@@ -1,14 +1,5 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-
-# IDE
-.vscode/
-.idea/
-
-
-# Pytest
-.pytest_cache/
+test_fft
+.tle_cache
+__pycache__
+.claude
+.codex

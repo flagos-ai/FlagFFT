@@ -1,1 +1,1 @@
-"""Source code for FFT implementations."""
+# Internal package container for the repo-local implementation module.
