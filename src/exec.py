@@ -18,6 +18,7 @@ from .plan import (
     build_fft_plan,
     clear_plan_cache,
     get_fft_plan,
+    lane_block_for,
     unique_leaf_plans,
 )
 
@@ -223,11 +224,11 @@ def _fmt_const(value: float) -> str:
     return repr(float(value))
 
 
-def _emit_inline_constant_codelet(indent: str, radix: int, lanes: int) -> list[str]:
+def _emit_inline_constant_codelet(indent: str, radix: int, lane_block: int) -> list[str]:
     lines: list[str] = []
     for kout in range(radix):
-        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lanes},), dtype=tl.float32)")
-        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lanes},), dtype=tl.float32)")
+        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
+        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
 
     for kout in range(radix):
         for nin in range(radix):
@@ -244,11 +245,11 @@ def _emit_inline_constant_codelet(indent: str, radix: int, lanes: int) -> list[s
     return lines
 
 
-def _emit_table_codelet(indent: str, radix: int, lanes: int) -> list[str]:
+def _emit_table_codelet(indent: str, radix: int, lane_block: int) -> list[str]:
     lines: list[str] = []
     for kout in range(radix):
-        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lanes},), dtype=tl.float32)")
-        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lanes},), dtype=tl.float32)")
+        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
+        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
 
     for kout in range(radix):
         for nin in range(radix):
@@ -264,7 +265,9 @@ def _emit_table_codelet(indent: str, radix: int, lanes: int) -> list[str]:
     return lines
 
 
-def _emit_stage_block(stage: int, factors: tuple[int, ...], n: int, lanes: int) -> list[str]:
+def _emit_stage_block(
+    stage: int, factors: tuple[int, ...], n: int, lanes: int, lane_block: int
+) -> list[str]:
     radix = factors[stage]
     groups = n // (lanes * radix)
     is_last = stage == len(factors) - 1
@@ -275,18 +278,28 @@ def _emit_stage_block(stage: int, factors: tuple[int, ...], n: int, lanes: int) 
     indent = "        "
 
     for j in range(radix):
-        lines.append(f"{indent}phys{j} = lane + {lanes} * (group_{stage} * {radix} + {j})")
+        lines.append(
+            f"{indent}phys{j} = tl.where(lane_mask, lane + {lanes} * (group_{stage} * {radix} + {j}), 0)"
+        )
 
     for j in range(radix):
         if stage == 0:
-            lines.append(f"{indent}in{j} = tl.load(in_map_ptr + phys{j})")
-            lines.append(f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2)")
-            lines.append(f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1)")
+            lines.append(f"{indent}in{j} = tl.load(in_map_ptr + phys{j}, mask=lane_mask, other=0)")
+            lines.append(
+                f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other=0.0)"
+            )
+            lines.append(
+                f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other=0.0)"
+            )
         else:
-            lines.append(f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, (phys{j},)))")
-            lines.append(f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, (phys{j},)))")
-            lines.append(f"{indent}twr = tl.load(tw{stage}_r_ptr + phys{j})")
-            lines.append(f"{indent}twi = tl.load(tw{stage}_i_ptr + phys{j})")
+            lines.append(
+                f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, (phys{j},)), mask=lane_mask, other=0.0)"
+            )
+            lines.append(
+                f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, (phys{j},)), mask=lane_mask, other=0.0)"
+            )
+            lines.append(f"{indent}twr = tl.load(tw{stage}_r_ptr + phys{j}, mask=lane_mask, other=0.0)")
+            lines.append(f"{indent}twi = tl.load(tw{stage}_i_ptr + phys{j}, mask=lane_mask, other=0.0)")
             lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if radix == 2:
@@ -359,19 +372,27 @@ def _emit_stage_block(stage: int, factors: tuple[int, ...], n: int, lanes: int) 
             "i0, i8, i4, i12, i2, i10, i6, i14, i1, i9, i5, i13, i3, i11, i7, i15)"
         )
     elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
-        lines.extend(_emit_inline_constant_codelet(indent, radix, lanes))
+        lines.extend(_emit_inline_constant_codelet(indent, radix, lane_block))
     else:
-        lines.extend(_emit_table_codelet(indent, radix, lanes))
+        lines.extend(_emit_table_codelet(indent, radix, lane_block))
 
     for j in range(radix):
         if is_last:
-            lines.append(f"{indent}out_idx{j} = tl.load(out_map_ptr + phys{j})")
-            lines.append(f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j})")
-            lines.append(f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j})")
+            lines.append(f"{indent}out_idx{j} = tl.load(out_map_ptr + phys{j}, mask=lane_mask, other=0)")
+            lines.append(
+                f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j}, mask=lane_mask)"
+            )
+            lines.append(
+                f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+            )
         else:
-            lines.append(f"{indent}dst{j} = tl.load(route{stage}_ptr + phys{j})")
-            lines.append(f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_r, (dst{j},)), r{j})")
-            lines.append(f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_i, (dst{j},)), i{j})")
+            lines.append(f"{indent}dst{j} = tl.load(route{stage}_ptr + phys{j}, mask=lane_mask, other=0)")
+            lines.append(
+                f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_r, (dst{j},)), r{j}, mask=lane_mask)"
+            )
+            lines.append(
+                f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_i, (dst{j},)), i{j}, mask=lane_mask)"
+            )
 
     if not is_last:
         lines.append("    tl.debug_barrier()")
@@ -383,6 +404,7 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
     n = plan.length
     smem_n = plan.smem_size
     generic_radices = plan.generic_radices
+    lane_block = lane_block_for(plan.lanes)
     params = ["in_ptr", "out_ptr", "in_map_ptr", "out_map_ptr"]
     for stage in range(len(factors) - 1):
         params.append(f"route{stage}_ptr")
@@ -394,7 +416,7 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
         params.append(f"dft{radix}_i_ptr")
     params.append("nbatch")
 
-    kernel_name = "fft_kernel_" + "_".join(str(x) for x in factors) + f"_l{plan.lanes}"
+    kernel_name = "fft_kernel_" + "_".join(str(x) for x in factors) + f"_l{plan.lanes}_b{lane_block}"
     body: list[str] = [
         "@triton.jit",
         f"def {kernel_name}(",
@@ -406,7 +428,8 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
     body.append("    pid = tl.program_id(0)")
     body.append("    if pid >= nbatch:")
     body.append("        return")
-    body.append(f"    lane = tl.arange(0, {plan.lanes})")
+    body.append(f"    lane = tl.arange(0, {lane_block})")
+    body.append(f"    lane_mask = lane < {plan.lanes}")
     body.append(f"    batch_base = pid * {n}")
 
     if len(factors) > 1:
@@ -424,7 +447,7 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
         )
 
     for stage in range(len(factors)):
-        body.extend(_emit_stage_block(stage, factors, n, plan.lanes))
+        body.extend(_emit_stage_block(stage, factors, n, plan.lanes, lane_block))
 
     return kernel_name, "\n".join(body)
 
@@ -448,7 +471,10 @@ def _get_leaf_kernel(plan: LeafPlan):
             helpers += codelet_file.read_text() + "\n\n"
 
     kernel_name, source = _build_leaf_kernel_source(plan)
-    module_name = "fft_mixed_radix_gen_" + "_".join(str(x) for x in plan.factors) + f"_l{plan.lanes}"
+    lane_block = lane_block_for(plan.lanes)
+    module_name = (
+        "fft_mixed_radix_gen_" + "_".join(str(x) for x in plan.factors) + f"_l{plan.lanes}_b{lane_block}"
+    )
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     module_path = _CACHE_DIR / f"{module_name}.py"
     module_path.write_text(helpers + "\n\n" + source + "\n")

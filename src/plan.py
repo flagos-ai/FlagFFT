@@ -38,6 +38,8 @@ FFTDecompositionSpec: TypeAlias = str | Sequence[Any] | Mapping[str, Any]
 
 _PLAN_CACHE: dict[int, FFTPlan] = {}
 _DIVISOR_CACHE: dict[int, tuple[int, ...]] = {}
+_FACTORIZATION_CACHE: dict[int, tuple[tuple[int, ...], ...]] = {}
+_BEST_LEAF_FACTORS_CACHE: dict[int, tuple[int, ...]] = {}
 
 
 def factorize_supported_radices(n: int) -> tuple[tuple[int, ...], int]:
@@ -71,6 +73,32 @@ def _factorize_or_raise(n: int) -> tuple[int, ...]:
     return factors
 
 
+def _enumerate_supported_factorizations(n: int) -> tuple[tuple[int, ...], ...]:
+    cached = _FACTORIZATION_CACHE.get(n)
+    if cached is not None:
+        return cached
+
+    factorizations: set[tuple[int, ...]] = set()
+    for radix in SUPPORTED_RADICES:
+        if n % radix != 0:
+            continue
+        if n == radix:
+            factorizations.add((radix,))
+            continue
+        for tail in _enumerate_supported_factorizations(n // radix):
+            factorizations.add((radix,) + tail)
+
+    result = tuple(sorted(factorizations))
+    _FACTORIZATION_CACHE[n] = result
+    return result
+
+
+def lane_block_for(lanes: int) -> int:
+    if lanes <= 1:
+        return 1
+    return 1 << (lanes - 1).bit_length()
+
+
 def _choose_lanes(n: int, factors: tuple[int, ...], max_lanes: int = MAX_LANES) -> int:
     counts = [n // radix for radix in factors]
     gcd_all = counts[0]
@@ -78,16 +106,50 @@ def _choose_lanes(n: int, factors: tuple[int, ...], max_lanes: int = MAX_LANES) 
         gcd_all = math.gcd(gcd_all, count)
 
     upper = min(gcd_all, max_lanes)
-    candidate = 1 << (upper.bit_length() - 1)
-    while candidate > 0:
+    for candidate in range(upper, 0, -1):
         if gcd_all % candidate == 0:
             return candidate
-        candidate //= 2
     return 1
 
 
+def _score_leaf_factorization(
+    n: int, factors: tuple[int, ...]
+) -> tuple[int, int, int, int, tuple[int, ...]]:
+    lanes = _choose_lanes(n, factors)
+    lane_block = lane_block_for(lanes)
+    generic_stage_count = sum(
+        1
+        for radix in factors
+        if radix not in SPECIALIZED_BUTTERFLY_RADICES
+        and radix not in SPECIALIZED_INLINE_CODELET_RADICES
+        and radix not in SPECIALIZED_DIRECT_CODELET_RADICES
+    )
+    return (
+        lanes,
+        -lane_block,
+        -generic_stage_count,
+        -len(factors),
+        factors,
+    )
+
+
+def _select_leaf_factors(n: int) -> tuple[int, ...]:
+    cached = _BEST_LEAF_FACTORS_CACHE.get(n)
+    if cached is not None:
+        return cached
+
+    candidates = _enumerate_supported_factorizations(n)
+    if not candidates:
+        cached = _factorize_or_raise(n)
+    else:
+        cached = max(candidates, key=lambda factors: _score_leaf_factorization(n, factors))
+
+    _BEST_LEAF_FACTORS_CACHE[n] = cached
+    return cached
+
+
 def _choose_num_warps(lanes: int) -> int:
-    warps = max(1, (lanes + 31) // 32)
+    warps = max(1, (lane_block_for(lanes) + 31) // 32)
     choice = 1
     while choice < warps:
         choice *= 2
@@ -180,7 +242,7 @@ def get_fft_plan(n: int) -> FFTPlan:
 
     factors = _factorize_or_raise(n)
     if should_use_leaf(n, factors):
-        plan: FFTPlan = make_leaf_plan(n, factors)
+        plan: FFTPlan = make_leaf_plan(n, _select_leaf_factors(n))
     else:
         n1, n2 = choose_four_step_split(n)
         plan = FourStepPlan(
@@ -201,7 +263,7 @@ def _build_manual_leaf_plan(n: int) -> LeafPlan:
             f"manual leaf plan for length {n} exceeds the leaf constraints; "
             "add an explicit split instead"
         )
-    return make_leaf_plan(n, factors)
+    return make_leaf_plan(n, _select_leaf_factors(n))
 
 
 def _is_sequence_spec(spec: object) -> bool:
@@ -270,6 +332,8 @@ def build_fft_plan(n: int, split_spec: FFTDecompositionSpec | None = None) -> FF
 def clear_plan_cache() -> None:
     _PLAN_CACHE.clear()
     _DIVISOR_CACHE.clear()
+    _FACTORIZATION_CACHE.clear()
+    _BEST_LEAF_FACTORS_CACHE.clear()
 
 
 def plan_depth(plan: FFTPlan) -> int:
@@ -302,8 +366,9 @@ def max_leaf_smem_bytes(plan: FFTPlan) -> int:
 def describe_fft_plan(plan: FFTPlan) -> str:
     if isinstance(plan, LeafPlan):
         smem_bytes = estimate_leaf_smem_bytes(plan.length, plan.factors)
+        lane_block = lane_block_for(plan.lanes)
         return (
-            f"leaf(n={plan.length}, factors={plan.factors}, lanes={plan.lanes}, "
+            f"leaf(n={plan.length}, factors={plan.factors}, lanes={plan.lanes}/{lane_block}, "
             f"warps={plan.num_warps}, smem={smem_bytes}B)"
         )
     return (
