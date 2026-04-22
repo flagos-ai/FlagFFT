@@ -40,6 +40,7 @@ _PLAN_CACHE: dict[int, FFTPlan] = {}
 _DIVISOR_CACHE: dict[int, tuple[int, ...]] = {}
 _FACTORIZATION_CACHE: dict[int, tuple[tuple[int, ...], ...]] = {}
 _BEST_LEAF_FACTORS_CACHE: dict[int, tuple[int, ...]] = {}
+_PLAN_COST_CACHE: dict[int, float] = {}
 
 
 def factorize_supported_radices(n: int) -> tuple[tuple[int, ...], int]:
@@ -191,6 +192,36 @@ def should_use_leaf(n: int, factors: tuple[int, ...]) -> bool:
     return estimate_leaf_smem_bytes(n, factors) <= LEAF_SMEM_BUDGET_BYTES
 
 
+def _estimate_leaf_warm_cost(n: int) -> float:
+    leaf = make_leaf_plan(n, _select_leaf_factors(n))
+    return float(leaf.length * len(leaf.factors) * leaf.num_warps) / float(leaf.lanes)
+
+
+def _estimate_plan_warm_cost(n: int) -> float:
+    cached = _PLAN_COST_CACHE.get(n)
+    if cached is not None:
+        return cached
+
+    factors = _factorize_or_raise(n)
+    if should_use_leaf(n, factors):
+        cost = _estimate_leaf_warm_cost(n)
+    else:
+        best_cost: float | None = None
+        for divisor in _enumerate_supported_divisors(n):
+            if divisor <= 1 or divisor >= n:
+                continue
+            mate = n // divisor
+            candidate = mate * _estimate_plan_warm_cost(divisor) + divisor * _estimate_plan_warm_cost(mate)
+            if best_cost is None or candidate < best_cost:
+                best_cost = candidate
+        if best_cost is None:
+            raise ValueError(f"length {n} has no non-trivial supported split")
+        cost = best_cost
+
+    _PLAN_COST_CACHE[n] = cost
+    return cost
+
+
 def _enumerate_supported_divisors(n: int) -> tuple[int, ...]:
     cached = _DIVISOR_CACHE.get(n)
     if cached is not None:
@@ -216,14 +247,15 @@ def choose_four_step_split(n: int) -> tuple[int, int]:
         raise ValueError(f"length {n} cannot be split further")
 
     root = math.sqrt(float(n))
-    best_score: tuple[float, float] | None = None
+    best_score: tuple[float, float, float] | None = None
     best_divisor: int | None = None
     for divisor in _enumerate_supported_divisors(n):
         if divisor <= 1 or divisor >= n:
             continue
         mate = n // divisor
+        warm_cost = mate * _estimate_plan_warm_cost(divisor) + divisor * _estimate_plan_warm_cost(mate)
         balance = abs(math.log(divisor) - math.log(mate))
-        score = (balance, abs(divisor - root))
+        score = (warm_cost, balance, abs(divisor - root))
         if best_score is None or score < best_score:
             best_score = score
             best_divisor = divisor
@@ -334,6 +366,7 @@ def clear_plan_cache() -> None:
     _DIVISOR_CACHE.clear()
     _FACTORIZATION_CACHE.clear()
     _BEST_LEAF_FACTORS_CACHE.clear()
+    _PLAN_COST_CACHE.clear()
 
 
 def plan_depth(plan: FFTPlan) -> int:

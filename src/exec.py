@@ -32,6 +32,10 @@ _CACHE_DIR = _PROJECT_ROOT / ".tle_cache" / "fft_mixed_radix_tle_generated"
 _TABLE_CACHE: dict[tuple[torch.device, tuple[int, ...], int], dict[str, torch.Tensor]] = {}
 _KERNEL_CACHE: dict[tuple[tuple[int, ...], int], object] = {}
 _TWIDDLE_CACHE: dict[tuple[torch.device, int, int], torch.Tensor] = {}
+_FOUR_STEP_BUFFER_CACHE: dict[tuple[torch.device, int, int, int], dict[str, torch.Tensor]] = {}
+_FOUR_STEP_TILE_ROWS = 32
+_FOUR_STEP_TILE_COLS = 32
+_FOUR_STEP_NUM_WARPS = 4
 
 
 def _decode_stage_codelet(codelet: int, radices: tuple[int, ...], stage: int) -> tuple[list[int], list[int]]:
@@ -212,6 +216,83 @@ def _get_leaf_tables(device: torch.device, plan: LeafPlan) -> dict[str, torch.Te
 @triton.jit
 def _cmul(ar, ai, br, bi):
     return ar * br - ai * bi, ai * br + ar * bi
+
+
+@triton.jit
+def _transpose_complex_kernel(
+    src_ptr,
+    dst_ptr,
+    src_batch_stride,
+    src_row_stride,
+    src_col_stride,
+    dst_batch_stride,
+    dst_row_stride,
+    dst_col_stride,
+    rows,
+    cols,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
+):
+    pid_col = tl.program_id(0)
+    pid_row = tl.program_id(1)
+    pid_batch = tl.program_id(2)
+
+    row_offsets = pid_row * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
+    col_offsets = pid_col * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+    mask = (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
+
+    src_base = src_ptr + pid_batch * src_batch_stride
+    src_offsets = src_base + row_offsets[:, None] * src_row_stride + col_offsets[None, :] * src_col_stride
+    src_real = tl.load(src_offsets, mask=mask, other=0.0)
+    src_imag = tl.load(src_offsets + 1, mask=mask, other=0.0)
+
+    dst_base = dst_ptr + pid_batch * dst_batch_stride
+    dst_offsets = dst_base + col_offsets[None, :] * dst_row_stride + row_offsets[:, None] * dst_col_stride
+    tl.store(dst_offsets, src_real, mask=mask)
+    tl.store(dst_offsets + 1, src_imag, mask=mask)
+
+
+@triton.jit
+def _twiddle_transpose_complex_kernel(
+    src_ptr,
+    twiddle_ptr,
+    dst_ptr,
+    src_batch_stride,
+    src_row_stride,
+    src_col_stride,
+    twiddle_row_stride,
+    twiddle_col_stride,
+    dst_batch_stride,
+    dst_row_stride,
+    dst_col_stride,
+    rows,
+    cols,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,
+):
+    pid_col = tl.program_id(0)
+    pid_row = tl.program_id(1)
+    pid_batch = tl.program_id(2)
+
+    row_offsets = pid_row * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
+    col_offsets = pid_col * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+    mask = (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
+
+    src_base = src_ptr + pid_batch * src_batch_stride
+    src_offsets = src_base + row_offsets[:, None] * src_row_stride + col_offsets[None, :] * src_col_stride
+    src_real = tl.load(src_offsets, mask=mask, other=0.0)
+    src_imag = tl.load(src_offsets + 1, mask=mask, other=0.0)
+
+    tw_offsets = twiddle_ptr + row_offsets[:, None] * twiddle_row_stride + col_offsets[None, :] * twiddle_col_stride
+    tw_real = tl.load(tw_offsets, mask=mask, other=0.0)
+    tw_imag = tl.load(tw_offsets + 1, mask=mask, other=0.0)
+    out_real, out_imag = _cmul(src_real, src_imag, tw_real, tw_imag)
+
+    dst_base = dst_ptr + pid_batch * dst_batch_stride
+    dst_offsets = dst_base + col_offsets[None, :] * dst_row_stride + row_offsets[:, None] * dst_col_stride
+    tl.store(dst_offsets, out_real, mask=mask)
+    tl.store(dst_offsets + 1, out_imag, mask=mask)
+
 
 
 def _fmt_const(value: float) -> str:
@@ -530,21 +611,98 @@ def _get_four_step_twiddle(device: torch.device, n1: int, n2: int) -> torch.Tens
     return twiddle
 
 
+def _transpose_complex(src: torch.Tensor, dst: torch.Tensor) -> None:
+    batch, rows, cols = src.shape
+    src_f = src.view(torch.float32)
+    dst_f = dst.view(torch.float32)
+    grid = (
+        triton.cdiv(cols, _FOUR_STEP_TILE_COLS),
+        triton.cdiv(rows, _FOUR_STEP_TILE_ROWS),
+        batch,
+    )
+    _transpose_complex_kernel[grid](
+        src_f,
+        dst_f,
+        src.stride(0) * 2,
+        src.stride(1) * 2,
+        src.stride(2) * 2,
+        dst.stride(0) * 2,
+        dst.stride(1) * 2,
+        dst.stride(2) * 2,
+        rows,
+        cols,
+        BLOCK_ROWS=_FOUR_STEP_TILE_ROWS,
+        BLOCK_COLS=_FOUR_STEP_TILE_COLS,
+        num_warps=_FOUR_STEP_NUM_WARPS,
+        num_stages=1,
+    )
+
+
+def _twiddle_transpose_complex(src: torch.Tensor, twiddle: torch.Tensor, dst: torch.Tensor) -> None:
+    batch, rows, cols = src.shape
+    src_f = src.view(torch.float32)
+    twiddle_f = twiddle.view(torch.float32)
+    dst_f = dst.view(torch.float32)
+    grid = (
+        triton.cdiv(cols, _FOUR_STEP_TILE_COLS),
+        triton.cdiv(rows, _FOUR_STEP_TILE_ROWS),
+        batch,
+    )
+    _twiddle_transpose_complex_kernel[grid](
+        src_f,
+        twiddle_f,
+        dst_f,
+        src.stride(0) * 2,
+        src.stride(1) * 2,
+        src.stride(2) * 2,
+        twiddle.stride(0) * 2,
+        twiddle.stride(1) * 2,
+        dst.stride(0) * 2,
+        dst.stride(1) * 2,
+        dst.stride(2) * 2,
+        rows,
+        cols,
+        BLOCK_ROWS=_FOUR_STEP_TILE_ROWS,
+        BLOCK_COLS=_FOUR_STEP_TILE_COLS,
+        num_warps=_FOUR_STEP_NUM_WARPS,
+        num_stages=1,
+    )
+
+
+def _get_four_step_buffers(device: torch.device, batch: int, n1: int, n2: int) -> dict[str, torch.Tensor]:
+    key = (device, batch, n1, n2)
+    cached = _FOUR_STEP_BUFFER_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    buffers = {
+        "stage0": torch.empty((batch, n2, n1), device=device, dtype=torch.complex64),
+        "stage2": torch.empty((batch, n1, n2), device=device, dtype=torch.complex64),
+    }
+    _FOUR_STEP_BUFFER_CACHE[key] = buffers
+    return buffers
+
+
 def _execute_four_step_plan(x: torch.Tensor, plan: FourStepPlan) -> torch.Tensor:
     batch = x.numel() // plan.length
     x_contig = x.contiguous().reshape(batch, plan.length)
+    buffers = _get_four_step_buffers(x.device, batch, plan.n1, plan.n2)
 
-    stage0 = x_contig.reshape(batch, plan.n1, plan.n2).transpose(1, 2).contiguous()
+    stage0 = buffers["stage0"]
+    _transpose_complex(x_contig.reshape(batch, plan.n1, plan.n2), stage0)
     stage1 = _execute_plan(stage0.reshape(batch * plan.n2, plan.n1), plan.row_plan)
     stage1 = stage1.reshape(batch, plan.n2, plan.n1)
 
     twiddle = _get_four_step_twiddle(x.device, plan.n1, plan.n2)
-    stage2 = (stage1 * twiddle[None, :, :]).transpose(1, 2).contiguous()
+    stage2 = buffers["stage2"]
+    _twiddle_transpose_complex(stage1, twiddle, stage2)
 
     stage3 = _execute_plan(stage2.reshape(batch * plan.n1, plan.n2), plan.col_plan)
     stage3 = stage3.reshape(batch, plan.n1, plan.n2)
 
-    return stage3.transpose(1, 2).contiguous().reshape_as(x_contig)
+    out = torch.empty((batch, plan.n2, plan.n1), device=x.device, dtype=torch.complex64)
+    _transpose_complex(stage3, out)
+    return out.reshape_as(x_contig)
 
 
 def _execute_plan(x: torch.Tensor, plan: FFTPlan) -> torch.Tensor:
@@ -576,6 +734,7 @@ def clear_exec_caches() -> None:
     _TABLE_CACHE.clear()
     _KERNEL_CACHE.clear()
     _TWIDDLE_CACHE.clear()
+    _FOUR_STEP_BUFFER_CACHE.clear()
 
 
 def clear_fft_caches() -> None:
