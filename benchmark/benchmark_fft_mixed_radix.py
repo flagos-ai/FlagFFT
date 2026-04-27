@@ -13,13 +13,13 @@ import torch
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fft_mixed_radix_tle import (
+from flagfft import (
     FFTDecompositionSpec,
     build_fft_plan,
     clear_fft_caches,
     collect_leaf_plans,
     describe_fft_plan,
-    fft_mixed_radix_triton,
+    fft,
     fft_mixed_radix_triton_manual,
     max_leaf_smem_bytes,
     plan_depth,
@@ -113,15 +113,20 @@ def benchmark_mixed_radix_once(
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     if split_spec is None:
-        y = fft_mixed_radix_triton(x)
+        y = fft(x)
     else:
         y = fft_mixed_radix_triton_manual(x, split_spec=split_spec)
     torch.cuda.synchronize()
     cold_first_call_ms = (time.perf_counter() - t0) * 1e3
 
     plan = _build_plan(n, split_spec)
-    triton_stats = _bench_gpu_ms(
-        lambda: fft_mixed_radix_triton(x, plan=plan),
+    flagfft_fn = (
+        (lambda: fft(x))
+        if split_spec is None
+        else (lambda: fft_mixed_radix_triton_manual(x, split_spec=split_spec))
+    )
+    flagfft_stats = _bench_gpu_ms(
+        flagfft_fn,
         warmup=warmup,
         iters=iters,
     )
@@ -146,14 +151,14 @@ def benchmark_mixed_radix_once(
         "kernel_build_ms": kernel_build_ms,
         "kernel_cached_us": kernel_cached_us,
         "cold_first_call_ms": cold_first_call_ms,
-        "triton_mean_ms": triton_stats["mean_ms"],
-        "triton_median_ms": triton_stats["median_ms"],
-        "triton_min_ms": triton_stats["min_ms"],
+        "flagfft_mean_ms": flagfft_stats["mean_ms"],
+        "flagfft_median_ms": flagfft_stats["median_ms"],
+        "flagfft_min_ms": flagfft_stats["min_ms"],
         "torch_mean_ms": torch_stats["mean_ms"],
         "torch_median_ms": torch_stats["median_ms"],
         "torch_min_ms": torch_stats["min_ms"],
-        "speedup_vs_torch": torch_stats["mean_ms"] / triton_stats["mean_ms"],
-        "cold_over_warm": cold_first_call_ms / triton_stats["median_ms"],
+        "speedup_vs_torch": torch_stats["mean_ms"] / flagfft_stats["mean_ms"],
+        "cold_over_warm": cold_first_call_ms / flagfft_stats["median_ms"],
         "max_abs_err": float(err.max()),
         "rms_err": float(err.square().mean().sqrt()),
     }
@@ -195,8 +200,8 @@ def run_benchmark(
             f"kernel={stats['kernel_cached_us']:.3f} us"
         )
         print(
-            f"  warm: triton_mean={stats['triton_mean_ms']:.4f} ms "
-            f"triton_median={stats['triton_median_ms']:.4f} ms "
+            f"  warm: flagfft_mean={stats['flagfft_mean_ms']:.4f} ms "
+            f"flagfft_median={stats['flagfft_median_ms']:.4f} ms "
             f"torch_mean={stats['torch_mean_ms']:.4f} ms "
             f"speedup={stats['speedup_vs_torch']:.2f}x"
         )

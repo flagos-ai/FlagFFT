@@ -10,11 +10,11 @@ import torch
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fft_mixed_radix_tle import (
+from flagfft import (
     FFTDecompositionSpec,
     build_fft_plan,
     describe_fft_plan,
-    fft_mixed_radix_triton,
+    fft,
     fft_mixed_radix_triton_manual,
 )
 
@@ -43,7 +43,7 @@ def check_case(
 
     if split_spec is None:
         plan = build_fft_plan(n)
-        y = fft_mixed_radix_triton(x, plan=plan)
+        y = fft(x)
     else:
         plan = build_fft_plan(n, split_spec=split_spec)
         y = fft_mixed_radix_triton_manual(x, split_spec=split_spec)
