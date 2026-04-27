@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import math
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import torch
 import triton
@@ -12,14 +14,20 @@ import triton.experimental.tle.language as tle
 from .plan import (
     FFTDecompositionSpec,
     FFTPlan,
+    FFTPlanRequest,
+    DirectDFTPlan,
     FourStepPlan,
     LeafPlan,
+    PlanNode,
     SPECIALIZED_INLINE_CODELET_RADICES,
+    StockhamPlan,
     build_fft_plan,
     clear_plan_cache,
-    get_fft_plan,
+    get_plan_root,
+    iter_plan_nodes,
     lane_block_for,
-    unique_leaf_plans,
+    load_fft_plan,
+    plan_from_json,
 )
 
 _MODULE_DIR = Path(__file__).resolve().parent
@@ -33,6 +41,7 @@ _TABLE_CACHE: dict[tuple[torch.device, tuple[int, ...], int], dict[str, torch.Te
 _KERNEL_CACHE: dict[tuple[tuple[int, ...], int], object] = {}
 _TWIDDLE_CACHE: dict[tuple[torch.device, int, int], torch.Tensor] = {}
 _FOUR_STEP_BUFFER_CACHE: dict[tuple[torch.device, int, int, int], dict[str, torch.Tensor]] = {}
+_DIRECT_DFT_MATRIX_CACHE: dict[tuple[torch.device, int], torch.Tensor] = {}
 _FOUR_STEP_TILE_ROWS = 32
 _FOUR_STEP_TILE_COLS = 32
 _FOUR_STEP_NUM_WARPS = 4
@@ -597,6 +606,29 @@ def _execute_leaf_plan(x: torch.Tensor, plan: LeafPlan) -> torch.Tensor:
     return out
 
 
+def _get_direct_dft_matrix(device: torch.device, n: int) -> torch.Tensor:
+    key = (device, n)
+    cached = _DIRECT_DFT_MATRIX_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    time = torch.arange(n, device=device, dtype=torch.float32)
+    freq = time[:, None]
+    angle = -2.0 * math.pi * freq * time[None, :] / float(n)
+    matrix = torch.complex(torch.cos(angle), torch.sin(angle)).to(torch.complex64)
+    _DIRECT_DFT_MATRIX_CACHE[key] = matrix
+    return matrix
+
+
+def _execute_direct_dft_plan(x: torch.Tensor, plan: DirectDFTPlan) -> torch.Tensor:
+    if plan.impl != "torch_matmul":
+        raise NotImplementedError(f"unsupported direct DFT implementation: {plan.impl}")
+    batch = x.numel() // plan.length
+    x_contig = x.contiguous().reshape(batch, plan.length)
+    matrix = _get_direct_dft_matrix(x.device, plan.length)
+    return x_contig @ matrix.T
+
+
 def _get_four_step_twiddle(device: torch.device, n1: int, n2: int) -> torch.Tensor:
     key = (device, n1, n2)
     cached = _TWIDDLE_CACHE.get(key)
@@ -690,14 +722,14 @@ def _execute_four_step_plan(x: torch.Tensor, plan: FourStepPlan) -> torch.Tensor
 
     stage0 = buffers["stage0"]
     _transpose_complex(x_contig.reshape(batch, plan.n1, plan.n2), stage0)
-    stage1 = _execute_plan(stage0.reshape(batch * plan.n2, plan.n1), plan.row_plan)
+    stage1 = _execute_plan_node(stage0.reshape(batch * plan.n2, plan.n1), plan.row_plan)
     stage1 = stage1.reshape(batch, plan.n2, plan.n1)
 
     twiddle = _get_four_step_twiddle(x.device, plan.n1, plan.n2)
     stage2 = buffers["stage2"]
     _twiddle_transpose_complex(stage1, twiddle, stage2)
 
-    stage3 = _execute_plan(stage2.reshape(batch * plan.n1, plan.n2), plan.col_plan)
+    stage3 = _execute_plan_node(stage2.reshape(batch * plan.n1, plan.n2), plan.col_plan)
     stage3 = stage3.reshape(batch, plan.n1, plan.n2)
 
     out = torch.empty((batch, plan.n2, plan.n1), device=x.device, dtype=torch.complex64)
@@ -705,29 +737,55 @@ def _execute_four_step_plan(x: torch.Tensor, plan: FourStepPlan) -> torch.Tensor
     return out.reshape_as(x_contig)
 
 
-def _execute_plan(x: torch.Tensor, plan: FFTPlan) -> torch.Tensor:
+def _execute_stockham_plan(x: torch.Tensor, plan: StockhamPlan) -> torch.Tensor:
+    raise NotImplementedError(
+        "stockham_autosort plan nodes are serializable but no executor is implemented yet"
+    )
+
+
+def _execute_plan_node(x: torch.Tensor, plan: PlanNode) -> torch.Tensor:
     if isinstance(plan, LeafPlan):
         return _execute_leaf_plan(x, plan)
-    return _execute_four_step_plan(x, plan)
+    if isinstance(plan, FourStepPlan):
+        return _execute_four_step_plan(x, plan)
+    if isinstance(plan, DirectDFTPlan):
+        return _execute_direct_dft_plan(x, plan)
+    if isinstance(plan, StockhamPlan):
+        return _execute_stockham_plan(x, plan)
+    raise TypeError(f"unsupported plan node type: {type(plan).__name__}")
 
 
-def prepare_fft_tables(device: torch.device, plan: FFTPlan) -> None:
-    for leaf in unique_leaf_plans(plan):
-        _get_leaf_tables(device, leaf)
-    _prepare_four_step_twiddles(device, plan)
+def _execute_plan(x: torch.Tensor, plan: FFTPlan | PlanNode) -> torch.Tensor:
+    return _execute_plan_node(x, get_plan_root(plan))
 
 
-def prepare_fft_kernels(plan: FFTPlan) -> None:
-    for leaf in unique_leaf_plans(plan):
-        _get_leaf_kernel(leaf)
+def prepare_fft_tables(device: torch.device, plan: FFTPlan | PlanNode) -> None:
+    for node in iter_plan_nodes(plan):
+        if isinstance(node, LeafPlan):
+            _get_leaf_tables(device, node)
+        elif isinstance(node, FourStepPlan):
+            _get_four_step_twiddle(device, node.n1, node.n2)
+        elif isinstance(node, DirectDFTPlan):
+            _get_direct_dft_matrix(device, node.length)
+        elif isinstance(node, StockhamPlan):
+            raise NotImplementedError(
+                "stockham_autosort plan nodes are serializable but no executor is implemented yet"
+            )
 
 
-def _prepare_four_step_twiddles(device: torch.device, plan: FFTPlan) -> None:
-    if isinstance(plan, LeafPlan):
+def prepare_fft_kernels(plan: FFTPlan | PlanNode) -> None:
+    for node in iter_plan_nodes(plan):
+        if isinstance(node, LeafPlan):
+            _get_leaf_kernel(node)
+
+
+def _prepare_four_step_twiddles(device: torch.device, plan: FFTPlan | PlanNode) -> None:
+    node = get_plan_root(plan)
+    if not isinstance(node, FourStepPlan):
         return
-    _get_four_step_twiddle(device, plan.n1, plan.n2)
-    _prepare_four_step_twiddles(device, plan.row_plan)
-    _prepare_four_step_twiddles(device, plan.col_plan)
+    _get_four_step_twiddle(device, node.n1, node.n2)
+    _prepare_four_step_twiddles(device, node.row_plan)
+    _prepare_four_step_twiddles(device, node.col_plan)
 
 
 def clear_exec_caches() -> None:
@@ -735,6 +793,7 @@ def clear_exec_caches() -> None:
     _KERNEL_CACHE.clear()
     _TWIDDLE_CACHE.clear()
     _FOUR_STEP_BUFFER_CACHE.clear()
+    _DIRECT_DFT_MATRIX_CACHE.clear()
 
 
 def clear_fft_caches() -> None:
@@ -744,21 +803,28 @@ def clear_fft_caches() -> None:
 
 def _resolve_fft_plan(
     n: int,
-    plan: FFTPlan | None = None,
+    plan: FFTPlan | PlanNode | Mapping[str, Any] | str | Path | None = None,
     split_spec: FFTDecompositionSpec | None = None,
+    request: FFTPlanRequest | None = None,
 ) -> FFTPlan:
     if plan is not None and split_spec is not None:
         raise ValueError("pass either plan or split_spec, not both")
     if plan is not None:
-        return plan
+        if isinstance(plan, Path):
+            return build_fft_plan(n, load_fft_plan(plan), request=request)
+        if isinstance(plan, str):
+            stripped = plan.strip()
+            loaded = plan_from_json(stripped) if stripped.startswith("{") else load_fft_plan(plan)
+            return build_fft_plan(n, loaded, request=request)
+        return build_fft_plan(n, plan, request=request)
     if split_spec is not None:
-        return build_fft_plan(n, split_spec)
-    return get_fft_plan(n)
+        return build_fft_plan(n, split_spec, request=request)
+    return build_fft_plan(n, request=request)
 
 
 def fft_mixed_radix_triton(
     x: torch.Tensor,
-    plan: FFTPlan | None = None,
+    plan: FFTPlan | PlanNode | Mapping[str, Any] | str | Path | None = None,
     split_spec: FFTDecompositionSpec | None = None,
 ) -> torch.Tensor:
     if x.dtype != torch.complex64:
@@ -769,7 +835,13 @@ def fft_mixed_radix_triton(
         raise ValueError("expected at least a 1-D tensor")
 
     n = x.shape[-1]
-    resolved_plan = _resolve_fft_plan(n, plan=plan, split_spec=split_spec)
+    request = FFTPlanRequest(
+        length=n,
+        dtype=str(x.dtype).removeprefix("torch."),
+        device=x.device.type,
+        batch=x.numel() // n,
+    )
+    resolved_plan = _resolve_fft_plan(n, plan=plan, split_spec=split_spec, request=request)
     if resolved_plan.length != n:
         raise ValueError(f"plan length mismatch: plan={resolved_plan.length}, tensor={n}")
     out = _execute_plan(x, resolved_plan)
