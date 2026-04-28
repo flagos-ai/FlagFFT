@@ -16,21 +16,14 @@ if __package__ in {None, ""}:
 from flagfft import (
     FFTDecompositionSpec,
     FFTPlan,
+    FFTPlanRequest,
     build_fft_plan,
     clear_fft_caches,
-    collect_leaf_plans,
-    describe_fft_plan,
-    fft,
-    fft_mixed_radix_triton,
-    fft_mixed_radix_triton_manual,
+    format_plan_tree,
     load_fft_plan,
-    max_leaf_smem_bytes,
-    plan_depth,
-    prepare_fft_kernels,
-    prepare_fft_tables,
     save_fft_plan,
-    unique_leaf_plans,
 )
+from src.exec import _execute_plan
 
 
 def _parse_split_spec(raw: str | None) -> FFTDecompositionSpec | None:
@@ -42,34 +35,99 @@ def _parse_split_spec(raw: str | None) -> FFTDecompositionSpec | None:
         raise ValueError(f"invalid --split-spec JSON: {exc}") from exc
 
 
-def _bench_gpu_ms(fn, warmup: int, iters: int) -> dict[str, float]:
+def _bench_warm_wall_ms(fn, warmup: int, iters: int) -> float:
+    if iters <= 0:
+        raise ValueError("iters must be positive")
+
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
+
     times: list[float] = []
     for _ in range(iters):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
         fn()
-        end.record()
-        end.synchronize()
-        times.append(start.elapsed_time(end))
-    return {
-        "mean_ms": statistics.mean(times),
-        "median_ms": statistics.median(times),
-        "min_ms": min(times),
-    }
+        torch.cuda.synchronize()
+        times.append((time.perf_counter() - t0) * 1e3)
+    return statistics.median(times)
 
 
 def _build_plan(
     n: int,
     split_spec: FFTDecompositionSpec | None,
     plan: FFTPlan | None,
+    request: FFTPlanRequest | None = None,
 ) -> FFTPlan:
     if plan is not None:
-        return build_fft_plan(n, plan)
-    return build_fft_plan(n, split_spec=split_spec)
+        return build_fft_plan(n, plan, request=request)
+    return build_fft_plan(n, split_spec=split_spec, request=request)
+
+
+def _make_plan_request(x: torch.Tensor, n: int) -> FFTPlanRequest:
+    return FFTPlanRequest(
+        length=n,
+        dtype=str(x.dtype).removeprefix("torch."),
+        device=x.device.type,
+        batch=x.numel() // n,
+    )
+
+
+def _profile_flagfft_warm_ms(
+    x: torch.Tensor,
+    n: int,
+    split_spec: FFTDecompositionSpec | None,
+    plan: FFTPlan | None,
+    warmup: int,
+    iters: int,
+) -> dict[str, Any]:
+    if iters <= 0:
+        raise ValueError("iters must be positive")
+
+    request = _make_plan_request(x, n)
+    resolved_plan = _build_plan(n, split_spec, plan, request=request)
+
+    for _ in range(warmup):
+        warm_plan = _build_plan(n, split_spec, plan, request=request)
+        _execute_plan(x, warm_plan)
+    torch.cuda.synchronize()
+
+    plan_times: list[float] = []
+    exec_times: list[float] = []
+    total_times: list[float] = []
+    for _ in range(iters):
+        torch.cuda.synchronize()
+        total_t0 = time.perf_counter()
+
+        t0 = time.perf_counter()
+        iter_plan = _build_plan(n, split_spec, plan, request=request)
+        plan_ms = (time.perf_counter() - t0) * 1e3
+
+        t0 = time.perf_counter()
+        _execute_plan(x, iter_plan).reshape(x.shape)
+        torch.cuda.synchronize()
+        exec_ms = (time.perf_counter() - t0) * 1e3
+        total_ms = (time.perf_counter() - total_t0) * 1e3
+
+        plan_times.append(plan_ms)
+        exec_times.append(exec_ms)
+        total_times.append(total_ms)
+
+    plan_median_ms = statistics.median(plan_times)
+    exec_median_ms = statistics.median(exec_times)
+    total_median_ms = statistics.median(total_times)
+    profile_total_ms = plan_median_ms + exec_median_ms
+    plan_pct = (plan_median_ms / profile_total_ms * 100.0) if profile_total_ms else 0.0
+    exec_pct = (exec_median_ms / profile_total_ms * 100.0) if profile_total_ms else 0.0
+
+    return {
+        "resolved_plan": resolved_plan,
+        "flagfft_median_ms": total_median_ms,
+        "flagfft_plan_median_ms": plan_median_ms,
+        "flagfft_exec_median_ms": exec_median_ms,
+        "flagfft_plan_pct": plan_pct,
+        "flagfft_exec_pct": exec_pct,
+    }
 
 
 def benchmark_mixed_radix_once(
@@ -87,95 +145,34 @@ def benchmark_mixed_radix_once(
     xr = torch.randn(batch, n, device="cuda", dtype=torch.float32)
     xi = torch.randn(batch, n, device="cuda", dtype=torch.float32)
     x = torch.complex(xr, xi)
-    device = x.device
 
     clear_fft_caches()
 
-    t0 = time.perf_counter()
-    resolved_plan = _build_plan(n, split_spec, plan)
-    plan_build_ms = (time.perf_counter() - t0) * 1e3
-
-    t0 = time.perf_counter()
-    for _ in range(1000):
-        _build_plan(n, split_spec, plan)
-    plan_cached_us = (time.perf_counter() - t0) * 1e6 / 1000.0
-
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    prepare_fft_tables(device, resolved_plan)
-    torch.cuda.synchronize()
-    table_build_ms = (time.perf_counter() - t0) * 1e3
-
-    t0 = time.perf_counter()
-    for _ in range(200):
-        prepare_fft_tables(device, resolved_plan)
-    table_cached_us = (time.perf_counter() - t0) * 1e6 / 200.0
-
-    t0 = time.perf_counter()
-    prepare_fft_kernels(resolved_plan)
-    kernel_build_ms = (time.perf_counter() - t0) * 1e3
-
-    t0 = time.perf_counter()
-    for _ in range(200):
-        prepare_fft_kernels(resolved_plan)
-    kernel_cached_us = (time.perf_counter() - t0) * 1e6 / 200.0
-
-    clear_fft_caches()
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    if plan is not None:
-        y = fft_mixed_radix_triton(x, plan=resolved_plan)
-    elif split_spec is None:
-        y = fft(x)
-    else:
-        y = fft_mixed_radix_triton_manual(x, split_spec=split_spec)
-    torch.cuda.synchronize()
-    cold_first_call_ms = (time.perf_counter() - t0) * 1e3
-
-    resolved_plan = _build_plan(n, split_spec, plan)
-    if plan is not None:
-        flagfft_fn = lambda: fft_mixed_radix_triton(x, plan=resolved_plan)
-    elif split_spec is None:
-        flagfft_fn = lambda: fft(x)
-    else:
-        flagfft_fn = lambda: fft_mixed_radix_triton_manual(x, split_spec=split_spec)
-    flagfft_stats = _bench_gpu_ms(
-        flagfft_fn,
+    flagfft_stats = _profile_flagfft_warm_ms(
+        x=x,
+        n=n,
+        split_spec=split_spec,
+        plan=plan,
         warmup=warmup,
         iters=iters,
     )
-    torch_stats = _bench_gpu_ms(lambda: torch.fft.fft(x, dim=-1), warmup=warmup, iters=iters)
-    ref = torch.fft.fft(x, dim=-1)
-    err = (y - ref).abs()
-    leaf_lengths = tuple(leaf.length for leaf in unique_leaf_plans(resolved_plan))
+    torch_median_ms = _bench_warm_wall_ms(
+        lambda: torch.fft.fft(x, dim=-1), warmup=warmup, iters=iters
+    )
+    resolved_plan = flagfft_stats["resolved_plan"]
 
     return {
         "length": resolved_plan.length,
         "batch": batch,
         "plan_source": "json" if plan is not None else ("manual" if split_spec is not None else "auto"),
-        "plan": describe_fft_plan(resolved_plan),
+        "plan": format_plan_tree(resolved_plan),
         "resolved_plan": resolved_plan,
-        "plan_depth": plan_depth(resolved_plan),
-        "leaf_lengths": leaf_lengths,
-        "leaf_count": len(collect_leaf_plans(resolved_plan)),
-        "max_leaf_smem_bytes": max_leaf_smem_bytes(resolved_plan),
-        "plan_build_ms": plan_build_ms,
-        "plan_cached_us": plan_cached_us,
-        "table_build_ms": table_build_ms,
-        "table_cached_us": table_cached_us,
-        "kernel_build_ms": kernel_build_ms,
-        "kernel_cached_us": kernel_cached_us,
-        "cold_first_call_ms": cold_first_call_ms,
-        "flagfft_mean_ms": flagfft_stats["mean_ms"],
-        "flagfft_median_ms": flagfft_stats["median_ms"],
-        "flagfft_min_ms": flagfft_stats["min_ms"],
-        "torch_mean_ms": torch_stats["mean_ms"],
-        "torch_median_ms": torch_stats["median_ms"],
-        "torch_min_ms": torch_stats["min_ms"],
-        "speedup_vs_torch": torch_stats["mean_ms"] / flagfft_stats["mean_ms"],
-        "cold_over_warm": cold_first_call_ms / flagfft_stats["median_ms"],
-        "max_abs_err": float(err.max()),
-        "rms_err": float(err.square().mean().sqrt()),
+        "flagfft_median_ms": flagfft_stats["flagfft_median_ms"],
+        "torch_median_ms": torch_median_ms,
+        "flagfft_plan_median_ms": flagfft_stats["flagfft_plan_median_ms"],
+        "flagfft_exec_median_ms": flagfft_stats["flagfft_exec_median_ms"],
+        "flagfft_plan_pct": flagfft_stats["flagfft_plan_pct"],
+        "flagfft_exec_pct": flagfft_stats["flagfft_exec_pct"],
     }
 
 
@@ -205,35 +202,20 @@ def run_benchmark(
             else:
                 dump_plan.mkdir(parents=True, exist_ok=True)
                 save_fft_plan(stats["resolved_plan"], dump_plan / f"fft_plan_{n}.json")
+        print(f"[mode={stats['plan_source']} n={n} batch={batch}]")
+        print("  plan:")
+        for line in stats["plan"].splitlines():
+            print(f"    {line}")
         print(
-            f"[mode={stats['plan_source']} n={n} plan={stats['plan']} "
-            f"max_leaf_smem={stats['max_leaf_smem_bytes']}B]"
+            f"  warm: flagfft_median_ms={stats['flagfft_median_ms']:.4f} "
+            f"torch_median_ms={stats['torch_median_ms']:.4f} "
+            f"speedup={stats['torch_median_ms']/stats['flagfft_median_ms']:.2f}x"
         )
         print(
-            f"  cold: plan={stats['plan_build_ms']:.3f} ms "
-            f"table={stats['table_build_ms']:.3f} ms "
-            f"kernel={stats['kernel_build_ms']:.3f} ms "
-            f"first_call={stats['cold_first_call_ms']:.3f} ms"
-        )
-        print(
-            f"  shape: depth={stats['plan_depth']} "
-            f"leaf_lengths={stats['leaf_lengths']} "
-            f"leaf_count={stats['leaf_count']}"
-        )
-        print(
-            f"  cache: plan={stats['plan_cached_us']:.3f} us "
-            f"table={stats['table_cached_us']:.3f} us "
-            f"kernel={stats['kernel_cached_us']:.3f} us"
-        )
-        print(
-            f"  warm: flagfft_mean={stats['flagfft_mean_ms']:.4f} ms "
-            f"flagfft_median={stats['flagfft_median_ms']:.4f} ms "
-            f"torch_mean={stats['torch_mean_ms']:.4f} ms "
-            f"speedup={stats['speedup_vs_torch']:.2f}x"
-        )
-        print(
-            f"  err: max={stats['max_abs_err']:.6e} "
-            f"rms={stats['rms_err']:.6e} "
+            f"  profile: plan={stats['flagfft_plan_median_ms']:.4f} ms "
+            f"({stats['flagfft_plan_pct']:.1f}%) "
+            f"exec={stats['flagfft_exec_median_ms']:.4f} ms "
+            f"({stats['flagfft_exec_pct']:.1f}%)"
         )
 
 
@@ -246,10 +228,10 @@ def main() -> None:
             "--plan-json loads an exact executable plan produced by --dump-plan."
         )
     )
-    parser.add_argument("--lengths", type=int, nargs="+", default=[34, 105, 936, 4096, 8192])
-    parser.add_argument("--batch", type=int, default=64)
-    parser.add_argument("--warmup", type=int, default=20)
-    parser.add_argument("--iters", type=int, default=100)
+    parser.add_argument("--lengths", type=int, nargs="+", default=[34, 64, 105, 1024, 936, 4096, 8192])
+    parser.add_argument("--batch", type=int, default=256)
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--iters", type=int, default=200)
     parser.add_argument("--split-spec", type=str, default=None)
     parser.add_argument("--plan-json", type=Path, default=None)
     parser.add_argument("--dump-plan", type=Path, default=None)
