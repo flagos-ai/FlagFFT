@@ -200,13 +200,7 @@ def _get_leaf_tables(device: torch.device, plan: LeafPlan) -> dict[str, torch.Te
     if cached is not None:
         return cached
 
-    tables: dict[str, torch.Tensor] = {
-        "in_map": _build_input_map(plan.factors, plan.lanes).to(device),
-        "out_map": _build_output_map(plan.factors, plan.lanes).to(device),
-    }
-
-    for stage in range(len(plan.factors) - 1):
-        tables[f"route{stage}"] = _build_stage_route_table(plan.factors, stage, plan.lanes).to(device)
+    tables: dict[str, torch.Tensor] = {}
 
     for stage in range(1, len(plan.factors)):
         tw_r, tw_i = _build_stage_twiddles(plan.factors, stage, plan.lanes)
@@ -355,6 +349,134 @@ def _emit_table_codelet(indent: str, radix: int, lane_block: int) -> list[str]:
     return lines
 
 
+def _time_major_stride(radices: tuple[int, ...], axis: int) -> int:
+    return math.prod(radices[axis + 1 :])
+
+
+def _emit_input_base(
+    indent: str,
+    factors: tuple[int, ...],
+    lanes: int,
+    group_var: str,
+) -> list[str]:
+    lines = [
+        f"{indent}codelet_in = tl.where(lane_mask, lane + {lanes} * {group_var}, 0)",
+        f"{indent}rem_in = codelet_in",
+        f"{indent}input_base = lane * 0",
+    ]
+    for axis in range(len(factors) - 1, 0, -1):
+        lines.append(f"{indent}digit_in_{axis} = rem_in % {factors[axis]}")
+        lines.append(f"{indent}rem_in = rem_in // {factors[axis]}")
+        stride = _time_major_stride(factors, axis)
+        if stride == 1:
+            lines.append(f"{indent}input_base += digit_in_{axis}")
+        else:
+            lines.append(f"{indent}input_base += digit_in_{axis} * {stride}")
+    return lines
+
+
+def _emit_input_index(indent: str, out_var: str, factors: tuple[int, ...], digit: int) -> list[str]:
+    offset = digit * _time_major_stride(factors, 0)
+    if offset == 0:
+        return [f"{indent}{out_var} = input_base"]
+    return [f"{indent}{out_var} = input_base + {offset}"]
+
+
+def _emit_output_base(
+    indent: str,
+    factors: tuple[int, ...],
+    lanes: int,
+    group_var: str,
+) -> list[str]:
+    last_stage = len(factors) - 1
+    lines = [
+        f"{indent}codelet_out = tl.where(lane_mask, lane + {lanes} * {group_var}, 0)",
+        f"{indent}rem_out = codelet_out",
+        f"{indent}output_base = lane * 0",
+    ]
+    stride = 1
+    for axis in range(last_stage):
+        lines.append(f"{indent}digit_out_{axis} = rem_out % {factors[axis]}")
+        lines.append(f"{indent}rem_out = rem_out // {factors[axis]}")
+        if stride == 1:
+            lines.append(f"{indent}output_base += digit_out_{axis}")
+        else:
+            lines.append(f"{indent}output_base += digit_out_{axis} * {stride}")
+        stride *= factors[axis]
+    return lines
+
+
+def _emit_output_index(indent: str, out_var: str, factors: tuple[int, ...], digit: int) -> list[str]:
+    last_stride = math.prod(factors[: len(factors) - 1])
+    offset = digit * last_stride
+    if offset == 0:
+        return [f"{indent}{out_var} = output_base"]
+    return [f"{indent}{out_var} = output_base + {offset}"]
+
+
+def _emit_route_base(
+    indent: str,
+    stage: int,
+    factors: tuple[int, ...],
+    lanes: int,
+    group_var: str,
+) -> list[str]:
+    lines = [
+        f"{indent}codelet_route{stage} = tl.where(lane_mask, lane + {lanes} * {group_var}, 0)",
+        f"{indent}rem_route{stage} = codelet_route{stage}",
+        f"{indent}route_codelet_base{stage} = lane * 0",
+    ]
+
+    stride = 1
+    for axis in range(stage):
+        lines.append(f"{indent}digit_route{stage}_{axis} = rem_route{stage} % {factors[axis]}")
+        lines.append(f"{indent}rem_route{stage} = rem_route{stage} // {factors[axis]}")
+        if stride == 1:
+            lines.append(f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis}")
+        else:
+            lines.append(f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis} * {stride}")
+        stride *= factors[axis]
+
+    stride *= factors[stage]
+
+    for axis in range(len(factors) - 1, stage, -1):
+        lines.append(f"{indent}digit_route{stage}_{axis} = rem_route{stage} % {factors[axis]}")
+        lines.append(f"{indent}rem_route{stage} = rem_route{stage} // {factors[axis]}")
+        if axis == stage + 1:
+            lines.append(f"{indent}next_digit{stage} = digit_route{stage}_{axis}")
+        else:
+            if stride == 1:
+                lines.append(f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis}")
+            else:
+                lines.append(f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis} * {stride}")
+            stride *= factors[axis]
+
+    return lines
+
+
+def _emit_route_index(
+    indent: str,
+    out_var: str,
+    stage: int,
+    factors: tuple[int, ...],
+    lanes: int,
+    digit: int,
+) -> list[str]:
+    suffix = out_var.removeprefix("dst")
+    radix_next = factors[stage + 1]
+    current_stride = math.prod(factors[:stage])
+    offset = digit * current_stride
+    if offset == 0:
+        lines = [f"{indent}next_codelet{stage}_{suffix} = route_codelet_base{stage}"]
+    else:
+        lines = [f"{indent}next_codelet{stage}_{suffix} = route_codelet_base{stage} + {offset}"]
+    lines.append(
+        f"{indent}{out_var} = (next_codelet{stage}_{suffix} % {lanes}) + "
+        f"{lanes} * ((next_codelet{stage}_{suffix} // {lanes}) * {radix_next} + next_digit{stage})"
+    )
+    return lines
+
+
 def _emit_stage_block(
     stage: int, factors: tuple[int, ...], n: int, lanes: int, lane_block: int
 ) -> list[str]:
@@ -371,10 +493,16 @@ def _emit_stage_block(
         lines.append(
             f"{indent}phys{j} = tl.where(lane_mask, lane + {lanes} * (group_{stage} * {radix} + {j}), 0)"
         )
+    if stage == 0:
+        lines.extend(_emit_input_base(indent, factors, lanes, f"group_{stage}"))
+    if is_last:
+        lines.extend(_emit_output_base(indent, factors, lanes, f"group_{stage}"))
+    else:
+        lines.extend(_emit_route_base(indent, stage, factors, lanes, f"group_{stage}"))
 
     for j in range(radix):
         if stage == 0:
-            lines.append(f"{indent}in{j} = tl.load(in_map_ptr + phys{j}, mask=lane_mask, other=0)")
+            lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             lines.append(
                 f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other=0.0)"
             )
@@ -468,7 +596,7 @@ def _emit_stage_block(
 
     for j in range(radix):
         if is_last:
-            lines.append(f"{indent}out_idx{j} = tl.load(out_map_ptr + phys{j}, mask=lane_mask, other=0)")
+            lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
             lines.append(
                 f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j}, mask=lane_mask)"
             )
@@ -476,7 +604,7 @@ def _emit_stage_block(
                 f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
             )
         else:
-            lines.append(f"{indent}dst{j} = tl.load(route{stage}_ptr + phys{j}, mask=lane_mask, other=0)")
+            lines.extend(_emit_route_index(indent, f"dst{j}", stage, factors, lanes, j))
             lines.append(
                 f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_r, (dst{j},)), r{j}, mask=lane_mask)"
             )
@@ -495,9 +623,7 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
     smem_n = plan.smem_size
     generic_radices = plan.generic_radices
     lane_block = lane_block_for(plan.lanes)
-    params = ["in_ptr", "out_ptr", "in_map_ptr", "out_map_ptr"]
-    for stage in range(len(factors) - 1):
-        params.append(f"route{stage}_ptr")
+    params = ["in_ptr", "out_ptr"]
     for stage in range(1, len(factors)):
         params.append(f"tw{stage}_r_ptr")
         params.append(f"tw{stage}_i_ptr")
@@ -589,11 +715,7 @@ def _execute_leaf_plan(x: torch.Tensor, plan: LeafPlan) -> torch.Tensor:
     args = [
         x_contig.view(torch.float32),
         out.view(torch.float32),
-        tables["in_map"],
-        tables["out_map"],
     ]
-    for stage in range(len(plan.factors) - 1):
-        args.append(tables[f"route{stage}"])
     for stage in range(1, len(plan.factors)):
         args.append(tables[f"tw{stage}_r"])
         args.append(tables[f"tw{stage}_i"])
