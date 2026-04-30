@@ -1,0 +1,27 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.4", "ninja"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "flagfft"
+version = "0.1.0"
+description = "Experimental Triton-backed FFT planner"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "triton",
+]
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.cmake]
+version = ">=3.18"
+
+[tool.scikit-build.ninja]
+make-fallback = true
+
+[tool.scikit-build.wheel]
+install-dir = ""

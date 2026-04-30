@@ -7,6 +7,11 @@ import torch
 
 from .exec import fft_mixed_radix_triton
 
+try:
+    import _flagfft_core
+except ImportError:  # pragma: no cover - source-tree fallback before the extension is built
+    _flagfft_core = None
+
 
 def _not_implemented(name: str) -> NoReturn:
     raise NotImplementedError(f"flagfft.{name} is not implemented yet")
@@ -29,6 +34,16 @@ def fft(
     out: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute a 1-D complex FFT using the FlagFFT backend."""
+    if not isinstance(input, torch.Tensor):
+        raise TypeError(f"flagfft.fft expected a torch.Tensor, got {type(input).__name__}")
+
+    if _flagfft_core is not None:
+        result = _flagfft_core.fft(input, n, dim, norm)
+        if out is not None:
+            out.copy_(result)
+            return out
+        return result
+
     if input.ndim == 0:
         raise ValueError("flagfft.fft expected at least a 1-D tensor")
 

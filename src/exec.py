@@ -921,6 +921,11 @@ def clear_exec_caches() -> None:
 def clear_fft_caches() -> None:
     clear_plan_cache()
     clear_exec_caches()
+    try:
+        import _flagfft_core
+    except ImportError:
+        return
+    _flagfft_core.clear_plan_cache()
 
 
 def _resolve_fft_plan(
