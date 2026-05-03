@@ -1,0 +1,107 @@
+@triton.jit
+def _fwd_rad7_b1(r0, r1, r2, r3, r4, r5, r6, i0, i1, i2, i3, i4, i5, i6):
+    c7q1 = -1.166666666666666
+    c7q2 = 0.7901564685254008
+    c7q3 = 0.05585426728964815
+    c7q4 = 0.7343022012357524
+    c7q5 = 0.4409585518440982
+    c7q6 = 0.3408729306239322
+    c7q7 = -0.533969360337726
+    c7q8 = 0.8748422909616578
+
+    p0r = r1 + r6
+    p0i = i1 + i6
+    p1r = r1 - r6
+    p1i = i1 - i6
+    p2r = r2 + r5
+    p2i = i2 + i5
+    p3r = r2 - r5
+    p3i = i2 - i5
+    p4r = r4 + r3
+    p4i = i4 + i3
+    p5r = r4 - r3
+    p5i = i4 - i3
+
+    p6r = p2r + p0r
+    p6i = p2i + p0i
+    q4r = p2r - p0r
+    q4i = p2i - p0i
+    q2r = p0r - p4r
+    q2i = p0i - p4i
+    q3r = p4r - p2r
+    q3i = p4i - p2i
+    p7r = p5r + p3r
+    p7i = p5i + p3i
+    q7r = p5r - p3r
+    q7i = p5i - p3i
+    q6r = p1r - p5r
+    q6i = p1i - p5i
+    q8r = p3r - p1r
+    q8i = p3i - p1i
+    q1r = p6r + p4r
+    q1i = p6i + p4i
+    q5r = p7r + p1r
+    q5i = p7i + p1i
+    q0r = r0 + q1r
+    q0i = i0 + q1i
+
+    q1r *= c7q1
+    q1i *= c7q1
+    q2r *= c7q2
+    q2i *= c7q2
+    q3r *= c7q3
+    q3i *= c7q3
+    q4r *= c7q4
+    q4i *= c7q4
+    q5r *= c7q5
+    q5i *= c7q5
+    q6r *= c7q6
+    q6i *= c7q6
+    q7r *= c7q7
+    q7i *= c7q7
+    q8r *= c7q8
+    q8i *= c7q8
+
+    p0r = q0r + q1r
+    p0i = q0i + q1i
+    p1r = q2r + q3r
+    p1i = q2i + q3i
+    p2r = q4r - q3r
+    p2i = q4i - q3i
+    p3r = -q2r - q4r
+    p3i = -q2i - q4i
+    p4r = q6r + q7r
+    p4i = q6i + q7i
+    p5r = q8r - q7r
+    p5i = q8i - q7i
+    p6r = -q8r - q6r
+    p6i = -q8i - q6i
+    p7r = p0r + p1r
+    p7i = p0i + p1i
+    p8r = p0r + p2r
+    p8i = p0i + p2i
+    p9r = p0r + p3r
+    p9i = p0i + p3i
+    q6r = p4r + q5r
+    q6i = p4i + q5i
+    q7r = p5r + q5r
+    q7i = p5i + q5i
+    q8r = p6r + q5r
+    q8i = p6i + q5i
+
+    y0r = q0r
+    y0i = q0i
+    y1r = p7r + q6i
+    y1i = p7i - q6r
+    y2r = p9r + q8i
+    y2i = p9i - q8r
+    y3r = p8r - q7i
+    y3i = p8i + q7r
+    y4r = p8r + q7i
+    y4i = p8i - q7r
+    y5r = p9r - q8i
+    y5i = p9i + q8r
+    y6r = p7r - q6i
+    y6i = p7i + q6r
+
+    return y0r, y1r, y2r, y3r, y4r, y5r, y6r, y0i, y1i, y2i, y3i, y4i, y5i, y6i

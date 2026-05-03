@@ -1,0 +1,8 @@
+__pycache__
+.flagfft_cache
+.pytest_cache
+.claude
+.codex
+AGENT.md
+*.egg-info/
+build/
