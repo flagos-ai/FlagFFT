@@ -1440,7 +1440,7 @@ private:
     }
 
     std::filesystem::path out_dir() const {
-        return std::filesystem::current_path() / ".flagfft_aot_cache";
+        return std::filesystem::current_path() / ".flagfft";
     }
 
     std::string python_executable() const {
