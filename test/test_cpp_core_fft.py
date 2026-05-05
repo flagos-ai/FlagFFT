@@ -100,6 +100,65 @@ def test_cpp_plan_cache_hits_on_repeated_call() -> None:
     assert after_second["hits"] == 1
 
 
+@pytest.mark.parametrize("n", [8, 16, 105])
+def test_cpp_aot_leaf_lengths_match_torch(n: int) -> None:
+    x = _sample(torch.complex64, n=n)
+
+    y = flagfft.fft(x)
+    ref = torch.fft.fft(x, dim=-1)
+
+    assert _flagfft_core.debug_plan(x)["root"]["kind"] == "ct_leaf"
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+@pytest.mark.parametrize("n", [4096, 8192, 16384])
+def test_cpp_aot_four_step_matches_torch(n: int) -> None:
+    x = _sample(torch.complex64, n=n)[:1]
+
+    y = flagfft.fft(x)
+    ref = torch.fft.fft(x, dim=-1)
+
+    assert _flagfft_core.debug_plan(x)["root"]["kind"] == "four_step"
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+def test_cpp_aot_four_step_accepts_float32_input() -> None:
+    x = _sample(torch.float32, n=8192)[:1]
+
+    y = flagfft.fft(x)
+    ref = torch.fft.fft(x, dim=-1)
+
+    assert y.dtype is torch.complex64
+    assert _flagfft_core.debug_plan(x)["root"]["kind"] == "four_step"
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+@pytest.mark.parametrize("norm", [None, "backward", "forward", "ortho"])
+def test_cpp_aot_four_step_norm_modes(norm: str | None) -> None:
+    x = _sample(torch.complex64, n=8192)[:1]
+
+    y = flagfft.fft(x, norm=norm)
+    ref = torch.fft.fft(x, dim=-1, norm=norm)
+
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+def test_cpp_aot_four_step_plan_cache_hits_on_repeated_call() -> None:
+    x = _sample(torch.complex64, n=8192)[:1]
+    _flagfft_core.clear_plan_cache()
+
+    flagfft.fft(x)
+    after_first = _flagfft_core.cache_info()
+    flagfft.fft(x)
+    after_second = _flagfft_core.cache_info()
+
+    assert after_first["size"] == 1
+    assert after_first["misses"] == 1
+    assert after_second["size"] == 1
+    assert after_second["misses"] == 1
+    assert after_second["hits"] == 1
+
+
 def test_debug_plan_returns_cpp_built_tree() -> None:
     x = _sample(torch.complex64, n=16)
 

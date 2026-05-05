@@ -1,8 +1,9 @@
-test_fft
+__pycache__
 .tle_cache
 .flagfft_aot_cache
-__pycache__
+.pytest_cache
 .claude
 .codex
-build/
 *.egg-info/
+test_fft
+build/

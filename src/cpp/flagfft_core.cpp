@@ -1017,6 +1017,100 @@ nb::object tensor_from_float_vector(const std::vector<float> &values, const FFTR
     return torch.attr("tensor")(nb::cast(values), "device"_a = device, "dtype"_a = torch.attr("float32"));
 }
 
+std::string torch_device_string(const FFTRequest &request) {
+    return request.device_type + ":" + std::to_string(request.device_index);
+}
+
+nb::object tensor_from_complex_vectors(const std::vector<float> &real,
+                                       const std::vector<float> &imag,
+                                       const FFTRequest &request,
+                                       nb::tuple shape) {
+    nb::module_ torch = nb::module_::import_("torch");
+    nb::object real_tensor = tensor_from_float_vector(real, request).attr("reshape")(shape);
+    nb::object imag_tensor = tensor_from_float_vector(imag, request).attr("reshape")(shape);
+    return torch.attr("complex")(real_tensor, imag_tensor);
+}
+
+nb::object empty_complex64_tensor(const FFTRequest &request, nb::tuple shape) {
+    nb::module_ torch = nb::module_::import_("torch");
+    return torch.attr("empty")(shape, "device"_a = torch_device_string(request),
+                               "dtype"_a = torch.attr("complex64"));
+}
+
+nb::object build_four_step_twiddle_tensor(const FFTRequest &request, int64_t n1, int64_t n2) {
+    std::vector<float> real(static_cast<std::size_t>(n1 * n2));
+    std::vector<float> imag(static_cast<std::size_t>(n1 * n2));
+    for (int64_t row = 0; row < n2; ++row) {
+        for (int64_t col = 0; col < n1; ++col) {
+            double angle = -2.0 * kPi * static_cast<double>(row * col) /
+                           static_cast<double>(n1 * n2);
+            std::size_t index = static_cast<std::size_t>(row * n1 + col);
+            real[index] = static_cast<float>(std::cos(angle));
+            imag[index] = static_cast<float>(std::sin(angle));
+        }
+    }
+    return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(n2, n1));
+}
+
+int64_t ceil_div(int64_t numerator, int64_t denominator) {
+    return (numerator + denominator - 1) / denominator;
+}
+
+int64_t tensor_numel(const nb::object &tensor) {
+    return nb::cast<int64_t>(tensor.attr("numel")());
+}
+
+int64_t tensor_size(const nb::object &tensor, int64_t dim) {
+    return nb::cast<int64_t>(tensor.attr("size")(dim));
+}
+
+int64_t tensor_stride(const nb::object &tensor, int64_t dim) {
+    return nb::cast<int64_t>(tensor.attr("stride")(dim));
+}
+
+CUdeviceptr tensor_data_ptr(const nb::object &tensor) {
+    return static_cast<CUdeviceptr>(nb::cast<uint64_t>(tensor.attr("data_ptr")()));
+}
+
+CUstream current_cuda_stream(const FFTRequest &request) {
+    nb::module_ torch = nb::module_::import_("torch");
+    nb::object stream_obj = torch.attr("cuda").attr("current_stream")(request.device_index);
+    return reinterpret_cast<CUstream>(nb::cast<uint64_t>(stream_obj.attr("cuda_stream")));
+}
+
+constexpr int64_t kFourStepTileRows = 32;
+constexpr int64_t kFourStepTileCols = 32;
+
+enum class AotArgKind { DevicePtr, Int32, Int64 };
+
+struct AotKernelArg {
+    static AotKernelArg device(CUdeviceptr value) {
+        AotKernelArg arg;
+        arg.kind = AotArgKind::DevicePtr;
+        arg.device_ptr = value;
+        return arg;
+    }
+
+    static AotKernelArg i32(int32_t value) {
+        AotKernelArg arg;
+        arg.kind = AotArgKind::Int32;
+        arg.int32_value = value;
+        return arg;
+    }
+
+    static AotKernelArg i64(int64_t value) {
+        AotKernelArg arg;
+        arg.kind = AotArgKind::Int64;
+        arg.int64_value = value;
+        return arg;
+    }
+
+    AotArgKind kind = AotArgKind::DevicePtr;
+    CUdeviceptr device_ptr = 0;
+    int32_t int32_value = 0;
+    int64_t int64_value = 0;
+};
+
 struct AotKernel {
     ~AotKernel() {
         if (module != nullptr) {
@@ -1041,22 +1135,35 @@ struct AotKernel {
         }
     }
 
-    void launch(CUstream stream, std::vector<CUdeviceptr> &device_args, int32_t nbatch) {
+    void launch(CUstream stream,
+                const std::vector<AotKernelArg> &kernel_args,
+                int64_t grid_x,
+                int64_t grid_y,
+                int64_t grid_z) {
         load();
         CUdeviceptr global_scratch = 0;
         CUdeviceptr profile_scratch = 0;
         std::vector<void *> args;
-        args.reserve(device_args.size() + 3);
-        for (CUdeviceptr &arg : device_args) {
-            args.push_back(&arg);
+        args.reserve(kernel_args.size() + 2);
+        for (const AotKernelArg &arg : kernel_args) {
+            switch (arg.kind) {
+                case AotArgKind::DevicePtr:
+                    args.push_back(const_cast<CUdeviceptr *>(&arg.device_ptr));
+                    break;
+                case AotArgKind::Int32:
+                    args.push_back(const_cast<int32_t *>(&arg.int32_value));
+                    break;
+                case AotArgKind::Int64:
+                    args.push_back(const_cast<int64_t *>(&arg.int64_value));
+                    break;
+            }
         }
-        args.push_back(&nbatch);
         args.push_back(&global_scratch);
         args.push_back(&profile_scratch);
         cuda_check(cuLaunchKernel(function,
-                                  static_cast<unsigned int>(nbatch),
-                                  1,
-                                  1,
+                                  static_cast<unsigned int>(grid_x),
+                                  static_cast<unsigned int>(grid_y),
+                                  static_cast<unsigned int>(grid_z),
                                   static_cast<unsigned int>(num_warps * 32),
                                   1,
                                   1,
@@ -1076,41 +1183,187 @@ struct AotKernel {
     std::mutex mutex;
 };
 
-struct CompiledLeafExecutable {
+struct ExecutionContext {
+    const FFTRequest &request;
+    CUstream stream = nullptr;
+};
+
+struct CompiledNode {
+    virtual ~CompiledNode() = default;
+    virtual nb::object execute(const nb::object &input, const ExecutionContext &context) const = 0;
+};
+
+struct CompiledLeafNode final : CompiledNode {
+    CompiledLeafNode(int64_t length, std::shared_ptr<AotKernel> kernel, std::vector<nb::object> tables)
+        : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {}
+
+    nb::object execute(const nb::object &input, const ExecutionContext &context) const override {
+        int64_t batch = tensor_numel(input) / length;
+        nb::object x_contig = input.attr("contiguous")().attr("reshape")(nb::make_tuple(batch, length));
+        nb::module_ torch = nb::module_::import_("torch");
+        nb::object result = torch.attr("empty_like")(x_contig);
+
+        std::vector<AotKernelArg> args;
+        args.reserve(3 + tables.size());
+        args.push_back(AotKernelArg::device(tensor_data_ptr(x_contig)));
+        args.push_back(AotKernelArg::device(tensor_data_ptr(result)));
+        for (const nb::object &table : tables) {
+            args.push_back(AotKernelArg::device(tensor_data_ptr(table)));
+        }
+        args.push_back(AotKernelArg::i32(static_cast<int32_t>(batch)));
+
+        kernel->launch(context.stream, args, batch, 1, 1);
+        return result;
+    }
+
+    int64_t length;
     std::shared_ptr<AotKernel> kernel;
     std::vector<nb::object> tables;
 };
 
+struct CompiledFourStepNode final : CompiledNode {
+    CompiledFourStepNode(int64_t length,
+                         int64_t n1,
+                         int64_t n2,
+                         std::shared_ptr<CompiledNode> row,
+                         std::shared_ptr<CompiledNode> col,
+                         std::shared_ptr<AotKernel> transpose_kernel,
+                         std::shared_ptr<AotKernel> twiddle_transpose_kernel,
+                         nb::object twiddle,
+                         nb::object stage0,
+                         nb::object stage2)
+        : length(length),
+          n1(n1),
+          n2(n2),
+          row(std::move(row)),
+          col(std::move(col)),
+          transpose_kernel(std::move(transpose_kernel)),
+          twiddle_transpose_kernel(std::move(twiddle_transpose_kernel)),
+          twiddle(std::move(twiddle)),
+          stage0(std::move(stage0)),
+          stage2(std::move(stage2)) {}
+
+    nb::object execute(const nb::object &input, const ExecutionContext &context) const override {
+        int64_t batch = tensor_numel(input) / length;
+        nb::object x_contig = input.attr("contiguous")().attr("reshape")(nb::make_tuple(batch, length));
+
+        launch_transpose(context.stream, x_contig.attr("reshape")(nb::make_tuple(batch, n1, n2)), stage0);
+        nb::object stage1 = row->execute(
+            stage0.attr("reshape")(nb::make_tuple(batch * n2, n1)), context);
+        stage1 = stage1.attr("reshape")(nb::make_tuple(batch, n2, n1));
+
+        launch_twiddle_transpose(context.stream, stage1, twiddle, stage2);
+
+        nb::object stage3 = col->execute(
+            stage2.attr("reshape")(nb::make_tuple(batch * n1, n2)), context);
+        stage3 = stage3.attr("reshape")(nb::make_tuple(batch, n1, n2));
+
+        nb::object out = empty_complex64_tensor(context.request, nb::make_tuple(batch, n2, n1));
+        launch_transpose(context.stream, stage3, out);
+        return out.attr("reshape")(nb::make_tuple(batch, length));
+    }
+
+    void launch_transpose(CUstream stream, const nb::object &src, const nb::object &dst) const {
+        int64_t batch = tensor_size(src, 0);
+        int64_t rows = tensor_size(src, 1);
+        int64_t cols = tensor_size(src, 2);
+        std::vector<AotKernelArg> args = {
+            AotKernelArg::device(tensor_data_ptr(src)),
+            AotKernelArg::device(tensor_data_ptr(dst)),
+            AotKernelArg::i64(tensor_stride(src, 0) * 2),
+            AotKernelArg::i64(tensor_stride(src, 1) * 2),
+            AotKernelArg::i64(tensor_stride(src, 2) * 2),
+            AotKernelArg::i64(tensor_stride(dst, 0) * 2),
+            AotKernelArg::i64(tensor_stride(dst, 1) * 2),
+            AotKernelArg::i64(tensor_stride(dst, 2) * 2),
+            AotKernelArg::i64(rows),
+            AotKernelArg::i64(cols),
+        };
+        transpose_kernel->launch(stream, args, ceil_div(cols, kFourStepTileCols),
+                                 ceil_div(rows, kFourStepTileRows), batch);
+    }
+
+    void launch_twiddle_transpose(CUstream stream,
+                                  const nb::object &src,
+                                  const nb::object &twiddle,
+                                  const nb::object &dst) const {
+        int64_t batch = tensor_size(src, 0);
+        int64_t rows = tensor_size(src, 1);
+        int64_t cols = tensor_size(src, 2);
+        std::vector<AotKernelArg> args = {
+            AotKernelArg::device(tensor_data_ptr(src)),
+            AotKernelArg::device(tensor_data_ptr(twiddle)),
+            AotKernelArg::device(tensor_data_ptr(dst)),
+            AotKernelArg::i64(tensor_stride(src, 0) * 2),
+            AotKernelArg::i64(tensor_stride(src, 1) * 2),
+            AotKernelArg::i64(tensor_stride(src, 2) * 2),
+            AotKernelArg::i64(tensor_stride(twiddle, 0) * 2),
+            AotKernelArg::i64(tensor_stride(twiddle, 1) * 2),
+            AotKernelArg::i64(tensor_stride(dst, 0) * 2),
+            AotKernelArg::i64(tensor_stride(dst, 1) * 2),
+            AotKernelArg::i64(tensor_stride(dst, 2) * 2),
+            AotKernelArg::i64(rows),
+            AotKernelArg::i64(cols),
+        };
+        twiddle_transpose_kernel->launch(stream, args, ceil_div(cols, kFourStepTileCols),
+                                         ceil_div(rows, kFourStepTileRows), batch);
+    }
+
+    int64_t length;
+    int64_t n1;
+    int64_t n2;
+    std::shared_ptr<CompiledNode> row;
+    std::shared_ptr<CompiledNode> col;
+    std::shared_ptr<AotKernel> transpose_kernel;
+    std::shared_ptr<AotKernel> twiddle_transpose_kernel;
+    nb::object twiddle;
+    nb::object stage0;
+    nb::object stage2;
+};
+
 class TritonCompiler {
 public:
-    CompiledLeafExecutable compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request) const {
-        std::filesystem::path out_dir = std::filesystem::current_path() / ".flagfft_aot_cache";
-        std::string arch = request.device_arch;
-        if (arch.rfind("sm_", 0) == 0) {
-            arch.erase(0, 3);
+    std::shared_ptr<CompiledNode> compile_node(const PlanNodePtr &node,
+                                               const FFTRequest &request,
+                                               int64_t batch) {
+        if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+            return compile_leaf(*leaf, request);
         }
-        std::string target = "cuda:" + arch + ":32";
+        if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+            std::shared_ptr<CompiledNode> row =
+                compile_node(four_step->row_plan, request, batch * four_step->n2);
+            std::shared_ptr<CompiledNode> col =
+                compile_node(four_step->col_plan, request, batch * four_step->n1);
+            nb::object twiddle = build_four_step_twiddle_tensor(request, four_step->n1, four_step->n2);
+            nb::object stage0 =
+                empty_complex64_tensor(request, nb::make_tuple(batch, four_step->n2, four_step->n1));
+            nb::object stage2 =
+                empty_complex64_tensor(request, nb::make_tuple(batch, four_step->n1, four_step->n2));
+            return std::make_shared<CompiledFourStepNode>(
+                four_step->length, four_step->n1, four_step->n2, std::move(row), std::move(col),
+                compile_transpose_kernel(request), compile_twiddle_transpose_kernel(request),
+                std::move(twiddle), std::move(stage0), std::move(stage2));
+        }
+        raise_python(PyExc_NotImplementedError,
+                     "flagfft.fft C++ AOT backend does not support plan node kind: " + node->kind);
+    }
 
-        std::wstring executable_w = Py_GetProgramFullPath();
-        std::string python_executable(executable_w.begin(), executable_w.end());
+private:
+    std::shared_ptr<CompiledNode> compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request) {
         std::ostringstream command;
-        command << shell_quote(python_executable)
-                << " -m src.triton_aot"
+        command << shell_quote(python_executable())
+                << " " << triton_aot_entrypoint()
+                << " --kernel leaf"
                 << " --length " << leaf.length
                 << " --factors " << shell_quote(join_ints(leaf.factors))
                 << " --lanes " << leaf.lanes
                 << " --num-warps " << leaf.num_warps
                 << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
                 << " --smem-size " << leaf.smem_size
-                << " --target " << shell_quote(target)
-                << " --out-dir " << shell_quote(out_dir.string());
+                << " --target " << shell_quote(target_for_request(request))
+                << " --out-dir " << shell_quote(out_dir().string());
 
-        std::string artifact_json = run_command_capture_stdout(command.str());
-        auto kernel = std::make_shared<AotKernel>();
-        kernel->kernel_name = json_string_field(artifact_json, "kernel_name");
-        kernel->cubin = hex_to_bytes(json_string_field(artifact_json, "cubin_hex"));
-        kernel->shared = json_int_field(artifact_json, "shared");
-        kernel->num_warps = json_int_field(artifact_json, "num_warps");
+        std::shared_ptr<AotKernel> kernel = compile_kernel_from_command(command.str());
 
         std::vector<nb::object> tables;
         for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
@@ -1123,11 +1376,92 @@ public:
             tables.push_back(tensor_from_float_vector(dft.first, request));
             tables.push_back(tensor_from_float_vector(dft.second, request));
         }
-        return {kernel, tables};
+        return std::make_shared<CompiledLeafNode>(leaf.length, std::move(kernel), std::move(tables));
     }
+
+    std::shared_ptr<AotKernel> compile_transpose_kernel(const FFTRequest &request) {
+        if (transpose_kernel != nullptr) {
+            return transpose_kernel;
+        }
+        std::ostringstream command;
+        command << shell_quote(python_executable())
+                << " " << triton_aot_entrypoint()
+                << " --kernel transpose"
+                << " --target " << shell_quote(target_for_request(request))
+                << " --out-dir " << shell_quote(out_dir().string());
+        transpose_kernel = compile_kernel_from_command(command.str());
+        return transpose_kernel;
+    }
+
+    std::shared_ptr<AotKernel> compile_twiddle_transpose_kernel(const FFTRequest &request) {
+        if (twiddle_transpose_kernel != nullptr) {
+            return twiddle_transpose_kernel;
+        }
+        std::ostringstream command;
+        command << shell_quote(python_executable())
+                << " " << triton_aot_entrypoint()
+                << " --kernel twiddle_transpose"
+                << " --target " << shell_quote(target_for_request(request))
+                << " --out-dir " << shell_quote(out_dir().string());
+        twiddle_transpose_kernel = compile_kernel_from_command(command.str());
+        return twiddle_transpose_kernel;
+    }
+
+    std::shared_ptr<AotKernel> compile_kernel_from_command(const std::string &command) const {
+        static std::mutex kernel_cache_mutex;
+        static std::unordered_map<std::string, std::shared_ptr<AotKernel>> kernel_cache;
+
+        {
+            std::lock_guard<std::mutex> lock(kernel_cache_mutex);
+            auto it = kernel_cache.find(command);
+            if (it != kernel_cache.end()) {
+                return it->second;
+            }
+        }
+
+        std::string artifact_json = run_command_capture_stdout(command);
+        auto kernel = std::make_shared<AotKernel>();
+        kernel->kernel_name = json_string_field(artifact_json, "kernel_name");
+        kernel->cubin = hex_to_bytes(json_string_field(artifact_json, "cubin_hex"));
+        kernel->shared = json_int_field(artifact_json, "shared");
+        kernel->num_warps = json_int_field(artifact_json, "num_warps");
+
+        std::lock_guard<std::mutex> lock(kernel_cache_mutex);
+        auto [it, inserted] = kernel_cache.emplace(command, kernel);
+        return inserted ? kernel : it->second;
+    }
+
+    std::string target_for_request(const FFTRequest &request) const {
+        std::string arch = request.device_arch;
+        if (arch.rfind("sm_", 0) == 0) {
+            arch.erase(0, 3);
+        }
+        return "cuda:" + arch + ":32";
+    }
+
+    std::filesystem::path out_dir() const {
+        return std::filesystem::current_path() / ".flagfft_aot_cache";
+    }
+
+    std::string python_executable() const {
+        std::wstring executable_w = Py_GetProgramFullPath();
+        return std::string(executable_w.begin(), executable_w.end());
+    }
+
+    std::string triton_aot_entrypoint() const {
+        std::filesystem::path local_script =
+            std::filesystem::current_path() / "src" / "triton_aot.py";
+        if (std::filesystem::exists(local_script)) {
+            return shell_quote(local_script.string());
+        }
+        return "-m src.triton_aot";
+    }
+
+    std::shared_ptr<AotKernel> transpose_kernel;
+    std::shared_ptr<AotKernel> twiddle_transpose_kernel;
 };
 
-enum class ExecutionBackend { AotCudaLeaf, TorchFFT };
+enum class ExecutionBackend { AotCuda, TorchFFT };
 
 struct ExecutablePlan {
     PlanKey key;
@@ -1135,8 +1469,7 @@ struct ExecutablePlan {
     PlanNodePtr root;
     nb::dict plan_dict;
     ExecutionBackend backend;
-    std::shared_ptr<AotKernel> aot_kernel;
-    std::vector<nb::object> aot_tables;
+    std::shared_ptr<CompiledNode> compiled_root;
 
     nb::object execute(nb::object input) const {
         if (backend == ExecutionBackend::TorchFFT) {
@@ -1154,21 +1487,9 @@ struct ExecutablePlan {
         }
 
         exec_input = exec_input.attr("contiguous")();
-        nb::module_ torch = nb::module_::import_("torch");
-        nb::object result = torch.attr("empty_like")(exec_input);
-
-        std::vector<CUdeviceptr> device_args;
-        device_args.reserve(2 + aot_tables.size());
-        device_args.push_back(static_cast<CUdeviceptr>(nb::cast<uint64_t>(exec_input.attr("data_ptr")())));
-        device_args.push_back(static_cast<CUdeviceptr>(nb::cast<uint64_t>(result.attr("data_ptr")())));
-        for (const nb::object &table : aot_tables) {
-            device_args.push_back(static_cast<CUdeviceptr>(nb::cast<uint64_t>(table.attr("data_ptr")())));
-        }
-
-        nb::object stream_obj = torch.attr("cuda").attr("current_stream")(request.device_index);
-        CUstream stream =
-            reinterpret_cast<CUstream>(nb::cast<uint64_t>(stream_obj.attr("cuda_stream")));
-        aot_kernel->launch(stream, device_args, static_cast<int32_t>(request.batch));
+        ExecutionContext context{request, current_cuda_stream(request)};
+        nb::object result = compiled_root->execute(exec_input, context);
+        result = result.attr("reshape")(nb::cast(request.input_shape));
 
         if (request.norm == "forward") {
             return result.attr("mul")(1.0 / static_cast<double>(request.requested_n));
@@ -1198,23 +1519,15 @@ public:
         nb::dict plan_dict = builder.wrap_plan_dict(root, request);
 
         ExecutionBackend backend = ExecutionBackend::TorchFFT;
-        std::shared_ptr<AotKernel> aot_kernel;
-        std::vector<nb::object> aot_tables;
+        std::shared_ptr<CompiledNode> compiled_root;
         if (request.output_dtype == "complex64") {
-            auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(root);
-            if (leaf == nullptr) {
-                raise_python(PyExc_NotImplementedError,
-                             "flagfft.fft C++ AOT backend currently supports only ct_leaf plans");
-            }
-            backend = ExecutionBackend::AotCudaLeaf;
+            backend = ExecutionBackend::AotCuda;
             TritonCompiler compiler;
-            CompiledLeafExecutable compiled = compiler.compile_leaf(*leaf, request);
-            aot_kernel = std::move(compiled.kernel);
-            aot_tables = std::move(compiled.tables);
+            compiled_root = compiler.compile_node(root, request, request.batch);
         }
 
         auto executable = std::make_shared<ExecutablePlan>(ExecutablePlan{
-            key, request, root, plan_dict, backend, std::move(aot_kernel), std::move(aot_tables)});
+            key, request, root, plan_dict, backend, std::move(compiled_root)});
 
         std::lock_guard<std::mutex> lock(mutex_);
         auto [it, inserted] = cache_.emplace(key, executable);
