@@ -13,6 +13,14 @@ dependencies = [
     "triton",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+dev = [
+    "pytest",
+]
+
 [tool.scikit-build]
 minimum-version = "0.10"
 build-dir = "build/{wheel_tag}"
@@ -25,3 +33,6 @@ make-fallback = true
 
 [tool.scikit-build.wheel]
 install-dir = ""
+
+[tool.pytest.ini_options]
+testpaths = ["test"]

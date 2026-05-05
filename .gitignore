@@ -4,6 +4,8 @@ __pycache__
 .pytest_cache
 .claude
 .codex
+.agents
+AGENTS.md
 *.egg-info/
 test_fft
 build/

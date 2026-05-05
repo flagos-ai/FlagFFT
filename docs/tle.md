@@ -1,3 +1,8 @@
+# TLE Reference Notes
+
+This file is a local reference for FlagTree/TLE APIs that are useful when
+authoring FlagFFT Triton kernels. It is not the FlagFFT architecture guide; see
+`docs/architecture.md` for project structure and current implementation status.
 
 ### 3.2 TLE-Lite
 
