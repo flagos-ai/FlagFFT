@@ -1,7 +1,27 @@
 # FlagFFT
 
-FlagFFT is an experimental FFT library that routes Python calls through a
+FlagFFT is an experimental FFT library that routes Python API calls through a
 nanobind C++ core and Triton/TLE-generated CUDA kernels.
+
+## Architecture
+
+The public Python package only exposes the torch.fft-compatible API surface.
+Planning, runtime cache lookup, AOT artifact loading, and execution live in the
+C++ extension. Python code outside the public API is limited to Triton/TLE code
+generation for kernels invoked by the C++ backend.
+
+Current source layout:
+
+- `src/cpp/plan/`: FFT route selection and plan tree construction.
+- `src/cpp/exec/`: executable plan cache and CUDA execution flow.
+- `src/cpp/codegen/`: C++ wrapper around the Python Triton AOT compiler.
+- `src/cpp/runtime/`: CUDA Driver and tensor runtime helpers.
+- `src/codegen/`: Python Triton/TLE kernel source emission and AOT CLI.
+- `src/codelet/`: reusable generated-kernel codelets.
+
+The implemented compute path is currently `flagfft.fft` for CUDA tensors on the
+last dimension. The remaining torch.fft-compatible entrypoints are present as API
+stubs and raise `NotImplementedError` until their C++ plan/exec paths are added.
 
 ## Installation
 
@@ -36,10 +56,10 @@ For a focused correctness sweep without pytest collection, run:
 python test/test_fft_mixed_radix.py --lengths 16 105 4096
 ```
 
-Benchmarks compare FlagFFT against `torch.fft`:
+Benchmarks compare FlagFFT against `torch.fft` through the C++ backend:
 
 ```sh
-python benchmark/benchmark_fft_mixed_radix.py --backend cpp --lengths 4096 8192
+python benchmark/benchmark_fft_mixed_radix.py --lengths 4096 8192
 ```
 
 ## License

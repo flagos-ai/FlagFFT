@@ -13,8 +13,18 @@ execute_process(
 )
 find_package(nanobind CONFIG REQUIRED)
 
-nanobind_add_module(_flagfft_core src/cpp/flagfft_core.cpp)
+set(FLAGFFT_CPP_SOURCES
+    src/cpp/bindings/module.cpp
+    src/cpp/common/request.cpp
+    src/cpp/plan/planner.cpp
+    src/cpp/runtime/cuda_runtime.cpp
+    src/cpp/codegen/triton_compiler.cpp
+    src/cpp/exec/executor.cpp
+)
+
+nanobind_add_module(_flagfft_core ${FLAGFFT_CPP_SOURCES})
 target_compile_features(_flagfft_core PRIVATE cxx_std_17)
+target_include_directories(_flagfft_core PRIVATE src/cpp/include)
 target_link_libraries(_flagfft_core PRIVATE CUDA::cuda_driver)
 
 install(TARGETS _flagfft_core
@@ -22,4 +32,5 @@ install(TARGETS _flagfft_core
         RUNTIME DESTINATION "."
         ARCHIVE DESTINATION ".")
 install(FILES flagfft.py DESTINATION ".")
-install(DIRECTORY src DESTINATION "." FILES_MATCHING PATTERN "*.py")
+install(FILES src/__init__.py src/api.py src/flagfft.py src/triton_aot.py DESTINATION "src")
+install(DIRECTORY src/codegen src/codelet DESTINATION "src" FILES_MATCHING PATTERN "*.py")

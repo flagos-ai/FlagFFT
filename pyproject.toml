@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "flagfft"
 version = "0.1.0"
-description = "Experimental Triton-backed FFT planner"
+description = "C++ planned FFT library with Triton/TLE code generation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

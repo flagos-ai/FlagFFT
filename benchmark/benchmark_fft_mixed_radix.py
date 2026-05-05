@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import statistics
 import sys
 import time
@@ -13,28 +12,7 @@ import torch
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from flagfft import (
-    FFTDecompositionSpec,
-    FFTPlan,
-    FFTPlanRequest,
-    build_fft_plan,
-    clear_fft_caches,
-    fft as flagfft_fft,
-    format_plan_tree,
-    load_fft_plan,
-    plan_from_dict,
-    save_fft_plan,
-)
-from src.exec import _execute_plan
-
-
-def _parse_split_spec(raw: str | None) -> FFTDecompositionSpec | None:
-    if raw is None:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid --split-spec JSON: {exc}") from exc
+from flagfft import fft as flagfft_fft
 
 
 def _bench_warm_wall_ms(fn, warmup: int, iters: int) -> float:
@@ -73,36 +51,27 @@ def _require_cpp_core():
     return _flagfft_core
 
 
-def _build_plan(
-    n: int,
-    split_spec: FFTDecompositionSpec | None,
-    plan: FFTPlan | None,
-    request: FFTPlanRequest | None = None,
-) -> FFTPlan:
-    if plan is not None:
-        return build_fft_plan(n, plan, request=request)
-    return build_fft_plan(n, split_spec=split_spec, request=request)
+def _format_plan_node(node: dict, indent: int = 0) -> str:
+    prefix = "  " * indent
+    kind = node.get("kind", "unknown")
+    length = node.get("length", "?")
+    if kind == "ct_leaf":
+        label = f"{kind}(n={length}, factors={node.get('factors')}, lanes={node.get('lanes')})"
+    elif kind == "four_step":
+        label = f"{kind}(n={length}, n1={node.get('n1')}, n2={node.get('n2')})"
+    else:
+        label = f"{kind}(n={length})"
+    lines = [prefix + label]
+    if kind == "four_step":
+        lines.append(_format_plan_node(node["row"], indent + 1))
+        lines.append(_format_plan_node(node["col"], indent + 1))
+    return "\n".join(lines)
 
 
-def _make_plan_request(x: torch.Tensor, n: int) -> FFTPlanRequest:
-    return FFTPlanRequest(
-        length=n,
-        dtype=str(x.dtype).removeprefix("torch."),
-        device=x.device.type,
-        batch=x.numel() // n,
-    )
-
-
-def _profile_flagfft_cpp_warm_ms(
-    x: torch.Tensor,
-    warmup: int,
-    iters: int,
-) -> dict[str, Any]:
-    if iters <= 0:
-        raise ValueError("iters must be positive")
-
+def _profile_flagfft_cpp_warm_ms(x: torch.Tensor, warmup: int, iters: int) -> dict[str, Any]:
     core = _require_cpp_core()
-    plan = plan_from_dict(core.debug_plan(x))
+    core.clear_plan_cache()
+    plan = core.debug_plan(x)
 
     first_call_ms = _bench_one_cuda_ms(lambda: flagfft_fft(x))
     after_first = dict(core.cache_info())
@@ -123,72 +92,7 @@ def _profile_flagfft_cpp_warm_ms(
     }
 
 
-def _profile_flagfft_python_warm_ms(
-    x: torch.Tensor,
-    n: int,
-    split_spec: FFTDecompositionSpec | None,
-    plan: FFTPlan | None,
-    warmup: int,
-    iters: int,
-) -> dict[str, Any]:
-    if iters <= 0:
-        raise ValueError("iters must be positive")
-
-    request = _make_plan_request(x, n)
-    resolved_plan = _build_plan(n, split_spec, plan, request=request)
-
-    for _ in range(warmup):
-        warm_plan = _build_plan(n, split_spec, plan, request=request)
-        _execute_plan(x, warm_plan)
-    torch.cuda.synchronize()
-
-    plan_times: list[float] = []
-    exec_times: list[float] = []
-    total_times: list[float] = []
-    for _ in range(iters):
-        torch.cuda.synchronize()
-        total_t0 = time.perf_counter()
-
-        t0 = time.perf_counter()
-        iter_plan = _build_plan(n, split_spec, plan, request=request)
-        plan_ms = (time.perf_counter() - t0) * 1e3
-
-        t0 = time.perf_counter()
-        _execute_plan(x, iter_plan).reshape(x.shape)
-        torch.cuda.synchronize()
-        exec_ms = (time.perf_counter() - t0) * 1e3
-        total_ms = (time.perf_counter() - total_t0) * 1e3
-
-        plan_times.append(plan_ms)
-        exec_times.append(exec_ms)
-        total_times.append(total_ms)
-
-    plan_median_ms = statistics.median(plan_times)
-    exec_median_ms = statistics.median(exec_times)
-    total_median_ms = statistics.median(total_times)
-    profile_total_ms = plan_median_ms + exec_median_ms
-    plan_pct = (plan_median_ms / profile_total_ms * 100.0) if profile_total_ms else 0.0
-    exec_pct = (exec_median_ms / profile_total_ms * 100.0) if profile_total_ms else 0.0
-
-    return {
-        "resolved_plan": resolved_plan,
-        "flagfft_median_ms": total_median_ms,
-        "flagfft_plan_median_ms": plan_median_ms,
-        "flagfft_exec_median_ms": exec_median_ms,
-        "flagfft_plan_pct": plan_pct,
-        "flagfft_exec_pct": exec_pct,
-    }
-
-
-def benchmark_mixed_radix_once(
-    n: int,
-    batch: int = 64,
-    warmup: int = 20,
-    iters: int = 100,
-    split_spec: FFTDecompositionSpec | None = None,
-    plan: FFTPlan | None = None,
-    backend: str = "cpp",
-) -> dict[str, Any]:
+def benchmark_mixed_radix_once(n: int, batch: int = 64, warmup: int = 20, iters: int = 100) -> dict[str, Any]:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available")
 
@@ -197,78 +101,31 @@ def benchmark_mixed_radix_once(
     xi = torch.randn(batch, n, device="cuda", dtype=torch.float32)
     x = torch.complex(xr, xi)
 
-    clear_fft_caches()
-
-    if backend == "cpp":
-        if split_spec is not None or plan is not None:
-            raise ValueError("--split-spec and --plan-json are only supported with --backend python")
-        flagfft_stats = _profile_flagfft_cpp_warm_ms(x=x, warmup=warmup, iters=iters)
-    elif backend == "python":
-        flagfft_stats = _profile_flagfft_python_warm_ms(
-            x=x,
-            n=n,
-            split_spec=split_spec,
-            plan=plan,
-            warmup=warmup,
-            iters=iters,
-        )
-    else:
-        raise ValueError(f"unsupported benchmark backend: {backend}")
-
+    flagfft_stats = _profile_flagfft_cpp_warm_ms(x=x, warmup=warmup, iters=iters)
     torch_median_ms = _bench_warm_wall_ms(
         lambda: torch.fft.fft(x, dim=-1), warmup=warmup, iters=iters
     )
     resolved_plan = flagfft_stats["resolved_plan"]
 
     return {
-        "length": resolved_plan.length,
+        "length": resolved_plan["root"]["length"],
         "batch": batch,
-        "backend": backend,
-        "plan_source": (
-            "cpp_auto"
-            if backend == "cpp"
-            else ("json" if plan is not None else ("manual" if split_spec is not None else "auto"))
-        ),
-        "plan": format_plan_tree(resolved_plan),
-        "resolved_plan": resolved_plan,
+        "backend": "cpp",
+        "plan_source": "cpp_auto",
+        "plan": _format_plan_node(resolved_plan["root"]),
         "flagfft_median_ms": flagfft_stats["flagfft_median_ms"],
         "torch_median_ms": torch_median_ms,
         **{
             key: value
             for key, value in flagfft_stats.items()
-            if key != "resolved_plan" and key != "flagfft_median_ms"
+            if key not in {"resolved_plan", "flagfft_median_ms"}
         },
     }
 
 
-def run_benchmark(
-    lengths: list[int],
-    batch: int,
-    warmup: int,
-    iters: int,
-    split_spec: FFTDecompositionSpec | None = None,
-    plan_json: Path | None = None,
-    dump_plan: Path | None = None,
-    backend: str = "cpp",
-) -> None:
-    loaded_plan = load_fft_plan(plan_json) if plan_json is not None else None
+def run_benchmark(lengths: list[int], batch: int, warmup: int, iters: int) -> None:
     for n in lengths:
-        stats = benchmark_mixed_radix_once(
-            n=n,
-            batch=batch,
-            warmup=warmup,
-            iters=iters,
-            split_spec=split_spec,
-            plan=loaded_plan,
-            backend=backend,
-        )
-        if dump_plan is not None:
-            if len(lengths) == 1:
-                dump_plan.parent.mkdir(parents=True, exist_ok=True)
-                save_fft_plan(stats["resolved_plan"], dump_plan)
-            else:
-                dump_plan.mkdir(parents=True, exist_ok=True)
-                save_fft_plan(stats["resolved_plan"], dump_plan / f"fft_plan_{n}.json")
+        stats = benchmark_mixed_radix_once(n=n, batch=batch, warmup=warmup, iters=iters)
         print(f"[backend={stats['backend']} mode={stats['plan_source']} n={n} batch={batch}]")
         print("  plan:")
         for line in stats["plan"].splitlines():
@@ -278,55 +135,21 @@ def run_benchmark(
             f"torch_median_ms={stats['torch_median_ms']:.4f} "
             f"speedup={stats['torch_median_ms']/stats['flagfft_median_ms']:.2f}x"
         )
-        if stats["backend"] == "cpp":
-            cache = stats["cpp_cache_after_warm"]
-            print(
-                f"  cpp: first_call_ms={stats['flagfft_first_call_ms']:.4f} "
-                f"cache_size={cache['size']} hits={cache['hits']} misses={cache['misses']}"
-            )
-        else:
-            print(
-                f"  profile: plan={stats['flagfft_plan_median_ms']:.4f} ms "
-                f"({stats['flagfft_plan_pct']:.1f}%) "
-                f"exec={stats['flagfft_exec_median_ms']:.4f} ms "
-                f"({stats['flagfft_exec_pct']:.1f}%)"
-            )
+        cache = stats["cpp_cache_after_warm"]
+        print(
+            f"  cpp: first_call_ms={stats['flagfft_first_call_ms']:.4f} "
+            f"cache_size={cache['size']} hits={cache['hits']} misses={cache['misses']}"
+        )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Benchmark FFT mixed-radix execution. "
-            "--split-spec accepts JSON such as '[32, 3200, null, [32, 100]]' "
-            "or '{\"split\": [32, 3200], \"col\": [32, 100]}'. "
-            "--plan-json loads an exact executable plan produced by --dump-plan."
-        )
-    )
+    parser = argparse.ArgumentParser(description="Benchmark FFT mixed-radix execution through the C++ backend.")
     parser.add_argument("--lengths", type=int, nargs="+", default=[34, 64, 105, 1024, 936, 4096, 8192])
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iters", type=int, default=200)
-    parser.add_argument("--backend", choices=("cpp", "python"), default="cpp")
-    parser.add_argument("--split-spec", type=str, default=None)
-    parser.add_argument("--plan-json", type=Path, default=None)
-    parser.add_argument("--dump-plan", type=Path, default=None)
     args = parser.parse_args()
-    if args.split_spec is not None and args.plan_json is not None:
-        parser.error("pass either --split-spec or --plan-json, not both")
-    if args.backend == "cpp" and (args.split_spec is not None or args.plan_json is not None):
-        parser.error("--split-spec and --plan-json are only supported with --backend python")
-
-    split_spec = _parse_split_spec(args.split_spec)
-    run_benchmark(
-        args.lengths,
-        args.batch,
-        args.warmup,
-        args.iters,
-        split_spec=split_spec,
-        plan_json=args.plan_json,
-        dump_plan=args.dump_plan,
-        backend=args.backend,
-    )
+    run_benchmark(args.lengths, args.batch, args.warmup, args.iters)
 
 
 if __name__ == "__main__":

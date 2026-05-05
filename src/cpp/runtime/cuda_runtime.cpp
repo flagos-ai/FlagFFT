@@ -1,0 +1,159 @@
+#include "flagfft/core.hpp"
+
+namespace flagfft {
+
+void cuda_check(CUresult result, const std::string &context) {
+    if (result == CUDA_SUCCESS) {
+        return;
+    }
+    const char *name = nullptr;
+    const char *message = nullptr;
+    cuGetErrorName(result, &name);
+    cuGetErrorString(result, &message);
+    std::ostringstream out;
+    out << context << " failed";
+    if (name != nullptr) {
+        out << " (" << name << ")";
+    }
+    if (message != nullptr) {
+        out << ": " << message;
+    }
+    throw std::runtime_error(out.str());
+}
+
+nb::object tensor_from_float_vector(const std::vector<float> &values, const FFTRequest &request) {
+    nb::module_ torch = nb::module_::import_("torch");
+    std::string device = request.device_type + ":" + std::to_string(request.device_index);
+    return torch.attr("tensor")(nb::cast(values), "device"_a = device, "dtype"_a = torch.attr("float32"));
+}
+
+std::string torch_device_string(const FFTRequest &request) {
+    return request.device_type + ":" + std::to_string(request.device_index);
+}
+
+nb::object tensor_from_complex_vectors(const std::vector<float> &real,
+                                       const std::vector<float> &imag,
+                                       const FFTRequest &request,
+                                       nb::tuple shape) {
+    nb::module_ torch = nb::module_::import_("torch");
+    nb::object real_tensor = tensor_from_float_vector(real, request).attr("reshape")(shape);
+    nb::object imag_tensor = tensor_from_float_vector(imag, request).attr("reshape")(shape);
+    return torch.attr("complex")(real_tensor, imag_tensor);
+}
+
+nb::object empty_complex64_tensor(const FFTRequest &request, nb::tuple shape) {
+    nb::module_ torch = nb::module_::import_("torch");
+    return torch.attr("empty")(shape, "device"_a = torch_device_string(request),
+                               "dtype"_a = torch.attr("complex64"));
+}
+
+int64_t ceil_div(int64_t numerator, int64_t denominator) {
+    return (numerator + denominator - 1) / denominator;
+}
+
+int64_t tensor_numel(const nb::object &tensor) {
+    return nb::cast<int64_t>(tensor.attr("numel")());
+}
+
+int64_t tensor_size(const nb::object &tensor, int64_t dim) {
+    return nb::cast<int64_t>(tensor.attr("size")(dim));
+}
+
+int64_t tensor_stride(const nb::object &tensor, int64_t dim) {
+    return nb::cast<int64_t>(tensor.attr("stride")(dim));
+}
+
+CUdeviceptr tensor_data_ptr(const nb::object &tensor) {
+    return static_cast<CUdeviceptr>(nb::cast<uint64_t>(tensor.attr("data_ptr")()));
+}
+
+CUstream current_cuda_stream(const FFTRequest &request) {
+    nb::module_ torch = nb::module_::import_("torch");
+    nb::object stream_obj = torch.attr("cuda").attr("current_stream")(request.device_index);
+    return reinterpret_cast<CUstream>(nb::cast<uint64_t>(stream_obj.attr("cuda_stream")));
+}
+
+AotKernelArg AotKernelArg::device(CUdeviceptr value) {
+    AotKernelArg arg;
+    arg.kind = AotArgKind::DevicePtr;
+    arg.device_ptr = value;
+    return arg;
+}
+
+AotKernelArg AotKernelArg::i32(int32_t value) {
+    AotKernelArg arg;
+    arg.kind = AotArgKind::Int32;
+    arg.int32_value = value;
+    return arg;
+}
+
+AotKernelArg AotKernelArg::i64(int64_t value) {
+    AotKernelArg arg;
+    arg.kind = AotArgKind::Int64;
+    arg.int64_value = value;
+    return arg;
+}
+
+AotKernel::~AotKernel() {
+    if (module != nullptr) {
+        cuModuleUnload(module);
+    }
+}
+
+void AotKernel::load() {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (function != nullptr) {
+        return;
+    }
+    cuda_check(cuInit(0), "cuInit");
+    cuda_check(cuModuleLoadData(&module, cubin.data()), "cuModuleLoadData");
+    cuda_check(cuModuleGetFunction(&function, module, kernel_name.c_str()), "cuModuleGetFunction");
+    if (shared > 49152) {
+        cuda_check(cuFuncSetCacheConfig(function, CU_FUNC_CACHE_PREFER_SHARED),
+                   "cuFuncSetCacheConfig");
+        cuda_check(cuFuncSetAttribute(function, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                                      shared),
+                   "cuFuncSetAttribute");
+    }
+}
+
+void AotKernel::launch(CUstream stream,
+                       const std::vector<AotKernelArg> &kernel_args,
+                       int64_t grid_x,
+                       int64_t grid_y,
+                       int64_t grid_z) {
+    load();
+    CUdeviceptr global_scratch = 0;
+    CUdeviceptr profile_scratch = 0;
+    std::vector<void *> args;
+    args.reserve(kernel_args.size() + 2);
+    for (const AotKernelArg &arg : kernel_args) {
+        switch (arg.kind) {
+            case AotArgKind::DevicePtr:
+                args.push_back(const_cast<CUdeviceptr *>(&arg.device_ptr));
+                break;
+            case AotArgKind::Int32:
+                args.push_back(const_cast<int32_t *>(&arg.int32_value));
+                break;
+            case AotArgKind::Int64:
+                args.push_back(const_cast<int64_t *>(&arg.int64_value));
+                break;
+        }
+    }
+    args.push_back(&global_scratch);
+    args.push_back(&profile_scratch);
+    cuda_check(cuLaunchKernel(function,
+                              static_cast<unsigned int>(grid_x),
+                              static_cast<unsigned int>(grid_y),
+                              static_cast<unsigned int>(grid_z),
+                              static_cast<unsigned int>(num_warps * 32),
+                              1,
+                              1,
+                              static_cast<unsigned int>(shared),
+                              stream,
+                              args.data(),
+                              nullptr),
+               "cuLaunchKernel");
+}
+
+}  // namespace flagfft

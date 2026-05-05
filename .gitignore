@@ -1,6 +1,5 @@
 __pycache__
-.tle_cache
-.flagfft_aot_cache
+.flagfft
 .pytest_cache
 .claude
 .codex
