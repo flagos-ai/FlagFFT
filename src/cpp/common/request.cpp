@@ -100,6 +100,10 @@ std::string kernel_kind_name(KernelKind kind) {
     switch (kind) {
         case KernelKind::Leaf:
             return "leaf";
+        case KernelKind::FourStepRow:
+            return "four_step_row";
+        case KernelKind::FourStepCol:
+            return "four_step_col";
         case KernelKind::Transpose:
             return "transpose";
         case KernelKind::TwiddleTranspose:
@@ -252,14 +256,60 @@ KernelKey KernelKey::leaf(std::string target,
                           int64_t num_warps,
                           std::vector<int64_t> generic_radices,
                           int64_t smem_size) {
-    return KernelKey{KernelKind::Leaf,
-                     std::move(target),
-                     length,
-                     std::move(factors),
-                     lanes,
-                     num_warps,
-                     std::move(generic_radices),
-                     smem_size};
+    KernelKey key;
+    key.kind = KernelKind::Leaf;
+    key.target = std::move(target);
+    key.length = length;
+    key.factors = std::move(factors);
+    key.lanes = lanes;
+    key.num_warps = num_warps;
+    key.generic_radices = std::move(generic_radices);
+    key.smem_size = smem_size;
+    return key;
+}
+
+KernelKey KernelKey::four_step_row(std::string target,
+                                   int64_t n1,
+                                   int64_t n2,
+                                   int64_t length,
+                                   std::vector<int64_t> factors,
+                                   int64_t lanes,
+                                   int64_t num_warps,
+                                   std::vector<int64_t> generic_radices,
+                                   int64_t smem_size) {
+    KernelKey key = KernelKey::leaf(std::move(target),
+                                    length,
+                                    std::move(factors),
+                                    lanes,
+                                    num_warps,
+                                    std::move(generic_radices),
+                                    smem_size);
+    key.kind = KernelKind::FourStepRow;
+    key.four_step_n1 = n1;
+    key.four_step_n2 = n2;
+    return key;
+}
+
+KernelKey KernelKey::four_step_col(std::string target,
+                                   int64_t n1,
+                                   int64_t n2,
+                                   int64_t length,
+                                   std::vector<int64_t> factors,
+                                   int64_t lanes,
+                                   int64_t num_warps,
+                                   std::vector<int64_t> generic_radices,
+                                   int64_t smem_size) {
+    KernelKey key = KernelKey::leaf(std::move(target),
+                                    length,
+                                    std::move(factors),
+                                    lanes,
+                                    num_warps,
+                                    std::move(generic_radices),
+                                    smem_size);
+    key.kind = KernelKind::FourStepCol;
+    key.four_step_n1 = n1;
+    key.four_step_n2 = n2;
+    return key;
 }
 
 KernelKey KernelKey::transpose(std::string target) {
@@ -280,17 +330,22 @@ bool KernelKey::operator==(const KernelKey &other) const {
     return kind == other.kind && target == other.target && length == other.length &&
            factors == other.factors && lanes == other.lanes &&
            num_warps == other.num_warps && generic_radices == other.generic_radices &&
-           smem_size == other.smem_size;
+           smem_size == other.smem_size && four_step_n1 == other.four_step_n1 &&
+           four_step_n2 == other.four_step_n2;
 }
 
 std::string KernelKey::repr() const {
     std::ostringstream out;
     out << "kind=" << kernel_kind_name(kind) << ";target=" << target;
-    if (kind == KernelKind::Leaf) {
+    if (kind == KernelKind::Leaf || kind == KernelKind::FourStepRow ||
+        kind == KernelKind::FourStepCol) {
         out << ";length=" << length << ";factors=[" << join_ints(factors) << "]"
             << ";lanes=" << lanes << ";num_warps=" << num_warps
             << ";generic_radices=[" << join_ints(generic_radices)
             << "];smem_size=" << smem_size;
+        if (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) {
+            out << ";four_step_n1=" << four_step_n1 << ";four_step_n2=" << four_step_n2;
+        }
     }
     return out.str();
 }
@@ -305,6 +360,8 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
     hash_value(seed, key.num_warps);
     hash_vector(seed, key.generic_radices);
     hash_value(seed, key.smem_size);
+    hash_value(seed, key.four_step_n1);
+    hash_value(seed, key.four_step_n2);
     return seed;
 }
 
@@ -386,6 +443,8 @@ nb::dict kernel_key_to_dict(const KernelKey &key) {
     out["num_warps"] = key.num_warps;
     out["generic_radices"] = nb::cast(key.generic_radices);
     out["smem_size"] = key.smem_size;
+    out["four_step_n1"] = key.four_step_n1;
+    out["four_step_n2"] = key.four_step_n2;
     out["hash"] = static_cast<uint64_t>(KernelKeyHash{}(key));
     return out;
 }

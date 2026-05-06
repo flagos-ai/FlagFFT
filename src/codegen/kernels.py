@@ -31,6 +31,9 @@ class LeafPlan:
     kind: Literal["ct_leaf"] = field(default="ct_leaf", init=False)
 
 
+LeafIoMode = Literal["contiguous", "four_step_row", "four_step_col"]
+
+
 def lane_block_for(lanes: int) -> int:
     if lanes <= 1:
         return 1
@@ -315,7 +318,15 @@ def _emit_route_index(
 
 
 def _emit_stage_block(
-    stage: int, factors: tuple[int, ...], n: int, lanes: int, lane_block: int
+    stage: int,
+    factors: tuple[int, ...],
+    n: int,
+    lanes: int,
+    lane_block: int,
+    *,
+    io_mode: LeafIoMode = "contiguous",
+    four_step_n1: int = 0,
+    four_step_n2: int = 0,
 ) -> list[str]:
     radix = factors[stage]
     groups = n // (lanes * radix)
@@ -340,12 +351,36 @@ def _emit_stage_block(
     for j in range(radix):
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
-            lines.append(
-                f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other=0.0)"
-            )
-            lines.append(
-                f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other=0.0)"
-            )
+            if io_mode == "contiguous":
+                lines.append(
+                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other=0.0)"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other=0.0)"
+                )
+            elif io_mode == "four_step_row":
+                lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner")
+                lines.append(
+                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, mask=lane_mask, other=0.0)"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, mask=lane_mask, other=0.0)"
+                )
+            else:
+                lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner")
+                lines.append(
+                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, mask=lane_mask, other=0.0)"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, mask=lane_mask, other=0.0)"
+                )
+                lines.append(
+                    f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other=0.0)"
+                )
+                lines.append(
+                    f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other=0.0)"
+                )
+                lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
         else:
             lines.append(
                 f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, (phys{j},)), mask=lane_mask, other=0.0)"
@@ -378,12 +413,33 @@ def _emit_stage_block(
     for j in range(radix):
         if is_last:
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
-            lines.append(
-                f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j}, mask=lane_mask)"
-            )
-            lines.append(
-                f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
-            )
+            if io_mode == "contiguous":
+                lines.append(
+                    f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j}, mask=lane_mask)"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+                )
+            elif io_mode == "four_step_row":
+                lines.append(
+                    f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+                )
+            else:
+                lines.append(
+                    f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+                )
         else:
             lines.extend(_emit_route_index(indent, f"dst{j}", stage, factors, lanes, j))
             lines.append(
@@ -398,13 +454,13 @@ def _emit_stage_block(
     return lines
 
 
-def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
+def _leaf_kernel_params(plan: LeafPlan, *, include_four_step_twiddle: bool = False) -> list[str]:
     factors = plan.factors
-    n = plan.length
-    smem_n = plan.smem_size
     generic_radices = plan.generic_radices
-    lane_block = lane_block_for(plan.lanes)
-    params = ["in_ptr", "out_ptr"]
+    params = ["in_ptr"]
+    if include_four_step_twiddle:
+        params.append("twiddle_ptr")
+    params.append("out_ptr")
     for stage in range(1, len(factors)):
         params.append(f"tw{stage}_r_ptr")
         params.append(f"tw{stage}_i_ptr")
@@ -412,8 +468,32 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
         params.append(f"dft{radix}_r_ptr")
         params.append(f"dft{radix}_i_ptr")
     params.append("nbatch")
+    return params
 
-    kernel_name = "fft_kernel_" + "_".join(str(x) for x in factors) + f"_l{plan.lanes}_b{lane_block}"
+
+def _build_leaf_kernel_source_for_io(
+    plan: LeafPlan,
+    *,
+    io_mode: LeafIoMode,
+    four_step_n1: int = 0,
+    four_step_n2: int = 0,
+) -> tuple[str, str]:
+    factors = plan.factors
+    n = plan.length
+    smem_n = plan.smem_size
+    lane_block = lane_block_for(plan.lanes)
+    params = _leaf_kernel_params(
+        plan, include_four_step_twiddle=io_mode == "four_step_col"
+    )
+
+    suffix = "_".join(str(x) for x in factors)
+    if io_mode == "contiguous":
+        kernel_name = f"fft_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    else:
+        kernel_name = (
+            f"{io_mode}_fft_kernel_{suffix}_n{four_step_n1}_{four_step_n2}"
+            f"_l{plan.lanes}_b{lane_block}"
+        )
     body: list[str] = [
         "@triton.jit",
         f"def {kernel_name}(",
@@ -422,12 +502,21 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
         suffix = "," if idx < len(params) - 1 else ""
         body.append(f"    {param}{suffix}")
     body.append("):")
-    body.append("    pid = tl.program_id(0)")
-    body.append("    if pid >= nbatch:")
-    body.append("        return")
+    if io_mode == "contiguous":
+        body.append("    pid = tl.program_id(0)")
+        body.append("    if pid >= nbatch:")
+        body.append("        return")
+    else:
+        body.append("    four_step_inner = tl.program_id(0)")
+        body.append("    four_step_batch = tl.program_id(1)")
+        body.append("    if four_step_batch >= nbatch:")
+        body.append("        return")
     body.append(f"    lane = tl.arange(0, {lane_block})")
     body.append(f"    lane_mask = lane < {plan.lanes}")
-    body.append(f"    batch_base = pid * {n}")
+    if io_mode == "contiguous":
+        body.append(f"    batch_base = pid * {n}")
+    else:
+        body.append(f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}")
 
     if len(factors) > 1:
         body.append(
@@ -444,9 +533,40 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
         )
 
     for stage in range(len(factors)):
-        body.extend(_emit_stage_block(stage, factors, n, plan.lanes, lane_block))
+        body.extend(
+            _emit_stage_block(
+                stage,
+                factors,
+                n,
+                plan.lanes,
+                lane_block,
+                io_mode=io_mode,
+                four_step_n1=four_step_n1,
+                four_step_n2=four_step_n2,
+            )
+        )
 
     return kernel_name, "\n".join(body)
+
+
+def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
+    return _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+
+
+def _build_four_step_row_kernel_source(plan: LeafPlan, n1: int, n2: int) -> tuple[str, str]:
+    if plan.length != n1:
+        raise ValueError(f"four-step row kernel length must equal n1: length={plan.length}, n1={n1}")
+    return _build_leaf_kernel_source_for_io(
+        plan, io_mode="four_step_row", four_step_n1=n1, four_step_n2=n2
+    )
+
+
+def _build_four_step_col_kernel_source(plan: LeafPlan, n1: int, n2: int) -> tuple[str, str]:
+    if plan.length != n2:
+        raise ValueError(f"four-step col kernel length must equal n2: length={plan.length}, n2={n2}")
+    return _build_leaf_kernel_source_for_io(
+        plan, io_mode="four_step_col", four_step_n1=n1, four_step_n2=n2
+    )
 
 __all__ = [
     "LeafPlan",
@@ -455,6 +575,8 @@ __all__ = [
     "_FOUR_STEP_TILE_COLS",
     "_FOUR_STEP_TILE_ROWS",
     "_build_leaf_kernel_source",
+    "_build_four_step_col_kernel_source",
+    "_build_four_step_row_kernel_source",
     "_transpose_complex_kernel",
     "_twiddle_transpose_complex_kernel",
     "lane_block_for",

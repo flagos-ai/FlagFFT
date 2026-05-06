@@ -208,6 +208,69 @@ void CompiledFourStepNode::launch_twiddle_transpose(CUstream stream,
                                      ceil_div(rows, kFourStepTileRows), batch);
 }
 
+CompiledFourStepFusedNode::CompiledFourStepFusedNode(int64_t length,
+                                                     int64_t n1,
+                                                     int64_t n2,
+                                                     std::shared_ptr<AotKernel> row_kernel,
+                                                     std::vector<nb::object> row_tables,
+                                                     std::shared_ptr<AotKernel> col_kernel,
+                                                     std::vector<nb::object> col_tables,
+                                                     nb::object twiddle,
+                                                     nb::object stage1)
+    : length(length),
+      n1(n1),
+      n2(n2),
+      row_kernel(std::move(row_kernel)),
+      row_tables(std::move(row_tables)),
+      col_kernel(std::move(col_kernel)),
+      col_tables(std::move(col_tables)),
+      twiddle(std::move(twiddle)),
+      stage1(std::move(stage1)) {}
+
+nb::object CompiledFourStepFusedNode::execute(const nb::object &input,
+                                              const ExecutionContext &context) const {
+    int64_t batch = tensor_numel(input) / length;
+    nb::object x_contig = input.attr("contiguous")().attr("reshape")(nb::make_tuple(batch, length));
+
+    launch_row(context.stream, x_contig, stage1);
+    nb::object out = empty_complex64_tensor(context.request, nb::make_tuple(batch, length));
+    launch_col(context.stream, stage1, out);
+    return out;
+}
+
+void CompiledFourStepFusedNode::launch_row(CUstream stream,
+                                           const nb::object &src,
+                                           const nb::object &dst) const {
+    int64_t batch = tensor_size(src, 0);
+    std::vector<AotKernelArg> args;
+    args.reserve(3 + row_tables.size());
+    args.push_back(AotKernelArg::device(tensor_data_ptr(src)));
+    args.push_back(AotKernelArg::device(tensor_data_ptr(dst)));
+    for (const nb::object &table : row_tables) {
+        args.push_back(AotKernelArg::device(tensor_data_ptr(table)));
+    }
+    args.push_back(AotKernelArg::i32(static_cast<int32_t>(batch)));
+
+    row_kernel->launch(stream, args, n2, batch, 1);
+}
+
+void CompiledFourStepFusedNode::launch_col(CUstream stream,
+                                           const nb::object &src,
+                                           const nb::object &dst) const {
+    int64_t batch = tensor_size(src, 0);
+    std::vector<AotKernelArg> args;
+    args.reserve(4 + col_tables.size());
+    args.push_back(AotKernelArg::device(tensor_data_ptr(src)));
+    args.push_back(AotKernelArg::device(tensor_data_ptr(twiddle)));
+    args.push_back(AotKernelArg::device(tensor_data_ptr(dst)));
+    for (const nb::object &table : col_tables) {
+        args.push_back(AotKernelArg::device(tensor_data_ptr(table)));
+    }
+    args.push_back(AotKernelArg::i32(static_cast<int32_t>(batch)));
+
+    col_kernel->launch(stream, args, n1, batch, 1);
+}
+
 nb::object ExecutablePlan::execute(nb::object input) const {
     if (backend == ExecutionBackend::TorchFFT) {
         nb::module_ torch = nb::module_::import_("torch");
@@ -419,8 +482,8 @@ nb::list enumerate_plan_candidates(nb::object input,
 nb::dict tune_fingerprints() {
     nb::dict out;
     out["planner"] = "planner-schema-1-pruned-quick";
-    out["codegen"] = "codegen-schema-1";
-    out["runtime"] = "runtime-schema-1";
+    out["codegen"] = "codegen-schema-2-fused-four-step";
+    out["runtime"] = "runtime-schema-2-fused-four-step";
     out["benchmark"] = "benchmark-schema-1";
     return out;
 }

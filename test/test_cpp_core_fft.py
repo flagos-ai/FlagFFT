@@ -146,6 +146,17 @@ def test_cpp_aot_four_step_matches_torch(n: int) -> None:
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
 
 
+def test_cpp_aot_four_step_leaf_children_use_fused_kernels() -> None:
+    x = _sample(torch.complex64, n=16384)[:1]
+
+    kernels = _flagfft_core.debug_keys(x)["kernels"]
+    kernel_kinds = {kernel["kind"] for kernel in kernels}
+
+    assert {"four_step_row", "four_step_col"} <= kernel_kinds
+    assert "transpose" not in kernel_kinds
+    assert "twiddle_transpose" not in kernel_kinds
+
+
 def test_cpp_aot_four_step_accepts_float32_input() -> None:
     x = _sample(torch.float32, n=8192)[:1]
 

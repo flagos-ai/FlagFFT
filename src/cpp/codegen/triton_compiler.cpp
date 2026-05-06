@@ -105,6 +105,29 @@ void append_kernel_keys(const PlanNodePtr &node, const std::string &target, nb::
         return;
     }
     if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+        auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
+        auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
+        if (row_leaf != nullptr && col_leaf != nullptr) {
+            out.append(kernel_key_to_dict(KernelKey::four_step_row(target,
+                                                                   four_step->n1,
+                                                                   four_step->n2,
+                                                                   row_leaf->length,
+                                                                   row_leaf->factors,
+                                                                   row_leaf->lanes,
+                                                                   row_leaf->num_warps,
+                                                                   row_leaf->generic_radices,
+                                                                   row_leaf->smem_size)));
+            out.append(kernel_key_to_dict(KernelKey::four_step_col(target,
+                                                                   four_step->n1,
+                                                                   four_step->n2,
+                                                                   col_leaf->length,
+                                                                   col_leaf->factors,
+                                                                   col_leaf->lanes,
+                                                                   col_leaf->num_warps,
+                                                                   col_leaf->generic_radices,
+                                                                   col_leaf->smem_size)));
+            return;
+        }
         append_kernel_keys(four_step->row_plan, target, out);
         append_kernel_keys(four_step->col_plan, target, out);
         out.append(kernel_key_to_dict(KernelKey::transpose(target)));
@@ -203,6 +226,21 @@ nb::object build_four_step_twiddle_tensor(const FFTRequest &request, int64_t n1,
     return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(n2, n1));
 }
 
+std::vector<nb::object> build_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request) {
+    std::vector<nb::object> tables;
+    for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
+        auto twiddles = build_stage_twiddles(leaf.factors, static_cast<int64_t>(stage), leaf.lanes);
+        tables.push_back(tensor_from_float_vector(twiddles.first, request));
+        tables.push_back(tensor_from_float_vector(twiddles.second, request));
+    }
+    for (int64_t radix : leaf.generic_radices) {
+        auto dft = build_dft_matrix(radix);
+        tables.push_back(tensor_from_float_vector(dft.first, request));
+        tables.push_back(tensor_from_float_vector(dft.second, request));
+    }
+    return tables;
+}
+
 std::shared_ptr<CompiledNode> TritonCompiler::compile_node(const PlanNodePtr &node,
                                                            const FFTRequest &request,
                                                            int64_t batch) {
@@ -210,6 +248,24 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_node(const PlanNodePtr &no
         return compile_leaf(*leaf, request);
     }
     if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+        auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
+        auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
+        if (row_leaf != nullptr && col_leaf != nullptr) {
+            nb::object twiddle =
+                build_four_step_twiddle_tensor(request, four_step->n1, four_step->n2);
+            nb::object stage1 =
+                empty_complex64_tensor(request, nb::make_tuple(batch, four_step->n2, four_step->n1));
+            return std::make_shared<CompiledFourStepFusedNode>(
+                four_step->length,
+                four_step->n1,
+                four_step->n2,
+                compile_four_step_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
+                build_leaf_tables(*row_leaf, request),
+                compile_four_step_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
+                build_leaf_tables(*col_leaf, request),
+                std::move(twiddle),
+                std::move(stage1));
+        }
         std::shared_ptr<CompiledNode> row =
             compile_node(four_step->row_plan, request, batch * four_step->n2);
         std::shared_ptr<CompiledNode> col =
@@ -253,18 +309,70 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_leaf(const LeafPlanNode &l
 
     std::shared_ptr<AotKernel> kernel = compile_kernel(key, command.str());
 
-    std::vector<nb::object> tables;
-    for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-        auto twiddles = build_stage_twiddles(leaf.factors, static_cast<int64_t>(stage), leaf.lanes);
-        tables.push_back(tensor_from_float_vector(twiddles.first, request));
-        tables.push_back(tensor_from_float_vector(twiddles.second, request));
-    }
-    for (int64_t radix : leaf.generic_radices) {
-        auto dft = build_dft_matrix(radix);
-        tables.push_back(tensor_from_float_vector(dft.first, request));
-        tables.push_back(tensor_from_float_vector(dft.second, request));
-    }
-    return std::make_shared<CompiledLeafNode>(leaf.length, std::move(kernel), std::move(tables));
+    return std::make_shared<CompiledLeafNode>(leaf.length, std::move(kernel),
+                                              build_leaf_tables(leaf, request));
+}
+
+std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_row_kernel(const LeafPlanNode &leaf,
+                                                                        const FFTRequest &request,
+                                                                        int64_t n1,
+                                                                        int64_t n2) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::four_step_row(target,
+                                             n1,
+                                             n2,
+                                             leaf.length,
+                                             leaf.factors,
+                                             leaf.lanes,
+                                             leaf.num_warps,
+                                             leaf.generic_radices,
+                                             leaf.smem_size);
+    std::ostringstream command;
+    command << shell_quote(python_executable())
+            << " " << triton_aot_entrypoint()
+            << " --kernel four_step_row"
+            << " --length " << leaf.length
+            << " --factors " << shell_quote(join_ints(leaf.factors))
+            << " --lanes " << leaf.lanes
+            << " --num-warps " << leaf.num_warps
+            << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
+            << " --smem-size " << leaf.smem_size
+            << " --four-step-n1 " << n1
+            << " --four-step-n2 " << n2
+            << " --target " << shell_quote(target)
+            << " --out-dir " << shell_quote(out_dir().string());
+    return compile_kernel(key, command.str());
+}
+
+std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_col_kernel(const LeafPlanNode &leaf,
+                                                                        const FFTRequest &request,
+                                                                        int64_t n1,
+                                                                        int64_t n2) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::four_step_col(target,
+                                             n1,
+                                             n2,
+                                             leaf.length,
+                                             leaf.factors,
+                                             leaf.lanes,
+                                             leaf.num_warps,
+                                             leaf.generic_radices,
+                                             leaf.smem_size);
+    std::ostringstream command;
+    command << shell_quote(python_executable())
+            << " " << triton_aot_entrypoint()
+            << " --kernel four_step_col"
+            << " --length " << leaf.length
+            << " --factors " << shell_quote(join_ints(leaf.factors))
+            << " --lanes " << leaf.lanes
+            << " --num-warps " << leaf.num_warps
+            << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
+            << " --smem-size " << leaf.smem_size
+            << " --four-step-n1 " << n1
+            << " --four-step-n2 " << n2
+            << " --target " << shell_quote(target)
+            << " --out-dir " << shell_quote(out_dir().string());
+    return compile_kernel(key, command.str());
 }
 
 std::shared_ptr<AotKernel> TritonCompiler::compile_transpose_kernel(const FFTRequest &request) {

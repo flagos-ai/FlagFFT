@@ -101,7 +101,7 @@ struct FFTRequest {
 };
 
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort };
-enum class KernelKind { Leaf, Transpose, TwiddleTranspose };
+enum class KernelKind { Leaf, FourStepRow, FourStepCol, Transpose, TwiddleTranspose };
 
 std::string plan_node_kind_name(PlanNodeKind kind);
 std::string kernel_kind_name(KernelKind kind);
@@ -167,6 +167,8 @@ struct KernelKey {
     int64_t num_warps = 0;
     std::vector<int64_t> generic_radices;
     int64_t smem_size = 0;
+    int64_t four_step_n1 = 0;
+    int64_t four_step_n2 = 0;
 
     static KernelKey leaf(std::string target,
                           int64_t length,
@@ -175,6 +177,24 @@ struct KernelKey {
                           int64_t num_warps,
                           std::vector<int64_t> generic_radices,
                           int64_t smem_size);
+    static KernelKey four_step_row(std::string target,
+                                   int64_t n1,
+                                   int64_t n2,
+                                   int64_t length,
+                                   std::vector<int64_t> factors,
+                                   int64_t lanes,
+                                   int64_t num_warps,
+                                   std::vector<int64_t> generic_radices,
+                                   int64_t smem_size);
+    static KernelKey four_step_col(std::string target,
+                                   int64_t n1,
+                                   int64_t n2,
+                                   int64_t length,
+                                   std::vector<int64_t> factors,
+                                   int64_t lanes,
+                                   int64_t num_warps,
+                                   std::vector<int64_t> generic_radices,
+                                   int64_t smem_size);
     static KernelKey transpose(std::string target);
     static KernelKey twiddle_transpose(std::string target);
     bool operator==(const KernelKey &other) const;
@@ -398,6 +418,31 @@ struct CompiledFourStepNode final : CompiledNode {
     nb::object stage2;
 };
 
+struct CompiledFourStepFusedNode final : CompiledNode {
+    CompiledFourStepFusedNode(int64_t length,
+                              int64_t n1,
+                              int64_t n2,
+                              std::shared_ptr<AotKernel> row_kernel,
+                              std::vector<nb::object> row_tables,
+                              std::shared_ptr<AotKernel> col_kernel,
+                              std::vector<nb::object> col_tables,
+                              nb::object twiddle,
+                              nb::object stage1);
+    nb::object execute(const nb::object &input, const ExecutionContext &context) const override;
+    void launch_row(CUstream stream, const nb::object &src, const nb::object &dst) const;
+    void launch_col(CUstream stream, const nb::object &src, const nb::object &dst) const;
+
+    int64_t length;
+    int64_t n1;
+    int64_t n2;
+    std::shared_ptr<AotKernel> row_kernel;
+    std::vector<nb::object> row_tables;
+    std::shared_ptr<AotKernel> col_kernel;
+    std::vector<nb::object> col_tables;
+    nb::object twiddle;
+    nb::object stage1;
+};
+
 class TritonCompiler {
 public:
     std::shared_ptr<CompiledNode> compile_node(const PlanNodePtr &node,
@@ -409,6 +454,14 @@ public:
 
 private:
     std::shared_ptr<CompiledNode> compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
+    std::shared_ptr<AotKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
+                                                            const FFTRequest &request,
+                                                            int64_t n1,
+                                                            int64_t n2);
+    std::shared_ptr<AotKernel> compile_four_step_col_kernel(const LeafPlanNode &leaf,
+                                                            const FFTRequest &request,
+                                                            int64_t n1,
+                                                            int64_t n2);
     std::shared_ptr<AotKernel> compile_transpose_kernel(const FFTRequest &request);
     std::shared_ptr<AotKernel> compile_twiddle_transpose_kernel(const FFTRequest &request);
     std::shared_ptr<AotKernel> compile_kernel(const KernelKey &key, const std::string &command) const;

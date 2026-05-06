@@ -30,6 +30,12 @@ Forward complex leaf kernels currently have specialized codelets for radix
 generated Triton kernels, so the C++ planner does not pass DFT table parameters
 for those stages.
 
+Four-step plans whose row and column children are both `ct_leaf` nodes execute
+through fused AOT kernels. The row kernel reads the original four-step strided
+columns directly, and the column kernel applies the four-step twiddle while
+writing final natural order. This removes the separate transpose and
+twiddle-transpose launches from the hot path.
+
 The implemented compute path is currently `flagfft.fft` for CUDA tensors on the
 last dimension. The remaining torch.fft-compatible entrypoints are present as API
 stubs and raise `NotImplementedError` until their C++ plan/exec paths are added.
@@ -70,6 +76,14 @@ calls to allow the C++ runtime to use matching tuned winners. Use
 `--explain-cache` to inspect why a current problem does or does not hit the
 tuned database.
 
+For the focused 16K single-batch four-step case:
+
+```sh
+env FLAGFFT_TUNE_DB=.flagfft/tuned_plans.sqlite \
+  python benchmark/tune_fft_plans.py --lengths 16384 --batch 1 --retune \
+  --db .flagfft/tuned_plans.sqlite
+```
+
 ## Validation
 
 The test suite requires CUDA for the active correctness cases:
@@ -89,6 +103,8 @@ Benchmarks compare FlagFFT against `torch.fft` through the C++ backend:
 ```sh
 python benchmark/benchmark_fft_mixed_radix.py --lengths 10 12 15 17 19 60 120 190 255 1020
 ```
+
+Use `FLAGFFT_TUNE_DB=.flagfft/tuned_plans.sqlite` when benchmarking tuned plans.
 
 ## License
 
