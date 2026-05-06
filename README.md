@@ -10,8 +10,11 @@ Planning, runtime cache lookup, AOT artifact loading, and execution live in the
 C++ extension. The runtime cache is split into `ProblemKey`, `PlanKey`, and
 `KernelKey` layers so repeated user input maps directly to an executable entry,
 while equivalent execution routes and generated Triton kernels are reused across
-compatible problems. Python code outside the public API is limited to Triton/TLE
-code generation for kernels invoked by the C++ backend.
+compatible problems. Optional offline tuning stores measured plan winners in a
+SQLite database; C++ reads only fingerprint-matched valid winners and falls back
+to the automatic planner when no tuned route is available. Python code outside
+the public API is limited to Triton/TLE code generation and offline benchmark
+orchestration for kernels invoked by the C++ backend.
 
 Current source layout:
 
@@ -52,7 +55,20 @@ Re-run it after changing the C++ extension or build configuration.
 
 Useful C++ debug helpers exposed by `_flagfft_core` include `debug_keys()` for
 inspecting problem/plan/kernel keys, `cache_info()` for the three cache layers,
-and `cache_keys()` for currently cached entries.
+`cache_keys()` for currently cached entries, `enumerate_plan_candidates()` for
+offline tuning, and `fft_with_plan()` for benchmarking an explicit plan.
+
+Offline tuning uses a quick, pruned search by default:
+
+```sh
+python benchmark/tune_fft_plans.py --lengths 4096 --batch 256 --mode quick --retune
+```
+
+The tuner writes `.flagfft/tuned_plans.sqlite` unless `--db` is provided.
+Set `FLAGFFT_TUNE_DB=/path/to/tuned_plans.sqlite` before normal `flagfft.fft`
+calls to allow the C++ runtime to use matching tuned winners. Use
+`--explain-cache` to inspect why a current problem does or does not hit the
+tuned database.
 
 ## Validation
 

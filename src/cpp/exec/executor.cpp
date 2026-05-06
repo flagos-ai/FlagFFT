@@ -1,6 +1,101 @@
 #include "flagfft/core.hpp"
 
 namespace flagfft {
+namespace {
+
+std::string batch_bucket(int64_t batch) {
+    if (batch <= 1) {
+        return "1";
+    }
+    if (batch <= 8) {
+        return "2-8";
+    }
+    if (batch <= 64) {
+        return "9-64";
+    }
+    if (batch <= 512) {
+        return "65-512";
+    }
+    return "513+";
+}
+
+PlanNodePtr plan_node_from_wrapped_dict(PlanBuilder &builder, nb::dict plan) {
+    nb::dict root = plan.contains("root") ? nb::cast<nb::dict>(plan["root"]) : plan;
+    return builder.node_from_dict(root);
+}
+
+std::shared_ptr<ExecutablePlan> build_executable_from_root(const FFTRequest &request,
+                                                           PlanBuilder &builder,
+                                                           PlanNodePtr root,
+                                                           std::string source) {
+    PlanKey plan_key = PlanKey::from_node(root);
+    nb::dict plan_dict = builder.wrap_forced_plan_dict(root, request, std::move(source));
+
+    ExecutionBackend backend = ExecutionBackend::TorchFFT;
+    std::shared_ptr<CompiledNode> compiled_root;
+    if (request.output_dtype == "complex64") {
+        backend = ExecutionBackend::AotCuda;
+        TritonCompiler compiler;
+        compiled_root = compiler.compile_node(root, request, request.batch);
+    }
+
+    return std::make_shared<ExecutablePlan>(ExecutablePlan{
+        ProblemKey::from_request(request), plan_key, request, std::move(root), std::move(plan_dict),
+        backend, std::move(compiled_root)});
+}
+
+std::optional<nb::dict> lookup_tuned_plan_dict(const FFTRequest &request) {
+    const char *db_path = std::getenv("FLAGFFT_TUNE_DB");
+    if (db_path == nullptr || std::string(db_path).empty()) {
+        return std::nullopt;
+    }
+    try {
+        nb::dict fps = tune_fingerprints();
+        nb::module_ sqlite3 = nb::module_::import_("sqlite3");
+        nb::object conn = sqlite3.attr("connect")(db_path);
+        nb::object row = nb::none();
+        try {
+            nb::object cursor = conn.attr("execute")(
+                "SELECT plan_json FROM tuned_measurements "
+                "WHERE schema_version=? AND status='valid' AND rank=0 "
+                "AND device_arch=? AND fft_length=? AND batch_bucket=? AND dtype=? "
+                "AND direction=? AND norm=? AND input_layout=? "
+                "AND planner_fingerprint=? AND codegen_fingerprint=? "
+                "AND runtime_fingerprint=? "
+                "ORDER BY measured_at DESC LIMIT 1",
+                nb::make_tuple(kPlanSchemaVersion,
+                               request.device_arch,
+                               request.requested_n,
+                               batch_bucket(request.batch),
+                               request.input_dtype,
+                               request.direction,
+                               request.norm,
+                               request.input_layout,
+                               fps["planner"],
+                               fps["codegen"],
+                               fps["runtime"]));
+            row = cursor.attr("fetchone")();
+        } catch (...) {
+            conn.attr("close")();
+            throw;
+        }
+        conn.attr("close")();
+        if (row.is_none()) {
+            return std::nullopt;
+        }
+        nb::tuple row_tuple = nb::cast<nb::tuple>(row);
+        std::string plan_json = nb::cast<std::string>(row_tuple[0]);
+        nb::module_ json = nb::module_::import_("json");
+        return nb::cast<nb::dict>(json.attr("loads")(plan_json));
+    } catch (const nb::python_error &) {
+        PyErr_Clear();
+        return std::nullopt;
+    } catch (const std::exception &) {
+        return std::nullopt;
+    }
+}
+
+}  // namespace
 
 CompiledLeafNode::CompiledLeafNode(int64_t length,
                                    std::shared_ptr<AotKernel> kernel,
@@ -155,31 +250,35 @@ std::shared_ptr<ExecutablePlan> PlanCache::get_or_create(const FFTRequest &reque
     }
 
     PlanBuilder builder;
-    PlanNodePtr root = builder.build(request.requested_n);
-    PlanKey plan_key = PlanKey::from_node(root);
+    std::shared_ptr<ExecutablePlan> tuned_executable;
+    if (auto tuned_plan = lookup_tuned_plan_dict(request)) {
+        try {
+            PlanNodePtr tuned_root = plan_node_from_wrapped_dict(builder, *tuned_plan);
+            tuned_executable =
+                build_executable_from_root(request, builder, tuned_root, "sqlite_tuned");
+        } catch (const nb::python_error &) {
+            PyErr_Clear();
+        } catch (const std::exception &) {
+        }
+    }
+
+    PlanNodePtr root = tuned_executable ? tuned_executable->root : builder.build(request.requested_n);
+    PlanKey plan_key = tuned_executable ? tuned_executable->plan_key : PlanKey::from_node(root);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = plan_cache_.find(plan_key);
         if (it != plan_cache_.end()) {
             ++plan_hits_;
-            root = it->second;
+            if (!tuned_executable) {
+                root = it->second;
+            }
         } else {
             ++plan_misses_;
             plan_cache_.emplace(plan_key, root);
         }
     }
-    nb::dict plan_dict = builder.wrap_plan_dict(root, request);
-
-    ExecutionBackend backend = ExecutionBackend::TorchFFT;
-    std::shared_ptr<CompiledNode> compiled_root;
-    if (request.output_dtype == "complex64") {
-        backend = ExecutionBackend::AotCuda;
-        TritonCompiler compiler;
-        compiled_root = compiler.compile_node(root, request, request.batch);
-    }
-
-    auto executable = std::make_shared<ExecutablePlan>(ExecutablePlan{
-        problem_key, plan_key, request, root, plan_dict, backend, std::move(compiled_root)});
+    auto executable = tuned_executable ? tuned_executable
+                                       : build_executable_from_root(request, builder, root, "cpp_auto");
 
     std::lock_guard<std::mutex> lock(mutex_);
     auto [it, inserted] = problem_cache_.emplace(problem_key, executable);
@@ -249,6 +348,19 @@ nb::object fft(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_
     return executable->execute(input);
 }
 
+nb::object fft_with_plan(nb::object input,
+                         nb::dict plan,
+                         nb::object n_obj,
+                         int64_t dim,
+                         nb::object norm_obj) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
+    validate_request(request);
+    PlanBuilder builder;
+    PlanNodePtr root = plan_node_from_wrapped_dict(builder, plan);
+    auto executable = build_executable_from_root(request, builder, root, "forced");
+    return executable->execute(input);
+}
+
 nb::dict debug_request(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
     return request_to_dict(build_request(input, n_obj, dim, norm_obj));
 }
@@ -271,6 +383,46 @@ nb::dict debug_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object 
     PlanBuilder builder;
     PlanNodePtr root = builder.build(request.requested_n);
     return builder.wrap_plan_dict(root, request);
+}
+
+nb::dict debug_resolved_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
+    std::shared_ptr<ExecutablePlan> executable = resolve_plan(input, n_obj, dim, norm_obj);
+    nb::dict out(executable->plan_dict);
+    out["kernels"] = kernel_keys_for_plan(executable->root, executable->request);
+    return out;
+}
+
+nb::dict debug_forced_plan(nb::object input,
+                           nb::dict plan,
+                           nb::object n_obj,
+                           int64_t dim,
+                           nb::object norm_obj) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
+    validate_request(request);
+    PlanBuilder builder;
+    PlanNodePtr root = plan_node_from_wrapped_dict(builder, plan);
+    nb::dict out = builder.wrap_forced_plan_dict(root, request, "forced");
+    out["kernels"] = kernel_keys_for_plan(root, request);
+    return out;
+}
+
+nb::list enumerate_plan_candidates(nb::object input,
+                                   nb::object n_obj,
+                                   int64_t dim,
+                                   nb::object norm_obj) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
+    validate_request(request);
+    PlanBuilder builder;
+    return builder.enumerate_candidate_plans(request.requested_n, request);
+}
+
+nb::dict tune_fingerprints() {
+    nb::dict out;
+    out["planner"] = "planner-schema-1-pruned-quick";
+    out["codegen"] = "codegen-schema-1";
+    out["runtime"] = "runtime-schema-1";
+    out["benchmark"] = "benchmark-schema-1";
+    return out;
 }
 
 }  // namespace flagfft

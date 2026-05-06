@@ -194,3 +194,102 @@ def test_debug_plan_returns_cpp_built_tree() -> None:
     assert plan["request"]["length"] == 16
     assert plan["plan_key"]["kind"] == plan["root"]["kind"]
     assert plan["root"]["kind"] in {"ct_leaf", "four_step", "direct_dft"}
+
+
+def test_enumerate_plan_candidates_and_forced_plan_roundtrip() -> None:
+    x = _sample(torch.complex64, n=64)
+
+    candidates = list(_flagfft_core.enumerate_plan_candidates(x))
+
+    assert candidates
+    assert len(candidates) <= 32
+    forced = _flagfft_core.debug_forced_plan(x, candidates[0])
+    assert forced["source"] == "forced"
+    assert forced["plan_key"]["repr"] == candidates[0]["plan_key"]["repr"]
+
+    y = _flagfft_core.fft_with_plan(x, candidates[0])
+    ref = torch.fft.fft(x, dim=-1)
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+def test_tuned_db_winner_is_used_when_fingerprints_match(tmp_path, monkeypatch) -> None:
+    import json
+    import sqlite3
+
+    x = _sample(torch.complex64, n=64)
+    plan = _flagfft_core.enumerate_plan_candidates(x)[0]
+    request = _flagfft_core.debug_request(x)
+    fps = _flagfft_core.tune_fingerprints()
+    db = tmp_path / "tuned.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE tuned_measurements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            schema_version INTEGER NOT NULL,
+            device_arch TEXT NOT NULL,
+            fft_length INTEGER NOT NULL,
+            batch_bucket TEXT NOT NULL,
+            batch INTEGER NOT NULL,
+            dtype TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            norm TEXT NOT NULL,
+            input_layout TEXT NOT NULL,
+            planner_fingerprint TEXT NOT NULL,
+            codegen_fingerprint TEXT NOT NULL,
+            runtime_fingerprint TEXT NOT NULL,
+            benchmark_fingerprint TEXT NOT NULL,
+            plan_key TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            rank INTEGER,
+            compile_ms REAL,
+            first_call_ms REAL,
+            median_ms REAL,
+            p90_ms REAL,
+            max_abs_err REAL,
+            rms_err REAL,
+            failure_reason TEXT,
+            measured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO tuned_measurements (
+            schema_version, device_arch, fft_length, batch_bucket, batch, dtype, direction,
+            norm, input_layout, planner_fingerprint, codegen_fingerprint, runtime_fingerprint,
+            benchmark_fingerprint, plan_key, plan_json, status, rank
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 0)
+        """,
+        (
+            1,
+            request["device_arch"],
+            request["requested_n"],
+            "2-8",
+            request["batch"],
+            request["input_dtype"],
+            request["direction"],
+            request["norm"],
+            request["input_layout"],
+            fps["planner"],
+            fps["codegen"],
+            fps["runtime"],
+            fps["benchmark"],
+            plan["plan_key"]["repr"],
+            json.dumps(plan, sort_keys=True),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("FLAGFFT_TUNE_DB", str(db))
+    _flagfft_core.clear_plan_cache()
+
+    y = flagfft.fft(x)
+    resolved = _flagfft_core.debug_resolved_plan(x)
+    ref = torch.fft.fft(x, dim=-1)
+
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+    assert resolved["source"] == "sqlite_tuned"
+    assert resolved["plan_key"]["repr"] == plan["plan_key"]["repr"]

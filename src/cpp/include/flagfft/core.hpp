@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -40,6 +41,14 @@ inline constexpr int64_t kMaxLanes = 128;
 inline constexpr double kPi = 3.14159265358979323846264338327950288;
 inline constexpr int64_t kFourStepTileRows = 32;
 inline constexpr int64_t kFourStepTileCols = 32;
+inline constexpr int64_t kLeafTuneTopK = 8;
+inline constexpr int64_t kLeafTuneLargeTopK = 16;
+inline constexpr int64_t kLeafTuneLargeN = 1024;
+inline constexpr int64_t kTuneOrdersPerFactorMultiset = 3;
+inline constexpr int64_t kTuneFourStepPairTopK = 8;
+inline constexpr int64_t kTuneFourStepCombosPerPair = 4;
+inline constexpr int64_t kTuneFourStepTopK = 16;
+inline constexpr int64_t kTuneStaticPlanTopK = 32;
 
 inline const std::vector<int64_t> kSupportedRadices = {19, 17, 16, 15, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2};
 inline const std::vector<int64_t> kSpecializedButterflyRadices = {2, 4, 8, 16};
@@ -249,6 +258,9 @@ public:
     PlanNodePtr build(int64_t n);
     double cost_for(int64_t n);
     nb::dict wrap_plan_dict(const PlanNodePtr &root, const FFTRequest &request);
+    nb::list enumerate_candidate_plans(int64_t n, const FFTRequest &request);
+    PlanNodePtr node_from_dict(nb::dict node);
+    nb::dict wrap_forced_plan_dict(const PlanNodePtr &root, const FFTRequest &request, std::string source);
 
 private:
     Factorization factorize_supported_radices(int64_t n);
@@ -261,20 +273,25 @@ private:
     int64_t estimate_leaf_smem_bytes(int64_t n, const std::vector<int64_t> &factors);
     bool should_use_leaf(int64_t n, const std::vector<int64_t> &factors);
     PlanNodePtr make_leaf_plan(int64_t n, const std::vector<int64_t> &factors, int64_t rem = 1);
+    double estimate_leaf_warm_cost(int64_t n, const std::vector<int64_t> &factors);
     double estimate_leaf_warm_cost(int64_t n);
     double estimate_direct_dft_cost(int64_t n);
     double four_step_cost(int64_t n1, int64_t n2);
     int priority(const PlanNodePtr &node);
     std::vector<int64_t> enumerate_divisors(int64_t n);
     std::vector<PlanCandidate> build_auto_candidates(int64_t n);
+    std::vector<PlanCandidate> build_tune_candidates(int64_t n, int64_t depth);
+    std::vector<PlanCandidate> build_leaf_tune_candidates(int64_t n);
     PlanCandidate select_candidate(const std::vector<PlanCandidate> &candidates);
     PlanNodePtr build_auto_node(int64_t n);
+    std::vector<PlanCandidate> top_candidates(std::vector<PlanCandidate> candidates, int64_t limit);
 
     std::unordered_map<int64_t, PlanNodePtr> node_cache_;
     std::unordered_map<int64_t, double> cost_cache_;
     std::unordered_map<int64_t, std::vector<int64_t>> divisor_cache_;
     std::unordered_map<int64_t, std::vector<std::vector<int64_t>>> factorization_cache_;
     std::unordered_map<int64_t, std::vector<int64_t>> best_leaf_factors_cache_;
+    std::unordered_map<int64_t, std::vector<PlanCandidate>> tune_candidate_cache_;
 };
 
 std::pair<std::vector<int64_t>, std::vector<int64_t>> decode_stage_codelet(
@@ -443,8 +460,24 @@ std::shared_ptr<ExecutablePlan> resolve_plan(nb::object input,
                                              int64_t dim,
                                              nb::object norm_obj);
 nb::object fft(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
+nb::object fft_with_plan(nb::object input,
+                         nb::dict plan,
+                         nb::object n_obj,
+                         int64_t dim,
+                         nb::object norm_obj);
 nb::dict debug_request(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
 nb::dict debug_keys(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
 nb::dict debug_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
+nb::dict debug_resolved_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
+nb::dict debug_forced_plan(nb::object input,
+                           nb::dict plan,
+                           nb::object n_obj,
+                           int64_t dim,
+                           nb::object norm_obj);
+nb::list enumerate_plan_candidates(nb::object input,
+                                   nb::object n_obj,
+                                   int64_t dim,
+                                   nb::object norm_obj);
+nb::dict tune_fingerprints();
 
 }  // namespace flagfft
