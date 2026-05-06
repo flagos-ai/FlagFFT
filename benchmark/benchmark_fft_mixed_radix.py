@@ -144,7 +144,12 @@ def run_benchmark(lengths: list[int], batch: int, warmup: int, iters: int) -> No
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark FFT mixed-radix execution through the C++ backend.")
-    parser.add_argument("--lengths", type=int, nargs="+", default=[34, 64, 512, 105, 1024, 936, 4096, 8192])
+    parser.add_argument(
+        "--lengths",
+        type=int,
+        nargs="+",
+        default=[10, 12, 15, 17, 19, 60, 120, 190, 255, 1020, 4096, 8192],
+    )
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iters", type=int, default=200)

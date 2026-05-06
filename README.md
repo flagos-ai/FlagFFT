@@ -22,6 +22,11 @@ Current source layout:
 - `src/codegen/`: Python Triton/TLE kernel source emission and AOT CLI.
 - `src/codelet/`: reusable generated-kernel codelets.
 
+Forward complex leaf kernels currently have specialized codelets for radix
+2/3/4/5/6/7/8/9/10/11/12/13/15/16/17/19. These radices are emitted inline in
+generated Triton kernels, so the C++ planner does not pass DFT table parameters
+for those stages.
+
 The implemented compute path is currently `flagfft.fft` for CUDA tensors on the
 last dimension. The remaining torch.fft-compatible entrypoints are present as API
 stubs and raise `NotImplementedError` until their C++ plan/exec paths are added.
@@ -60,13 +65,13 @@ python -m pytest test
 For a focused correctness sweep without pytest collection, run:
 
 ```sh
-python test/test_fft_mixed_radix.py --lengths 16 105 4096
+python test/test_fft_mixed_radix.py --lengths 10 12 15 17 19 60 120 190 255 1020
 ```
 
 Benchmarks compare FlagFFT against `torch.fft` through the C++ backend:
 
 ```sh
-python benchmark/benchmark_fft_mixed_radix.py --lengths 4096 8192
+python benchmark/benchmark_fft_mixed_radix.py --lengths 10 12 15 17 19 60 120 190 255 1020
 ```
 
 ## License

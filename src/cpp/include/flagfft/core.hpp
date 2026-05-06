@@ -41,9 +41,9 @@ inline constexpr double kPi = 3.14159265358979323846264338327950288;
 inline constexpr int64_t kFourStepTileRows = 32;
 inline constexpr int64_t kFourStepTileCols = 32;
 
-inline const std::vector<int64_t> kSupportedRadices = {17, 16, 13, 11, 9, 8, 7, 6, 5, 4, 3, 2};
+inline const std::vector<int64_t> kSupportedRadices = {19, 17, 16, 15, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2};
 inline const std::vector<int64_t> kSpecializedButterflyRadices = {2, 4, 8, 16};
-inline const std::vector<int64_t> kSpecializedDirectCodeletRadices = {3, 5, 6, 7, 9, 11, 13};
+inline const std::vector<int64_t> kSpecializedDirectCodeletRadices = {3, 5, 6, 7, 9, 10, 11, 12, 13, 15, 17, 19};
 
 [[noreturn]] void raise_python(PyObject *type, const std::string &message);
 bool contains(const std::vector<int64_t> &values, int64_t value);

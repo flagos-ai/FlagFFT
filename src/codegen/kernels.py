@@ -15,6 +15,7 @@ _CODELET_DIR = _PROJECT_ROOT / "src" / "codelet"
 _FOUR_STEP_TILE_ROWS = 32
 _FOUR_STEP_TILE_COLS = 32
 _FOUR_STEP_NUM_WARPS = 4
+_NATURAL_ORDER_CODELET_RADICES = frozenset({2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19})
 SPECIALIZED_INLINE_CODELET_RADICES: set[int] = set()
 
 
@@ -169,6 +170,19 @@ def _emit_table_codelet(indent: str, radix: int, lane_block: int) -> list[str]:
     for kout in range(radix):
         lines.append(f"{indent}r{kout} = acc_r_{kout}")
         lines.append(f"{indent}i{kout} = acc_i_{kout}")
+    return lines
+
+
+def _emit_natural_order_codelet_call(indent: str, radix: int) -> list[str]:
+    lines = [f"{indent}("]
+    for idx in range(radix):
+        lines.append(f"{indent}    r{idx},")
+    for idx in range(radix):
+        lines.append(f"{indent}    i{idx},")
+    args = ", ".join(
+        [*(f"r{idx}" for idx in range(radix)), *(f"i{idx}" for idx in range(radix))]
+    )
+    lines.append(f"{indent}) = _fwd_rad{radix}_b1({args})")
     return lines
 
 
@@ -343,65 +357,7 @@ def _emit_stage_block(
             lines.append(f"{indent}twi = tl.load(tw{stage}_i_ptr + phys{j}, mask=lane_mask, other=0.0)")
             lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
-    if radix == 2:
-        lines.append(f"{indent}(r0, r1, i0, i1) = _fwd_rad2_b1(r0, r1, i0, i1)")
-    elif radix == 3:
-        lines.append(
-            f"{indent}(r0, r1, r2, i0, i1, i2) = "
-            "_fwd_rad3_b1(r0, r1, r2, i0, i1, i2)"
-        )
-    elif radix == 4:
-        lines.append(
-            f"{indent}(r0, r1, r2, r3, i0, i1, i2, i3) = _fwd_rad4_b1(r0, r1, r2, r3, i0, i1, i2, i3)"
-        )
-    elif radix == 5:
-        lines.append(
-            f"{indent}(r0, r1, r2, r3, r4, i0, i1, i2, i3, i4) = "
-            "_fwd_rad5_b1(r0, r1, r2, r3, r4, i0, i1, i2, i3, i4)"
-        )
-    elif radix == 6:
-        lines.append(
-            f"{indent}(r0, r1, r2, r3, r4, r5, i0, i1, i2, i3, i4, i5) = "
-            "_fwd_rad6_b1(r0, r1, r2, r3, r4, r5, i0, i1, i2, i3, i4, i5)"
-        )
-    elif radix == 7:
-        lines.append(
-            f"{indent}(r0, r1, r2, r3, r4, r5, r6, i0, i1, i2, i3, i4, i5, i6) = "
-            "_fwd_rad7_b1(r0, r1, r2, r3, r4, r5, r6, i0, i1, i2, i3, i4, i5, i6)"
-        )
-    elif radix == 8:
-        lines.append(
-            f"{indent}(r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7) = "
-            "_fwd_rad8_b1(r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7)"
-        )
-    elif radix == 9:
-        lines.append(
-            f"{indent}(r0, r1, r2, r3, r4, r5, r6, r7, r8, i0, i1, i2, i3, i4, i5, i6, i7, i8) = "
-            "_fwd_rad9_b1(r0, r1, r2, r3, r4, r5, r6, r7, r8, i0, i1, i2, i3, i4, i5, i6, i7, i8)"
-        )
-    elif radix == 11:
-        lines.append(f"{indent}(")
-        for idx in range(11):
-            lines.append(f"{indent}    r{idx},")
-        for idx in range(11):
-            lines.append(f"{indent}    i{idx},")
-        lines.append(
-            f"{indent}) = _fwd_rad11_b1("
-            "r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, "
-            "i0, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10)"
-        )
-    elif radix == 13:
-        lines.append(f"{indent}(")
-        for idx in range(13):
-            lines.append(f"{indent}    r{idx},")
-        for idx in range(13):
-            lines.append(f"{indent}    i{idx},")
-        lines.append(
-            f"{indent}) = _fwd_rad13_b1("
-            "r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, "
-            "i0, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11, i12)"
-        )
-    elif radix == 16:
+    if radix == 16:
         lines.append(f"{indent}(")
         for idx in range(16):
             lines.append(f"{indent}    r{idx},")
@@ -412,6 +368,8 @@ def _emit_stage_block(
             "r0, r8, r4, r12, r2, r10, r6, r14, r1, r9, r5, r13, r3, r11, r7, r15, "
             "i0, i8, i4, i12, i2, i10, i6, i14, i1, i9, i5, i13, i3, i11, i7, i15)"
         )
+    elif radix in _NATURAL_ORDER_CODELET_RADICES:
+        lines.extend(_emit_natural_order_codelet_call(indent, radix))
     elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
         lines.extend(_emit_inline_constant_codelet(indent, radix, lane_block))
     else:
