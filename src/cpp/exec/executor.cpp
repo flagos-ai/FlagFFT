@@ -142,19 +142,32 @@ nb::object ExecutablePlan::execute(nb::object input) const {
     return result;
 }
 
-std::shared_ptr<ExecutablePlan> PlanCache::get_or_create(const PlanKey &key, const FFTRequest &request) {
+std::shared_ptr<ExecutablePlan> PlanCache::get_or_create(const FFTRequest &request) {
+    ProblemKey problem_key = ProblemKey::from_request(request);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = cache_.find(key);
-        if (it != cache_.end()) {
-            ++hits_;
+        auto it = problem_cache_.find(problem_key);
+        if (it != problem_cache_.end()) {
+            ++problem_hits_;
             return it->second;
         }
-        ++misses_;
+        ++problem_misses_;
     }
 
     PlanBuilder builder;
     PlanNodePtr root = builder.build(request.requested_n);
+    PlanKey plan_key = PlanKey::from_node(root);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = plan_cache_.find(plan_key);
+        if (it != plan_cache_.end()) {
+            ++plan_hits_;
+            root = it->second;
+        } else {
+            ++plan_misses_;
+            plan_cache_.emplace(plan_key, root);
+        }
+    }
     nb::dict plan_dict = builder.wrap_plan_dict(root, request);
 
     ExecutionBackend backend = ExecutionBackend::TorchFFT;
@@ -166,35 +179,54 @@ std::shared_ptr<ExecutablePlan> PlanCache::get_or_create(const PlanKey &key, con
     }
 
     auto executable = std::make_shared<ExecutablePlan>(ExecutablePlan{
-        key, request, root, plan_dict, backend, std::move(compiled_root)});
+        problem_key, plan_key, request, root, plan_dict, backend, std::move(compiled_root)});
 
     std::lock_guard<std::mutex> lock(mutex_);
-    auto [it, inserted] = cache_.emplace(key, executable);
+    auto [it, inserted] = problem_cache_.emplace(problem_key, executable);
     return inserted ? executable : it->second;
 }
 
 void PlanCache::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
-    cache_.clear();
-    hits_ = 0;
-    misses_ = 0;
+    problem_cache_.clear();
+    plan_cache_.clear();
+    problem_hits_ = 0;
+    problem_misses_ = 0;
+    plan_hits_ = 0;
+    plan_misses_ = 0;
+    TritonCompiler::clear_kernel_cache();
 }
 
 nb::dict PlanCache::info() const {
     std::lock_guard<std::mutex> lock(mutex_);
     nb::dict out;
-    out["size"] = cache_.size();
-    out["hits"] = hits_;
-    out["misses"] = misses_;
+    out["problem_size"] = problem_cache_.size();
+    out["problem_hits"] = problem_hits_;
+    out["problem_misses"] = problem_misses_;
+    out["plan_size"] = plan_cache_.size();
+    out["plan_hits"] = plan_hits_;
+    out["plan_misses"] = plan_misses_;
+    nb::dict kernel = TritonCompiler::kernel_cache_info();
+    out["kernel_size"] = kernel["kernel_size"];
+    out["kernel_hits"] = kernel["kernel_hits"];
+    out["kernel_misses"] = kernel["kernel_misses"];
     return out;
 }
 
-nb::list PlanCache::keys() const {
+nb::dict PlanCache::keys() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    nb::list out;
-    for (const auto &entry : cache_) {
-        out.append(key_to_dict(entry.first));
+    nb::dict out;
+    nb::list problems;
+    nb::list plans;
+    for (const auto &entry : problem_cache_) {
+        problems.append(problem_key_to_dict(entry.first));
     }
+    for (const auto &entry : plan_cache_) {
+        plans.append(plan_key_to_dict(entry.first));
+    }
+    out["problems"] = std::move(problems);
+    out["plans"] = std::move(plans);
+    out["kernels"] = TritonCompiler::kernel_cache_keys();
     return out;
 }
 
@@ -208,9 +240,8 @@ std::shared_ptr<ExecutablePlan> resolve_plan(nb::object input,
                                              int64_t dim,
                                              nb::object norm_obj) {
     FFTRequest request = build_request(input, n_obj, dim, norm_obj);
-    PlanKey key = PlanKey::from_request(request);
     validate_request(request);
-    return plan_cache().get_or_create(key, request);
+    return plan_cache().get_or_create(request);
 }
 
 nb::object fft(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
@@ -222,9 +253,16 @@ nb::dict debug_request(nb::object input, nb::object n_obj, int64_t dim, nb::obje
     return request_to_dict(build_request(input, n_obj, dim, norm_obj));
 }
 
-nb::dict debug_plan_key(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
+nb::dict debug_keys(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
     FFTRequest request = build_request(input, n_obj, dim, norm_obj);
-    return key_to_dict(PlanKey::from_request(request));
+    validate_request(request);
+    PlanBuilder builder;
+    PlanNodePtr root = builder.build(request.requested_n);
+    nb::dict out;
+    out["problem"] = problem_key_to_dict(ProblemKey::from_request(request));
+    out["plan"] = plan_key_to_dict(PlanKey::from_node(root));
+    out["kernels"] = kernel_keys_for_plan(root, request);
+    return out;
 }
 
 nb::dict debug_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {

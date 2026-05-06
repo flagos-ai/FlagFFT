@@ -91,7 +91,16 @@ struct FFTRequest {
     int64_t batch = 0;
 };
 
-struct PlanKey {
+enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort };
+enum class KernelKind { Leaf, Transpose, TwiddleTranspose };
+
+std::string plan_node_kind_name(PlanNodeKind kind);
+std::string kernel_kind_name(KernelKind kind);
+
+struct PlanNode;
+using PlanNodePtr = std::shared_ptr<PlanNode>;
+
+struct ProblemKey {
     int64_t fft_length = 0;
     std::vector<int64_t> input_shape;
     std::optional<int64_t> n;
@@ -108,7 +117,30 @@ struct PlanKey {
     bool requires_contiguous_copy = false;
     std::string direction;
 
-    static PlanKey from_request(const FFTRequest &request);
+    static ProblemKey from_request(const FFTRequest &request);
+    bool operator==(const ProblemKey &other) const;
+    std::string repr() const;
+};
+
+struct ProblemKeyHash {
+    std::size_t operator()(const ProblemKey &key) const;
+};
+
+struct PlanKey {
+    int64_t schema_version = kPlanSchemaVersion;
+    PlanNodeKind root_kind = PlanNodeKind::CtLeaf;
+    int64_t length = 0;
+    std::vector<int64_t> factors;
+    int64_t remainder = 1;
+    int64_t lanes = 0;
+    int64_t num_warps = 0;
+    std::vector<int64_t> generic_radices;
+    int64_t smem_size = 0;
+    int64_t n1 = 0;
+    int64_t n2 = 0;
+    std::vector<std::string> child_keys;
+
+    static PlanKey from_node(const PlanNodePtr &node);
     bool operator==(const PlanKey &other) const;
     std::string repr() const;
 };
@@ -117,8 +149,37 @@ struct PlanKeyHash {
     std::size_t operator()(const PlanKey &key) const;
 };
 
+struct KernelKey {
+    KernelKind kind = KernelKind::Leaf;
+    std::string target;
+    int64_t length = 0;
+    std::vector<int64_t> factors;
+    int64_t lanes = 0;
+    int64_t num_warps = 0;
+    std::vector<int64_t> generic_radices;
+    int64_t smem_size = 0;
+
+    static KernelKey leaf(std::string target,
+                          int64_t length,
+                          std::vector<int64_t> factors,
+                          int64_t lanes,
+                          int64_t num_warps,
+                          std::vector<int64_t> generic_radices,
+                          int64_t smem_size);
+    static KernelKey transpose(std::string target);
+    static KernelKey twiddle_transpose(std::string target);
+    bool operator==(const KernelKey &other) const;
+    std::string repr() const;
+};
+
+struct KernelKeyHash {
+    std::size_t operator()(const KernelKey &key) const;
+};
+
 nb::dict request_to_dict(const FFTRequest &request);
-nb::dict key_to_dict(const PlanKey &key);
+nb::dict problem_key_to_dict(const ProblemKey &key);
+nb::dict plan_key_to_dict(const PlanKey &key);
+nb::dict kernel_key_to_dict(const KernelKey &key);
 std::string output_dtype_for(const std::string &input_dtype);
 FFTRequest build_request(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
 void validate_request(const FFTRequest &request);
@@ -129,15 +190,13 @@ struct Factorization {
 };
 
 struct PlanNode {
-    explicit PlanNode(int64_t length, std::string kind);
+    explicit PlanNode(int64_t length, PlanNodeKind kind);
     virtual ~PlanNode();
     virtual nb::dict to_dict() const = 0;
 
     int64_t length;
-    std::string kind;
+    PlanNodeKind kind;
 };
-
-using PlanNodePtr = std::shared_ptr<PlanNode>;
 
 struct LeafPlanNode final : PlanNode {
     LeafPlanNode(int64_t length,
@@ -327,13 +386,15 @@ public:
     std::shared_ptr<CompiledNode> compile_node(const PlanNodePtr &node,
                                                const FFTRequest &request,
                                                int64_t batch);
+    static void clear_kernel_cache();
+    static nb::dict kernel_cache_info();
+    static nb::list kernel_cache_keys();
 
 private:
     std::shared_ptr<CompiledNode> compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
     std::shared_ptr<AotKernel> compile_transpose_kernel(const FFTRequest &request);
     std::shared_ptr<AotKernel> compile_twiddle_transpose_kernel(const FFTRequest &request);
-    std::shared_ptr<AotKernel> compile_kernel_from_command(const std::string &command) const;
-    std::string target_for_request(const FFTRequest &request) const;
+    std::shared_ptr<AotKernel> compile_kernel(const KernelKey &key, const std::string &command) const;
     std::filesystem::path out_dir() const;
     std::string python_executable() const;
     std::string triton_aot_entrypoint() const;
@@ -342,10 +403,14 @@ private:
     std::shared_ptr<AotKernel> twiddle_transpose_kernel;
 };
 
+std::string triton_target_for_request(const FFTRequest &request);
+nb::list kernel_keys_for_plan(const PlanNodePtr &node, const FFTRequest &request);
+
 enum class ExecutionBackend { AotCuda, TorchFFT };
 
 struct ExecutablePlan {
-    PlanKey key;
+    ProblemKey problem_key;
+    PlanKey plan_key;
     FFTRequest request;
     PlanNodePtr root;
     nb::dict plan_dict;
@@ -357,16 +422,19 @@ struct ExecutablePlan {
 
 class PlanCache {
 public:
-    std::shared_ptr<ExecutablePlan> get_or_create(const PlanKey &key, const FFTRequest &request);
+    std::shared_ptr<ExecutablePlan> get_or_create(const FFTRequest &request);
     void clear();
     nb::dict info() const;
-    nb::list keys() const;
+    nb::dict keys() const;
 
 private:
     mutable std::mutex mutex_;
-    std::unordered_map<PlanKey, std::shared_ptr<ExecutablePlan>, PlanKeyHash> cache_;
-    int64_t hits_ = 0;
-    int64_t misses_ = 0;
+    std::unordered_map<ProblemKey, std::shared_ptr<ExecutablePlan>, ProblemKeyHash> problem_cache_;
+    std::unordered_map<PlanKey, PlanNodePtr, PlanKeyHash> plan_cache_;
+    int64_t problem_hits_ = 0;
+    int64_t problem_misses_ = 0;
+    int64_t plan_hits_ = 0;
+    int64_t plan_misses_ = 0;
 };
 
 PlanCache &plan_cache();
@@ -376,7 +444,7 @@ std::shared_ptr<ExecutablePlan> resolve_plan(nb::object input,
                                              nb::object norm_obj);
 nb::object fft(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
 nb::dict debug_request(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
-nb::dict debug_plan_key(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
+nb::dict debug_keys(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
 nb::dict debug_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
 
 }  // namespace flagfft

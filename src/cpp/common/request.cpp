@@ -82,8 +82,34 @@ void hash_combine(std::size_t &seed, std::size_t value) {
     seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
 }
 
-PlanKey PlanKey::from_request(const FFTRequest &request) {
-    return PlanKey{
+std::string plan_node_kind_name(PlanNodeKind kind) {
+    switch (kind) {
+        case PlanNodeKind::CtLeaf:
+            return "ct_leaf";
+        case PlanNodeKind::FourStep:
+            return "four_step";
+        case PlanNodeKind::DirectDft:
+            return "direct_dft";
+        case PlanNodeKind::StockhamAutosort:
+            return "stockham_autosort";
+    }
+    return "unknown";
+}
+
+std::string kernel_kind_name(KernelKind kind) {
+    switch (kind) {
+        case KernelKind::Leaf:
+            return "leaf";
+        case KernelKind::Transpose:
+            return "transpose";
+        case KernelKind::TwiddleTranspose:
+            return "twiddle_transpose";
+    }
+    return "unknown";
+}
+
+ProblemKey ProblemKey::from_request(const FFTRequest &request) {
+    return ProblemKey{
         request.fft_length,
         request.input_shape,
         request.n,
@@ -102,7 +128,7 @@ PlanKey PlanKey::from_request(const FFTRequest &request) {
     };
 }
 
-bool PlanKey::operator==(const PlanKey &other) const {
+bool ProblemKey::operator==(const ProblemKey &other) const {
     return fft_length == other.fft_length && input_shape == other.input_shape && n == other.n &&
            requested_n == other.requested_n && normalized_dim == other.normalized_dim &&
            norm == other.norm && input_dtype == other.input_dtype &&
@@ -113,7 +139,7 @@ bool PlanKey::operator==(const PlanKey &other) const {
            direction == other.direction;
 }
 
-std::string PlanKey::repr() const {
+std::string ProblemKey::repr() const {
     std::ostringstream out;
     out << "fft_length=" << fft_length << ";n=";
     if (n.has_value()) {
@@ -143,7 +169,7 @@ std::string PlanKey::repr() const {
     return out.str();
 }
 
-std::size_t PlanKeyHash::operator()(const PlanKey &key) const {
+std::size_t ProblemKeyHash::operator()(const ProblemKey &key) const {
     std::size_t seed = 0;
     hash_value(seed, key.fft_length);
     hash_vector(seed, key.input_shape);
@@ -163,6 +189,122 @@ std::size_t PlanKeyHash::operator()(const PlanKey &key) const {
     hash_value(seed, key.input_layout);
     hash_value(seed, key.requires_contiguous_copy);
     hash_value(seed, key.direction);
+    return seed;
+}
+
+bool PlanKey::operator==(const PlanKey &other) const {
+    return schema_version == other.schema_version && root_kind == other.root_kind &&
+           length == other.length && factors == other.factors && remainder == other.remainder &&
+           lanes == other.lanes && num_warps == other.num_warps &&
+           generic_radices == other.generic_radices && smem_size == other.smem_size &&
+           n1 == other.n1 && n2 == other.n2 && child_keys == other.child_keys;
+}
+
+std::string PlanKey::repr() const {
+    std::ostringstream out;
+    out << "schema=" << schema_version << ";kind=" << plan_node_kind_name(root_kind)
+        << ";length=" << length;
+    if (!factors.empty()) {
+        out << ";factors=[" << join_ints(factors) << "]";
+    }
+    if (root_kind == PlanNodeKind::CtLeaf) {
+        out << ";remainder=" << remainder << ";lanes=" << lanes
+            << ";num_warps=" << num_warps << ";generic_radices=["
+            << join_ints(generic_radices) << "];smem_size=" << smem_size;
+    }
+    if (root_kind == PlanNodeKind::FourStep) {
+        out << ";n1=" << n1 << ";n2=" << n2;
+    }
+    if (!child_keys.empty()) {
+        out << ";children=[";
+        for (std::size_t i = 0; i < child_keys.size(); ++i) {
+            if (i != 0) {
+                out << "|";
+            }
+            out << "{" << child_keys[i] << "}";
+        }
+        out << "]";
+    }
+    return out.str();
+}
+
+std::size_t PlanKeyHash::operator()(const PlanKey &key) const {
+    std::size_t seed = 0;
+    hash_value(seed, key.schema_version);
+    hash_value(seed, static_cast<int64_t>(key.root_kind));
+    hash_value(seed, key.length);
+    hash_vector(seed, key.factors);
+    hash_value(seed, key.remainder);
+    hash_value(seed, key.lanes);
+    hash_value(seed, key.num_warps);
+    hash_vector(seed, key.generic_radices);
+    hash_value(seed, key.smem_size);
+    hash_value(seed, key.n1);
+    hash_value(seed, key.n2);
+    hash_vector(seed, key.child_keys);
+    return seed;
+}
+
+KernelKey KernelKey::leaf(std::string target,
+                          int64_t length,
+                          std::vector<int64_t> factors,
+                          int64_t lanes,
+                          int64_t num_warps,
+                          std::vector<int64_t> generic_radices,
+                          int64_t smem_size) {
+    return KernelKey{KernelKind::Leaf,
+                     std::move(target),
+                     length,
+                     std::move(factors),
+                     lanes,
+                     num_warps,
+                     std::move(generic_radices),
+                     smem_size};
+}
+
+KernelKey KernelKey::transpose(std::string target) {
+    KernelKey key;
+    key.kind = KernelKind::Transpose;
+    key.target = std::move(target);
+    return key;
+}
+
+KernelKey KernelKey::twiddle_transpose(std::string target) {
+    KernelKey key;
+    key.kind = KernelKind::TwiddleTranspose;
+    key.target = std::move(target);
+    return key;
+}
+
+bool KernelKey::operator==(const KernelKey &other) const {
+    return kind == other.kind && target == other.target && length == other.length &&
+           factors == other.factors && lanes == other.lanes &&
+           num_warps == other.num_warps && generic_radices == other.generic_radices &&
+           smem_size == other.smem_size;
+}
+
+std::string KernelKey::repr() const {
+    std::ostringstream out;
+    out << "kind=" << kernel_kind_name(kind) << ";target=" << target;
+    if (kind == KernelKind::Leaf) {
+        out << ";length=" << length << ";factors=[" << join_ints(factors) << "]"
+            << ";lanes=" << lanes << ";num_warps=" << num_warps
+            << ";generic_radices=[" << join_ints(generic_radices)
+            << "];smem_size=" << smem_size;
+    }
+    return out.str();
+}
+
+std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
+    std::size_t seed = 0;
+    hash_value(seed, static_cast<int64_t>(key.kind));
+    hash_value(seed, key.target);
+    hash_value(seed, key.length);
+    hash_vector(seed, key.factors);
+    hash_value(seed, key.lanes);
+    hash_value(seed, key.num_warps);
+    hash_vector(seed, key.generic_radices);
+    hash_value(seed, key.smem_size);
     return seed;
 }
 
@@ -192,7 +334,7 @@ nb::dict request_to_dict(const FFTRequest &request) {
     return out;
 }
 
-nb::dict key_to_dict(const PlanKey &key) {
+nb::dict problem_key_to_dict(const ProblemKey &key) {
     nb::dict out;
     out["repr"] = key.repr();
     out["fft_length"] = key.fft_length;
@@ -210,7 +352,41 @@ nb::dict key_to_dict(const PlanKey &key) {
     out["input_layout"] = key.input_layout;
     out["requires_contiguous_copy"] = key.requires_contiguous_copy;
     out["direction"] = key.direction;
+    out["hash"] = static_cast<uint64_t>(ProblemKeyHash{}(key));
+    return out;
+}
+
+nb::dict plan_key_to_dict(const PlanKey &key) {
+    nb::dict out;
+    out["repr"] = key.repr();
+    out["schema_version"] = key.schema_version;
+    out["kind"] = plan_node_kind_name(key.root_kind);
+    out["length"] = key.length;
+    out["factors"] = nb::cast(key.factors);
+    out["remainder"] = key.remainder;
+    out["lanes"] = key.lanes;
+    out["num_warps"] = key.num_warps;
+    out["generic_radices"] = nb::cast(key.generic_radices);
+    out["smem_size"] = key.smem_size;
+    out["n1"] = key.n1;
+    out["n2"] = key.n2;
+    out["child_keys"] = nb::cast(key.child_keys);
     out["hash"] = static_cast<uint64_t>(PlanKeyHash{}(key));
+    return out;
+}
+
+nb::dict kernel_key_to_dict(const KernelKey &key) {
+    nb::dict out;
+    out["repr"] = key.repr();
+    out["kind"] = kernel_kind_name(key.kind);
+    out["target"] = key.target;
+    out["length"] = key.length;
+    out["factors"] = nb::cast(key.factors);
+    out["lanes"] = key.lanes;
+    out["num_warps"] = key.num_warps;
+    out["generic_radices"] = nb::cast(key.generic_radices);
+    out["smem_size"] = key.smem_size;
+    out["hash"] = static_cast<uint64_t>(KernelKeyHash{}(key));
     return out;
 }
 

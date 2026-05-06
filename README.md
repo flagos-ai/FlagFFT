@@ -7,8 +7,11 @@ nanobind C++ core and Triton/TLE-generated CUDA kernels.
 
 The public Python package only exposes the torch.fft-compatible API surface.
 Planning, runtime cache lookup, AOT artifact loading, and execution live in the
-C++ extension. Python code outside the public API is limited to Triton/TLE code
-generation for kernels invoked by the C++ backend.
+C++ extension. The runtime cache is split into `ProblemKey`, `PlanKey`, and
+`KernelKey` layers so repeated user input maps directly to an executable entry,
+while equivalent execution routes and generated Triton kernels are reused across
+compatible problems. Python code outside the public API is limited to Triton/TLE
+code generation for kernels invoked by the C++ backend.
 
 Current source layout:
 
@@ -41,6 +44,10 @@ python -m pip install -e . --no-build-isolation
 
 This reuses build dependencies already installed in the current environment.
 Re-run it after changing the C++ extension or build configuration.
+
+Useful C++ debug helpers exposed by `_flagfft_core` include `debug_keys()` for
+inspecting problem/plan/kernel keys, `cache_info()` for the three cache layers,
+and `cache_keys()` for currently cached entries.
 
 ## Validation
 

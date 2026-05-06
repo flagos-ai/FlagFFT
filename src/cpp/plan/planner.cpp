@@ -2,7 +2,7 @@
 
 namespace flagfft {
 
-PlanNode::PlanNode(int64_t length, std::string kind) : length(length), kind(std::move(kind)) {}
+PlanNode::PlanNode(int64_t length, PlanNodeKind kind) : length(length), kind(kind) {}
 PlanNode::~PlanNode() = default;
 
 LeafPlanNode::LeafPlanNode(int64_t length,
@@ -12,7 +12,7 @@ LeafPlanNode::LeafPlanNode(int64_t length,
                            int64_t num_warps,
                            std::vector<int64_t> generic_radices,
                            int64_t smem_size)
-    : PlanNode(length, "ct_leaf"),
+    : PlanNode(length, PlanNodeKind::CtLeaf),
       factors(std::move(factors)),
       remainder(remainder),
       lanes(lanes),
@@ -22,7 +22,7 @@ LeafPlanNode::LeafPlanNode(int64_t length,
 
 nb::dict LeafPlanNode::to_dict() const {
     nb::dict out;
-    out["kind"] = kind;
+    out["kind"] = plan_node_kind_name(kind);
     out["length"] = length;
     out["factors"] = nb::cast(factors);
     out["remainder"] = remainder;
@@ -33,22 +33,22 @@ nb::dict LeafPlanNode::to_dict() const {
     return out;
 }
 
-DirectDFTPlanNode::DirectDFTPlanNode(int64_t length) : PlanNode(length, "direct_dft") {}
+DirectDFTPlanNode::DirectDFTPlanNode(int64_t length) : PlanNode(length, PlanNodeKind::DirectDft) {}
 
 nb::dict DirectDFTPlanNode::to_dict() const {
     nb::dict out;
-    out["kind"] = kind;
+    out["kind"] = plan_node_kind_name(kind);
     out["length"] = length;
     out["impl"] = "torch_matmul";
     return out;
 }
 
 StockhamPlanNode::StockhamPlanNode(int64_t length, std::vector<int64_t> factors)
-    : PlanNode(length, "stockham_autosort"), factors(std::move(factors)) {}
+    : PlanNode(length, PlanNodeKind::StockhamAutosort), factors(std::move(factors)) {}
 
 nb::dict StockhamPlanNode::to_dict() const {
     nb::dict out;
-    out["kind"] = kind;
+    out["kind"] = plan_node_kind_name(kind);
     out["length"] = length;
     out["factors"] = nb::cast(factors);
     out["stages"] = nb::list();
@@ -56,7 +56,7 @@ nb::dict StockhamPlanNode::to_dict() const {
 }
 
 FourStepPlanNode::FourStepPlanNode(int64_t length, int64_t n1, int64_t n2, PlanNodePtr row, PlanNodePtr col)
-    : PlanNode(length, "four_step"),
+    : PlanNode(length, PlanNodeKind::FourStep),
       n1(n1),
       n2(n2),
       row_plan(std::move(row)),
@@ -64,13 +64,52 @@ FourStepPlanNode::FourStepPlanNode(int64_t length, int64_t n1, int64_t n2, PlanN
 
 nb::dict FourStepPlanNode::to_dict() const {
     nb::dict out;
-    out["kind"] = kind;
+    out["kind"] = plan_node_kind_name(kind);
     out["length"] = length;
     out["n1"] = n1;
     out["n2"] = n2;
     out["row"] = row_plan->to_dict();
     out["col"] = col_plan->to_dict();
     return out;
+}
+
+PlanKey PlanKey::from_node(const PlanNodePtr &node) {
+    if (node == nullptr) {
+        raise_python(PyExc_ValueError, "cannot build a plan key from a null plan node");
+    }
+
+    PlanKey key;
+    key.schema_version = kPlanSchemaVersion;
+    key.root_kind = node->kind;
+    key.length = node->length;
+
+    if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+        key.factors = leaf->factors;
+        key.remainder = leaf->remainder;
+        key.lanes = leaf->lanes;
+        key.num_warps = leaf->num_warps;
+        key.generic_radices = leaf->generic_radices;
+        key.smem_size = leaf->smem_size;
+        return key;
+    }
+    if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
+        (void)direct;
+        return key;
+    }
+    if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
+        key.factors = stockham->factors;
+        return key;
+    }
+    if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+        key.n1 = four_step->n1;
+        key.n2 = four_step->n2;
+        key.child_keys.push_back(PlanKey::from_node(four_step->row_plan).repr());
+        key.child_keys.push_back(PlanKey::from_node(four_step->col_plan).repr());
+        return key;
+    }
+
+    raise_python(PyExc_NotImplementedError,
+                 "unsupported plan node kind for key generation: " + plan_node_kind_name(node->kind));
 }
 
 PlanNodePtr PlanBuilder::build(int64_t n) {
@@ -102,6 +141,7 @@ nb::dict PlanBuilder::wrap_plan_dict(const PlanNodePtr &root, const FFTRequest &
     out["source"] = "cpp_auto";
     out["request"] = request_to_dict(request);
     out["estimated_cost"] = cost_for(root->length);
+    out["plan_key"] = plan_key_to_dict(PlanKey::from_node(root));
     out["tags"] = nb::dict();
     out["root"] = root->to_dict();
     return out;
@@ -282,16 +322,16 @@ double PlanBuilder::four_step_cost(int64_t n1, int64_t n2) {
 }
 
 int PlanBuilder::priority(const PlanNodePtr &node) {
-    if (node->kind == "ct_leaf") {
+    if (node->kind == PlanNodeKind::CtLeaf) {
         return 0;
     }
-    if (node->kind == "four_step") {
+    if (node->kind == PlanNodeKind::FourStep) {
         return 1;
     }
-    if (node->kind == "stockham_autosort") {
+    if (node->kind == PlanNodeKind::StockhamAutosort) {
         return 2;
     }
-    if (node->kind == "direct_dft") {
+    if (node->kind == PlanNodeKind::DirectDft) {
         return 3;
     }
     return 99;

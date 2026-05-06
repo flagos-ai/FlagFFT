@@ -72,17 +72,20 @@ def test_request_schema_exists_before_unsupported_errors() -> None:
         flagfft.fft(x, dim=0)
 
 
-def test_plan_key_covers_semantic_and_layout_fields() -> None:
+def test_debug_keys_cover_semantic_and_layout_fields() -> None:
     x = _sample(torch.complex64, n=16)
     strided = torch.randn(2, 32, device="cuda", dtype=torch.complex64)[:, ::2]
 
-    default_key = _flagfft_core.debug_plan_key(x)["repr"]
-    forward_key = _flagfft_core.debug_plan_key(x, None, -1, "forward")["repr"]
-    strided_key = _flagfft_core.debug_plan_key(strided)["repr"]
+    default_key = _flagfft_core.debug_keys(x)["problem"]["repr"]
+    forward_key = _flagfft_core.debug_keys(x, None, -1, "forward")["problem"]["repr"]
+    strided_keys = _flagfft_core.debug_keys(strided)
+    strided_key = strided_keys["problem"]["repr"]
 
     assert default_key != forward_key
     assert default_key != strided_key
-    assert _flagfft_core.debug_plan_key(strided)["requires_contiguous_copy"] is True
+    assert strided_keys["problem"]["requires_contiguous_copy"] is True
+    assert _flagfft_core.debug_keys(x)["plan"]["kind"] == "ct_leaf"
+    assert len(_flagfft_core.debug_keys(x)["kernels"]) >= 1
 
 
 def test_cpp_plan_cache_hits_on_repeated_call() -> None:
@@ -94,10 +97,31 @@ def test_cpp_plan_cache_hits_on_repeated_call() -> None:
     flagfft.fft(x)
     after_second = _flagfft_core.cache_info()
 
-    assert after_first["size"] == 1
-    assert after_first["misses"] == 1
-    assert after_second["size"] == 1
-    assert after_second["hits"] == 1
+    assert after_first["problem_size"] == 1
+    assert after_first["problem_misses"] == 1
+    assert after_first["plan_size"] == 1
+    assert after_second["problem_size"] == 1
+    assert after_second["problem_hits"] == 1
+    assert after_second["plan_size"] == 1
+
+
+def test_plan_and_kernel_caches_reuse_same_route_for_distinct_problems() -> None:
+    x = _sample(torch.complex64, n=16)
+    y = torch.randn(3, 16, device="cuda", dtype=torch.complex64)
+    _flagfft_core.clear_plan_cache()
+
+    flagfft.fft(x)
+    after_first = _flagfft_core.cache_info()
+    flagfft.fft(y)
+    after_second = _flagfft_core.cache_info()
+
+    assert after_first["problem_size"] == 1
+    assert after_second["problem_size"] == 2
+    assert after_second["problem_misses"] == 2
+    assert after_second["plan_size"] == after_first["plan_size"] == 1
+    assert after_second["plan_hits"] == after_first["plan_hits"] + 1
+    assert after_second["kernel_size"] == after_first["kernel_size"]
+    assert after_second["kernel_hits"] > after_first["kernel_hits"]
 
 
 @pytest.mark.parametrize("n", [8, 16, 105])
@@ -152,11 +176,13 @@ def test_cpp_aot_four_step_plan_cache_hits_on_repeated_call() -> None:
     flagfft.fft(x)
     after_second = _flagfft_core.cache_info()
 
-    assert after_first["size"] == 1
-    assert after_first["misses"] == 1
-    assert after_second["size"] == 1
-    assert after_second["misses"] == 1
-    assert after_second["hits"] == 1
+    assert after_first["problem_size"] == 1
+    assert after_first["problem_misses"] == 1
+    assert after_first["plan_size"] == 1
+    assert after_second["problem_size"] == 1
+    assert after_second["problem_misses"] == 1
+    assert after_second["problem_hits"] == 1
+    assert after_second["plan_size"] == 1
 
 
 def test_debug_plan_returns_cpp_built_tree() -> None:
@@ -166,4 +192,5 @@ def test_debug_plan_returns_cpp_built_tree() -> None:
 
     assert plan["source"] == "cpp_auto"
     assert plan["request"]["length"] == 16
+    assert plan["plan_key"]["kind"] == plan["root"]["kind"]
     assert plan["root"]["kind"] in {"ct_leaf", "four_step", "direct_dft"}

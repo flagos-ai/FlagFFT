@@ -81,6 +81,37 @@ std::vector<unsigned char> hex_to_bytes(const std::string &hex) {
     return bytes;
 }
 
+struct KernelCacheState {
+    std::mutex mutex;
+    std::unordered_map<KernelKey, std::shared_ptr<AotKernel>, KernelKeyHash> cache;
+    int64_t hits = 0;
+    int64_t misses = 0;
+};
+
+KernelCacheState &kernel_cache_state() {
+    static KernelCacheState *state = new KernelCacheState();
+    return *state;
+}
+
+void append_kernel_keys(const PlanNodePtr &node, const std::string &target, nb::list &out) {
+    if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+        out.append(kernel_key_to_dict(KernelKey::leaf(target,
+                                                      leaf->length,
+                                                      leaf->factors,
+                                                      leaf->lanes,
+                                                      leaf->num_warps,
+                                                      leaf->generic_radices,
+                                                      leaf->smem_size)));
+        return;
+    }
+    if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+        append_kernel_keys(four_step->row_plan, target, out);
+        append_kernel_keys(four_step->col_plan, target, out);
+        out.append(kernel_key_to_dict(KernelKey::transpose(target)));
+        out.append(kernel_key_to_dict(KernelKey::twiddle_transpose(target)));
+    }
+}
+
 }  // namespace
 
 std::pair<std::vector<int64_t>, std::vector<int64_t>> decode_stage_codelet(
@@ -194,10 +225,19 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_node(const PlanNodePtr &no
             std::move(twiddle), std::move(stage0), std::move(stage2));
     }
     raise_python(PyExc_NotImplementedError,
-                 "flagfft.fft C++ AOT backend does not support plan node kind: " + node->kind);
+                 "flagfft.fft C++ AOT backend does not support plan node kind: " +
+                     plan_node_kind_name(node->kind));
 }
 
 std::shared_ptr<CompiledNode> TritonCompiler::compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::leaf(target,
+                                    leaf.length,
+                                    leaf.factors,
+                                    leaf.lanes,
+                                    leaf.num_warps,
+                                    leaf.generic_radices,
+                                    leaf.smem_size);
     std::ostringstream command;
     command << shell_quote(python_executable())
             << " " << triton_aot_entrypoint()
@@ -208,10 +248,10 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_leaf(const LeafPlanNode &l
             << " --num-warps " << leaf.num_warps
             << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
             << " --smem-size " << leaf.smem_size
-            << " --target " << shell_quote(target_for_request(request))
+            << " --target " << shell_quote(target)
             << " --out-dir " << shell_quote(out_dir().string());
 
-    std::shared_ptr<AotKernel> kernel = compile_kernel_from_command(command.str());
+    std::shared_ptr<AotKernel> kernel = compile_kernel(key, command.str());
 
     std::vector<nb::object> tables;
     for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
@@ -231,13 +271,15 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_transpose_kernel(const FFTReq
     if (transpose_kernel != nullptr) {
         return transpose_kernel;
     }
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::transpose(target);
     std::ostringstream command;
     command << shell_quote(python_executable())
             << " " << triton_aot_entrypoint()
             << " --kernel transpose"
-            << " --target " << shell_quote(target_for_request(request))
+            << " --target " << shell_quote(target)
             << " --out-dir " << shell_quote(out_dir().string());
-    transpose_kernel = compile_kernel_from_command(command.str());
+    transpose_kernel = compile_kernel(key, command.str());
     return transpose_kernel;
 }
 
@@ -245,26 +287,28 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_twiddle_transpose_kernel(cons
     if (twiddle_transpose_kernel != nullptr) {
         return twiddle_transpose_kernel;
     }
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::twiddle_transpose(target);
     std::ostringstream command;
     command << shell_quote(python_executable())
             << " " << triton_aot_entrypoint()
             << " --kernel twiddle_transpose"
-            << " --target " << shell_quote(target_for_request(request))
+            << " --target " << shell_quote(target)
             << " --out-dir " << shell_quote(out_dir().string());
-    twiddle_transpose_kernel = compile_kernel_from_command(command.str());
+    twiddle_transpose_kernel = compile_kernel(key, command.str());
     return twiddle_transpose_kernel;
 }
 
-std::shared_ptr<AotKernel> TritonCompiler::compile_kernel_from_command(const std::string &command) const {
-    static std::mutex kernel_cache_mutex;
-    static std::unordered_map<std::string, std::shared_ptr<AotKernel>> kernel_cache;
-
+std::shared_ptr<AotKernel> TritonCompiler::compile_kernel(const KernelKey &key, const std::string &command) const {
+    KernelCacheState &state = kernel_cache_state();
     {
-        std::lock_guard<std::mutex> lock(kernel_cache_mutex);
-        auto it = kernel_cache.find(command);
-        if (it != kernel_cache.end()) {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        auto it = state.cache.find(key);
+        if (it != state.cache.end()) {
+            ++state.hits;
             return it->second;
         }
+        ++state.misses;
     }
 
     std::string artifact_json = run_command_capture_stdout(command);
@@ -274,17 +318,54 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_kernel_from_command(const std
     kernel->shared = json_int_field(artifact_json, "shared");
     kernel->num_warps = json_int_field(artifact_json, "num_warps");
 
-    std::lock_guard<std::mutex> lock(kernel_cache_mutex);
-    auto [it, inserted] = kernel_cache.emplace(command, kernel);
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto [it, inserted] = state.cache.emplace(key, kernel);
     return inserted ? kernel : it->second;
 }
 
-std::string TritonCompiler::target_for_request(const FFTRequest &request) const {
+void TritonCompiler::clear_kernel_cache() {
+    KernelCacheState &state = kernel_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.cache.clear();
+    state.hits = 0;
+    state.misses = 0;
+}
+
+nb::dict TritonCompiler::kernel_cache_info() {
+    KernelCacheState &state = kernel_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    nb::dict out;
+    out["kernel_size"] = state.cache.size();
+    out["kernel_hits"] = state.hits;
+    out["kernel_misses"] = state.misses;
+    return out;
+}
+
+nb::list TritonCompiler::kernel_cache_keys() {
+    KernelCacheState &state = kernel_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    nb::list out;
+    for (const auto &entry : state.cache) {
+        out.append(kernel_key_to_dict(entry.first));
+    }
+    return out;
+}
+
+std::string triton_target_for_request(const FFTRequest &request) {
     std::string arch = request.device_arch;
     if (arch.rfind("sm_", 0) == 0) {
         arch.erase(0, 3);
     }
     return "cuda:" + arch + ":32";
+}
+
+nb::list kernel_keys_for_plan(const PlanNodePtr &node, const FFTRequest &request) {
+    nb::list out;
+    if (request.output_dtype != "complex64") {
+        return out;
+    }
+    append_kernel_keys(node, triton_target_for_request(request), out);
+    return out;
 }
 
 std::filesystem::path TritonCompiler::out_dir() const {

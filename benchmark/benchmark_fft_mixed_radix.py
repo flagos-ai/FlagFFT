@@ -138,13 +138,13 @@ def run_benchmark(lengths: list[int], batch: int, warmup: int, iters: int) -> No
         cache = stats["cpp_cache_after_warm"]
         print(
             f"  cpp: first_call_ms={stats['flagfft_first_call_ms']:.4f} "
-            f"cache_size={cache['size']} hits={cache['hits']} misses={cache['misses']}"
+            f"problem_cache={cache['problem_size']} problem_hits={cache['problem_hits']} problem_misses={cache['problem_misses']} plan_cache={cache['plan_size']} kernel_cache={cache['kernel_size']}"
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark FFT mixed-radix execution through the C++ backend.")
-    parser.add_argument("--lengths", type=int, nargs="+", default=[34, 64, 105, 1024, 936, 4096, 8192])
+    parser.add_argument("--lengths", type=int, nargs="+", default=[34, 64, 512, 105, 1024, 936, 4096, 8192])
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iters", type=int, default=200)

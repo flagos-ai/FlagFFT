@@ -7,7 +7,7 @@ NB_MODULE(_flagfft_core, m) {
           "norm"_a = nb::none(), "Execute a 1-D FFT through the C++ plan cache");
     m.def("debug_request", &flagfft::debug_request, "input"_a, "n"_a = nb::none(), "dim"_a = -1,
           "norm"_a = nb::none());
-    m.def("debug_plan_key", &flagfft::debug_plan_key, "input"_a, "n"_a = nb::none(), "dim"_a = -1,
+    m.def("debug_keys", &flagfft::debug_keys, "input"_a, "n"_a = nb::none(), "dim"_a = -1,
           "norm"_a = nb::none());
     m.def("debug_plan", &flagfft::debug_plan, "input"_a, "n"_a = nb::none(), "dim"_a = -1,
           "norm"_a = nb::none());
