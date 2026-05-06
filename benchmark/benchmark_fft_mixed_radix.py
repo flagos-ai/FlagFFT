@@ -71,9 +71,9 @@ def _format_plan_node(node: dict, indent: int = 0) -> str:
 def _profile_flagfft_cpp_warm_ms(x: torch.Tensor, warmup: int, iters: int) -> dict[str, Any]:
     core = _require_cpp_core()
     core.clear_plan_cache()
-    plan = core.debug_plan(x)
 
     first_call_ms = _bench_one_cuda_ms(lambda: flagfft_fft(x))
+    plan = core.debug_resolved_plan(x)
     after_first = dict(core.cache_info())
 
     for _ in range(warmup):
@@ -111,7 +111,7 @@ def benchmark_mixed_radix_once(n: int, batch: int = 64, warmup: int = 20, iters:
         "length": resolved_plan["root"]["length"],
         "batch": batch,
         "backend": "cpp",
-        "plan_source": "cpp_auto",
+        "plan_source": resolved_plan["source"],
         "plan": _format_plan_node(resolved_plan["root"]),
         "flagfft_median_ms": flagfft_stats["flagfft_median_ms"],
         "torch_median_ms": torch_median_ms,
