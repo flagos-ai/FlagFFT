@@ -73,6 +73,20 @@ nb::dict FourStepPlanNode::to_dict() const {
     return out;
 }
 
+BluesteinPlanNode::BluesteinPlanNode(int64_t length, int64_t conv_length, PlanNodePtr fft_plan)
+    : PlanNode(length, PlanNodeKind::Bluestein),
+      conv_length(conv_length),
+      fft_plan(std::move(fft_plan)) {}
+
+nb::dict BluesteinPlanNode::to_dict() const {
+    nb::dict out;
+    out["kind"] = plan_node_kind_name(kind);
+    out["length"] = length;
+    out["conv_length"] = conv_length;
+    out["fft_plan"] = fft_plan->to_dict();
+    return out;
+}
+
 PlanKey PlanKey::from_node(const PlanNodePtr &node) {
     if (node == nullptr) {
         raise_python(PyExc_ValueError, "cannot build a plan key from a null plan node");
@@ -105,6 +119,11 @@ PlanKey PlanKey::from_node(const PlanNodePtr &node) {
         key.n2 = four_step->n2;
         key.child_keys.push_back(PlanKey::from_node(four_step->row_plan).repr());
         key.child_keys.push_back(PlanKey::from_node(four_step->col_plan).repr());
+        return key;
+    }
+    if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
+        key.conv_length = bluestein->conv_length;
+        key.child_keys.push_back(PlanKey::from_node(bluestein->fft_plan).repr());
         return key;
     }
 
@@ -186,6 +205,11 @@ PlanNodePtr PlanBuilder::node_from_dict(nb::dict node) {
         return std::make_shared<FourStepPlanNode>(
             length, n1, n2, node_from_dict(nb::cast<nb::dict>(node["row"])),
             node_from_dict(nb::cast<nb::dict>(node["col"])));
+    }
+    if (kind == "bluestein") {
+        int64_t conv_length = nb::cast<int64_t>(node["conv_length"]);
+        return std::make_shared<BluesteinPlanNode>(
+            length, conv_length, node_from_dict(nb::cast<nb::dict>(node["fft_plan"])));
     }
     if (kind == "direct_dft") {
         return std::make_shared<DirectDFTPlanNode>(length);
@@ -386,6 +410,10 @@ double PlanBuilder::four_step_cost(int64_t n1, int64_t n2) {
            static_cast<double>(n1) * cost_for(n2) + static_cast<double>(n1 * n2);
 }
 
+double PlanBuilder::bluestein_cost(int64_t n, int64_t conv_length) {
+    return 3.0 * cost_for(conv_length) + static_cast<double>(n + conv_length);
+}
+
 int PlanBuilder::priority(const PlanNodePtr &node) {
     if (node->kind == PlanNodeKind::CtLeaf) {
         return 0;
@@ -396,8 +424,11 @@ int PlanBuilder::priority(const PlanNodePtr &node) {
     if (node->kind == PlanNodeKind::StockhamAutosort) {
         return 2;
     }
-    if (node->kind == PlanNodeKind::DirectDft) {
+    if (node->kind == PlanNodeKind::Bluestein) {
         return 3;
+    }
+    if (node->kind == PlanNodeKind::DirectDft) {
+        return 4;
     }
     return 99;
 }
@@ -422,6 +453,26 @@ std::vector<int64_t> PlanBuilder::enumerate_divisors(int64_t n) {
     std::sort(divisors.begin(), divisors.end());
     divisor_cache_[n] = divisors;
     return divisors;
+}
+
+int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
+    if (minimum <= 1) {
+        return 1;
+    }
+    int64_t power = ceil_power_of_two(minimum);
+    for (int64_t candidate = minimum; candidate <= power; ++candidate) {
+        Factorization factorization = factorize_supported_radices(candidate);
+        if (factorization.remainder == 1 && !factorization.factors.empty()) {
+            return candidate;
+        }
+    }
+    return power;
+}
+
+PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
+    int64_t conv_length = next_supported_convolution_length(2 * n - 1);
+    PlanNodePtr fft_plan = build_auto_node(conv_length);
+    return std::make_shared<BluesteinPlanNode>(n, conv_length, std::move(fft_plan));
 }
 
 std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
@@ -464,6 +515,11 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         } catch (const nb::python_error &) {
             PyErr_Clear();
         }
+    }
+    if (candidates.empty() && n > kDirectDftMaxN) {
+        PlanNodePtr node = make_bluestein_plan(n);
+        auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
+        candidates.push_back({node, bluestein_cost(n, bluestein->conv_length), priority(node)});
     }
     return candidates;
 }

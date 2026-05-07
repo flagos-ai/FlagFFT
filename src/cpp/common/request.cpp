@@ -92,6 +92,8 @@ std::string plan_node_kind_name(PlanNodeKind kind) {
             return "direct_dft";
         case PlanNodeKind::StockhamAutosort:
             return "stockham_autosort";
+        case PlanNodeKind::Bluestein:
+            return "bluestein";
     }
     return "unknown";
 }
@@ -108,6 +110,12 @@ std::string kernel_kind_name(KernelKind kind) {
             return "transpose";
         case KernelKind::TwiddleTranspose:
             return "twiddle_transpose";
+        case KernelKind::BluesteinPrepare:
+            return "bluestein_prepare";
+        case KernelKind::BluesteinPointwise:
+            return "bluestein_pointwise";
+        case KernelKind::BluesteinFinalize:
+            return "bluestein_finalize";
     }
     return "unknown";
 }
@@ -201,7 +209,8 @@ bool PlanKey::operator==(const PlanKey &other) const {
            length == other.length && factors == other.factors && remainder == other.remainder &&
            lanes == other.lanes && num_warps == other.num_warps &&
            generic_radices == other.generic_radices && smem_size == other.smem_size &&
-           n1 == other.n1 && n2 == other.n2 && child_keys == other.child_keys;
+           n1 == other.n1 && n2 == other.n2 && conv_length == other.conv_length &&
+           child_keys == other.child_keys;
 }
 
 std::string PlanKey::repr() const {
@@ -218,6 +227,9 @@ std::string PlanKey::repr() const {
     }
     if (root_kind == PlanNodeKind::FourStep) {
         out << ";n1=" << n1 << ";n2=" << n2;
+    }
+    if (root_kind == PlanNodeKind::Bluestein) {
+        out << ";conv_length=" << conv_length;
     }
     if (!child_keys.empty()) {
         out << ";children=[";
@@ -245,6 +257,7 @@ std::size_t PlanKeyHash::operator()(const PlanKey &key) const {
     hash_value(seed, key.smem_size);
     hash_value(seed, key.n1);
     hash_value(seed, key.n2);
+    hash_value(seed, key.conv_length);
     hash_vector(seed, key.child_keys);
     return seed;
 }
@@ -326,12 +339,40 @@ KernelKey KernelKey::twiddle_transpose(std::string target) {
     return key;
 }
 
+KernelKey KernelKey::bluestein_prepare(std::string target, int64_t n, int64_t m) {
+    KernelKey key;
+    key.kind = KernelKind::BluesteinPrepare;
+    key.target = std::move(target);
+    key.bluestein_n = n;
+    key.bluestein_m = m;
+    return key;
+}
+
+KernelKey KernelKey::bluestein_pointwise(std::string target, int64_t n, int64_t m) {
+    KernelKey key;
+    key.kind = KernelKind::BluesteinPointwise;
+    key.target = std::move(target);
+    key.bluestein_n = n;
+    key.bluestein_m = m;
+    return key;
+}
+
+KernelKey KernelKey::bluestein_finalize(std::string target, int64_t n, int64_t m) {
+    KernelKey key;
+    key.kind = KernelKind::BluesteinFinalize;
+    key.target = std::move(target);
+    key.bluestein_n = n;
+    key.bluestein_m = m;
+    return key;
+}
+
 bool KernelKey::operator==(const KernelKey &other) const {
     return kind == other.kind && target == other.target && length == other.length &&
            factors == other.factors && lanes == other.lanes &&
            num_warps == other.num_warps && generic_radices == other.generic_radices &&
            smem_size == other.smem_size && four_step_n1 == other.four_step_n1 &&
-           four_step_n2 == other.four_step_n2;
+           four_step_n2 == other.four_step_n2 && bluestein_n == other.bluestein_n &&
+           bluestein_m == other.bluestein_m;
 }
 
 std::string KernelKey::repr() const {
@@ -346,6 +387,10 @@ std::string KernelKey::repr() const {
         if (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) {
             out << ";four_step_n1=" << four_step_n1 << ";four_step_n2=" << four_step_n2;
         }
+    }
+    if (kind == KernelKind::BluesteinPrepare || kind == KernelKind::BluesteinPointwise ||
+        kind == KernelKind::BluesteinFinalize) {
+        out << ";bluestein_n=" << bluestein_n << ";bluestein_m=" << bluestein_m;
     }
     return out.str();
 }
@@ -362,6 +407,8 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
     hash_value(seed, key.smem_size);
     hash_value(seed, key.four_step_n1);
     hash_value(seed, key.four_step_n2);
+    hash_value(seed, key.bluestein_n);
+    hash_value(seed, key.bluestein_m);
     return seed;
 }
 
@@ -427,6 +474,7 @@ nb::dict plan_key_to_dict(const PlanKey &key) {
     out["smem_size"] = key.smem_size;
     out["n1"] = key.n1;
     out["n2"] = key.n2;
+    out["conv_length"] = key.conv_length;
     out["child_keys"] = nb::cast(key.child_keys);
     out["hash"] = static_cast<uint64_t>(PlanKeyHash{}(key));
     return out;
@@ -445,6 +493,8 @@ nb::dict kernel_key_to_dict(const KernelKey &key) {
     out["smem_size"] = key.smem_size;
     out["four_step_n1"] = key.four_step_n1;
     out["four_step_n2"] = key.four_step_n2;
+    out["bluestein_n"] = key.bluestein_n;
+    out["bluestein_m"] = key.bluestein_m;
     out["hash"] = static_cast<uint64_t>(KernelKeyHash{}(key));
     return out;
 }

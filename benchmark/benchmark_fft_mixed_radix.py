@@ -148,13 +148,22 @@ def main() -> None:
         "--lengths",
         type=int,
         nargs="+",
-        default=[10, 12, 15, 17, 19, 60, 120, 190, 255, 1020, 4096, 8192, 16384, 65536],
+        default=[],
     )
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iters", type=int, default=200)
     args = parser.parse_args()
-    run_benchmark(args.lengths, args.batch, args.warmup, args.iters)
+
+    if len(args.lengths) == 0:
+        print("======== mixed Cooley-Tukey ========")
+        normal_lengths = [10, 12, 15, 17, 19, 60, 120, 190, 255, 1020, 4096, 8192, 16384, 65536]
+        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters)
+        print("======== Bluestein ========")
+        normal_lengths = [331, 4093, 16381, 65537, 65539]
+        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters)
+    else:
+        run_benchmark(args.lengths, args.batch, args.warmup, args.iters)
 
 
 if __name__ == "__main__":

@@ -158,6 +158,88 @@ def _twiddle_transpose_complex_kernel(
     tl.store(dst_offsets + 1, out_imag, mask=mask)
 
 
+@triton.jit
+def _bluestein_prepare_kernel(
+    in_ptr,
+    chirp_ptr,
+    out_ptr,
+    n,
+    m,
+    nbatch,
+    BLOCK: tl.constexpr,
+):
+    pid_block = tl.program_id(0)
+    pid_batch = tl.program_id(1)
+    offsets = pid_block * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < m
+    in_mask = mask & (offsets < n)
+
+    src = in_ptr + (pid_batch * n + offsets) * 2
+    xr = tl.load(src, mask=in_mask, other=0.0)
+    xi = tl.load(src + 1, mask=in_mask, other=0.0)
+    cr = tl.load(chirp_ptr + offsets * 2, mask=in_mask, other=0.0)
+    ci = tl.load(chirp_ptr + offsets * 2 + 1, mask=in_mask, other=0.0)
+    yr, yi = _cmul(xr, xi, cr, ci)
+
+    dst = out_ptr + (pid_batch * m + offsets) * 2
+    tl.store(dst, yr, mask=mask)
+    tl.store(dst + 1, yi, mask=mask)
+
+
+@triton.jit
+def _bluestein_pointwise_kernel(
+    a_ptr,
+    b_ptr,
+    out_ptr,
+    m,
+    nbatch,
+    BLOCK: tl.constexpr,
+):
+    pid_block = tl.program_id(0)
+    pid_batch = tl.program_id(1)
+    offsets = pid_block * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < m
+
+    a = a_ptr + (pid_batch * m + offsets) * 2
+    b = b_ptr + offsets * 2
+    ar = tl.load(a, mask=mask, other=0.0)
+    ai = tl.load(a + 1, mask=mask, other=0.0)
+    br = tl.load(b, mask=mask, other=0.0)
+    bi = tl.load(b + 1, mask=mask, other=0.0)
+    pr, pi = _cmul(ar, ai, br, bi)
+
+    dst = out_ptr + (pid_batch * m + offsets) * 2
+    tl.store(dst, pr, mask=mask)
+    tl.store(dst + 1, -pi, mask=mask)
+
+
+@triton.jit
+def _bluestein_finalize_kernel(
+    in_ptr,
+    chirp_ptr,
+    out_ptr,
+    n,
+    m,
+    nbatch,
+    BLOCK: tl.constexpr,
+):
+    pid_block = tl.program_id(0)
+    pid_batch = tl.program_id(1)
+    offsets = pid_block * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < n
+
+    src = in_ptr + (pid_batch * m + offsets) * 2
+    xr = tl.load(src, mask=mask, other=0.0) / m
+    xi = -tl.load(src + 1, mask=mask, other=0.0) / m
+    cr = tl.load(chirp_ptr + offsets * 2, mask=mask, other=0.0)
+    ci = tl.load(chirp_ptr + offsets * 2 + 1, mask=mask, other=0.0)
+    yr, yi = _cmul(xr, xi, cr, ci)
+
+    dst = out_ptr + (pid_batch * n + offsets) * 2
+    tl.store(dst, yr, mask=mask)
+    tl.store(dst + 1, yi, mask=mask)
+
+
 
 def _fmt_const(value: float) -> str:
     if abs(value) < 1e-8:

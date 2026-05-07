@@ -33,7 +33,7 @@ using namespace nb::literals;
 
 namespace flagfft {
 
-inline constexpr int64_t kPlanSchemaVersion = 1;
+inline constexpr int64_t kPlanSchemaVersion = 2;
 inline constexpr int64_t kDirectDftMaxN = 64;
 inline constexpr int64_t kLeafMaxN = 4096;
 inline constexpr int64_t kLeafSmemBudgetBytes = 48 * 1024;
@@ -100,8 +100,17 @@ struct FFTRequest {
     int64_t batch = 0;
 };
 
-enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort };
-enum class KernelKind { Leaf, FourStepRow, FourStepCol, Transpose, TwiddleTranspose };
+enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein };
+enum class KernelKind {
+    Leaf,
+    FourStepRow,
+    FourStepCol,
+    Transpose,
+    TwiddleTranspose,
+    BluesteinPrepare,
+    BluesteinPointwise,
+    BluesteinFinalize
+};
 
 std::string plan_node_kind_name(PlanNodeKind kind);
 std::string kernel_kind_name(KernelKind kind);
@@ -147,6 +156,7 @@ struct PlanKey {
     int64_t smem_size = 0;
     int64_t n1 = 0;
     int64_t n2 = 0;
+    int64_t conv_length = 0;
     std::vector<std::string> child_keys;
 
     static PlanKey from_node(const PlanNodePtr &node);
@@ -169,6 +179,8 @@ struct KernelKey {
     int64_t smem_size = 0;
     int64_t four_step_n1 = 0;
     int64_t four_step_n2 = 0;
+    int64_t bluestein_n = 0;
+    int64_t bluestein_m = 0;
 
     static KernelKey leaf(std::string target,
                           int64_t length,
@@ -197,6 +209,9 @@ struct KernelKey {
                                    int64_t smem_size);
     static KernelKey transpose(std::string target);
     static KernelKey twiddle_transpose(std::string target);
+    static KernelKey bluestein_prepare(std::string target, int64_t n, int64_t m);
+    static KernelKey bluestein_pointwise(std::string target, int64_t n, int64_t m);
+    static KernelKey bluestein_finalize(std::string target, int64_t n, int64_t m);
     bool operator==(const KernelKey &other) const;
     std::string repr() const;
 };
@@ -267,6 +282,14 @@ struct FourStepPlanNode final : PlanNode {
     PlanNodePtr col_plan;
 };
 
+struct BluesteinPlanNode final : PlanNode {
+    BluesteinPlanNode(int64_t length, int64_t conv_length, PlanNodePtr fft_plan);
+    nb::dict to_dict() const override;
+
+    int64_t conv_length;
+    PlanNodePtr fft_plan;
+};
+
 struct PlanCandidate {
     PlanNodePtr node;
     double cost = 0.0;
@@ -297,8 +320,11 @@ private:
     double estimate_leaf_warm_cost(int64_t n);
     double estimate_direct_dft_cost(int64_t n);
     double four_step_cost(int64_t n1, int64_t n2);
+    double bluestein_cost(int64_t n, int64_t conv_length);
     int priority(const PlanNodePtr &node);
     std::vector<int64_t> enumerate_divisors(int64_t n);
+    int64_t next_supported_convolution_length(int64_t minimum);
+    PlanNodePtr make_bluestein_plan(int64_t n);
     std::vector<PlanCandidate> build_auto_candidates(int64_t n);
     std::vector<PlanCandidate> build_tune_candidates(int64_t n, int64_t depth);
     std::vector<PlanCandidate> build_leaf_tune_candidates(int64_t n);
@@ -323,6 +349,8 @@ std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
     const std::vector<int64_t> &radices, int64_t stage, int64_t lanes);
 std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix);
 nb::object build_four_step_twiddle_tensor(const FFTRequest &request, int64_t n1, int64_t n2);
+nb::object build_bluestein_chirp_tensor(const FFTRequest &request, int64_t n, bool inverse_sign);
+nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_t m);
 
 nb::object tensor_from_float_vector(const std::vector<float> &values, const FFTRequest &request);
 std::string torch_device_string(const FFTRequest &request);
@@ -444,6 +472,36 @@ struct CompiledFourStepFusedNode final : CompiledNode {
     nb::object stage1;
 };
 
+struct CompiledBluesteinNode final : CompiledNode {
+    CompiledBluesteinNode(int64_t length,
+                          int64_t conv_length,
+                          std::shared_ptr<CompiledNode> fft,
+                          std::shared_ptr<AotKernel> prepare_kernel,
+                          std::shared_ptr<AotKernel> pointwise_kernel,
+                          std::shared_ptr<AotKernel> finalize_kernel,
+                          nb::object chirp,
+                          nb::object b_time,
+                          nb::object a_buf,
+                          nb::object work_buf,
+                          nb::object b_fft_buf);
+    nb::object execute(const nb::object &input, const ExecutionContext &context) const override;
+    void ensure_b_fft(const ExecutionContext &context) const;
+
+    int64_t length;
+    int64_t conv_length;
+    std::shared_ptr<CompiledNode> fft;
+    std::shared_ptr<AotKernel> prepare_kernel;
+    std::shared_ptr<AotKernel> pointwise_kernel;
+    std::shared_ptr<AotKernel> finalize_kernel;
+    nb::object chirp;
+    nb::object b_time;
+    nb::object a_buf;
+    nb::object work_buf;
+    mutable nb::object b_fft_buf;
+    mutable bool b_fft_ready = false;
+    mutable std::mutex b_fft_mutex;
+};
+
 class TritonCompiler {
 public:
     std::shared_ptr<CompiledNode> compile_node(const PlanNodePtr &node,
@@ -465,6 +523,15 @@ private:
                                                             int64_t n2);
     std::shared_ptr<AotKernel> compile_transpose_kernel(const FFTRequest &request);
     std::shared_ptr<AotKernel> compile_twiddle_transpose_kernel(const FFTRequest &request);
+    std::shared_ptr<AotKernel> compile_bluestein_prepare_kernel(const FFTRequest &request,
+                                                                int64_t n,
+                                                                int64_t m);
+    std::shared_ptr<AotKernel> compile_bluestein_pointwise_kernel(const FFTRequest &request,
+                                                                  int64_t n,
+                                                                  int64_t m);
+    std::shared_ptr<AotKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
+                                                                 int64_t n,
+                                                                 int64_t m);
     std::shared_ptr<AotKernel> compile_kernel(const KernelKey &key, const std::string &command) const;
     std::filesystem::path out_dir() const;
     std::string python_executable() const;

@@ -23,6 +23,9 @@ from src.codegen.kernels import (
     _build_four_step_col_kernel_source,
     _build_four_step_row_kernel_source,
     _build_leaf_kernel_source,
+    _bluestein_finalize_kernel,
+    _bluestein_pointwise_kernel,
+    _bluestein_prepare_kernel,
     _transpose_complex_kernel,
     _twiddle_transpose_complex_kernel,
     contiguous_batch_pack_for,
@@ -291,6 +294,7 @@ def _compile_four_step_kernel(
     artifact["kernel_type"] = kind
     artifact["tile_rows"] = _FOUR_STEP_TILE_ROWS
     artifact["tile_cols"] = _FOUR_STEP_TILE_COLS
+    artifact["batch_per_block"] = 1
     artifact["grid"] = {
         "x": "ceil(cols / BLOCK_COLS)",
         "y": "ceil(rows / BLOCK_ROWS)",
@@ -301,11 +305,85 @@ def _compile_four_step_kernel(
     return artifact
 
 
+def _compile_bluestein_kernel(
+    *,
+    kind: str,
+    n: int,
+    m: int,
+    target: str,
+    out_dir: Path,
+) -> dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if kind == "bluestein_prepare":
+        kernel = _bluestein_prepare_kernel
+        arg_names = ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"]
+        signature = {
+            "in_ptr": _POINTER_SIGNATURE,
+            "chirp_ptr": _POINTER_SIGNATURE,
+            "out_ptr": _POINTER_SIGNATURE,
+            "n": "i64",
+            "m": "i64",
+            "nbatch": "i32",
+        }
+    elif kind == "bluestein_pointwise":
+        kernel = _bluestein_pointwise_kernel
+        arg_names = ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"]
+        signature = {
+            "a_ptr": _POINTER_SIGNATURE,
+            "b_ptr": _POINTER_SIGNATURE,
+            "out_ptr": _POINTER_SIGNATURE,
+            "m": "i64",
+            "nbatch": "i32",
+        }
+    elif kind == "bluestein_finalize":
+        kernel = _bluestein_finalize_kernel
+        arg_names = ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"]
+        signature = {
+            "in_ptr": _POINTER_SIGNATURE,
+            "chirp_ptr": _POINTER_SIGNATURE,
+            "out_ptr": _POINTER_SIGNATURE,
+            "n": "i64",
+            "m": "i64",
+            "nbatch": "i32",
+        }
+    else:
+        raise ValueError(f"unsupported bluestein kernel kind: {kind}")
+
+    artifact = _compile_kernel_artifact(
+        kernel=kernel,
+        kernel_name=kernel.__name__,
+        arg_names=arg_names,
+        signature=signature,
+        attrs={(idx,): [["tt.divisibility", 16]] for idx, name in enumerate(arg_names) if name.endswith("_ptr")},
+        constexprs={"BLOCK": 256},
+        num_warps=4,
+        num_stages=4,
+        target=target,
+    )
+    artifact["kernel_type"] = kind
+    artifact["bluestein_n"] = n
+    artifact["bluestein_m"] = m
+    artifact["batch_per_block"] = 1
+    artifact["grid"] = {"x": "ceil_div(m,256)", "y": "nbatch", "z": 1}
+    artifact_path = out_dir / f"{kind}_n{n}_m{m}.json"
+    artifact_path.write_text(json.dumps(artifact, sort_keys=True))
+    return artifact
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="AOT compile FlagFFT Triton kernels")
     parser.add_argument(
         "--kernel",
-        choices=("leaf", "four_step_row", "four_step_col", "transpose", "twiddle_transpose"),
+        choices=(
+            "leaf",
+            "four_step_row",
+            "four_step_col",
+            "transpose",
+            "twiddle_transpose",
+            "bluestein_prepare",
+            "bluestein_pointwise",
+            "bluestein_finalize",
+        ),
         default="leaf",
     )
     parser.add_argument("--length", type=int)
@@ -316,6 +394,8 @@ def main() -> None:
     parser.add_argument("--smem-size", type=int)
     parser.add_argument("--four-step-n1", type=int)
     parser.add_argument("--four-step-n2", type=int)
+    parser.add_argument("--bluestein-n", type=int)
+    parser.add_argument("--bluestein-m", type=int)
     parser.add_argument("--target", type=str, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -362,8 +442,18 @@ def main() -> None:
                 target=args.target,
                 out_dir=args.out_dir,
             )
-    else:
+    elif args.kernel in {"transpose", "twiddle_transpose"}:
         artifact = _compile_four_step_kernel(kind=args.kernel, target=args.target, out_dir=args.out_dir)
+    else:
+        if args.bluestein_n is None or args.bluestein_m is None:
+            parser.error(f"--kernel {args.kernel} requires --bluestein-n and --bluestein-m")
+        artifact = _compile_bluestein_kernel(
+            kind=args.kernel,
+            n=args.bluestein_n,
+            m=args.bluestein_m,
+            target=args.target,
+            out_dir=args.out_dir,
+        )
     print(json.dumps(artifact, sort_keys=True))
 
 

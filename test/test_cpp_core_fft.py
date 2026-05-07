@@ -168,6 +168,41 @@ def test_cpp_aot_four_step_accepts_float32_input() -> None:
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
 
 
+@pytest.mark.parametrize("n", [331, 997])
+def test_cpp_aot_bluestein_lengths_match_torch(n: int) -> None:
+    x = _sample(torch.complex64, n=n)[:1]
+
+    y = flagfft.fft(x)
+    ref = torch.fft.fft(x, dim=-1)
+    root = _flagfft_core.debug_plan(x)["root"]
+
+    assert root["kind"] == "bluestein"
+    assert root["conv_length"] >= 2 * n - 1
+    torch.testing.assert_close(y, ref, atol=5e-4, rtol=5e-4)
+
+
+def test_cpp_aot_large_bluestein_reuses_child_fft_kernels() -> None:
+    _flagfft_core.clear_plan_cache()
+    first = torch.randn(1, 65537, device="cuda", dtype=torch.complex64)
+    second = torch.randn(1, 65539, device="cuda", dtype=torch.complex64)
+
+    first_plan = _flagfft_core.debug_plan(first)["root"]
+    second_plan = _flagfft_core.debug_plan(second)["root"]
+    assert first_plan["kind"] == second_plan["kind"] == "bluestein"
+    assert first_plan["conv_length"] == second_plan["conv_length"]
+
+    torch.testing.assert_close(
+        flagfft.fft(first), torch.fft.fft(first, dim=-1), atol=8e-4, rtol=8e-4
+    )
+    after_first = _flagfft_core.cache_info()
+    torch.testing.assert_close(
+        flagfft.fft(second), torch.fft.fft(second, dim=-1), atol=8e-4, rtol=8e-4
+    )
+    after_second = _flagfft_core.cache_info()
+
+    assert after_second["kernel_hits"] >= after_first["kernel_hits"] + 2
+
+
 @pytest.mark.parametrize("norm", [None, "backward", "forward", "ortho"])
 def test_cpp_aot_four_step_norm_modes(norm: str | None) -> None:
     x = _sample(torch.complex64, n=8192)[:1]
@@ -274,7 +309,7 @@ def test_tuned_db_winner_is_used_when_fingerprints_match(tmp_path, monkeypatch) 
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 0)
         """,
         (
-            1,
+            plan["schema_version"],
             request["device_arch"],
             request["requested_n"],
             "2-8",

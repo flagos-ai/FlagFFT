@@ -132,6 +132,16 @@ void append_kernel_keys(const PlanNodePtr &node, const std::string &target, nb::
         append_kernel_keys(four_step->col_plan, target, out);
         out.append(kernel_key_to_dict(KernelKey::transpose(target)));
         out.append(kernel_key_to_dict(KernelKey::twiddle_transpose(target)));
+        return;
+    }
+    if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
+        out.append(kernel_key_to_dict(KernelKey::bluestein_prepare(
+            target, bluestein->length, bluestein->conv_length)));
+        out.append(kernel_key_to_dict(KernelKey::bluestein_pointwise(
+            target, bluestein->length, bluestein->conv_length)));
+        out.append(kernel_key_to_dict(KernelKey::bluestein_finalize(
+            target, bluestein->length, bluestein->conv_length)));
+        append_kernel_keys(bluestein->fft_plan, target, out);
     }
 }
 
@@ -226,6 +236,39 @@ nb::object build_four_step_twiddle_tensor(const FFTRequest &request, int64_t n1,
     return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(n2, n1));
 }
 
+nb::object build_bluestein_chirp_tensor(const FFTRequest &request, int64_t n, bool inverse_sign) {
+    std::vector<float> real(static_cast<std::size_t>(n));
+    std::vector<float> imag(static_cast<std::size_t>(n));
+    double sign = inverse_sign ? 1.0 : -1.0;
+    for (int64_t idx = 0; idx < n; ++idx) {
+        double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
+                                   static_cast<double>(2 * n));
+        double angle = sign * kPi * reduced / static_cast<double>(n);
+        real[static_cast<std::size_t>(idx)] = static_cast<float>(std::cos(angle));
+        imag[static_cast<std::size_t>(idx)] = static_cast<float>(std::sin(angle));
+    }
+    return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(n));
+}
+
+nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_t m) {
+    std::vector<float> real(static_cast<std::size_t>(m), 0.0f);
+    std::vector<float> imag(static_cast<std::size_t>(m), 0.0f);
+    for (int64_t idx = 0; idx < n; ++idx) {
+        double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
+                                   static_cast<double>(2 * n));
+        double angle = kPi * reduced / static_cast<double>(n);
+        float r = static_cast<float>(std::cos(angle));
+        float i = static_cast<float>(std::sin(angle));
+        real[static_cast<std::size_t>(idx)] = r;
+        imag[static_cast<std::size_t>(idx)] = i;
+        if (idx != 0) {
+            real[static_cast<std::size_t>(m - idx)] = r;
+            imag[static_cast<std::size_t>(m - idx)] = i;
+        }
+    }
+    return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(1, m));
+}
+
 std::vector<nb::object> build_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request) {
     std::vector<nb::object> tables;
     for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
@@ -279,6 +322,29 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_node(const PlanNodePtr &no
             four_step->length, four_step->n1, four_step->n2, std::move(row), std::move(col),
             compile_transpose_kernel(request), compile_twiddle_transpose_kernel(request),
             std::move(twiddle), std::move(stage0), std::move(stage2));
+    }
+    if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
+        std::shared_ptr<CompiledNode> fft = compile_node(bluestein->fft_plan, request, batch);
+        nb::object chirp = build_bluestein_chirp_tensor(request, bluestein->length, false);
+        nb::object b_time = build_bluestein_b_tensor(request, bluestein->length, bluestein->conv_length);
+        nb::object a_buf =
+            empty_complex64_tensor(request, nb::make_tuple(batch, bluestein->conv_length));
+        nb::object work_buf =
+            empty_complex64_tensor(request, nb::make_tuple(batch, bluestein->conv_length));
+        nb::object b_fft_buf =
+            empty_complex64_tensor(request, nb::make_tuple(1, bluestein->conv_length));
+        return std::make_shared<CompiledBluesteinNode>(
+            bluestein->length,
+            bluestein->conv_length,
+            std::move(fft),
+            compile_bluestein_prepare_kernel(request, bluestein->length, bluestein->conv_length),
+            compile_bluestein_pointwise_kernel(request, bluestein->length, bluestein->conv_length),
+            compile_bluestein_finalize_kernel(request, bluestein->length, bluestein->conv_length),
+            std::move(chirp),
+            std::move(b_time),
+            std::move(a_buf),
+            std::move(work_buf),
+            std::move(b_fft_buf));
     }
     raise_python(PyExc_NotImplementedError,
                  "flagfft.fft C++ AOT backend does not support plan node kind: " +
@@ -405,6 +471,54 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_twiddle_transpose_kernel(cons
             << " --out-dir " << shell_quote(out_dir().string());
     twiddle_transpose_kernel = compile_kernel(key, command.str());
     return twiddle_transpose_kernel;
+}
+
+std::shared_ptr<AotKernel> TritonCompiler::compile_bluestein_prepare_kernel(const FFTRequest &request,
+                                                                            int64_t n,
+                                                                            int64_t m) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::bluestein_prepare(target, n, m);
+    std::ostringstream command;
+    command << shell_quote(python_executable())
+            << " " << triton_aot_entrypoint()
+            << " --kernel bluestein_prepare"
+            << " --bluestein-n " << n
+            << " --bluestein-m " << m
+            << " --target " << shell_quote(target)
+            << " --out-dir " << shell_quote(out_dir().string());
+    return compile_kernel(key, command.str());
+}
+
+std::shared_ptr<AotKernel> TritonCompiler::compile_bluestein_pointwise_kernel(const FFTRequest &request,
+                                                                              int64_t n,
+                                                                              int64_t m) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::bluestein_pointwise(target, n, m);
+    std::ostringstream command;
+    command << shell_quote(python_executable())
+            << " " << triton_aot_entrypoint()
+            << " --kernel bluestein_pointwise"
+            << " --bluestein-n " << n
+            << " --bluestein-m " << m
+            << " --target " << shell_quote(target)
+            << " --out-dir " << shell_quote(out_dir().string());
+    return compile_kernel(key, command.str());
+}
+
+std::shared_ptr<AotKernel> TritonCompiler::compile_bluestein_finalize_kernel(const FFTRequest &request,
+                                                                             int64_t n,
+                                                                             int64_t m) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::bluestein_finalize(target, n, m);
+    std::ostringstream command;
+    command << shell_quote(python_executable())
+            << " " << triton_aot_entrypoint()
+            << " --kernel bluestein_finalize"
+            << " --bluestein-n " << n
+            << " --bluestein-m " << m
+            << " --target " << shell_quote(target)
+            << " --out-dir " << shell_quote(out_dir().string());
+    return compile_kernel(key, command.str());
 }
 
 std::shared_ptr<AotKernel> TritonCompiler::compile_kernel(const KernelKey &key, const std::string &command) const {

@@ -47,6 +47,14 @@ plans keep one inner column per CTA, while `n1 >= 128` packs two adjacent
 `inner` columns and interleaves vector lanes to reduce natural-order store
 stride pressure.
 
+Unsupported large-prime or large-prime-factor lengths fall back to a C++
+`BluesteinPlanNode`. Bluestein maps an `N`-point FFT to a convolution length
+`M >= 2N - 1` chosen from lengths the existing planner can execute, then reuses
+the normal `M`-point FFT child plan. The `ProblemKey` cache still maps repeated
+user inputs directly to an executable entry, while `KernelKey` caching avoids
+recompiling the shared `FFT_M` kernels when nearby Bluestein lengths choose the
+same convolution size.
+
 The implemented compute path is currently `flagfft.fft` for CUDA tensors on the
 last dimension. The remaining torch.fft-compatible entrypoints are present as API
 stubs and raise `NotImplementedError` until their C++ plan/exec paths are added.

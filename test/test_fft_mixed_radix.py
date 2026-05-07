@@ -100,6 +100,9 @@ def main() -> None:
             4096,
             8192,
             16384,
+            331,
+            16387,
+            16389
         ],
     )
     parser.add_argument("--batch", type=int, default=2)
