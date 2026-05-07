@@ -3,6 +3,23 @@
 namespace flagfft {
 namespace {
 
+inline constexpr int64_t kFourStepColInnerPack = 2;
+inline constexpr int64_t kFourStepColInnerPackMinN1 = 128;
+
+int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2) {
+    (void)n2;
+    if (n1 < kFourStepColInnerPackMinN1) {
+        return 1;
+    }
+    return kFourStepColInnerPack;
+}
+
+bool request_has_flat_batch_shape(const FFTRequest &request) {
+    return request.input_shape.size() == 2 &&
+           request.input_shape[0] == request.batch &&
+           request.input_shape[1] == request.requested_n;
+}
+
 std::string batch_bucket(int64_t batch) {
     if (batch <= 1) {
         return "1";
@@ -103,8 +120,11 @@ CompiledLeafNode::CompiledLeafNode(int64_t length,
     : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {}
 
 nb::object CompiledLeafNode::execute(const nb::object &input, const ExecutionContext &context) const {
-    int64_t batch = tensor_numel(input) / length;
-    nb::object x_contig = input.attr("contiguous")().attr("reshape")(nb::make_tuple(batch, length));
+    bool root_leaf = length == context.request.requested_n;
+    int64_t batch = root_leaf ? context.request.batch : tensor_numel(input) / length;
+    nb::object x_contig = (root_leaf && request_has_flat_batch_shape(context.request))
+                              ? input
+                              : input.attr("reshape")(nb::make_tuple(batch, length));
     nb::module_ torch = nb::module_::import_("torch");
     nb::object result = torch.attr("empty_like")(x_contig);
 
@@ -117,7 +137,7 @@ nb::object CompiledLeafNode::execute(const nb::object &input, const ExecutionCon
     }
     args.push_back(AotKernelArg::i32(static_cast<int32_t>(batch)));
 
-    kernel->launch(context.stream, args, batch, 1, 1);
+    kernel->launch(context.stream, args, ceil_div(batch, kernel->batch_per_block), 1, 1);
     return result;
 }
 
@@ -143,8 +163,10 @@ CompiledFourStepNode::CompiledFourStepNode(int64_t length,
       stage2(std::move(stage2)) {}
 
 nb::object CompiledFourStepNode::execute(const nb::object &input, const ExecutionContext &context) const {
-    int64_t batch = tensor_numel(input) / length;
-    nb::object x_contig = input.attr("contiguous")().attr("reshape")(nb::make_tuple(batch, length));
+    int64_t batch = context.request.batch;
+    nb::object x_contig = request_has_flat_batch_shape(context.request)
+                              ? input
+                              : input.attr("reshape")(nb::make_tuple(batch, length));
 
     launch_transpose(context.stream, x_contig.attr("reshape")(nb::make_tuple(batch, n1, n2)), stage0);
     nb::object stage1 = row->execute(
@@ -229,19 +251,21 @@ CompiledFourStepFusedNode::CompiledFourStepFusedNode(int64_t length,
 
 nb::object CompiledFourStepFusedNode::execute(const nb::object &input,
                                               const ExecutionContext &context) const {
-    int64_t batch = tensor_numel(input) / length;
-    nb::object x_contig = input.attr("contiguous")().attr("reshape")(nb::make_tuple(batch, length));
+    int64_t batch = context.request.batch;
+    nb::object x_contig = request_has_flat_batch_shape(context.request)
+                              ? input
+                              : input.attr("reshape")(nb::make_tuple(batch, length));
 
-    launch_row(context.stream, x_contig, stage1);
+    launch_row(context.stream, x_contig, stage1, batch);
     nb::object out = empty_complex64_tensor(context.request, nb::make_tuple(batch, length));
-    launch_col(context.stream, stage1, out);
+    launch_col(context.stream, stage1, out, batch);
     return out;
 }
 
 void CompiledFourStepFusedNode::launch_row(CUstream stream,
                                            const nb::object &src,
-                                           const nb::object &dst) const {
-    int64_t batch = tensor_size(src, 0);
+                                           const nb::object &dst,
+                                           int64_t batch) const {
     std::vector<AotKernelArg> args;
     args.reserve(3 + row_tables.size());
     args.push_back(AotKernelArg::device(tensor_data_ptr(src)));
@@ -256,8 +280,8 @@ void CompiledFourStepFusedNode::launch_row(CUstream stream,
 
 void CompiledFourStepFusedNode::launch_col(CUstream stream,
                                            const nb::object &src,
-                                           const nb::object &dst) const {
-    int64_t batch = tensor_size(src, 0);
+                                           const nb::object &dst,
+                                           int64_t batch) const {
     std::vector<AotKernelArg> args;
     args.reserve(4 + col_tables.size());
     args.push_back(AotKernelArg::device(tensor_data_ptr(src)));
@@ -268,7 +292,7 @@ void CompiledFourStepFusedNode::launch_col(CUstream stream,
     }
     args.push_back(AotKernelArg::i32(static_cast<int32_t>(batch)));
 
-    col_kernel->launch(stream, args, n1, batch, 1);
+    col_kernel->launch(stream, args, ceil_div(n1, four_step_col_inner_pack_for(n1, n2)), batch, 1);
 }
 
 nb::object ExecutablePlan::execute(nb::object input) const {
@@ -284,12 +308,17 @@ nb::object ExecutablePlan::execute(nb::object input) const {
         nb::module_ torch = nb::module_::import_("torch");
         nb::object zeros = torch.attr("zeros_like")(input);
         exec_input = torch.attr("complex")(input, zeros);
+        if (request.requires_contiguous_copy) {
+            exec_input = exec_input.attr("contiguous")();
+        }
+    } else if (request.requires_contiguous_copy) {
+        exec_input = exec_input.attr("contiguous")();
     }
-
-    exec_input = exec_input.attr("contiguous")();
     ExecutionContext context{request, current_cuda_stream(request)};
     nb::object result = compiled_root->execute(exec_input, context);
-    result = result.attr("reshape")(nb::cast(request.input_shape));
+    if (!request_has_flat_batch_shape(request)) {
+        result = result.attr("reshape")(nb::cast(request.input_shape));
+    }
 
     if (request.norm == "forward") {
         return result.attr("mul")(1.0 / static_cast<double>(request.requested_n));

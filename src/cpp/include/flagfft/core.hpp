@@ -364,6 +364,7 @@ struct AotKernel {
     std::vector<unsigned char> cubin;
     int64_t shared = 0;
     int64_t num_warps = 1;
+    int64_t batch_per_block = 1;
     CUmodule module = nullptr;
     CUfunction function = nullptr;
     std::mutex mutex;
@@ -429,8 +430,8 @@ struct CompiledFourStepFusedNode final : CompiledNode {
                               nb::object twiddle,
                               nb::object stage1);
     nb::object execute(const nb::object &input, const ExecutionContext &context) const override;
-    void launch_row(CUstream stream, const nb::object &src, const nb::object &dst) const;
-    void launch_col(CUstream stream, const nb::object &src, const nb::object &dst) const;
+    void launch_row(CUstream stream, const nb::object &src, const nb::object &dst, int64_t batch) const;
+    void launch_col(CUstream stream, const nb::object &src, const nb::object &dst, int64_t batch) const;
 
     int64_t length;
     int64_t n1;

@@ -425,6 +425,7 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_kernel(const KernelKey &key, 
     kernel->cubin = hex_to_bytes(json_string_field(artifact_json, "cubin_hex"));
     kernel->shared = json_int_field(artifact_json, "shared");
     kernel->num_warps = json_int_field(artifact_json, "num_warps");
+    kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
 
     std::lock_guard<std::mutex> lock(state.mutex);
     auto [it, inserted] = state.cache.emplace(key, kernel);

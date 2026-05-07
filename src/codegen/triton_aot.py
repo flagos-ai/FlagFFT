@@ -25,6 +25,8 @@ from src.codegen.kernels import (
     _build_leaf_kernel_source,
     _transpose_complex_kernel,
     _twiddle_transpose_complex_kernel,
+    contiguous_batch_pack_for,
+    four_step_col_inner_pack_for,
     lane_block_for,
 )
 
@@ -98,6 +100,7 @@ def _compile_leaf_source(
     artifact["kernel_type"] = kernel_type
     artifact["length"] = plan.length
     artifact["lanes"] = plan.lanes
+    artifact["batch_per_block"] = contiguous_batch_pack_for(plan) if kernel_type == "leaf" else 1
     artifact["grid"] = grid
     artifact_path = out_dir / f"{module_name}.json"
     artifact_path.write_text(json.dumps(artifact, sort_keys=True))
@@ -171,7 +174,11 @@ def compile_four_step_leaf_kernel(
         kernel_name, kernel_source = _build_four_step_col_kernel_source(
             plan, four_step_n1, four_step_n2
         )
-        grid = {"x": "n1", "y": "nbatch", "z": 1}
+        grid = {
+            "x": f"ceil_div(n1,{four_step_col_inner_pack_for(four_step_n1, four_step_n2)})",
+            "y": "nbatch",
+            "z": 1,
+        }
     else:
         raise ValueError(f"unsupported four-step leaf kernel kind: {kind}")
 

@@ -30,11 +30,22 @@ Forward complex leaf kernels currently have specialized codelets for radix
 generated Triton kernels, so the C++ planner does not pass DFT table parameters
 for those stages.
 
+Contiguous leaf kernels with fewer than one warp of active lanes may pack
+multiple batch rows into one CTA. The generated AOT artifact records
+`batch_per_block`, and C++ uses it to launch `ceil(batch / batch_per_block)`
+blocks. Packed leaves keep per-batch shared-memory regions separate and use
+limited padding only where Nsight Compute showed the bank-conflict reduction was
+worth the additional shared memory.
+
 Four-step plans whose row and column children are both `ct_leaf` nodes execute
 through fused AOT kernels. The row kernel reads the original four-step strided
 columns directly, and the column kernel applies the four-step twiddle while
 writing final natural order. This removes the separate transpose and
-twiddle-transpose launches from the hot path.
+twiddle-transpose launches from the hot path. The fused column kernel shares one
+inner-pack rule between Python codegen and C++ launch sizing: smaller `n1`
+plans keep one inner column per CTA, while `n1 >= 128` packs two adjacent
+`inner` columns and interleaves vector lanes to reduce natural-order store
+stride pressure.
 
 The implemented compute path is currently `flagfft.fft` for CUDA tensors on the
 last dimension. The remaining torch.fft-compatible entrypoints are present as API

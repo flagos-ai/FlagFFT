@@ -285,8 +285,12 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
             ++generic_stage_count;
         }
     }
-    std::vector<int64_t> score = {lanes, -lane_block, -generic_stage_count,
-                                  -static_cast<int64_t>(factors.size())};
+    int64_t warm_cost = static_cast<int64_t>(std::llround(estimate_leaf_warm_cost(n, factors) * 1024.0));
+    std::vector<int64_t> score = {-warm_cost,
+                                  -static_cast<int64_t>(factors.size()),
+                                  lanes,
+                                  -lane_block,
+                                  -generic_stage_count};
     score.insert(score.end(), factors.begin(), factors.end());
     return score;
 }
@@ -436,6 +440,13 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     if (n <= kDirectDftMaxN) {
         PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
         candidates.push_back({node, estimate_direct_dft_cost(n), priority(node)});
+    }
+
+    if (n == 16384) {
+        PlanNodePtr row = make_leaf_plan(64, std::vector<int64_t>{4, 4, 4});
+        PlanNodePtr col = make_leaf_plan(256, std::vector<int64_t>{4, 8, 8});
+        PlanNodePtr node = std::make_shared<FourStepPlanNode>(n, 64, 256, row, col);
+        candidates.push_back({node, four_step_cost(64, 256) * 0.5, priority(node)});
     }
 
     for (int64_t n1 : enumerate_divisors(n)) {

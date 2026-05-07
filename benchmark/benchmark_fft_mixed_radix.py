@@ -148,7 +148,7 @@ def main() -> None:
         "--lengths",
         type=int,
         nargs="+",
-        default=[10, 12, 15, 17, 19, 60, 120, 190, 255, 1020, 4096, 8192],
+        default=[10, 12, 15, 17, 19, 60, 120, 190, 255, 1020, 4096, 8192, 16384, 65536],
     )
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=5)

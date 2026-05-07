@@ -15,6 +15,10 @@ _CODELET_DIR = _PROJECT_ROOT / "src" / "codelet"
 _FOUR_STEP_TILE_ROWS = 32
 _FOUR_STEP_TILE_COLS = 32
 _FOUR_STEP_NUM_WARPS = 4
+_FOUR_STEP_COL_INNER_PACK = 2
+_FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
+_LEAF_PACK_TARGET_THREADS = 32
+_LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 _NATURAL_ORDER_CODELET_RADICES = frozenset({2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19})
 SPECIALIZED_INLINE_CODELET_RADICES: set[int] = set()
 
@@ -41,6 +45,36 @@ def lane_block_for(lanes: int) -> int:
     while value < lanes:
         value <<= 1
     return value
+
+
+def _floor_power_of_two(value: int) -> int:
+    power = 1
+    while power * 2 <= value:
+        power *= 2
+    return power
+
+
+def contiguous_batch_pack_for(plan: LeafPlan) -> int:
+    lane_block = lane_block_for(plan.lanes)
+    if lane_block >= _LEAF_PACK_TARGET_THREADS:
+        return 1
+
+    thread_pack = max(1, _LEAF_PACK_TARGET_THREADS // lane_block)
+    if plan.length <= 128:
+        thread_pack = min(thread_pack, 4)
+    if len(plan.factors) <= 1:
+        return thread_pack
+
+    bytes_per_fft = 4 * (plan.smem_size + 1) * 4
+    smem_pack = max(1, _LEAF_PACK_SMEM_BUDGET_BYTES // bytes_per_fft)
+    return _floor_power_of_two(max(1, min(thread_pack, smem_pack)))
+
+
+def four_step_col_inner_pack_for(n1: int, n2: int) -> int:
+    del n2
+    if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
+        return 1
+    return _FOUR_STEP_COL_INNER_PACK
 
 
 @triton.jit
@@ -327,6 +361,7 @@ def _emit_stage_block(
     io_mode: LeafIoMode = "contiguous",
     four_step_n1: int = 0,
     four_step_n2: int = 0,
+    smem_pack: int = 1,
 ) -> list[str]:
     radix = factors[stage]
     groups = n // (lanes * radix)
@@ -339,8 +374,12 @@ def _emit_stage_block(
 
     for j in range(radix):
         lines.append(
-            f"{indent}phys{j} = tl.where(lane_mask, lane + {lanes} * (group_{stage} * {radix} + {j}), 0)"
+            f"{indent}logical_phys{j} = tl.where(lane_mask, lane + {lanes} * (group_{stage} * {radix} + {j}), 0)"
         )
+        if smem_pack > 1:
+            lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
+        else:
+            lines.append(f"{indent}phys{j} = logical_phys{j}")
     if stage == 0:
         lines.extend(_emit_input_base(indent, factors, lanes, f"group_{stage}"))
     if is_last:
@@ -388,8 +427,8 @@ def _emit_stage_block(
             lines.append(
                 f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, (phys{j},)), mask=lane_mask, other=0.0)"
             )
-            lines.append(f"{indent}twr = tl.load(tw{stage}_r_ptr + phys{j}, mask=lane_mask, other=0.0)")
-            lines.append(f"{indent}twi = tl.load(tw{stage}_i_ptr + phys{j}, mask=lane_mask, other=0.0)")
+            lines.append(f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other=0.0)")
+            lines.append(f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other=0.0)")
             lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if radix == 16:
@@ -442,11 +481,15 @@ def _emit_stage_block(
                 )
         else:
             lines.extend(_emit_route_index(indent, f"dst{j}", stage, factors, lanes, j))
+            store_index = f"dst{j}"
+            if smem_pack > 1:
+                lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
+                store_index = f"smem_dst{j}"
             lines.append(
-                f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_r, (dst{j},)), r{j}, mask=lane_mask)"
+                f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_r, ({store_index},)), r{j}, mask=lane_mask)"
             )
             lines.append(
-                f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_i, (dst{j},)), i{j}, mask=lane_mask)"
+                f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_i, ({store_index},)), i{j}, mask=lane_mask)"
             )
 
     if not is_last:
@@ -482,6 +525,16 @@ def _build_leaf_kernel_source_for_io(
     n = plan.length
     smem_n = plan.smem_size
     lane_block = lane_block_for(plan.lanes)
+    batch_pack = contiguous_batch_pack_for(plan) if io_mode == "contiguous" else 1
+    inner_pack = (
+        four_step_col_inner_pack_for(four_step_n1, four_step_n2)
+        if io_mode == "four_step_col"
+        else 1
+    )
+    smem_pack = max(batch_pack, inner_pack)
+    vector_block = lane_block * smem_pack
+    smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    smem_n = lane_block_for(smem_slot_stride * smem_pack)
     params = _leaf_kernel_params(
         plan, include_four_step_twiddle=io_mode == "four_step_col"
     )
@@ -504,18 +557,40 @@ def _build_leaf_kernel_source_for_io(
     body.append("):")
     if io_mode == "contiguous":
         body.append("    pid = tl.program_id(0)")
-        body.append("    if pid >= nbatch:")
+        body.append(f"    batch_id = pid * {batch_pack}")
+        body.append("    if batch_id >= nbatch:")
         body.append("        return")
     else:
-        body.append("    four_step_inner = tl.program_id(0)")
+        if io_mode == "four_step_col" and inner_pack > 1:
+            body.append(f"    four_step_inner_base = tl.program_id(0) * {inner_pack}")
+        else:
+            body.append("    four_step_inner = tl.program_id(0)")
         body.append("    four_step_batch = tl.program_id(1)")
         body.append("    if four_step_batch >= nbatch:")
         body.append("        return")
-    body.append(f"    lane = tl.arange(0, {lane_block})")
-    body.append(f"    lane_mask = lane < {plan.lanes}")
+    body.append(f"    lane_vec = tl.arange(0, {vector_block})")
     if io_mode == "contiguous":
-        body.append(f"    batch_base = pid * {n}")
+        if batch_pack == 1:
+            body.append("    lane = lane_vec")
+            body.append(f"    lane_mask = lane < {plan.lanes}")
+            body.append(f"    batch_base = batch_id * {n}")
+        else:
+            body.append(f"    batch_slot = lane_vec // {lane_block}")
+            body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
+            body.append("    current_batch = batch_id + batch_slot")
+            body.append(f"    lane_mask = (lane < {plan.lanes}) & (current_batch < nbatch)")
+            body.append(f"    batch_base = current_batch * {n}")
+            body.append(f"    smem_offset = batch_slot * {smem_slot_stride}")
     else:
+        if io_mode == "four_step_col" and inner_pack > 1:
+            body.append(f"    inner_slot = lane_vec % {inner_pack}")
+            body.append(f"    lane = lane_vec // {inner_pack}")
+            body.append("    four_step_inner = four_step_inner_base + inner_slot")
+            body.append(f"    lane_mask = (lane < {plan.lanes}) & (four_step_inner < {four_step_n1})")
+            body.append(f"    smem_offset = inner_slot * {smem_slot_stride}")
+        else:
+            body.append("    lane = lane_vec")
+            body.append(f"    lane_mask = lane < {plan.lanes}")
         body.append(f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}")
 
     if len(factors) > 1:
@@ -543,6 +618,7 @@ def _build_leaf_kernel_source_for_io(
                 io_mode=io_mode,
                 four_step_n1=four_step_n1,
                 four_step_n2=four_step_n2,
+                smem_pack=smem_pack,
             )
         )
 
@@ -572,6 +648,8 @@ __all__ = [
     "LeafPlan",
     "_CODELET_DIR",
     "_FOUR_STEP_NUM_WARPS",
+    "_FOUR_STEP_COL_INNER_PACK",
+    "four_step_col_inner_pack_for",
     "_FOUR_STEP_TILE_COLS",
     "_FOUR_STEP_TILE_ROWS",
     "_build_leaf_kernel_source",

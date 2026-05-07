@@ -23,7 +23,11 @@ sequence. Four-step nodes whose row and column children are both `ct_leaf` use
 specialized fused row/column AOT kernels keyed as `four_step_row` and
 `four_step_col`. The fused row kernel reads the original strided input columns
 directly, while the fused column kernel loads the four-step twiddle and writes
-the final natural output order, reducing the hot path to two launches.
+the final natural output order, reducing the hot path to two launches. The fused
+column kernel uses a shared codegen/runtime inner-pack rule: it keeps one inner
+column per CTA for smaller `n1` values and packs two adjacent inner columns once
+`n1 >= 128`, interleaving those slots in the vector layout to reduce
+natural-order store stride pressure visible in Nsight Compute.
 
 ## Python Boundary
 
@@ -37,6 +41,16 @@ not own plan caching, tensor caching, or FFT execution fallback.
 `benchmark/tune_fft_plans.py` is an offline development tool that benchmarks
 explicit C++ plans and records measurement history in SQLite. It does not provide
 a Python FFT execution fallback or runtime plan cache.
+
+For contiguous `ct_leaf` kernels whose selected lane count is smaller than a
+warp, codegen can pack multiple independent batch rows into one CTA. The pack
+factor is derived from the lane block and a conservative shared-memory budget,
+rounded to powers of two for Triton/TLE shape constraints, and capped for very
+small leaves to avoid launching fewer blocks than the GPU can occupy. Packed
+artifacts expose `batch_per_block`; `src/cpp/exec/` uses that value only for
+contiguous leaf grid sizing. Four-step fused row kernels keep their existing
+`(inner, batch)` grid; fused column kernels use the dynamic inner-pack rule
+described above.
 
 ## Current Status
 
