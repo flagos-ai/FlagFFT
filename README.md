@@ -37,6 +37,13 @@ blocks. Packed leaves keep per-batch shared-memory regions separate and use
 limited padding only where Nsight Compute showed the bank-conflict reduction was
 worth the additional shared memory.
 
+`ct_leaf` candidate eligibility is based on the active CUDA device's opt-in
+dynamic shared-memory capacity, falling back to the normal per-block limit and
+then 48 KiB only if the Driver query fails. `smem_size` in plan and kernel keys
+continues to mean float32 scratch elements, not bytes. This lets tune enumerate
+single-CTA leaves such as 4096-point `complex64`/`float32` FFTs on devices that
+can launch their 64 KiB dynamic shared-memory kernels.
+
 Four-step plans whose row and column children are both `ct_leaf` nodes execute
 through fused AOT kernels. The row kernel reads the original four-step strided
 columns directly, and the column kernel applies the four-step twiddle while

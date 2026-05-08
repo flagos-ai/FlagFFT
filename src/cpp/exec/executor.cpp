@@ -462,7 +462,7 @@ std::shared_ptr<ExecutablePlan> PlanCache::get_or_create(const FFTRequest &reque
         }
     }
 
-    PlanNodePtr root = tuned_executable ? tuned_executable->root : builder.build(request.requested_n);
+    PlanNodePtr root = tuned_executable ? tuned_executable->root : builder.build(request.requested_n, request);
     PlanKey plan_key = tuned_executable ? tuned_executable->plan_key : PlanKey::from_node(root);
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -571,7 +571,7 @@ nb::dict debug_keys(nb::object input, nb::object n_obj, int64_t dim, nb::object 
     FFTRequest request = build_request(input, n_obj, dim, norm_obj);
     validate_request(request);
     PlanBuilder builder;
-    PlanNodePtr root = builder.build(request.requested_n);
+    PlanNodePtr root = builder.build(request.requested_n, request);
     nb::dict out;
     out["problem"] = problem_key_to_dict(ProblemKey::from_request(request));
     out["plan"] = plan_key_to_dict(PlanKey::from_node(root));
@@ -583,7 +583,7 @@ nb::dict debug_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object 
     FFTRequest request = build_request(input, n_obj, dim, norm_obj);
     validate_request(request);
     PlanBuilder builder;
-    PlanNodePtr root = builder.build(request.requested_n);
+    PlanNodePtr root = builder.build(request.requested_n, request);
     return builder.wrap_plan_dict(root, request);
 }
 
@@ -620,7 +620,7 @@ nb::list enumerate_plan_candidates(nb::object input,
 
 nb::dict tune_fingerprints() {
     nb::dict out;
-    out["planner"] = "planner-schema-1-pruned-quick";
+    out["planner"] = "planner-schema-2-device-smem-leaf";
     out["codegen"] = "codegen-schema-2-fused-four-step";
     out["runtime"] = "runtime-schema-2-fused-four-step";
     out["benchmark"] = "benchmark-schema-1";

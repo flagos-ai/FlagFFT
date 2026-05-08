@@ -61,6 +61,16 @@ contiguous leaf grid sizing. Four-step fused row kernels keep their existing
 `(inner, batch)` grid; fused column kernels use the dynamic inner-pack rule
 described above.
 
+Planner `ct_leaf` eligibility is request-aware. For `float32` and `complex64`
+inputs, the planner records `smem_size` as float32 scratch elements and converts
+that to bytes only when checking whether the current CUDA device can launch the
+candidate. It queries `CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN`,
+falls back to `CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK`, and uses 48 KiB
+only if the Driver query fails. This changes candidate enumeration without
+changing the plan schema: large single-CTA leaves such as 4096-point FFTs can be
+tuned on devices with sufficient opt-in dynamic shared memory, while unsupported
+double-precision scratch rules remain outside the leaf planner.
+
 ## Current Status
 
 `flagfft.fft` is implemented for CUDA tensors on the last dimension. Other torch.fft

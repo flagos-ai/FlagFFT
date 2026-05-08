@@ -131,11 +131,54 @@ PlanKey PlanKey::from_node(const PlanNodePtr &node) {
                  "unsupported plan node kind for key generation: " + plan_node_kind_name(node->kind));
 }
 
-PlanNodePtr PlanBuilder::build(int64_t n) {
+bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
+    return input_dtype == other.input_dtype && output_dtype == other.output_dtype &&
+           device_index == other.device_index && device_arch == other.device_arch &&
+           max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
+}
+
+PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &request) const {
+    RequestContext context;
+    context.input_dtype = request.input_dtype;
+    context.output_dtype = request.output_dtype;
+    context.device_index = request.device_index;
+    context.device_arch = request.device_arch;
+    if (request.device_type == "cuda") {
+        context.max_dynamic_smem_bytes =
+            cuda_device_max_dynamic_shared_memory_bytes(request.device_index);
+    }
+    return context;
+}
+
+void PlanBuilder::set_request_context(const FFTRequest &request) {
+    RequestContext next = make_request_context(request);
+    if (request_context_.has_value() && *request_context_ == next) {
+        return;
+    }
+    request_context_ = std::move(next);
+    node_cache_.clear();
+    cost_cache_.clear();
+    tune_candidate_cache_.clear();
+}
+
+const PlanBuilder::RequestContext &PlanBuilder::request_context() const {
+    if (!request_context_.has_value()) {
+        throw std::runtime_error("PlanBuilder request context is not initialized");
+    }
+    return *request_context_;
+}
+
+PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
+    set_request_context(request);
     if (n <= 0) {
         raise_python(PyExc_ValueError, "FFT length must be positive");
     }
     return build_auto_node(n);
+}
+
+double PlanBuilder::cost_for(int64_t n, const FFTRequest &request) {
+    set_request_context(request);
+    return cost_for(n);
 }
 
 double PlanBuilder::cost_for(int64_t n) {
@@ -165,7 +208,7 @@ nb::dict PlanBuilder::wrap_forced_plan_dict(const PlanNodePtr &root,
     out["schema_version"] = kPlanSchemaVersion;
     out["source"] = std::move(source);
     out["request"] = request_to_dict(request);
-    out["estimated_cost"] = cost_for(root->length);
+    out["estimated_cost"] = cost_for(root->length, request);
     out["plan_key"] = plan_key_to_dict(PlanKey::from_node(root));
     out["tags"] = nb::dict();
     out["root"] = root->to_dict();
@@ -194,8 +237,9 @@ PlanNodePtr PlanBuilder::node_from_dict(nb::dict node) {
             }
             std::sort(generic_radices.begin(), generic_radices.end());
         }
-        int64_t smem_size =
-            node.contains("smem_size") ? nb::cast<int64_t>(node["smem_size"]) : ceil_power_of_two(length);
+        int64_t smem_size = node.contains("smem_size")
+                                 ? nb::cast<int64_t>(node["smem_size"])
+                                 : (factors.size() <= 1 ? 0 : ceil_power_of_two(length));
         return std::make_shared<LeafPlanNode>(length, std::move(factors), remainder, lanes,
                                               num_warps, std::move(generic_radices), smem_size);
     }
@@ -353,19 +397,42 @@ int64_t PlanBuilder::choose_num_warps(int64_t lanes) {
     return std::min<int64_t>(choice, 8);
 }
 
-int64_t PlanBuilder::estimate_leaf_smem_bytes(int64_t n, const std::vector<int64_t> &factors) {
+std::optional<int64_t> PlanBuilder::leaf_smem_elements(int64_t n,
+                                                       const std::vector<int64_t> &factors,
+                                                       const std::string &input_dtype) {
+    if (input_dtype != "complex64" && input_dtype != "float32") {
+        return std::nullopt;
+    }
     if (factors.size() <= 1) {
         return 0;
     }
-    int64_t smem_n = ceil_power_of_two(n);
-    return 4 * smem_n * 4;
+    return ceil_power_of_two(n);
+}
+
+std::optional<int64_t> PlanBuilder::leaf_smem_bytes(int64_t n,
+                                                    const std::vector<int64_t> &factors,
+                                                    const std::string &input_dtype) {
+    auto elements = leaf_smem_elements(n, factors, input_dtype);
+    if (!elements.has_value()) {
+        return std::nullopt;
+    }
+    return 4 * *elements * static_cast<int64_t>(sizeof(float));
 }
 
 bool PlanBuilder::should_use_leaf(int64_t n, const std::vector<int64_t> &factors) {
-    return n <= kLeafMaxN && estimate_leaf_smem_bytes(n, factors) <= kLeafSmemBudgetBytes;
+    const RequestContext &context = request_context();
+    auto smem_bytes = leaf_smem_bytes(n, factors, context.input_dtype);
+    return n <= kLeafMaxN && smem_bytes.has_value() &&
+           *smem_bytes <= context.max_dynamic_smem_bytes;
 }
 
 PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &factors, int64_t rem) {
+    const RequestContext &context = request_context();
+    auto smem_elements = leaf_smem_elements(n, factors, context.input_dtype);
+    if (!smem_elements.has_value()) {
+        raise_python(PyExc_NotImplementedError,
+                     "ct_leaf shared-memory planner currently supports only float32 and complex64 inputs");
+    }
     int64_t lanes = choose_lanes(n, factors);
     std::vector<int64_t> generic_radices;
     for (int64_t radix : factors) {
@@ -378,7 +445,7 @@ PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &f
     }
     std::sort(generic_radices.begin(), generic_radices.end());
     return std::make_shared<LeafPlanNode>(n, factors, rem, lanes, choose_num_warps(lanes),
-                                          generic_radices, ceil_power_of_two(n));
+                                          generic_radices, *smem_elements);
 }
 
 double PlanBuilder::estimate_leaf_warm_cost(int64_t n) {
@@ -493,7 +560,8 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         candidates.push_back({node, estimate_direct_dft_cost(n), priority(node)});
     }
 
-    if (n == 16384) {
+    if (n == 16384 && should_use_leaf(64, std::vector<int64_t>{4, 4, 4}) &&
+        should_use_leaf(256, std::vector<int64_t>{4, 8, 8})) {
         PlanNodePtr row = make_leaf_plan(64, std::vector<int64_t>{4, 4, 4});
         PlanNodePtr col = make_leaf_plan(256, std::vector<int64_t>{4, 8, 8});
         PlanNodePtr node = std::make_shared<FourStepPlanNode>(n, 64, 256, row, col);
@@ -671,6 +739,7 @@ std::vector<PlanCandidate> PlanBuilder::build_tune_candidates(int64_t n, int64_t
 }
 
 nb::list PlanBuilder::enumerate_candidate_plans(int64_t n, const FFTRequest &request) {
+    set_request_context(request);
     nb::list out;
     for (const auto &candidate : build_tune_candidates(n, 0)) {
         nb::dict item = wrap_forced_plan_dict(candidate.node, request, "cpp_tune_candidate");

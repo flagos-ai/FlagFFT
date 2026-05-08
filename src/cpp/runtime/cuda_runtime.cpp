@@ -73,6 +73,31 @@ CUstream current_cuda_stream(const FFTRequest &request) {
     return reinterpret_cast<CUstream>(nb::cast<uint64_t>(stream_obj.attr("cuda_stream")));
 }
 
+int64_t cuda_device_max_dynamic_shared_memory_bytes(int64_t device_index) {
+    if (device_index < 0 || cuInit(0) != CUDA_SUCCESS) {
+        return kDynamicSmemFallbackBytes;
+    }
+
+    CUdevice device;
+    if (cuDeviceGet(&device, static_cast<int>(device_index)) != CUDA_SUCCESS) {
+        return kDynamicSmemFallbackBytes;
+    }
+
+    int value = 0;
+    CUresult result = cuDeviceGetAttribute(
+        &value, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN, device);
+    if (result == CUDA_SUCCESS && value > 0) {
+        return static_cast<int64_t>(value);
+    }
+
+    value = 0;
+    result = cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, device);
+    if (result == CUDA_SUCCESS && value > 0) {
+        return static_cast<int64_t>(value);
+    }
+    return kDynamicSmemFallbackBytes;
+}
+
 AotKernelArg AotKernelArg::device(CUdeviceptr value) {
     AotKernelArg arg;
     arg.kind = AotArgKind::DevicePtr;

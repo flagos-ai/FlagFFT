@@ -36,7 +36,7 @@ namespace flagfft {
 inline constexpr int64_t kPlanSchemaVersion = 2;
 inline constexpr int64_t kDirectDftMaxN = 64;
 inline constexpr int64_t kLeafMaxN = 4096;
-inline constexpr int64_t kLeafSmemBudgetBytes = 48 * 1024;
+inline constexpr int64_t kDynamicSmemFallbackBytes = 48 * 1024;
 inline constexpr int64_t kMaxLanes = 128;
 inline constexpr double kPi = 3.14159265358979323846264338327950288;
 inline constexpr int64_t kFourStepTileRows = 32;
@@ -298,14 +298,27 @@ struct PlanCandidate {
 
 class PlanBuilder {
 public:
-    PlanNodePtr build(int64_t n);
-    double cost_for(int64_t n);
+    PlanNodePtr build(int64_t n, const FFTRequest &request);
+    double cost_for(int64_t n, const FFTRequest &request);
     nb::dict wrap_plan_dict(const PlanNodePtr &root, const FFTRequest &request);
     nb::list enumerate_candidate_plans(int64_t n, const FFTRequest &request);
     PlanNodePtr node_from_dict(nb::dict node);
     nb::dict wrap_forced_plan_dict(const PlanNodePtr &root, const FFTRequest &request, std::string source);
 
 private:
+    struct RequestContext {
+        std::string input_dtype;
+        std::string output_dtype;
+        int64_t device_index = -1;
+        std::string device_arch;
+        int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
+
+        bool operator==(const RequestContext &other) const;
+    };
+
+    RequestContext make_request_context(const FFTRequest &request) const;
+    void set_request_context(const FFTRequest &request);
+    const RequestContext &request_context() const;
     Factorization factorize_supported_radices(int64_t n);
     std::vector<std::vector<int64_t>> enumerate_supported_factorizations(int64_t n);
     std::vector<int64_t> factorize_or_raise(int64_t n);
@@ -313,7 +326,12 @@ private:
     std::vector<int64_t> score_leaf_factorization(int64_t n, const std::vector<int64_t> &factors);
     std::vector<int64_t> select_leaf_factors(int64_t n);
     int64_t choose_num_warps(int64_t lanes);
-    int64_t estimate_leaf_smem_bytes(int64_t n, const std::vector<int64_t> &factors);
+    std::optional<int64_t> leaf_smem_elements(int64_t n,
+                                              const std::vector<int64_t> &factors,
+                                              const std::string &input_dtype);
+    std::optional<int64_t> leaf_smem_bytes(int64_t n,
+                                           const std::vector<int64_t> &factors,
+                                           const std::string &input_dtype);
     bool should_use_leaf(int64_t n, const std::vector<int64_t> &factors);
     PlanNodePtr make_leaf_plan(int64_t n, const std::vector<int64_t> &factors, int64_t rem = 1);
     double estimate_leaf_warm_cost(int64_t n, const std::vector<int64_t> &factors);
@@ -330,8 +348,10 @@ private:
     std::vector<PlanCandidate> build_leaf_tune_candidates(int64_t n);
     PlanCandidate select_candidate(const std::vector<PlanCandidate> &candidates);
     PlanNodePtr build_auto_node(int64_t n);
+    double cost_for(int64_t n);
     std::vector<PlanCandidate> top_candidates(std::vector<PlanCandidate> candidates, int64_t limit);
 
+    std::optional<RequestContext> request_context_;
     std::unordered_map<int64_t, PlanNodePtr> node_cache_;
     std::unordered_map<int64_t, double> cost_cache_;
     std::unordered_map<int64_t, std::vector<int64_t>> divisor_cache_;
@@ -365,6 +385,7 @@ int64_t tensor_size(const nb::object &tensor, int64_t dim);
 int64_t tensor_stride(const nb::object &tensor, int64_t dim);
 CUdeviceptr tensor_data_ptr(const nb::object &tensor);
 CUstream current_cuda_stream(const FFTRequest &request);
+int64_t cuda_device_max_dynamic_shared_memory_bytes(int64_t device_index);
 
 enum class AotArgKind { DevicePtr, Int32, Int64 };
 

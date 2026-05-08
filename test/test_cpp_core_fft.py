@@ -22,6 +22,27 @@ def _sample(dtype: torch.dtype, n: int = 16) -> torch.Tensor:
     return torch.randn(2, n, device="cuda", dtype=dtype)
 
 
+def _supports_4096_leaf_smem() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    major, _minor = torch.cuda.get_device_capability(torch.cuda.current_device())
+    return major >= 7
+
+
+requires_4096_leaf_smem = pytest.mark.skipif(
+    not _supports_4096_leaf_smem(),
+    reason="current CUDA device cannot opt in to the 64 KiB 4096-point leaf scratch",
+)
+
+
+def _leaf_candidate(candidates, n: int = 4096):
+    return next(
+        candidate
+        for candidate in candidates
+        if candidate["root"]["kind"] == "ct_leaf" and candidate["root"]["length"] == n
+    )
+
+
 def _tuned_fields(x: torch.Tensor) -> dict[str, object]:
     request = dict(_flagfft_core.debug_request(x))
     fps = dict(_flagfft_core.tune_fingerprints())
@@ -166,7 +187,53 @@ def test_cpp_aot_leaf_lengths_match_torch(n: int) -> None:
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
 
 
-@pytest.mark.parametrize("n", [4096, 8192, 16384])
+@requires_4096_leaf_smem
+def test_enumerate_plan_candidates_includes_device_smem_leaf_4096() -> None:
+    x = _sample(torch.complex64, n=4096)[:1]
+
+    leaf = _leaf_candidate(list(_flagfft_core.enumerate_plan_candidates(x)))
+
+    assert leaf["root"]["smem_size"] == 4096
+    assert leaf["plan_key"]["smem_size"] == 4096
+
+
+@requires_4096_leaf_smem
+@pytest.mark.parametrize("dtype", [torch.complex64, torch.float32])
+def test_forced_large_leaf_4096_matches_torch(dtype: torch.dtype) -> None:
+    x = _sample(dtype, n=4096)[:1]
+    leaf = _leaf_candidate(list(_flagfft_core.enumerate_plan_candidates(x)))
+
+    y = _flagfft_core.fft_with_plan(x, leaf)
+    ref = torch.fft.fft(x, dim=-1)
+
+    assert y.dtype is torch.complex64
+    assert leaf["root"]["smem_size"] == 4096
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+@requires_4096_leaf_smem
+def test_tuned_db_can_select_large_leaf_4096(tmp_path, monkeypatch) -> None:
+    x = _sample(torch.complex64, n=4096)[:1]
+    leaf = _leaf_candidate(list(_flagfft_core.enumerate_plan_candidates(x)))
+    db = tmp_path / "tuned.sqlite"
+    _write_tuned_winner(db, x, leaf)
+
+    monkeypatch.setenv("FLAGFFT_TUNE_DB", str(db))
+    monkeypatch.delenv("FLAGFFT_TUNE_DISABLE", raising=False)
+    _flagfft_core.clear_plan_cache()
+
+    y = flagfft.fft(x)
+    resolved = _flagfft_core.debug_resolved_plan(x)
+    ref = torch.fft.fft(x, dim=-1)
+
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+    assert resolved["source"] == "sqlite_tuned"
+    assert resolved["root"]["kind"] == "ct_leaf"
+    assert resolved["root"]["length"] == 4096
+    assert resolved["root"]["smem_size"] == 4096
+
+
+@pytest.mark.parametrize("n", [8192, 16384])
 def test_cpp_aot_four_step_matches_torch(n: int) -> None:
     x = _sample(torch.complex64, n=n)[:1]
 
