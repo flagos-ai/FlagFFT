@@ -143,6 +143,15 @@ Benchmarks compare FlagFFT against `torch.fft` through the C++ backend:
 python benchmark/benchmark_fft_mixed_radix.py --lengths 10 12 15 17 19 60 120 190 255 1020
 ```
 
+Add `--tune` to run normal tuning for each length before timing; existing valid
+winners are reused. Use `--tune retune` to supersede existing tuned winners
+before the benchmark:
+
+```sh
+python benchmark/benchmark_fft_mixed_radix.py --lengths 16384 --batch 1 --tune
+python benchmark/benchmark_fft_mixed_radix.py --lengths 16384 --batch 1 --tune retune
+```
+
 Set `FLAGFFT_TUNE_DB=/path/to/tuned_plans.sqlite` only when benchmarking against
 a non-default tuned-plan database.
 

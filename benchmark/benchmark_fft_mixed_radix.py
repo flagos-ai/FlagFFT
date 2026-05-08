@@ -5,7 +5,7 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -13,6 +13,9 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flagfft import fft as flagfft_fft
+from flagfft import tune as flagfft_tune
+
+TuneMode = Literal["tune", "retune"]
 
 
 def _bench_warm_wall_ms(fn, warmup: int, iters: int) -> float:
@@ -123,8 +126,29 @@ def benchmark_mixed_radix_once(n: int, batch: int = 64, warmup: int = 20, iters:
     }
 
 
-def run_benchmark(lengths: list[int], batch: int, warmup: int, iters: int) -> None:
+def _tune_before_benchmark(n: int, batch: int, warmup: int, iters: int, tune_mode: TuneMode) -> None:
+    retune = tune_mode == "retune"
+    print(f"[tune={'retune' if retune else 'tune'} n={n} batch={batch}]")
+    flagfft_tune(
+        flagfft_fft,
+        lengths=[n],
+        batch=batch,
+        retune=retune,
+        warmup=warmup,
+        iters=iters,
+    )
+
+
+def run_benchmark(
+    lengths: list[int],
+    batch: int,
+    warmup: int,
+    iters: int,
+    tune_mode: TuneMode | None = None,
+) -> None:
     for n in lengths:
+        if tune_mode is not None:
+            _tune_before_benchmark(n, batch, warmup, iters, tune_mode)
         stats = benchmark_mixed_radix_once(n=n, batch=batch, warmup=warmup, iters=iters)
         print(f"[backend={stats['backend']} mode={stats['plan_source']} n={n} batch={batch}]")
         print("  plan:")
@@ -142,7 +166,7 @@ def run_benchmark(lengths: list[int], batch: int, warmup: int, iters: int) -> No
         )
 
 
-def main() -> None:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark FFT mixed-radix execution through the C++ backend.")
     parser.add_argument(
         "--lengths",
@@ -153,17 +177,30 @@ def main() -> None:
     parser.add_argument("--batch", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--iters", type=int, default=200)
+    parser.add_argument(
+        "--tune",
+        nargs="?",
+        choices=["tune", "retune"],
+        const="tune",
+        default=None,
+        help="Tune each length before benchmarking. Use --tune/--tune tune to keep existing winners, or --tune retune to supersede them.",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = _parser()
     args = parser.parse_args()
 
     if len(args.lengths) == 0:
         print("======== mixed Cooley-Tukey ========")
         normal_lengths = [10, 12, 15, 17, 19, 60, 120, 190, 255, 1020, 4096, 8192, 16384, 65536]
-        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters)
+        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters, args.tune)
         print("======== Bluestein ========")
         normal_lengths = [331, 4093, 16381, 65537, 65539]
-        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters)
+        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters, args.tune)
     else:
-        run_benchmark(args.lengths, args.batch, args.warmup, args.iters)
+        run_benchmark(args.lengths, args.batch, args.warmup, args.iters, args.tune)
 
 
 if __name__ == "__main__":

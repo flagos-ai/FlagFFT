@@ -45,10 +45,11 @@ not own plan caching, tensor caching, or FFT execution fallback.
 `flagfft.tune(...)` and the thin `flagfft-tune` CLI. It benchmarks explicit C++
 plans through `_flagfft_core.enumerate_plan_candidates()` and
 `_flagfft_core.fft_with_plan()`, records measurement history in SQLite, and can
-load problem lists from CLI flags, a JSON string, or a JSON file. Only
-`flagfft.fft` is currently benchmarkable; all other API names are reserved in
-the tune dispatcher and raise `NotImplementedError` without invoking any Python
-FFT fallback.
+load problem lists from CLI flags, a JSON string, or a JSON file. The focused
+mixed-radix benchmark can call the same tuner before timing with `--tune`, or
+force a new winner with `--tune retune`. Only `flagfft.fft` is currently
+benchmarkable; all other API names are reserved in the tune dispatcher and raise
+`NotImplementedError` without invoking any Python FFT fallback.
 
 For contiguous `ct_leaf` kernels whose selected lane count is smaller than a
 warp, codegen can pack multiple independent batch rows into one CTA. The pack
