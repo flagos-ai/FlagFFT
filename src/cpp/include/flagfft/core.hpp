@@ -573,6 +573,7 @@ private:
     int64_t problem_misses_ = 0;
     int64_t plan_hits_ = 0;
     int64_t plan_misses_ = 0;
+    int64_t tuned_db_lookups_ = 0;
 };
 
 PlanCache &plan_cache();

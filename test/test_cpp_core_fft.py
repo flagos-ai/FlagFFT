@@ -4,6 +4,7 @@ import pytest
 import torch
 
 import flagfft
+from src.tuning import TuneConfig, _batch_bucket, _connect, _insert_measurement, _problem_fields
 
 _flagfft_core = pytest.importorskip("_flagfft_core")
 
@@ -19,6 +20,36 @@ def _sample(dtype: torch.dtype, n: int = 16) -> torch.Tensor:
         imag = torch.randn(2, n, device="cuda", dtype=real_dtype)
         return torch.complex(real, imag).to(dtype)
     return torch.randn(2, n, device="cuda", dtype=dtype)
+
+
+def _tuned_fields(x: torch.Tensor) -> dict[str, object]:
+    request = dict(_flagfft_core.debug_request(x))
+    fps = dict(_flagfft_core.tune_fingerprints())
+    return {
+        "schema_version": int(request.get("schema_version", 2)),
+        "device_arch": request["device_arch"],
+        "fft_length": request["requested_n"],
+        "batch_bucket": _batch_bucket(request["batch"]),
+        "batch": request["batch"],
+        "dtype": request["input_dtype"],
+        "direction": request["direction"],
+        "norm": request["norm"],
+        "input_layout": request["input_layout"],
+        "planner_fingerprint": fps["planner"],
+        "codegen_fingerprint": fps["codegen"],
+        "runtime_fingerprint": fps["runtime"],
+        "benchmark_fingerprint": fps["benchmark"],
+    }
+
+
+def _write_tuned_winner(db, x: torch.Tensor, plan=None):
+    plan = plan if plan is not None else _flagfft_core.enumerate_plan_candidates(x)[0]
+    fields = _tuned_fields(x)
+    fields["schema_version"] = plan["schema_version"]
+    with _connect(db) as conn:
+        _insert_measurement(conn, fields, plan, status="valid", rank=0)
+        conn.commit()
+    return plan
 
 
 @pytest.mark.parametrize(
@@ -259,77 +290,13 @@ def test_enumerate_plan_candidates_and_forced_plan_roundtrip() -> None:
 
 
 def test_tuned_db_winner_is_used_when_fingerprints_match(tmp_path, monkeypatch) -> None:
-    import json
-    import sqlite3
-
     x = _sample(torch.complex64, n=64)
     plan = _flagfft_core.enumerate_plan_candidates(x)[0]
-    request = _flagfft_core.debug_request(x)
-    fps = _flagfft_core.tune_fingerprints()
     db = tmp_path / "tuned.sqlite"
-    conn = sqlite3.connect(db)
-    conn.execute(
-        """
-        CREATE TABLE tuned_measurements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            schema_version INTEGER NOT NULL,
-            device_arch TEXT NOT NULL,
-            fft_length INTEGER NOT NULL,
-            batch_bucket TEXT NOT NULL,
-            batch INTEGER NOT NULL,
-            dtype TEXT NOT NULL,
-            direction TEXT NOT NULL,
-            norm TEXT NOT NULL,
-            input_layout TEXT NOT NULL,
-            planner_fingerprint TEXT NOT NULL,
-            codegen_fingerprint TEXT NOT NULL,
-            runtime_fingerprint TEXT NOT NULL,
-            benchmark_fingerprint TEXT NOT NULL,
-            plan_key TEXT NOT NULL,
-            plan_json TEXT NOT NULL,
-            status TEXT NOT NULL,
-            rank INTEGER,
-            compile_ms REAL,
-            first_call_ms REAL,
-            median_ms REAL,
-            p90_ms REAL,
-            max_abs_err REAL,
-            rms_err REAL,
-            failure_reason TEXT,
-            measured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    conn.execute(
-        """
-        INSERT INTO tuned_measurements (
-            schema_version, device_arch, fft_length, batch_bucket, batch, dtype, direction,
-            norm, input_layout, planner_fingerprint, codegen_fingerprint, runtime_fingerprint,
-            benchmark_fingerprint, plan_key, plan_json, status, rank
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'valid', 0)
-        """,
-        (
-            plan["schema_version"],
-            request["device_arch"],
-            request["requested_n"],
-            "2-8",
-            request["batch"],
-            request["input_dtype"],
-            request["direction"],
-            request["norm"],
-            request["input_layout"],
-            fps["planner"],
-            fps["codegen"],
-            fps["runtime"],
-            fps["benchmark"],
-            plan["plan_key"]["repr"],
-            json.dumps(plan, sort_keys=True),
-        ),
-    )
-    conn.commit()
-    conn.close()
+    _write_tuned_winner(db, x, plan)
 
     monkeypatch.setenv("FLAGFFT_TUNE_DB", str(db))
+    monkeypatch.delenv("FLAGFFT_TUNE_DISABLE", raising=False)
     _flagfft_core.clear_plan_cache()
 
     y = flagfft.fft(x)
@@ -339,3 +306,61 @@ def test_tuned_db_winner_is_used_when_fingerprints_match(tmp_path, monkeypatch) 
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
     assert resolved["source"] == "sqlite_tuned"
     assert resolved["plan_key"]["repr"] == plan["plan_key"]["repr"]
+
+
+def test_tuning_problem_fields_use_current_plan_schema() -> None:
+    x = _sample(torch.complex64, n=64)
+
+    fields = _problem_fields(_flagfft_core, x, TuneConfig(lengths=(64,)))
+
+    assert fields["schema_version"] == _flagfft_core.debug_plan(x)["schema_version"]
+
+
+def test_default_tuned_db_path_is_used_when_env_is_unset(tmp_path, monkeypatch) -> None:
+    x = _sample(torch.complex64, n=64)
+    plan = _write_tuned_winner(tmp_path / ".flagfft" / "tuned_plans.sqlite", x)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FLAGFFT_TUNE_DB", raising=False)
+    monkeypatch.delenv("FLAGFFT_TUNE_DISABLE", raising=False)
+    _flagfft_core.clear_plan_cache()
+
+    resolved = _flagfft_core.debug_resolved_plan(x)
+
+    assert resolved["source"] == "sqlite_tuned"
+    assert resolved["plan_key"]["repr"] == plan["plan_key"]["repr"]
+
+
+def test_tuned_db_disable_skips_matching_winner(tmp_path, monkeypatch) -> None:
+    x = _sample(torch.complex64, n=64)
+    db = tmp_path / "tuned.sqlite"
+    _write_tuned_winner(db, x)
+
+    monkeypatch.setenv("FLAGFFT_TUNE_DB", str(db))
+    monkeypatch.setenv("FLAGFFT_TUNE_DISABLE", "1")
+    _flagfft_core.clear_plan_cache()
+
+    resolved = _flagfft_core.debug_resolved_plan(x)
+
+    assert resolved["source"] == "cpp_auto"
+
+
+def test_warm_problem_cache_hit_does_not_recheck_tuned_db(tmp_path, monkeypatch) -> None:
+    x = _sample(torch.complex64, n=64)
+    db = tmp_path / "tuned.sqlite"
+    _write_tuned_winner(db, x)
+
+    monkeypatch.setenv("FLAGFFT_TUNE_DB", str(db))
+    monkeypatch.delenv("FLAGFFT_TUNE_DISABLE", raising=False)
+    _flagfft_core.clear_plan_cache()
+
+    flagfft.fft(x)
+    after_first = _flagfft_core.cache_info()
+    monkeypatch.setenv("FLAGFFT_TUNE_DISABLE", "1")
+    flagfft.fft(x)
+    after_second = _flagfft_core.cache_info()
+
+    assert after_first["problem_misses"] == 1
+    assert after_first["tuned_db_lookups"] == 1
+    assert after_second["problem_hits"] == after_first["problem_hits"] + 1
+    assert after_second["tuned_db_lookups"] == after_first["tuned_db_lookups"]

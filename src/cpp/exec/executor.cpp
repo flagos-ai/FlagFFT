@@ -36,6 +36,28 @@ std::string batch_bucket(int64_t batch) {
     return "513+";
 }
 
+bool env_flag_enabled(const char *value) {
+    if (value == nullptr) {
+        return false;
+    }
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return !(normalized.empty() || normalized == "0" || normalized == "false" ||
+             normalized == "off" || normalized == "no");
+}
+
+std::optional<std::filesystem::path> tuned_db_path() {
+    if (env_flag_enabled(std::getenv("FLAGFFT_TUNE_DISABLE"))) {
+        return std::nullopt;
+    }
+    const char *override_path = std::getenv("FLAGFFT_TUNE_DB");
+    if (override_path != nullptr && std::string(override_path).size() > 0) {
+        return std::filesystem::path(override_path);
+    }
+    return std::filesystem::path(".flagfft") / "tuned_plans.sqlite";
+}
+
 PlanNodePtr plan_node_from_wrapped_dict(PlanBuilder &builder, nb::dict plan) {
     nb::dict root = plan.contains("root") ? nb::cast<nb::dict>(plan["root"]) : plan;
     return builder.node_from_dict(root);
@@ -62,14 +84,18 @@ std::shared_ptr<ExecutablePlan> build_executable_from_root(const FFTRequest &req
 }
 
 std::optional<nb::dict> lookup_tuned_plan_dict(const FFTRequest &request) {
-    const char *db_path = std::getenv("FLAGFFT_TUNE_DB");
-    if (db_path == nullptr || std::string(db_path).empty()) {
+    auto db_path = tuned_db_path();
+    if (!db_path.has_value()) {
+        return std::nullopt;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(*db_path, ec)) {
         return std::nullopt;
     }
     try {
         nb::dict fps = tune_fingerprints();
         nb::module_ sqlite3 = nb::module_::import_("sqlite3");
-        nb::object conn = sqlite3.attr("connect")(db_path);
+        nb::object conn = sqlite3.attr("connect")(db_path->string());
         nb::object row = nb::none();
         try {
             nb::object cursor = conn.attr("execute")(
@@ -421,6 +447,10 @@ std::shared_ptr<ExecutablePlan> PlanCache::get_or_create(const FFTRequest &reque
 
     PlanBuilder builder;
     std::shared_ptr<ExecutablePlan> tuned_executable;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++tuned_db_lookups_;
+    }
     if (auto tuned_plan = lookup_tuned_plan_dict(request)) {
         try {
             PlanNodePtr tuned_root = plan_node_from_wrapped_dict(builder, *tuned_plan);
@@ -463,6 +493,7 @@ void PlanCache::clear() {
     problem_misses_ = 0;
     plan_hits_ = 0;
     plan_misses_ = 0;
+    tuned_db_lookups_ = 0;
     TritonCompiler::clear_kernel_cache();
 }
 
@@ -475,6 +506,7 @@ nb::dict PlanCache::info() const {
     out["plan_size"] = plan_cache_.size();
     out["plan_hits"] = plan_hits_;
     out["plan_misses"] = plan_misses_;
+    out["tuned_db_lookups"] = tuned_db_lookups_;
     nb::dict kernel = TritonCompiler::kernel_cache_info();
     out["kernel_size"] = kernel["kernel_size"];
     out["kernel_hits"] = kernel["kernel_hits"];

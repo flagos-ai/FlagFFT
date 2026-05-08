@@ -32,5 +32,5 @@ install(TARGETS _flagfft_core
         RUNTIME DESTINATION "."
         ARCHIVE DESTINATION ".")
 install(FILES flagfft.py DESTINATION ".")
-install(FILES src/__init__.py src/api.py src/flagfft.py src/triton_aot.py DESTINATION "src")
+install(FILES src/__init__.py src/api.py src/flagfft.py src/flagfft_tune.py src/tuning.py src/triton_aot.py DESTINATION "src")
 install(DIRECTORY src/codegen src/codelet DESTINATION "src" FILES_MATCHING PATTERN "*.py")

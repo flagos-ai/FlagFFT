@@ -24,6 +24,7 @@ from .api import (
     rfftfreq,
     rfftn,
 )
+from .tuning import tune
 
 __all__ = [
     "fft",
@@ -48,4 +49,5 @@ __all__ = [
     "rfftfreq",
     "fftshift",
     "ifftshift",
+    "tune",
 ]

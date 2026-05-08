@@ -83,24 +83,44 @@ inspecting problem/plan/kernel keys, `cache_info()` for the three cache layers,
 `cache_keys()` for currently cached entries, `enumerate_plan_candidates()` for
 offline tuning, and `fft_with_plan()` for benchmarking an explicit plan.
 
-Offline tuning uses a quick, pruned search by default:
+Offline tuning is exposed as the `flagfft-tune` console script and as
+`flagfft.tune(...)`. Both routes benchmark explicit C++ plan candidates and
+store measurement history in SQLite:
 
 ```sh
-python benchmark/tune_fft_plans.py --lengths 4096 --batch 256 --mode quick --retune
+flagfft-tune --api fft --lengths 4096 --batch 256 --retune
 ```
 
-The tuner writes `.flagfft/tuned_plans.sqlite` unless `--db` is provided.
-Set `FLAGFFT_TUNE_DB=/path/to/tuned_plans.sqlite` before normal `flagfft.fft`
-calls to allow the C++ runtime to use matching tuned winners. Use
+```py
+import flagfft
+
+flagfft.tune(flagfft.fft, lengths=[4096], batch=256, retune=True)
+```
+
+The tuner writes `.flagfft/tuned_plans.sqlite` unless `--db` or the Python
+`db=` argument is provided. Normal `flagfft.fft` calls read that default
+database automatically on cold plan-cache misses. `FLAGFFT_TUNE_DB` overrides
+the path, and `FLAGFFT_TUNE_DISABLE=1` disables tuned-plan lookup. Use
 `--explain-cache` to inspect why a current problem does or does not hit the
 tuned database.
+
+Problem lists can be supplied as a JSON string or JSON file. The JSON payload
+may be a single object or a list of objects:
+
+```sh
+flagfft-tune --json '{"api":"fft","lengths":[4096,8192],"batch":256,"retune":true}'
+flagfft-tune --json-file problems.json
+```
+
+The JSON fields are `api`, `lengths`, `batch`, `dtype`, `device`, `dim`, `norm`,
+`db`, `retune`, `dry_run`, `static_limit`, `finalists`, `warmup`, and `iters`.
+Only `fft` is currently benchmarkable; the other torch.fft-compatible names are
+reserved and raise `NotImplementedError` in the tune layer.
 
 For the focused 16K single-batch four-step case:
 
 ```sh
-env FLAGFFT_TUNE_DB=.flagfft/tuned_plans.sqlite \
-  python benchmark/tune_fft_plans.py --lengths 16384 --batch 1 --retune \
-  --db .flagfft/tuned_plans.sqlite
+flagfft-tune --api fft --lengths 16384 --batch 1 --retune
 ```
 
 ## Validation
@@ -123,7 +143,8 @@ Benchmarks compare FlagFFT against `torch.fft` through the C++ backend:
 python benchmark/benchmark_fft_mixed_radix.py --lengths 10 12 15 17 19 60 120 190 255 1020
 ```
 
-Use `FLAGFFT_TUNE_DB=.flagfft/tuned_plans.sqlite` when benchmarking tuned plans.
+Set `FLAGFFT_TUNE_DB=/path/to/tuned_plans.sqlite` only when benchmarking against
+a non-default tuned-plan database.
 
 ## License
 

@@ -12,9 +12,11 @@ the public API wrappers and Triton/TLE code generation.
 - `src/cpp/runtime/` owns CUDA Driver loading, launch helpers, current stream lookup,
   and PyTorch tensor allocation helpers.
 - `src/cpp/exec/` owns executable plans, cache hits/misses, normalization, and plan
-  node execution. It can optionally read a SQLite tuned-plan database named by
-  `FLAGFFT_TUNE_DB`; only valid rows with matching problem fields and tune
-  fingerprints are used.
+  node execution. On cold `ProblemKey` misses it can read a SQLite tuned-plan
+  database, using `.flagfft/tuned_plans.sqlite` by default, `FLAGFFT_TUNE_DB` as
+  an override, and `FLAGFFT_TUNE_DISABLE` as a kill switch. Only valid rows with
+  matching problem fields and tune fingerprints are used; warm `ProblemKey`
+  hits return the cached executable directly.
 - `src/cpp/bindings/` exposes the nanobind module `_flagfft_core`.
 
 Four-step execution has two runtime forms. Nested or non-leaf children use the
@@ -38,9 +40,15 @@ No Python plan cache, tensor table cache, or FFT execution fallback is allowed.
 Triton/TLE kernel source and compiles AOT artifacts for C++ to load and execute.
 This includes the fused four-step row/column kernel variants; Python still does
 not own plan caching, tensor caching, or FFT execution fallback.
-`benchmark/tune_fft_plans.py` is an offline development tool that benchmarks
-explicit C++ plans and records measurement history in SQLite. It does not provide
-a Python FFT execution fallback or runtime plan cache.
+
+`src/tuning.py` provides the official offline tuning orchestration used by
+`flagfft.tune(...)` and the thin `flagfft-tune` CLI. It benchmarks explicit C++
+plans through `_flagfft_core.enumerate_plan_candidates()` and
+`_flagfft_core.fft_with_plan()`, records measurement history in SQLite, and can
+load problem lists from CLI flags, a JSON string, or a JSON file. Only
+`flagfft.fft` is currently benchmarkable; all other API names are reserved in
+the tune dispatcher and raise `NotImplementedError` without invoking any Python
+FFT fallback.
 
 For contiguous `ct_leaf` kernels whose selected lane count is smaller than a
 warp, codegen can pack multiple independent batch rows into one CTA. The pack
