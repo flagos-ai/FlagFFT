@@ -2,12 +2,34 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import importlib.util
+import sys
+from pathlib import Path
 
 import pytest
 
-import flagfft
-from src import tuning
-from src.tuning import TuneConfig, _connect, _existing_winner, _insert_measurement, _mark_superseded
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+_tuning_spec = importlib.util.spec_from_file_location("flagfft_local_tuning", ROOT / "src" / "tuning.py")
+assert _tuning_spec is not None and _tuning_spec.loader is not None
+tuning = importlib.util.module_from_spec(_tuning_spec)
+sys.modules[_tuning_spec.name] = tuning
+_tuning_spec.loader.exec_module(tuning)
+
+TuneConfig = tuning.TuneConfig
+_connect = tuning._connect
+_existing_winner = tuning._existing_winner
+_insert_measurement = tuning._insert_measurement
+_mark_superseded = tuning._mark_superseded
+
+
+def _api_callable(name: str):
+    def api():
+        raise AssertionError("callable should only be inspected by name")
+
+    api.__name__ = name
+    return api
 
 
 def _fields() -> dict[str, object]:
@@ -160,29 +182,32 @@ def test_cli_rejects_unknown_json_fields() -> None:
 
 
 def test_run_config_dispatches_fft_lengths_without_python_fft_fallback(tmp_path, monkeypatch) -> None:
-    calls: list[int] = []
+    calls: list[tuple[str, int]] = []
 
     def fake_tune_length(config, conn, n):
-        calls.append(n)
+        calls.append((config.api, n))
 
     monkeypatch.setattr(tuning, "_tune_fft_length", fake_tune_length)
 
     tuning.run_config(TuneConfig(api="fft", lengths=(8, 16), db=tmp_path / "tuned.sqlite"))
+    tuning.run_config(TuneConfig(api="ifft", lengths=(32,), db=tmp_path / "tuned.sqlite"))
 
-    assert calls == [8, 16]
+    assert calls == [("fft", 8), ("fft", 16), ("ifft", 32)]
 
 
 def test_run_config_rejects_unimplemented_api_before_benchmark(tmp_path) -> None:
-    with pytest.raises(NotImplementedError, match="flagfft.fft only"):
-        tuning.run_config(TuneConfig(api="ifft", lengths=(8,), db=tmp_path / "tuned.sqlite"))
+    with pytest.raises(NotImplementedError, match="flagfft.fft and flagfft.ifft only"):
+        tuning.run_config(TuneConfig(api="fft2", lengths=(8,), db=tmp_path / "tuned.sqlite"))
 
 
 def test_tune_accepts_flagfft_api_callable(tmp_path, monkeypatch) -> None:
     captured: list[TuneConfig] = []
     monkeypatch.setattr(tuning, "run_config", lambda config: captured.append(config))
 
-    tuning.tune(flagfft.fft, lengths=8, dry_run=True, db=tmp_path / "tuned.sqlite")
+    tuning.tune(_api_callable("fft"), lengths=8, dry_run=True, db=tmp_path / "tuned.sqlite")
+    tuning.tune(_api_callable("ifft"), lengths=16, dry_run=True, db=tmp_path / "tuned.sqlite")
 
     assert captured == [
-        TuneConfig(api="fft", lengths=(8,), dry_run=True, db=tmp_path / "tuned.sqlite")
+        TuneConfig(api="fft", lengths=(8,), dry_run=True, db=tmp_path / "tuned.sqlite"),
+        TuneConfig(api="ifft", lengths=(16,), dry_run=True, db=tmp_path / "tuned.sqlite"),
     ]

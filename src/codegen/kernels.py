@@ -32,6 +32,7 @@ class LeafPlan:
     num_warps: int
     generic_radices: tuple[int, ...]
     smem_size: int
+    direction: Literal["forward", "inverse"] = "forward"
     kind: Literal["ct_leaf"] = field(default="ct_leaf", init=False)
 
 
@@ -251,15 +252,22 @@ def _fmt_const(value: float) -> str:
     return repr(float(value))
 
 
-def _emit_inline_constant_codelet(indent: str, radix: int, lane_block: int) -> list[str]:
+def _direction_sign(direction: Literal["forward", "inverse"]) -> float:
+    return 1.0 if direction == "inverse" else -1.0
+
+
+def _emit_inline_constant_codelet(
+    indent: str, radix: int, lane_block: int, direction: Literal["forward", "inverse"]
+) -> list[str]:
     lines: list[str] = []
+    sign = _direction_sign(direction)
     for kout in range(radix):
         lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
         lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
 
     for kout in range(radix):
         for nin in range(radix):
-            angle = -2.0 * math.pi * kout * nin / float(radix)
+            angle = sign * 2.0 * math.pi * kout * nin / float(radix)
             wr = _fmt_const(math.cos(angle))
             wi = _fmt_const(math.sin(angle))
             lines.append(f"{indent}pr, pi = _cmul(r{nin}, i{nin}, {wr}, {wi})")
@@ -292,8 +300,14 @@ def _emit_table_codelet(indent: str, radix: int, lane_block: int) -> list[str]:
     return lines
 
 
-def _emit_natural_order_codelet_call(indent: str, radix: int) -> list[str]:
-    lines = [f"{indent}("]
+def _emit_natural_order_codelet_call(
+    indent: str, radix: int, direction: Literal["forward", "inverse"]
+) -> list[str]:
+    lines: list[str] = []
+    if direction == "inverse":
+        for idx in range(radix):
+            lines.append(f"{indent}i{idx} = -i{idx}")
+    lines.append(f"{indent}(")
     for idx in range(radix):
         lines.append(f"{indent}    r{idx},")
     for idx in range(radix):
@@ -302,6 +316,9 @@ def _emit_natural_order_codelet_call(indent: str, radix: int) -> list[str]:
         [*(f"r{idx}" for idx in range(radix)), *(f"i{idx}" for idx in range(radix))]
     )
     lines.append(f"{indent}) = _fwd_rad{radix}_b1({args})")
+    if direction == "inverse":
+        for idx in range(radix):
+            lines.append(f"{indent}i{idx} = -i{idx}")
     return lines
 
 
@@ -444,6 +461,7 @@ def _emit_stage_block(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
     smem_pack: int = 1,
+    direction: Literal["forward", "inverse"] = "forward",
 ) -> list[str]:
     radix = factors[stage]
     groups = n // (lanes * radix)
@@ -514,6 +532,9 @@ def _emit_stage_block(
             lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if radix == 16:
+        if direction == "inverse":
+            for idx in range(16):
+                lines.append(f"{indent}i{idx} = -i{idx}")
         lines.append(f"{indent}(")
         for idx in range(16):
             lines.append(f"{indent}    r{idx},")
@@ -524,10 +545,13 @@ def _emit_stage_block(
             "r0, r8, r4, r12, r2, r10, r6, r14, r1, r9, r5, r13, r3, r11, r7, r15, "
             "i0, i8, i4, i12, i2, i10, i6, i14, i1, i9, i5, i13, i3, i11, i7, i15)"
         )
+        if direction == "inverse":
+            for idx in range(16):
+                lines.append(f"{indent}i{idx} = -i{idx}")
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
-        lines.extend(_emit_natural_order_codelet_call(indent, radix))
+        lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
-        lines.extend(_emit_inline_constant_codelet(indent, radix, lane_block))
+        lines.extend(_emit_inline_constant_codelet(indent, radix, lane_block, direction))
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block))
 
@@ -623,10 +647,12 @@ def _build_leaf_kernel_source_for_io(
 
     suffix = "_".join(str(x) for x in factors)
     if io_mode == "contiguous":
-        kernel_name = f"fft_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+        kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
+        kernel_name = f"{kernel_prefix}_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     else:
+        kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = (
-            f"{io_mode}_fft_kernel_{suffix}_n{four_step_n1}_{four_step_n2}"
+            f"{io_mode}_{kernel_prefix}_kernel_{suffix}_n{four_step_n1}_{four_step_n2}"
             f"_l{plan.lanes}_b{lane_block}"
         )
     body: list[str] = [
@@ -701,6 +727,7 @@ def _build_leaf_kernel_source_for_io(
                 four_step_n1=four_step_n1,
                 four_step_n2=four_step_n2,
                 smem_pack=smem_pack,
+                direction=plan.direction,
             )
         )
 

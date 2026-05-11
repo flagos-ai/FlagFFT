@@ -171,6 +171,7 @@ struct PlanKeyHash {
 struct KernelKey {
     KernelKind kind = KernelKind::Leaf;
     std::string target;
+    std::string direction = "forward";
     int64_t length = 0;
     std::vector<int64_t> factors;
     int64_t lanes = 0;
@@ -183,6 +184,7 @@ struct KernelKey {
     int64_t bluestein_m = 0;
 
     static KernelKey leaf(std::string target,
+                          std::string direction,
                           int64_t length,
                           std::vector<int64_t> factors,
                           int64_t lanes,
@@ -190,6 +192,7 @@ struct KernelKey {
                           std::vector<int64_t> generic_radices,
                           int64_t smem_size);
     static KernelKey four_step_row(std::string target,
+                                   std::string direction,
                                    int64_t n1,
                                    int64_t n2,
                                    int64_t length,
@@ -199,6 +202,7 @@ struct KernelKey {
                                    std::vector<int64_t> generic_radices,
                                    int64_t smem_size);
     static KernelKey four_step_col(std::string target,
+                                   std::string direction,
                                    int64_t n1,
                                    int64_t n2,
                                    int64_t length,
@@ -225,7 +229,11 @@ nb::dict problem_key_to_dict(const ProblemKey &key);
 nb::dict plan_key_to_dict(const PlanKey &key);
 nb::dict kernel_key_to_dict(const KernelKey &key);
 std::string output_dtype_for(const std::string &input_dtype);
-FFTRequest build_request(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
+FFTRequest build_request(nb::object input,
+                         nb::object n_obj,
+                         int64_t dim,
+                         nb::object norm_obj,
+                         std::string direction = "forward");
 void validate_request(const FFTRequest &request);
 
 struct Factorization {
@@ -366,8 +374,9 @@ int64_t mixed_radix_value(const std::vector<int64_t> &digits,
                           const std::vector<int64_t> &radices,
                           std::size_t limit);
 std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
-    const std::vector<int64_t> &radices, int64_t stage, int64_t lanes);
-std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix);
+    const std::vector<int64_t> &radices, int64_t stage, int64_t lanes, const std::string &direction);
+std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix,
+                                                                   const std::string &direction);
 nb::object build_four_step_twiddle_tensor(const FFTRequest &request, int64_t n1, int64_t n2);
 nb::object build_bluestein_chirp_tensor(const FFTRequest &request, int64_t n, bool inverse_sign);
 nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_t m);
@@ -601,26 +610,51 @@ PlanCache &plan_cache();
 std::shared_ptr<ExecutablePlan> resolve_plan(nb::object input,
                                              nb::object n_obj,
                                              int64_t dim,
-                                             nb::object norm_obj);
+                                             nb::object norm_obj,
+                                             std::string direction);
 nb::object fft(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
+nb::object ifft(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
 nb::object fft_with_plan(nb::object input,
                          nb::dict plan,
                          nb::object n_obj,
                          int64_t dim,
                          nb::object norm_obj);
-nb::dict debug_request(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
-nb::dict debug_keys(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
-nb::dict debug_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
-nb::dict debug_resolved_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj);
+nb::object ifft_with_plan(nb::object input,
+                          nb::dict plan,
+                          nb::object n_obj,
+                          int64_t dim,
+                          nb::object norm_obj);
+nb::dict debug_request(nb::object input,
+                       nb::object n_obj,
+                       int64_t dim,
+                       nb::object norm_obj,
+                       std::string direction);
+nb::dict debug_keys(nb::object input,
+                    nb::object n_obj,
+                    int64_t dim,
+                    nb::object norm_obj,
+                    std::string direction);
+nb::dict debug_plan(nb::object input,
+                    nb::object n_obj,
+                    int64_t dim,
+                    nb::object norm_obj,
+                    std::string direction);
+nb::dict debug_resolved_plan(nb::object input,
+                             nb::object n_obj,
+                             int64_t dim,
+                             nb::object norm_obj,
+                             std::string direction);
 nb::dict debug_forced_plan(nb::object input,
                            nb::dict plan,
                            nb::object n_obj,
                            int64_t dim,
-                           nb::object norm_obj);
+                           nb::object norm_obj,
+                           std::string direction);
 nb::list enumerate_plan_candidates(nb::object input,
                                    nb::object n_obj,
                                    int64_t dim,
-                                   nb::object norm_obj);
+                                   nb::object norm_obj,
+                                   std::string direction);
 nb::dict tune_fingerprints();
 
 }  // namespace flagfft

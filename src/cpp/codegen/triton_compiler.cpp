@@ -93,9 +93,20 @@ KernelCacheState &kernel_cache_state() {
     return *state;
 }
 
-void append_kernel_keys(const PlanNodePtr &node, const std::string &target, nb::list &out) {
+FFTRequest forward_child_request(const FFTRequest &request) {
+    FFTRequest child = request;
+    child.direction = "forward";
+    child.norm = "backward";
+    return child;
+}
+
+void append_kernel_keys(const PlanNodePtr &node,
+                        const FFTRequest &request,
+                        const std::string &target,
+                        nb::list &out) {
     if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
         out.append(kernel_key_to_dict(KernelKey::leaf(target,
+                                                      request.direction,
                                                       leaf->length,
                                                       leaf->factors,
                                                       leaf->lanes,
@@ -109,6 +120,7 @@ void append_kernel_keys(const PlanNodePtr &node, const std::string &target, nb::
         auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
         if (row_leaf != nullptr && col_leaf != nullptr) {
             out.append(kernel_key_to_dict(KernelKey::four_step_row(target,
+                                                                   request.direction,
                                                                    four_step->n1,
                                                                    four_step->n2,
                                                                    row_leaf->length,
@@ -118,6 +130,7 @@ void append_kernel_keys(const PlanNodePtr &node, const std::string &target, nb::
                                                                    row_leaf->generic_radices,
                                                                    row_leaf->smem_size)));
             out.append(kernel_key_to_dict(KernelKey::four_step_col(target,
+                                                                   request.direction,
                                                                    four_step->n1,
                                                                    four_step->n2,
                                                                    col_leaf->length,
@@ -128,8 +141,8 @@ void append_kernel_keys(const PlanNodePtr &node, const std::string &target, nb::
                                                                    col_leaf->smem_size)));
             return;
         }
-        append_kernel_keys(four_step->row_plan, target, out);
-        append_kernel_keys(four_step->col_plan, target, out);
+        append_kernel_keys(four_step->row_plan, request, target, out);
+        append_kernel_keys(four_step->col_plan, request, target, out);
         out.append(kernel_key_to_dict(KernelKey::transpose(target)));
         out.append(kernel_key_to_dict(KernelKey::twiddle_transpose(target)));
         return;
@@ -141,7 +154,8 @@ void append_kernel_keys(const PlanNodePtr &node, const std::string &target, nb::
             target, bluestein->length, bluestein->conv_length)));
         out.append(kernel_key_to_dict(KernelKey::bluestein_finalize(
             target, bluestein->length, bluestein->conv_length)));
-        append_kernel_keys(bluestein->fft_plan, target, out);
+        FFTRequest child_request = forward_child_request(request);
+        append_kernel_keys(bluestein->fft_plan, child_request, target, out);
     }
 }
 
@@ -180,7 +194,10 @@ int64_t mixed_radix_value(const std::vector<int64_t> &digits,
 }
 
 std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
-    const std::vector<int64_t> &radices, int64_t stage, int64_t lanes) {
+    const std::vector<int64_t> &radices,
+    int64_t stage,
+    int64_t lanes,
+    const std::string &direction) {
     int64_t n = product(radices);
     int64_t elems_per_lane = n / lanes;
     int64_t radix = radices[static_cast<std::size_t>(stage)];
@@ -198,7 +215,9 @@ std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
             int64_t codelet = lane + lanes * group;
             auto decoded = decode_stage_codelet(codelet, radices, stage);
             int64_t prefix = mixed_radix_value(decoded.first, radices, decoded.first.size());
-            double angle = -2.0 * kPi * static_cast<double>(prefix * digit) / static_cast<double>(denom);
+            double sign = direction == "inverse" ? 1.0 : -1.0;
+            double angle = sign * 2.0 * kPi * static_cast<double>(prefix * digit) /
+                           static_cast<double>(denom);
             std::size_t index = static_cast<std::size_t>(lane + lanes * elem);
             tw_r[index] = static_cast<float>(std::cos(angle));
             tw_i[index] = static_cast<float>(std::sin(angle));
@@ -207,12 +226,15 @@ std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
     return {tw_r, tw_i};
 }
 
-std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix) {
+std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix,
+                                                                   const std::string &direction) {
     std::vector<float> dft_r(static_cast<std::size_t>(radix * radix));
     std::vector<float> dft_i(static_cast<std::size_t>(radix * radix));
+    double sign = direction == "inverse" ? 1.0 : -1.0;
     for (int64_t k = 0; k < radix; ++k) {
         for (int64_t n = 0; n < radix; ++n) {
-            double angle = -2.0 * kPi * static_cast<double>(k * n) / static_cast<double>(radix);
+            double angle = sign * 2.0 * kPi * static_cast<double>(k * n) /
+                           static_cast<double>(radix);
             std::size_t index = static_cast<std::size_t>(k * radix + n);
             dft_r[index] = static_cast<float>(std::cos(angle));
             dft_i[index] = static_cast<float>(std::sin(angle));
@@ -228,6 +250,9 @@ nb::object build_four_step_twiddle_tensor(const FFTRequest &request, int64_t n1,
         for (int64_t col = 0; col < n1; ++col) {
             double angle = -2.0 * kPi * static_cast<double>(row * col) /
                            static_cast<double>(n1 * n2);
+            if (request.direction == "inverse") {
+                angle = -angle;
+            }
             std::size_t index = static_cast<std::size_t>(row * n1 + col);
             real[index] = static_cast<float>(std::cos(angle));
             imag[index] = static_cast<float>(std::sin(angle));
@@ -253,10 +278,11 @@ nb::object build_bluestein_chirp_tensor(const FFTRequest &request, int64_t n, bo
 nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_t m) {
     std::vector<float> real(static_cast<std::size_t>(m), 0.0f);
     std::vector<float> imag(static_cast<std::size_t>(m), 0.0f);
+    double sign = request.direction == "inverse" ? -1.0 : 1.0;
     for (int64_t idx = 0; idx < n; ++idx) {
         double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
                                    static_cast<double>(2 * n));
-        double angle = kPi * reduced / static_cast<double>(n);
+        double angle = sign * kPi * reduced / static_cast<double>(n);
         float r = static_cast<float>(std::cos(angle));
         float i = static_cast<float>(std::sin(angle));
         real[static_cast<std::size_t>(idx)] = r;
@@ -272,12 +298,13 @@ nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_
 std::vector<nb::object> build_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request) {
     std::vector<nb::object> tables;
     for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-        auto twiddles = build_stage_twiddles(leaf.factors, static_cast<int64_t>(stage), leaf.lanes);
+        auto twiddles = build_stage_twiddles(
+            leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
         tables.push_back(tensor_from_float_vector(twiddles.first, request));
         tables.push_back(tensor_from_float_vector(twiddles.second, request));
     }
     for (int64_t radix : leaf.generic_radices) {
-        auto dft = build_dft_matrix(radix);
+        auto dft = build_dft_matrix(radix, request.direction);
         tables.push_back(tensor_from_float_vector(dft.first, request));
         tables.push_back(tensor_from_float_vector(dft.second, request));
     }
@@ -324,8 +351,10 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_node(const PlanNodePtr &no
             std::move(twiddle), std::move(stage0), std::move(stage2));
     }
     if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
-        std::shared_ptr<CompiledNode> fft = compile_node(bluestein->fft_plan, request, batch);
-        nb::object chirp = build_bluestein_chirp_tensor(request, bluestein->length, false);
+        FFTRequest child_request = forward_child_request(request);
+        std::shared_ptr<CompiledNode> fft = compile_node(bluestein->fft_plan, child_request, batch);
+        nb::object chirp = build_bluestein_chirp_tensor(
+            request, bluestein->length, request.direction == "inverse");
         nb::object b_time = build_bluestein_b_tensor(request, bluestein->length, bluestein->conv_length);
         nb::object a_buf =
             empty_complex64_tensor(request, nb::make_tuple(batch, bluestein->conv_length));
@@ -346,14 +375,17 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_node(const PlanNodePtr &no
             std::move(work_buf),
             std::move(b_fft_buf));
     }
+    std::string op_name = request.direction == "inverse" ? "ifft" : "fft";
     raise_python(PyExc_NotImplementedError,
-                 "flagfft.fft C++ AOT backend does not support plan node kind: " +
+                 "flagfft." + op_name +
+                     " C++ AOT backend does not support plan node kind: " +
                      plan_node_kind_name(node->kind));
 }
 
 std::shared_ptr<CompiledNode> TritonCompiler::compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::leaf(target,
+                                    request.direction,
                                     leaf.length,
                                     leaf.factors,
                                     leaf.lanes,
@@ -370,6 +402,7 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_leaf(const LeafPlanNode &l
             << " --num-warps " << leaf.num_warps
             << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
             << " --smem-size " << leaf.smem_size
+            << " --direction " << shell_quote(request.direction)
             << " --target " << shell_quote(target)
             << " --out-dir " << shell_quote(out_dir().string());
 
@@ -385,6 +418,7 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_row_kernel(const Le
                                                                         int64_t n2) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::four_step_row(target,
+                                             request.direction,
                                              n1,
                                              n2,
                                              leaf.length,
@@ -405,6 +439,7 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_row_kernel(const Le
             << " --smem-size " << leaf.smem_size
             << " --four-step-n1 " << n1
             << " --four-step-n2 " << n2
+            << " --direction " << shell_quote(request.direction)
             << " --target " << shell_quote(target)
             << " --out-dir " << shell_quote(out_dir().string());
     return compile_kernel(key, command.str());
@@ -416,6 +451,7 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_col_kernel(const Le
                                                                         int64_t n2) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::four_step_col(target,
+                                             request.direction,
                                              n1,
                                              n2,
                                              leaf.length,
@@ -436,6 +472,7 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_col_kernel(const Le
             << " --smem-size " << leaf.smem_size
             << " --four-step-n1 " << n1
             << " --four-step-n2 " << n2
+            << " --direction " << shell_quote(request.direction)
             << " --target " << shell_quote(target)
             << " --out-dir " << shell_quote(out_dir().string());
     return compile_kernel(key, command.str());
@@ -587,7 +624,7 @@ nb::list kernel_keys_for_plan(const PlanNodePtr &node, const FFTRequest &request
     if (request.output_dtype != "complex64") {
         return out;
     }
-    append_kernel_keys(node, triton_target_for_request(request), out);
+    append_kernel_keys(node, request, triton_target_for_request(request), out);
     return out;
 }
 

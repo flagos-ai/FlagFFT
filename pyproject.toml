@@ -4,8 +4,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "flagfft"
-version = "0.1.4"
-description = "C++ planned FFT library with Bluestein fallback and Triton/TLE code generation"
+version = "0.1.5"
+description = "C++ planned FFT/IFFT library with Bluestein fallback and Triton/TLE code generation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

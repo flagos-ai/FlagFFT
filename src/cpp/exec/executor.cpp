@@ -47,6 +47,19 @@ bool env_flag_enabled(const char *value) {
              normalized == "off" || normalized == "no");
 }
 
+double normalization_scale(const FFTRequest &request) {
+    if (request.norm == "ortho") {
+        return 1.0 / std::sqrt(static_cast<double>(request.requested_n));
+    }
+    if (request.direction == "forward" && request.norm == "forward") {
+        return 1.0 / static_cast<double>(request.requested_n);
+    }
+    if (request.direction == "inverse" && request.norm == "backward") {
+        return 1.0 / static_cast<double>(request.requested_n);
+    }
+    return 1.0;
+}
+
 std::optional<std::filesystem::path> tuned_db_path() {
     if (env_flag_enabled(std::getenv("FLAGFFT_TUNE_DISABLE"))) {
         return std::nullopt;
@@ -402,9 +415,10 @@ nb::object CompiledBluesteinNode::execute(const nb::object &input, const Executi
 nb::object ExecutablePlan::execute(nb::object input) const {
     if (backend == ExecutionBackend::TorchFFT) {
         nb::module_ torch = nb::module_::import_("torch");
-        return torch.attr("fft").attr("fft")(input, "n"_a = request.requested_n,
-                                             "dim"_a = request.normalized_dim,
-                                             "norm"_a = request.norm);
+        const char *op_name = request.direction == "inverse" ? "ifft" : "fft";
+        return torch.attr("fft").attr(op_name)(input, "n"_a = request.requested_n,
+                                               "dim"_a = request.normalized_dim,
+                                               "norm"_a = request.norm);
     }
 
     nb::object exec_input = input;
@@ -424,11 +438,9 @@ nb::object ExecutablePlan::execute(nb::object input) const {
         result = result.attr("reshape")(nb::cast(request.input_shape));
     }
 
-    if (request.norm == "forward") {
-        return result.attr("mul")(1.0 / static_cast<double>(request.requested_n));
-    }
-    if (request.norm == "ortho") {
-        return result.attr("mul")(1.0 / std::sqrt(static_cast<double>(request.requested_n)));
+    double scale = normalization_scale(request);
+    if (scale != 1.0) {
+        return result.attr("mul")(scale);
     }
     return result;
 }
@@ -539,14 +551,36 @@ PlanCache &plan_cache() {
 std::shared_ptr<ExecutablePlan> resolve_plan(nb::object input,
                                              nb::object n_obj,
                                              int64_t dim,
-                                             nb::object norm_obj) {
-    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
+                                             nb::object norm_obj,
+                                             std::string direction) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj, std::move(direction));
     validate_request(request);
     return plan_cache().get_or_create(request);
 }
 
 nb::object fft(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
-    std::shared_ptr<ExecutablePlan> executable = resolve_plan(input, n_obj, dim, norm_obj);
+    std::shared_ptr<ExecutablePlan> executable =
+        resolve_plan(input, n_obj, dim, norm_obj, "forward");
+    return executable->execute(input);
+}
+
+nb::object ifft(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
+    std::shared_ptr<ExecutablePlan> executable =
+        resolve_plan(input, n_obj, dim, norm_obj, "inverse");
+    return executable->execute(input);
+}
+
+nb::object execute_with_plan(nb::object input,
+                             nb::dict plan,
+                             nb::object n_obj,
+                             int64_t dim,
+                             nb::object norm_obj,
+                             std::string direction) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj, std::move(direction));
+    validate_request(request);
+    PlanBuilder builder;
+    PlanNodePtr root = plan_node_from_wrapped_dict(builder, plan);
+    auto executable = build_executable_from_root(request, builder, root, "forced");
     return executable->execute(input);
 }
 
@@ -555,20 +589,31 @@ nb::object fft_with_plan(nb::object input,
                          nb::object n_obj,
                          int64_t dim,
                          nb::object norm_obj) {
-    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
-    validate_request(request);
-    PlanBuilder builder;
-    PlanNodePtr root = plan_node_from_wrapped_dict(builder, plan);
-    auto executable = build_executable_from_root(request, builder, root, "forced");
-    return executable->execute(input);
+    return execute_with_plan(input, std::move(plan), n_obj, dim, norm_obj, "forward");
 }
 
-nb::dict debug_request(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
-    return request_to_dict(build_request(input, n_obj, dim, norm_obj));
+nb::object ifft_with_plan(nb::object input,
+                          nb::dict plan,
+                          nb::object n_obj,
+                          int64_t dim,
+                          nb::object norm_obj) {
+    return execute_with_plan(input, std::move(plan), n_obj, dim, norm_obj, "inverse");
 }
 
-nb::dict debug_keys(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
-    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
+nb::dict debug_request(nb::object input,
+                       nb::object n_obj,
+                       int64_t dim,
+                       nb::object norm_obj,
+                       std::string direction) {
+    return request_to_dict(build_request(input, n_obj, dim, norm_obj, std::move(direction)));
+}
+
+nb::dict debug_keys(nb::object input,
+                    nb::object n_obj,
+                    int64_t dim,
+                    nb::object norm_obj,
+                    std::string direction) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj, std::move(direction));
     validate_request(request);
     PlanBuilder builder;
     PlanNodePtr root = builder.build(request.requested_n, request);
@@ -579,16 +624,25 @@ nb::dict debug_keys(nb::object input, nb::object n_obj, int64_t dim, nb::object 
     return out;
 }
 
-nb::dict debug_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
-    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
+nb::dict debug_plan(nb::object input,
+                    nb::object n_obj,
+                    int64_t dim,
+                    nb::object norm_obj,
+                    std::string direction) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj, std::move(direction));
     validate_request(request);
     PlanBuilder builder;
     PlanNodePtr root = builder.build(request.requested_n, request);
     return builder.wrap_plan_dict(root, request);
 }
 
-nb::dict debug_resolved_plan(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
-    std::shared_ptr<ExecutablePlan> executable = resolve_plan(input, n_obj, dim, norm_obj);
+nb::dict debug_resolved_plan(nb::object input,
+                             nb::object n_obj,
+                             int64_t dim,
+                             nb::object norm_obj,
+                             std::string direction) {
+    std::shared_ptr<ExecutablePlan> executable =
+        resolve_plan(input, n_obj, dim, norm_obj, std::move(direction));
     nb::dict out(executable->plan_dict);
     out["kernels"] = kernel_keys_for_plan(executable->root, executable->request);
     return out;
@@ -598,8 +652,9 @@ nb::dict debug_forced_plan(nb::object input,
                            nb::dict plan,
                            nb::object n_obj,
                            int64_t dim,
-                           nb::object norm_obj) {
-    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
+                           nb::object norm_obj,
+                           std::string direction) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj, std::move(direction));
     validate_request(request);
     PlanBuilder builder;
     PlanNodePtr root = plan_node_from_wrapped_dict(builder, plan);
@@ -611,8 +666,9 @@ nb::dict debug_forced_plan(nb::object input,
 nb::list enumerate_plan_candidates(nb::object input,
                                    nb::object n_obj,
                                    int64_t dim,
-                                   nb::object norm_obj) {
-    FFTRequest request = build_request(input, n_obj, dim, norm_obj);
+                                   nb::object norm_obj,
+                                   std::string direction) {
+    FFTRequest request = build_request(input, n_obj, dim, norm_obj, std::move(direction));
     validate_request(request);
     PlanBuilder builder;
     return builder.enumerate_candidate_plans(request.requested_n, request);
@@ -621,9 +677,9 @@ nb::list enumerate_plan_candidates(nb::object input,
 nb::dict tune_fingerprints() {
     nb::dict out;
     out["planner"] = "planner-schema-2-device-smem-leaf";
-    out["codegen"] = "codegen-schema-2-fused-four-step";
-    out["runtime"] = "runtime-schema-2-fused-four-step";
-    out["benchmark"] = "benchmark-schema-1";
+    out["codegen"] = "codegen-schema-3-directional-ifft";
+    out["runtime"] = "runtime-schema-3-directional-ifft";
+    out["benchmark"] = "benchmark-schema-2-api-dispatch";
     return out;
 }
 

@@ -13,9 +13,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flagfft import fft as flagfft_fft
+from flagfft import ifft as flagfft_ifft
 from flagfft import tune as flagfft_tune
 
 TuneMode = Literal["tune", "retune"]
+ApiName = Literal["fft", "ifft"]
 
 
 def _bench_warm_wall_ms(fn, warmup: int, iters: int) -> float:
@@ -54,6 +56,18 @@ def _require_cpp_core():
     return _flagfft_core
 
 
+def _flagfft_api(api: ApiName):
+    return flagfft_ifft if api == "ifft" else flagfft_fft
+
+
+def _torch_api(api: ApiName):
+    return torch.fft.ifft if api == "ifft" else torch.fft.fft
+
+
+def _direction_for_api(api: ApiName) -> str:
+    return "inverse" if api == "ifft" else "forward"
+
+
 def _format_plan_node(node: dict, indent: int = 0) -> str:
     prefix = "  " * indent
     kind = node.get("kind", "unknown")
@@ -71,19 +85,22 @@ def _format_plan_node(node: dict, indent: int = 0) -> str:
     return "\n".join(lines)
 
 
-def _profile_flagfft_cpp_warm_ms(x: torch.Tensor, warmup: int, iters: int) -> dict[str, Any]:
+def _profile_flagfft_cpp_warm_ms(
+    x: torch.Tensor, warmup: int, iters: int, api: ApiName
+) -> dict[str, Any]:
     core = _require_cpp_core()
+    flagfft_api = _flagfft_api(api)
     core.clear_plan_cache()
 
-    first_call_ms = _bench_one_cuda_ms(lambda: flagfft_fft(x))
-    plan = core.debug_resolved_plan(x)
+    first_call_ms = _bench_one_cuda_ms(lambda: flagfft_api(x))
+    plan = core.debug_resolved_plan(x, None, -1, None, _direction_for_api(api))
     after_first = dict(core.cache_info())
 
     for _ in range(warmup):
-        flagfft_fft(x)
+        flagfft_api(x)
     torch.cuda.synchronize()
 
-    warm_median_ms = _bench_warm_wall_ms(lambda: flagfft_fft(x), warmup=0, iters=iters)
+    warm_median_ms = _bench_warm_wall_ms(lambda: flagfft_api(x), warmup=0, iters=iters)
     after_warm = dict(core.cache_info())
 
     return {
@@ -95,7 +112,13 @@ def _profile_flagfft_cpp_warm_ms(x: torch.Tensor, warmup: int, iters: int) -> di
     }
 
 
-def benchmark_mixed_radix_once(n: int, batch: int = 64, warmup: int = 20, iters: int = 100) -> dict[str, Any]:
+def benchmark_mixed_radix_once(
+    n: int,
+    batch: int = 64,
+    warmup: int = 20,
+    iters: int = 100,
+    api: ApiName = "fft",
+) -> dict[str, Any]:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available")
 
@@ -104,9 +127,9 @@ def benchmark_mixed_radix_once(n: int, batch: int = 64, warmup: int = 20, iters:
     xi = torch.randn(batch, n, device="cuda", dtype=torch.float32)
     x = torch.complex(xr, xi)
 
-    flagfft_stats = _profile_flagfft_cpp_warm_ms(x=x, warmup=warmup, iters=iters)
+    flagfft_stats = _profile_flagfft_cpp_warm_ms(x=x, warmup=warmup, iters=iters, api=api)
     torch_median_ms = _bench_warm_wall_ms(
-        lambda: torch.fft.fft(x, dim=-1), warmup=warmup, iters=iters
+        lambda: _torch_api(api)(x, dim=-1), warmup=warmup, iters=iters
     )
     resolved_plan = flagfft_stats["resolved_plan"]
 
@@ -114,6 +137,7 @@ def benchmark_mixed_radix_once(n: int, batch: int = 64, warmup: int = 20, iters:
         "length": resolved_plan["root"]["length"],
         "batch": batch,
         "backend": "cpp",
+        "api": api,
         "plan_source": resolved_plan["source"],
         "plan": _format_plan_node(resolved_plan["root"]),
         "flagfft_median_ms": flagfft_stats["flagfft_median_ms"],
@@ -126,11 +150,13 @@ def benchmark_mixed_radix_once(n: int, batch: int = 64, warmup: int = 20, iters:
     }
 
 
-def _tune_before_benchmark(n: int, batch: int, warmup: int, iters: int, tune_mode: TuneMode) -> None:
+def _tune_before_benchmark(
+    n: int, batch: int, warmup: int, iters: int, tune_mode: TuneMode, api: ApiName
+) -> None:
     retune = tune_mode == "retune"
-    print(f"[tune={'retune' if retune else 'tune'} n={n} batch={batch}]")
+    print(f"[api={api} tune={'retune' if retune else 'tune'} n={n} batch={batch}]")
     flagfft_tune(
-        flagfft_fft,
+        _flagfft_api(api),
         lengths=[n],
         batch=batch,
         retune=retune,
@@ -145,12 +171,15 @@ def run_benchmark(
     warmup: int,
     iters: int,
     tune_mode: TuneMode | None = None,
+    api: ApiName = "fft",
 ) -> None:
     for n in lengths:
         if tune_mode is not None:
-            _tune_before_benchmark(n, batch, warmup, iters, tune_mode)
-        stats = benchmark_mixed_radix_once(n=n, batch=batch, warmup=warmup, iters=iters)
-        print(f"[backend={stats['backend']} mode={stats['plan_source']} n={n} batch={batch}]")
+            _tune_before_benchmark(n, batch, warmup, iters, tune_mode, api)
+        stats = benchmark_mixed_radix_once(n=n, batch=batch, warmup=warmup, iters=iters, api=api)
+        print(
+            f"[api={api} backend={stats['backend']} mode={stats['plan_source']} n={n} batch={batch}]"
+        )
         print("  plan:")
         for line in stats["plan"].splitlines():
             print(f"    {line}")
@@ -168,6 +197,7 @@ def run_benchmark(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark FFT mixed-radix execution through the C++ backend.")
+    parser.add_argument("--api", choices=["fft", "ifft"], default="fft")
     parser.add_argument(
         "--lengths",
         type=int,
@@ -195,12 +225,12 @@ def main() -> None:
     if len(args.lengths) == 0:
         print("======== mixed Cooley-Tukey ========")
         normal_lengths = [10, 12, 15, 17, 19, 60, 120, 190, 255, 1020, 4096, 8192, 16384, 65536]
-        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters, args.tune)
+        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters, args.tune, args.api)
         print("======== Bluestein ========")
         normal_lengths = [331, 4093, 16381, 65537, 65539]
-        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters, args.tune)
+        run_benchmark(normal_lengths, args.batch, args.warmup, args.iters, args.tune, args.api)
     else:
-        run_benchmark(args.lengths, args.batch, args.warmup, args.iters, args.tune)
+        run_benchmark(args.lengths, args.batch, args.warmup, args.iters, args.tune, args.api)
 
 
 if __name__ == "__main__":

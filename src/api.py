@@ -40,8 +40,23 @@ def fft(
     return result
 
 
-def ifft(input: torch.Tensor, n: int | None = None, dim: int = -1, norm: str | None = None, *, out: torch.Tensor | None = None) -> torch.Tensor:
-    _not_implemented("ifft")
+def ifft(
+    input: torch.Tensor,
+    n: int | None = None,
+    dim: int = -1,
+    norm: str | None = None,
+    *,
+    out: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Compute a 1-D inverse complex FFT using the C++ FlagFFT backend."""
+    if not isinstance(input, torch.Tensor):
+        raise TypeError(f"flagfft.ifft expected a torch.Tensor, got {type(input).__name__}")
+
+    result = _require_core().ifft(input, n, dim, norm)
+    if out is not None:
+        out.copy_(result)
+        return out
+    return result
 
 
 def fft2(input: torch.Tensor, s: Sequence[int] | None = None, dim: Sequence[int] = (-2, -1), norm: str | None = None, *, out: torch.Tensor | None = None) -> torch.Tensor:

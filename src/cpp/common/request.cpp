@@ -263,6 +263,7 @@ std::size_t PlanKeyHash::operator()(const PlanKey &key) const {
 }
 
 KernelKey KernelKey::leaf(std::string target,
+                          std::string direction,
                           int64_t length,
                           std::vector<int64_t> factors,
                           int64_t lanes,
@@ -272,6 +273,7 @@ KernelKey KernelKey::leaf(std::string target,
     KernelKey key;
     key.kind = KernelKind::Leaf;
     key.target = std::move(target);
+    key.direction = std::move(direction);
     key.length = length;
     key.factors = std::move(factors);
     key.lanes = lanes;
@@ -282,6 +284,7 @@ KernelKey KernelKey::leaf(std::string target,
 }
 
 KernelKey KernelKey::four_step_row(std::string target,
+                                   std::string direction,
                                    int64_t n1,
                                    int64_t n2,
                                    int64_t length,
@@ -291,6 +294,7 @@ KernelKey KernelKey::four_step_row(std::string target,
                                    std::vector<int64_t> generic_radices,
                                    int64_t smem_size) {
     KernelKey key = KernelKey::leaf(std::move(target),
+                                    std::move(direction),
                                     length,
                                     std::move(factors),
                                     lanes,
@@ -304,6 +308,7 @@ KernelKey KernelKey::four_step_row(std::string target,
 }
 
 KernelKey KernelKey::four_step_col(std::string target,
+                                   std::string direction,
                                    int64_t n1,
                                    int64_t n2,
                                    int64_t length,
@@ -313,6 +318,7 @@ KernelKey KernelKey::four_step_col(std::string target,
                                    std::vector<int64_t> generic_radices,
                                    int64_t smem_size) {
     KernelKey key = KernelKey::leaf(std::move(target),
+                                    std::move(direction),
                                     length,
                                     std::move(factors),
                                     lanes,
@@ -367,8 +373,8 @@ KernelKey KernelKey::bluestein_finalize(std::string target, int64_t n, int64_t m
 }
 
 bool KernelKey::operator==(const KernelKey &other) const {
-    return kind == other.kind && target == other.target && length == other.length &&
-           factors == other.factors && lanes == other.lanes &&
+    return kind == other.kind && target == other.target && direction == other.direction &&
+           length == other.length && factors == other.factors && lanes == other.lanes &&
            num_warps == other.num_warps && generic_radices == other.generic_radices &&
            smem_size == other.smem_size && four_step_n1 == other.four_step_n1 &&
            four_step_n2 == other.four_step_n2 && bluestein_n == other.bluestein_n &&
@@ -380,7 +386,8 @@ std::string KernelKey::repr() const {
     out << "kind=" << kernel_kind_name(kind) << ";target=" << target;
     if (kind == KernelKind::Leaf || kind == KernelKind::FourStepRow ||
         kind == KernelKind::FourStepCol) {
-        out << ";length=" << length << ";factors=[" << join_ints(factors) << "]"
+        out << ";direction=" << direction << ";length=" << length << ";factors=["
+            << join_ints(factors) << "]"
             << ";lanes=" << lanes << ";num_warps=" << num_warps
             << ";generic_radices=[" << join_ints(generic_radices)
             << "];smem_size=" << smem_size;
@@ -399,6 +406,7 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
     std::size_t seed = 0;
     hash_value(seed, static_cast<int64_t>(key.kind));
     hash_value(seed, key.target);
+    hash_value(seed, key.direction);
     hash_value(seed, key.length);
     hash_vector(seed, key.factors);
     hash_value(seed, key.lanes);
@@ -414,7 +422,7 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
 
 nb::dict request_to_dict(const FFTRequest &request) {
     nb::dict out;
-    out["op"] = "fft";
+    out["op"] = request.direction == "inverse" ? "ifft" : "fft";
     out["length"] = request.fft_length;
     out["input_shape"] = nb::cast(request.input_shape);
     out["n"] = request.n.has_value() ? nb::cast(*request.n) : nb::none();
@@ -485,6 +493,7 @@ nb::dict kernel_key_to_dict(const KernelKey &key) {
     out["repr"] = key.repr();
     out["kind"] = kernel_kind_name(key.kind);
     out["target"] = key.target;
+    out["direction"] = key.direction;
     out["length"] = key.length;
     out["factors"] = nb::cast(key.factors);
     out["lanes"] = key.lanes;
@@ -509,8 +518,13 @@ std::string output_dtype_for(const std::string &input_dtype) {
     return "unsupported";
 }
 
-FFTRequest build_request(nb::object input, nb::object n_obj, int64_t dim, nb::object norm_obj) {
+FFTRequest build_request(nb::object input,
+                         nb::object n_obj,
+                         int64_t dim,
+                         nb::object norm_obj,
+                         std::string direction) {
     FFTRequest request;
+    request.direction = std::move(direction);
     request.input_shape = int64_vector_from_sequence(input.attr("size")());
     request.input_strides = int64_vector_from_sequence(input.attr("stride")());
     request.raw_dim = dim;
@@ -572,9 +586,13 @@ FFTRequest build_request(nb::object input, nb::object n_obj, int64_t dim, nb::ob
 }
 
 void validate_request(const FFTRequest &request) {
+    const std::string op_name = request.direction == "inverse" ? "ifft" : "fft";
     const int64_t ndim = static_cast<int64_t>(request.input_shape.size());
+    if (request.direction != "forward" && request.direction != "inverse") {
+        raise_python(PyExc_ValueError, "flagfft.fft direction must be 'forward' or 'inverse'");
+    }
     if (ndim == 0) {
-        raise_python(PyExc_ValueError, "flagfft.fft expected at least a 1-D tensor");
+        raise_python(PyExc_ValueError, "flagfft." + op_name + " expected at least a 1-D tensor");
     }
     if (!(-ndim <= request.raw_dim && request.raw_dim < ndim)) {
         std::ostringstream message;
@@ -583,26 +601,31 @@ void validate_request(const FFTRequest &request) {
         raise_python(PyExc_IndexError, message.str());
     }
     if (request.requested_n <= 0) {
-        raise_python(PyExc_ValueError, "flagfft.fft expected n to be a positive integer");
+        raise_python(PyExc_ValueError,
+                     "flagfft." + op_name + " expected n to be a positive integer");
     }
     if (request.n.has_value() && request.requested_n != request.fft_length) {
         raise_python(PyExc_NotImplementedError,
-                     "flagfft.fft currently does not support padding or trimming with n");
+                     "flagfft." + op_name +
+                         " currently does not support padding or trimming with n");
     }
     if (request.normalized_dim != ndim - 1) {
         raise_python(PyExc_NotImplementedError,
-                     "flagfft.fft currently supports only the last dimension");
+                     "flagfft." + op_name + " currently supports only the last dimension");
     }
     if (request.norm != "backward" && request.norm != "forward" && request.norm != "ortho") {
         raise_python(PyExc_ValueError,
-                     "flagfft.fft norm must be None, 'backward', 'forward', or 'ortho'");
+                     "flagfft." + op_name +
+                         " norm must be None, 'backward', 'forward', or 'ortho'");
     }
     if (request.device_type != "cuda") {
-        raise_python(PyExc_NotImplementedError, "flagfft.fft currently supports only CUDA tensors");
+        raise_python(PyExc_NotImplementedError,
+                     "flagfft." + op_name + " currently supports only CUDA tensors");
     }
     if (request.output_dtype == "unsupported") {
         raise_python(PyExc_TypeError,
-                     "flagfft.fft supports float32, float64, complex64, and complex128 inputs");
+                     "flagfft." + op_name +
+                         " supports float32, float64, complex64, and complex128 inputs");
     }
 }
 

@@ -103,6 +103,7 @@ def _compile_leaf_source(
     artifact["kernel_type"] = kernel_type
     artifact["length"] = plan.length
     artifact["lanes"] = plan.lanes
+    artifact["direction"] = plan.direction
     artifact["batch_per_block"] = contiguous_batch_pack_for(plan) if kernel_type == "leaf" else 1
     artifact["grid"] = grid
     artifact_path = out_dir / f"{module_name}.json"
@@ -118,6 +119,7 @@ def compile_leaf_kernel(
     num_warps: int,
     generic_radices: tuple[int, ...],
     smem_size: int,
+    direction: str,
     target: str,
     out_dir: Path,
 ) -> dict[str, Any]:
@@ -129,9 +131,17 @@ def compile_leaf_kernel(
         num_warps=num_warps,
         generic_radices=generic_radices,
         smem_size=smem_size,
+        direction=direction,
     )
     lane_block = lane_block_for(lanes)
-    module_name = "flagfft_aot_" + "_".join(str(x) for x in factors) + f"_l{lanes}_b{lane_block}"
+    direction_tag = "inv" if direction == "inverse" else "fwd"
+    module_name = (
+        "flagfft_aot_"
+        + direction_tag
+        + "_"
+        + "_".join(str(x) for x in factors)
+        + f"_l{lanes}_b{lane_block}"
+    )
     kernel_name, source = _leaf_module_source(plan)
     return _compile_leaf_source(
         kernel_name=kernel_name,
@@ -156,6 +166,7 @@ def compile_four_step_leaf_kernel(
     smem_size: int,
     four_step_n1: int,
     four_step_n2: int,
+    direction: str,
     target: str,
     out_dir: Path,
 ) -> dict[str, Any]:
@@ -167,6 +178,7 @@ def compile_four_step_leaf_kernel(
         num_warps=num_warps,
         generic_radices=generic_radices,
         smem_size=smem_size,
+        direction=direction,
     )
     if kind == "four_step_row":
         kernel_name, kernel_source = _build_four_step_row_kernel_source(
@@ -186,9 +198,12 @@ def compile_four_step_leaf_kernel(
         raise ValueError(f"unsupported four-step leaf kernel kind: {kind}")
 
     lane_block = lane_block_for(lanes)
+    direction_tag = "inv" if direction == "inverse" else "fwd"
     module_name = (
         "flagfft_aot_"
         + kind
+        + "_"
+        + direction_tag
         + "_"
         + "_".join(str(x) for x in factors)
         + f"_n{four_step_n1}_{four_step_n2}_l{lanes}_b{lane_block}"
@@ -392,6 +407,7 @@ def main() -> None:
     parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
+    parser.add_argument("--direction", choices=("forward", "inverse"), default="forward")
     parser.add_argument("--four-step-n1", type=int)
     parser.add_argument("--four-step-n2", type=int)
     parser.add_argument("--bluestein-n", type=int)
@@ -425,6 +441,7 @@ def main() -> None:
                 num_warps=args.num_warps,
                 generic_radices=args.generic_radices,
                 smem_size=args.smem_size,
+                direction=args.direction,
                 target=args.target,
                 out_dir=args.out_dir,
             )
@@ -439,6 +456,7 @@ def main() -> None:
                 smem_size=args.smem_size,
                 four_step_n1=args.four_step_n1,
                 four_step_n2=args.four_step_n2,
+                direction=args.direction,
                 target=args.target,
                 out_dir=args.out_dir,
             )

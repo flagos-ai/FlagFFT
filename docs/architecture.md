@@ -31,6 +31,15 @@ column per CTA for smaller `n1` values and packs two adjacent inner columns once
 `n1 >= 128`, interleaving those slots in the vector layout to reduce
 natural-order store stride pressure visible in Nsight Compute.
 
+Forward and inverse complex leaves share the same generated radix codelets.
+Inverse kernels are emitted by wrapping each specialized forward codelet with
+input/output conjugation, while stage twiddles, generic DFT tables, and
+four-step twiddles are generated with the inverse sign. `KernelKey` includes
+direction for leaf and fused four-step kernels so forward and inverse cubins are
+never reused across signs; generic transpose kernels remain direction-neutral.
+Bluestein uses direction-specific outer chirp and convolution tables, but its
+internal convolution child plan is compiled as an unnormalized forward FFT.
+
 ## Python Boundary
 
 `src/api.py` and `src/flagfft.py` expose only the torch.fft-compatible FlagFFT API.
@@ -44,12 +53,13 @@ not own plan caching, tensor caching, or FFT execution fallback.
 `src/tuning.py` provides the official offline tuning orchestration used by
 `flagfft.tune(...)` and the thin `flagfft-tune` CLI. It benchmarks explicit C++
 plans through `_flagfft_core.enumerate_plan_candidates()` and
-`_flagfft_core.fft_with_plan()`, records measurement history in SQLite, and can
-load problem lists from CLI flags, a JSON string, or a JSON file. The focused
-mixed-radix benchmark can call the same tuner before timing with `--tune`, or
-force a new winner with `--tune retune`. Only `flagfft.fft` is currently
-benchmarkable; all other API names are reserved in the tune dispatcher and raise
-`NotImplementedError` without invoking any Python FFT fallback.
+`_flagfft_core.fft_with_plan()` / `_flagfft_core.ifft_with_plan()`, records
+measurement history in SQLite, and can load problem lists from CLI flags, a JSON
+string, or a JSON file. The focused mixed-radix benchmark can call the same
+tuner before timing with `--tune`, or force a new winner with `--tune retune`.
+`flagfft.fft` and `flagfft.ifft` are currently benchmarkable; all other API
+names are reserved in the tune dispatcher and raise `NotImplementedError`
+without invoking any Python FFT fallback.
 
 For contiguous `ct_leaf` kernels whose selected lane count is smaller than a
 warp, codegen can pack multiple independent batch rows into one CTA. The pack
@@ -73,5 +83,6 @@ double-precision scratch rules remain outside the leaf planner.
 
 ## Current Status
 
-`flagfft.fft` is implemented for CUDA tensors on the last dimension. Other torch.fft
-entrypoints exist as API stubs until their C++ plan and exec paths are implemented.
+1-D `flagfft.fft` and `flagfft.ifft` are implemented for CUDA tensors on the
+last dimension. Other torch.fft entrypoints exist as API stubs until their C++
+plan and exec paths are implemented.

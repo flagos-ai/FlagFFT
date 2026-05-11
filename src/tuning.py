@@ -39,7 +39,7 @@ FFT_API_NAMES = (
     "fftshift",
     "ifftshift",
 )
-IMPLEMENTED_TUNE_APIS = {"fft"}
+IMPLEMENTED_TUNE_APIS = {"fft", "ifft"}
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,23 @@ def _api_name(api: str | Callable[..., Any]) -> str:
 
 def _ensure_implemented_api(api_name: str) -> None:
     if api_name not in IMPLEMENTED_TUNE_APIS:
-        raise NotImplementedError(f"flagfft.tune currently supports flagfft.fft only, got flagfft.{api_name}")
+        raise NotImplementedError(
+            f"flagfft.tune currently supports flagfft.fft and flagfft.ifft only, got flagfft.{api_name}"
+        )
+
+
+def _direction_for_api(api_name: str) -> str:
+    return "inverse" if api_name == "ifft" else "forward"
+
+
+def _torch_fft_api(api_name: str) -> Callable[..., torch.Tensor]:
+    if api_name == "ifft":
+        return torch.fft.ifft
+    return torch.fft.fft
+
+
+def _core_with_plan(core: Any, api_name: str) -> Callable[..., torch.Tensor]:
+    return core.ifft_with_plan if api_name == "ifft" else core.fft_with_plan
 
 
 def _normalize_dtype(dtype: str | torch.dtype) -> str:
@@ -225,8 +241,11 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def _problem_fields(core: Any, x: torch.Tensor, config: TuneConfig) -> dict[str, Any]:
-    request = dict(core.debug_request(x, None, config.dim, config.norm))
-    plan_schema_version = int(core.debug_plan(x, None, config.dim, config.norm)["schema_version"])
+    direction = _direction_for_api(config.api)
+    request = dict(core.debug_request(x, None, config.dim, config.norm, direction))
+    plan_schema_version = int(
+        core.debug_plan(x, None, config.dim, config.norm, direction)["schema_version"]
+    )
     fps = dict(core.tune_fingerprints())
     return {
         "schema_version": plan_schema_version,
@@ -357,9 +376,10 @@ def _measure_plan(
     plan: dict[str, Any],
     config: TuneConfig,
 ) -> dict[str, Any]:
+    core_api_with_plan = _core_with_plan(core, config.api)
     core.clear_plan_cache()
     t0 = time.perf_counter()
-    y = core.fft_with_plan(x, plan, None, config.dim, config.norm)
+    y = core_api_with_plan(x, plan, None, config.dim, config.norm)
     torch.cuda.synchronize()
     first_call_ms = (time.perf_counter() - t0) * 1e3
     err = (y - ref).abs()
@@ -368,7 +388,7 @@ def _measure_plan(
     if max_abs_err > 5e-3:
         raise RuntimeError(f"correctness failed: max_abs_err={max_abs_err:.6g}")
     median_ms, p90_ms = _bench_ms(
-        lambda: core.fft_with_plan(x, plan, None, config.dim, config.norm),
+        lambda: core_api_with_plan(x, plan, None, config.dim, config.norm),
         warmup=config.warmup,
         iters=config.iters,
     )
@@ -398,14 +418,18 @@ def _tune_fft_length(config: TuneConfig, conn: sqlite3.Connection, n: int) -> No
         print(f"n={n}: existing valid winner found; pass --retune to overwrite")
         return
 
-    plans = [dict(plan) for plan in core.enumerate_plan_candidates(x, None, config.dim, config.norm)]
+    direction = _direction_for_api(config.api)
+    plans = [
+        dict(plan)
+        for plan in core.enumerate_plan_candidates(x, None, config.dim, config.norm, direction)
+    ]
     print(f"n={n}: generated {len(plans)} candidate plans")
     if config.dry_run:
         for idx, plan in enumerate(plans):
             print(f"  [{idx}] {plan['plan_key']['repr']}")
         return
 
-    ref = torch.fft.fft(x, dim=config.dim, norm=config.norm)
+    ref = _torch_fft_api(config.api)(x, dim=config.dim, norm=config.norm)
     quick_results: list[tuple[dict[str, Any], dict[str, Any]]] = []
     quick_config = replace(config, warmup=1, iters=5)
     for plan in plans[: config.static_limit]:

@@ -43,8 +43,8 @@ def _leaf_candidate(candidates, n: int = 4096):
     )
 
 
-def _tuned_fields(x: torch.Tensor) -> dict[str, object]:
-    request = dict(_flagfft_core.debug_request(x))
+def _tuned_fields(x: torch.Tensor, direction: str = "forward") -> dict[str, object]:
+    request = dict(_flagfft_core.debug_request(x, None, -1, None, direction))
     fps = dict(_flagfft_core.tune_fingerprints())
     return {
         "schema_version": int(request.get("schema_version", 2)),
@@ -63,9 +63,11 @@ def _tuned_fields(x: torch.Tensor) -> dict[str, object]:
     }
 
 
-def _write_tuned_winner(db, x: torch.Tensor, plan=None):
-    plan = plan if plan is not None else _flagfft_core.enumerate_plan_candidates(x)[0]
-    fields = _tuned_fields(x)
+def _write_tuned_winner(db, x: torch.Tensor, plan=None, direction: str = "forward"):
+    plan = plan if plan is not None else _flagfft_core.enumerate_plan_candidates(
+        x, None, -1, None, direction
+    )[0]
+    fields = _tuned_fields(x, direction)
     fields["schema_version"] = plan["schema_version"]
     with _connect(db) as conn:
         _insert_measurement(conn, fields, plan, status="valid", rank=0)
@@ -99,6 +101,31 @@ def test_fft_matches_torch_for_supported_dtypes(
     torch.testing.assert_close(y, ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.parametrize(
+    ("dtype", "expected_dtype", "atol", "rtol"),
+    [
+        (torch.float32, torch.complex64, 2e-5, 2e-5),
+        (torch.complex64, torch.complex64, 2e-5, 2e-5),
+        (torch.complex128, torch.complex128, 1e-12, 1e-12),
+    ],
+)
+@pytest.mark.parametrize("norm", [None, "backward", "forward", "ortho"])
+def test_ifft_matches_torch_for_supported_dtypes(
+    dtype: torch.dtype,
+    expected_dtype: torch.dtype,
+    atol: float,
+    rtol: float,
+    norm: str | None,
+) -> None:
+    x = _sample(dtype)
+
+    y = flagfft.ifft(x, norm=norm)
+    ref = torch.fft.ifft(x, dim=-1, norm=norm)
+
+    assert y.dtype is expected_dtype
+    torch.testing.assert_close(y, ref, atol=atol, rtol=rtol)
+
+
 def test_out_returns_same_object_and_copies_result() -> None:
     x = _sample(torch.float32)
     out = torch.empty(x.shape, device=x.device, dtype=torch.complex64)
@@ -107,6 +134,16 @@ def test_out_returns_same_object_and_copies_result() -> None:
 
     assert y is out
     torch.testing.assert_close(out, torch.fft.fft(x, dim=-1), atol=2e-5, rtol=2e-5)
+
+
+def test_ifft_out_returns_same_object_and_copies_result() -> None:
+    x = _sample(torch.complex64)
+    out = torch.empty(x.shape, device=x.device, dtype=torch.complex64)
+
+    y = flagfft.ifft(x, out=out)
+
+    assert y is out
+    torch.testing.assert_close(out, torch.fft.ifft(x, dim=-1), atol=2e-5, rtol=2e-5)
 
 
 def test_request_schema_exists_before_unsupported_errors() -> None:
@@ -123,6 +160,14 @@ def test_request_schema_exists_before_unsupported_errors() -> None:
     with pytest.raises(NotImplementedError, match="last dimension"):
         flagfft.fft(x, dim=0)
 
+    inverse_request = _flagfft_core.debug_request(x, None, -1, None, "inverse")
+    assert inverse_request["op"] == "ifft"
+    assert inverse_request["direction"] == "inverse"
+    with pytest.raises(NotImplementedError, match="padding or trimming"):
+        flagfft.ifft(x, n=4)
+    with pytest.raises(NotImplementedError, match="last dimension"):
+        flagfft.ifft(x, dim=0)
+
 
 def test_debug_keys_cover_semantic_and_layout_fields() -> None:
     x = _sample(torch.complex64, n=16)
@@ -138,6 +183,22 @@ def test_debug_keys_cover_semantic_and_layout_fields() -> None:
     assert strided_keys["problem"]["requires_contiguous_copy"] is True
     assert _flagfft_core.debug_keys(x)["plan"]["kind"] == "ct_leaf"
     assert len(_flagfft_core.debug_keys(x)["kernels"]) >= 1
+
+
+def test_ifft_problem_and_kernel_keys_are_directional() -> None:
+    x = _sample(torch.complex64, n=16)
+
+    forward = _flagfft_core.debug_keys(x)
+    inverse = _flagfft_core.debug_keys(x, None, -1, None, "inverse")
+    forward_kernel = forward["kernels"][0]
+    inverse_kernel = inverse["kernels"][0]
+
+    assert forward["problem"]["direction"] == "forward"
+    assert inverse["problem"]["direction"] == "inverse"
+    assert forward["problem"]["repr"] != inverse["problem"]["repr"]
+    assert forward_kernel["direction"] == "forward"
+    assert inverse_kernel["direction"] == "inverse"
+    assert forward_kernel["hash"] != inverse_kernel["hash"]
 
 
 def test_cpp_plan_cache_hits_on_repeated_call() -> None:
@@ -184,6 +245,17 @@ def test_cpp_aot_leaf_lengths_match_torch(n: int) -> None:
     ref = torch.fft.fft(x, dim=-1)
 
     assert _flagfft_core.debug_plan(x)["root"]["kind"] == "ct_leaf"
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+@pytest.mark.parametrize("n", [8, 16, 105])
+def test_cpp_aot_ifft_leaf_lengths_match_torch(n: int) -> None:
+    x = _sample(torch.complex64, n=n)
+
+    y = flagfft.ifft(x)
+    ref = torch.fft.ifft(x, dim=-1)
+
+    assert _flagfft_core.debug_plan(x, None, -1, None, "inverse")["root"]["kind"] == "ct_leaf"
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
 
 
@@ -244,6 +316,16 @@ def test_cpp_aot_four_step_matches_torch(n: int) -> None:
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
 
 
+def test_cpp_aot_ifft_four_step_matches_torch() -> None:
+    x = _sample(torch.complex64, n=8192)[:1]
+
+    y = flagfft.ifft(x)
+    ref = torch.fft.ifft(x, dim=-1)
+
+    assert _flagfft_core.debug_plan(x, None, -1, None, "inverse")["root"]["kind"] == "four_step"
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
 def test_cpp_aot_four_step_leaf_children_use_fused_kernels() -> None:
     x = _sample(torch.complex64, n=16384)[:1]
 
@@ -279,6 +361,18 @@ def test_cpp_aot_bluestein_lengths_match_torch(n: int) -> None:
     torch.testing.assert_close(y, ref, atol=5e-4, rtol=5e-4)
 
 
+def test_cpp_aot_ifft_bluestein_length_matches_torch() -> None:
+    x = _sample(torch.complex64, n=331)[:1]
+
+    y = flagfft.ifft(x)
+    ref = torch.fft.ifft(x, dim=-1)
+    root = _flagfft_core.debug_plan(x, None, -1, None, "inverse")["root"]
+
+    assert root["kind"] == "bluestein"
+    assert root["conv_length"] >= 2 * 331 - 1
+    torch.testing.assert_close(y, ref, atol=5e-4, rtol=5e-4)
+
+
 def test_cpp_aot_large_bluestein_reuses_child_fft_kernels() -> None:
     _flagfft_core.clear_plan_cache()
     first = torch.randn(1, 65537, device="cuda", dtype=torch.complex64)
@@ -308,6 +402,29 @@ def test_cpp_aot_four_step_norm_modes(norm: str | None) -> None:
     y = flagfft.fft(x, norm=norm)
     ref = torch.fft.fft(x, dim=-1, norm=norm)
 
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+@pytest.mark.parametrize("norm", [None, "backward", "forward", "ortho"])
+def test_cpp_aot_ifft_four_step_norm_modes(norm: str | None) -> None:
+    x = _sample(torch.complex64, n=8192)[:1]
+
+    y = flagfft.ifft(x, norm=norm)
+    ref = torch.fft.ifft(x, dim=-1, norm=norm)
+
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
+def test_cpp_aot_ifft_strided_input_matches_torch() -> None:
+    base = torch.randn(2, 32, device="cuda", dtype=torch.complex64)
+    x = base[:, ::2]
+
+    y = flagfft.ifft(x)
+    ref = torch.fft.ifft(x, dim=-1)
+
+    assert _flagfft_core.debug_keys(x, None, -1, None, "inverse")["problem"][
+        "requires_contiguous_copy"
+    ] is True
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
 
 
@@ -356,6 +473,21 @@ def test_enumerate_plan_candidates_and_forced_plan_roundtrip() -> None:
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
 
 
+def test_ifft_enumerate_plan_candidates_and_forced_plan_roundtrip() -> None:
+    x = _sample(torch.complex64, n=64)
+
+    candidates = list(_flagfft_core.enumerate_plan_candidates(x, None, -1, None, "inverse"))
+
+    assert candidates
+    forced = _flagfft_core.debug_forced_plan(x, candidates[0], None, -1, None, "inverse")
+    assert forced["request"]["direction"] == "inverse"
+    assert forced["source"] == "forced"
+
+    y = _flagfft_core.ifft_with_plan(x, candidates[0])
+    ref = torch.fft.ifft(x, dim=-1)
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+
+
 def test_tuned_db_winner_is_used_when_fingerprints_match(tmp_path, monkeypatch) -> None:
     x = _sample(torch.complex64, n=64)
     plan = _flagfft_core.enumerate_plan_candidates(x)[0]
@@ -373,6 +505,30 @@ def test_tuned_db_winner_is_used_when_fingerprints_match(tmp_path, monkeypatch) 
     torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
     assert resolved["source"] == "sqlite_tuned"
     assert resolved["plan_key"]["repr"] == plan["plan_key"]["repr"]
+
+
+def test_tuned_db_inverse_winner_is_direction_isolated(tmp_path, monkeypatch) -> None:
+    x = _sample(torch.complex64, n=64)
+    inverse_plan = _flagfft_core.enumerate_plan_candidates(x, None, -1, None, "inverse")[0]
+    db = tmp_path / "tuned.sqlite"
+    _write_tuned_winner(db, x, inverse_plan, direction="inverse")
+
+    monkeypatch.setenv("FLAGFFT_TUNE_DB", str(db))
+    monkeypatch.delenv("FLAGFFT_TUNE_DISABLE", raising=False)
+    _flagfft_core.clear_plan_cache()
+
+    y = flagfft.ifft(x)
+    inverse_resolved = _flagfft_core.debug_resolved_plan(x, None, -1, None, "inverse")
+    ref = torch.fft.ifft(x, dim=-1)
+
+    torch.testing.assert_close(y, ref, atol=3e-4, rtol=3e-4)
+    assert inverse_resolved["source"] == "sqlite_tuned"
+    assert inverse_resolved["request"]["direction"] == "inverse"
+
+    _flagfft_core.clear_plan_cache()
+    forward_resolved = _flagfft_core.debug_resolved_plan(x)
+    assert forward_resolved["source"] == "cpp_auto"
+    assert forward_resolved["request"]["direction"] == "forward"
 
 
 def test_tuning_problem_fields_use_current_plan_schema() -> None:
