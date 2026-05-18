@@ -65,7 +65,10 @@ def _require_core():
     try:
         import _flagfft_core
     except ImportError as exc:  # pragma: no cover - depends on extension build state
-        raise RuntimeError("run `python -m pip install -e .` before tuning") from exc
+        raise RuntimeError(
+            "flagfft-tune currently requires the optional legacy _flagfft_core module; "
+            "build with -DFLAGFFT_BUILD_PYTHON=ON before tuning"
+        ) from exc
     return _flagfft_core
 
 
@@ -81,7 +84,7 @@ def _api_name(api: str | Callable[..., Any]) -> str:
 def _ensure_implemented_api(api_name: str) -> None:
     if api_name not in IMPLEMENTED_TUNE_APIS:
         raise NotImplementedError(
-            f"flagfft.tune currently supports flagfft.fft and flagfft.ifft only, got flagfft.{api_name}"
+            f"flagfft-tune currently supports api=fft and api=ifft only, got api={api_name}"
         )
 
 

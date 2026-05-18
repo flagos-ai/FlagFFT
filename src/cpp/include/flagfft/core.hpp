@@ -2,6 +2,7 @@
 
 #include <Python.h>
 #include <cuda.h>
+#include <flagfft/flagfft.h>
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
@@ -11,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cctype>
+#include <cstring>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -433,9 +435,74 @@ struct ExecutionContext {
     CUstream stream = nullptr;
 };
 
+struct DeviceAllocation {
+    DeviceAllocation() = default;
+    DeviceAllocation(CUdeviceptr ptr, std::size_t bytes);
+    ~DeviceAllocation();
+    DeviceAllocation(const DeviceAllocation &) = delete;
+    DeviceAllocation &operator=(const DeviceAllocation &) = delete;
+    DeviceAllocation(DeviceAllocation &&other) noexcept;
+    DeviceAllocation &operator=(DeviceAllocation &&other) noexcept;
+    void reset();
+
+    CUdeviceptr ptr = 0;
+    std::size_t bytes = 0;
+};
+
+struct RawExecutionContext {
+    const FFTRequest &request;
+    CUstream stream = nullptr;
+    int64_t batch = 0;
+};
+
 struct CompiledNode {
     virtual ~CompiledNode() = default;
     virtual nb::object execute(const nb::object &input, const ExecutionContext &context) const = 0;
+};
+
+struct CompiledRawNode {
+    virtual ~CompiledRawNode() = default;
+    virtual flagfftResult execute(CUdeviceptr input,
+                                  CUdeviceptr output,
+                                  const RawExecutionContext &context) const = 0;
+};
+
+struct CompiledRawLeafNode final : CompiledRawNode {
+    CompiledRawLeafNode(int64_t length,
+                        std::shared_ptr<AotKernel> kernel,
+                        std::vector<DeviceAllocation> tables);
+    flagfftResult execute(CUdeviceptr input,
+                          CUdeviceptr output,
+                          const RawExecutionContext &context) const override;
+
+    int64_t length;
+    std::shared_ptr<AotKernel> kernel;
+    std::vector<DeviceAllocation> tables;
+};
+
+struct CompiledRawFourStepFusedNode final : CompiledRawNode {
+    CompiledRawFourStepFusedNode(int64_t length,
+                                 int64_t n1,
+                                 int64_t n2,
+                                 std::shared_ptr<AotKernel> row_kernel,
+                                 std::vector<DeviceAllocation> row_tables,
+                                 std::shared_ptr<AotKernel> col_kernel,
+                                 std::vector<DeviceAllocation> col_tables,
+                                 DeviceAllocation twiddle,
+                                 DeviceAllocation stage1);
+    flagfftResult execute(CUdeviceptr input,
+                          CUdeviceptr output,
+                          const RawExecutionContext &context) const override;
+
+    int64_t length;
+    int64_t n1;
+    int64_t n2;
+    std::shared_ptr<AotKernel> row_kernel;
+    std::vector<DeviceAllocation> row_tables;
+    std::shared_ptr<AotKernel> col_kernel;
+    std::vector<DeviceAllocation> col_tables;
+    DeviceAllocation twiddle;
+    DeviceAllocation stage1;
 };
 
 struct CompiledLeafNode final : CompiledNode {
@@ -537,12 +604,17 @@ public:
     std::shared_ptr<CompiledNode> compile_node(const PlanNodePtr &node,
                                                const FFTRequest &request,
                                                int64_t batch);
+    std::shared_ptr<CompiledRawNode> compile_raw_node(const PlanNodePtr &node,
+                                                      const FFTRequest &request,
+                                                      int64_t batch);
     static void clear_kernel_cache();
     static nb::dict kernel_cache_info();
     static nb::list kernel_cache_keys();
 
 private:
     std::shared_ptr<CompiledNode> compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
+    std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf,
+                                                      const FFTRequest &request);
     std::shared_ptr<AotKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t n1,

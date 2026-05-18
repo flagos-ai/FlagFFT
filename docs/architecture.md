@@ -1,88 +1,60 @@
 # FlagFFT Architecture
 
-FlagFFT keeps execution ownership in C++ and leaves Python responsible only for
-the public API wrappers and Triton/TLE code generation.
+FlagFFT now treats the C/C++ API as the runtime boundary. Python remains in the
+repository for Triton/TLE AOT generation and offline tuning orchestration, but
+Python no longer exposes a runtime FFT API.
 
-## C++ Backend
+## C++ Runtime
 
-- `src/cpp/common/` builds and validates FFT requests, plan keys, and debug dicts.
-- `src/cpp/plan/` maps FFT lengths to plan trees such as `ct_leaf` and `four_step`.
-- `src/cpp/codegen/` invokes the Python AOT compiler, parses kernel artifacts, and
-  builds runtime tables required by compiled nodes.
-- `src/cpp/runtime/` owns CUDA Driver loading, launch helpers, current stream lookup,
-  and PyTorch tensor allocation helpers.
-- `src/cpp/exec/` owns executable plans, cache hits/misses, normalization, and plan
-  node execution. On cold `ProblemKey` misses it can read a SQLite tuned-plan
-  database, using `.flagfft/tuned_plans.sqlite` by default, `FLAGFFT_TUNE_DB` as
-  an override, and `FLAGFFT_TUNE_DISABLE` as a kill switch. Only valid rows with
-  matching problem fields and tune fingerprints are used; warm `ProblemKey`
-  hits return the cached executable directly.
-- `src/cpp/bindings/` exposes the nanobind module `_flagfft_core`.
+- `include/flagfft/flagfft.h` declares the cuFFT-style opaque handle API.
+- `src/cpp/exec/c_api.cpp` owns `flagfftHandle` lifecycle, plan creation,
+  stream state, and raw pointer exec dispatch.
+- `src/cpp/plan/` maps a validated `FFTRequest` to a `PlanNode` tree.
+- `src/cpp/codegen/` invokes the Python AOT compiler during plan creation and
+  loads the resulting cubins as `AotKernel` objects.
+- `src/cpp/runtime/` owns CUDA Driver helpers and RAII device allocations used
+  by raw plans.
 
-Four-step execution has two runtime forms. Nested or non-leaf children use the
-generic transpose, row exec, twiddle-transpose, column exec, final transpose
-sequence. Four-step nodes whose row and column children are both `ct_leaf` use
-specialized fused row/column AOT kernels keyed as `four_step_row` and
-`four_step_col`. The fused row kernel reads the original strided input columns
-directly, while the fused column kernel loads the four-step twiddle and writes
-the final natural output order, reducing the hot path to two launches. The fused
-column kernel uses a shared codegen/runtime inner-pack rule: it keeps one inner
-column per CTA for smaller `n1` values and packs two adjacent inner columns once
-`n1 >= 128`, interleaving those slots in the vector layout to reduce
-natural-order store stride pressure visible in Nsight Compute.
+The current native C API slice is intentionally narrow: out-of-place,
+contiguous, rank-1, batched `FLAGFFT_C2C` with `complex64` pointers. Plan
+creation compiles both forward and inverse kernels so `flagfftExecC2C` only
+validates inputs, selects the compiled direction, and launches kernels on the
+handle stream. Unsupported ranks, layouts, precisions, and real transforms
+return `FLAGFFT_NOT_SUPPORTED`.
 
-Forward and inverse complex leaves share the same generated radix codelets.
-Inverse kernels are emitted by wrapping each specialized forward codelet with
-input/output conjugation, while stage twiddles, generic DFT tables, and
-four-step twiddles are generated with the inverse sign. `KernelKey` includes
-direction for leaf and fused four-step kernels so forward and inverse cubins are
-never reused across signs; generic transpose kernels remain direction-neutral.
-Bluestein uses direction-specific outer chirp and convolution tables, but its
-internal convolution child plan is compiled as an unnormalized forward FFT.
+## Raw Execution Nodes
+
+Raw nodes mirror the existing plan tree but do not depend on PyTorch tensors:
+
+- `CompiledRawLeafNode` launches a contiguous leaf kernel with plan-owned
+  twiddle and DFT table allocations.
+- `CompiledRawFourStepFusedNode` supports four-step routes whose row and column
+  children are both leaves. It owns the four-step twiddle and intermediate
+  stage buffer.
+
+The old `CompiledNode` tensor path remains only to support the optional
+`FLAGFFT_BUILD_PYTHON=ON` debug/tune module. It is not part of the default
+runtime build surface.
 
 ## Python Boundary
 
-`src/api.py` and `src/flagfft.py` expose only the torch.fft-compatible FlagFFT API.
-No Python plan cache, tensor table cache, or FFT execution fallback is allowed.
+Deleted runtime wrappers: top-level `flagfft.py`, `src/api.py`, and
+`src/flagfft.py`.
 
-`src/codegen/` is the only Python implementation area below the API layer. It emits
-Triton/TLE kernel source and compiles AOT artifacts for C++ to load and execute.
-This includes the fused four-step row/column kernel variants; Python still does
-not own plan caching, tensor caching, or FFT execution fallback.
+Retained Python files:
 
-`src/tuning.py` provides the official offline tuning orchestration used by
-`flagfft.tune(...)` and the thin `flagfft-tune` CLI. It benchmarks explicit C++
-plans through `_flagfft_core.enumerate_plan_candidates()` and
-`_flagfft_core.fft_with_plan()` / `_flagfft_core.ifft_with_plan()`, records
-measurement history in SQLite, and can load problem lists from CLI flags, a JSON
-string, or a JSON file. The focused mixed-radix benchmark can call the same
-tuner before timing with `--tune`, or force a new winner with `--tune retune`.
-`flagfft.fft` and `flagfft.ifft` are currently benchmarkable; all other API
-names are reserved in the tune dispatcher and raise `NotImplementedError`
-without invoking any Python FFT fallback.
+- `src/triton_aot.py`
+- `src/codegen/`
+- `src/codelet/`
+- `src/tuning.py`
+- `src/flagfft_tune.py`
 
-For contiguous `ct_leaf` kernels whose selected lane count is smaller than a
-warp, codegen can pack multiple independent batch rows into one CTA. The pack
-factor is derived from the lane block and a conservative shared-memory budget,
-rounded to powers of two for Triton/TLE shape constraints, and capped for very
-small leaves to avoid launching fewer blocks than the GPU can occupy. Packed
-artifacts expose `batch_per_block`; `src/cpp/exec/` uses that value only for
-contiguous leaf grid sizing. Four-step fused row kernels keep their existing
-`(inner, batch)` grid; fused column kernels use the dynamic inner-pack rule
-described above.
+`flagfft-tune` is still the reserved tune entrypoint. Candidate enumeration and
+forced-plan timing currently require the optional legacy `_flagfft_core` module,
+so tuning workflows should build with `FLAGFFT_BUILD_PYTHON=ON`.
 
-Planner `ct_leaf` eligibility is request-aware. For `float32` and `complex64`
-inputs, the planner records `smem_size` as float32 scratch elements and converts
-that to bytes only when checking whether the current CUDA device can launch the
-candidate. It queries `CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN`,
-falls back to `CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK`, and uses 48 KiB
-only if the Driver query fails. This changes candidate enumeration without
-changing the plan schema: large single-CTA leaves such as 4096-point FFTs can be
-tuned on devices with sufficient opt-in dynamic shared memory, while unsupported
-double-precision scratch rules remain outside the leaf planner.
+## Tests
 
-## Current Status
-
-1-D `flagfft.fft` and `flagfft.ifft` are implemented for CUDA tensors on the
-last dimension. Other torch.fft entrypoints exist as API stubs until their C++
-plan and exec paths are implemented.
+C++ tests live in `ctests/` and are registered by CMake/CTest when cuFFT is
+available. They compare `flagfftExecC2C` against `cufftExecC2C` across multiple
+batch sizes, directions, and native route shapes.

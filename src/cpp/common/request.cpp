@@ -3,6 +3,9 @@
 namespace flagfft {
 
 [[noreturn]] void raise_python(PyObject *type, const std::string &message) {
+    if (!Py_IsInitialized()) {
+        throw std::runtime_error(message);
+    }
     PyErr_SetString(type, message.c_str());
     throw nb::python_error();
 }

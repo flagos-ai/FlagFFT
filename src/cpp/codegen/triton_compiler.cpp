@@ -7,7 +7,7 @@ std::string run_command_capture_stdout(const std::string &command) {
     std::array<char, 4096> buffer{};
     std::string output;
     int status = 0;
-    {
+    auto run_pipe = [&]() {
         nb::gil_scoped_release release;
         FILE *pipe = popen(command.c_str(), "r");
         if (pipe == nullptr) {
@@ -17,6 +17,21 @@ std::string run_command_capture_stdout(const std::string &command) {
             output += buffer.data();
         }
         status = pclose(pipe);
+    };
+    auto run_pipe_without_gil = [&]() {
+        FILE *pipe = popen(command.c_str(), "r");
+        if (pipe == nullptr) {
+            throw std::runtime_error("failed to start command: " + command);
+        }
+        while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+            output += buffer.data();
+        }
+        status = pclose(pipe);
+    };
+    if (Py_IsInitialized()) {
+        run_pipe();
+    } else {
+        run_pipe_without_gil();
     }
     if (status != 0) {
         std::ostringstream message;
@@ -295,6 +310,61 @@ nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_
     return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(1, m));
 }
 
+namespace {
+
+DeviceAllocation allocate_device_bytes(std::size_t bytes) {
+    if (bytes == 0) {
+        return {};
+    }
+    CUdeviceptr ptr = 0;
+    cuda_check(cuMemAlloc(&ptr, bytes), "cuMemAlloc");
+    return DeviceAllocation(ptr, bytes);
+}
+
+DeviceAllocation device_allocation_from_floats(const std::vector<float> &values) {
+    DeviceAllocation allocation = allocate_device_bytes(values.size() * sizeof(float));
+    if (allocation.ptr != 0) {
+        cuda_check(cuMemcpyHtoD(allocation.ptr, values.data(), allocation.bytes), "cuMemcpyHtoD");
+    }
+    return allocation;
+}
+
+DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2) {
+    std::vector<float> interleaved(static_cast<std::size_t>(n1 * n2 * 2));
+    for (int64_t row = 0; row < n2; ++row) {
+        for (int64_t col = 0; col < n1; ++col) {
+            double angle = -2.0 * kPi * static_cast<double>(row * col) /
+                           static_cast<double>(n1 * n2);
+            if (request.direction == "inverse") {
+                angle = -angle;
+            }
+            std::size_t index = static_cast<std::size_t>((row * n1 + col) * 2);
+            interleaved[index] = static_cast<float>(std::cos(angle));
+            interleaved[index + 1] = static_cast<float>(std::sin(angle));
+        }
+    }
+    return device_allocation_from_floats(interleaved);
+}
+
+std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf,
+                                                    const FFTRequest &request) {
+    std::vector<DeviceAllocation> tables;
+    for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
+        auto twiddles = build_stage_twiddles(
+            leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
+        tables.push_back(device_allocation_from_floats(twiddles.first));
+        tables.push_back(device_allocation_from_floats(twiddles.second));
+    }
+    for (int64_t radix : leaf.generic_radices) {
+        auto dft = build_dft_matrix(radix, request.direction);
+        tables.push_back(device_allocation_from_floats(dft.first));
+        tables.push_back(device_allocation_from_floats(dft.second));
+    }
+    return tables;
+}
+
+}  // namespace
+
 std::vector<nb::object> build_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request) {
     std::vector<nb::object> tables;
     for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
@@ -382,6 +452,36 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_node(const PlanNodePtr &no
                      plan_node_kind_name(node->kind));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNodePtr &node,
+                                                                  const FFTRequest &request,
+                                                                  int64_t batch) {
+    if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+        return compile_raw_leaf(*leaf, request);
+    }
+    if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+        auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
+        auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
+        if (row_leaf == nullptr || col_leaf == nullptr) {
+            throw std::runtime_error("raw C API currently supports only fused leaf/leaf four-step plans");
+        }
+        DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
+        DeviceAllocation stage1 = allocate_device_bytes(
+            static_cast<std::size_t>(batch * four_step->length * 2 * sizeof(float)));
+        return std::make_shared<CompiledRawFourStepFusedNode>(
+            four_step->length,
+            four_step->n1,
+            four_step->n2,
+            compile_four_step_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
+            build_raw_leaf_tables(*row_leaf, request),
+            compile_four_step_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
+            build_raw_leaf_tables(*col_leaf, request),
+            std::move(twiddle),
+            std::move(stage1));
+    }
+    throw std::runtime_error("raw C API does not support plan node kind: " +
+                             plan_node_kind_name(node->kind));
+}
+
 std::shared_ptr<CompiledNode> TritonCompiler::compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::leaf(target,
@@ -410,6 +510,36 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_leaf(const LeafPlanNode &l
 
     return std::make_shared<CompiledLeafNode>(leaf.length, std::move(kernel),
                                               build_leaf_tables(leaf, request));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlanNode &leaf,
+                                                                  const FFTRequest &request) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::leaf(target,
+                                    request.direction,
+                                    leaf.length,
+                                    leaf.factors,
+                                    leaf.lanes,
+                                    leaf.num_warps,
+                                    leaf.generic_radices,
+                                    leaf.smem_size);
+    std::ostringstream command;
+    command << shell_quote(python_executable())
+            << " " << triton_aot_entrypoint()
+            << " --kernel leaf"
+            << " --length " << leaf.length
+            << " --factors " << shell_quote(join_ints(leaf.factors))
+            << " --lanes " << leaf.lanes
+            << " --num-warps " << leaf.num_warps
+            << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
+            << " --smem-size " << leaf.smem_size
+            << " --direction " << shell_quote(request.direction)
+            << " --target " << shell_quote(target)
+            << " --out-dir " << shell_quote(out_dir().string());
+
+    std::shared_ptr<AotKernel> kernel = compile_kernel(key, command.str());
+    return std::make_shared<CompiledRawLeafNode>(
+        leaf.length, std::move(kernel), build_raw_leaf_tables(leaf, request));
 }
 
 std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_row_kernel(const LeafPlanNode &leaf,
@@ -633,7 +763,17 @@ std::filesystem::path TritonCompiler::out_dir() const {
 }
 
 std::string TritonCompiler::python_executable() const {
+    const char *override_path = std::getenv("FLAGFFT_PYTHON");
+    if (override_path != nullptr && std::strlen(override_path) > 0) {
+        return override_path;
+    }
+    if (!Py_IsInitialized()) {
+        return "python3";
+    }
     std::wstring executable_w = Py_GetProgramFullPath();
+    if (executable_w.empty()) {
+        return "python3";
+    }
     return std::string(executable_w.begin(), executable_w.end());
 }
 

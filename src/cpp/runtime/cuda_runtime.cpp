@@ -2,6 +2,37 @@
 
 namespace flagfft {
 
+DeviceAllocation::DeviceAllocation(CUdeviceptr ptr, std::size_t bytes) : ptr(ptr), bytes(bytes) {}
+
+DeviceAllocation::~DeviceAllocation() {
+    reset();
+}
+
+DeviceAllocation::DeviceAllocation(DeviceAllocation &&other) noexcept
+    : ptr(other.ptr), bytes(other.bytes) {
+    other.ptr = 0;
+    other.bytes = 0;
+}
+
+DeviceAllocation &DeviceAllocation::operator=(DeviceAllocation &&other) noexcept {
+    if (this != &other) {
+        reset();
+        ptr = other.ptr;
+        bytes = other.bytes;
+        other.ptr = 0;
+        other.bytes = 0;
+    }
+    return *this;
+}
+
+void DeviceAllocation::reset() {
+    if (ptr != 0) {
+        cuMemFree(ptr);
+        ptr = 0;
+        bytes = 0;
+    }
+}
+
 void cuda_check(CUresult result, const std::string &context) {
     if (result == CUDA_SUCCESS) {
         return;
