@@ -40,6 +40,15 @@ The old `CompiledNode` tensor path remains only to support the optional
 `FLAGFFT_BUILD_PYTHON=ON` debug/tune module. It is not part of the default
 runtime build surface.
 
+## Build Options
+
+The default CMake build produces only the C++ shared library `flagfft`. Optional
+targets are controlled in the same build directory with `-D` switches:
+
+- `FLAGFFT_BUILD_TESTS=ON` builds C++ gtest targets.
+- `FLAGFFT_BUILD_BENCHMARKS=ON` builds `bench_vs_cufft`.
+- `FLAGFFT_BUILD_PYTHON=ON` builds the legacy `_flagfft_core` debug/tune module.
+
 ## Python Boundary
 
 Deleted runtime wrappers: top-level `flagfft.py`, `src/api.py`, and

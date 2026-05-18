@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.18)
 project(flagfft LANGUAGES CXX)
 
 option(FLAGFFT_BUILD_PYTHON "Build the legacy nanobind Python debug/tune module" OFF)
-option(FLAGFFT_BUILD_TESTS "Build C++ tests" ON)
+option(FLAGFFT_BUILD_TESTS "Build C++ tests" OFF)
 option(FLAGFFT_BUILD_BENCHMARKS "Build C++ benchmark executables" OFF)
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module Development.Embed)

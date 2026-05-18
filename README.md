@@ -39,19 +39,28 @@ Python, compile kernels, rebuild plans, or allocate large buffers.
 
 ## Build
 
-Configure and build the C++ library:
+Configure and build the C++ library. Optional targets are controlled by CMake
+`-D` switches in the same build directory; the default build only produces
+`flagfft`.
 
 ```sh
 cmake -S . -B build/cpp -GNinja
 cmake --build build/cpp
 ```
 
-The legacy nanobind debug module is optional and disabled by default:
+Enable optional targets by reconfiguring the same directory:
 
 ```sh
-cmake -S . -B build/cpp-python -GNinja -DFLAGFFT_BUILD_PYTHON=ON
-cmake --build build/cpp-python
+cmake -S . -B build/cpp -GNinja \
+  -DFLAGFFT_BUILD_TESTS=ON \
+  -DFLAGFFT_BUILD_BENCHMARKS=ON \
+  -DFLAGFFT_BUILD_PYTHON=ON
+cmake --build build/cpp
 ```
+
+`FLAGFFT_BUILD_TESTS`, `FLAGFFT_BUILD_BENCHMARKS`, and
+`FLAGFFT_BUILD_PYTHON` are all disabled by default. The legacy nanobind debug
+module is built only when `FLAGFFT_BUILD_PYTHON=ON`.
 
 When plan creation invokes Triton AOT, it uses `FLAGFFT_PYTHON` if set, otherwise
 `python3`. Generated AOT artifacts and tuned-plan SQLite defaults are stored in
@@ -74,10 +83,10 @@ for candidate enumeration and forced-plan benchmarking. Build with
 The supported benchmark entrypoint is the C++ C API tool:
 
 ```sh
-cmake -S . -B build/cpp-bench -GNinja -DFLAGFFT_BUILD_BENCHMARKS=ON
-cmake --build build/cpp-bench --target bench_vs_cufft
-build/cpp-bench/bench_vs_cufft --lengths 256,1024 --batch 64
-build/cpp-bench/bench_vs_cufft --lengths 4096 --batch 256 --retune
+cmake -S . -B build/cpp -GNinja -DFLAGFFT_BUILD_BENCHMARKS=ON
+cmake --build build/cpp --target bench_vs_cufft
+build/cpp/bench_vs_cufft --lengths 256,1024 --batch 64
+build/cpp/bench_vs_cufft --lengths 4096 --batch 256 --retune
 ```
 
 `--tune` keeps an existing SQLite winner, while `--retune` supersedes it. The
@@ -97,9 +106,9 @@ tune/retune; cuFFT is reported as default contiguous `cufftPlan1d`.
 C++ plan tests and cuFFT comparison tests are registered with CTest:
 
 ```sh
-cmake -S . -B build/cpp-tests -GNinja -DFLAGFFT_BUILD_TESTS=ON
-cmake --build build/cpp-tests
-ctest --test-dir build/cpp-tests --output-on-failure
+cmake -S . -B build/cpp -GNinja -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build/cpp
+ctest --test-dir build/cpp --output-on-failure
 ```
 
 The gtest suite compares `flagfftExecC2C` against `cufftExecC2C` for multiple
