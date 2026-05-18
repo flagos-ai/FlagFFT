@@ -12,12 +12,14 @@ dependencies = [
 ]
 
 [project.scripts]
-flagfft-tune = "src.flagfft_tune:main"
+flagfft-tune = "src.tune.flagfft_tune:main"
 
 [project.optional-dependencies]
 test = [
+    "pytest",
 ]
 dev = [
+    "pytest",
 ]
 
 [tool.scikit-build]

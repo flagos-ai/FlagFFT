@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import statistics
 import sys
 import time
@@ -9,12 +10,19 @@ from typing import Any, Literal
 
 import torch
 
+ROOT = Path(__file__).resolve().parents[1]
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(ROOT))
 
-from flagfft import fft as flagfft_fft
-from flagfft import ifft as flagfft_ifft
-from flagfft import tune as flagfft_tune
+_TUNING_SPEC = importlib.util.spec_from_file_location(
+    "flagfft_benchmark_tuning", ROOT / "src" / "tune" / "tuning.py"
+)
+if _TUNING_SPEC is None or _TUNING_SPEC.loader is None:
+    raise RuntimeError("failed to load repo-local tuning module")
+_TUNING = importlib.util.module_from_spec(_TUNING_SPEC)
+sys.modules[_TUNING_SPEC.name] = _TUNING
+_TUNING_SPEC.loader.exec_module(_TUNING)
+flagfft_tune = _TUNING.tune
 
 TuneMode = Literal["tune", "retune"]
 ApiName = Literal["fft", "ifft"]
@@ -56,8 +64,8 @@ def _require_cpp_core():
     return _flagfft_core
 
 
-def _flagfft_api(api: ApiName):
-    return flagfft_ifft if api == "ifft" else flagfft_fft
+def _flagfft_api(core, api: ApiName):
+    return core.ifft if api == "ifft" else core.fft
 
 
 def _torch_api(api: ApiName):
@@ -89,7 +97,7 @@ def _profile_flagfft_cpp_warm_ms(
     x: torch.Tensor, warmup: int, iters: int, api: ApiName
 ) -> dict[str, Any]:
     core = _require_cpp_core()
-    flagfft_api = _flagfft_api(api)
+    flagfft_api = _flagfft_api(core, api)
     core.clear_plan_cache()
 
     first_call_ms = _bench_one_cuda_ms(lambda: flagfft_api(x))
@@ -156,7 +164,7 @@ def _tune_before_benchmark(
     retune = tune_mode == "retune"
     print(f"[api={api} tune={'retune' if retune else 'tune'} n={n} batch={batch}]")
     flagfft_tune(
-        _flagfft_api(api),
+        api,
         lengths=[n],
         batch=batch,
         retune=retune,

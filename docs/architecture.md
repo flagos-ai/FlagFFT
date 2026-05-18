@@ -7,13 +7,17 @@ Python no longer exposes a runtime FFT API.
 ## C++ Runtime
 
 - `include/flagfft/flagfft.h` declares the cuFFT-style opaque handle API.
-- `src/cpp/exec/c_api.cpp` owns `flagfftHandle` lifecycle, plan creation,
-  stream state, and raw pointer exec dispatch.
-- `src/cpp/plan/` maps a validated `FFTRequest` to a `PlanNode` tree.
-- `src/cpp/codegen/` invokes the Python AOT compiler during plan creation and
-  loads the resulting cubins as `AotKernel` objects.
-- `src/cpp/runtime/` owns CUDA Driver helpers and RAII device allocations used
-  by raw plans.
+- `src/exec/` owns `flagfftHandle` lifecycle, plan creation, stream state,
+  plan cache, raw pointer exec dispatch, and optional legacy tensor execution.
+- `src/plan/` maps a validated `FFTRequest` to a `PlanNode` tree and is split
+  into node, factorization, cost, auto-candidate, and tune-candidate units.
+- `src/codegen/` invokes the Python AOT compiler during plan creation, loads
+  cubins as `AotKernel` objects, and contains Python Triton/TLE source
+  generation plus `src/codegen/codelet/`.
+- `src/runtime/` owns CUDA Driver helpers and RAII device allocations used by
+  raw plans.
+- `src/utils/` owns shared request/key utilities, nanobind glue, and internal
+  headers under `src/utils/include/flagfft/`.
 
 The current native C API slice is intentionally narrow: out-of-place,
 contiguous, rank-1, batched `FLAGFFT_C2C` with `complex64` pointers. Plan
@@ -45,16 +49,21 @@ Retained Python files:
 
 - `src/triton_aot.py`
 - `src/codegen/`
-- `src/codelet/`
-- `src/tuning.py`
-- `src/flagfft_tune.py`
+- `src/codegen/codelet/`
+- `src/tune/`
 
 `flagfft-tune` is still the reserved tune entrypoint. Candidate enumeration and
 forced-plan timing currently require the optional legacy `_flagfft_core` module,
 so tuning workflows should build with `FLAGFFT_BUILD_PYTHON=ON`.
 
+Default generated artifacts and tuned-plan SQLite files live in `.flagfft`
+beside the running executable unless an explicit override such as
+`FLAGFFT_TUNE_DB` is provided.
+
 ## Tests
 
-C++ tests live in `ctests/` and are registered by CMake/CTest when cuFFT is
-available. They compare `flagfftExecC2C` against `cufftExecC2C` across multiple
-batch sizes, directions, and native route shapes.
+C++ tests live in `tests/ctest/` and are registered by CMake/CTest. Plan tests
+cover route selection and key structure; cuFFT comparison tests cover
+`flagfftExecC2C` across multiple batch sizes, directions, and native route
+shapes when cuFFT is available. Python tests live in `tests/python/` and cover
+codegen/tune behavior only.

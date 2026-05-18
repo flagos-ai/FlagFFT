@@ -21,14 +21,16 @@ their raw execution paths are implemented.
 
 ## Architecture
 
-- `src/cpp/common/`: FFT request and key types reused by planning/codegen.
-- `src/cpp/plan/`: plan tree construction for `ct_leaf` and fused `four_step`
-  routes.
-- `src/cpp/codegen/`: invokes the Python Triton AOT compiler and loads cubins.
-- `src/cpp/runtime/`: CUDA Driver helpers and plan-owned device allocations.
-- `src/cpp/exec/`: cuFFT-style C API, raw pointer execution, and legacy tensor
-  execution code used only when the optional Python debug module is enabled.
-- `src/codegen/` and `src/codelet/`: Python kernel source generation.
+- `src/utils/`: shared C++ utilities, request/key types, nanobind module glue,
+  and internal headers under `src/utils/include/flagfft/`.
+- `src/plan/`: plan node definitions, factorization, cost model, automatic route
+  selection, forced-plan parsing, and tune candidate enumeration.
+- `src/codegen/`: C++ Triton AOT invocation/cache logic plus Python kernel
+  source generation. Codelets live in `src/codegen/codelet/`.
+- `src/runtime/`: CUDA Driver helpers and plan-owned device allocations.
+- `src/exec/`: cuFFT-style C API, raw pointer execution nodes, plan cache, and
+  legacy tensor execution used only by the optional Python debug/tune module.
+- `src/tune/`: offline tune CLI and SQLite measurement orchestration.
 
 The C API uses an opaque `flagfftHandle`. Internally it owns the immutable plan
 description, stream/lifecycle state, compiled forward and inverse raw execution
@@ -52,8 +54,8 @@ cmake --build build/cpp-python
 ```
 
 When plan creation invokes Triton AOT, it uses `FLAGFFT_PYTHON` if set, otherwise
-`python3`. Run C++ tests from the repository root or keep the CTest working
-directory unchanged so the local `src/triton_aot.py` entrypoint is visible.
+`python3`. Generated AOT artifacts and tuned-plan SQLite defaults are stored in
+`.flagfft` next to the running executable.
 
 ## Tuning
 
@@ -69,7 +71,7 @@ for candidate enumeration and forced-plan benchmarking. Build with
 
 ## Validation
 
-C++ correctness tests are registered with CTest when cuFFT is available:
+C++ plan tests and cuFFT comparison tests are registered with CTest:
 
 ```sh
 cmake -S . -B build/cpp-tests -GNinja -DFLAGFFT_BUILD_TESTS=ON
@@ -78,7 +80,8 @@ ctest --test-dir build/cpp-tests --output-on-failure
 ```
 
 The gtest suite compares `flagfftExecC2C` against `cufftExecC2C` for multiple
-batch sizes and both leaf and four-step native routes.
+batch sizes and both leaf and four-step native routes. Python tests live under
+`tests/python/` and cover codegen/tune behavior only.
 
 ## License
 

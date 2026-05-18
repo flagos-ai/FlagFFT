@@ -11,7 +11,7 @@ import triton.experimental.tle.language as tle
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _MODULE_DIR.parents[1]
-_CODELET_DIR = _PROJECT_ROOT / "src" / "codelet"
+_CODELET_DIR = _MODULE_DIR / "codelet"
 _FOUR_STEP_TILE_ROWS = 32
 _FOUR_STEP_TILE_COLS = 32
 _FOUR_STEP_NUM_WARPS = 4
