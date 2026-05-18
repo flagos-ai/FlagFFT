@@ -23,9 +23,32 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse_request = request_from_desc(plan->desc, "inverse");
 
         PlanBuilder builder;
-        plan->executable.root =
-            builder.build(plan->executable.forward_request.requested_n,
-                          plan->executable.forward_request);
+        auto tuned_root_for = [&](const FFTRequest &request) -> PlanNodePtr {
+            if (auto tuned_plan = lookup_tuned_plan_dict(request)) {
+                try {
+                    nb::gil_scoped_acquire acquire;
+                    PlanNodePtr root = plan_node_from_wrapped_dict(builder, *tuned_plan);
+                    if (raw_supported_node(root)) {
+                        return root;
+                    }
+                } catch (const nb::python_error &) {
+                    nb::gil_scoped_acquire acquire;
+                    PyErr_Clear();
+                } catch (const std::exception &) {
+                }
+            }
+            return nullptr;
+        };
+
+        plan->executable.root = tuned_root_for(plan->executable.forward_request);
+        if (plan->executable.root == nullptr) {
+            plan->executable.root = tuned_root_for(plan->executable.inverse_request);
+        }
+        if (plan->executable.root == nullptr) {
+            plan->executable.root =
+                builder.build(plan->executable.forward_request.requested_n,
+                              plan->executable.forward_request);
+        }
         if (!raw_supported_node(plan->executable.root)) {
             return FLAGFFT_NOT_SUPPORTED;
         }

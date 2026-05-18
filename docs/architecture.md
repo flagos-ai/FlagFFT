@@ -60,6 +60,15 @@ Default generated artifacts and tuned-plan SQLite files live in `.flagfft`
 beside the running executable unless an explicit override such as
 `FLAGFFT_TUNE_DB` is provided.
 
+The benchmark path is a C++ executable, `bench_vs_cufft`, built with
+`FLAGFFT_BUILD_BENCHMARKS=ON`. It exercises the public C API, optionally invokes
+`flagfft-tune` with `--tune` or `--retune`, and points both tuning and execution
+at the executable-local `.flagfft/tuned_plans.sqlite`.
+Timing uses a shared explicit CUDA stream for FlagFFT and cuFFT, alternates the
+measurement order per sample, and divides grouped launch time by
+`--launches-per-sample` before taking the median. Benchmark output labels the
+FlagFFT plan mode separately from cuFFT's default contiguous `cufftPlan1d`.
+
 ## Tests
 
 C++ tests live in `tests/ctest/` and are registered by CMake/CTest. Plan tests
@@ -67,3 +76,6 @@ cover route selection and key structure; cuFFT comparison tests cover
 `flagfftExecC2C` across multiple batch sizes, directions, and native route
 shapes when cuFFT is available. Python tests live in `tests/python/` and cover
 codegen/tune behavior only.
+
+Benchmark pytest cases live in `benchmark/` and shell out to `bench_vs_cufft`;
+they are smoke/registration tests for the tool, not Python FFT runtime tests.

@@ -5,6 +5,7 @@ __pycache__
 .codex
 .agents
 .nsys
+CLAUDE.md
 AGENTS.md
 *.egg-info/
 test_fft

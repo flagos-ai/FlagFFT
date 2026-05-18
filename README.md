@@ -69,6 +69,29 @@ The tune path still depends on the optional legacy `_flagfft_core` debug module
 for candidate enumeration and forced-plan benchmarking. Build with
 `FLAGFFT_BUILD_PYTHON=ON` when using that workflow.
 
+## Benchmark
+
+The supported benchmark entrypoint is the C++ C API tool:
+
+```sh
+cmake -S . -B build/cpp-bench -GNinja -DFLAGFFT_BUILD_BENCHMARKS=ON
+cmake --build build/cpp-bench --target bench_vs_cufft
+build/cpp-bench/bench_vs_cufft --lengths 256,1024 --batch 64
+build/cpp-bench/bench_vs_cufft --lengths 4096 --batch 256 --retune
+```
+
+`--tune` keeps an existing SQLite winner, while `--retune` supersedes it. The
+tool passes `--db` to `flagfft-tune` so tuning records are written to the same
+`.flagfft/tuned_plans.sqlite` directory that the benchmark executable reads.
+Use `--tune-static-limit` and `--tune-finalists` to reduce tune work for smoke
+runs.
+
+The benchmark binds both libraries to one explicit CUDA stream, alternates the
+timed order per sample, and reports the median per-launch time from grouped
+launches. Use `--launches-per-sample` to control the group size. Output labels
+whether FlagFFT used auto planning, an existing SQLite winner, or a per-shape
+tune/retune; cuFFT is reported as default contiguous `cufftPlan1d`.
+
 ## Validation
 
 C++ plan tests and cuFFT comparison tests are registered with CTest:
@@ -82,6 +105,9 @@ ctest --test-dir build/cpp-tests --output-on-failure
 The gtest suite compares `flagfftExecC2C` against `cufftExecC2C` for multiple
 batch sizes and both leaf and four-step native routes. Python tests live under
 `tests/python/` and cover codegen/tune behavior only.
+
+Benchmark pytest wrappers live under `benchmark/` and invoke `bench_vs_cufft`
+directly; they do not call Python FFT runtime APIs.
 
 ## License
 

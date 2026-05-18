@@ -105,6 +105,10 @@ std::optional<nb::dict> lookup_tuned_plan_dict(const FFTRequest &request) {
         return std::nullopt;
     }
     try {
+        if (!Py_IsInitialized()) {
+            Py_Initialize();
+        }
+        nb::gil_scoped_acquire acquire;
         nb::dict fps = tune_fingerprints();
         nb::module_ sqlite3 = nb::module_::import_("sqlite3");
         nb::object conn = sqlite3.attr("connect")(db_path->string());

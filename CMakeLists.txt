@@ -4,6 +4,7 @@ project(flagfft LANGUAGES CXX)
 
 option(FLAGFFT_BUILD_PYTHON "Build the legacy nanobind Python debug/tune module" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests" ON)
+option(FLAGFFT_BUILD_BENCHMARKS "Build C++ benchmark executables" OFF)
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module Development.Embed)
 find_package(CUDAToolkit REQUIRED)
@@ -62,10 +63,10 @@ target_link_libraries(flagfft PRIVATE nanobind-static Python::Python CUDA::cuda_
 set_target_properties(flagfft PROPERTIES OUTPUT_NAME flagfft)
 
 if(FLAGFFT_BUILD_PYTHON)
-    nanobind_add_module(_flagfft_core src/utils/module.cpp)
+    nanobind_add_module(_flagfft_core src/utils/module.cpp ${FLAGFFT_CORE_SOURCES})
     target_compile_features(_flagfft_core PRIVATE cxx_std_17)
     target_include_directories(_flagfft_core PRIVATE include src/utils/include)
-    target_link_libraries(_flagfft_core PRIVATE flagfft CUDA::cuda_driver)
+    target_link_libraries(_flagfft_core PRIVATE CUDA::cuda_driver)
     install(TARGETS _flagfft_core
             LIBRARY DESTINATION "."
             RUNTIME DESTINATION "."
@@ -125,5 +126,23 @@ if(FLAGFFT_BUILD_TESTS)
         else()
             message(WARNING "CUDA::cufft target was not found; skipping cuFFT comparison tests")
         endif()
+    endif()
+endif()
+
+if(FLAGFFT_BUILD_BENCHMARKS)
+    if(TARGET CUDA::cufft)
+        add_executable(bench_vs_cufft benchmark/bench_vs_cufft.cpp)
+        target_compile_features(bench_vs_cufft PRIVATE cxx_std_17)
+        target_include_directories(bench_vs_cufft PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+        )
+        target_link_libraries(bench_vs_cufft
+            PRIVATE
+                flagfft
+                CUDA::cudart
+                CUDA::cufft
+        )
+    else()
+        message(WARNING "CUDA::cufft not found; bench_vs_cufft will not be built")
     endif()
 endif()
