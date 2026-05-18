@@ -37,6 +37,27 @@ description, stream/lifecycle state, compiled forward and inverse raw execution
 nodes, and device buffers for twiddle/table/stage data. Exec calls do not import
 Python, compile kernels, rebuild plans, or allocate large buffers.
 
+## Kernel Backends
+
+The default backend is Triton AOT (`FLAGFFT_KERNEL_BACKEND=AOT`). An experimental
+`libtriton_jit` backend can be enabled at build time:
+
+```sh
+cmake -S . -B build -GNinja \
+  -DFLAGFFT_ENABLE_LIBTRITON_JIT=ON \
+  -DFLAGFFT_KERNEL_BACKEND=LIBTRITON_JIT
+cmake --build build
+```
+
+The JIT backend currently targets CUDA only
+(`FLAGFFT_LIBTRITON_JIT_BACKEND=CUDA`) and covers the same raw C API execution
+surface as the default backend: rank-1 contiguous out-of-place
+`FLAGFFT_C2C` complex64 leaf plans and fused leaf/leaf four-step plans. Plan
+creation emits the Triton source and calls libtriton_jit compile-only APIs so
+the first `flagfftExecC2C` does not pay Python compilation latency. Non-C2C,
+rank>1, in-place, and non-contiguous C API requests keep returning
+`FLAGFFT_NOT_SUPPORTED`.
+
 ## Build
 
 Configure and build the C++ library. Optional targets are controlled by CMake
@@ -44,18 +65,18 @@ Configure and build the C++ library. Optional targets are controlled by CMake
 `flagfft`.
 
 ```sh
-cmake -S . -B build/cpp -GNinja
-cmake --build build/cpp
+cmake -S . -B build -GNinja
+cmake --build build
 ```
 
 Enable optional targets by reconfiguring the same directory:
 
 ```sh
-cmake -S . -B build/cpp -GNinja \
+cmake -S . -B build -GNinja \
   -DFLAGFFT_BUILD_TESTS=ON \
   -DFLAGFFT_BUILD_BENCHMARKS=ON \
   -DFLAGFFT_BUILD_PYTHON=ON
-cmake --build build/cpp
+cmake --build build
 ```
 
 `FLAGFFT_BUILD_TESTS`, `FLAGFFT_BUILD_BENCHMARKS`, and
@@ -83,10 +104,10 @@ for candidate enumeration and forced-plan benchmarking. Build with
 The supported benchmark entrypoint is the C++ C API tool:
 
 ```sh
-cmake -S . -B build/cpp -GNinja -DFLAGFFT_BUILD_BENCHMARKS=ON
-cmake --build build/cpp --target bench_vs_cufft
-build/cpp/bench_vs_cufft --lengths 256,1024 --batch 64
-build/cpp/bench_vs_cufft --lengths 4096 --batch 256 --retune
+cmake -S . -B build -GNinja -DFLAGFFT_BUILD_BENCHMARKS=ON
+cmake --build build --target bench_vs_cufft
+build/bench_vs_cufft --lengths 256,1024 --batch 64
+build/bench_vs_cufft --lengths 4096 --batch 256 --retune
 ```
 
 `--tune` keeps an existing SQLite winner, while `--retune` supersedes it. The
@@ -98,17 +119,18 @@ runs.
 The benchmark binds both libraries to one explicit CUDA stream, alternates the
 timed order per sample, and reports the median per-launch time from grouped
 launches. Use `--launches-per-sample` to control the group size. Output labels
-whether FlagFFT used auto planning, an existing SQLite winner, or a per-shape
-tune/retune; cuFFT is reported as default contiguous `cufftPlan1d`.
+the FlagFFT kernel backend and whether FlagFFT used auto planning, an existing
+SQLite winner, or a per-shape tune/retune; cuFFT is reported as default
+contiguous `cufftPlan1d`.
 
 ## Validation
 
 C++ plan tests and cuFFT comparison tests are registered with CTest:
 
 ```sh
-cmake -S . -B build/cpp -GNinja -DFLAGFFT_BUILD_TESTS=ON
-cmake --build build/cpp
-ctest --test-dir build/cpp --output-on-failure
+cmake -S . -B build -GNinja -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
 The gtest suite compares `flagfftExecC2C` against `cufftExecC2C` for multiple

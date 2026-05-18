@@ -409,6 +409,18 @@ const char *flagfft_plan_mode(const BenchConfig &cfg) {
     return "auto planner";
 }
 
+std::string flagfft_kernel_backend() {
+    const char *env = std::getenv("FLAGFFT_KERNEL_BACKEND");
+    if (env != nullptr && std::strlen(env) > 0) {
+        return env;
+    }
+#if defined(FLAGFFT_KERNEL_BACKEND_DEFAULT)
+    return FLAGFFT_KERNEL_BACKEND_DEFAULT;
+#else
+    return "AOT";
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -442,8 +454,9 @@ int main(int argc, char **argv) {
                 cfg.launches_per_sample,
                 cfg.direction == FLAGFFT_FORWARD ? "forward" : "inverse",
                 cfg.tune_db.c_str());
-    std::printf("Plan mode: FlagFFT=%s; cuFFT=default cufftPlan1d contiguous batch\n",
-                flagfft_plan_mode(cfg));
+    std::printf("Plan mode: FlagFFT=%s; backend=%s; cuFFT=default cufftPlan1d contiguous batch\n",
+                flagfft_plan_mode(cfg),
+                flagfft_kernel_backend().c_str());
     std::printf("%-10s %-7s %-13s %-12s %-9s\n",
                 "n", "batch", "flagfft_ms", "cufft_ms", "speedup");
     std::printf("------------------------------------------------------\n");

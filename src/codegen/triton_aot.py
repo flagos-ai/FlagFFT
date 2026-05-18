@@ -49,7 +49,11 @@ def _leaf_module_source(plan: LeafPlan) -> tuple[str, str]:
 
 
 def _module_source(kernel_source: str) -> str:
-    helpers = ""
+    helpers = (
+        "import triton\n"
+        "import triton.language as tl\n"
+        "import triton.experimental.tle.language as tle\n\n"
+    )
     utils_path = _CODELET_DIR / "utils.py"
     if utils_path.exists():
         helpers += utils_path.read_text() + "\n\n"

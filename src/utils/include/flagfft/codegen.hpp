@@ -2,6 +2,10 @@
 
 #include "flagfft/runtime.hpp"
 
+#if defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
+#include "triton_jit/triton_jit_function.h"
+#endif
+
 namespace flagfft {
 
 std::pair<std::vector<int64_t>, std::vector<int64_t>> decode_stage_codelet(
@@ -18,6 +22,7 @@ nb::object build_bluestein_chirp_tensor(const FFTRequest &request, int64_t n, bo
 nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_t m);
 
 enum class AotArgKind { DevicePtr, Int32, Int64 };
+enum class RuntimeKernelBackend { Aot, LibTritonJit };
 
 struct AotKernelArg {
     static AotKernelArg device(CUdeviceptr value);
@@ -33,6 +38,7 @@ struct AotKernelArg {
 struct AotKernel {
     ~AotKernel();
     void load();
+    void compile();
     void launch(CUstream stream,
                 const std::vector<AotKernelArg> &kernel_args,
                 int64_t grid_x,
@@ -40,12 +46,19 @@ struct AotKernel {
                 int64_t grid_z);
 
     std::string kernel_name;
+    RuntimeKernelBackend backend = RuntimeKernelBackend::Aot;
     std::vector<unsigned char> cubin;
+    std::string module_path;
+    std::string signature;
     int64_t shared = 0;
     int64_t num_warps = 1;
+    int64_t num_stages = 1;
     int64_t batch_per_block = 1;
     CUmodule module = nullptr;
     CUfunction function = nullptr;
+#if defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
+    triton_jit::TritonJITFunction *jit_function = nullptr;
+#endif
     std::mutex mutex;
 };
 
@@ -254,9 +267,12 @@ private:
                                                                  int64_t n,
                                                                  int64_t m);
     std::shared_ptr<AotKernel> compile_kernel(const KernelKey &key, const std::string &command) const;
+    std::shared_ptr<AotKernel> compile_aot_kernel(const KernelKey &key, const std::string &command) const;
+    std::shared_ptr<AotKernel> compile_jit_kernel(const KernelKey &key, const std::string &command) const;
     std::filesystem::path out_dir() const;
     std::string python_executable() const;
     std::string triton_aot_entrypoint() const;
+    std::string triton_jit_source_entrypoint() const;
 
     std::shared_ptr<AotKernel> transpose_kernel;
     std::shared_ptr<AotKernel> twiddle_transpose_kernel;

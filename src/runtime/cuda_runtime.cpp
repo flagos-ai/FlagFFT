@@ -157,6 +157,10 @@ AotKernel::~AotKernel() {
 }
 
 void AotKernel::load() {
+    if (backend == RuntimeKernelBackend::LibTritonJit) {
+        compile();
+        return;
+    }
     std::lock_guard<std::mutex> lock(mutex);
     if (function != nullptr) {
         return;
@@ -173,11 +177,72 @@ void AotKernel::load() {
     }
 }
 
+void AotKernel::compile() {
+    if (backend == RuntimeKernelBackend::Aot) {
+        load();
+        return;
+    }
+#if !defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
+    throw std::runtime_error("libtriton_jit backend was not enabled at build time");
+#else
+    std::lock_guard<std::mutex> lock(mutex);
+    if (jit_function != nullptr) {
+        return;
+    }
+    cuda_check(cuInit(0), "cuInit");
+    CUdevice device = 0;
+    cuda_check(cuCtxGetDevice(&device), "cuCtxGetDevice");
+    jit_function =
+        &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
+    jit_function->compile(signature,
+                          static_cast<unsigned int>(num_warps),
+                          static_cast<unsigned int>(num_stages),
+                          static_cast<int>(device));
+#endif
+}
+
 void AotKernel::launch(CUstream stream,
                        const std::vector<AotKernelArg> &kernel_args,
                        int64_t grid_x,
                        int64_t grid_y,
                        int64_t grid_z) {
+    if (backend == RuntimeKernelBackend::LibTritonJit) {
+#if !defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
+        throw std::runtime_error("libtriton_jit backend was not enabled at build time");
+#else
+        compile();
+        CUdeviceptr global_scratch = 0;
+        CUdeviceptr profile_scratch = 0;
+        std::vector<void *> args;
+        args.reserve(kernel_args.size() + 2);
+        for (const AotKernelArg &arg : kernel_args) {
+            switch (arg.kind) {
+                case AotArgKind::DevicePtr:
+                    args.push_back(const_cast<CUdeviceptr *>(&arg.device_ptr));
+                    break;
+                case AotArgKind::Int32:
+                    args.push_back(const_cast<int32_t *>(&arg.int32_value));
+                    break;
+                case AotArgKind::Int64:
+                    args.push_back(const_cast<int64_t *>(&arg.int64_value));
+                    break;
+            }
+        }
+        args.push_back(&global_scratch);
+        args.push_back(&profile_scratch);
+        jit_function->launch_with_raw_args(stream,
+                                           static_cast<unsigned int>(grid_x),
+                                           static_cast<unsigned int>(grid_y),
+                                           static_cast<unsigned int>(grid_z),
+                                           static_cast<unsigned int>(num_warps),
+                                           static_cast<unsigned int>(num_stages),
+                                           signature,
+                                           args.data(),
+                                           args.size());
+        return;
+#endif
+    }
+
     load();
     CUdeviceptr global_scratch = 0;
     CUdeviceptr profile_scratch = 0;

@@ -157,11 +157,13 @@ void compare_case(int n, int batch, int direction, bool custom_stream = false) {
 
 TEST(FlagFFTCApi, C2CLeafMatchesCuFFTForwardBatches) {
     compare_case(16, 1, FLAGFFT_FORWARD);
+    compare_case(19, 4, FLAGFFT_FORWARD);
     compare_case(105, 7, FLAGFFT_FORWARD);
 }
 
 TEST(FlagFFTCApi, C2CLeafMatchesCuFFTInverseBatches) {
     compare_case(16, 2, FLAGFFT_INVERSE);
+    compare_case(19, 3, FLAGFFT_INVERSE);
     compare_case(105, 5, FLAGFFT_INVERSE);
 }
 
@@ -174,6 +176,7 @@ TEST(FlagFFTCApi, C2CFourStepMatchesCuFFT) {
 
 TEST(FlagFFTCApi, SetStreamUsesProvidedStream) {
     compare_case(16, 3, FLAGFFT_FORWARD, true);
+    compare_case(8192, 3, FLAGFFT_FORWARD, true);
 }
 
 TEST(FlagFFTCApi, RejectsInvalidAndUnsupportedCalls) {

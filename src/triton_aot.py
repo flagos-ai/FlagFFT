@@ -37,6 +37,7 @@ _register_local_package(
     "src.codegen", _PROJECT_ROOT / "src" / "codegen" / "__init__.py", execute=False
 )
 _load_local_module("src.codegen.kernels", _PROJECT_ROOT / "src" / "codegen" / "kernels.py")
+_load_local_module("src.codegen.jit_source", _PROJECT_ROOT / "src" / "codegen" / "jit_source.py")
 
 _SPEC = importlib.util.spec_from_file_location(
     "src.codegen.triton_aot", _PROJECT_ROOT / "src" / "codegen" / "triton_aot.py"
