@@ -174,6 +174,11 @@ TEST(FlagFFTCApi, C2CFourStepMatchesCuFFT) {
     compare_case(16384, 64, FLAGFFT_FORWARD);
 }
 
+TEST(FlagFFTCApi, C2CBluesteinMatchesCuFFT) {
+    compare_case(331, 1, FLAGFFT_FORWARD);
+    compare_case(331, 2, FLAGFFT_INVERSE);
+}
+
 TEST(FlagFFTCApi, SetStreamUsesProvidedStream) {
     compare_case(16, 3, FLAGFFT_FORWARD, true);
     compare_case(8192, 3, FLAGFFT_FORWARD, true);

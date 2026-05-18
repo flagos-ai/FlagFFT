@@ -10,12 +10,12 @@ RuntimeKernelBackend configured_kernel_backend() {
     if (backend == "AOT") {
         return RuntimeKernelBackend::Aot;
     }
-    if (backend == "LIBTRITON_JIT") {
+    if (backend == "JIT") {
 #if defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
         return RuntimeKernelBackend::LibTritonJit;
 #else
         throw std::runtime_error(
-            "FLAGFFT_KERNEL_BACKEND=LIBTRITON_JIT requires a build with FLAGFFT_ENABLE_LIBTRITON_JIT=ON");
+            "FLAGFFT_KERNEL_BACKEND=JIT requires a build with FLAGFFT_ENABLE_LIBTRITON_JIT=ON");
 #endif
     }
     throw std::runtime_error("unsupported FLAGFFT_KERNEL_BACKEND: " + backend);

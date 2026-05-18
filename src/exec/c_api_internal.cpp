@@ -127,6 +127,9 @@ bool raw_supported_node(const PlanNodePtr &node) {
         return std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
                std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
     }
+    if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
+        return raw_supported_node(bluestein->fft_plan);
+    }
     return false;
 }
 

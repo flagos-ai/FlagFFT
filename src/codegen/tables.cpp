@@ -170,6 +170,42 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
     return device_allocation_from_floats(interleaved);
 }
 
+DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign) {
+    (void)request;
+    std::vector<float> interleaved(static_cast<std::size_t>(n * 2));
+    double sign = inverse_sign ? 1.0 : -1.0;
+    for (int64_t idx = 0; idx < n; ++idx) {
+        double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
+                                   static_cast<double>(2 * n));
+        double angle = sign * kPi * reduced / static_cast<double>(n);
+        std::size_t offset = static_cast<std::size_t>(idx * 2);
+        interleaved[offset] = static_cast<float>(std::cos(angle));
+        interleaved[offset + 1] = static_cast<float>(std::sin(angle));
+    }
+    return device_allocation_from_floats(interleaved);
+}
+
+DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m) {
+    std::vector<float> interleaved(static_cast<std::size_t>(m * 2), 0.0f);
+    double sign = request.direction == "inverse" ? -1.0 : 1.0;
+    for (int64_t idx = 0; idx < n; ++idx) {
+        double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
+                                   static_cast<double>(2 * n));
+        double angle = sign * kPi * reduced / static_cast<double>(n);
+        float r = static_cast<float>(std::cos(angle));
+        float i = static_cast<float>(std::sin(angle));
+        std::size_t offset = static_cast<std::size_t>(idx * 2);
+        interleaved[offset] = r;
+        interleaved[offset + 1] = i;
+        if (idx != 0) {
+            std::size_t mirror = static_cast<std::size_t>((m - idx) * 2);
+            interleaved[mirror] = r;
+            interleaved[mirror + 1] = i;
+        }
+    }
+    return device_allocation_from_floats(interleaved);
+}
+
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf,
                                                     const FFTRequest &request) {
     std::vector<DeviceAllocation> tables;

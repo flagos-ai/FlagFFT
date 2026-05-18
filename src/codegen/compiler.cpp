@@ -99,6 +99,33 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
             std::move(twiddle),
             std::move(stage1));
     }
+    if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
+        FFTRequest child_request = forward_child_request(request);
+        std::shared_ptr<CompiledRawNode> fft =
+            compile_raw_node(bluestein->fft_plan, child_request, batch);
+        DeviceAllocation chirp = build_raw_bluestein_chirp(
+            request, bluestein->length, request.direction == "inverse");
+        DeviceAllocation b_time =
+            build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
+        DeviceAllocation a_buf = allocate_device_bytes(
+            static_cast<std::size_t>(batch * bluestein->conv_length * 2 * sizeof(float)));
+        DeviceAllocation work_buf = allocate_device_bytes(
+            static_cast<std::size_t>(batch * bluestein->conv_length * 2 * sizeof(float)));
+        DeviceAllocation b_fft_buf = allocate_device_bytes(
+            static_cast<std::size_t>(bluestein->conv_length * 2 * sizeof(float)));
+        return std::make_shared<CompiledRawBluesteinNode>(
+            bluestein->length,
+            bluestein->conv_length,
+            std::move(fft),
+            compile_bluestein_prepare_kernel(request, bluestein->length, bluestein->conv_length),
+            compile_bluestein_pointwise_kernel(request, bluestein->length, bluestein->conv_length),
+            compile_bluestein_finalize_kernel(request, bluestein->length, bluestein->conv_length),
+            std::move(chirp),
+            std::move(b_time),
+            std::move(a_buf),
+            std::move(work_buf),
+            std::move(b_fft_buf));
+    }
     throw std::runtime_error("raw C API does not support plan node kind: " +
                              plan_node_kind_name(node->kind));
 }

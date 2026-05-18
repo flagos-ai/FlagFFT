@@ -77,4 +77,95 @@ flagfftResult CompiledRawFourStepFusedNode::execute(CUdeviceptr input,
     }
 }
 
+CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
+                                                   int64_t conv_length,
+                                                   std::shared_ptr<CompiledRawNode> fft,
+                                                   std::shared_ptr<AotKernel> prepare_kernel,
+                                                   std::shared_ptr<AotKernel> pointwise_kernel,
+                                                   std::shared_ptr<AotKernel> finalize_kernel,
+                                                   DeviceAllocation chirp,
+                                                   DeviceAllocation b_time,
+                                                   DeviceAllocation a_buf,
+                                                   DeviceAllocation work_buf,
+                                                   DeviceAllocation b_fft_buf)
+    : length(length),
+      conv_length(conv_length),
+      fft(std::move(fft)),
+      prepare_kernel(std::move(prepare_kernel)),
+      pointwise_kernel(std::move(pointwise_kernel)),
+      finalize_kernel(std::move(finalize_kernel)),
+      chirp(std::move(chirp)),
+      b_time(std::move(b_time)),
+      a_buf(std::move(a_buf)),
+      work_buf(std::move(work_buf)),
+      b_fft_buf(std::move(b_fft_buf)) {}
+
+void CompiledRawBluesteinNode::ensure_b_fft(const RawExecutionContext &context) const {
+    std::lock_guard<std::mutex> lock(b_fft_mutex);
+    if (b_fft_ready) {
+        return;
+    }
+    RawExecutionContext child_context{context.request, context.stream, 1};
+    flagfftResult result = fft->execute(b_time.ptr, b_fft_buf.ptr, child_context);
+    if (result != FLAGFFT_SUCCESS) {
+        throw std::runtime_error("failed to precompute Bluestein convolution FFT");
+    }
+    b_fft_ready = true;
+}
+
+flagfftResult CompiledRawBluesteinNode::execute(CUdeviceptr input,
+                                                CUdeviceptr output,
+                                                const RawExecutionContext &context) const {
+    try {
+        ensure_b_fft(context);
+
+        std::vector<AotKernelArg> prepare_args = {
+            AotKernelArg::device(input),
+            AotKernelArg::device(chirp.ptr),
+            AotKernelArg::device(a_buf.ptr),
+            AotKernelArg::i64(length),
+            AotKernelArg::i64(conv_length),
+            AotKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), context.batch, 1);
+
+        RawExecutionContext child_context{context.request, context.stream, context.batch};
+        flagfftResult result = fft->execute(a_buf.ptr, work_buf.ptr, child_context);
+        if (result != FLAGFFT_SUCCESS) {
+            return result;
+        }
+
+        std::vector<AotKernelArg> pointwise_args = {
+            AotKernelArg::device(work_buf.ptr),
+            AotKernelArg::device(b_fft_buf.ptr),
+            AotKernelArg::device(a_buf.ptr),
+            AotKernelArg::i64(conv_length),
+            AotKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        pointwise_kernel->launch(context.stream,
+                                 pointwise_args,
+                                 ceil_div(conv_length, 256),
+                                 context.batch,
+                                 1);
+
+        result = fft->execute(a_buf.ptr, work_buf.ptr, child_context);
+        if (result != FLAGFFT_SUCCESS) {
+            return result;
+        }
+
+        std::vector<AotKernelArg> finalize_args = {
+            AotKernelArg::device(work_buf.ptr),
+            AotKernelArg::device(chirp.ptr),
+            AotKernelArg::device(output),
+            AotKernelArg::i64(length),
+            AotKernelArg::i64(conv_length),
+            AotKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, 256), context.batch, 1);
+        return FLAGFFT_SUCCESS;
+    } catch (const std::exception &) {
+        return FLAGFFT_EXEC_FAILED;
+    }
+}
+
 }  // namespace flagfft

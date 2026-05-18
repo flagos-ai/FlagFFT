@@ -1,6 +1,19 @@
 #include "c_api_internal.hpp"
 
 namespace flagfft {
+namespace {
+
+PlanNodePtr raw_compatible_bluestein_plan(int64_t length,
+                                          PlanBuilder &builder,
+                                          const FFTRequest &request) {
+    int64_t conv_length = ceil_power_of_two(2 * length - 1);
+    PlanNodePtr child = builder.build(conv_length, request);
+    PlanNodePtr candidate =
+        std::make_shared<BluesteinPlanNode>(length, conv_length, std::move(child));
+    return raw_supported_node(candidate) ? candidate : nullptr;
+}
+
+}  // namespace
 
 flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     if (out == nullptr) {
@@ -48,6 +61,14 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
             plan->executable.root =
                 builder.build(plan->executable.forward_request.requested_n,
                               plan->executable.forward_request);
+        }
+        if (!raw_supported_node(plan->executable.root)) {
+            if (PlanNodePtr fallback = raw_compatible_bluestein_plan(
+                    plan->executable.forward_request.requested_n,
+                    builder,
+                    plan->executable.forward_request)) {
+                plan->executable.root = std::move(fallback);
+            }
         }
         if (!raw_supported_node(plan->executable.root)) {
             return FLAGFFT_NOT_SUPPORTED;

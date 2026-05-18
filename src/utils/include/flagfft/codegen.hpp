@@ -137,6 +137,38 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
     DeviceAllocation stage1;
 };
 
+struct CompiledRawBluesteinNode final : CompiledRawNode {
+    CompiledRawBluesteinNode(int64_t length,
+                             int64_t conv_length,
+                             std::shared_ptr<CompiledRawNode> fft,
+                             std::shared_ptr<AotKernel> prepare_kernel,
+                             std::shared_ptr<AotKernel> pointwise_kernel,
+                             std::shared_ptr<AotKernel> finalize_kernel,
+                             DeviceAllocation chirp,
+                             DeviceAllocation b_time,
+                             DeviceAllocation a_buf,
+                             DeviceAllocation work_buf,
+                             DeviceAllocation b_fft_buf);
+    flagfftResult execute(CUdeviceptr input,
+                          CUdeviceptr output,
+                          const RawExecutionContext &context) const override;
+    void ensure_b_fft(const RawExecutionContext &context) const;
+
+    int64_t length;
+    int64_t conv_length;
+    std::shared_ptr<CompiledRawNode> fft;
+    std::shared_ptr<AotKernel> prepare_kernel;
+    std::shared_ptr<AotKernel> pointwise_kernel;
+    std::shared_ptr<AotKernel> finalize_kernel;
+    DeviceAllocation chirp;
+    DeviceAllocation b_time;
+    DeviceAllocation a_buf;
+    DeviceAllocation work_buf;
+    mutable DeviceAllocation b_fft_buf;
+    mutable bool b_fft_ready = false;
+    mutable std::mutex b_fft_mutex;
+};
+
 struct CompiledLeafNode final : CompiledNode {
     CompiledLeafNode(int64_t length, std::shared_ptr<AotKernel> kernel, std::vector<nb::object> tables);
     nb::object execute(const nb::object &input, const ExecutionContext &context) const override;
@@ -284,6 +316,8 @@ nb::list kernel_keys_for_plan(const PlanNodePtr &node, const FFTRequest &request
 FFTRequest forward_child_request(const FFTRequest &request);
 DeviceAllocation allocate_device_bytes(std::size_t bytes);
 DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2);
+DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign);
+DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m);
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request);
 std::vector<nb::object> build_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request);
 

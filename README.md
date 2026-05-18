@@ -45,7 +45,7 @@ The default backend is Triton AOT (`FLAGFFT_KERNEL_BACKEND=AOT`). An experimenta
 ```sh
 cmake -S . -B build -GNinja \
   -DFLAGFFT_ENABLE_LIBTRITON_JIT=ON \
-  -DFLAGFFT_KERNEL_BACKEND=LIBTRITON_JIT
+  -DFLAGFFT_KERNEL_BACKEND=JIT
 cmake --build build
 ```
 
