@@ -1,5 +1,7 @@
 #include "c_api_internal.hpp"
 
+#include <sstream>
+
 extern "C" flagfftResult flagfftExecC2C(flagfftHandle handle,
                                         flagfftComplex *idata,
                                         flagfftComplex *odata,
@@ -100,4 +102,48 @@ extern "C" flagfftResult flagfftDestroy(flagfftHandle handle) {
     }
     delete handle;
     return FLAGFFT_SUCCESS;
+}
+
+extern "C" const char *flagfftGetPlanDescription(flagfftHandle handle) {
+    flagfft::FlagFFTPlan *plan = flagfft::checked_plan(handle);
+    if (plan == nullptr || plan->state.destroyed || !plan->state.initialized) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(plan->mutex);
+    if (!plan->description_cache.empty()) {
+        return plan->description_cache.c_str();
+    }
+
+    std::ostringstream oss;
+    oss << "=== FlagFFT Plan ===\n";
+    oss << "rank=" << plan->desc.rank
+        << " n=[" << plan->desc.n[0];
+    for (std::size_t i = 1; i < plan->desc.n.size(); ++i) {
+        oss << "," << plan->desc.n[i];
+    }
+    oss << "] batch=" << plan->desc.batch
+        << " type=" << static_cast<int>(plan->desc.type) << "\n";
+
+    oss << "\n-- Plan tree --\n";
+    if (plan->executable.root) {
+        oss << plan->executable.root->describe() << "\n";
+    } else {
+        oss << "(no plan tree)\n";
+    }
+
+    oss << "\n-- Forward execution --\n";
+    if (plan->executable.forward) {
+        oss << plan->executable.forward->describe() << "\n";
+    } else {
+        oss << "(not compiled)\n";
+    }
+
+    if (plan->executable.inverse) {
+        oss << "\n-- Inverse execution --\n";
+        oss << plan->executable.inverse->describe() << "\n";
+    }
+
+    plan->description_cache = oss.str();
+    return plan->description_cache.c_str();
 }

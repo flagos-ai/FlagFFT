@@ -6,36 +6,8 @@
 
 namespace flagfft {
 
-[[noreturn]] void raise_python(PyObject *type, const std::string &message) {
-    if (!Py_IsInitialized()) {
-        throw std::runtime_error(message);
-    }
-    PyErr_SetString(type, message.c_str());
-    throw nb::python_error();
-}
-
 bool contains(const std::vector<int64_t> &values, int64_t value) {
     return std::find(values.begin(), values.end(), value) != values.end();
-}
-
-std::string py_str(nb::handle object) {
-    return nb::cast<std::string>(nb::str(object));
-}
-
-std::string strip_torch_prefix(std::string value) {
-    constexpr const char *prefix = "torch.";
-    if (value.rfind(prefix, 0) == 0) {
-        value.erase(0, std::char_traits<char>::length(prefix));
-    }
-    return value;
-}
-
-std::vector<int64_t> int64_vector_from_sequence(nb::handle sequence) {
-    std::vector<int64_t> result;
-    for (nb::handle item : nb::iter(sequence)) {
-        result.push_back(nb::cast<int64_t>(item));
-    }
-    return result;
 }
 
 int64_t product(const std::vector<int64_t> &values) {
@@ -98,13 +70,6 @@ std::filesystem::path executable_directory() {
             .parent_path();
     }
 #endif
-    if (Py_IsInitialized()) {
-        std::wstring executable_w = Py_GetProgramFullPath();
-        if (!executable_w.empty()) {
-            return std::filesystem::path(std::string(executable_w.begin(), executable_w.end()))
-                .parent_path();
-        }
-    }
     return std::filesystem::current_path();
 }
 

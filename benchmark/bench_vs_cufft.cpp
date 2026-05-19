@@ -66,9 +66,10 @@ struct BenchConfig {
     bool tune = false;
     bool retune = false;
     std::string tune_db;
-    std::string tune_command = "flagfft-tune";
+    std::string tune_command = "flagfft_tune";
     int tune_static_limit = 32;
     int tune_finalists = 3;
+    bool print_path = false;
 };
 
 struct CudaStream {
@@ -137,7 +138,8 @@ BenchResult bench_one(int n,
                       int direction,
                       int n_warmup,
                       int n_iters,
-                      int launches_per_sample) {
+                      int launches_per_sample,
+                      bool print_path) {
     const std::size_t bytes = static_cast<std::size_t>(n) * batch * sizeof(flagfftComplex);
     flagfftComplex *d_in = nullptr;
     flagfftComplex *d_out_flagfft = nullptr;
@@ -153,6 +155,13 @@ BenchResult bench_one(int n,
     flagfftHandle ff_plan = nullptr;
     FLAGFFT_CHECK(flagfftPlan1d(&ff_plan, n, FLAGFFT_C2C, batch));
     FLAGFFT_CHECK(flagfftSetStream(ff_plan, stream.stream));
+
+    if (print_path) {
+        const char *desc = flagfftGetPlanDescription(ff_plan);
+        if (desc != nullptr) {
+            std::printf("%s\n", desc);
+        }
+    }
 
     cufftHandle cf_plan = 0;
     CUFFT_CHECK(cufftPlan1d(&cf_plan, n, CUFFT_C2C, batch));
@@ -296,7 +305,8 @@ void print_usage(const char *argv0) {
         "          [--launches-per-sample K]\n"
         "          [--direction forward|inverse] [--tune|--retune]\n"
         "          [--tune-db PATH] [--tune-command CMD]\n"
-        "          [--tune-static-limit N] [--tune-finalists N]\n",
+        "          [--tune-static-limit N] [--tune-finalists N]\n"
+        "          [--print-path]\n",
         argv0);
 }
 
@@ -368,6 +378,8 @@ bool parse_args(int argc, char **argv, BenchConfig &cfg) {
             const char *v = need_value("--tune-finalists");
             if (!v) return false;
             cfg.tune_finalists = std::atoi(v);
+        } else if (arg == "--print-path") {
+            cfg.print_path = true;
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argv[0]);
             std::exit(0);
@@ -455,7 +467,8 @@ int main(int argc, char **argv) {
 
     for (int n : cfg.lengths) {
         BenchResult r = bench_one(n, cfg.batch, cfg.direction,
-                                  cfg.n_warmup, cfg.n_iters, cfg.launches_per_sample);
+                                  cfg.n_warmup, cfg.n_iters, cfg.launches_per_sample,
+                                  cfg.print_path);
         float speedup = (r.flagfft_ms > 0.f) ? (r.cufft_ms / r.flagfft_ms) : 0.f;
         std::printf("%-10d %-7d %-13.5f %-12.5f %-8.2fx\n",
                     n, cfg.batch, r.flagfft_ms, r.cufft_ms, speedup);

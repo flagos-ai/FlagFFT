@@ -42,7 +42,7 @@ const PlanBuilder::RequestContext &PlanBuilder::request_context() const {
 PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     set_request_context(request);
     if (n <= 0) {
-        raise_python(PyExc_ValueError, "FFT length must be positive");
+        throw std::runtime_error("FFT length must be positive");
     }
     return build_auto_node(n);
 }
@@ -59,31 +59,12 @@ double PlanBuilder::cost_for(int64_t n) {
     }
     std::vector<PlanCandidate> candidates = build_auto_candidates(n);
     if (candidates.empty()) {
-        raise_python(PyExc_ValueError,
-                     "length " + std::to_string(n) +
-                         " has no supported FFT implementation route");
+        throw std::runtime_error(
+            "length " + std::to_string(n) + " has no supported FFT implementation route");
     }
     auto best = select_candidate(candidates);
     cost_cache_[n] = best.cost;
     return best.cost;
-}
-
-nb::dict PlanBuilder::wrap_plan_dict(const PlanNodePtr &root, const FFTRequest &request) {
-    return wrap_forced_plan_dict(root, request, "cpp_auto");
-}
-
-nb::dict PlanBuilder::wrap_forced_plan_dict(const PlanNodePtr &root,
-                                            const FFTRequest &request,
-                                            std::string source) {
-    nb::dict out;
-    out["schema_version"] = kPlanSchemaVersion;
-    out["source"] = std::move(source);
-    out["request"] = request_to_dict(request);
-    out["estimated_cost"] = cost_for(root->length, request);
-    out["plan_key"] = plan_key_to_dict(PlanKey::from_node(root));
-    out["tags"] = nb::dict();
-    out["root"] = root->to_dict();
-    return out;
 }
 
 }  // namespace flagfft

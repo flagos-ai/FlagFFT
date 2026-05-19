@@ -1,9 +1,70 @@
 #include "flagfft/core.hpp"
 
+#include <sstream>
+
 namespace flagfft {
+
+static std::string indent_str(int indent) {
+    return std::string(static_cast<std::size_t>(indent), ' ');
+}
+
+static std::string factors_str(const std::vector<int64_t> &factors) {
+    std::ostringstream oss;
+    oss << "[";
+    for (std::size_t i = 0; i < factors.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << factors[i];
+    }
+    oss << "]";
+    return oss.str();
+}
 
 PlanNode::PlanNode(int64_t length, PlanNodeKind kind) : length(length), kind(kind) {}
 PlanNode::~PlanNode() = default;
+
+std::string LeafPlanNode::describe(int indent) const {
+    std::ostringstream oss;
+    oss << indent_str(indent)
+        << "LeafPlan(n=" << length
+        << ", factors=" << factors_str(factors)
+        << ", lanes=" << lanes
+        << ", num_warps=" << num_warps;
+    if (!generic_radices.empty()) {
+        oss << ", generic_radices=" << factors_str(generic_radices);
+    }
+    oss << ", smem_size=" << smem_size << ")";
+    return oss.str();
+}
+
+std::string DirectDFTPlanNode::describe(int indent) const {
+    std::ostringstream oss;
+    oss << indent_str(indent) << "DirectDFT(n=" << length << ")";
+    return oss.str();
+}
+
+std::string StockhamPlanNode::describe(int indent) const {
+    std::ostringstream oss;
+    oss << indent_str(indent) << "Stockham(n=" << length
+        << ", factors=" << factors_str(factors) << ")";
+    return oss.str();
+}
+
+std::string FourStepPlanNode::describe(int indent) const {
+    std::ostringstream oss;
+    oss << indent_str(indent) << "FourStep(n=" << length
+        << ", n1=" << n1 << ", n2=" << n2 << ")\n";
+    oss << row_plan->describe(indent + 2) << "\n";
+    oss << col_plan->describe(indent + 2);
+    return oss.str();
+}
+
+std::string BluesteinPlanNode::describe(int indent) const {
+    std::ostringstream oss;
+    oss << indent_str(indent) << "Bluestein(n=" << length
+        << ", conv_length=" << conv_length << ")\n";
+    oss << fft_plan->describe(indent + 2);
+    return oss.str();
+}
 
 LeafPlanNode::LeafPlanNode(int64_t length,
                            std::vector<int64_t> factors,
@@ -20,40 +81,10 @@ LeafPlanNode::LeafPlanNode(int64_t length,
       generic_radices(std::move(generic_radices)),
       smem_size(smem_size) {}
 
-nb::dict LeafPlanNode::to_dict() const {
-    nb::dict out;
-    out["kind"] = plan_node_kind_name(kind);
-    out["length"] = length;
-    out["factors"] = nb::cast(factors);
-    out["remainder"] = remainder;
-    out["lanes"] = lanes;
-    out["num_warps"] = num_warps;
-    out["generic_radices"] = nb::cast(generic_radices);
-    out["smem_size"] = smem_size;
-    return out;
-}
-
 DirectDFTPlanNode::DirectDFTPlanNode(int64_t length) : PlanNode(length, PlanNodeKind::DirectDft) {}
-
-nb::dict DirectDFTPlanNode::to_dict() const {
-    nb::dict out;
-    out["kind"] = plan_node_kind_name(kind);
-    out["length"] = length;
-    out["impl"] = "torch_matmul";
-    return out;
-}
 
 StockhamPlanNode::StockhamPlanNode(int64_t length, std::vector<int64_t> factors)
     : PlanNode(length, PlanNodeKind::StockhamAutosort), factors(std::move(factors)) {}
-
-nb::dict StockhamPlanNode::to_dict() const {
-    nb::dict out;
-    out["kind"] = plan_node_kind_name(kind);
-    out["length"] = length;
-    out["factors"] = nb::cast(factors);
-    out["stages"] = nb::list();
-    return out;
-}
 
 FourStepPlanNode::FourStepPlanNode(int64_t length, int64_t n1, int64_t n2, PlanNodePtr row, PlanNodePtr col)
     : PlanNode(length, PlanNodeKind::FourStep),
@@ -62,34 +93,14 @@ FourStepPlanNode::FourStepPlanNode(int64_t length, int64_t n1, int64_t n2, PlanN
       row_plan(std::move(row)),
       col_plan(std::move(col)) {}
 
-nb::dict FourStepPlanNode::to_dict() const {
-    nb::dict out;
-    out["kind"] = plan_node_kind_name(kind);
-    out["length"] = length;
-    out["n1"] = n1;
-    out["n2"] = n2;
-    out["row"] = row_plan->to_dict();
-    out["col"] = col_plan->to_dict();
-    return out;
-}
-
 BluesteinPlanNode::BluesteinPlanNode(int64_t length, int64_t conv_length, PlanNodePtr fft_plan)
     : PlanNode(length, PlanNodeKind::Bluestein),
       conv_length(conv_length),
       fft_plan(std::move(fft_plan)) {}
 
-nb::dict BluesteinPlanNode::to_dict() const {
-    nb::dict out;
-    out["kind"] = plan_node_kind_name(kind);
-    out["length"] = length;
-    out["conv_length"] = conv_length;
-    out["fft_plan"] = fft_plan->to_dict();
-    return out;
-}
-
 PlanKey PlanKey::from_node(const PlanNodePtr &node) {
     if (node == nullptr) {
-        raise_python(PyExc_ValueError, "cannot build a plan key from a null plan node");
+        throw std::runtime_error("cannot build a plan key from a null plan node");
     }
 
     PlanKey key;
@@ -127,8 +138,8 @@ PlanKey PlanKey::from_node(const PlanNodePtr &node) {
         return key;
     }
 
-    raise_python(PyExc_NotImplementedError,
-                 "unsupported plan node kind for key generation: " + plan_node_kind_name(node->kind));
+    throw std::runtime_error(
+        "unsupported plan node kind for key generation: " + plan_node_kind_name(node->kind));
 }
 
 }  // namespace flagfft

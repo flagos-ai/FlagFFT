@@ -4,7 +4,7 @@ namespace flagfft {
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
     if (n <= 0) {
-        raise_python(PyExc_ValueError, "FFT length must be positive");
+        throw std::runtime_error("FFT length must be positive");
     }
     Factorization result;
     int64_t rem = n;
@@ -59,10 +59,10 @@ std::vector<int64_t> PlanBuilder::factorize_or_raise(int64_t n) {
         std::ostringstream message;
         message << "length " << n << " is not fully factorable by supported radices, "
                 << "remainder=" << factorization.remainder;
-        raise_python(PyExc_ValueError, message.str());
+        throw std::runtime_error(message.str());
     }
     if (factorization.factors.empty()) {
-        raise_python(PyExc_ValueError, "at least one radix stage is required");
+        throw std::runtime_error("at least one radix stage is required");
     }
     return factorization.factors;
 }
@@ -168,8 +168,8 @@ PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &f
     const RequestContext &context = request_context();
     auto smem_elements = leaf_smem_elements(n, factors, context.input_dtype);
     if (!smem_elements.has_value()) {
-        raise_python(PyExc_NotImplementedError,
-                     "ct_leaf shared-memory planner currently supports only float32 and complex64 inputs");
+        throw std::runtime_error(
+            "ct_leaf shared-memory planner currently supports only float32 and complex64 inputs");
     }
     int64_t lanes = choose_lanes(n, factors);
     std::vector<int64_t> generic_radices;

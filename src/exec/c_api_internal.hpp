@@ -52,6 +52,7 @@ struct FlagFFTPlan {
     FlagFFTPlanDesc desc;
     FlagFFTPlanState state;
     FlagFFTExecutable executable;
+    mutable std::string description_cache;
     std::mutex mutex;
 };
 

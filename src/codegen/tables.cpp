@@ -84,58 +84,6 @@ std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix
     return {dft_r, dft_i};
 }
 
-nb::object build_four_step_twiddle_tensor(const FFTRequest &request, int64_t n1, int64_t n2) {
-    std::vector<float> real(static_cast<std::size_t>(n1 * n2));
-    std::vector<float> imag(static_cast<std::size_t>(n1 * n2));
-    for (int64_t row = 0; row < n2; ++row) {
-        for (int64_t col = 0; col < n1; ++col) {
-            double angle = -2.0 * kPi * static_cast<double>(row * col) /
-                           static_cast<double>(n1 * n2);
-            if (request.direction == "inverse") {
-                angle = -angle;
-            }
-            std::size_t index = static_cast<std::size_t>(row * n1 + col);
-            real[index] = static_cast<float>(std::cos(angle));
-            imag[index] = static_cast<float>(std::sin(angle));
-        }
-    }
-    return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(n2, n1));
-}
-
-nb::object build_bluestein_chirp_tensor(const FFTRequest &request, int64_t n, bool inverse_sign) {
-    std::vector<float> real(static_cast<std::size_t>(n));
-    std::vector<float> imag(static_cast<std::size_t>(n));
-    double sign = inverse_sign ? 1.0 : -1.0;
-    for (int64_t idx = 0; idx < n; ++idx) {
-        double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
-                                   static_cast<double>(2 * n));
-        double angle = sign * kPi * reduced / static_cast<double>(n);
-        real[static_cast<std::size_t>(idx)] = static_cast<float>(std::cos(angle));
-        imag[static_cast<std::size_t>(idx)] = static_cast<float>(std::sin(angle));
-    }
-    return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(n));
-}
-
-nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_t m) {
-    std::vector<float> real(static_cast<std::size_t>(m), 0.0f);
-    std::vector<float> imag(static_cast<std::size_t>(m), 0.0f);
-    double sign = request.direction == "inverse" ? -1.0 : 1.0;
-    for (int64_t idx = 0; idx < n; ++idx) {
-        double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
-                                   static_cast<double>(2 * n));
-        double angle = sign * kPi * reduced / static_cast<double>(n);
-        float r = static_cast<float>(std::cos(angle));
-        float i = static_cast<float>(std::sin(angle));
-        real[static_cast<std::size_t>(idx)] = r;
-        imag[static_cast<std::size_t>(idx)] = i;
-        if (idx != 0) {
-            real[static_cast<std::size_t>(m - idx)] = r;
-            imag[static_cast<std::size_t>(m - idx)] = i;
-        }
-    }
-    return tensor_from_complex_vectors(real, imag, request, nb::make_tuple(1, m));
-}
-
 DeviceAllocation allocate_device_bytes(std::size_t bytes) {
     if (bytes == 0) {
         return {};
@@ -219,22 +167,6 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf,
         auto dft = build_dft_matrix(radix, request.direction);
         tables.push_back(device_allocation_from_floats(dft.first));
         tables.push_back(device_allocation_from_floats(dft.second));
-    }
-    return tables;
-}
-
-std::vector<nb::object> build_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request) {
-    std::vector<nb::object> tables;
-    for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-        auto twiddles = build_stage_twiddles(
-            leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
-        tables.push_back(tensor_from_float_vector(twiddles.first, request));
-        tables.push_back(tensor_from_float_vector(twiddles.second, request));
-    }
-    for (int64_t radix : leaf.generic_radices) {
-        auto dft = build_dft_matrix(radix, request.direction);
-        tables.push_back(tensor_from_float_vector(dft.first, request));
-        tables.push_back(tensor_from_float_vector(dft.second, request));
     }
     return tables;
 }

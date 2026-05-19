@@ -21,32 +21,14 @@ std::string run_command_capture_stdout(const std::string &command) {
     std::array<char, 4096> buffer{};
     std::string output;
     int status = 0;
-    auto run_pipe = [&]() {
-        nb::gil_scoped_release release;
-        FILE *pipe = popen(command.c_str(), "r");
-        if (pipe == nullptr) {
-            throw std::runtime_error("failed to start command: " + command);
-        }
-        while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-            output += buffer.data();
-        }
-        status = pclose(pipe);
-    };
-    auto run_pipe_without_gil = [&]() {
-        FILE *pipe = popen(command.c_str(), "r");
-        if (pipe == nullptr) {
-            throw std::runtime_error("failed to start command: " + command);
-        }
-        while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
-            output += buffer.data();
-        }
-        status = pclose(pipe);
-    };
-    if (Py_IsInitialized()) {
-        run_pipe();
-    } else {
-        run_pipe_without_gil();
+    FILE *pipe = popen(command.c_str(), "r");
+    if (pipe == nullptr) {
+        throw std::runtime_error("failed to start command: " + command);
     }
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        output += buffer.data();
+    }
+    status = pclose(pipe);
     if (status != 0) {
         std::ostringstream message;
         message << "command failed with status " << status << ": " << command << "\n" << output;
@@ -194,26 +176,6 @@ void TritonCompiler::clear_kernel_cache() {
     state.misses = 0;
 }
 
-nb::dict TritonCompiler::kernel_cache_info() {
-    KernelCacheState &state = kernel_cache_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    nb::dict out;
-    out["kernel_size"] = state.cache.size();
-    out["kernel_hits"] = state.hits;
-    out["kernel_misses"] = state.misses;
-    return out;
-}
-
-nb::list TritonCompiler::kernel_cache_keys() {
-    KernelCacheState &state = kernel_cache_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    nb::list out;
-    for (const auto &entry : state.cache) {
-        out.append(kernel_key_to_dict(entry.first));
-    }
-    return out;
-}
-
 std::filesystem::path TritonCompiler::out_dir() const {
     return default_cache_dir();
 }
@@ -223,14 +185,7 @@ std::string TritonCompiler::python_executable() const {
     if (override_path != nullptr && std::strlen(override_path) > 0) {
         return override_path;
     }
-    if (!Py_IsInitialized()) {
-        return "python3";
-    }
-    std::wstring executable_w = Py_GetProgramFullPath();
-    if (executable_w.empty()) {
-        return "python3";
-    }
-    return std::string(executable_w.begin(), executable_w.end());
+    return "python3";
 }
 
 std::string TritonCompiler::triton_jit_source_entrypoint() const {

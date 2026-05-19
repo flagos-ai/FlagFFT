@@ -110,16 +110,6 @@ struct KernelKeyHash {
     std::size_t operator()(const KernelKey &key) const;
 };
 
-nb::dict request_to_dict(const FFTRequest &request);
-nb::dict problem_key_to_dict(const ProblemKey &key);
-nb::dict plan_key_to_dict(const PlanKey &key);
-nb::dict kernel_key_to_dict(const KernelKey &key);
 std::string output_dtype_for(const std::string &input_dtype);
-FFTRequest build_request(nb::object input,
-                         nb::object n_obj,
-                         int64_t dim,
-                         nb::object norm_obj,
-                         std::string direction = "forward");
-void validate_request(const FFTRequest &request);
 
 }  // namespace flagfft

@@ -148,21 +148,9 @@ std::vector<PlanCandidate> PlanBuilder::build_tune_candidates(int64_t n, int64_t
     return result;
 }
 
-nb::list PlanBuilder::enumerate_candidate_plans(int64_t n, const FFTRequest &request) {
-    set_request_context(request);
-    nb::list out;
-    for (const auto &candidate : build_tune_candidates(n, 0)) {
-        nb::dict item = wrap_forced_plan_dict(candidate.node, request, "cpp_tune_candidate");
-        item["estimated_cost"] = candidate.cost;
-        item["priority"] = candidate.priority;
-        out.append(std::move(item));
-    }
-    return out;
-}
-
 PlanCandidate PlanBuilder::select_candidate(const std::vector<PlanCandidate> &candidates) {
     if (candidates.empty()) {
-        raise_python(PyExc_ValueError, "no FFT plan candidates were generated");
+        throw std::runtime_error("no FFT plan candidates were generated");
     }
     return *std::min_element(candidates.begin(), candidates.end(),
                              [](const PlanCandidate &a, const PlanCandidate &b) {

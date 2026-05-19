@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include "flagfft/keys.hpp"
 
 namespace flagfft {
@@ -12,7 +14,8 @@ struct Factorization {
 struct PlanNode {
     explicit PlanNode(int64_t length, PlanNodeKind kind);
     virtual ~PlanNode();
-    virtual nb::dict to_dict() const = 0;
+
+    virtual std::string describe(int indent = 0) const = 0;
 
     int64_t length;
     PlanNodeKind kind;
@@ -26,7 +29,8 @@ struct LeafPlanNode final : PlanNode {
                  int64_t num_warps,
                  std::vector<int64_t> generic_radices,
                  int64_t smem_size);
-    nb::dict to_dict() const override;
+
+    std::string describe(int indent = 0) const override;
 
     std::vector<int64_t> factors;
     int64_t remainder;
@@ -38,19 +42,19 @@ struct LeafPlanNode final : PlanNode {
 
 struct DirectDFTPlanNode final : PlanNode {
     explicit DirectDFTPlanNode(int64_t length);
-    nb::dict to_dict() const override;
+    std::string describe(int indent = 0) const override;
 };
 
 struct StockhamPlanNode final : PlanNode {
     StockhamPlanNode(int64_t length, std::vector<int64_t> factors);
-    nb::dict to_dict() const override;
+    std::string describe(int indent = 0) const override;
 
     std::vector<int64_t> factors;
 };
 
 struct FourStepPlanNode final : PlanNode {
     FourStepPlanNode(int64_t length, int64_t n1, int64_t n2, PlanNodePtr row, PlanNodePtr col);
-    nb::dict to_dict() const override;
+    std::string describe(int indent = 0) const override;
 
     int64_t n1;
     int64_t n2;
@@ -60,7 +64,7 @@ struct FourStepPlanNode final : PlanNode {
 
 struct BluesteinPlanNode final : PlanNode {
     BluesteinPlanNode(int64_t length, int64_t conv_length, PlanNodePtr fft_plan);
-    nb::dict to_dict() const override;
+    std::string describe(int indent = 0) const override;
 
     int64_t conv_length;
     PlanNodePtr fft_plan;
@@ -76,10 +80,9 @@ class PlanBuilder {
 public:
     PlanNodePtr build(int64_t n, const FFTRequest &request);
     double cost_for(int64_t n, const FFTRequest &request);
-    nb::dict wrap_plan_dict(const PlanNodePtr &root, const FFTRequest &request);
-    nb::list enumerate_candidate_plans(int64_t n, const FFTRequest &request);
-    PlanNodePtr node_from_dict(nb::dict node);
-    nb::dict wrap_forced_plan_dict(const PlanNodePtr &root, const FFTRequest &request, std::string source);
+    int64_t choose_lanes(int64_t n, const std::vector<int64_t> &factors);
+    int64_t choose_num_warps(int64_t lanes);
+    std::vector<PlanCandidate> build_tune_candidates(int64_t n, int64_t depth);
 
 private:
     struct RequestContext {
@@ -98,10 +101,8 @@ private:
     Factorization factorize_supported_radices(int64_t n);
     std::vector<std::vector<int64_t>> enumerate_supported_factorizations(int64_t n);
     std::vector<int64_t> factorize_or_raise(int64_t n);
-    int64_t choose_lanes(int64_t n, const std::vector<int64_t> &factors);
     std::vector<int64_t> score_leaf_factorization(int64_t n, const std::vector<int64_t> &factors);
     std::vector<int64_t> select_leaf_factors(int64_t n);
-    int64_t choose_num_warps(int64_t lanes);
     std::optional<int64_t> leaf_smem_elements(int64_t n,
                                               const std::vector<int64_t> &factors,
                                               const std::string &input_dtype);
@@ -120,7 +121,6 @@ private:
     int64_t next_supported_convolution_length(int64_t minimum);
     PlanNodePtr make_bluestein_plan(int64_t n);
     std::vector<PlanCandidate> build_auto_candidates(int64_t n);
-    std::vector<PlanCandidate> build_tune_candidates(int64_t n, int64_t depth);
     std::vector<PlanCandidate> build_leaf_tune_candidates(int64_t n);
     PlanCandidate select_candidate(const std::vector<PlanCandidate> &candidates);
     PlanNodePtr build_auto_node(int64_t n);

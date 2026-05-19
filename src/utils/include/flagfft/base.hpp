@@ -1,12 +1,7 @@
 #pragma once
 
-#include <Python.h>
 #include <cuda.h>
 #include <flagfft/flagfft.h>
-#include <nanobind/nanobind.h>
-#include <nanobind/stl/optional.h>
-#include <nanobind/stl/string.h>
-#include <nanobind/stl/vector.h>
 
 #include <algorithm>
 #include <array>
@@ -31,9 +26,6 @@
 #include <utility>
 #include <vector>
 
-namespace nb = nanobind;
-using namespace nb::literals;
-
 namespace flagfft {
 
 inline constexpr int64_t kPlanSchemaVersion = 2;
@@ -57,11 +49,7 @@ inline const std::vector<int64_t> kSupportedRadices = {19, 17, 16, 15, 13, 12, 1
 inline const std::vector<int64_t> kSpecializedButterflyRadices = {2, 4, 8, 16};
 inline const std::vector<int64_t> kSpecializedDirectCodeletRadices = {3, 5, 6, 7, 9, 10, 11, 12, 13, 15, 17, 19};
 
-[[noreturn]] void raise_python(PyObject *type, const std::string &message);
 bool contains(const std::vector<int64_t> &values, int64_t value);
-std::string py_str(nb::handle object);
-std::string strip_torch_prefix(std::string value);
-std::vector<int64_t> int64_vector_from_sequence(nb::handle sequence);
 int64_t product(const std::vector<int64_t> &values);
 std::string join_ints(const std::vector<int64_t> &values);
 int64_t ceil_power_of_two(int64_t value);

@@ -85,6 +85,7 @@ flagfftResult flagfftExecZ2D(flagfftHandle plan,
 
 flagfftResult flagfftSetStream(flagfftHandle plan, cudaStream_t stream);
 flagfftResult flagfftDestroy(flagfftHandle plan);
+const char *flagfftGetPlanDescription(flagfftHandle plan);
 
 #ifdef __cplusplus
 }

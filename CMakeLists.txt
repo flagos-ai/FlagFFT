@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.18)
 
 project(flagfft LANGUAGES CXX)
 
-option(FLAGFFT_BUILD_PYTHON "Build the legacy nanobind Python debug/tune module" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests" OFF)
 option(FLAGFFT_BUILD_BENCHMARKS "Build C++ benchmark executables" OFF)
 set(FLAGFFT_LIBTRITON_JIT_BACKEND "CUDA" CACHE STRING "libtriton_jit backend used by FlagFFT")
@@ -12,17 +11,9 @@ if(NOT FLAGFFT_LIBTRITON_JIT_BACKEND STREQUAL "CUDA")
     message(FATAL_ERROR "FlagFFT currently supports only FLAGFFT_LIBTRITON_JIT_BACKEND=CUDA")
 endif()
 
-find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module Development.Embed)
+find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
 find_package(CUDAToolkit REQUIRED)
-
-execute_process(
-    COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
-    OUTPUT_VARIABLE nanobind_DIR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    COMMAND_ERROR_IS_FATAL ANY
-)
-find_package(nanobind CONFIG REQUIRED)
-nanobind_build_library(nanobind-static)
+find_package(SQLite3 REQUIRED)
 
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit/CMakeLists.txt")
     message(FATAL_ERROR "deps/libtriton_jit is required")
@@ -37,8 +28,8 @@ set(FLAGFFT_CORE_SOURCES
     src/utils/problem_key.cpp
     src/utils/plan_key.cpp
     src/utils/kernel_key.cpp
-    src/utils/serialization.cpp
-    src/utils/request_builder.cpp
+    src/utils/sqlite_wrapper.cpp
+    src/utils/plan_json.cpp
     src/plan/nodes.cpp
     src/plan/builder_context.cpp
     src/plan/plan_deserialize.cpp
@@ -48,17 +39,11 @@ set(FLAGFFT_CORE_SOURCES
     src/plan/tune_candidates.cpp
     src/runtime/cuda_runtime.cpp
     src/codegen/jit_cache.cpp
-    src/codegen/kernel_keys.cpp
+    src/codegen/plan_kernel_keys.cpp
     src/codegen/tables.cpp
     src/codegen/compiler.cpp
-    src/exec/helpers.cpp
+    src/exec/tuned_plan.cpp
     src/exec/raw_nodes.cpp
-    src/exec/tensor_leaf.cpp
-    src/exec/tensor_four_step.cpp
-    src/exec/tensor_bluestein.cpp
-    src/exec/executable_plan.cpp
-    src/exec/plan_cache.cpp
-    src/exec/debug_api.cpp
     src/exec/c_api_internal.cpp
     src/exec/c_api_plan.cpp
     src/exec/c_api_exec.cpp
@@ -73,27 +58,14 @@ target_include_directories(flagfft
     PRIVATE
         src/utils/include
 )
-target_link_libraries(flagfft PRIVATE nanobind-static Python::Python CUDA::cuda_driver TritonJIT::triton_jit)
+target_link_libraries(flagfft PRIVATE CUDA::cuda_driver TritonJIT::triton_jit SQLite3::SQLite3 nlohmann_json::nlohmann_json)
 set_target_properties(flagfft PROPERTIES OUTPUT_NAME flagfft)
-
-if(FLAGFFT_BUILD_PYTHON)
-    nanobind_add_module(_flagfft_core src/utils/module.cpp ${FLAGFFT_CORE_SOURCES})
-    target_compile_features(_flagfft_core PRIVATE cxx_std_20)
-    target_include_directories(_flagfft_core PRIVATE include src/utils/include)
-    target_link_libraries(_flagfft_core PRIVATE CUDA::cuda_driver TritonJIT::triton_jit)
-    install(TARGETS _flagfft_core
-            LIBRARY DESTINATION "."
-            RUNTIME DESTINATION "."
-            ARCHIVE DESTINATION ".")
-endif()
 
 install(TARGETS flagfft
         LIBRARY DESTINATION "lib"
         RUNTIME DESTINATION "bin"
         ARCHIVE DESTINATION "lib")
 install(DIRECTORY include/ DESTINATION "include")
-install(FILES src/__init__.py DESTINATION "src")
-install(DIRECTORY src/codegen src/tune DESTINATION "src" FILES_MATCHING PATTERN "*.py")
 
 if(FLAGFFT_BUILD_TESTS)
     include(CTest)
@@ -116,8 +88,6 @@ if(FLAGFFT_BUILD_TESTS)
         target_link_libraries(flagfft_plan_tests
             PRIVATE
                 flagfft
-                nanobind-static
-                Python::Python
                 CUDA::cuda_driver
                 GTest::gtest_main
         )
@@ -155,6 +125,27 @@ if(FLAGFFT_BUILD_BENCHMARKS)
                 flagfft
                 CUDA::cudart
                 CUDA::cufft
+        )
+
+        add_executable(flagfft_tune
+            src/tune_cpp/tune_main.cpp
+            src/tune_cpp/tune_bench.cpp
+            src/tune_cpp/tune_sqlite.cpp
+        )
+        target_compile_features(flagfft_tune PRIVATE cxx_std_20)
+        target_include_directories(flagfft_tune PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            src/utils/include
+            src/utils
+            src/exec
+        )
+        target_link_libraries(flagfft_tune
+            PRIVATE
+                flagfft
+                CUDA::cudart
+                CUDA::cufft
+                SQLite3::SQLite3
+                nlohmann_json::nlohmann_json
         )
     else()
         message(WARNING "CUDA::cufft not found; bench_vs_cufft will not be built")

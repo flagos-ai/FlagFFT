@@ -1,5 +1,7 @@
 #include "flagfft/core.hpp"
 
+#include <sstream>
+
 namespace flagfft {
 namespace {
 
@@ -24,6 +26,16 @@ CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
                                          std::shared_ptr<RuntimeKernel> kernel,
                                          std::vector<DeviceAllocation> tables)
     : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {}
+
+std::string CompiledRawLeafNode::describe() const {
+    std::ostringstream oss;
+    oss << "CompiledRawLeaf(n=" << length
+        << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+        << ", num_warps=" << (kernel ? kernel->num_warps : 0)
+        << ", module=" << (kernel ? kernel->module_path : "null")
+        << ", tables=" << tables.size() << ")";
+    return oss.str();
+}
 
 flagfftResult CompiledRawLeafNode::execute(CUdeviceptr input,
                                            CUdeviceptr output,
@@ -57,6 +69,15 @@ CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(
       col_tables(std::move(col_tables)),
       twiddle(std::move(twiddle)),
       stage1(std::move(stage1)) {}
+
+std::string CompiledRawFourStepFusedNode::describe() const {
+    std::ostringstream oss;
+    oss << "CompiledRawFourStepFused(n=" << length
+        << ", n1=" << n1 << ", n2=" << n2
+        << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
+        << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+    return oss.str();
+}
 
 flagfftResult CompiledRawFourStepFusedNode::execute(CUdeviceptr input,
                                                     CUdeviceptr output,
@@ -99,6 +120,17 @@ CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
       a_buf(std::move(a_buf)),
       work_buf(std::move(work_buf)),
       b_fft_buf(std::move(b_fft_buf)) {}
+
+std::string CompiledRawBluesteinNode::describe() const {
+    std::ostringstream oss;
+    oss << "CompiledRawBluestein(n=" << length
+        << ", conv_length=" << conv_length
+        << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->kernel_name : "null")
+        << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->kernel_name : "null")
+        << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->kernel_name : "null")
+        << ", fft=" << (fft ? fft->describe() : "null") << ")";
+    return oss.str();
+}
 
 void CompiledRawBluesteinNode::ensure_b_fft(const RawExecutionContext &context) const {
     std::lock_guard<std::mutex> lock(b_fft_mutex);

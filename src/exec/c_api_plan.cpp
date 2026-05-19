@@ -1,4 +1,5 @@
 #include "c_api_internal.hpp"
+#include "flagfft/tune_json.hpp"
 
 namespace flagfft {
 namespace {
@@ -11,6 +12,20 @@ PlanNodePtr raw_compatible_bluestein_plan(int64_t length,
     PlanNodePtr candidate =
         std::make_shared<BluesteinPlanNode>(length, conv_length, std::move(child));
     return raw_supported_node(candidate) ? candidate : nullptr;
+}
+
+PlanNodePtr lookup_or_build_root(PlanBuilder &builder, const FFTRequest &request) {
+    auto tuned = lookup_tuned_plan_json(request);
+    if (tuned.has_value()) {
+        try {
+            PlanNodePtr root = plan_node_from_json(builder, tuned->at("root"));
+            if (raw_supported_node(root)) {
+                return root;
+            }
+        } catch (const std::exception &) {
+        }
+    }
+    return builder.build(request.requested_n, request);
 }
 
 }  // namespace
@@ -36,31 +51,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse_request = request_from_desc(plan->desc, "inverse");
 
         PlanBuilder builder;
-        auto tuned_root_for = [&](const FFTRequest &request) -> PlanNodePtr {
-            if (auto tuned_plan = lookup_tuned_plan_dict(request)) {
-                try {
-                    nb::gil_scoped_acquire acquire;
-                    PlanNodePtr root = plan_node_from_wrapped_dict(builder, *tuned_plan);
-                    if (raw_supported_node(root)) {
-                        return root;
-                    }
-                } catch (const nb::python_error &) {
-                    nb::gil_scoped_acquire acquire;
-                    PyErr_Clear();
-                } catch (const std::exception &) {
-                }
-            }
-            return nullptr;
-        };
 
-        plan->executable.root = tuned_root_for(plan->executable.forward_request);
-        if (plan->executable.root == nullptr) {
-            plan->executable.root = tuned_root_for(plan->executable.inverse_request);
-        }
-        if (plan->executable.root == nullptr) {
-            plan->executable.root =
-                builder.build(plan->executable.forward_request.requested_n,
-                              plan->executable.forward_request);
+        plan->executable.root = lookup_or_build_root(builder, plan->executable.forward_request);
+        if (!raw_supported_node(plan->executable.root)) {
+            plan->executable.root = lookup_or_build_root(builder, plan->executable.inverse_request);
         }
         if (!raw_supported_node(plan->executable.root)) {
             if (PlanNodePtr fallback = raw_compatible_bluestein_plan(
@@ -91,11 +85,6 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         handle->impl = plan.release();
         *out = handle.release();
         return FLAGFFT_SUCCESS;
-    } catch (const nb::python_error &) {
-        if (Py_IsInitialized()) {
-            PyErr_Clear();
-        }
-        return FLAGFFT_SETUP_FAILED;
     } catch (const std::bad_alloc &) {
         return FLAGFFT_ALLOC_FAILED;
     } catch (const std::exception &) {

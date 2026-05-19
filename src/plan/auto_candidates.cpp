@@ -46,7 +46,7 @@ PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
 
 std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     if (n <= 0) {
-        raise_python(PyExc_ValueError, "FFT length must be positive");
+        throw std::runtime_error("FFT length must be positive");
     }
 
     std::vector<PlanCandidate> candidates;
@@ -82,8 +82,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
             double balance =
                 std::abs(std::log(static_cast<double>(n1)) - std::log(static_cast<double>(n2)));
             candidates.push_back({node, four_step_cost(n1, n2) + balance, priority(node)});
-        } catch (const nb::python_error &) {
-            PyErr_Clear();
+        } catch (const std::exception &) {
         }
     }
     if (candidates.empty() && n > kDirectDftMaxN) {
