@@ -3,25 +3,25 @@
 namespace flagfft {
 namespace {
 
-std::vector<AotKernelArg> raw_kernel_args(std::initializer_list<CUdeviceptr> ptrs,
+std::vector<RuntimeKernelArg> raw_kernel_args(std::initializer_list<CUdeviceptr> ptrs,
                                           const std::vector<DeviceAllocation> &tables,
                                           int64_t batch) {
-    std::vector<AotKernelArg> args;
+    std::vector<RuntimeKernelArg> args;
     args.reserve(ptrs.size() + tables.size() + 1);
     for (CUdeviceptr ptr : ptrs) {
-        args.push_back(AotKernelArg::device(ptr));
+        args.push_back(RuntimeKernelArg::device(ptr));
     }
     for (const DeviceAllocation &table : tables) {
-        args.push_back(AotKernelArg::device(table.ptr));
+        args.push_back(RuntimeKernelArg::device(table.ptr));
     }
-    args.push_back(AotKernelArg::i32(static_cast<int32_t>(batch)));
+    args.push_back(RuntimeKernelArg::i32(static_cast<int32_t>(batch)));
     return args;
 }
 
 }  // namespace
 
 CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
-                                         std::shared_ptr<AotKernel> kernel,
+                                         std::shared_ptr<RuntimeKernel> kernel,
                                          std::vector<DeviceAllocation> tables)
     : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {}
 
@@ -29,7 +29,7 @@ flagfftResult CompiledRawLeafNode::execute(CUdeviceptr input,
                                            CUdeviceptr output,
                                            const RawExecutionContext &context) const {
     try {
-        std::vector<AotKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
+        std::vector<RuntimeKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
 
         kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
         return FLAGFFT_SUCCESS;
@@ -42,9 +42,9 @@ CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(
     int64_t length,
     int64_t n1,
     int64_t n2,
-    std::shared_ptr<AotKernel> row_kernel,
+    std::shared_ptr<RuntimeKernel> row_kernel,
     std::vector<DeviceAllocation> row_tables,
-    std::shared_ptr<AotKernel> col_kernel,
+    std::shared_ptr<RuntimeKernel> col_kernel,
     std::vector<DeviceAllocation> col_tables,
     DeviceAllocation twiddle,
     DeviceAllocation stage1)
@@ -62,11 +62,11 @@ flagfftResult CompiledRawFourStepFusedNode::execute(CUdeviceptr input,
                                                     CUdeviceptr output,
                                                     const RawExecutionContext &context) const {
     try {
-        std::vector<AotKernelArg> row_args =
+        std::vector<RuntimeKernelArg> row_args =
             raw_kernel_args({input, stage1.ptr}, row_tables, context.batch);
         row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
 
-        std::vector<AotKernelArg> col_args =
+        std::vector<RuntimeKernelArg> col_args =
             raw_kernel_args({stage1.ptr, twiddle.ptr, output}, col_tables, context.batch);
         col_kernel->launch(context.stream, col_args,
                            ceil_div(n1, four_step_col_inner_pack_for(n1, n2)),
@@ -80,9 +80,9 @@ flagfftResult CompiledRawFourStepFusedNode::execute(CUdeviceptr input,
 CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
                                                    int64_t conv_length,
                                                    std::shared_ptr<CompiledRawNode> fft,
-                                                   std::shared_ptr<AotKernel> prepare_kernel,
-                                                   std::shared_ptr<AotKernel> pointwise_kernel,
-                                                   std::shared_ptr<AotKernel> finalize_kernel,
+                                                   std::shared_ptr<RuntimeKernel> prepare_kernel,
+                                                   std::shared_ptr<RuntimeKernel> pointwise_kernel,
+                                                   std::shared_ptr<RuntimeKernel> finalize_kernel,
                                                    DeviceAllocation chirp,
                                                    DeviceAllocation b_time,
                                                    DeviceAllocation a_buf,
@@ -119,13 +119,13 @@ flagfftResult CompiledRawBluesteinNode::execute(CUdeviceptr input,
     try {
         ensure_b_fft(context);
 
-        std::vector<AotKernelArg> prepare_args = {
-            AotKernelArg::device(input),
-            AotKernelArg::device(chirp.ptr),
-            AotKernelArg::device(a_buf.ptr),
-            AotKernelArg::i64(length),
-            AotKernelArg::i64(conv_length),
-            AotKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<RuntimeKernelArg> prepare_args = {
+            RuntimeKernelArg::device(input),
+            RuntimeKernelArg::device(chirp.ptr),
+            RuntimeKernelArg::device(a_buf.ptr),
+            RuntimeKernelArg::i64(length),
+            RuntimeKernelArg::i64(conv_length),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), context.batch, 1);
 
@@ -135,12 +135,12 @@ flagfftResult CompiledRawBluesteinNode::execute(CUdeviceptr input,
             return result;
         }
 
-        std::vector<AotKernelArg> pointwise_args = {
-            AotKernelArg::device(work_buf.ptr),
-            AotKernelArg::device(b_fft_buf.ptr),
-            AotKernelArg::device(a_buf.ptr),
-            AotKernelArg::i64(conv_length),
-            AotKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<RuntimeKernelArg> pointwise_args = {
+            RuntimeKernelArg::device(work_buf.ptr),
+            RuntimeKernelArg::device(b_fft_buf.ptr),
+            RuntimeKernelArg::device(a_buf.ptr),
+            RuntimeKernelArg::i64(conv_length),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         pointwise_kernel->launch(context.stream,
                                  pointwise_args,
@@ -153,13 +153,13 @@ flagfftResult CompiledRawBluesteinNode::execute(CUdeviceptr input,
             return result;
         }
 
-        std::vector<AotKernelArg> finalize_args = {
-            AotKernelArg::device(work_buf.ptr),
-            AotKernelArg::device(chirp.ptr),
-            AotKernelArg::device(output),
-            AotKernelArg::i64(length),
-            AotKernelArg::i64(conv_length),
-            AotKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<RuntimeKernelArg> finalize_args = {
+            RuntimeKernelArg::device(work_buf.ptr),
+            RuntimeKernelArg::device(chirp.ptr),
+            RuntimeKernelArg::device(output),
+            RuntimeKernelArg::i64(length),
+            RuntimeKernelArg::i64(conv_length),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, 256), context.batch, 1);
         return FLAGFFT_SUCCESS;

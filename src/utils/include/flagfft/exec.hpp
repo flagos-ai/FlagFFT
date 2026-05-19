@@ -4,7 +4,7 @@
 
 namespace flagfft {
 
-enum class ExecutionBackend { AotCuda, TorchFFT };
+enum class ExecutionBackend { JitCuda, TorchFFT };
 
 struct ExecutablePlan {
     ProblemKey problem_key;

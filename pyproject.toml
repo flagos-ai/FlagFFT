@@ -32,8 +32,6 @@ version = ">=3.18"
 [tool.scikit-build.cmake.define]
 FLAGFFT_BUILD_PYTHON = "OFF"
 FLAGFFT_BUILD_TESTS = "OFF"
-FLAGFFT_ENABLE_LIBTRITON_JIT = "OFF"
-FLAGFFT_KERNEL_BACKEND = "AOT"
 FLAGFFT_LIBTRITON_JIT_BACKEND = "CUDA"
 
 [tool.scikit-build.ninja]

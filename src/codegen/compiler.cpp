@@ -69,7 +69,7 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_node(const PlanNodePtr &no
     std::string op_name = request.direction == "inverse" ? "ifft" : "fft";
     raise_python(PyExc_NotImplementedError,
                  "flagfft." + op_name +
-                     " C++ AOT backend does not support plan node kind: " +
+                     " C++ JIT backend does not support plan node kind: " +
                      plan_node_kind_name(node->kind));
 }
 
@@ -140,21 +140,7 @@ std::shared_ptr<CompiledNode> TritonCompiler::compile_leaf(const LeafPlanNode &l
                                     leaf.num_warps,
                                     leaf.generic_radices,
                                     leaf.smem_size);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel leaf"
-            << " --length " << leaf.length
-            << " --factors " << shell_quote(join_ints(leaf.factors))
-            << " --lanes " << leaf.lanes
-            << " --num-warps " << leaf.num_warps
-            << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
-            << " --smem-size " << leaf.smem_size
-            << " --direction " << shell_quote(request.direction)
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-
-    std::shared_ptr<AotKernel> kernel = compile_kernel(key, command.str());
+    std::shared_ptr<RuntimeKernel> kernel = compile_kernel(key);
 
     return std::make_shared<CompiledLeafNode>(leaf.length, std::move(kernel),
                                               build_leaf_tables(leaf, request));
@@ -171,26 +157,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                     leaf.num_warps,
                                     leaf.generic_radices,
                                     leaf.smem_size);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel leaf"
-            << " --length " << leaf.length
-            << " --factors " << shell_quote(join_ints(leaf.factors))
-            << " --lanes " << leaf.lanes
-            << " --num-warps " << leaf.num_warps
-            << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
-            << " --smem-size " << leaf.smem_size
-            << " --direction " << shell_quote(request.direction)
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-
-    std::shared_ptr<AotKernel> kernel = compile_kernel(key, command.str());
+    std::shared_ptr<RuntimeKernel> kernel = compile_kernel(key);
     return std::make_shared<CompiledRawLeafNode>(
         leaf.length, std::move(kernel), build_raw_leaf_tables(leaf, request));
 }
 
-std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_row_kernel(const LeafPlanNode &leaf,
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                                         const FFTRequest &request,
                                                                         int64_t n1,
                                                                         int64_t n2) {
@@ -205,25 +177,10 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_row_kernel(const Le
                                              leaf.num_warps,
                                              leaf.generic_radices,
                                              leaf.smem_size);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel four_step_row"
-            << " --length " << leaf.length
-            << " --factors " << shell_quote(join_ints(leaf.factors))
-            << " --lanes " << leaf.lanes
-            << " --num-warps " << leaf.num_warps
-            << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
-            << " --smem-size " << leaf.smem_size
-            << " --four-step-n1 " << n1
-            << " --four-step-n2 " << n2
-            << " --direction " << shell_quote(request.direction)
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-    return compile_kernel(key, command.str());
+    return compile_kernel(key);
 }
 
-std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_col_kernel(const LeafPlanNode &leaf,
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_four_step_col_kernel(const LeafPlanNode &leaf,
                                                                         const FFTRequest &request,
                                                                         int64_t n1,
                                                                         int64_t n2) {
@@ -238,102 +195,51 @@ std::shared_ptr<AotKernel> TritonCompiler::compile_four_step_col_kernel(const Le
                                              leaf.num_warps,
                                              leaf.generic_radices,
                                              leaf.smem_size);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel four_step_col"
-            << " --length " << leaf.length
-            << " --factors " << shell_quote(join_ints(leaf.factors))
-            << " --lanes " << leaf.lanes
-            << " --num-warps " << leaf.num_warps
-            << " --generic-radices " << shell_quote(join_ints(leaf.generic_radices))
-            << " --smem-size " << leaf.smem_size
-            << " --four-step-n1 " << n1
-            << " --four-step-n2 " << n2
-            << " --direction " << shell_quote(request.direction)
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-    return compile_kernel(key, command.str());
+    return compile_kernel(key);
 }
 
-std::shared_ptr<AotKernel> TritonCompiler::compile_transpose_kernel(const FFTRequest &request) {
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_transpose_kernel(const FFTRequest &request) {
     if (transpose_kernel != nullptr) {
         return transpose_kernel;
     }
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::transpose(target);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel transpose"
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-    transpose_kernel = compile_kernel(key, command.str());
+    transpose_kernel = compile_kernel(key);
     return transpose_kernel;
 }
 
-std::shared_ptr<AotKernel> TritonCompiler::compile_twiddle_transpose_kernel(const FFTRequest &request) {
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_twiddle_transpose_kernel(const FFTRequest &request) {
     if (twiddle_transpose_kernel != nullptr) {
         return twiddle_transpose_kernel;
     }
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::twiddle_transpose(target);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel twiddle_transpose"
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-    twiddle_transpose_kernel = compile_kernel(key, command.str());
+    twiddle_transpose_kernel = compile_kernel(key);
     return twiddle_transpose_kernel;
 }
 
-std::shared_ptr<AotKernel> TritonCompiler::compile_bluestein_prepare_kernel(const FFTRequest &request,
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_prepare_kernel(const FFTRequest &request,
                                                                             int64_t n,
                                                                             int64_t m) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::bluestein_prepare(target, n, m);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel bluestein_prepare"
-            << " --bluestein-n " << n
-            << " --bluestein-m " << m
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-    return compile_kernel(key, command.str());
+    return compile_kernel(key);
 }
 
-std::shared_ptr<AotKernel> TritonCompiler::compile_bluestein_pointwise_kernel(const FFTRequest &request,
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_pointwise_kernel(const FFTRequest &request,
                                                                               int64_t n,
                                                                               int64_t m) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::bluestein_pointwise(target, n, m);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel bluestein_pointwise"
-            << " --bluestein-n " << n
-            << " --bluestein-m " << m
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-    return compile_kernel(key, command.str());
+    return compile_kernel(key);
 }
 
-std::shared_ptr<AotKernel> TritonCompiler::compile_bluestein_finalize_kernel(const FFTRequest &request,
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                              int64_t n,
                                                                              int64_t m) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::bluestein_finalize(target, n, m);
-    std::ostringstream command;
-    command << shell_quote(python_executable())
-            << " " << triton_aot_entrypoint()
-            << " --kernel bluestein_finalize"
-            << " --bluestein-n " << n
-            << " --bluestein-m " << m
-            << " --target " << shell_quote(target)
-            << " --out-dir " << shell_quote(out_dir().string());
-    return compile_kernel(key, command.str());
+    return compile_kernel(key);
 }
 
 }  // namespace flagfft

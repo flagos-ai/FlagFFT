@@ -1,5 +1,7 @@
 #include "flagfft/core.hpp"
 
+#include "triton_jit/triton_jit_function.h"
+
 namespace flagfft {
 
 DeviceAllocation::DeviceAllocation(CUdeviceptr ptr, std::size_t bytes) : ptr(ptr), bytes(bytes) {}
@@ -129,62 +131,30 @@ int64_t cuda_device_max_dynamic_shared_memory_bytes(int64_t device_index) {
     return kDynamicSmemFallbackBytes;
 }
 
-AotKernelArg AotKernelArg::device(CUdeviceptr value) {
-    AotKernelArg arg;
-    arg.kind = AotArgKind::DevicePtr;
+RuntimeKernelArg RuntimeKernelArg::device(CUdeviceptr value) {
+    RuntimeKernelArg arg;
+    arg.kind = RuntimeArgKind::DevicePtr;
     arg.device_ptr = value;
     return arg;
 }
 
-AotKernelArg AotKernelArg::i32(int32_t value) {
-    AotKernelArg arg;
-    arg.kind = AotArgKind::Int32;
+RuntimeKernelArg RuntimeKernelArg::i32(int32_t value) {
+    RuntimeKernelArg arg;
+    arg.kind = RuntimeArgKind::Int32;
     arg.int32_value = value;
     return arg;
 }
 
-AotKernelArg AotKernelArg::i64(int64_t value) {
-    AotKernelArg arg;
-    arg.kind = AotArgKind::Int64;
+RuntimeKernelArg RuntimeKernelArg::i64(int64_t value) {
+    RuntimeKernelArg arg;
+    arg.kind = RuntimeArgKind::Int64;
     arg.int64_value = value;
     return arg;
 }
 
-AotKernel::~AotKernel() {
-    if (module != nullptr) {
-        cuModuleUnload(module);
-    }
-}
+RuntimeKernel::~RuntimeKernel() = default;
 
-void AotKernel::load() {
-    if (backend == RuntimeKernelBackend::LibTritonJit) {
-        compile();
-        return;
-    }
-    std::lock_guard<std::mutex> lock(mutex);
-    if (function != nullptr) {
-        return;
-    }
-    cuda_check(cuInit(0), "cuInit");
-    cuda_check(cuModuleLoadData(&module, cubin.data()), "cuModuleLoadData");
-    cuda_check(cuModuleGetFunction(&function, module, kernel_name.c_str()), "cuModuleGetFunction");
-    if (shared > 49152) {
-        cuda_check(cuFuncSetCacheConfig(function, CU_FUNC_CACHE_PREFER_SHARED),
-                   "cuFuncSetCacheConfig");
-        cuda_check(cuFuncSetAttribute(function, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                                      shared),
-                   "cuFuncSetAttribute");
-    }
-}
-
-void AotKernel::compile() {
-    if (backend == RuntimeKernelBackend::Aot) {
-        load();
-        return;
-    }
-#if !defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
-    throw std::runtime_error("libtriton_jit backend was not enabled at build time");
-#else
+void RuntimeKernel::compile() {
     std::lock_guard<std::mutex> lock(mutex);
     if (jit_function != nullptr) {
         return;
@@ -194,87 +164,48 @@ void AotKernel::compile() {
     cuda_check(cuCtxGetDevice(&device), "cuCtxGetDevice");
     jit_function =
         &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
-    jit_function->compile(signature,
-                          static_cast<unsigned int>(num_warps),
-                          static_cast<unsigned int>(num_stages),
-                          static_cast<int>(device));
-#endif
+    auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
+    function->compile(signature,
+                      static_cast<unsigned int>(num_warps),
+                      static_cast<unsigned int>(num_stages),
+                      static_cast<int>(device));
 }
 
-void AotKernel::launch(CUstream stream,
-                       const std::vector<AotKernelArg> &kernel_args,
+void RuntimeKernel::launch(CUstream stream,
+                       const std::vector<RuntimeKernelArg> &kernel_args,
                        int64_t grid_x,
                        int64_t grid_y,
                        int64_t grid_z) {
-    if (backend == RuntimeKernelBackend::LibTritonJit) {
-#if !defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
-        throw std::runtime_error("libtriton_jit backend was not enabled at build time");
-#else
-        compile();
-        CUdeviceptr global_scratch = 0;
-        CUdeviceptr profile_scratch = 0;
-        std::vector<void *> args;
-        args.reserve(kernel_args.size() + 2);
-        for (const AotKernelArg &arg : kernel_args) {
-            switch (arg.kind) {
-                case AotArgKind::DevicePtr:
-                    args.push_back(const_cast<CUdeviceptr *>(&arg.device_ptr));
-                    break;
-                case AotArgKind::Int32:
-                    args.push_back(const_cast<int32_t *>(&arg.int32_value));
-                    break;
-                case AotArgKind::Int64:
-                    args.push_back(const_cast<int64_t *>(&arg.int64_value));
-                    break;
-            }
-        }
-        args.push_back(&global_scratch);
-        args.push_back(&profile_scratch);
-        jit_function->launch_with_raw_args(stream,
-                                           static_cast<unsigned int>(grid_x),
-                                           static_cast<unsigned int>(grid_y),
-                                           static_cast<unsigned int>(grid_z),
-                                           static_cast<unsigned int>(num_warps),
-                                           static_cast<unsigned int>(num_stages),
-                                           signature,
-                                           args.data(),
-                                           args.size());
-        return;
-#endif
-    }
-
-    load();
+    compile();
     CUdeviceptr global_scratch = 0;
     CUdeviceptr profile_scratch = 0;
     std::vector<void *> args;
     args.reserve(kernel_args.size() + 2);
-    for (const AotKernelArg &arg : kernel_args) {
+    for (const RuntimeKernelArg &arg : kernel_args) {
         switch (arg.kind) {
-            case AotArgKind::DevicePtr:
+            case RuntimeArgKind::DevicePtr:
                 args.push_back(const_cast<CUdeviceptr *>(&arg.device_ptr));
                 break;
-            case AotArgKind::Int32:
+            case RuntimeArgKind::Int32:
                 args.push_back(const_cast<int32_t *>(&arg.int32_value));
                 break;
-            case AotArgKind::Int64:
+            case RuntimeArgKind::Int64:
                 args.push_back(const_cast<int64_t *>(&arg.int64_value));
                 break;
         }
     }
     args.push_back(&global_scratch);
     args.push_back(&profile_scratch);
-    cuda_check(cuLaunchKernel(function,
-                              static_cast<unsigned int>(grid_x),
-                              static_cast<unsigned int>(grid_y),
-                              static_cast<unsigned int>(grid_z),
-                              static_cast<unsigned int>(num_warps * 32),
-                              1,
-                              1,
-                              static_cast<unsigned int>(shared),
-                              stream,
-                              args.data(),
-                              nullptr),
-               "cuLaunchKernel");
+    auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
+    function->launch_with_raw_args(stream,
+                                   static_cast<unsigned int>(grid_x),
+                                   static_cast<unsigned int>(grid_y),
+                                   static_cast<unsigned int>(grid_z),
+                                   static_cast<unsigned int>(num_warps),
+                                   static_cast<unsigned int>(num_stages),
+                                   signature,
+                                   args.data(),
+                                   args.size());
 }
 
 }  // namespace flagfft

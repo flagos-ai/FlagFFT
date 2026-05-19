@@ -1,8 +1,8 @@
 # FlagFFT Architecture
 
 FlagFFT now treats the C/C++ API as the runtime boundary. Python remains in the
-repository for Triton/TLE AOT generation and offline tuning orchestration, but
-Python no longer exposes a runtime FFT API.
+repository for Triton/TLE JIT source generation and offline tuning
+orchestration, but Python no longer exposes a runtime FFT API.
 
 ## C++ Runtime
 
@@ -11,20 +11,19 @@ Python no longer exposes a runtime FFT API.
   plan cache, raw pointer exec dispatch, and optional legacy tensor execution.
 - `src/plan/` maps a validated `FFTRequest` to a `PlanNode` tree and is split
   into node, factorization, cost, auto-candidate, and tune-candidate units.
-- `src/codegen/` invokes the Python AOT compiler during plan creation, loads
-  cubins as `AotKernel` objects, and contains Python Triton/TLE source
-  generation plus `src/codegen/codelet/`.
+- `src/codegen/` emits Python Triton/TLE source during plan creation, compiles
+  it through libtriton_jit, and contains codelets under `src/codegen/codelet/`.
 - `src/runtime/` owns CUDA Driver helpers and RAII device allocations used by
   raw plans.
 - `src/utils/` owns shared request/key utilities, nanobind glue, and internal
   headers under `src/utils/include/flagfft/`.
 
-The current native C API slice is intentionally narrow: out-of-place,
-contiguous, rank-1, batched `FLAGFFT_C2C` with `complex64` pointers. Plan
-creation compiles both forward and inverse kernels so `flagfftExecC2C` only
-validates inputs, selects the compiled direction, and launches kernels on the
-handle stream. Unsupported ranks, layouts, precisions, and real transforms
-return `FLAGFFT_NOT_SUPPORTED`.
+The current native C API slice is intentionally narrow but supports arbitrary
+1D lengths: out-of-place, contiguous, rank-1, batched `FLAGFFT_C2C` with
+`complex64` pointers. Plan creation compiles both forward and inverse kernels
+so `flagfftExecC2C` only validates inputs, selects the compiled direction, and
+launches kernels on the handle stream. Unsupported ranks, layouts, precisions,
+and real transforms return `FLAGFFT_NOT_SUPPORTED`.
 
 ## Raw Execution Nodes
 
@@ -35,6 +34,8 @@ Raw nodes mirror the existing plan tree but do not depend on PyTorch tensors:
 - `CompiledRawFourStepFusedNode` supports four-step routes whose row and column
   children are both leaves. It owns the four-step twiddle and intermediate
   stage buffer.
+- `CompiledRawBluesteinNode` handles prime and awkward composite lengths through
+  JIT prepare, pointwise, finalize, and convolution FFT child kernels.
 
 The old `CompiledNode` tensor path remains only to support the optional
 `FLAGFFT_BUILD_PYTHON=ON` debug/tune module. It is not part of the default
@@ -42,8 +43,9 @@ runtime build surface.
 
 ## Build Options
 
-The default CMake build produces only the C++ shared library `flagfft`. Optional
-targets are controlled in the same build directory with `-D` switches:
+The default CMake build produces only the C++ shared library `flagfft` and
+requires `deps/libtriton_jit`. Optional targets are controlled in the same
+build directory with `-D` switches:
 
 - `FLAGFFT_BUILD_TESTS=ON` builds C++ gtest targets.
 - `FLAGFFT_BUILD_BENCHMARKS=ON` builds `bench_vs_cufft`.
@@ -56,7 +58,6 @@ Deleted runtime wrappers: top-level `flagfft.py`, `src/api.py`, and
 
 Retained Python files:
 
-- `src/triton_aot.py`
 - `src/codegen/`
 - `src/codegen/codelet/`
 - `src/tune/`
@@ -65,8 +66,8 @@ Retained Python files:
 forced-plan timing currently require the optional legacy `_flagfft_core` module,
 so tuning workflows should build with `FLAGFFT_BUILD_PYTHON=ON`.
 
-Default generated artifacts and tuned-plan SQLite files live in `.flagfft`
-beside the running executable unless an explicit override such as
+Default generated JIT source/metadata and tuned-plan SQLite files live in
+`.flagfft` beside the running executable unless an explicit override such as
 `FLAGFFT_TUNE_DB` is provided.
 
 The benchmark path is a C++ executable, `bench_vs_cufft`, built with

@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import sys
+from textwrap import dedent
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,9 @@ from src.codegen.kernels import (
 
 
 _POINTER_SIGNATURE = "*fp32:16"
+_BLUESTEIN_BLOCK = 256
+_BLUESTEIN_NUM_WARPS = 4
+_BLUESTEIN_NUM_STAGES = 4
 
 
 def _csv_ints(raw: str) -> tuple[int, ...]:
@@ -48,8 +52,16 @@ def _module_source(kernel_source: str) -> str:
     return helpers + "\n\n" + kernel_source + "\n"
 
 
+def _arg_signature(name: str) -> str:
+    if name == "nbatch":
+        return "i32"
+    if name in {"n", "m"}:
+        return "i64"
+    return _POINTER_SIGNATURE
+
+
 def _signature(arg_names: list[str]) -> str:
-    return ",".join("i32" if name == "nbatch" else _POINTER_SIGNATURE for name in arg_names)
+    return ",".join(_arg_signature(name) for name in arg_names)
 
 
 def _metadata(
@@ -78,6 +90,139 @@ def _metadata(
         "n1": int(n1),
         "n2": int(n2),
     }
+
+
+def _bluestein_kernel_source(kind: str) -> tuple[str, str, list[str]]:
+    if kind == "bluestein_prepare":
+        return (
+            "_bluestein_prepare_kernel",
+            dedent(
+                f"""
+                @triton.jit
+                def _bluestein_prepare_kernel(
+                    in_ptr,
+                    chirp_ptr,
+                    out_ptr,
+                    n,
+                    m,
+                    nbatch,
+                ):
+                    pid_block = tl.program_id(0)
+                    pid_batch = tl.program_id(1)
+                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    mask = offsets < m
+                    in_mask = mask & (offsets < n)
+
+                    src = in_ptr + (pid_batch * n + offsets) * 2
+                    xr = tl.load(src, mask=in_mask, other=0.0)
+                    xi = tl.load(src + 1, mask=in_mask, other=0.0)
+                    cr = tl.load(chirp_ptr + offsets * 2, mask=in_mask, other=0.0)
+                    ci = tl.load(chirp_ptr + offsets * 2 + 1, mask=in_mask, other=0.0)
+                    yr, yi = _cmul(xr, xi, cr, ci)
+
+                    dst = out_ptr + (pid_batch * m + offsets) * 2
+                    tl.store(dst, yr, mask=mask)
+                    tl.store(dst + 1, yi, mask=mask)
+                """
+            ),
+            ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
+        )
+    if kind == "bluestein_pointwise":
+        return (
+            "_bluestein_pointwise_kernel",
+            dedent(
+                """
+                @triton.jit
+                def _bluestein_pointwise_kernel(
+                    a_ptr,
+                    b_ptr,
+                    out_ptr,
+                    m,
+                    nbatch,
+                ):
+                    pid_block = tl.program_id(0)
+                    pid_batch = tl.program_id(1)
+                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    mask = offsets < m
+
+                    a = a_ptr + (pid_batch * m + offsets) * 2
+                    b = b_ptr + offsets * 2
+                    ar = tl.load(a, mask=mask, other=0.0)
+                    ai = tl.load(a + 1, mask=mask, other=0.0)
+                    br = tl.load(b, mask=mask, other=0.0)
+                    bi = tl.load(b + 1, mask=mask, other=0.0)
+                    pr, pi = _cmul(ar, ai, br, bi)
+
+                    dst = out_ptr + (pid_batch * m + offsets) * 2
+                    tl.store(dst, pr, mask=mask)
+                    tl.store(dst + 1, -pi, mask=mask)
+                """
+            ),
+            ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
+        )
+    if kind == "bluestein_finalize":
+        return (
+            "_bluestein_finalize_kernel",
+            dedent(
+                """
+                @triton.jit
+                def _bluestein_finalize_kernel(
+                    in_ptr,
+                    chirp_ptr,
+                    out_ptr,
+                    n,
+                    m,
+                    nbatch,
+                ):
+                    pid_block = tl.program_id(0)
+                    pid_batch = tl.program_id(1)
+                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    mask = offsets < n
+
+                    src = in_ptr + (pid_batch * m + offsets) * 2
+                    xr = tl.load(src, mask=mask, other=0.0) / m
+                    xi = -tl.load(src + 1, mask=mask, other=0.0) / m
+                    cr = tl.load(chirp_ptr + offsets * 2, mask=mask, other=0.0)
+                    ci = tl.load(chirp_ptr + offsets * 2 + 1, mask=mask, other=0.0)
+                    yr, yi = _cmul(xr, xi, cr, ci)
+
+                    dst = out_ptr + (pid_batch * n + offsets) * 2
+                    tl.store(dst, yr, mask=mask)
+                    tl.store(dst + 1, yi, mask=mask)
+                """
+            ),
+            ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
+        )
+    raise ValueError(f"unsupported JIT kernel kind: {kind}")
+
+
+def _emit_bluestein_jit_kernel(
+    *,
+    kernel: str,
+    n: int,
+    m: int,
+    out_dir: Path,
+) -> dict[str, Any]:
+    kernel_name, kernel_source, arg_names = _bluestein_kernel_source(kernel)
+    module_name = f"flagfft_jit_{kernel}_n{n}_m{m}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{module_name}.py"
+    module_path.write_text(_module_source(kernel_source))
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": kernel_name,
+        "signature": _signature(arg_names),
+        "num_warps": _BLUESTEIN_NUM_WARPS,
+        "num_stages": _BLUESTEIN_NUM_STAGES,
+        "batch_per_block": 1,
+        "arg_names": arg_names,
+        "kernel_type": kernel,
+        "bluestein_n": int(n),
+        "bluestein_m": int(m),
+        "block": _BLUESTEIN_BLOCK,
+    }
+    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    return metadata
 
 
 def emit_jit_kernel(
@@ -162,18 +307,54 @@ def emit_jit_kernel(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate FlagFFT libtriton_jit kernel sources")
-    parser.add_argument("--kernel", choices=("leaf", "four_step_row", "four_step_col"), required=True)
-    parser.add_argument("--length", type=int, required=True)
-    parser.add_argument("--factors", type=_csv_ints, required=True)
-    parser.add_argument("--lanes", type=int, required=True)
-    parser.add_argument("--num-warps", type=int, required=True)
+    parser.add_argument(
+        "--kernel",
+        choices=(
+            "leaf",
+            "four_step_row",
+            "four_step_col",
+            "bluestein_prepare",
+            "bluestein_pointwise",
+            "bluestein_finalize",
+        ),
+        required=True,
+    )
+    parser.add_argument("--length", type=int)
+    parser.add_argument("--factors", type=_csv_ints)
+    parser.add_argument("--lanes", type=int)
+    parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
-    parser.add_argument("--smem-size", type=int, required=True)
+    parser.add_argument("--smem-size", type=int)
     parser.add_argument("--direction", choices=("forward", "inverse"), default="forward")
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
+    parser.add_argument("--bluestein-n", type=int)
+    parser.add_argument("--bluestein-m", type=int)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
+
+    if args.kernel.startswith("bluestein_"):
+        if args.bluestein_n is None or args.bluestein_m is None:
+            parser.error(f"--kernel {args.kernel} requires --bluestein-n and --bluestein-m")
+        metadata = _emit_bluestein_jit_kernel(
+            kernel=args.kernel,
+            n=args.bluestein_n,
+            m=args.bluestein_m,
+            out_dir=args.out_dir,
+        )
+        print(json.dumps(metadata, sort_keys=True))
+        return
+
+    missing = [
+        name
+        for name in ("length", "factors", "lanes", "num_warps", "smem_size")
+        if getattr(args, name) is None
+    ]
+    if missing:
+        parser.error(
+            f"--kernel {args.kernel} requires "
+            + ", ".join(f"--{name.replace('_', '-')}" for name in missing)
+        )
     if args.kernel in {"four_step_row", "four_step_col"}:
         if args.four_step_n1 <= 0 or args.four_step_n2 <= 0:
             parser.error(f"--kernel {args.kernel} requires --four-step-n1 and --four-step-n2")

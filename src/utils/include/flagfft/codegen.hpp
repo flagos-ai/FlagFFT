@@ -2,10 +2,6 @@
 
 #include "flagfft/runtime.hpp"
 
-#if defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
-#include "triton_jit/triton_jit_function.h"
-#endif
-
 namespace flagfft {
 
 std::pair<std::vector<int64_t>, std::vector<int64_t>> decode_stage_codelet(
@@ -21,44 +17,35 @@ nb::object build_four_step_twiddle_tensor(const FFTRequest &request, int64_t n1,
 nb::object build_bluestein_chirp_tensor(const FFTRequest &request, int64_t n, bool inverse_sign);
 nb::object build_bluestein_b_tensor(const FFTRequest &request, int64_t n, int64_t m);
 
-enum class AotArgKind { DevicePtr, Int32, Int64 };
-enum class RuntimeKernelBackend { Aot, LibTritonJit };
+enum class RuntimeArgKind { DevicePtr, Int32, Int64 };
 
-struct AotKernelArg {
-    static AotKernelArg device(CUdeviceptr value);
-    static AotKernelArg i32(int32_t value);
-    static AotKernelArg i64(int64_t value);
+struct RuntimeKernelArg {
+    static RuntimeKernelArg device(CUdeviceptr value);
+    static RuntimeKernelArg i32(int32_t value);
+    static RuntimeKernelArg i64(int64_t value);
 
-    AotArgKind kind = AotArgKind::DevicePtr;
+    RuntimeArgKind kind = RuntimeArgKind::DevicePtr;
     CUdeviceptr device_ptr = 0;
     int32_t int32_value = 0;
     int64_t int64_value = 0;
 };
 
-struct AotKernel {
-    ~AotKernel();
-    void load();
+struct RuntimeKernel {
+    ~RuntimeKernel();
     void compile();
     void launch(CUstream stream,
-                const std::vector<AotKernelArg> &kernel_args,
+                const std::vector<RuntimeKernelArg> &kernel_args,
                 int64_t grid_x,
                 int64_t grid_y,
                 int64_t grid_z);
 
     std::string kernel_name;
-    RuntimeKernelBackend backend = RuntimeKernelBackend::Aot;
-    std::vector<unsigned char> cubin;
     std::string module_path;
     std::string signature;
-    int64_t shared = 0;
     int64_t num_warps = 1;
     int64_t num_stages = 1;
     int64_t batch_per_block = 1;
-    CUmodule module = nullptr;
-    CUfunction function = nullptr;
-#if defined(FLAGFFT_ENABLE_LIBTRITON_JIT)
-    triton_jit::TritonJITFunction *jit_function = nullptr;
-#endif
+    void *jit_function = nullptr;
     std::mutex mutex;
 };
 
@@ -101,14 +88,14 @@ struct CompiledRawNode {
 
 struct CompiledRawLeafNode final : CompiledRawNode {
     CompiledRawLeafNode(int64_t length,
-                        std::shared_ptr<AotKernel> kernel,
+                        std::shared_ptr<RuntimeKernel> kernel,
                         std::vector<DeviceAllocation> tables);
     flagfftResult execute(CUdeviceptr input,
                           CUdeviceptr output,
                           const RawExecutionContext &context) const override;
 
     int64_t length;
-    std::shared_ptr<AotKernel> kernel;
+    std::shared_ptr<RuntimeKernel> kernel;
     std::vector<DeviceAllocation> tables;
 };
 
@@ -116,9 +103,9 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
     CompiledRawFourStepFusedNode(int64_t length,
                                  int64_t n1,
                                  int64_t n2,
-                                 std::shared_ptr<AotKernel> row_kernel,
+                                 std::shared_ptr<RuntimeKernel> row_kernel,
                                  std::vector<DeviceAllocation> row_tables,
-                                 std::shared_ptr<AotKernel> col_kernel,
+                                 std::shared_ptr<RuntimeKernel> col_kernel,
                                  std::vector<DeviceAllocation> col_tables,
                                  DeviceAllocation twiddle,
                                  DeviceAllocation stage1);
@@ -129,9 +116,9 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
     int64_t length;
     int64_t n1;
     int64_t n2;
-    std::shared_ptr<AotKernel> row_kernel;
+    std::shared_ptr<RuntimeKernel> row_kernel;
     std::vector<DeviceAllocation> row_tables;
-    std::shared_ptr<AotKernel> col_kernel;
+    std::shared_ptr<RuntimeKernel> col_kernel;
     std::vector<DeviceAllocation> col_tables;
     DeviceAllocation twiddle;
     DeviceAllocation stage1;
@@ -141,9 +128,9 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
     CompiledRawBluesteinNode(int64_t length,
                              int64_t conv_length,
                              std::shared_ptr<CompiledRawNode> fft,
-                             std::shared_ptr<AotKernel> prepare_kernel,
-                             std::shared_ptr<AotKernel> pointwise_kernel,
-                             std::shared_ptr<AotKernel> finalize_kernel,
+                             std::shared_ptr<RuntimeKernel> prepare_kernel,
+                             std::shared_ptr<RuntimeKernel> pointwise_kernel,
+                             std::shared_ptr<RuntimeKernel> finalize_kernel,
                              DeviceAllocation chirp,
                              DeviceAllocation b_time,
                              DeviceAllocation a_buf,
@@ -157,9 +144,9 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
     int64_t length;
     int64_t conv_length;
     std::shared_ptr<CompiledRawNode> fft;
-    std::shared_ptr<AotKernel> prepare_kernel;
-    std::shared_ptr<AotKernel> pointwise_kernel;
-    std::shared_ptr<AotKernel> finalize_kernel;
+    std::shared_ptr<RuntimeKernel> prepare_kernel;
+    std::shared_ptr<RuntimeKernel> pointwise_kernel;
+    std::shared_ptr<RuntimeKernel> finalize_kernel;
     DeviceAllocation chirp;
     DeviceAllocation b_time;
     DeviceAllocation a_buf;
@@ -170,11 +157,11 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
 };
 
 struct CompiledLeafNode final : CompiledNode {
-    CompiledLeafNode(int64_t length, std::shared_ptr<AotKernel> kernel, std::vector<nb::object> tables);
+    CompiledLeafNode(int64_t length, std::shared_ptr<RuntimeKernel> kernel, std::vector<nb::object> tables);
     nb::object execute(const nb::object &input, const ExecutionContext &context) const override;
 
     int64_t length;
-    std::shared_ptr<AotKernel> kernel;
+    std::shared_ptr<RuntimeKernel> kernel;
     std::vector<nb::object> tables;
 };
 
@@ -184,8 +171,8 @@ struct CompiledFourStepNode final : CompiledNode {
                          int64_t n2,
                          std::shared_ptr<CompiledNode> row,
                          std::shared_ptr<CompiledNode> col,
-                         std::shared_ptr<AotKernel> transpose_kernel,
-                         std::shared_ptr<AotKernel> twiddle_transpose_kernel,
+                         std::shared_ptr<RuntimeKernel> transpose_kernel,
+                         std::shared_ptr<RuntimeKernel> twiddle_transpose_kernel,
                          nb::object twiddle,
                          nb::object stage0,
                          nb::object stage2);
@@ -201,8 +188,8 @@ struct CompiledFourStepNode final : CompiledNode {
     int64_t n2;
     std::shared_ptr<CompiledNode> row;
     std::shared_ptr<CompiledNode> col;
-    std::shared_ptr<AotKernel> transpose_kernel;
-    std::shared_ptr<AotKernel> twiddle_transpose_kernel;
+    std::shared_ptr<RuntimeKernel> transpose_kernel;
+    std::shared_ptr<RuntimeKernel> twiddle_transpose_kernel;
     nb::object twiddle;
     nb::object stage0;
     nb::object stage2;
@@ -212,9 +199,9 @@ struct CompiledFourStepFusedNode final : CompiledNode {
     CompiledFourStepFusedNode(int64_t length,
                               int64_t n1,
                               int64_t n2,
-                              std::shared_ptr<AotKernel> row_kernel,
+                              std::shared_ptr<RuntimeKernel> row_kernel,
                               std::vector<nb::object> row_tables,
-                              std::shared_ptr<AotKernel> col_kernel,
+                              std::shared_ptr<RuntimeKernel> col_kernel,
                               std::vector<nb::object> col_tables,
                               nb::object twiddle,
                               nb::object stage1);
@@ -225,9 +212,9 @@ struct CompiledFourStepFusedNode final : CompiledNode {
     int64_t length;
     int64_t n1;
     int64_t n2;
-    std::shared_ptr<AotKernel> row_kernel;
+    std::shared_ptr<RuntimeKernel> row_kernel;
     std::vector<nb::object> row_tables;
-    std::shared_ptr<AotKernel> col_kernel;
+    std::shared_ptr<RuntimeKernel> col_kernel;
     std::vector<nb::object> col_tables;
     nb::object twiddle;
     nb::object stage1;
@@ -237,9 +224,9 @@ struct CompiledBluesteinNode final : CompiledNode {
     CompiledBluesteinNode(int64_t length,
                           int64_t conv_length,
                           std::shared_ptr<CompiledNode> fft,
-                          std::shared_ptr<AotKernel> prepare_kernel,
-                          std::shared_ptr<AotKernel> pointwise_kernel,
-                          std::shared_ptr<AotKernel> finalize_kernel,
+                          std::shared_ptr<RuntimeKernel> prepare_kernel,
+                          std::shared_ptr<RuntimeKernel> pointwise_kernel,
+                          std::shared_ptr<RuntimeKernel> finalize_kernel,
                           nb::object chirp,
                           nb::object b_time,
                           nb::object a_buf,
@@ -251,9 +238,9 @@ struct CompiledBluesteinNode final : CompiledNode {
     int64_t length;
     int64_t conv_length;
     std::shared_ptr<CompiledNode> fft;
-    std::shared_ptr<AotKernel> prepare_kernel;
-    std::shared_ptr<AotKernel> pointwise_kernel;
-    std::shared_ptr<AotKernel> finalize_kernel;
+    std::shared_ptr<RuntimeKernel> prepare_kernel;
+    std::shared_ptr<RuntimeKernel> pointwise_kernel;
+    std::shared_ptr<RuntimeKernel> finalize_kernel;
     nb::object chirp;
     nb::object b_time;
     nb::object a_buf;
@@ -279,35 +266,32 @@ private:
     std::shared_ptr<CompiledNode> compile_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
     std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf,
                                                       const FFTRequest &request);
-    std::shared_ptr<AotKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
+    std::shared_ptr<RuntimeKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t n1,
                                                             int64_t n2);
-    std::shared_ptr<AotKernel> compile_four_step_col_kernel(const LeafPlanNode &leaf,
+    std::shared_ptr<RuntimeKernel> compile_four_step_col_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t n1,
                                                             int64_t n2);
-    std::shared_ptr<AotKernel> compile_transpose_kernel(const FFTRequest &request);
-    std::shared_ptr<AotKernel> compile_twiddle_transpose_kernel(const FFTRequest &request);
-    std::shared_ptr<AotKernel> compile_bluestein_prepare_kernel(const FFTRequest &request,
+    std::shared_ptr<RuntimeKernel> compile_transpose_kernel(const FFTRequest &request);
+    std::shared_ptr<RuntimeKernel> compile_twiddle_transpose_kernel(const FFTRequest &request);
+    std::shared_ptr<RuntimeKernel> compile_bluestein_prepare_kernel(const FFTRequest &request,
                                                                 int64_t n,
                                                                 int64_t m);
-    std::shared_ptr<AotKernel> compile_bluestein_pointwise_kernel(const FFTRequest &request,
+    std::shared_ptr<RuntimeKernel> compile_bluestein_pointwise_kernel(const FFTRequest &request,
                                                                   int64_t n,
                                                                   int64_t m);
-    std::shared_ptr<AotKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
+    std::shared_ptr<RuntimeKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                  int64_t n,
                                                                  int64_t m);
-    std::shared_ptr<AotKernel> compile_kernel(const KernelKey &key, const std::string &command) const;
-    std::shared_ptr<AotKernel> compile_aot_kernel(const KernelKey &key, const std::string &command) const;
-    std::shared_ptr<AotKernel> compile_jit_kernel(const KernelKey &key, const std::string &command) const;
+    std::shared_ptr<RuntimeKernel> compile_kernel(const KernelKey &key) const;
     std::filesystem::path out_dir() const;
     std::string python_executable() const;
-    std::string triton_aot_entrypoint() const;
     std::string triton_jit_source_entrypoint() const;
 
-    std::shared_ptr<AotKernel> transpose_kernel;
-    std::shared_ptr<AotKernel> twiddle_transpose_kernel;
+    std::shared_ptr<RuntimeKernel> transpose_kernel;
+    std::shared_ptr<RuntimeKernel> twiddle_transpose_kernel;
 };
 
 std::string triton_target_for_request(const FFTRequest &request);

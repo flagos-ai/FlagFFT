@@ -85,7 +85,7 @@ std::shared_ptr<ExecutablePlan> build_executable_from_root(const FFTRequest &req
     ExecutionBackend backend = ExecutionBackend::TorchFFT;
     std::shared_ptr<CompiledNode> compiled_root;
     if (request.output_dtype == "complex64") {
-        backend = ExecutionBackend::AotCuda;
+        backend = ExecutionBackend::JitCuda;
         TritonCompiler compiler;
         compiled_root = compiler.compile_node(root, request, request.batch);
     }

@@ -410,15 +410,7 @@ const char *flagfft_plan_mode(const BenchConfig &cfg) {
 }
 
 std::string flagfft_kernel_backend() {
-    const char *env = std::getenv("FLAGFFT_KERNEL_BACKEND");
-    if (env != nullptr && std::strlen(env) > 0) {
-        return env;
-    }
-#if defined(FLAGFFT_KERNEL_BACKEND_DEFAULT)
-    return FLAGFFT_KERNEL_BACKEND_DEFAULT;
-#else
-    return "AOT";
-#endif
+    return "JIT";
 }
 
 }  // namespace

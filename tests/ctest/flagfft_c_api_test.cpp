@@ -177,6 +177,14 @@ TEST(FlagFFTCApi, C2CFourStepMatchesCuFFT) {
 TEST(FlagFFTCApi, C2CBluesteinMatchesCuFFT) {
     compare_case(331, 1, FLAGFFT_FORWARD);
     compare_case(331, 2, FLAGFFT_INVERSE);
+    compare_case(997, 1, FLAGFFT_FORWARD);
+    compare_case(1009, 2, FLAGFFT_INVERSE);
+}
+
+TEST(FlagFFTCApi, C2CBluesteinLargeAndMixedLengthsMatchCuFFT) {
+    compare_case(5 * 331, 2, FLAGFFT_FORWARD);
+    compare_case(5 * 331, 1, FLAGFFT_INVERSE);
+    compare_case(16385, 1, FLAGFFT_FORWARD);
 }
 
 TEST(FlagFFTCApi, SetStreamUsesProvidedStream) {

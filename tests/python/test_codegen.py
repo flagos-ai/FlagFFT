@@ -113,15 +113,40 @@ def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(128, 64) == 2
 
 
-def test_aot_csv_parsing_accepts_empty_and_populated_lists(kernels) -> None:
+def test_jit_csv_parsing_accepts_empty_and_populated_lists(kernels) -> None:
     pytest.importorskip("triton")
-    triton_aot_spec = importlib.util.spec_from_file_location(
-        "src.codegen.triton_aot", ROOT / "src" / "codegen" / "triton_aot.py"
+    jit_source_spec = importlib.util.spec_from_file_location(
+        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
     )
-    assert triton_aot_spec is not None and triton_aot_spec.loader is not None
-    module = importlib.util.module_from_spec(triton_aot_spec)
-    sys.modules["src.codegen.triton_aot"] = module
-    triton_aot_spec.loader.exec_module(module)
+    assert jit_source_spec is not None and jit_source_spec.loader is not None
+    module = importlib.util.module_from_spec(jit_source_spec)
+    sys.modules["src.codegen.jit_source"] = module
+    jit_source_spec.loader.exec_module(module)
 
     assert module._csv_ints("") == ()
     assert module._csv_ints("16,8,4") == (16, 8, 4)
+
+
+def test_jit_bluestein_source_metadata(tmp_path) -> None:
+    pytest.importorskip("triton")
+    jit_source_spec = importlib.util.spec_from_file_location(
+        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
+    )
+    assert jit_source_spec is not None and jit_source_spec.loader is not None
+    module = importlib.util.module_from_spec(jit_source_spec)
+    sys.modules["src.codegen.jit_source"] = module
+    jit_source_spec.loader.exec_module(module)
+
+    metadata = module._emit_bluestein_jit_kernel(
+        kernel="bluestein_prepare",
+        n=331,
+        m=1024,
+        out_dir=tmp_path,
+    )
+
+    assert metadata["kernel_type"] == "bluestein_prepare"
+    assert metadata["arg_names"] == ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"]
+    assert metadata["signature"] == "*fp32:16,*fp32:16,*fp32:16,i64,i64,i32"
+    assert metadata["bluestein_n"] == 331
+    assert metadata["bluestein_m"] == 1024
+    assert (tmp_path / "flagfft_jit_bluestein_prepare_n331_m1024.py").is_file()

@@ -7,8 +7,8 @@ CompiledFourStepNode::CompiledFourStepNode(int64_t length,
                                            int64_t n2,
                                            std::shared_ptr<CompiledNode> row,
                                            std::shared_ptr<CompiledNode> col,
-                                           std::shared_ptr<AotKernel> transpose_kernel,
-                                           std::shared_ptr<AotKernel> twiddle_transpose_kernel,
+                                           std::shared_ptr<RuntimeKernel> transpose_kernel,
+                                           std::shared_ptr<RuntimeKernel> twiddle_transpose_kernel,
                                            nb::object twiddle,
                                            nb::object stage0,
                                            nb::object stage2)
@@ -50,17 +50,17 @@ void CompiledFourStepNode::launch_transpose(CUstream stream, const nb::object &s
     int64_t batch = tensor_size(src, 0);
     int64_t rows = tensor_size(src, 1);
     int64_t cols = tensor_size(src, 2);
-    std::vector<AotKernelArg> args = {
-        AotKernelArg::device(tensor_data_ptr(src)),
-        AotKernelArg::device(tensor_data_ptr(dst)),
-        AotKernelArg::i64(tensor_stride(src, 0) * 2),
-        AotKernelArg::i64(tensor_stride(src, 1) * 2),
-        AotKernelArg::i64(tensor_stride(src, 2) * 2),
-        AotKernelArg::i64(tensor_stride(dst, 0) * 2),
-        AotKernelArg::i64(tensor_stride(dst, 1) * 2),
-        AotKernelArg::i64(tensor_stride(dst, 2) * 2),
-        AotKernelArg::i64(rows),
-        AotKernelArg::i64(cols),
+    std::vector<RuntimeKernelArg> args = {
+        RuntimeKernelArg::device(tensor_data_ptr(src)),
+        RuntimeKernelArg::device(tensor_data_ptr(dst)),
+        RuntimeKernelArg::i64(tensor_stride(src, 0) * 2),
+        RuntimeKernelArg::i64(tensor_stride(src, 1) * 2),
+        RuntimeKernelArg::i64(tensor_stride(src, 2) * 2),
+        RuntimeKernelArg::i64(tensor_stride(dst, 0) * 2),
+        RuntimeKernelArg::i64(tensor_stride(dst, 1) * 2),
+        RuntimeKernelArg::i64(tensor_stride(dst, 2) * 2),
+        RuntimeKernelArg::i64(rows),
+        RuntimeKernelArg::i64(cols),
     };
     transpose_kernel->launch(stream, args, ceil_div(cols, kFourStepTileCols),
                              ceil_div(rows, kFourStepTileRows), batch);
@@ -73,20 +73,20 @@ void CompiledFourStepNode::launch_twiddle_transpose(CUstream stream,
     int64_t batch = tensor_size(src, 0);
     int64_t rows = tensor_size(src, 1);
     int64_t cols = tensor_size(src, 2);
-    std::vector<AotKernelArg> args = {
-        AotKernelArg::device(tensor_data_ptr(src)),
-        AotKernelArg::device(tensor_data_ptr(twiddle)),
-        AotKernelArg::device(tensor_data_ptr(dst)),
-        AotKernelArg::i64(tensor_stride(src, 0) * 2),
-        AotKernelArg::i64(tensor_stride(src, 1) * 2),
-        AotKernelArg::i64(tensor_stride(src, 2) * 2),
-        AotKernelArg::i64(tensor_stride(twiddle, 0) * 2),
-        AotKernelArg::i64(tensor_stride(twiddle, 1) * 2),
-        AotKernelArg::i64(tensor_stride(dst, 0) * 2),
-        AotKernelArg::i64(tensor_stride(dst, 1) * 2),
-        AotKernelArg::i64(tensor_stride(dst, 2) * 2),
-        AotKernelArg::i64(rows),
-        AotKernelArg::i64(cols),
+    std::vector<RuntimeKernelArg> args = {
+        RuntimeKernelArg::device(tensor_data_ptr(src)),
+        RuntimeKernelArg::device(tensor_data_ptr(twiddle)),
+        RuntimeKernelArg::device(tensor_data_ptr(dst)),
+        RuntimeKernelArg::i64(tensor_stride(src, 0) * 2),
+        RuntimeKernelArg::i64(tensor_stride(src, 1) * 2),
+        RuntimeKernelArg::i64(tensor_stride(src, 2) * 2),
+        RuntimeKernelArg::i64(tensor_stride(twiddle, 0) * 2),
+        RuntimeKernelArg::i64(tensor_stride(twiddle, 1) * 2),
+        RuntimeKernelArg::i64(tensor_stride(dst, 0) * 2),
+        RuntimeKernelArg::i64(tensor_stride(dst, 1) * 2),
+        RuntimeKernelArg::i64(tensor_stride(dst, 2) * 2),
+        RuntimeKernelArg::i64(rows),
+        RuntimeKernelArg::i64(cols),
     };
     twiddle_transpose_kernel->launch(stream, args, ceil_div(cols, kFourStepTileCols),
                                      ceil_div(rows, kFourStepTileRows), batch);
@@ -95,9 +95,9 @@ void CompiledFourStepNode::launch_twiddle_transpose(CUstream stream,
 CompiledFourStepFusedNode::CompiledFourStepFusedNode(int64_t length,
                                                      int64_t n1,
                                                      int64_t n2,
-                                                     std::shared_ptr<AotKernel> row_kernel,
+                                                     std::shared_ptr<RuntimeKernel> row_kernel,
                                                      std::vector<nb::object> row_tables,
-                                                     std::shared_ptr<AotKernel> col_kernel,
+                                                     std::shared_ptr<RuntimeKernel> col_kernel,
                                                      std::vector<nb::object> col_tables,
                                                      nb::object twiddle,
                                                      nb::object stage1)
@@ -129,14 +129,14 @@ void CompiledFourStepFusedNode::launch_row(CUstream stream,
                                            const nb::object &src,
                                            const nb::object &dst,
                                            int64_t batch) const {
-    std::vector<AotKernelArg> args;
+    std::vector<RuntimeKernelArg> args;
     args.reserve(3 + row_tables.size());
-    args.push_back(AotKernelArg::device(tensor_data_ptr(src)));
-    args.push_back(AotKernelArg::device(tensor_data_ptr(dst)));
+    args.push_back(RuntimeKernelArg::device(tensor_data_ptr(src)));
+    args.push_back(RuntimeKernelArg::device(tensor_data_ptr(dst)));
     for (const nb::object &table : row_tables) {
-        args.push_back(AotKernelArg::device(tensor_data_ptr(table)));
+        args.push_back(RuntimeKernelArg::device(tensor_data_ptr(table)));
     }
-    args.push_back(AotKernelArg::i32(static_cast<int32_t>(batch)));
+    args.push_back(RuntimeKernelArg::i32(static_cast<int32_t>(batch)));
 
     row_kernel->launch(stream, args, n2, batch, 1);
 }
@@ -145,15 +145,15 @@ void CompiledFourStepFusedNode::launch_col(CUstream stream,
                                            const nb::object &src,
                                            const nb::object &dst,
                                            int64_t batch) const {
-    std::vector<AotKernelArg> args;
+    std::vector<RuntimeKernelArg> args;
     args.reserve(4 + col_tables.size());
-    args.push_back(AotKernelArg::device(tensor_data_ptr(src)));
-    args.push_back(AotKernelArg::device(tensor_data_ptr(twiddle)));
-    args.push_back(AotKernelArg::device(tensor_data_ptr(dst)));
+    args.push_back(RuntimeKernelArg::device(tensor_data_ptr(src)));
+    args.push_back(RuntimeKernelArg::device(tensor_data_ptr(twiddle)));
+    args.push_back(RuntimeKernelArg::device(tensor_data_ptr(dst)));
     for (const nb::object &table : col_tables) {
-        args.push_back(AotKernelArg::device(tensor_data_ptr(table)));
+        args.push_back(RuntimeKernelArg::device(tensor_data_ptr(table)));
     }
-    args.push_back(AotKernelArg::i32(static_cast<int32_t>(batch)));
+    args.push_back(RuntimeKernelArg::i32(static_cast<int32_t>(batch)));
 
     col_kernel->launch(stream, args, ceil_div(n1, four_step_col_inner_pack_for(n1, n2)), batch, 1);
 }

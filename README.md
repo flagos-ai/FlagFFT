@@ -2,7 +2,8 @@
 
 FlagFFT is an experimental C++ FFT library with a cuFFT-style API and
 Triton/TLE-generated CUDA kernels. The public runtime interface is C/C++; Python
-is retained only for Triton AOT code generation and the offline tune entrypoint.
+is retained only for Triton/TLE JIT source generation and the offline tune
+entrypoint.
 
 ## Current API
 
@@ -13,9 +14,10 @@ The public header is `include/flagfft/flagfft.h` and exposes:
   `flagfftExecC2R`, `flagfftExecZ2D`
 - `flagfftSetStream`, `flagfftDestroy`
 
-The first native runtime slice supports out-of-place, contiguous, rank-1,
-batched `FLAGFFT_C2C` transforms on `complex64` device pointers. Forward and
-inverse C2C kernels are compiled during plan creation and selected at exec time.
+The first native runtime slice supports arbitrary-length out-of-place,
+contiguous, rank-1, batched `FLAGFFT_C2C` transforms on `complex64` device
+pointers. Forward and inverse C2C kernels are compiled during plan creation and
+selected at exec time.
 Other declared plan/exec combinations return `FLAGFFT_NOT_SUPPORTED` until
 their raw execution paths are implemented.
 
@@ -25,7 +27,7 @@ their raw execution paths are implemented.
   and internal headers under `src/utils/include/flagfft/`.
 - `src/plan/`: plan node definitions, factorization, cost model, automatic route
   selection, forced-plan parsing, and tune candidate enumeration.
-- `src/codegen/`: C++ Triton AOT invocation/cache logic plus Python kernel
+- `src/codegen/`: C++ libtriton_jit invocation/cache logic plus Python kernel
   source generation. Codelets live in `src/codegen/codelet/`.
 - `src/runtime/`: CUDA Driver helpers and plan-owned device allocations.
 - `src/exec/`: cuFFT-style C API, raw pointer execution nodes, plan cache, and
@@ -37,26 +39,23 @@ description, stream/lifecycle state, compiled forward and inverse raw execution
 nodes, and device buffers for twiddle/table/stage data. Exec calls do not import
 Python, compile kernels, rebuild plans, or allocate large buffers.
 
-## Kernel Backends
+## Kernel Backend
 
-The default backend is Triton AOT (`FLAGFFT_KERNEL_BACKEND=AOT`). An experimental
-`libtriton_jit` backend can be enabled at build time:
+FlagFFT is JIT-only. It requires the `deps/libtriton_jit` submodule and targets
+CUDA through `FLAGFFT_LIBTRITON_JIT_BACKEND=CUDA`. Legacy AOT backend selection
+is not supported; setting `FLAGFFT_KERNEL_BACKEND=AOT` or `FFT_BACKEND=AOT`
+causes plan creation to fail clearly.
 
 ```sh
-cmake -S . -B build -GNinja \
-  -DFLAGFFT_ENABLE_LIBTRITON_JIT=ON \
-  -DFLAGFFT_KERNEL_BACKEND=JIT
+cmake -S . -B build -GNinja
 cmake --build build
 ```
 
-The JIT backend currently targets CUDA only
-(`FLAGFFT_LIBTRITON_JIT_BACKEND=CUDA`) and covers the same raw C API execution
-surface as the default backend: rank-1 contiguous out-of-place
-`FLAGFFT_C2C` complex64 leaf plans and fused leaf/leaf four-step plans. Plan
-creation emits the Triton source and calls libtriton_jit compile-only APIs so
-the first `flagfftExecC2C` does not pay Python compilation latency. Non-C2C,
-rank>1, in-place, and non-contiguous C API requests keep returning
-`FLAGFFT_NOT_SUPPORTED`.
+Plan creation emits Triton source and calls libtriton_jit compile APIs so the
+first `flagfftExecC2C` does not pay Python compilation latency. The raw C API
+supports leaf, fused leaf/leaf four-step, and Bluestein fallback routes for
+arbitrary 1D C2C lengths. Non-C2C, rank>1, in-place, and non-contiguous C API
+requests keep returning `FLAGFFT_NOT_SUPPORTED`.
 
 ## Build
 
@@ -83,9 +82,9 @@ cmake --build build
 `FLAGFFT_BUILD_PYTHON` are all disabled by default. The legacy nanobind debug
 module is built only when `FLAGFFT_BUILD_PYTHON=ON`.
 
-When plan creation invokes Triton AOT, it uses `FLAGFFT_PYTHON` if set, otherwise
-`python3`. Generated AOT artifacts and tuned-plan SQLite defaults are stored in
-`.flagfft` next to the running executable.
+When plan creation emits Triton JIT source, it uses `FLAGFFT_PYTHON` if set,
+otherwise `python3`. Generated source/metadata and tuned-plan SQLite defaults
+are stored in `.flagfft` next to the running executable.
 
 ## Tuning
 
