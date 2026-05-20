@@ -128,9 +128,9 @@ if(FLAGFFT_BUILD_BENCHMARKS)
         )
 
         add_executable(flagfft_tune
-            src/tune_cpp/tune_main.cpp
-            src/tune_cpp/tune_bench.cpp
-            src/tune_cpp/tune_sqlite.cpp
+            src/tune/tune_main.cpp
+            src/tune/tune_bench.cpp
+            src/tune/tune_sqlite.cpp
         )
         target_compile_features(flagfft_tune PRIVATE cxx_std_20)
         target_include_directories(flagfft_tune PRIVATE
