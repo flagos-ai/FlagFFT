@@ -141,6 +141,24 @@ KernelKey KernelKey::twiddle_reshape_pack(std::string target, std::string dtype,
     return key;
 }
 
+KernelKey KernelKey::real_to_complex(std::string target, std::string dtype, int64_t length) {
+    KernelKey key;
+    key.kind = KernelKind::RealToComplex;
+    key.target = std::move(target);
+    key.dtype = std::move(dtype);
+    key.length = length;
+    return key;
+}
+
+KernelKey KernelKey::r2c_half_pack(std::string target, std::string dtype, int64_t length) {
+    KernelKey key;
+    key.kind = KernelKind::R2CHalfPack;
+    key.target = std::move(target);
+    key.dtype = std::move(dtype);
+    key.length = length;
+    return key;
+}
+
 bool KernelKey::operator==(const KernelKey &other) const {
     return kind == other.kind && target == other.target && direction == other.direction &&
            dtype == other.dtype && length == other.length && factors == other.factors &&
@@ -171,6 +189,9 @@ std::string KernelKey::repr() const {
     }
     if (kind == KernelKind::ReshapePack || kind == KernelKind::TwiddleReshapePack) {
         out << ";reshape_n1=" << reshape_n1 << ";reshape_n2=" << reshape_n2;
+    }
+    if (kind == KernelKind::RealToComplex || kind == KernelKind::R2CHalfPack) {
+        out << ";length=" << length;
     }
     return out.str();
 }

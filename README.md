@@ -16,9 +16,12 @@ The public header is `include/flagfft/flagfft.h` and exposes:
 
 The first native runtime slice supports arbitrary-length out-of-place,
 contiguous, rank-1, batched `FLAGFFT_C2C` (`complex64`) and `FLAGFFT_Z2Z`
-(`complex128`) transforms on device pointers. Forward and inverse kernels are
-compiled during plan creation and selected at exec time. Both single-layer and
-nested fused four-step routes are supported, so very large composite lengths
+(`complex128`) transforms on device pointers. It also supports forward
+`FLAGFFT_R2C` (`float32` to compact `complex64`) for the same rank-1
+contiguous out-of-place shape, with `n / 2 + 1` complex output values per
+batch. Forward and inverse kernels are compiled during plan creation and
+selected at exec time for complex transforms. Both single-layer and nested
+fused four-step routes are supported, so very large composite lengths
 (e.g. `n = 2^23`) plan as multi-level four-step trees instead of falling back
 to Bluestein.
 Other declared plan/exec combinations return `FLAGFFT_NOT_SUPPORTED` until
@@ -61,8 +64,9 @@ Plan creation emits Triton source and calls libtriton_jit compile APIs so the
 first exec call does not pay Python compilation latency. The raw C API
 supports leaf, fused leaf/leaf four-step, generic nested four-step (FourStep of
 arbitrary supported children), and Bluestein fallback routes for arbitrary 1D
-`C2C`/`Z2Z` lengths. Non-C2C/Z2Z, rank>1, in-place, and non-contiguous C API
-requests keep returning `FLAGFFT_NOT_SUPPORTED`.
+`C2C`/`Z2Z` lengths, plus R2C staging/compact-pack kernels around the forward
+complex FFT route. `D2Z`, `C2R`, `Z2D`, rank>1, in-place, and non-contiguous C
+API requests keep returning `FLAGFFT_NOT_SUPPORTED`.
 
 ## Build
 

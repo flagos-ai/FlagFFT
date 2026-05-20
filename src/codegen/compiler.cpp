@@ -61,6 +61,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                              plan_node_kind_name(node->kind));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const PlanNodePtr &node,
+                                                                      const FFTRequest &request,
+                                                                      int64_t batch) {
+    const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+    const int64_t n = request.requested_n;
+    DeviceAllocation complex_input =
+        allocate_device_bytes(static_cast<std::size_t>(batch * n * element_bytes));
+    DeviceAllocation full_output =
+        allocate_device_bytes(static_cast<std::size_t>(batch * n * element_bytes));
+    return std::make_shared<CompiledRawR2CNode>(
+        n,
+        compile_real_to_complex_kernel(request, n),
+        compile_raw_node(node, request, batch),
+        compile_r2c_half_pack_kernel(request, n),
+        std::move(complex_input),
+        std::move(full_output));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlanNode &leaf,
                                                                   const FFTRequest &request) {
     std::string target = triton_target_for_request(request);
@@ -153,6 +171,20 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_twiddle_reshape_pack_kern
                                                                                    int64_t n2) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::twiddle_reshape_pack(target, request.input_dtype, n1, n2);
+    return compile_kernel(key);
+}
+
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_real_to_complex_kernel(const FFTRequest &request,
+                                                                              int64_t n) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::real_to_complex(target, request.input_dtype, n);
+    return compile_kernel(key);
+}
+
+std::shared_ptr<RuntimeKernel> TritonCompiler::compile_r2c_half_pack_kernel(const FFTRequest &request,
+                                                                           int64_t n) {
+    std::string target = triton_target_for_request(request);
+    KernelKey key = KernelKey::r2c_half_pack(target, request.input_dtype, n);
     return compile_kernel(key);
 }
 

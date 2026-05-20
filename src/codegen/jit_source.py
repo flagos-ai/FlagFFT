@@ -37,6 +37,8 @@ from src.codegen.kernels import (
     _build_four_step_col_kernel_source,
     _build_four_step_row_kernel_source,
     _build_leaf_kernel_source,
+    _build_r2c_half_pack_kernel_source,
+    _build_real_to_complex_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_twiddle_reshape_pack_kernel_source,
     contiguous_batch_pack_for,
@@ -314,6 +316,50 @@ def _emit_reshape_jit_kernel(
     return metadata
 
 
+def _emit_r2c_pointwise_jit_kernel(
+    *,
+    kernel: str,
+    n: int,
+    dtype: str,
+    out_dir: Path,
+) -> dict[str, Any]:
+    if kernel == "real_to_complex":
+        kernel_name, kernel_source, arg_names = _build_real_to_complex_kernel_source(n, dtype)
+    elif kernel == "r2c_half_pack":
+        kernel_name, kernel_source, arg_names = _build_r2c_half_pack_kernel_source(n, dtype)
+    else:
+        raise ValueError(f"unsupported R2C pointwise kernel kind: {kernel}")
+
+    dtype_tag = _dtype_suffix(dtype)
+    module_name = f"flagfft_jit_{kernel}_n{n}_{dtype_tag}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{module_name}.py"
+    module_path.write_text(_module_source(kernel_source))
+
+    sys.path.insert(0, str(module_path.parent))
+    spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load generated kernel module {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    arg_names = list(getattr(module, kernel_name).arg_names)
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": kernel_name,
+        "signature": _signature(arg_names, dtype),
+        "num_warps": _RESHAPE_NUM_WARPS,
+        "num_stages": _RESHAPE_NUM_STAGES,
+        "batch_per_block": 1,
+        "arg_names": arg_names,
+        "kernel_type": kernel,
+        "dtype": dtype,
+        "length": int(n),
+        "block": 256,
+    }
+    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
 def emit_jit_kernel(
     *,
     kernel: str,
@@ -413,6 +459,8 @@ def main() -> None:
             "bluestein_finalize",
             "reshape_pack",
             "twiddle_reshape_pack",
+            "real_to_complex",
+            "r2c_half_pack",
         ),
         required=True,
     )
@@ -455,6 +503,18 @@ def main() -> None:
             kernel=args.kernel,
             n1=args.reshape_n1,
             n2=args.reshape_n2,
+            dtype=args.dtype,
+            out_dir=args.out_dir,
+        )
+        print(json.dumps(metadata, sort_keys=True))
+        return
+
+    if args.kernel in {"real_to_complex", "r2c_half_pack"}:
+        if args.length is None or args.length <= 0:
+            parser.error(f"--kernel {args.kernel} requires --length")
+        metadata = _emit_r2c_pointwise_jit_kernel(
+            kernel=args.kernel,
+            n=args.length,
             dtype=args.dtype,
             out_dir=args.out_dir,
         )

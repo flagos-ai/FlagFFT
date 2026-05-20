@@ -157,6 +157,124 @@ void compare_case(int n, int batch, int direction, bool custom_stream = false) {
     assert_close(actual, expected, base_tol * scale, base_tol);
 }
 
+std::vector<flagfftReal> sample_real_input(int n, int batch) {
+    std::mt19937 rng(2468 + n * 13 + batch);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<flagfftReal> data(static_cast<std::size_t>(n * batch));
+    for (auto &value : data) {
+        value = dist(rng);
+    }
+    return data;
+}
+
+std::vector<flagfftComplex> run_cufft_r2c(const std::vector<flagfftReal> &input,
+                                          int n,
+                                          int batch) {
+    flagfftReal *d_in = nullptr;
+    flagfftComplex *d_out = nullptr;
+    const int half = n / 2 + 1;
+    const std::size_t input_bytes = input.size() * sizeof(flagfftReal);
+    const std::size_t output_bytes = static_cast<std::size_t>(batch * half) * sizeof(flagfftComplex);
+    EXPECT_EQ(cudaMalloc(reinterpret_cast<void **>(&d_in), input_bytes), cudaSuccess);
+    EXPECT_EQ(cudaMalloc(reinterpret_cast<void **>(&d_out), output_bytes), cudaSuccess);
+    EXPECT_EQ(cudaMemcpy(d_in, input.data(), input_bytes, cudaMemcpyHostToDevice), cudaSuccess);
+
+    cufftHandle plan = 0;
+    if (cufftPlan1d(&plan, n, CUFFT_R2C, batch) != CUFFT_SUCCESS) {
+        ADD_FAILURE() << "cufftPlan1d R2C failed";
+        return {};
+    }
+    if (cufftExecR2C(plan,
+                     reinterpret_cast<cufftReal *>(d_in),
+                     reinterpret_cast<cufftComplex *>(d_out)) != CUFFT_SUCCESS) {
+        ADD_FAILURE() << "cufftExecR2C failed";
+        cufftDestroy(plan);
+        return {};
+    }
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        ADD_FAILURE() << "cudaDeviceSynchronize failed";
+        cufftDestroy(plan);
+        return {};
+    }
+
+    std::vector<flagfftComplex> output(static_cast<std::size_t>(batch * half));
+    EXPECT_EQ(cudaMemcpy(output.data(), d_out, output_bytes, cudaMemcpyDeviceToHost), cudaSuccess);
+    cufftDestroy(plan);
+    cudaFree(d_out);
+    cudaFree(d_in);
+    return output;
+}
+
+std::vector<flagfftComplex> run_flagfft_r2c(const std::vector<flagfftReal> &input,
+                                            int n,
+                                            int batch,
+                                            bool custom_stream) {
+    flagfftReal *d_in = nullptr;
+    flagfftComplex *d_out = nullptr;
+    const int half = n / 2 + 1;
+    const std::size_t input_bytes = input.size() * sizeof(flagfftReal);
+    const std::size_t output_bytes = static_cast<std::size_t>(batch * half) * sizeof(flagfftComplex);
+    EXPECT_EQ(cudaMalloc(reinterpret_cast<void **>(&d_in), input_bytes), cudaSuccess);
+    EXPECT_EQ(cudaMalloc(reinterpret_cast<void **>(&d_out), output_bytes), cudaSuccess);
+    EXPECT_EQ(cudaMemcpy(d_in, input.data(), input_bytes, cudaMemcpyHostToDevice), cudaSuccess);
+
+    flagfftHandle plan = nullptr;
+    if (flagfftPlan1d(&plan, n, FLAGFFT_R2C, batch) != FLAGFFT_SUCCESS) {
+        ADD_FAILURE() << "flagfftPlan1d R2C failed";
+        return {};
+    }
+
+    cudaStream_t stream = nullptr;
+    if (custom_stream) {
+        if (cudaStreamCreate(&stream) != cudaSuccess) {
+            ADD_FAILURE() << "cudaStreamCreate failed";
+            flagfftDestroy(plan);
+            return {};
+        }
+        if (flagfftSetStream(plan, stream) != FLAGFFT_SUCCESS) {
+            ADD_FAILURE() << "flagfftSetStream failed";
+            flagfftDestroy(plan);
+            cudaStreamDestroy(stream);
+            return {};
+        }
+    }
+
+    if (flagfftExecR2C(plan, d_in, d_out) != FLAGFFT_SUCCESS) {
+        ADD_FAILURE() << "flagfftExecR2C failed";
+        flagfftDestroy(plan);
+        if (stream != nullptr) {
+            cudaStreamDestroy(stream);
+        }
+        return {};
+    }
+    if (custom_stream) {
+        if (cudaStreamSynchronize(stream) != cudaSuccess) {
+            ADD_FAILURE() << "cudaStreamSynchronize failed";
+        }
+        cudaStreamDestroy(stream);
+    } else {
+        if (cudaDeviceSynchronize() != cudaSuccess) {
+            ADD_FAILURE() << "cudaDeviceSynchronize failed";
+        }
+    }
+
+    std::vector<flagfftComplex> output(static_cast<std::size_t>(batch * half));
+    EXPECT_EQ(cudaMemcpy(output.data(), d_out, output_bytes, cudaMemcpyDeviceToHost), cudaSuccess);
+    EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+    cudaFree(d_out);
+    cudaFree(d_in);
+    return output;
+}
+
+void compare_case_r2c(int n, int batch, bool custom_stream = false) {
+    require_cuda();
+    auto input = sample_real_input(n, batch);
+    auto expected = run_cufft_r2c(input, n, batch);
+    auto actual = run_flagfft_r2c(input, n, batch, custom_stream);
+    float base_tol = n >= 8192 ? 2.5e-3f : 1.5e-3f;
+    assert_close(actual, expected, base_tol, base_tol);
+}
+
 std::vector<flagfftDoubleComplex> sample_input_z(int n, int batch) {
     std::mt19937 rng(9876 + n * 31 + batch);
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
@@ -329,6 +447,27 @@ TEST(FlagFFTCApi, C2CNestedFourStepMatchesCuFFT) {
     compare_case(1 << 23, 2, FLAGFFT_INVERSE);
 }
 
+TEST(FlagFFTCApi, R2CLeafMatchesCuFFTForwardBatches) {
+    compare_case_r2c(16, 1);
+    compare_case_r2c(17, 3);
+    compare_case_r2c(105, 7);
+}
+
+TEST(FlagFFTCApi, R2CFourStepMatchesCuFFT) {
+    compare_case_r2c(8192, 1);
+    compare_case_r2c(8192, 3);
+}
+
+TEST(FlagFFTCApi, R2CBluesteinMatchesCuFFT) {
+    compare_case_r2c(331, 1);
+    compare_case_r2c(997, 2);
+}
+
+TEST(FlagFFTCApi, R2CSetStreamUsesProvidedStream) {
+    compare_case_r2c(16, 3, true);
+    compare_case_r2c(8192, 2, true);
+}
+
 TEST(FlagFFTCApi, Z2ZLeafMatchesCuFFTForwardBatches) {
     compare_case_z(16, 1, FLAGFFT_FORWARD);
     compare_case_z(19, 4, FLAGFFT_FORWARD);
@@ -418,10 +557,29 @@ TEST(FlagFFTCApi, RejectsInvalidAndUnsupportedCalls) {
                              reinterpret_cast<flagfftComplex *>(0x2),
                              FLAGFFT_FORWARD),
               FLAGFFT_INVALID_TYPE);
-    // R2C / C2R remain unimplemented.
-    EXPECT_EQ(flagfftExecR2C(zplan, nullptr, nullptr), FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(flagfftExecR2C(zplan,
+                             reinterpret_cast<flagfftReal *>(0x1),
+                             reinterpret_cast<flagfftComplex *>(0x2)),
+              FLAGFFT_INVALID_TYPE);
     EXPECT_EQ(flagfftExecD2Z(zplan, nullptr, nullptr), FLAGFFT_NOT_SUPPORTED);
     EXPECT_EQ(flagfftExecC2R(zplan, nullptr, nullptr), FLAGFFT_NOT_SUPPORTED);
     EXPECT_EQ(flagfftExecZ2D(zplan, nullptr, nullptr), FLAGFFT_NOT_SUPPORTED);
     EXPECT_EQ(flagfftDestroy(zplan), FLAGFFT_SUCCESS);
+
+    flagfftHandle rplan = nullptr;
+    ASSERT_EQ(flagfftPlan1d(&rplan, 16, FLAGFFT_R2C, 1), FLAGFFT_SUCCESS);
+    EXPECT_EQ(flagfftExecR2C(rplan, nullptr, nullptr), FLAGFFT_INVALID_VALUE);
+    EXPECT_EQ(flagfftExecR2C(rplan,
+                             reinterpret_cast<flagfftReal *>(0x1),
+                             reinterpret_cast<flagfftComplex *>(0x1)),
+              FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(flagfftExecC2C(rplan,
+                             reinterpret_cast<flagfftComplex *>(0x1),
+                             reinterpret_cast<flagfftComplex *>(0x2),
+                             FLAGFFT_FORWARD),
+              FLAGFFT_INVALID_TYPE);
+    EXPECT_EQ(flagfftExecD2Z(rplan, nullptr, nullptr), FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(flagfftExecC2R(rplan, nullptr, nullptr), FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(flagfftExecZ2D(rplan, nullptr, nullptr), FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(flagfftDestroy(rplan), FLAGFFT_SUCCESS);
 }

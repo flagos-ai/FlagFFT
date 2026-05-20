@@ -110,6 +110,8 @@ struct KernelKey {
     static KernelKey bluestein_finalize(std::string target, std::string dtype, int64_t n, int64_t m);
     static KernelKey reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
     static KernelKey twiddle_reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
+    static KernelKey real_to_complex(std::string target, std::string dtype, int64_t length);
+    static KernelKey r2c_half_pack(std::string target, std::string dtype, int64_t length);
     bool operator==(const KernelKey &other) const;
     std::string repr() const;
 };

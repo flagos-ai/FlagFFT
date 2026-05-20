@@ -115,6 +115,10 @@ std::string kernel_kind_name(KernelKind kind) {
             return "reshape_pack";
         case KernelKind::TwiddleReshapePack:
             return "twiddle_reshape_pack";
+        case KernelKind::RealToComplex:
+            return "real_to_complex";
+        case KernelKind::R2CHalfPack:
+            return "r2c_half_pack";
     }
     return "unknown";
 }

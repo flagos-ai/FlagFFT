@@ -183,11 +183,34 @@ struct CompiledRawFourStepGenericNode final : CompiledRawNode {
     DeviceAllocation stage2;
 };
 
+struct CompiledRawR2CNode final : CompiledRawNode {
+    CompiledRawR2CNode(int64_t length,
+                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                       std::shared_ptr<CompiledRawNode> fft,
+                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                       DeviceAllocation complex_input,
+                       DeviceAllocation full_output);
+    flagfftResult execute(CUdeviceptr input,
+                          CUdeviceptr output,
+                          const RawExecutionContext &context) const override;
+    std::string describe() const override;
+
+    int64_t length;
+    std::shared_ptr<RuntimeKernel> expand_kernel;
+    std::shared_ptr<CompiledRawNode> fft;
+    std::shared_ptr<RuntimeKernel> pack_kernel;
+    DeviceAllocation complex_input;
+    DeviceAllocation full_output;
+};
+
 class TritonCompiler {
 public:
     std::shared_ptr<CompiledRawNode> compile_raw_node(const PlanNodePtr &node,
                                                       const FFTRequest &request,
                                                       int64_t batch);
+    std::shared_ptr<CompiledRawNode> compile_raw_r2c_node(const PlanNodePtr &node,
+                                                          const FFTRequest &request,
+                                                          int64_t batch);
     static void clear_kernel_cache();
 
 private:
@@ -219,6 +242,10 @@ private:
     std::shared_ptr<RuntimeKernel> compile_twiddle_reshape_pack_kernel(const FFTRequest &request,
                                                                        int64_t n1,
                                                                        int64_t n2);
+    std::shared_ptr<RuntimeKernel> compile_real_to_complex_kernel(const FFTRequest &request,
+                                                                  int64_t n);
+    std::shared_ptr<RuntimeKernel> compile_r2c_half_pack_kernel(const FFTRequest &request,
+                                                               int64_t n);
     std::shared_ptr<RuntimeKernel> compile_kernel(const KernelKey &key) const;
     std::filesystem::path out_dir() const;
     std::string python_executable() const;

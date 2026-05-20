@@ -71,9 +71,26 @@ extern "C" flagfftResult flagfftExecZ2Z(flagfftHandle handle,
 extern "C" flagfftResult flagfftExecR2C(flagfftHandle handle,
                                         flagfftReal *idata,
                                         flagfftComplex *odata) {
-    (void)idata;
-    (void)odata;
-    return flagfft::checked_plan(handle) == nullptr ? FLAGFFT_INVALID_PLAN : FLAGFFT_NOT_SUPPORTED;
+    flagfft::FlagFFTPlan *plan = flagfft::checked_plan(handle);
+    if (plan == nullptr || plan->state.destroyed || !plan->state.initialized) {
+        return FLAGFFT_INVALID_PLAN;
+    }
+    if (idata == nullptr || odata == nullptr) {
+        return FLAGFFT_INVALID_VALUE;
+    }
+    if (reinterpret_cast<void *>(idata) == reinterpret_cast<void *>(odata)) {
+        return FLAGFFT_NOT_SUPPORTED;
+    }
+    if (plan->desc.type != FLAGFFT_R2C) {
+        return FLAGFFT_INVALID_TYPE;
+    }
+
+    std::lock_guard<std::mutex> lock(plan->mutex);
+    flagfft::RawExecutionContext context{
+        plan->executable.forward_request, plan->state.stream, plan->desc.batch};
+    return plan->executable.forward->execute(reinterpret_cast<CUdeviceptr>(idata),
+                                             reinterpret_cast<CUdeviceptr>(odata),
+                                             context);
 }
 
 extern "C" flagfftResult flagfftExecD2Z(flagfftHandle handle,

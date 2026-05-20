@@ -300,4 +300,61 @@ flagfftResult CompiledRawFourStepGenericNode::execute(CUdeviceptr input,
     }
 }
 
+CompiledRawR2CNode::CompiledRawR2CNode(int64_t length,
+                                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                                       std::shared_ptr<CompiledRawNode> fft,
+                                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                                       DeviceAllocation complex_input,
+                                       DeviceAllocation full_output)
+    : length(length),
+      expand_kernel(std::move(expand_kernel)),
+      fft(std::move(fft)),
+      pack_kernel(std::move(pack_kernel)),
+      complex_input(std::move(complex_input)),
+      full_output(std::move(full_output)) {}
+
+std::string CompiledRawR2CNode::describe() const {
+    std::ostringstream oss;
+    oss << "CompiledRawR2C(n=" << length
+        << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+        << ", fft=" << (fft ? fft->describe() : "null")
+        << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+    return oss.str();
+}
+
+flagfftResult CompiledRawR2CNode::execute(CUdeviceptr input,
+                                          CUdeviceptr output,
+                                          const RawExecutionContext &context) const {
+    try {
+        constexpr int64_t block = 256;
+        std::vector<RuntimeKernelArg> expand_args = {
+            RuntimeKernelArg::device(input),
+            RuntimeKernelArg::device(complex_input.ptr),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
+
+        flagfftResult result = fft->execute(complex_input.ptr, full_output.ptr, context);
+        if (result != FLAGFFT_SUCCESS) {
+            return result;
+        }
+
+        std::vector<RuntimeKernelArg> pack_args = {
+            RuntimeKernelArg::device(full_output.ptr),
+            RuntimeKernelArg::device(output),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        pack_kernel->launch(context.stream,
+                            pack_args,
+                            ceil_div(length / 2 + 1, block),
+                            context.batch,
+                            1);
+        return FLAGFFT_SUCCESS;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[flagfft] R2C execute failed: %s\n", e.what());
+        std::fflush(stderr);
+        return FLAGFFT_EXEC_FAILED;
+    }
+}
+
 }  // namespace flagfft

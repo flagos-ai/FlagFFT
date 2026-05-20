@@ -880,6 +880,65 @@ def _build_twiddle_reshape_pack_kernel_source(
     return kernel_name, source, ["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"]
 
 
+def _build_real_to_complex_kernel_source(
+    n: int, dtype: str
+) -> tuple[str, list[str], list[str]]:
+    block = 256
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    kernel_name = f"_real_to_complex_kernel_n{n}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(1)
+            offsets = pid_block * {block} + tl.arange(0, {block})
+            mask = offsets < {n}
+            xr = tl.load(in_ptr + pid_batch * {n} + offsets, mask=mask, other={zero})
+            dst = out_ptr + (pid_batch * {n} + offsets) * 2
+            tl.store(dst, xr, mask=mask)
+            tl.store(dst + 1, 0.0, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
+def _build_r2c_half_pack_kernel_source(
+    n: int, dtype: str
+) -> tuple[str, list[str], list[str]]:
+    half = n // 2 + 1
+    block = 256
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    kernel_name = f"_r2c_half_pack_kernel_n{n}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(1)
+            offsets = pid_block * {block} + tl.arange(0, {block})
+            mask = offsets < {half}
+            src = in_ptr + (pid_batch * {n} + offsets) * 2
+            xr = tl.load(src, mask=mask, other={zero})
+            xi = tl.load(src + 1, mask=mask, other={zero})
+            dst = out_ptr + (pid_batch * {half} + offsets) * 2
+            tl.store(dst, xr, mask=mask)
+            tl.store(dst + 1, xi, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
 __all__ = [
     "LeafPlan",
     "_CODELET_DIR",
@@ -891,6 +950,8 @@ __all__ = [
     "_build_leaf_kernel_source",
     "_build_four_step_col_kernel_source",
     "_build_four_step_row_kernel_source",
+    "_build_r2c_half_pack_kernel_source",
+    "_build_real_to_complex_kernel_source",
     "_build_reshape_pack_kernel_source",
     "_build_twiddle_reshape_pack_kernel_source",
     "_transpose_complex_kernel",

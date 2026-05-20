@@ -104,7 +104,9 @@ enum class KernelKind {
     BluesteinPointwise,
     BluesteinFinalize,
     ReshapePack,
-    TwiddleReshapePack
+    TwiddleReshapePack,
+    RealToComplex,
+    R2CHalfPack
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

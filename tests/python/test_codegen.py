@@ -187,3 +187,37 @@ def test_jit_reshape_pack_source_metadata(tmp_path) -> None:
     assert twiddle["arg_names"] == ["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"]
     assert twiddle["signature"] == "*fp32:16,*fp32:16,*fp32:16,i32"
     assert (tmp_path / "flagfft_jit_twiddle_reshape_pack_n128_64_f32.py").is_file()
+
+
+def test_jit_r2c_pointwise_source_metadata(tmp_path) -> None:
+    pytest.importorskip("triton")
+    jit_source_spec = importlib.util.spec_from_file_location(
+        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
+    )
+    assert jit_source_spec is not None and jit_source_spec.loader is not None
+    module = importlib.util.module_from_spec(jit_source_spec)
+    sys.modules["src.codegen.jit_source"] = module
+    jit_source_spec.loader.exec_module(module)
+
+    expand = module._emit_r2c_pointwise_jit_kernel(
+        kernel="real_to_complex",
+        n=17,
+        dtype="complex64",
+        out_dir=tmp_path,
+    )
+    pack = module._emit_r2c_pointwise_jit_kernel(
+        kernel="r2c_half_pack",
+        n=17,
+        dtype="complex64",
+        out_dir=tmp_path,
+    )
+
+    assert expand["kernel_type"] == "real_to_complex"
+    assert expand["arg_names"] == ["in_ptr", "out_ptr", "nbatch"]
+    assert expand["signature"] == "*fp32:16,*fp32:16,i32"
+    assert (tmp_path / "flagfft_jit_real_to_complex_n17_f32.py").is_file()
+
+    assert pack["kernel_type"] == "r2c_half_pack"
+    assert pack["length"] == 17
+    assert pack["signature"] == "*fp32:16,*fp32:16,i32"
+    assert (tmp_path / "flagfft_jit_r2c_half_pack_n17_f32.py").is_file()

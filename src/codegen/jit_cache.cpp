@@ -129,6 +129,12 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &k
         case KernelKind::TwiddleReshapePack:
             kernel_kind = "twiddle_reshape_pack";
             break;
+        case KernelKind::RealToComplex:
+            kernel_kind = "real_to_complex";
+            break;
+        case KernelKind::R2CHalfPack:
+            kernel_kind = "r2c_half_pack";
+            break;
         default:
             throw std::runtime_error("JIT backend does not support kernel kind: " +
                                      kernel_kind_name(key.kind));
@@ -162,6 +168,9 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &k
     if (key.kind == KernelKind::ReshapePack || key.kind == KernelKind::TwiddleReshapePack) {
         jit_command << " --reshape-n1 " << key.reshape_n1
                     << " --reshape-n2 " << key.reshape_n2;
+    }
+    if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack) {
+        jit_command << " --length " << key.length;
     }
 
     std::string artifact_json = run_command_capture_stdout(jit_command.str());

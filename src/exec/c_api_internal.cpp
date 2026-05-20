@@ -110,16 +110,18 @@ bool is_supported_minimal_desc(const FlagFFTPlanDesc &desc) {
     if (desc.rank != 1 || desc.batch <= 0) {
         return false;
     }
-    if (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_Z2Z) {
+    if (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_Z2Z && desc.type != FLAGFFT_R2C) {
         return false;
     }
     if (desc.n.size() != 1 || desc.n[0] <= 0) {
         return false;
     }
-    return desc.istride == 1 && desc.ostride == 1 && desc.idist == desc.n[0] &&
-           desc.odist == desc.n[0] && desc.inembed.size() == 1 &&
-           desc.onembed.size() == 1 && desc.inembed[0] == desc.n[0] &&
-           desc.onembed[0] == desc.n[0];
+    const int64_t input_length = desc.n[0];
+    const int64_t output_length = desc.type == FLAGFFT_R2C ? input_length / 2 + 1 : input_length;
+    return desc.istride == 1 && desc.ostride == 1 && desc.idist == input_length &&
+           desc.odist == output_length && desc.inembed.size() == 1 &&
+           desc.onembed.size() == 1 && desc.inembed[0] == input_length &&
+           desc.onembed[0] == output_length;
 }
 
 bool raw_supported_node(const PlanNodePtr &node) {
