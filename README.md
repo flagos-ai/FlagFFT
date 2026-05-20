@@ -40,7 +40,7 @@ debugging. The returned pointer is valid for the lifetime of the plan.
 - `src/runtime/`: CUDA Driver helpers.
 - `src/exec/`: cuFFT-style C API, raw pointer execution nodes, and tuned plan
   lookup.
-- `src/tune_cpp/`: C++ offline tuning CLI and SQLite measurement orchestration.
+- `src/tune/`: C++ offline tuning CLI and SQLite measurement orchestration.
 
 The C API uses an opaque `flagfftHandle`. Internally it owns the immutable plan
 description, stream/lifecycle state, compiled forward and inverse raw execution
@@ -203,9 +203,11 @@ ctest --test-dir build --output-on-failure
 
 The gtest suite compares `flagfftExecC2C` and `flagfftExecZ2Z` against the
 matching `cufftExecC2C`/`cufftExecZ2Z` reference for multiple batch sizes and
-covers leaf, single-layer four-step, nested four-step, and Bluestein native
-routes for both precisions. Python tests live under `tests/python/` and cover
-codegen behavior only.
+covers leaf, single-layer four-step, nested four-step, Bluestein native routes,
+stream selection, invalid calls, unsupported ranks, and out-of-place-only
+execution for both precisions. Python tests live under `tests/python/` and cover
+codegen behavior only, including leaf, fused four-step, Bluestein, and generic
+four-step reshape-pack source generation.
 
 Benchmark pytest wrappers live under `benchmark/` and invoke `bench_vs_cufft`
 directly; they do not call Python FFT runtime APIs.

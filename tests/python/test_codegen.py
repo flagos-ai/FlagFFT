@@ -111,6 +111,7 @@ def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
 def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(64, 128) == 1
     assert kernels.four_step_col_inner_pack_for(128, 64) == 2
+    assert kernels.four_step_col_inner_pack_for(128, 2048, "complex128") == 1
 
 
 def test_jit_csv_parsing_accepts_empty_and_populated_lists(kernels) -> None:
@@ -149,4 +150,40 @@ def test_jit_bluestein_source_metadata(tmp_path) -> None:
     assert metadata["signature"] == "*fp32:16,*fp32:16,*fp32:16,i64,i64,i32"
     assert metadata["bluestein_n"] == 331
     assert metadata["bluestein_m"] == 1024
-    assert (tmp_path / "flagfft_jit_bluestein_prepare_n331_m1024.py").is_file()
+    assert (tmp_path / "flagfft_jit_bluestein_prepare_n331_m1024_f32.py").is_file()
+
+
+def test_jit_reshape_pack_source_metadata(tmp_path) -> None:
+    pytest.importorskip("triton")
+    jit_source_spec = importlib.util.spec_from_file_location(
+        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
+    )
+    assert jit_source_spec is not None and jit_source_spec.loader is not None
+    module = importlib.util.module_from_spec(jit_source_spec)
+    sys.modules["src.codegen.jit_source"] = module
+    jit_source_spec.loader.exec_module(module)
+
+    reshape = module._emit_reshape_jit_kernel(
+        kernel="reshape_pack",
+        n1=64,
+        n2=128,
+        dtype="complex128",
+        out_dir=tmp_path,
+    )
+    twiddle = module._emit_reshape_jit_kernel(
+        kernel="twiddle_reshape_pack",
+        n1=128,
+        n2=64,
+        out_dir=tmp_path,
+    )
+
+    assert reshape["kernel_type"] == "reshape_pack"
+    assert reshape["signature"] == "*fp64:16,*fp64:16,i32"
+    assert reshape["reshape_n1"] == 64
+    assert reshape["reshape_n2"] == 128
+    assert (tmp_path / "flagfft_jit_reshape_pack_n64_128_f64.py").is_file()
+
+    assert twiddle["kernel_type"] == "twiddle_reshape_pack"
+    assert twiddle["arg_names"] == ["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"]
+    assert twiddle["signature"] == "*fp32:16,*fp32:16,*fp32:16,i32"
+    assert (tmp_path / "flagfft_jit_twiddle_reshape_pack_n128_64_f32.py").is_file()

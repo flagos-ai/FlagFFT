@@ -372,9 +372,13 @@ TEST(FlagFFTCApi, SetStreamUsesProvidedStream) {
 TEST(FlagFFTCApi, RejectsInvalidAndUnsupportedCalls) {
     require_cuda();
 
-    EXPECT_EQ(flagfftPlan1d(nullptr, 16, FLAGFFT_C2C, 1), FLAGFFT_INVALID_VALUE);
-
     flagfftHandle plan = nullptr;
+    EXPECT_EQ(flagfftPlan1d(nullptr, 16, FLAGFFT_C2C, 1), FLAGFFT_INVALID_VALUE);
+    EXPECT_EQ(flagfftPlan2d(&plan, 8, 8, FLAGFFT_C2C), FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(plan, nullptr);
+    EXPECT_EQ(flagfftPlan3d(&plan, 4, 4, 4, FLAGFFT_C2C), FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(plan, nullptr);
+
     int dims2[2] = {8, 8};
     EXPECT_EQ(flagfftPlanMany(&plan, 2, dims2, nullptr, 1, 64, nullptr, 1, 64,
                               FLAGFFT_C2C, 1),
@@ -383,6 +387,11 @@ TEST(FlagFFTCApi, RejectsInvalidAndUnsupportedCalls) {
 
     ASSERT_EQ(flagfftPlan1d(&plan, 16, FLAGFFT_C2C, 1), FLAGFFT_SUCCESS);
     EXPECT_EQ(flagfftExecC2C(plan, nullptr, nullptr, FLAGFFT_FORWARD), FLAGFFT_INVALID_VALUE);
+    EXPECT_EQ(flagfftExecC2C(plan,
+                             reinterpret_cast<flagfftComplex *>(0x1),
+                             reinterpret_cast<flagfftComplex *>(0x1),
+                             FLAGFFT_FORWARD),
+              FLAGFFT_NOT_SUPPORTED);
     EXPECT_EQ(flagfftExecC2C(plan,
                              reinterpret_cast<flagfftComplex *>(0x1),
                              reinterpret_cast<flagfftComplex *>(0x2),

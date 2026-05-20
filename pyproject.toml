@@ -17,9 +17,11 @@ flagfft-tune = "src.tune.flagfft_tune:main"
 [project.optional-dependencies]
 test = [
     "pytest",
+    "triton",
 ]
 dev = [
     "pytest",
+    "triton",
 ]
 
 [tool.scikit-build]

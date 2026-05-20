@@ -247,7 +247,7 @@ def _emit_bluestein_jit_kernel(
     kernel: str,
     n: int,
     m: int,
-    dtype: str,
+    dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
     kernel_name, kernel_source, arg_names = _bluestein_kernel_source(kernel, dtype)
@@ -279,7 +279,7 @@ def _emit_reshape_jit_kernel(
     kernel: str,
     n1: int,
     n2: int,
-    dtype: str,
+    dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
     if kernel == "reshape_pack":
