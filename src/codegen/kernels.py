@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from textwrap import dedent
 from typing import Literal
 
 import triton
@@ -23,6 +24,28 @@ _NATURAL_ORDER_CODELET_RADICES = frozenset({2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 
 SPECIALIZED_INLINE_CODELET_RADICES: set[int] = set()
 
 
+def _is_double_dtype(dtype: str) -> bool:
+    return dtype in ("complex128", "float64")
+
+
+def _tl_real_dtype(dtype: str) -> str:
+    return "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
+
+
+def _real_element_bytes(dtype: str) -> int:
+    return 8 if _is_double_dtype(dtype) else 4
+
+
+def _dtype_suffix(dtype: str) -> str:
+    return "f64" if _is_double_dtype(dtype) else "f32"
+
+
+def _zero_other(dtype: str) -> str:
+    # auto-promoted by Triton's masked-load lowering; one literal works for fp32 and fp64
+    del dtype
+    return "0.0"
+
+
 @dataclass(frozen=True)
 class LeafPlan:
     length: int
@@ -33,6 +56,7 @@ class LeafPlan:
     generic_radices: tuple[int, ...]
     smem_size: int
     direction: Literal["forward", "inverse"] = "forward"
+    dtype: Literal["complex64", "complex128"] = "complex64"
     kind: Literal["ct_leaf"] = field(default="ct_leaf", init=False)
 
 
@@ -66,14 +90,15 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     if len(plan.factors) <= 1:
         return thread_pack
 
-    bytes_per_fft = 4 * (plan.smem_size + 1) * 4
+    bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
     smem_pack = max(1, _LEAF_PACK_SMEM_BUDGET_BYTES // bytes_per_fft)
     return _floor_power_of_two(max(1, min(thread_pack, smem_pack)))
 
 
-def four_step_col_inner_pack_for(n1: int, n2: int) -> int:
-    del n2
+def four_step_col_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
     if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
+        return 1
+    if dtype in ("complex128", "float64") and n2 > 1024:
         return 1
     return _FOUR_STEP_COL_INNER_PACK
 
@@ -257,13 +282,18 @@ def _direction_sign(direction: Literal["forward", "inverse"]) -> float:
 
 
 def _emit_inline_constant_codelet(
-    indent: str, radix: int, lane_block: int, direction: Literal["forward", "inverse"]
+    indent: str,
+    radix: int,
+    lane_block: int,
+    direction: Literal["forward", "inverse"],
+    dtype: str = "complex64",
 ) -> list[str]:
     lines: list[str] = []
     sign = _direction_sign(direction)
+    tl_dtype = _tl_real_dtype(dtype)
     for kout in range(radix):
-        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
-        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
+        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})")
+        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})")
 
     for kout in range(radix):
         for nin in range(radix):
@@ -280,11 +310,12 @@ def _emit_inline_constant_codelet(
     return lines
 
 
-def _emit_table_codelet(indent: str, radix: int, lane_block: int) -> list[str]:
+def _emit_table_codelet(indent: str, radix: int, lane_block: int, dtype: str = "complex64") -> list[str]:
     lines: list[str] = []
+    tl_dtype = _tl_real_dtype(dtype)
     for kout in range(radix):
-        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
-        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype=tl.float32)")
+        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})")
+        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})")
 
     for kout in range(radix):
         for nin in range(radix):
@@ -462,12 +493,14 @@ def _emit_stage_block(
     four_step_n2: int = 0,
     smem_pack: int = 1,
     direction: Literal["forward", "inverse"] = "forward",
+    dtype: str = "complex64",
 ) -> list[str]:
     radix = factors[stage]
     groups = n // (lanes * radix)
     is_last = stage == len(factors) - 1
     source_buffer = None if stage == 0 else ("smem_b" if stage % 2 == 1 else "smem_a")
     dest_buffer = None if is_last else ("smem_b" if stage % 2 == 0 else "smem_a")
+    zero = "0.0"
 
     lines = [f"    for group_{stage} in tl.range(0, {groups}):"]
     indent = "        "
@@ -492,43 +525,43 @@ def _emit_stage_block(
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             if io_mode == "contiguous":
                 lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other=0.0)"
+                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other=0.0)"
+                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other={zero})"
                 )
             elif io_mode == "four_step_row":
                 lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner")
                 lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, mask=lane_mask, other=0.0)"
+                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, mask=lane_mask, other=0.0)"
+                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, mask=lane_mask, other={zero})"
                 )
             else:
                 lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner")
                 lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, mask=lane_mask, other=0.0)"
+                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, mask=lane_mask, other=0.0)"
+                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other=0.0)"
+                    f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other=0.0)"
+                    f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
                 )
                 lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
         else:
             lines.append(
-                f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, (phys{j},)), mask=lane_mask, other=0.0)"
+                f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, (phys{j},)), mask=lane_mask, other={zero})"
             )
             lines.append(
-                f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, (phys{j},)), mask=lane_mask, other=0.0)"
+                f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, (phys{j},)), mask=lane_mask, other={zero})"
             )
-            lines.append(f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other=0.0)")
-            lines.append(f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other=0.0)")
+            lines.append(f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})")
+            lines.append(f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})")
             lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if radix == 16:
@@ -551,9 +584,9 @@ def _emit_stage_block(
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
-        lines.extend(_emit_inline_constant_codelet(indent, radix, lane_block, direction))
+        lines.extend(_emit_inline_constant_codelet(indent, radix, lane_block, direction, dtype))
     else:
-        lines.extend(_emit_table_codelet(indent, radix, lane_block))
+        lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
 
     for j in range(radix):
         if is_last:
@@ -633,7 +666,7 @@ def _build_leaf_kernel_source_for_io(
     lane_block = lane_block_for(plan.lanes)
     batch_pack = contiguous_batch_pack_for(plan) if io_mode == "contiguous" else 1
     inner_pack = (
-        four_step_col_inner_pack_for(four_step_n1, four_step_n2)
+        four_step_col_inner_pack_for(four_step_n1, four_step_n2, plan.dtype)
         if io_mode == "four_step_col"
         else 1
     )
@@ -702,17 +735,18 @@ def _build_leaf_kernel_source_for_io(
         body.append(f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}")
 
     if len(factors) > 1:
+        tl_dtype = _tl_real_dtype(plan.dtype)
         body.append(
-            f"    smem_a_r = tle.gpu.alloc([{smem_n}], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            f"    smem_a_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
         )
         body.append(
-            f"    smem_a_i = tle.gpu.alloc([{smem_n}], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            f"    smem_a_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
         )
         body.append(
-            f"    smem_b_r = tle.gpu.alloc([{smem_n}], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            f"    smem_b_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
         )
         body.append(
-            f"    smem_b_i = tle.gpu.alloc([{smem_n}], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            f"    smem_b_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
         )
 
     for stage in range(len(factors)):
@@ -728,6 +762,7 @@ def _build_leaf_kernel_source_for_io(
                 four_step_n2=four_step_n2,
                 smem_pack=smem_pack,
                 direction=plan.direction,
+                dtype=plan.dtype,
             )
         )
 
@@ -753,6 +788,98 @@ def _build_four_step_col_kernel_source(plan: LeafPlan, n1: int, n2: int) -> tupl
         plan, io_mode="four_step_col", four_step_n1=n1, four_step_n2=n2
     )
 
+
+def _build_reshape_pack_kernel_source(
+    n1: int, n2: int, dtype: str
+) -> tuple[str, list[str], list[str]]:
+    """Emit a pointwise (batch, R=n1, C=n2) -> (batch, C, R) transpose pack kernel.
+
+    Used by generic nested four-step both for the row pre-transpose (stage 1) and the
+    final natural-order pack (stage 5). Complex elements are stored interleaved
+    (real, imag) with stride 2.
+    """
+    R = n1
+    C = n2
+    total = R * C
+    block = 256
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    kernel_name = f"_reshape_pack_kernel_n{R}_{C}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(1)
+            offsets = pid_block * {block} + tl.arange(0, {block})
+            mask = offsets < {total}
+            r = offsets // {C}
+            c = offsets - r * {C}
+            src = in_ptr + (pid_batch * {total} + offsets) * 2
+            xr = tl.load(src, mask=mask, other={zero})
+            xi = tl.load(src + 1, mask=mask, other={zero})
+            dst_off = c * {R} + r
+            dst = out_ptr + (pid_batch * {total} + dst_off) * 2
+            tl.store(dst, xr, mask=mask)
+            tl.store(dst + 1, xi, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
+def _build_twiddle_reshape_pack_kernel_source(
+    n1: int, n2: int, dtype: str
+) -> tuple[str, list[str], list[str]]:
+    """Emit a pointwise twiddle-multiply + (batch, R=n1, C=n2) -> (batch, C, R) pack kernel.
+
+    The twiddle table is laid out as (R, C) row-major complex: twiddle[r * C + c].
+    Used by generic nested four-step as the stage 3 fused twiddle+transpose pass.
+    Caller-side mapping is R=n2, C=n1; the four-step twiddle table built by
+    build_raw_four_step_twiddle uses (row=j2, col=k1) → (row * n1 + col) which
+    matches twiddle[r * C + c] when (R, C) = (n2, n1).
+    """
+    R = n1
+    C = n2
+    total = R * C
+    block = 256
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    kernel_name = f"_twiddle_reshape_pack_kernel_n{R}_{C}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            twiddle_ptr,
+            out_ptr,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(1)
+            offsets = pid_block * {block} + tl.arange(0, {block})
+            mask = offsets < {total}
+            r = offsets // {C}
+            c = offsets - r * {C}
+            src = in_ptr + (pid_batch * {total} + offsets) * 2
+            xr = tl.load(src, mask=mask, other={zero})
+            xi = tl.load(src + 1, mask=mask, other={zero})
+            tw = twiddle_ptr + offsets * 2
+            tr = tl.load(tw, mask=mask, other={zero})
+            ti = tl.load(tw + 1, mask=mask, other={zero})
+            yr, yi = _cmul(xr, xi, tr, ti)
+            dst_off = c * {R} + r
+            dst = out_ptr + (pid_batch * {total} + dst_off) * 2
+            tl.store(dst, yr, mask=mask)
+            tl.store(dst + 1, yi, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"]
+
+
 __all__ = [
     "LeafPlan",
     "_CODELET_DIR",
@@ -764,7 +891,10 @@ __all__ = [
     "_build_leaf_kernel_source",
     "_build_four_step_col_kernel_source",
     "_build_four_step_row_kernel_source",
+    "_build_reshape_pack_kernel_source",
+    "_build_twiddle_reshape_pack_kernel_source",
     "_transpose_complex_kernel",
     "_twiddle_transpose_complex_kernel",
+    "contiguous_batch_pack_for",
     "lane_block_for",
 ]

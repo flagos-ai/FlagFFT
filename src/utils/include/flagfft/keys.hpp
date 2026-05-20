@@ -58,6 +58,7 @@ struct KernelKey {
     KernelKind kind = KernelKind::Leaf;
     std::string target;
     std::string direction = "forward";
+    std::string dtype = "complex64";
     int64_t length = 0;
     std::vector<int64_t> factors;
     int64_t lanes = 0;
@@ -68,9 +69,12 @@ struct KernelKey {
     int64_t four_step_n2 = 0;
     int64_t bluestein_n = 0;
     int64_t bluestein_m = 0;
+    int64_t reshape_n1 = 0;
+    int64_t reshape_n2 = 0;
 
     static KernelKey leaf(std::string target,
                           std::string direction,
+                          std::string dtype,
                           int64_t length,
                           std::vector<int64_t> factors,
                           int64_t lanes,
@@ -79,6 +83,7 @@ struct KernelKey {
                           int64_t smem_size);
     static KernelKey four_step_row(std::string target,
                                    std::string direction,
+                                   std::string dtype,
                                    int64_t n1,
                                    int64_t n2,
                                    int64_t length,
@@ -89,6 +94,7 @@ struct KernelKey {
                                    int64_t smem_size);
     static KernelKey four_step_col(std::string target,
                                    std::string direction,
+                                   std::string dtype,
                                    int64_t n1,
                                    int64_t n2,
                                    int64_t length,
@@ -99,9 +105,11 @@ struct KernelKey {
                                    int64_t smem_size);
     static KernelKey transpose(std::string target);
     static KernelKey twiddle_transpose(std::string target);
-    static KernelKey bluestein_prepare(std::string target, int64_t n, int64_t m);
-    static KernelKey bluestein_pointwise(std::string target, int64_t n, int64_t m);
-    static KernelKey bluestein_finalize(std::string target, int64_t n, int64_t m);
+    static KernelKey bluestein_prepare(std::string target, std::string dtype, int64_t n, int64_t m);
+    static KernelKey bluestein_pointwise(std::string target, std::string dtype, int64_t n, int64_t m);
+    static KernelKey bluestein_finalize(std::string target, std::string dtype, int64_t n, int64_t m);
+    static KernelKey reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
+    static KernelKey twiddle_reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
     bool operator==(const KernelKey &other) const;
     std::string repr() const;
 };

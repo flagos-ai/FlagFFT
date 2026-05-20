@@ -4,6 +4,7 @@ namespace flagfft {
 
 KernelKey KernelKey::leaf(std::string target,
                           std::string direction,
+                          std::string dtype,
                           int64_t length,
                           std::vector<int64_t> factors,
                           int64_t lanes,
@@ -14,6 +15,7 @@ KernelKey KernelKey::leaf(std::string target,
     key.kind = KernelKind::Leaf;
     key.target = std::move(target);
     key.direction = std::move(direction);
+    key.dtype = std::move(dtype);
     key.length = length;
     key.factors = std::move(factors);
     key.lanes = lanes;
@@ -25,6 +27,7 @@ KernelKey KernelKey::leaf(std::string target,
 
 KernelKey KernelKey::four_step_row(std::string target,
                                    std::string direction,
+                                   std::string dtype,
                                    int64_t n1,
                                    int64_t n2,
                                    int64_t length,
@@ -35,6 +38,7 @@ KernelKey KernelKey::four_step_row(std::string target,
                                    int64_t smem_size) {
     KernelKey key = KernelKey::leaf(std::move(target),
                                     std::move(direction),
+                                    std::move(dtype),
                                     length,
                                     std::move(factors),
                                     lanes,
@@ -49,6 +53,7 @@ KernelKey KernelKey::four_step_row(std::string target,
 
 KernelKey KernelKey::four_step_col(std::string target,
                                    std::string direction,
+                                   std::string dtype,
                                    int64_t n1,
                                    int64_t n2,
                                    int64_t length,
@@ -59,6 +64,7 @@ KernelKey KernelKey::four_step_col(std::string target,
                                    int64_t smem_size) {
     KernelKey key = KernelKey::leaf(std::move(target),
                                     std::move(direction),
+                                    std::move(dtype),
                                     length,
                                     std::move(factors),
                                     lanes,
@@ -85,45 +91,69 @@ KernelKey KernelKey::twiddle_transpose(std::string target) {
     return key;
 }
 
-KernelKey KernelKey::bluestein_prepare(std::string target, int64_t n, int64_t m) {
+KernelKey KernelKey::bluestein_prepare(std::string target, std::string dtype, int64_t n, int64_t m) {
     KernelKey key;
     key.kind = KernelKind::BluesteinPrepare;
     key.target = std::move(target);
+    key.dtype = std::move(dtype);
     key.bluestein_n = n;
     key.bluestein_m = m;
     return key;
 }
 
-KernelKey KernelKey::bluestein_pointwise(std::string target, int64_t n, int64_t m) {
+KernelKey KernelKey::bluestein_pointwise(std::string target, std::string dtype, int64_t n, int64_t m) {
     KernelKey key;
     key.kind = KernelKind::BluesteinPointwise;
     key.target = std::move(target);
+    key.dtype = std::move(dtype);
     key.bluestein_n = n;
     key.bluestein_m = m;
     return key;
 }
 
-KernelKey KernelKey::bluestein_finalize(std::string target, int64_t n, int64_t m) {
+KernelKey KernelKey::bluestein_finalize(std::string target, std::string dtype, int64_t n, int64_t m) {
     KernelKey key;
     key.kind = KernelKind::BluesteinFinalize;
     key.target = std::move(target);
+    key.dtype = std::move(dtype);
     key.bluestein_n = n;
     key.bluestein_m = m;
+    return key;
+}
+
+KernelKey KernelKey::reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2) {
+    KernelKey key;
+    key.kind = KernelKind::ReshapePack;
+    key.target = std::move(target);
+    key.dtype = std::move(dtype);
+    key.reshape_n1 = n1;
+    key.reshape_n2 = n2;
+    return key;
+}
+
+KernelKey KernelKey::twiddle_reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2) {
+    KernelKey key;
+    key.kind = KernelKind::TwiddleReshapePack;
+    key.target = std::move(target);
+    key.dtype = std::move(dtype);
+    key.reshape_n1 = n1;
+    key.reshape_n2 = n2;
     return key;
 }
 
 bool KernelKey::operator==(const KernelKey &other) const {
     return kind == other.kind && target == other.target && direction == other.direction &&
-           length == other.length && factors == other.factors && lanes == other.lanes &&
-           num_warps == other.num_warps && generic_radices == other.generic_radices &&
-           smem_size == other.smem_size && four_step_n1 == other.four_step_n1 &&
-           four_step_n2 == other.four_step_n2 && bluestein_n == other.bluestein_n &&
-           bluestein_m == other.bluestein_m;
+           dtype == other.dtype && length == other.length && factors == other.factors &&
+           lanes == other.lanes && num_warps == other.num_warps &&
+           generic_radices == other.generic_radices && smem_size == other.smem_size &&
+           four_step_n1 == other.four_step_n1 && four_step_n2 == other.four_step_n2 &&
+           bluestein_n == other.bluestein_n && bluestein_m == other.bluestein_m &&
+           reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2;
 }
 
 std::string KernelKey::repr() const {
     std::ostringstream out;
-    out << "kind=" << kernel_kind_name(kind) << ";target=" << target;
+    out << "kind=" << kernel_kind_name(kind) << ";target=" << target << ";dtype=" << dtype;
     if (kind == KernelKind::Leaf || kind == KernelKind::FourStepRow ||
         kind == KernelKind::FourStepCol) {
         out << ";direction=" << direction << ";length=" << length << ";factors=["
@@ -139,6 +169,9 @@ std::string KernelKey::repr() const {
         kind == KernelKind::BluesteinFinalize) {
         out << ";bluestein_n=" << bluestein_n << ";bluestein_m=" << bluestein_m;
     }
+    if (kind == KernelKind::ReshapePack || kind == KernelKind::TwiddleReshapePack) {
+        out << ";reshape_n1=" << reshape_n1 << ";reshape_n2=" << reshape_n2;
+    }
     return out.str();
 }
 
@@ -147,6 +180,7 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
     hash_value(seed, static_cast<int64_t>(key.kind));
     hash_value(seed, key.target);
     hash_value(seed, key.direction);
+    hash_value(seed, key.dtype);
     hash_value(seed, key.length);
     hash_vector(seed, key.factors);
     hash_value(seed, key.lanes);
@@ -157,6 +191,8 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
     hash_value(seed, key.four_step_n2);
     hash_value(seed, key.bluestein_n);
     hash_value(seed, key.bluestein_m);
+    hash_value(seed, key.reshape_n1);
+    hash_value(seed, key.reshape_n2);
     return seed;
 }
 

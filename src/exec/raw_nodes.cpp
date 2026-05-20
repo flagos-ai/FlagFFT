@@ -1,5 +1,6 @@
 #include "flagfft/core.hpp"
 
+#include <cstdio>
 #include <sstream>
 
 namespace flagfft {
@@ -45,7 +46,9 @@ flagfftResult CompiledRawLeafNode::execute(CUdeviceptr input,
 
         kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
         return FLAGFFT_SUCCESS;
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[flagfft] Leaf execute failed: %s\n", e.what());
+        std::fflush(stderr);
         return FLAGFFT_EXEC_FAILED;
     }
 }
@@ -90,10 +93,12 @@ flagfftResult CompiledRawFourStepFusedNode::execute(CUdeviceptr input,
         std::vector<RuntimeKernelArg> col_args =
             raw_kernel_args({stage1.ptr, twiddle.ptr, output}, col_tables, context.batch);
         col_kernel->launch(context.stream, col_args,
-                           ceil_div(n1, four_step_col_inner_pack_for(n1, n2)),
+                           ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
                            context.batch, 1);
         return FLAGFFT_SUCCESS;
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[flagfft] FourStepFused execute failed: %s\n", e.what());
+        std::fflush(stderr);
         return FLAGFFT_EXEC_FAILED;
     }
 }
@@ -195,7 +200,102 @@ flagfftResult CompiledRawBluesteinNode::execute(CUdeviceptr input,
         };
         finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, 256), context.batch, 1);
         return FLAGFFT_SUCCESS;
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[flagfft] Bluestein execute failed: %s\n", e.what());
+        std::fflush(stderr);
+        return FLAGFFT_EXEC_FAILED;
+    }
+}
+
+CompiledRawFourStepGenericNode::CompiledRawFourStepGenericNode(
+    int64_t length,
+    int64_t n1,
+    int64_t n2,
+    std::shared_ptr<CompiledRawNode> row_child,
+    std::shared_ptr<CompiledRawNode> col_child,
+    std::shared_ptr<RuntimeKernel> reshape_in_kernel,
+    std::shared_ptr<RuntimeKernel> twiddle_reshape_kernel,
+    std::shared_ptr<RuntimeKernel> final_pack_kernel,
+    DeviceAllocation twiddle,
+    DeviceAllocation stage1,
+    DeviceAllocation stage2)
+    : length(length),
+      n1(n1),
+      n2(n2),
+      row_child(std::move(row_child)),
+      col_child(std::move(col_child)),
+      reshape_in_kernel(std::move(reshape_in_kernel)),
+      twiddle_reshape_kernel(std::move(twiddle_reshape_kernel)),
+      final_pack_kernel(std::move(final_pack_kernel)),
+      twiddle(std::move(twiddle)),
+      stage1(std::move(stage1)),
+      stage2(std::move(stage2)) {}
+
+std::string CompiledRawFourStepGenericNode::describe() const {
+    std::ostringstream oss;
+    oss << "CompiledRawFourStepGeneric(n=" << length
+        << ", n1=" << n1 << ", n2=" << n2
+        << ", row_child=" << (row_child ? row_child->describe() : "null")
+        << ", col_child=" << (col_child ? col_child->describe() : "null") << ")";
+    return oss.str();
+}
+
+flagfftResult CompiledRawFourStepGenericNode::execute(CUdeviceptr input,
+                                                     CUdeviceptr output,
+                                                     const RawExecutionContext &context) const {
+    try {
+        const int64_t total = n1 * n2;
+        const int64_t reshape_block = 256;
+
+        std::vector<RuntimeKernelArg> reshape_in_args = {
+            RuntimeKernelArg::device(input),
+            RuntimeKernelArg::device(stage1.ptr),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        reshape_in_kernel->launch(context.stream,
+                                  reshape_in_args,
+                                  ceil_div(total, reshape_block),
+                                  context.batch,
+                                  1);
+
+        RawExecutionContext row_context{context.request, context.stream, context.batch * n2};
+        flagfftResult result = row_child->execute(stage1.ptr, stage2.ptr, row_context);
+        if (result != FLAGFFT_SUCCESS) {
+            return result;
+        }
+
+        std::vector<RuntimeKernelArg> twiddle_args = {
+            RuntimeKernelArg::device(stage2.ptr),
+            RuntimeKernelArg::device(twiddle.ptr),
+            RuntimeKernelArg::device(stage1.ptr),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        twiddle_reshape_kernel->launch(context.stream,
+                                       twiddle_args,
+                                       ceil_div(total, reshape_block),
+                                       context.batch,
+                                       1);
+
+        RawExecutionContext col_context{context.request, context.stream, context.batch * n1};
+        result = col_child->execute(stage1.ptr, stage2.ptr, col_context);
+        if (result != FLAGFFT_SUCCESS) {
+            return result;
+        }
+
+        std::vector<RuntimeKernelArg> final_args = {
+            RuntimeKernelArg::device(stage2.ptr),
+            RuntimeKernelArg::device(output),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        final_pack_kernel->launch(context.stream,
+                                  final_args,
+                                  ceil_div(total, reshape_block),
+                                  context.batch,
+                                  1);
+        return FLAGFFT_SUCCESS;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[flagfft] FourStepGeneric execute failed: %s\n", e.what());
+        std::fflush(stderr);
         return FLAGFFT_EXEC_FAILED;
     }
 }

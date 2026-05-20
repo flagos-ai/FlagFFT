@@ -107,7 +107,10 @@ std::vector<int64_t> copy_dims(const int *values, int rank) {
 }
 
 bool is_supported_minimal_desc(const FlagFFTPlanDesc &desc) {
-    if (desc.rank != 1 || desc.type != FLAGFFT_C2C || desc.batch <= 0) {
+    if (desc.rank != 1 || desc.batch <= 0) {
+        return false;
+    }
+    if (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_Z2Z) {
         return false;
     }
     if (desc.n.size() != 1 || desc.n[0] <= 0) {
@@ -124,8 +127,8 @@ bool raw_supported_node(const PlanNodePtr &node) {
         return true;
     }
     if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
-        return std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
-               std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
+        return raw_supported_node(four_step->row_plan) &&
+               raw_supported_node(four_step->col_plan);
     }
     if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
         return raw_supported_node(bluestein->fft_plan);
@@ -143,8 +146,9 @@ FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction)
     request.raw_dim = 1;
     request.normalized_dim = 1;
     request.norm = "backward";
-    request.input_dtype = "complex64";
-    request.output_dtype = "complex64";
+    const bool is_double = desc.precision == FlagFFTPrecision::Float64;
+    request.input_dtype = is_double ? "complex128" : "complex64";
+    request.output_dtype = is_double ? "complex128" : "complex64";
     request.device_type = "cuda";
     request.device_index = desc.device_index;
     request.device_arch = desc.device_arch;

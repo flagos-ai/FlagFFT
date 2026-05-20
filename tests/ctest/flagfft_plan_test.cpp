@@ -89,11 +89,49 @@ TEST(FlagFFTPlan, PlanKeyCapturesRouteStructure) {
 
 TEST(FlagFFTPlan, KernelKeysSeparateForwardAndInverseArtifacts) {
     flagfft::KernelKey forward = flagfft::KernelKey::leaf(
-        "cuda:80:32", "forward", 16, {16}, 1, 1, {}, 0);
+        "cuda:80:32", "forward", "complex64", 16, {16}, 1, 1, {}, 0);
     flagfft::KernelKey inverse = flagfft::KernelKey::leaf(
-        "cuda:80:32", "inverse", 16, {16}, 1, 1, {}, 0);
+        "cuda:80:32", "inverse", "complex64", 16, {16}, 1, 1, {}, 0);
 
     EXPECT_FALSE(forward == inverse);
     EXPECT_NE(flagfft::KernelKeyHash{}(forward), flagfft::KernelKeyHash{}(inverse));
     EXPECT_NE(forward.repr(), inverse.repr());
+}
+
+TEST(FlagFFTPlan, KernelKeysSeparateF32AndF64Artifacts) {
+    flagfft::KernelKey f32 = flagfft::KernelKey::leaf(
+        "cuda:80:32", "forward", "complex64", 16, {16}, 1, 1, {}, 0);
+    flagfft::KernelKey f64 = flagfft::KernelKey::leaf(
+        "cuda:80:32", "forward", "complex128", 16, {16}, 1, 1, {}, 0);
+
+    EXPECT_FALSE(f32 == f64);
+    EXPECT_NE(flagfft::KernelKeyHash{}(f32), flagfft::KernelKeyHash{}(f64));
+    EXPECT_NE(f32.repr(), f64.repr());
+}
+
+TEST(FlagFFTPlan, Z2ZRequestProducesComplex128Plan) {
+    flagfft::PlanBuilder builder;
+    auto request = make_request(16, 4);
+    request.input_dtype = "complex128";
+    request.output_dtype = "complex128";
+    auto root = builder.build(request.requested_n, request);
+
+    ASSERT_EQ(root->kind, flagfft::PlanNodeKind::CtLeaf);
+    auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(root);
+    ASSERT_NE(leaf, nullptr);
+    EXPECT_EQ(leaf->length, 16);
+}
+
+TEST(FlagFFTPlan, NestedFourStepPlanForVeryLargeLength) {
+    flagfft::PlanBuilder builder;
+    auto request = make_request(1 << 23, 1);
+    auto root = builder.build(request.requested_n, request);
+
+    ASSERT_EQ(root->kind, flagfft::PlanNodeKind::FourStep);
+    auto four_step = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(root);
+    ASSERT_NE(four_step, nullptr);
+    EXPECT_EQ(four_step->n1 * four_step->n2, 1 << 23);
+    const bool row_nested = four_step->row_plan->kind == flagfft::PlanNodeKind::FourStep;
+    const bool col_nested = four_step->col_plan->kind == flagfft::PlanNodeKind::FourStep;
+    EXPECT_TRUE(row_nested || col_nested);
 }

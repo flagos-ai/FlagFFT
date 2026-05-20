@@ -15,9 +15,12 @@ The public header is `include/flagfft/flagfft.h` and exposes:
 - `flagfftGetPlanDescription`
 
 The first native runtime slice supports arbitrary-length out-of-place,
-contiguous, rank-1, batched `FLAGFFT_C2C` transforms on `complex64` device
-pointers. Forward and inverse C2C kernels are compiled during plan creation and
-selected at exec time.
+contiguous, rank-1, batched `FLAGFFT_C2C` (`complex64`) and `FLAGFFT_Z2Z`
+(`complex128`) transforms on device pointers. Forward and inverse kernels are
+compiled during plan creation and selected at exec time. Both single-layer and
+nested fused four-step routes are supported, so very large composite lengths
+(e.g. `n = 2^23`) plan as multi-level four-step trees instead of falling back
+to Bluestein.
 Other declared plan/exec combinations return `FLAGFFT_NOT_SUPPORTED` until
 their raw execution paths are implemented.
 
@@ -55,9 +58,10 @@ cmake --build build
 ```
 
 Plan creation emits Triton source and calls libtriton_jit compile APIs so the
-first `flagfftExecC2C` does not pay Python compilation latency. The raw C API
-supports leaf, fused leaf/leaf four-step, and Bluestein fallback routes for
-arbitrary 1D C2C lengths. Non-C2C, rank>1, in-place, and non-contiguous C API
+first exec call does not pay Python compilation latency. The raw C API
+supports leaf, fused leaf/leaf four-step, generic nested four-step (FourStep of
+arbitrary supported children), and Bluestein fallback routes for arbitrary 1D
+`C2C`/`Z2Z` lengths. Non-C2C/Z2Z, rank>1, in-place, and non-contiguous C API
 requests keep returning `FLAGFFT_NOT_SUPPORTED`.
 
 ## Build
@@ -197,9 +201,11 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The gtest suite compares `flagfftExecC2C` against `cufftExecC2C` for multiple
-batch sizes and both leaf and four-step native routes. Python tests live under
-`tests/python/` and cover codegen behavior only.
+The gtest suite compares `flagfftExecC2C` and `flagfftExecZ2Z` against the
+matching `cufftExecC2C`/`cufftExecZ2Z` reference for multiple batch sizes and
+covers leaf, single-layer four-step, nested four-step, and Bluestein native
+routes for both precisions. Python tests live under `tests/python/` and cover
+codegen behavior only.
 
 Benchmark pytest wrappers live under `benchmark/` and invoke `bench_vs_cufft`
 directly; they do not call Python FFT runtime APIs.

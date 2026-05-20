@@ -39,10 +39,33 @@ extern "C" flagfftResult flagfftExecZ2Z(flagfftHandle handle,
                                         flagfftDoubleComplex *idata,
                                         flagfftDoubleComplex *odata,
                                         int direction) {
-    (void)idata;
-    (void)odata;
-    (void)direction;
-    return flagfft::checked_plan(handle) == nullptr ? FLAGFFT_INVALID_PLAN : FLAGFFT_NOT_SUPPORTED;
+    flagfft::FlagFFTPlan *plan = flagfft::checked_plan(handle);
+    if (plan == nullptr || plan->state.destroyed || !plan->state.initialized) {
+        return FLAGFFT_INVALID_PLAN;
+    }
+    if (idata == nullptr || odata == nullptr) {
+        return FLAGFFT_INVALID_VALUE;
+    }
+    if (idata == odata) {
+        return FLAGFFT_NOT_SUPPORTED;
+    }
+    if (plan->desc.type != FLAGFFT_Z2Z) {
+        return FLAGFFT_INVALID_TYPE;
+    }
+    if (direction != FLAGFFT_FORWARD && direction != FLAGFFT_INVERSE) {
+        return FLAGFFT_INVALID_VALUE;
+    }
+
+    std::lock_guard<std::mutex> lock(plan->mutex);
+    const bool inverse = direction == FLAGFFT_INVERSE;
+    const flagfft::FFTRequest &request = inverse ? plan->executable.inverse_request
+                                                 : plan->executable.forward_request;
+    const std::shared_ptr<flagfft::CompiledRawNode> &compiled =
+        inverse ? plan->executable.inverse : plan->executable.forward;
+    flagfft::RawExecutionContext context{request, plan->state.stream, plan->desc.batch};
+    return compiled->execute(reinterpret_cast<CUdeviceptr>(idata),
+                             reinterpret_cast<CUdeviceptr>(odata),
+                             context);
 }
 
 extern "C" flagfftResult flagfftExecR2C(flagfftHandle handle,
