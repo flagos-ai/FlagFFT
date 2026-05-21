@@ -44,7 +44,8 @@ override_dh_auto_configure:
 		-DFLAGFFT_BUILD_BENCHMARKS=OFF \
 		-DTRITON_JIT_USE_EXTERNAL_JSON=ON \
 		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
-		-DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON
+		-DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
+		-DFMT_INSTALL=OFF
 
 override_dh_auto_build:
 	dh_auto_build --buildsystem=cmake
