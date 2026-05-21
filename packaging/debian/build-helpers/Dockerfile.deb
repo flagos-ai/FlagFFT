@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y \
     devscripts \
     dpkg-dev \
     fakeroot \
-    libfmt-dev \
     libsqlite3-dev \
     ninja-build \
     nlohmann-json3-dev \
