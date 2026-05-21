@@ -30,8 +30,11 @@ override_dh_auto_configure:
 	# and pybind11 comes from pip. dh-cmake defaults
 	# FETCHCONTENT_FULLY_DISCONNECTED=ON which would block the fmt
 	# fetch; explicitly override to OFF.
+	# Note: no -GNinja — dh-cmake defaults to "Unix Makefiles" and
+	# dh_auto_build expects a Makefile. Passing -GNinja makes configure
+	# emit build.ninja but dh_auto_build still looks for Makefile and
+	# fails with "No targets specified and no makefile found".
 	dh_auto_configure --buildsystem=cmake -- \
-		-GNinja \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DFETCHCONTENT_FULLY_DISCONNECTED=OFF \
