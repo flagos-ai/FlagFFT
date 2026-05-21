@@ -8,6 +8,13 @@ export DEB_BUILD_OPTIONS = parallel=$(shell nproc)
 	dh $@
 
 override_dh_auto_configure:
+	# Workaround: Ubuntu 24.04 CMake 3.28's FindSQLite3.cmake sets
+	# SQLite3_LIBRARY in the cache (Found SQLite3 succeeds) but the
+	# SQLite3::SQLite3 imported target is not visible at generate
+	# time, breaking target_link_libraries. Swap the IMPORTED-target
+	# form for the variable form which is equivalent here.
+	sed -i 's/SQLite3::SQLite3/${SQLite3_LIBRARY}/g' CMakeLists.txt
+
 	# Ubuntu 24.04's libfmt-dev is 9.1.0 but libtriton_jit requires
 	# fmt 10.2.1, so fall back to FetchContent for fmt (bundled into
 	# libflagfft.so). nlohmann-json system package (3.11.3) is fine,
