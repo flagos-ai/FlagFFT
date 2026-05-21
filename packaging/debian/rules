@@ -8,19 +8,23 @@ export DEB_BUILD_OPTIONS = parallel=$(shell nproc)
 	dh $@
 
 override_dh_auto_configure:
-	# dh-cmake forces FETCHCONTENT_FULLY_DISCONNECTED=ON, so the bundled
-	# libtriton_jit submodule's FetchContent for json/fmt/pybind11 cannot
-	# pull. Use system packages via TRITON_JIT_USE_EXTERNAL_* = ON instead;
-	# Build-Depends includes libfmt-dev + nlohmann-json3-dev for this.
+	# Ubuntu 24.04's libfmt-dev is 9.1.0 but libtriton_jit requires
+	# fmt 10.2.1, so fall back to FetchContent for fmt (bundled into
+	# libflagfft.so). nlohmann-json system package (3.11.3) is fine,
+	# and pybind11 comes from pip. dh-cmake defaults
+	# FETCHCONTENT_FULLY_DISCONNECTED=ON which would block the fmt
+	# fetch; explicitly override to OFF.
 	dh_auto_configure --buildsystem=cmake -- \
 		-GNinja \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DFETCHCONTENT_FULLY_DISCONNECTED=OFF \
+		-DFETCHCONTENT_QUIET=OFF \
 		-DFLAGFFT_LIBTRITON_JIT_BACKEND=CUDA \
 		-DFLAGFFT_BUILD_TESTS=OFF \
 		-DFLAGFFT_BUILD_BENCHMARKS=OFF \
 		-DTRITON_JIT_USE_EXTERNAL_JSON=ON \
-		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=ON \
+		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
 		-DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON
 
 override_dh_auto_build:
