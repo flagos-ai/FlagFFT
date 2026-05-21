@@ -7,9 +7,12 @@ Build-Depends: debhelper-compat (= 13),
                ninja-build,
                patchelf,
                python3-dev,
-               libfmt-dev (>= 10.2.1),
                libsqlite3-dev,
                nlohmann-json3-dev (>= 3.11.3)
+# fmt is intentionally NOT in Build-Depends. Ubuntu 24.04's
+# libfmt-dev is 9.1.0 but libtriton_jit requires 10.2.1, so the build
+# pulls fmt 10.2.1 via CMake FetchContent and bundles it into
+# libflagfft.so. See debian/rules override_dh_auto_configure.
 Standards-Version: 4.6.2
 Homepage: https://github.com/flagos-ai/FlagFFT
 Vcs-Browser: https://github.com/flagos-ai/FlagFFT
