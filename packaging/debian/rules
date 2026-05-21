@@ -1,0 +1,38 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_BUILD_OPTIONS = parallel=$(shell nproc)
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	dh_auto_configure --buildsystem=cmake -- \
+		-GNinja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DFLAGFFT_LIBTRITON_JIT_BACKEND=CUDA \
+		-DFLAGFFT_BUILD_TESTS=OFF \
+		-DFLAGFFT_BUILD_BENCHMARKS=OFF
+
+override_dh_auto_build:
+	dh_auto_build --buildsystem=cmake
+
+override_dh_auto_install:
+	dh_auto_install --buildsystem=cmake
+	# Fix RPATH if any; vendor runtime libs are provided by CUDA pkg
+	find debian/tmp/usr/lib -name "*.so*" -type f \
+	    -exec patchelf --remove-rpath {} \; || true
+
+override_dh_auto_test:
+	# Skip tests during package build (require GPU)
+	@echo "Skipping tests"
+
+override_dh_shlibdeps:
+	# Ignore missing CUDA/vendor library dependencies — provided by
+	# the user's CUDA runtime install, not by this package.
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info || true
+
+override_dh_dwz:
+	@echo "Skipping dwz debug info optimization (incompatible with patchelf)"
