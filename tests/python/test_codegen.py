@@ -111,6 +111,7 @@ def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
 def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(64, 128) == 1
     assert kernels.four_step_col_inner_pack_for(128, 64) == 2
+    assert kernels.four_step_col_inner_pack_for(128, 2048, "complex128") == 1
 
 
 def test_jit_csv_parsing_accepts_empty_and_populated_lists(kernels) -> None:
@@ -149,4 +150,95 @@ def test_jit_bluestein_source_metadata(tmp_path) -> None:
     assert metadata["signature"] == "*fp32:16,*fp32:16,*fp32:16,i64,i64,i32"
     assert metadata["bluestein_n"] == 331
     assert metadata["bluestein_m"] == 1024
-    assert (tmp_path / "flagfft_jit_bluestein_prepare_n331_m1024.py").is_file()
+    assert (tmp_path / "flagfft_jit_bluestein_prepare_n331_m1024_f32.py").is_file()
+
+
+def test_jit_reshape_pack_source_metadata(tmp_path) -> None:
+    pytest.importorskip("triton")
+    jit_source_spec = importlib.util.spec_from_file_location(
+        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
+    )
+    assert jit_source_spec is not None and jit_source_spec.loader is not None
+    module = importlib.util.module_from_spec(jit_source_spec)
+    sys.modules["src.codegen.jit_source"] = module
+    jit_source_spec.loader.exec_module(module)
+
+    reshape = module._emit_reshape_jit_kernel(
+        kernel="reshape_pack",
+        n1=64,
+        n2=128,
+        dtype="complex128",
+        out_dir=tmp_path,
+    )
+    twiddle = module._emit_reshape_jit_kernel(
+        kernel="twiddle_reshape_pack",
+        n1=128,
+        n2=64,
+        out_dir=tmp_path,
+    )
+
+    assert reshape["kernel_type"] == "reshape_pack"
+    assert reshape["signature"] == "*fp64:16,*fp64:16,i32"
+    assert reshape["reshape_n1"] == 64
+    assert reshape["reshape_n2"] == 128
+    assert (tmp_path / "flagfft_jit_reshape_pack_n64_128_f64.py").is_file()
+
+    assert twiddle["kernel_type"] == "twiddle_reshape_pack"
+    assert twiddle["arg_names"] == ["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"]
+    assert twiddle["signature"] == "*fp32:16,*fp32:16,*fp32:16,i32"
+    assert (tmp_path / "flagfft_jit_twiddle_reshape_pack_n128_64_f32.py").is_file()
+
+
+def test_jit_r2c_pointwise_source_metadata(tmp_path) -> None:
+    pytest.importorskip("triton")
+    jit_source_spec = importlib.util.spec_from_file_location(
+        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
+    )
+    assert jit_source_spec is not None and jit_source_spec.loader is not None
+    module = importlib.util.module_from_spec(jit_source_spec)
+    sys.modules["src.codegen.jit_source"] = module
+    jit_source_spec.loader.exec_module(module)
+
+    expand = module._emit_r2c_pointwise_jit_kernel(
+        kernel="real_to_complex",
+        n=17,
+        dtype="complex64",
+        out_dir=tmp_path,
+    )
+    pack = module._emit_r2c_pointwise_jit_kernel(
+        kernel="r2c_half_pack",
+        n=17,
+        dtype="complex64",
+        out_dir=tmp_path,
+    )
+    expand_inverse = module._emit_r2c_pointwise_jit_kernel(
+        kernel="compact_to_hermitian_full",
+        n=17,
+        dtype="complex128",
+        out_dir=tmp_path,
+    )
+    pack_inverse = module._emit_r2c_pointwise_jit_kernel(
+        kernel="complex_to_real",
+        n=17,
+        dtype="complex128",
+        out_dir=tmp_path,
+    )
+
+    assert expand["kernel_type"] == "real_to_complex"
+    assert expand["arg_names"] == ["in_ptr", "out_ptr", "input_distance", "nbatch"]
+    assert expand["signature"] == "*fp32:16,*fp32:16,i64,i32"
+    assert (tmp_path / "flagfft_jit_real_to_complex_n17_f32.py").is_file()
+
+    assert pack["kernel_type"] == "r2c_half_pack"
+    assert pack["length"] == 17
+    assert pack["arg_names"] == ["in_ptr", "out_ptr", "output_distance", "nbatch"]
+    assert pack["signature"] == "*fp32:16,*fp32:16,i64,i32"
+    assert (tmp_path / "flagfft_jit_r2c_half_pack_n17_f32.py").is_file()
+
+    assert expand_inverse["kernel_type"] == "compact_to_hermitian_full"
+    assert expand_inverse["signature"] == "*fp64:16,*fp64:16,i64,i32"
+    assert (tmp_path / "flagfft_jit_compact_to_hermitian_full_n17_f64.py").is_file()
+
+    assert pack_inverse["kernel_type"] == "complex_to_real"
+    assert pack_inverse["signature"] == "*fp64:16,*fp64:16,i64,i32"
+    assert (tmp_path / "flagfft_jit_complex_to_real_n17_f64.py").is_file()

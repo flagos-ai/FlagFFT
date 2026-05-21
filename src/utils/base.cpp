@@ -111,8 +111,34 @@ std::string kernel_kind_name(KernelKind kind) {
             return "bluestein_pointwise";
         case KernelKind::BluesteinFinalize:
             return "bluestein_finalize";
+        case KernelKind::ReshapePack:
+            return "reshape_pack";
+        case KernelKind::TwiddleReshapePack:
+            return "twiddle_reshape_pack";
+        case KernelKind::RealToComplex:
+            return "real_to_complex";
+        case KernelKind::R2CHalfPack:
+            return "r2c_half_pack";
+        case KernelKind::CompactToHermitianFull:
+            return "compact_to_hermitian_full";
+        case KernelKind::ComplexToReal:
+            return "complex_to_real";
     }
     return "unknown";
+}
+
+int64_t complex_element_bytes(const std::string &input_dtype) {
+    if (input_dtype == "complex128" || input_dtype == "float64") {
+        return 16;
+    }
+    return 8;
+}
+
+std::string complex_dtype_for(const std::string &input_dtype) {
+    if (input_dtype == "complex128" || input_dtype == "float64") {
+        return "complex128";
+    }
+    return "complex64";
 }
 
 }  // namespace flagfft

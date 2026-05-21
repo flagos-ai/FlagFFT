@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "flagfft"
-version = "0.2.0"
+version = "0.2.2"
 description = "C++ cuFFT-style FFT library with Triton/TLE code generation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,9 +17,11 @@ flagfft-tune = "src.tune.flagfft_tune:main"
 [project.optional-dependencies]
 test = [
     "pytest",
+    "triton",
 ]
 dev = [
     "pytest",
+    "triton",
 ]
 
 [tool.scikit-build]

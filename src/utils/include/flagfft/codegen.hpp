@@ -13,8 +13,12 @@ int64_t mixed_radix_value(const std::vector<int64_t> &digits,
                           std::size_t limit);
 std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
     const std::vector<int64_t> &radices, int64_t stage, int64_t lanes, const std::string &direction);
+std::pair<std::vector<double>, std::vector<double>> build_stage_twiddles_d(
+    const std::vector<int64_t> &radices, int64_t stage, int64_t lanes, const std::string &direction);
 std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix,
                                                                    const std::string &direction);
+std::pair<std::vector<double>, std::vector<double>> build_dft_matrix_d(int64_t radix,
+                                                                       const std::string &direction);
 
 enum class RuntimeArgKind { DevicePtr, Int32, Int64 };
 
@@ -66,6 +70,8 @@ struct RawExecutionContext {
     const FFTRequest &request;
     CUstream stream = nullptr;
     int64_t batch = 0;
+    int64_t input_distance = 0;
+    int64_t output_distance = 0;
 };
 
 struct CompiledRawNode {
@@ -149,16 +155,95 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
     mutable std::mutex b_fft_mutex;
 };
 
+struct CompiledRawFourStepGenericNode final : CompiledRawNode {
+    CompiledRawFourStepGenericNode(int64_t length,
+                                   int64_t n1,
+                                   int64_t n2,
+                                   std::shared_ptr<CompiledRawNode> row_child,
+                                   std::shared_ptr<CompiledRawNode> col_child,
+                                   std::shared_ptr<RuntimeKernel> reshape_in_kernel,
+                                   std::shared_ptr<RuntimeKernel> twiddle_reshape_kernel,
+                                   std::shared_ptr<RuntimeKernel> final_pack_kernel,
+                                   DeviceAllocation twiddle,
+                                   DeviceAllocation stage1,
+                                   DeviceAllocation stage2);
+    flagfftResult execute(CUdeviceptr input,
+                          CUdeviceptr output,
+                          const RawExecutionContext &context) const override;
+    std::string describe() const override;
+
+    int64_t length;
+    int64_t n1;
+    int64_t n2;
+    std::shared_ptr<CompiledRawNode> row_child;
+    std::shared_ptr<CompiledRawNode> col_child;
+    std::shared_ptr<RuntimeKernel> reshape_in_kernel;
+    std::shared_ptr<RuntimeKernel> twiddle_reshape_kernel;
+    std::shared_ptr<RuntimeKernel> final_pack_kernel;
+    DeviceAllocation twiddle;
+    DeviceAllocation stage1;
+    DeviceAllocation stage2;
+};
+
+struct CompiledRawR2CNode final : CompiledRawNode {
+    CompiledRawR2CNode(int64_t length,
+                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                       std::shared_ptr<CompiledRawNode> fft,
+                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                       DeviceAllocation complex_input,
+                       DeviceAllocation full_output);
+    flagfftResult execute(CUdeviceptr input,
+                          CUdeviceptr output,
+                          const RawExecutionContext &context) const override;
+    std::string describe() const override;
+
+    int64_t length;
+    std::shared_ptr<RuntimeKernel> expand_kernel;
+    std::shared_ptr<CompiledRawNode> fft;
+    std::shared_ptr<RuntimeKernel> pack_kernel;
+    DeviceAllocation complex_input;
+    DeviceAllocation full_output;
+};
+
+struct CompiledRawC2RNode final : CompiledRawNode {
+    CompiledRawC2RNode(int64_t length,
+                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                       std::shared_ptr<CompiledRawNode> fft,
+                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                       DeviceAllocation full_input,
+                       DeviceAllocation full_output);
+    flagfftResult execute(CUdeviceptr input,
+                          CUdeviceptr output,
+                          const RawExecutionContext &context) const override;
+    std::string describe() const override;
+
+    int64_t length;
+    std::shared_ptr<RuntimeKernel> expand_kernel;
+    std::shared_ptr<CompiledRawNode> fft;
+    std::shared_ptr<RuntimeKernel> pack_kernel;
+    DeviceAllocation full_input;
+    DeviceAllocation full_output;
+};
+
 class TritonCompiler {
 public:
     std::shared_ptr<CompiledRawNode> compile_raw_node(const PlanNodePtr &node,
                                                       const FFTRequest &request,
                                                       int64_t batch);
+    std::shared_ptr<CompiledRawNode> compile_raw_r2c_node(const PlanNodePtr &node,
+                                                          const FFTRequest &request,
+                                                          int64_t batch);
+    std::shared_ptr<CompiledRawNode> compile_raw_c2r_node(const PlanNodePtr &node,
+                                                          const FFTRequest &request,
+                                                          int64_t batch);
     static void clear_kernel_cache();
 
 private:
     std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf,
                                                       const FFTRequest &request);
+    std::shared_ptr<CompiledRawNode> compile_raw_four_step_generic(const FourStepPlanNode &node,
+                                                                   const FFTRequest &request,
+                                                                   int64_t batch);
     std::shared_ptr<RuntimeKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t n1,
@@ -176,6 +261,20 @@ private:
     std::shared_ptr<RuntimeKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                  int64_t n,
                                                                  int64_t m);
+    std::shared_ptr<RuntimeKernel> compile_reshape_pack_kernel(const FFTRequest &request,
+                                                               int64_t n1,
+                                                               int64_t n2);
+    std::shared_ptr<RuntimeKernel> compile_twiddle_reshape_pack_kernel(const FFTRequest &request,
+                                                                       int64_t n1,
+                                                                       int64_t n2);
+    std::shared_ptr<RuntimeKernel> compile_real_to_complex_kernel(const FFTRequest &request,
+                                                                  int64_t n);
+    std::shared_ptr<RuntimeKernel> compile_r2c_half_pack_kernel(const FFTRequest &request,
+                                                               int64_t n);
+    std::shared_ptr<RuntimeKernel> compile_compact_to_hermitian_full_kernel(const FFTRequest &request,
+                                                                            int64_t n);
+    std::shared_ptr<RuntimeKernel> compile_complex_to_real_kernel(const FFTRequest &request,
+                                                                  int64_t n);
     std::shared_ptr<RuntimeKernel> compile_kernel(const KernelKey &key) const;
     std::filesystem::path out_dir() const;
     std::string python_executable() const;
@@ -185,6 +284,8 @@ private:
 std::string triton_target_for_request(const FFTRequest &request);
 FFTRequest forward_child_request(const FFTRequest &request);
 DeviceAllocation allocate_device_bytes(std::size_t bytes);
+DeviceAllocation device_allocation_from_floats(const std::vector<float> &values);
+DeviceAllocation device_allocation_from_doubles(const std::vector<double> &values);
 DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2);
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign);
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m);

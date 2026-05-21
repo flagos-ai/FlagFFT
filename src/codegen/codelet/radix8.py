@@ -1,6 +1,5 @@
 @triton.jit
 def _fwd_rad8_b1(r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7):
-    c8q = 0.7071067811865475
 
     e02r = r0 + r4
     e02i = i0 + i4
@@ -40,9 +39,9 @@ def _fwd_rad8_b1(r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7)
 
     T0r = O0r
     T0i = O0i
-    T1r, T1i = _cmul(O1r, O1i, c8q, -c8q)
+    T1r, T1i = _cmul(O1r, O1i, 0.7071067811865475, -0.7071067811865475)
     T2r, T2i = _cmul(O2r, O2i, 0.0, -1.0)
-    T3r, T3i = _cmul(O3r, O3i, -c8q, -c8q)
+    T3r, T3i = _cmul(O3r, O3i, -0.7071067811865475, -0.7071067811865475)
 
     y0r = E0r + T0r
     y0i = E0i + T0i

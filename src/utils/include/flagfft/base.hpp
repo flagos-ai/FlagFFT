@@ -28,7 +28,7 @@
 
 namespace flagfft {
 
-inline constexpr int64_t kPlanSchemaVersion = 2;
+inline constexpr int64_t kPlanSchemaVersion = 3;
 inline constexpr int64_t kDirectDftMaxN = 64;
 inline constexpr int64_t kLeafMaxN = 4096;
 inline constexpr int64_t kDynamicSmemFallbackBytes = 48 * 1024;
@@ -102,8 +102,17 @@ enum class KernelKind {
     TwiddleTranspose,
     BluesteinPrepare,
     BluesteinPointwise,
-    BluesteinFinalize
+    BluesteinFinalize,
+    ReshapePack,
+    TwiddleReshapePack,
+    RealToComplex,
+    R2CHalfPack,
+    CompactToHermitianFull,
+    ComplexToReal
 };
+
+int64_t complex_element_bytes(const std::string &input_dtype);
+std::string complex_dtype_for(const std::string &input_dtype);
 
 std::string plan_node_kind_name(PlanNodeKind kind);
 std::string kernel_kind_name(KernelKind kind);

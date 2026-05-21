@@ -4,14 +4,20 @@ namespace flagfft {
 
 inline constexpr int64_t kFourStepColInnerPack = 2;
 inline constexpr int64_t kFourStepColInnerPackMinN1 = 128;
+inline constexpr int64_t kFourStepColInnerPackMaxN2F64 = 1024;
 
-int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2) {
-    (void)n2;
+int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2, const std::string &dtype) {
     if (n1 < kFourStepColInnerPackMinN1) {
+        return 1;
+    }
+    if ((dtype == "complex128" || dtype == "float64") && n2 > kFourStepColInnerPackMaxN2F64) {
+        // fp64 doubles per-element smem; pack=2 overflows A100 opt-in (163 KiB)
+        // once the col leaf is bigger than ~1024 lanes. Fall back to pack=1.
         return 1;
     }
     return kFourStepColInnerPack;
 }
+
 
 std::string batch_bucket(int64_t batch) {
     if (batch <= 1) {

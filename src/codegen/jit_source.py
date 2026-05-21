@@ -9,7 +9,27 @@ from pathlib import Path
 from typing import Any
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    _project_root = str(Path(__file__).resolve().parents[2])
+    sys.path.insert(0, _project_root)
+    # Drop any scikit-build-core editable finder that pins src/* to a stale
+    # site-packages copy; we want the in-tree sources to win.
+    sys.meta_path = [
+        finder for finder in sys.meta_path
+        if "ScikitBuildRedirectingFinder" not in type(finder).__name__
+    ]
+    for _mod in list(sys.modules):
+        if _mod == "src" or _mod.startswith("src."):
+            sys.modules.pop(_mod, None)
+    # Load the in-tree kernels.py by file path so that a previously installed
+    # `src` regular package in site-packages cannot shadow it.
+    _kernels_path = Path(__file__).resolve().parent / "kernels.py"
+    _spec = importlib.util.spec_from_file_location(
+        "src.codegen.kernels", str(_kernels_path)
+    )
+    if _spec is not None and _spec.loader is not None:
+        _kernels_mod = importlib.util.module_from_spec(_spec)
+        sys.modules["src.codegen.kernels"] = _kernels_mod
+        _spec.loader.exec_module(_kernels_mod)
 
 from src.codegen.kernels import (
     LeafPlan,
@@ -17,16 +37,42 @@ from src.codegen.kernels import (
     _build_four_step_col_kernel_source,
     _build_four_step_row_kernel_source,
     _build_leaf_kernel_source,
+    _build_compact_to_hermitian_full_kernel_source,
+    _build_complex_to_real_kernel_source,
+    _build_r2c_half_pack_kernel_source,
+    _build_real_to_complex_kernel_source,
+    _build_reshape_pack_kernel_source,
+    _build_twiddle_reshape_pack_kernel_source,
     contiguous_batch_pack_for,
     four_step_col_inner_pack_for,
     lane_block_for,
 )
 
 
-_POINTER_SIGNATURE = "*fp32:16"
 _BLUESTEIN_BLOCK = 256
 _BLUESTEIN_NUM_WARPS = 4
 _BLUESTEIN_NUM_STAGES = 4
+_RESHAPE_NUM_WARPS = 4
+_RESHAPE_NUM_STAGES = 1
+
+
+def _pointer_signature(dtype: str) -> str:
+    if dtype == "complex128":
+        return "*fp64:16"
+    return "*fp32:16"
+
+
+def _dtype_suffix(dtype: str) -> str:
+    return "f64" if dtype == "complex128" else "f32"
+
+
+def _zero_literal(dtype: str) -> str:
+    # `tl.load(..., other=0.0)` is auto-promoted to the pointer's dtype by
+    # Triton's masked-load lowering, so a single literal works for fp32 and
+    # fp64. Indexing a constexpr (e.g. ``tl.zeros((1,), tl.float64)[0]``) is
+    # rejected at IR-build time.
+    del dtype
+    return "0.0"
 
 
 def _csv_ints(raw: str) -> tuple[int, ...]:
@@ -52,16 +98,16 @@ def _module_source(kernel_source: str) -> str:
     return helpers + "\n\n" + kernel_source + "\n"
 
 
-def _arg_signature(name: str) -> str:
+def _arg_signature(name: str, dtype: str) -> str:
     if name == "nbatch":
         return "i32"
-    if name in {"n", "m"}:
+    if name in {"n", "m", "input_distance", "output_distance"}:
         return "i64"
-    return _POINTER_SIGNATURE
+    return _pointer_signature(dtype)
 
 
-def _signature(arg_names: list[str]) -> str:
-    return ",".join(_arg_signature(name) for name in arg_names)
+def _signature(arg_names: list[str], dtype: str) -> str:
+    return ",".join(_arg_signature(name, dtype) for name in arg_names)
 
 
 def _metadata(
@@ -73,12 +119,13 @@ def _metadata(
     kernel_type: str,
     n1: int,
     n2: int,
+    dtype: str,
 ) -> dict[str, Any]:
     batch_per_block = contiguous_batch_pack_for(plan) if kernel_type == "leaf" else 1
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
-        "signature": _signature(arg_names),
+        "signature": _signature(arg_names, dtype),
         "num_warps": int(plan.num_warps),
         "num_stages": 1,
         "batch_per_block": int(batch_per_block),
@@ -87,12 +134,15 @@ def _metadata(
         "length": int(plan.length),
         "lanes": int(plan.lanes),
         "direction": plan.direction,
+        "dtype": dtype,
         "n1": int(n1),
         "n2": int(n2),
     }
 
 
-def _bluestein_kernel_source(kind: str) -> tuple[str, str, list[str]]:
+def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]]:
+    zero = _zero_literal(dtype)
+    div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
     if kind == "bluestein_prepare":
         return (
             "_bluestein_prepare_kernel",
@@ -114,10 +164,10 @@ def _bluestein_kernel_source(kind: str) -> tuple[str, str, list[str]]:
                     in_mask = mask & (offsets < n)
 
                     src = in_ptr + (pid_batch * n + offsets) * 2
-                    xr = tl.load(src, mask=in_mask, other=0.0)
-                    xi = tl.load(src + 1, mask=in_mask, other=0.0)
-                    cr = tl.load(chirp_ptr + offsets * 2, mask=in_mask, other=0.0)
-                    ci = tl.load(chirp_ptr + offsets * 2 + 1, mask=in_mask, other=0.0)
+                    xr = tl.load(src, mask=in_mask, other={zero})
+                    xi = tl.load(src + 1, mask=in_mask, other={zero})
+                    cr = tl.load(chirp_ptr + offsets * 2, mask=in_mask, other={zero})
+                    ci = tl.load(chirp_ptr + offsets * 2 + 1, mask=in_mask, other={zero})
                     yr, yi = _cmul(xr, xi, cr, ci)
 
                     dst = out_ptr + (pid_batch * m + offsets) * 2
@@ -131,7 +181,7 @@ def _bluestein_kernel_source(kind: str) -> tuple[str, str, list[str]]:
         return (
             "_bluestein_pointwise_kernel",
             dedent(
-                """
+                f"""
                 @triton.jit
                 def _bluestein_pointwise_kernel(
                     a_ptr,
@@ -147,10 +197,10 @@ def _bluestein_kernel_source(kind: str) -> tuple[str, str, list[str]]:
 
                     a = a_ptr + (pid_batch * m + offsets) * 2
                     b = b_ptr + offsets * 2
-                    ar = tl.load(a, mask=mask, other=0.0)
-                    ai = tl.load(a + 1, mask=mask, other=0.0)
-                    br = tl.load(b, mask=mask, other=0.0)
-                    bi = tl.load(b + 1, mask=mask, other=0.0)
+                    ar = tl.load(a, mask=mask, other={zero})
+                    ai = tl.load(a + 1, mask=mask, other={zero})
+                    br = tl.load(b, mask=mask, other={zero})
+                    bi = tl.load(b + 1, mask=mask, other={zero})
                     pr, pi = _cmul(ar, ai, br, bi)
 
                     dst = out_ptr + (pid_batch * m + offsets) * 2
@@ -164,7 +214,7 @@ def _bluestein_kernel_source(kind: str) -> tuple[str, str, list[str]]:
         return (
             "_bluestein_finalize_kernel",
             dedent(
-                """
+                f"""
                 @triton.jit
                 def _bluestein_finalize_kernel(
                     in_ptr,
@@ -180,10 +230,10 @@ def _bluestein_kernel_source(kind: str) -> tuple[str, str, list[str]]:
                     mask = offsets < n
 
                     src = in_ptr + (pid_batch * m + offsets) * 2
-                    xr = tl.load(src, mask=mask, other=0.0) / m
-                    xi = -tl.load(src + 1, mask=mask, other=0.0) / m
-                    cr = tl.load(chirp_ptr + offsets * 2, mask=mask, other=0.0)
-                    ci = tl.load(chirp_ptr + offsets * 2 + 1, mask=mask, other=0.0)
+                    xr = tl.load(src, mask=mask, other={zero}) / {div_cast}
+                    xi = -tl.load(src + 1, mask=mask, other={zero}) / {div_cast}
+                    cr = tl.load(chirp_ptr + offsets * 2, mask=mask, other={zero})
+                    ci = tl.load(chirp_ptr + offsets * 2 + 1, mask=mask, other={zero})
                     yr, yi = _cmul(xr, xi, cr, ci)
 
                     dst = out_ptr + (pid_batch * n + offsets) * 2
@@ -201,25 +251,116 @@ def _emit_bluestein_jit_kernel(
     kernel: str,
     n: int,
     m: int,
+    dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
-    kernel_name, kernel_source, arg_names = _bluestein_kernel_source(kernel)
-    module_name = f"flagfft_jit_{kernel}_n{n}_m{m}"
+    kernel_name, kernel_source, arg_names = _bluestein_kernel_source(kernel, dtype)
+    suffix = _dtype_suffix(dtype)
+    module_name = f"flagfft_jit_{kernel}_n{n}_m{m}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     module_path.write_text(_module_source(kernel_source))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
-        "signature": _signature(arg_names),
+        "signature": _signature(arg_names, dtype),
         "num_warps": _BLUESTEIN_NUM_WARPS,
         "num_stages": _BLUESTEIN_NUM_STAGES,
         "batch_per_block": 1,
         "arg_names": arg_names,
         "kernel_type": kernel,
+        "dtype": dtype,
         "bluestein_n": int(n),
         "bluestein_m": int(m),
         "block": _BLUESTEIN_BLOCK,
+    }
+    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
+def _emit_reshape_jit_kernel(
+    *,
+    kernel: str,
+    n1: int,
+    n2: int,
+    dtype: str = "complex64",
+    out_dir: Path,
+) -> dict[str, Any]:
+    if kernel == "reshape_pack":
+        kernel_name, kernel_source, arg_names = _build_reshape_pack_kernel_source(n1, n2, dtype)
+    elif kernel == "twiddle_reshape_pack":
+        kernel_name, kernel_source, arg_names = _build_twiddle_reshape_pack_kernel_source(
+            n1, n2, dtype
+        )
+    else:
+        raise ValueError(f"unsupported reshape kernel kind: {kernel}")
+
+    suffix = _dtype_suffix(dtype)
+    module_name = f"flagfft_jit_{kernel}_n{n1}_{n2}_{suffix}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{module_name}.py"
+    module_path.write_text(_module_source(kernel_source))
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": kernel_name,
+        "signature": _signature(arg_names, dtype),
+        "num_warps": _RESHAPE_NUM_WARPS,
+        "num_stages": _RESHAPE_NUM_STAGES,
+        "batch_per_block": 1,
+        "arg_names": arg_names,
+        "kernel_type": kernel,
+        "dtype": dtype,
+        "reshape_n1": int(n1),
+        "reshape_n2": int(n2),
+        "block": 256,
+    }
+    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
+def _emit_r2c_pointwise_jit_kernel(
+    *,
+    kernel: str,
+    n: int,
+    dtype: str,
+    out_dir: Path,
+) -> dict[str, Any]:
+    if kernel == "real_to_complex":
+        kernel_name, kernel_source, arg_names = _build_real_to_complex_kernel_source(n, dtype)
+    elif kernel == "r2c_half_pack":
+        kernel_name, kernel_source, arg_names = _build_r2c_half_pack_kernel_source(n, dtype)
+    elif kernel == "compact_to_hermitian_full":
+        kernel_name, kernel_source, arg_names = _build_compact_to_hermitian_full_kernel_source(n, dtype)
+    elif kernel == "complex_to_real":
+        kernel_name, kernel_source, arg_names = _build_complex_to_real_kernel_source(n, dtype)
+    else:
+        raise ValueError(f"unsupported R2C pointwise kernel kind: {kernel}")
+
+    dtype_tag = _dtype_suffix(dtype)
+    module_name = f"flagfft_jit_{kernel}_n{n}_{dtype_tag}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{module_name}.py"
+    module_path.write_text(_module_source(kernel_source))
+
+    sys.path.insert(0, str(module_path.parent))
+    spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load generated kernel module {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    arg_names = list(getattr(module, kernel_name).arg_names)
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": kernel_name,
+        "signature": _signature(arg_names, dtype),
+        "num_warps": _RESHAPE_NUM_WARPS,
+        "num_stages": _RESHAPE_NUM_STAGES,
+        "batch_per_block": 1,
+        "arg_names": arg_names,
+        "kernel_type": kernel,
+        "dtype": dtype,
+        "length": int(n),
+        "block": 256,
     }
     (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
     return metadata
@@ -235,6 +376,7 @@ def emit_jit_kernel(
     generic_radices: tuple[int, ...],
     smem_size: int,
     direction: str,
+    dtype: str,
     four_step_n1: int,
     four_step_n2: int,
     out_dir: Path,
@@ -248,6 +390,7 @@ def emit_jit_kernel(
         generic_radices=generic_radices,
         smem_size=smem_size,
         direction=direction,
+        dtype=dtype,
     )
     if kernel == "leaf":
         kernel_name, kernel_source = _build_leaf_kernel_source(plan)
@@ -271,12 +414,15 @@ def emit_jit_kernel(
     lane_block = lane_block_for(lanes)
     direction_tag = "inv" if direction == "inverse" else "fwd"
     factor_tag = "_".join(str(x) for x in factors)
+    dtype_tag = _dtype_suffix(dtype)
     if kernel == "leaf":
-        module_name = f"flagfft_jit_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}"
+        module_name = (
+            f"flagfft_jit_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
+        )
     else:
         module_name = (
             f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
-            f"_n{four_step_n1}_{four_step_n2}_l{lanes}_b{lane_block}"
+            f"_n{four_step_n1}_{four_step_n2}_l{lanes}_b{lane_block}_{dtype_tag}"
         )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -298,9 +444,10 @@ def emit_jit_kernel(
         kernel_type=kernel,
         n1=n1,
         n2=n2,
+        dtype=dtype,
     )
     if kernel == "four_step_col":
-        metadata["inner_pack"] = four_step_col_inner_pack_for(four_step_n1, four_step_n2)
+        metadata["inner_pack"] = four_step_col_inner_pack_for(four_step_n1, four_step_n2, dtype)
     (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
     return metadata
 
@@ -316,6 +463,12 @@ def main() -> None:
             "bluestein_prepare",
             "bluestein_pointwise",
             "bluestein_finalize",
+            "reshape_pack",
+            "twiddle_reshape_pack",
+            "real_to_complex",
+            "r2c_half_pack",
+            "compact_to_hermitian_full",
+            "complex_to_real",
         ),
         required=True,
     )
@@ -326,10 +479,15 @@ def main() -> None:
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
     parser.add_argument("--direction", choices=("forward", "inverse"), default="forward")
+    parser.add_argument(
+        "--dtype", choices=("complex64", "complex128"), default="complex64"
+    )
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--bluestein-n", type=int)
     parser.add_argument("--bluestein-m", type=int)
+    parser.add_argument("--reshape-n1", type=int, default=0)
+    parser.add_argument("--reshape-n2", type=int, default=0)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
 
@@ -340,6 +498,32 @@ def main() -> None:
             kernel=args.kernel,
             n=args.bluestein_n,
             m=args.bluestein_m,
+            dtype=args.dtype,
+            out_dir=args.out_dir,
+        )
+        print(json.dumps(metadata, sort_keys=True))
+        return
+
+    if args.kernel in {"reshape_pack", "twiddle_reshape_pack"}:
+        if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
+            parser.error(f"--kernel {args.kernel} requires --reshape-n1 and --reshape-n2")
+        metadata = _emit_reshape_jit_kernel(
+            kernel=args.kernel,
+            n1=args.reshape_n1,
+            n2=args.reshape_n2,
+            dtype=args.dtype,
+            out_dir=args.out_dir,
+        )
+        print(json.dumps(metadata, sort_keys=True))
+        return
+
+    if args.kernel in {"real_to_complex", "r2c_half_pack", "compact_to_hermitian_full", "complex_to_real"}:
+        if args.length is None or args.length <= 0:
+            parser.error(f"--kernel {args.kernel} requires --length")
+        metadata = _emit_r2c_pointwise_jit_kernel(
+            kernel=args.kernel,
+            n=args.length,
+            dtype=args.dtype,
             out_dir=args.out_dir,
         )
         print(json.dumps(metadata, sort_keys=True))
@@ -368,6 +552,7 @@ def main() -> None:
         generic_radices=args.generic_radices,
         smem_size=args.smem_size,
         direction=args.direction,
+        dtype=args.dtype,
         four_step_n1=args.four_step_n1,
         four_step_n2=args.four_step_n2,
         out_dir=args.out_dir,

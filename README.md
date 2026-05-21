@@ -14,12 +14,19 @@ The public header is `include/flagfft/flagfft.h` and exposes:
 - `flagfftSetStream`, `flagfftDestroy`
 - `flagfftGetPlanDescription`
 
-The first native runtime slice supports arbitrary-length out-of-place,
-contiguous, rank-1, batched `FLAGFFT_C2C` transforms on `complex64` device
-pointers. Forward and inverse C2C kernels are compiled during plan creation and
-selected at exec time.
-Other declared plan/exec combinations return `FLAGFFT_NOT_SUPPORTED` until
-their raw execution paths are implemented.
+The native runtime supports arbitrary-length contiguous rank-1 batched
+`FLAGFFT_C2C` (`complex64`) and `FLAGFFT_Z2Z` (`complex128`) transforms on
+device pointers, plus `FLAGFFT_R2C`, `FLAGFFT_D2Z`, `FLAGFFT_C2R`, and
+`FLAGFFT_Z2D` compact real transforms. Real forward outputs and real inverse
+inputs use `n / 2 + 1` complex values per batch. In-place real transforms use
+the cuFFT padded physical row layout, `2 * (n / 2 + 1)` real scalars per
+batch. Forward and inverse kernels are compiled during plan creation and
+selected at exec time for complex transforms. Both single-layer and nested
+fused four-step routes are supported, so very large composite lengths
+(e.g. `n = 2^23`) plan as multi-level four-step trees instead of falling back
+to Bluestein.
+Rank>1 and non-contiguous/custom stride or embed C API requests still return
+`FLAGFFT_NOT_SUPPORTED`.
 
 `flagfftGetPlanDescription(plan)` returns a human-readable string describing
 the plan node tree, kernel names, module paths, and compilation details.
@@ -37,7 +44,7 @@ debugging. The returned pointer is valid for the lifetime of the plan.
 - `src/runtime/`: CUDA Driver helpers.
 - `src/exec/`: cuFFT-style C API, raw pointer execution nodes, and tuned plan
   lookup.
-- `src/tune_cpp/`: C++ offline tuning CLI and SQLite measurement orchestration.
+- `src/tune/`: C++ offline tuning CLI and SQLite measurement orchestration.
 
 The C API uses an opaque `flagfftHandle`. Internally it owns the immutable plan
 description, stream/lifecycle state, compiled forward and inverse raw execution
@@ -55,10 +62,13 @@ cmake --build build
 ```
 
 Plan creation emits Triton source and calls libtriton_jit compile APIs so the
-first `flagfftExecC2C` does not pay Python compilation latency. The raw C API
-supports leaf, fused leaf/leaf four-step, and Bluestein fallback routes for
-arbitrary 1D C2C lengths. Non-C2C, rank>1, in-place, and non-contiguous C API
-requests keep returning `FLAGFFT_NOT_SUPPORTED`.
+first exec call does not pay Python compilation latency. The raw C API
+supports leaf, fused leaf/leaf four-step, generic nested four-step (FourStep of
+arbitrary supported children), and Bluestein fallback routes for arbitrary 1D
+complex lengths. Real transforms use pointwise staging around the complex FFT
+route: real-to-complex, half-spectrum pack, compact Hermitian expansion, and
+complex-to-real pack. Rank>1 and non-contiguous C API requests keep returning
+`FLAGFFT_NOT_SUPPORTED`.
 
 ## Build
 
@@ -197,9 +207,13 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The gtest suite compares `flagfftExecC2C` against `cufftExecC2C` for multiple
-batch sizes and both leaf and four-step native routes. Python tests live under
-`tests/python/` and cover codegen behavior only.
+The gtest suite compares `flagfftExecC2C` and `flagfftExecZ2Z` against the
+matching `cufftExecC2C`/`cufftExecZ2Z` reference for multiple batch sizes and
+covers leaf, single-layer four-step, nested four-step, Bluestein native routes,
+stream selection, invalid calls, unsupported ranks, and out-of-place-only
+execution for both precisions. Python tests live under `tests/python/` and cover
+codegen behavior only, including leaf, fused four-step, Bluestein, and generic
+four-step reshape-pack source generation.
 
 Benchmark pytest wrappers live under `benchmark/` and invoke `bench_vs_cufft`
 directly; they do not call Python FFT runtime APIs.

@@ -107,16 +107,35 @@ std::vector<int64_t> copy_dims(const int *values, int rank) {
 }
 
 bool is_supported_minimal_desc(const FlagFFTPlanDesc &desc) {
-    if (desc.rank != 1 || desc.type != FLAGFFT_C2C || desc.batch <= 0) {
+    if (desc.rank != 1 || desc.batch <= 0) {
+        return false;
+    }
+    if (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_Z2Z && desc.type != FLAGFFT_R2C &&
+        desc.type != FLAGFFT_D2Z && desc.type != FLAGFFT_C2R && desc.type != FLAGFFT_Z2D) {
         return false;
     }
     if (desc.n.size() != 1 || desc.n[0] <= 0) {
         return false;
     }
-    return desc.istride == 1 && desc.ostride == 1 && desc.idist == desc.n[0] &&
-           desc.odist == desc.n[0] && desc.inembed.size() == 1 &&
-           desc.onembed.size() == 1 && desc.inembed[0] == desc.n[0] &&
-           desc.onembed[0] == desc.n[0];
+    const int64_t n = desc.n[0];
+    const bool real_forward = desc.type == FLAGFFT_R2C || desc.type == FLAGFFT_D2Z;
+    const bool real_inverse = desc.type == FLAGFFT_C2R || desc.type == FLAGFFT_Z2D;
+    const int64_t compact_length = n / 2 + 1;
+    const int64_t padded_real_length = 2 * compact_length;
+    const int64_t input_length = real_inverse ? compact_length : n;
+    const int64_t output_length = real_forward ? compact_length : n;
+    const bool valid_input_distance =
+        desc.idist == input_length || (real_forward && desc.idist == padded_real_length);
+    const bool valid_output_distance =
+        desc.odist == output_length || (real_inverse && desc.odist == padded_real_length);
+    const bool valid_input_embed =
+        desc.inembed.size() == 1 &&
+        (desc.inembed[0] == input_length || (real_forward && desc.inembed[0] == padded_real_length));
+    const bool valid_output_embed =
+        desc.onembed.size() == 1 &&
+        (desc.onembed[0] == output_length || (real_inverse && desc.onembed[0] == padded_real_length));
+    return desc.istride == 1 && desc.ostride == 1 && valid_input_distance &&
+           valid_output_distance && valid_input_embed && valid_output_embed;
 }
 
 bool raw_supported_node(const PlanNodePtr &node) {
@@ -124,8 +143,8 @@ bool raw_supported_node(const PlanNodePtr &node) {
         return true;
     }
     if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
-        return std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
-               std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
+        return raw_supported_node(four_step->row_plan) &&
+               raw_supported_node(four_step->col_plan);
     }
     if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
         return raw_supported_node(bluestein->fft_plan);
@@ -143,8 +162,9 @@ FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction)
     request.raw_dim = 1;
     request.normalized_dim = 1;
     request.norm = "backward";
-    request.input_dtype = "complex64";
-    request.output_dtype = "complex64";
+    const bool is_double = desc.precision == FlagFFTPrecision::Float64;
+    request.input_dtype = is_double ? "complex128" : "complex64";
+    request.output_dtype = is_double ? "complex128" : "complex64";
     request.device_type = "cuda";
     request.device_index = desc.device_index;
     request.device_arch = desc.device_arch;

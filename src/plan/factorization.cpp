@@ -138,7 +138,8 @@ int64_t PlanBuilder::choose_num_warps(int64_t lanes) {
 std::optional<int64_t> PlanBuilder::leaf_smem_elements(int64_t n,
                                                        const std::vector<int64_t> &factors,
                                                        const std::string &input_dtype) {
-    if (input_dtype != "complex64" && input_dtype != "float32") {
+    if (input_dtype != "complex64" && input_dtype != "float32" &&
+        input_dtype != "complex128" && input_dtype != "float64") {
         return std::nullopt;
     }
     if (factors.size() <= 1) {
@@ -154,7 +155,8 @@ std::optional<int64_t> PlanBuilder::leaf_smem_bytes(int64_t n,
     if (!elements.has_value()) {
         return std::nullopt;
     }
-    return 4 * *elements * static_cast<int64_t>(sizeof(float));
+    int64_t element_bytes = (input_dtype == "complex128" || input_dtype == "float64") ? 8 : 4;
+    return 4 * *elements * element_bytes;
 }
 
 bool PlanBuilder::should_use_leaf(int64_t n, const std::vector<int64_t> &factors) {
@@ -169,7 +171,7 @@ PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &f
     auto smem_elements = leaf_smem_elements(n, factors, context.input_dtype);
     if (!smem_elements.has_value()) {
         throw std::runtime_error(
-            "ct_leaf shared-memory planner currently supports only float32 and complex64 inputs");
+            "ct_leaf shared-memory planner currently supports only float32/complex64 and float64/complex128 inputs");
     }
     int64_t lanes = choose_lanes(n, factors);
     std::vector<int64_t> generic_radices;

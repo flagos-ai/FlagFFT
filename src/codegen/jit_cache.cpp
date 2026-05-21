@@ -123,6 +123,24 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &k
         case KernelKind::BluesteinFinalize:
             kernel_kind = "bluestein_finalize";
             break;
+        case KernelKind::ReshapePack:
+            kernel_kind = "reshape_pack";
+            break;
+        case KernelKind::TwiddleReshapePack:
+            kernel_kind = "twiddle_reshape_pack";
+            break;
+        case KernelKind::RealToComplex:
+            kernel_kind = "real_to_complex";
+            break;
+        case KernelKind::R2CHalfPack:
+            kernel_kind = "r2c_half_pack";
+            break;
+        case KernelKind::CompactToHermitianFull:
+            kernel_kind = "compact_to_hermitian_full";
+            break;
+        case KernelKind::ComplexToReal:
+            kernel_kind = "complex_to_real";
+            break;
         default:
             throw std::runtime_error("JIT backend does not support kernel kind: " +
                                      kernel_kind_name(key.kind));
@@ -131,7 +149,8 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &k
     jit_command << shell_quote(python_executable())
                 << " " << triton_jit_source_entrypoint()
                 << " --kernel " << kernel_kind
-                << " --out-dir " << shell_quote(out_dir().string());
+                << " --out-dir " << shell_quote(out_dir().string())
+                << " --dtype " << shell_quote(key.dtype);
     if (key.kind == KernelKind::Leaf || key.kind == KernelKind::FourStepRow ||
         key.kind == KernelKind::FourStepCol) {
         jit_command << " --length " << key.length
@@ -151,6 +170,14 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &k
         key.kind == KernelKind::BluesteinFinalize) {
         jit_command << " --bluestein-n " << key.bluestein_n
                     << " --bluestein-m " << key.bluestein_m;
+    }
+    if (key.kind == KernelKind::ReshapePack || key.kind == KernelKind::TwiddleReshapePack) {
+        jit_command << " --reshape-n1 " << key.reshape_n1
+                    << " --reshape-n2 " << key.reshape_n2;
+    }
+    if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
+        key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
+        jit_command << " --length " << key.length;
     }
 
     std::string artifact_json = run_command_capture_stdout(jit_command.str());

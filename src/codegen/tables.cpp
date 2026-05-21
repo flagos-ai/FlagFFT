@@ -34,7 +34,10 @@ int64_t mixed_radix_value(const std::vector<int64_t> &digits,
     return value;
 }
 
-std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
+namespace {
+
+template <typename Real>
+std::pair<std::vector<Real>, std::vector<Real>> build_stage_twiddles_t(
     const std::vector<int64_t> &radices,
     int64_t stage,
     int64_t lanes,
@@ -47,8 +50,8 @@ std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
         denom *= radices[static_cast<std::size_t>(axis)];
     }
 
-    std::vector<float> tw_r(static_cast<std::size_t>(n));
-    std::vector<float> tw_i(static_cast<std::size_t>(n));
+    std::vector<Real> tw_r(static_cast<std::size_t>(n));
+    std::vector<Real> tw_i(static_cast<std::size_t>(n));
     for (int64_t lane = 0; lane < lanes; ++lane) {
         for (int64_t elem = 0; elem < elems_per_lane; ++elem) {
             int64_t group = elem / radix;
@@ -60,28 +63,61 @@ std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
             double angle = sign * 2.0 * kPi * static_cast<double>(prefix * digit) /
                            static_cast<double>(denom);
             std::size_t index = static_cast<std::size_t>(lane + lanes * elem);
-            tw_r[index] = static_cast<float>(std::cos(angle));
-            tw_i[index] = static_cast<float>(std::sin(angle));
+            tw_r[index] = static_cast<Real>(std::cos(angle));
+            tw_i[index] = static_cast<Real>(std::sin(angle));
         }
     }
     return {tw_r, tw_i};
 }
 
-std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix,
+template <typename Real>
+std::pair<std::vector<Real>, std::vector<Real>> build_dft_matrix_t(int64_t radix,
                                                                    const std::string &direction) {
-    std::vector<float> dft_r(static_cast<std::size_t>(radix * radix));
-    std::vector<float> dft_i(static_cast<std::size_t>(radix * radix));
+    std::vector<Real> dft_r(static_cast<std::size_t>(radix * radix));
+    std::vector<Real> dft_i(static_cast<std::size_t>(radix * radix));
     double sign = direction == "inverse" ? 1.0 : -1.0;
     for (int64_t k = 0; k < radix; ++k) {
         for (int64_t n = 0; n < radix; ++n) {
             double angle = sign * 2.0 * kPi * static_cast<double>(k * n) /
                            static_cast<double>(radix);
             std::size_t index = static_cast<std::size_t>(k * radix + n);
-            dft_r[index] = static_cast<float>(std::cos(angle));
-            dft_i[index] = static_cast<float>(std::sin(angle));
+            dft_r[index] = static_cast<Real>(std::cos(angle));
+            dft_i[index] = static_cast<Real>(std::sin(angle));
         }
     }
     return {dft_r, dft_i};
+}
+
+bool dtype_is_double(const std::string &dtype) {
+    return dtype == "complex128" || dtype == "float64";
+}
+
+}  // namespace
+
+std::pair<std::vector<float>, std::vector<float>> build_stage_twiddles(
+    const std::vector<int64_t> &radices,
+    int64_t stage,
+    int64_t lanes,
+    const std::string &direction) {
+    return build_stage_twiddles_t<float>(radices, stage, lanes, direction);
+}
+
+std::pair<std::vector<double>, std::vector<double>> build_stage_twiddles_d(
+    const std::vector<int64_t> &radices,
+    int64_t stage,
+    int64_t lanes,
+    const std::string &direction) {
+    return build_stage_twiddles_t<double>(radices, stage, lanes, direction);
+}
+
+std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix,
+                                                                   const std::string &direction) {
+    return build_dft_matrix_t<float>(radix, direction);
+}
+
+std::pair<std::vector<double>, std::vector<double>> build_dft_matrix_d(int64_t radix,
+                                                                       const std::string &direction) {
+    return build_dft_matrix_t<double>(radix, direction);
 }
 
 DeviceAllocation allocate_device_bytes(std::size_t bytes) {
@@ -101,8 +137,34 @@ DeviceAllocation device_allocation_from_floats(const std::vector<float> &values)
     return allocation;
 }
 
+DeviceAllocation device_allocation_from_doubles(const std::vector<double> &values) {
+    DeviceAllocation allocation = allocate_device_bytes(values.size() * sizeof(double));
+    if (allocation.ptr != 0) {
+        cuda_check(cuMemcpyHtoD(allocation.ptr, values.data(), allocation.bytes), "cuMemcpyHtoD");
+    }
+    return allocation;
+}
+
 DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2) {
-    std::vector<float> interleaved(static_cast<std::size_t>(n1 * n2 * 2));
+    const bool is_double = dtype_is_double(request.input_dtype);
+    const std::size_t total = static_cast<std::size_t>(n1 * n2 * 2);
+    if (is_double) {
+        std::vector<double> interleaved(total);
+        for (int64_t row = 0; row < n2; ++row) {
+            for (int64_t col = 0; col < n1; ++col) {
+                double angle = -2.0 * kPi * static_cast<double>(row * col) /
+                               static_cast<double>(n1 * n2);
+                if (request.direction == "inverse") {
+                    angle = -angle;
+                }
+                std::size_t index = static_cast<std::size_t>((row * n1 + col) * 2);
+                interleaved[index] = std::cos(angle);
+                interleaved[index + 1] = std::sin(angle);
+            }
+        }
+        return device_allocation_from_doubles(interleaved);
+    }
+    std::vector<float> interleaved(total);
     for (int64_t row = 0; row < n2; ++row) {
         for (int64_t col = 0; col < n1; ++col) {
             double angle = -2.0 * kPi * static_cast<double>(row * col) /
@@ -119,9 +181,22 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
 }
 
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign) {
-    (void)request;
-    std::vector<float> interleaved(static_cast<std::size_t>(n * 2));
+    const bool is_double = dtype_is_double(request.input_dtype);
+    const std::size_t total = static_cast<std::size_t>(n * 2);
     double sign = inverse_sign ? 1.0 : -1.0;
+    if (is_double) {
+        std::vector<double> interleaved(total);
+        for (int64_t idx = 0; idx < n; ++idx) {
+            double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
+                                       static_cast<double>(2 * n));
+            double angle = sign * kPi * reduced / static_cast<double>(n);
+            std::size_t offset = static_cast<std::size_t>(idx * 2);
+            interleaved[offset] = std::cos(angle);
+            interleaved[offset + 1] = std::sin(angle);
+        }
+        return device_allocation_from_doubles(interleaved);
+    }
+    std::vector<float> interleaved(total);
     for (int64_t idx = 0; idx < n; ++idx) {
         double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
                                    static_cast<double>(2 * n));
@@ -134,8 +209,28 @@ DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n,
 }
 
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m) {
-    std::vector<float> interleaved(static_cast<std::size_t>(m * 2), 0.0f);
+    const bool is_double = dtype_is_double(request.input_dtype);
     double sign = request.direction == "inverse" ? -1.0 : 1.0;
+    if (is_double) {
+        std::vector<double> interleaved(static_cast<std::size_t>(m * 2), 0.0);
+        for (int64_t idx = 0; idx < n; ++idx) {
+            double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
+                                       static_cast<double>(2 * n));
+            double angle = sign * kPi * reduced / static_cast<double>(n);
+            double r = std::cos(angle);
+            double i = std::sin(angle);
+            std::size_t offset = static_cast<std::size_t>(idx * 2);
+            interleaved[offset] = r;
+            interleaved[offset + 1] = i;
+            if (idx != 0) {
+                std::size_t mirror = static_cast<std::size_t>((m - idx) * 2);
+                interleaved[mirror] = r;
+                interleaved[mirror + 1] = i;
+            }
+        }
+        return device_allocation_from_doubles(interleaved);
+    }
+    std::vector<float> interleaved(static_cast<std::size_t>(m * 2), 0.0f);
     for (int64_t idx = 0; idx < n; ++idx) {
         double reduced = std::fmod(static_cast<double>(idx) * static_cast<double>(idx),
                                    static_cast<double>(2 * n));
@@ -156,17 +251,31 @@ DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int
 
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf,
                                                     const FFTRequest &request) {
+    const bool is_double = dtype_is_double(request.input_dtype);
     std::vector<DeviceAllocation> tables;
     for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-        auto twiddles = build_stage_twiddles(
-            leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
-        tables.push_back(device_allocation_from_floats(twiddles.first));
-        tables.push_back(device_allocation_from_floats(twiddles.second));
+        if (is_double) {
+            auto twiddles = build_stage_twiddles_d(
+                leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
+            tables.push_back(device_allocation_from_doubles(twiddles.first));
+            tables.push_back(device_allocation_from_doubles(twiddles.second));
+        } else {
+            auto twiddles = build_stage_twiddles(
+                leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
+            tables.push_back(device_allocation_from_floats(twiddles.first));
+            tables.push_back(device_allocation_from_floats(twiddles.second));
+        }
     }
     for (int64_t radix : leaf.generic_radices) {
-        auto dft = build_dft_matrix(radix, request.direction);
-        tables.push_back(device_allocation_from_floats(dft.first));
-        tables.push_back(device_allocation_from_floats(dft.second));
+        if (is_double) {
+            auto dft = build_dft_matrix_d(radix, request.direction);
+            tables.push_back(device_allocation_from_doubles(dft.first));
+            tables.push_back(device_allocation_from_doubles(dft.second));
+        } else {
+            auto dft = build_dft_matrix(radix, request.direction);
+            tables.push_back(device_allocation_from_floats(dft.first));
+            tables.push_back(device_allocation_from_floats(dft.second));
+        }
     }
     return tables;
 }

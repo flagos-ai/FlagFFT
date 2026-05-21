@@ -75,10 +75,18 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.plan_key = PlanKey::from_node(plan->executable.root);
 
         TritonCompiler compiler;
-        plan->executable.forward = compiler.compile_raw_node(
-            plan->executable.root, plan->executable.forward_request, plan->desc.batch);
-        plan->executable.inverse = compiler.compile_raw_node(
-            plan->executable.root, plan->executable.inverse_request, plan->desc.batch);
+        if (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z) {
+            plan->executable.forward = compiler.compile_raw_r2c_node(
+                plan->executable.root, plan->executable.forward_request, plan->desc.batch);
+        } else if (plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D) {
+            plan->executable.inverse = compiler.compile_raw_c2r_node(
+                plan->executable.root, plan->executable.inverse_request, plan->desc.batch);
+        } else {
+            plan->executable.forward = compiler.compile_raw_node(
+                plan->executable.root, plan->executable.forward_request, plan->desc.batch);
+            plan->executable.inverse = compiler.compile_raw_node(
+                plan->executable.root, plan->executable.inverse_request, plan->desc.batch);
+        }
         plan->state.initialized = true;
 
         std::unique_ptr<flagfftPlan_t> handle(new flagfftPlan_t());
@@ -99,7 +107,12 @@ extern "C" flagfftResult flagfftPlan1d(flagfftHandle *plan,
                                        flagfftType type,
                                        int batch) {
     int n[1] = {nx};
-    return flagfftPlanMany(plan, 1, n, nullptr, 1, nx, nullptr, 1, nx, type, batch);
+    const bool real_forward = type == FLAGFFT_R2C || type == FLAGFFT_D2Z;
+    const bool real_inverse = type == FLAGFFT_C2R || type == FLAGFFT_Z2D;
+    const int half = nx / 2 + 1;
+    const int idist = real_inverse ? half : nx;
+    const int odist = real_forward ? half : nx;
+    return flagfftPlanMany(plan, 1, n, nullptr, 1, idist, nullptr, 1, odist, type, batch);
 }
 
 extern "C" flagfftResult flagfftPlan2d(flagfftHandle *plan,
@@ -146,10 +159,8 @@ extern "C" flagfftResult flagfftPlanMany(flagfftHandle *plan,
     flagfft::FlagFFTPlanDesc desc;
     desc.rank = rank;
     desc.n = flagfft::copy_dims(n, rank);
-    desc.inembed = inembed == nullptr ? desc.n : flagfft::copy_dims(inembed, rank);
     desc.istride = istride;
     desc.idist = idist;
-    desc.onembed = onembed == nullptr ? desc.n : flagfft::copy_dims(onembed, rank);
     desc.ostride = ostride;
     desc.odist = odist;
     desc.batch = batch;
@@ -159,6 +170,21 @@ extern "C" flagfftResult flagfftPlanMany(flagfftHandle *plan,
         type, desc.precision, desc.kind, desc.real_input, desc.real_output);
     if (type_result != FLAGFFT_SUCCESS) {
         return type_result;
+    }
+
+    if (inembed != nullptr) {
+        desc.inembed = flagfft::copy_dims(inembed, rank);
+    } else if ((type == FLAGFFT_C2R || type == FLAGFFT_Z2D) && rank == 1) {
+        desc.inembed = {desc.n[0] / 2 + 1};
+    } else {
+        desc.inembed = desc.n;
+    }
+    if (onembed != nullptr) {
+        desc.onembed = flagfft::copy_dims(onembed, rank);
+    } else if ((type == FLAGFFT_R2C || type == FLAGFFT_D2Z) && rank == 1) {
+        desc.onembed = {desc.n[0] / 2 + 1};
+    } else {
+        desc.onembed = desc.n;
     }
 
     return flagfft::build_plan(plan, std::move(desc));
