@@ -1,0 +1,49 @@
+Source: libflagfft
+Section: libs
+Priority: optional
+Maintainer: FlagOS Contributors <contact@flagos.io>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.18),
+               ninja-build,
+               patchelf,
+               python3-dev,
+               libsqlite3-dev,
+               nlohmann-json3-dev (>= 3.11.3)
+Standards-Version: 4.6.2
+Homepage: https://github.com/flagos-ai/FlagFFT
+Vcs-Browser: https://github.com/flagos-ai/FlagFFT
+Vcs-Git: https://github.com/flagos-ai/FlagFFT.git
+Rules-Requires-Root: no
+X-Build-Environment: This package is designed to be built in a CUDA container
+ environment that provides the necessary SDK and Python packages:
+ .
+ - CUDA toolkit (>= 12.0) from nvidia/cuda base image
+ - PyTorch (>= 2.5.0) and Triton (>= 3.1.0) via pip (required by the
+   bundled libtriton_jit submodule built statically into libflagfft.so)
+ - pybind11 via pip; SQLite3 + nlohmann-json via system packages
+ - fmt 10.2.1 downloaded via CMake FetchContent at build time
+ .
+ The Build-Depends listed above are for the Debian packaging tools only.
+ CUDA and Python deps are provided by the container environment.
+
+Package: libflagfft-nvidia
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
+ FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation,
+ targeting FlagOS multi-vendor accelerators. The NVIDIA backend uses
+ CUDA + Triton-JIT for kernel generation.
+ .
+ This package contains the shared library libflagfft.so built for
+ NVIDIA hardware. libtriton_jit is bundled statically into this
+ library; no separate libtriton-jit runtime dependency.
+
+Package: libflagfft-nvidia-dev
+Section: libdevel
+Architecture: amd64
+Depends: libflagfft-nvidia (= ${binary:Version}), ${misc:Depends}
+Description: FlagFFT development files (NVIDIA backend)
+ FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation.
+ .
+ This package contains the header files for building applications
+ against libflagfft-nvidia.
