@@ -106,7 +106,9 @@ enum class KernelKind {
     ReshapePack,
     TwiddleReshapePack,
     RealToComplex,
-    R2CHalfPack
+    R2CHalfPack,
+    CompactToHermitianFull,
+    ComplexToReal
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

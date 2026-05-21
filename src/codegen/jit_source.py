@@ -37,6 +37,8 @@ from src.codegen.kernels import (
     _build_four_step_col_kernel_source,
     _build_four_step_row_kernel_source,
     _build_leaf_kernel_source,
+    _build_compact_to_hermitian_full_kernel_source,
+    _build_complex_to_real_kernel_source,
     _build_r2c_half_pack_kernel_source,
     _build_real_to_complex_kernel_source,
     _build_reshape_pack_kernel_source,
@@ -99,7 +101,7 @@ def _module_source(kernel_source: str) -> str:
 def _arg_signature(name: str, dtype: str) -> str:
     if name == "nbatch":
         return "i32"
-    if name in {"n", "m"}:
+    if name in {"n", "m", "input_distance", "output_distance"}:
         return "i64"
     return _pointer_signature(dtype)
 
@@ -327,6 +329,10 @@ def _emit_r2c_pointwise_jit_kernel(
         kernel_name, kernel_source, arg_names = _build_real_to_complex_kernel_source(n, dtype)
     elif kernel == "r2c_half_pack":
         kernel_name, kernel_source, arg_names = _build_r2c_half_pack_kernel_source(n, dtype)
+    elif kernel == "compact_to_hermitian_full":
+        kernel_name, kernel_source, arg_names = _build_compact_to_hermitian_full_kernel_source(n, dtype)
+    elif kernel == "complex_to_real":
+        kernel_name, kernel_source, arg_names = _build_complex_to_real_kernel_source(n, dtype)
     else:
         raise ValueError(f"unsupported R2C pointwise kernel kind: {kernel}")
 
@@ -461,6 +467,8 @@ def main() -> None:
             "twiddle_reshape_pack",
             "real_to_complex",
             "r2c_half_pack",
+            "compact_to_hermitian_full",
+            "complex_to_real",
         ),
         required=True,
     )
@@ -509,7 +517,7 @@ def main() -> None:
         print(json.dumps(metadata, sort_keys=True))
         return
 
-    if args.kernel in {"real_to_complex", "r2c_half_pack"}:
+    if args.kernel in {"real_to_complex", "r2c_half_pack", "compact_to_hermitian_full", "complex_to_real"}:
         if args.length is None or args.length <= 0:
             parser.error(f"--kernel {args.kernel} requires --length")
         metadata = _emit_r2c_pointwise_jit_kernel(

@@ -159,6 +159,24 @@ KernelKey KernelKey::r2c_half_pack(std::string target, std::string dtype, int64_
     return key;
 }
 
+KernelKey KernelKey::compact_to_hermitian_full(std::string target, std::string dtype, int64_t length) {
+    KernelKey key;
+    key.kind = KernelKind::CompactToHermitianFull;
+    key.target = std::move(target);
+    key.dtype = std::move(dtype);
+    key.length = length;
+    return key;
+}
+
+KernelKey KernelKey::complex_to_real(std::string target, std::string dtype, int64_t length) {
+    KernelKey key;
+    key.kind = KernelKind::ComplexToReal;
+    key.target = std::move(target);
+    key.dtype = std::move(dtype);
+    key.length = length;
+    return key;
+}
+
 bool KernelKey::operator==(const KernelKey &other) const {
     return kind == other.kind && target == other.target && direction == other.direction &&
            dtype == other.dtype && length == other.length && factors == other.factors &&
@@ -190,7 +208,8 @@ std::string KernelKey::repr() const {
     if (kind == KernelKind::ReshapePack || kind == KernelKind::TwiddleReshapePack) {
         out << ";reshape_n1=" << reshape_n1 << ";reshape_n2=" << reshape_n2;
     }
-    if (kind == KernelKind::RealToComplex || kind == KernelKind::R2CHalfPack) {
+    if (kind == KernelKind::RealToComplex || kind == KernelKind::R2CHalfPack ||
+        kind == KernelKind::CompactToHermitianFull || kind == KernelKind::ComplexToReal) {
         out << ";length=" << length;
     }
     return out.str();

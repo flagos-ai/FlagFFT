@@ -13,9 +13,6 @@ extern "C" flagfftResult flagfftExecC2C(flagfftHandle handle,
     if (idata == nullptr || odata == nullptr) {
         return FLAGFFT_INVALID_VALUE;
     }
-    if (idata == odata) {
-        return FLAGFFT_NOT_SUPPORTED;
-    }
     if (plan->desc.type != FLAGFFT_C2C) {
         return FLAGFFT_INVALID_TYPE;
     }
@@ -29,7 +26,8 @@ extern "C" flagfftResult flagfftExecC2C(flagfftHandle handle,
                                                  : plan->executable.forward_request;
     const std::shared_ptr<flagfft::CompiledRawNode> &compiled =
         inverse ? plan->executable.inverse : plan->executable.forward;
-    flagfft::RawExecutionContext context{request, plan->state.stream, plan->desc.batch};
+    flagfft::RawExecutionContext context{
+        request, plan->state.stream, plan->desc.batch, plan->desc.idist, plan->desc.odist};
     return compiled->execute(reinterpret_cast<CUdeviceptr>(idata),
                              reinterpret_cast<CUdeviceptr>(odata),
                              context);
@@ -46,9 +44,6 @@ extern "C" flagfftResult flagfftExecZ2Z(flagfftHandle handle,
     if (idata == nullptr || odata == nullptr) {
         return FLAGFFT_INVALID_VALUE;
     }
-    if (idata == odata) {
-        return FLAGFFT_NOT_SUPPORTED;
-    }
     if (plan->desc.type != FLAGFFT_Z2Z) {
         return FLAGFFT_INVALID_TYPE;
     }
@@ -62,7 +57,8 @@ extern "C" flagfftResult flagfftExecZ2Z(flagfftHandle handle,
                                                  : plan->executable.forward_request;
     const std::shared_ptr<flagfft::CompiledRawNode> &compiled =
         inverse ? plan->executable.inverse : plan->executable.forward;
-    flagfft::RawExecutionContext context{request, plan->state.stream, plan->desc.batch};
+    flagfft::RawExecutionContext context{
+        request, plan->state.stream, plan->desc.batch, plan->desc.idist, plan->desc.odist};
     return compiled->execute(reinterpret_cast<CUdeviceptr>(idata),
                              reinterpret_cast<CUdeviceptr>(odata),
                              context);
@@ -78,16 +74,14 @@ extern "C" flagfftResult flagfftExecR2C(flagfftHandle handle,
     if (idata == nullptr || odata == nullptr) {
         return FLAGFFT_INVALID_VALUE;
     }
-    if (reinterpret_cast<void *>(idata) == reinterpret_cast<void *>(odata)) {
-        return FLAGFFT_NOT_SUPPORTED;
-    }
     if (plan->desc.type != FLAGFFT_R2C) {
         return FLAGFFT_INVALID_TYPE;
     }
 
     std::lock_guard<std::mutex> lock(plan->mutex);
     flagfft::RawExecutionContext context{
-        plan->executable.forward_request, plan->state.stream, plan->desc.batch};
+        plan->executable.forward_request, plan->state.stream, plan->desc.batch,
+        plan->desc.idist, plan->desc.odist};
     return plan->executable.forward->execute(reinterpret_cast<CUdeviceptr>(idata),
                                              reinterpret_cast<CUdeviceptr>(odata),
                                              context);
@@ -96,25 +90,70 @@ extern "C" flagfftResult flagfftExecR2C(flagfftHandle handle,
 extern "C" flagfftResult flagfftExecD2Z(flagfftHandle handle,
                                         flagfftDoubleReal *idata,
                                         flagfftDoubleComplex *odata) {
-    (void)idata;
-    (void)odata;
-    return flagfft::checked_plan(handle) == nullptr ? FLAGFFT_INVALID_PLAN : FLAGFFT_NOT_SUPPORTED;
+    flagfft::FlagFFTPlan *plan = flagfft::checked_plan(handle);
+    if (plan == nullptr || plan->state.destroyed || !plan->state.initialized) {
+        return FLAGFFT_INVALID_PLAN;
+    }
+    if (idata == nullptr || odata == nullptr) {
+        return FLAGFFT_INVALID_VALUE;
+    }
+    if (plan->desc.type != FLAGFFT_D2Z) {
+        return FLAGFFT_INVALID_TYPE;
+    }
+
+    std::lock_guard<std::mutex> lock(plan->mutex);
+    flagfft::RawExecutionContext context{
+        plan->executable.forward_request, plan->state.stream, plan->desc.batch,
+        plan->desc.idist, plan->desc.odist};
+    return plan->executable.forward->execute(reinterpret_cast<CUdeviceptr>(idata),
+                                             reinterpret_cast<CUdeviceptr>(odata),
+                                             context);
 }
 
 extern "C" flagfftResult flagfftExecC2R(flagfftHandle handle,
                                         flagfftComplex *idata,
                                         flagfftReal *odata) {
-    (void)idata;
-    (void)odata;
-    return flagfft::checked_plan(handle) == nullptr ? FLAGFFT_INVALID_PLAN : FLAGFFT_NOT_SUPPORTED;
+    flagfft::FlagFFTPlan *plan = flagfft::checked_plan(handle);
+    if (plan == nullptr || plan->state.destroyed || !plan->state.initialized) {
+        return FLAGFFT_INVALID_PLAN;
+    }
+    if (idata == nullptr || odata == nullptr) {
+        return FLAGFFT_INVALID_VALUE;
+    }
+    if (plan->desc.type != FLAGFFT_C2R) {
+        return FLAGFFT_INVALID_TYPE;
+    }
+
+    std::lock_guard<std::mutex> lock(plan->mutex);
+    flagfft::RawExecutionContext context{
+        plan->executable.inverse_request, plan->state.stream, plan->desc.batch,
+        plan->desc.idist, plan->desc.odist};
+    return plan->executable.inverse->execute(reinterpret_cast<CUdeviceptr>(idata),
+                                             reinterpret_cast<CUdeviceptr>(odata),
+                                             context);
 }
 
 extern "C" flagfftResult flagfftExecZ2D(flagfftHandle handle,
                                         flagfftDoubleComplex *idata,
                                         flagfftDoubleReal *odata) {
-    (void)idata;
-    (void)odata;
-    return flagfft::checked_plan(handle) == nullptr ? FLAGFFT_INVALID_PLAN : FLAGFFT_NOT_SUPPORTED;
+    flagfft::FlagFFTPlan *plan = flagfft::checked_plan(handle);
+    if (plan == nullptr || plan->state.destroyed || !plan->state.initialized) {
+        return FLAGFFT_INVALID_PLAN;
+    }
+    if (idata == nullptr || odata == nullptr) {
+        return FLAGFFT_INVALID_VALUE;
+    }
+    if (plan->desc.type != FLAGFFT_Z2D) {
+        return FLAGFFT_INVALID_TYPE;
+    }
+
+    std::lock_guard<std::mutex> lock(plan->mutex);
+    flagfft::RawExecutionContext context{
+        plan->executable.inverse_request, plan->state.stream, plan->desc.batch,
+        plan->desc.idist, plan->desc.odist};
+    return plan->executable.inverse->execute(reinterpret_cast<CUdeviceptr>(idata),
+                                             reinterpret_cast<CUdeviceptr>(odata),
+                                             context);
 }
 
 extern "C" flagfftResult flagfftSetStream(flagfftHandle handle, cudaStream_t stream) {

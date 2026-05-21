@@ -112,6 +112,8 @@ struct KernelKey {
     static KernelKey twiddle_reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
     static KernelKey real_to_complex(std::string target, std::string dtype, int64_t length);
     static KernelKey r2c_half_pack(std::string target, std::string dtype, int64_t length);
+    static KernelKey compact_to_hermitian_full(std::string target, std::string dtype, int64_t length);
+    static KernelKey complex_to_real(std::string target, std::string dtype, int64_t length);
     bool operator==(const KernelKey &other) const;
     std::string repr() const;
 };

@@ -119,6 +119,10 @@ std::string kernel_kind_name(KernelKind kind) {
             return "real_to_complex";
         case KernelKind::R2CHalfPack:
             return "r2c_half_pack";
+        case KernelKind::CompactToHermitianFull:
+            return "compact_to_hermitian_full";
+        case KernelKind::ComplexToReal:
+            return "complex_to_real";
     }
     return "unknown";
 }

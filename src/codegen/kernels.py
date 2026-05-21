@@ -893,19 +893,20 @@ def _build_real_to_complex_kernel_source(
         def {kernel_name}(
             in_ptr,
             out_ptr,
+            input_distance,
             nbatch,
         ):
             pid_block = tl.program_id(0)
             pid_batch = tl.program_id(1)
             offsets = pid_block * {block} + tl.arange(0, {block})
             mask = offsets < {n}
-            xr = tl.load(in_ptr + pid_batch * {n} + offsets, mask=mask, other={zero})
+            xr = tl.load(in_ptr + pid_batch * input_distance + offsets, mask=mask, other={zero})
             dst = out_ptr + (pid_batch * {n} + offsets) * 2
             tl.store(dst, xr, mask=mask)
             tl.store(dst + 1, 0.0, mask=mask)
         """
     )
-    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+    return kernel_name, source, ["in_ptr", "out_ptr", "input_distance", "nbatch"]
 
 
 def _build_r2c_half_pack_kernel_source(
@@ -922,6 +923,7 @@ def _build_r2c_half_pack_kernel_source(
         def {kernel_name}(
             in_ptr,
             out_ptr,
+            output_distance,
             nbatch,
         ):
             pid_block = tl.program_id(0)
@@ -931,12 +933,77 @@ def _build_r2c_half_pack_kernel_source(
             src = in_ptr + (pid_batch * {n} + offsets) * 2
             xr = tl.load(src, mask=mask, other={zero})
             xi = tl.load(src + 1, mask=mask, other={zero})
-            dst = out_ptr + (pid_batch * {half} + offsets) * 2
+            dst = out_ptr + (pid_batch * output_distance + offsets) * 2
             tl.store(dst, xr, mask=mask)
             tl.store(dst + 1, xi, mask=mask)
         """
     )
-    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+    return kernel_name, source, ["in_ptr", "out_ptr", "output_distance", "nbatch"]
+
+
+def _build_compact_to_hermitian_full_kernel_source(
+    n: int, dtype: str
+) -> tuple[str, list[str], list[str]]:
+    half = n // 2 + 1
+    nyquist_guard = f" | (offsets == {n // 2})" if n % 2 == 0 else ""
+    block = 256
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    kernel_name = f"_compact_to_hermitian_full_kernel_n{n}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            input_distance,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(1)
+            offsets = pid_block * {block} + tl.arange(0, {block})
+            mask = offsets < {n}
+            src_k = tl.where(offsets < {half}, offsets, {n} - offsets)
+            src = in_ptr + (pid_batch * input_distance + src_k) * 2
+            xr = tl.load(src, mask=mask, other={zero})
+            xi = tl.load(src + 1, mask=mask, other={zero})
+            xi = tl.where(offsets < {half}, xi, -xi)
+            xi = tl.where((offsets == 0){nyquist_guard}, 0.0, xi)
+            dst = out_ptr + (pid_batch * {n} + offsets) * 2
+            tl.store(dst, xr, mask=mask)
+            tl.store(dst + 1, xi, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "input_distance", "nbatch"]
+
+
+def _build_complex_to_real_kernel_source(
+    n: int, dtype: str
+) -> tuple[str, list[str], list[str]]:
+    block = 256
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    kernel_name = f"_complex_to_real_kernel_n{n}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            output_distance,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(1)
+            offsets = pid_block * {block} + tl.arange(0, {block})
+            mask = offsets < {n}
+            src = in_ptr + (pid_batch * {n} + offsets) * 2
+            xr = tl.load(src, mask=mask, other={zero})
+            dst = out_ptr + pid_batch * output_distance + offsets
+            tl.store(dst, xr, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "output_distance", "nbatch"]
 
 
 __all__ = [
@@ -950,6 +1017,8 @@ __all__ = [
     "_build_leaf_kernel_source",
     "_build_four_step_col_kernel_source",
     "_build_four_step_row_kernel_source",
+    "_build_compact_to_hermitian_full_kernel_source",
+    "_build_complex_to_real_kernel_source",
     "_build_r2c_half_pack_kernel_source",
     "_build_real_to_complex_kernel_source",
     "_build_reshape_pack_kernel_source",

@@ -135,6 +135,12 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &k
         case KernelKind::R2CHalfPack:
             kernel_kind = "r2c_half_pack";
             break;
+        case KernelKind::CompactToHermitianFull:
+            kernel_kind = "compact_to_hermitian_full";
+            break;
+        case KernelKind::ComplexToReal:
+            kernel_kind = "complex_to_real";
+            break;
         default:
             throw std::runtime_error("JIT backend does not support kernel kind: " +
                                      kernel_kind_name(key.kind));
@@ -169,7 +175,8 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &k
         jit_command << " --reshape-n1 " << key.reshape_n1
                     << " --reshape-n2 " << key.reshape_n2;
     }
-    if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack) {
+    if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
+        key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
         jit_command << " --length " << key.length;
     }
 

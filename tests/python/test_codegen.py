@@ -211,13 +211,34 @@ def test_jit_r2c_pointwise_source_metadata(tmp_path) -> None:
         dtype="complex64",
         out_dir=tmp_path,
     )
+    expand_inverse = module._emit_r2c_pointwise_jit_kernel(
+        kernel="compact_to_hermitian_full",
+        n=17,
+        dtype="complex128",
+        out_dir=tmp_path,
+    )
+    pack_inverse = module._emit_r2c_pointwise_jit_kernel(
+        kernel="complex_to_real",
+        n=17,
+        dtype="complex128",
+        out_dir=tmp_path,
+    )
 
     assert expand["kernel_type"] == "real_to_complex"
-    assert expand["arg_names"] == ["in_ptr", "out_ptr", "nbatch"]
-    assert expand["signature"] == "*fp32:16,*fp32:16,i32"
+    assert expand["arg_names"] == ["in_ptr", "out_ptr", "input_distance", "nbatch"]
+    assert expand["signature"] == "*fp32:16,*fp32:16,i64,i32"
     assert (tmp_path / "flagfft_jit_real_to_complex_n17_f32.py").is_file()
 
     assert pack["kernel_type"] == "r2c_half_pack"
     assert pack["length"] == 17
-    assert pack["signature"] == "*fp32:16,*fp32:16,i32"
+    assert pack["arg_names"] == ["in_ptr", "out_ptr", "output_distance", "nbatch"]
+    assert pack["signature"] == "*fp32:16,*fp32:16,i64,i32"
     assert (tmp_path / "flagfft_jit_r2c_half_pack_n17_f32.py").is_file()
+
+    assert expand_inverse["kernel_type"] == "compact_to_hermitian_full"
+    assert expand_inverse["signature"] == "*fp64:16,*fp64:16,i64,i32"
+    assert (tmp_path / "flagfft_jit_compact_to_hermitian_full_n17_f64.py").is_file()
+
+    assert pack_inverse["kernel_type"] == "complex_to_real"
+    assert pack_inverse["signature"] == "*fp64:16,*fp64:16,i64,i32"
+    assert (tmp_path / "flagfft_jit_complex_to_real_n17_f64.py").is_file()

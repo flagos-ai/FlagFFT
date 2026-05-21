@@ -41,6 +41,8 @@ def test_bench_vs_cufft_help(request) -> None:
     assert "--retune" in result.stdout
     assert "--tune-db" in result.stdout
     assert "--launches-per-sample" in result.stdout
+    assert "--type" in result.stdout
+    assert "--inplace" in result.stdout
 
 
 def test_bench_vs_cufft_smoke(request, tmp_path) -> None:
@@ -88,3 +90,37 @@ def test_bench_vs_cufft_smoke(request, tmp_path) -> None:
     assert "Plan mode:" in result.stdout
     assert "flagfft_ms" in result.stdout
     assert "cufft_ms" in result.stdout
+
+
+@pytest.mark.parametrize("extra", [["--type", "r2c"], ["--type", "c2r", "--inplace"]])
+def test_bench_vs_cufft_real_type_smoke(request, tmp_path, extra) -> None:
+    exe = _require_benchmark_exe(request)
+    command = [
+        str(exe),
+        "--lengths",
+        "16",
+        "--batch",
+        "1",
+        "--warmup",
+        "0",
+        "--iters",
+        "1",
+        "--launches-per-sample",
+        "1",
+        "--tune-db",
+        str(tmp_path / "tuned_plans.sqlite"),
+        *extra,
+    ]
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=180,
+    )
+    if result.returncode == 2 and "no CUDA device available" in result.stderr:
+        pytest.skip("CUDA device required")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FlagFFT vs cuFFT benchmark" in result.stdout

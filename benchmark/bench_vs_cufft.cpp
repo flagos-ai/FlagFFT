@@ -58,6 +58,7 @@ namespace {
 
 struct BenchConfig {
     std::vector<int> lengths{256, 1024, 4096, 8192, 16384, 65536};
+    std::string type = "c2c";
     int batch = 64;
     int n_warmup = 10;
     int n_iters = 100;
@@ -70,6 +71,7 @@ struct BenchConfig {
     int tune_static_limit = 32;
     int tune_finalists = 3;
     bool print_path = false;
+    bool inplace = false;
 };
 
 struct CudaStream {
@@ -123,6 +125,54 @@ std::vector<flagfftComplex> sample_input(int n, int batch) {
     return data;
 }
 
+std::vector<flagfftDoubleComplex> sample_input_z(int n, int batch) {
+    std::mt19937 rng(4321 + n * 19 + batch);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    std::vector<flagfftDoubleComplex> data(static_cast<std::size_t>(n) * batch);
+    for (auto &v : data) {
+        v.x = dist(rng);
+        v.y = dist(rng);
+    }
+    return data;
+}
+
+std::vector<flagfftReal> sample_input_r(int n, int batch, int distance) {
+    std::mt19937 rng(2468 + n * 13 + batch);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<flagfftReal> data(static_cast<std::size_t>(distance) * batch, 0.0f);
+    for (int b = 0; b < batch; ++b) {
+        for (int i = 0; i < n; ++i) {
+            data[static_cast<std::size_t>(b) * distance + i] = dist(rng);
+        }
+    }
+    return data;
+}
+
+std::vector<flagfftDoubleReal> sample_input_d(int n, int batch, int distance) {
+    std::mt19937 rng(8642 + n * 13 + batch);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    std::vector<flagfftDoubleReal> data(static_cast<std::size_t>(distance) * batch, 0.0);
+    for (int b = 0; b < batch; ++b) {
+        for (int i = 0; i < n; ++i) {
+            data[static_cast<std::size_t>(b) * distance + i] = dist(rng);
+        }
+    }
+    return data;
+}
+
+template <typename ComplexT>
+std::vector<ComplexT> sample_compact_complex(int half, int batch) {
+    std::mt19937 rng(9753 + half * 23 + batch);
+    using Scalar = decltype(ComplexT{}.x);
+    std::uniform_real_distribution<Scalar> dist(static_cast<Scalar>(-1.0), static_cast<Scalar>(1.0));
+    std::vector<ComplexT> data(static_cast<std::size_t>(half) * batch);
+    for (auto &v : data) {
+        v.x = dist(rng);
+        v.y = dist(rng);
+    }
+    return data;
+}
+
 float median(std::vector<float> v) {
     std::sort(v.begin(), v.end());
     return v[v.size() / 2];
@@ -133,30 +183,166 @@ struct BenchResult {
     float cufft_ms;
 };
 
-BenchResult bench_one(int n,
-                      int batch,
-                      int direction,
-                      int n_warmup,
-                      int n_iters,
-                      int launches_per_sample,
-                      bool print_path) {
-    const std::size_t bytes = static_cast<std::size_t>(n) * batch * sizeof(flagfftComplex);
-    flagfftComplex *d_in = nullptr;
-    flagfftComplex *d_out_flagfft = nullptr;
-    flagfftComplex *d_out_cufft = nullptr;
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&d_in), bytes));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&d_out_flagfft), bytes));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&d_out_cufft), bytes));
+flagfftType flagfft_type_for(const std::string &type) {
+    if (type == "c2c") return FLAGFFT_C2C;
+    if (type == "z2z") return FLAGFFT_Z2Z;
+    if (type == "r2c") return FLAGFFT_R2C;
+    if (type == "d2z") return FLAGFFT_D2Z;
+    if (type == "c2r") return FLAGFFT_C2R;
+    if (type == "z2d") return FLAGFFT_Z2D;
+    throw std::runtime_error("unsupported benchmark type: " + type);
+}
 
-    auto host = sample_input(n, batch);
-    CUDA_CHECK(cudaMemcpy(d_in, host.data(), bytes, cudaMemcpyHostToDevice));
+cufftType cufft_type_for(const std::string &type) {
+    if (type == "c2c") return CUFFT_C2C;
+    if (type == "z2z") return CUFFT_Z2Z;
+    if (type == "r2c") return CUFFT_R2C;
+    if (type == "d2z") return CUFFT_D2Z;
+    if (type == "c2r") return CUFFT_C2R;
+    if (type == "z2d") return CUFFT_Z2D;
+    throw std::runtime_error("unsupported benchmark type: " + type);
+}
+
+bool is_complex_type(const std::string &type) {
+    return type == "c2c" || type == "z2z";
+}
+
+bool is_double_type(const std::string &type) {
+    return type == "z2z" || type == "d2z" || type == "z2d";
+}
+
+bool is_real_forward_type(const std::string &type) {
+    return type == "r2c" || type == "d2z";
+}
+
+void exec_flagfft(flagfftHandle plan, const BenchConfig &cfg, void *input, void *output) {
+    if (cfg.type == "c2c") {
+        FLAGFFT_CHECK(flagfftExecC2C(plan,
+                                     static_cast<flagfftComplex *>(input),
+                                     static_cast<flagfftComplex *>(output),
+                                     cfg.direction));
+    } else if (cfg.type == "z2z") {
+        FLAGFFT_CHECK(flagfftExecZ2Z(plan,
+                                     static_cast<flagfftDoubleComplex *>(input),
+                                     static_cast<flagfftDoubleComplex *>(output),
+                                     cfg.direction));
+    } else if (cfg.type == "r2c") {
+        FLAGFFT_CHECK(flagfftExecR2C(plan,
+                                     static_cast<flagfftReal *>(input),
+                                     static_cast<flagfftComplex *>(output)));
+    } else if (cfg.type == "d2z") {
+        FLAGFFT_CHECK(flagfftExecD2Z(plan,
+                                     static_cast<flagfftDoubleReal *>(input),
+                                     static_cast<flagfftDoubleComplex *>(output)));
+    } else if (cfg.type == "c2r") {
+        FLAGFFT_CHECK(flagfftExecC2R(plan,
+                                     static_cast<flagfftComplex *>(input),
+                                     static_cast<flagfftReal *>(output)));
+    } else if (cfg.type == "z2d") {
+        FLAGFFT_CHECK(flagfftExecZ2D(plan,
+                                     static_cast<flagfftDoubleComplex *>(input),
+                                     static_cast<flagfftDoubleReal *>(output)));
+    }
+}
+
+void exec_cufft(cufftHandle plan, const BenchConfig &cfg, void *input, void *output) {
+    const int cufft_dir = (cfg.direction == FLAGFFT_FORWARD) ? CUFFT_FORWARD : CUFFT_INVERSE;
+    if (cfg.type == "c2c") {
+        CUFFT_CHECK(cufftExecC2C(plan,
+                                 static_cast<cufftComplex *>(input),
+                                 static_cast<cufftComplex *>(output),
+                                 cufft_dir));
+    } else if (cfg.type == "z2z") {
+        CUFFT_CHECK(cufftExecZ2Z(plan,
+                                 static_cast<cufftDoubleComplex *>(input),
+                                 static_cast<cufftDoubleComplex *>(output),
+                                 cufft_dir));
+    } else if (cfg.type == "r2c") {
+        CUFFT_CHECK(cufftExecR2C(plan,
+                                 static_cast<cufftReal *>(input),
+                                 static_cast<cufftComplex *>(output)));
+    } else if (cfg.type == "d2z") {
+        CUFFT_CHECK(cufftExecD2Z(plan,
+                                 static_cast<cufftDoubleReal *>(input),
+                                 static_cast<cufftDoubleComplex *>(output)));
+    } else if (cfg.type == "c2r") {
+        CUFFT_CHECK(cufftExecC2R(plan,
+                                 static_cast<cufftComplex *>(input),
+                                 static_cast<cufftReal *>(output)));
+    } else if (cfg.type == "z2d") {
+        CUFFT_CHECK(cufftExecZ2D(plan,
+                                 static_cast<cufftDoubleComplex *>(input),
+                                 static_cast<cufftDoubleReal *>(output)));
+    }
+}
+
+BenchResult bench_one(int n,
+                      const BenchConfig &cfg) {
+    const int half = n / 2 + 1;
+    const int padded_real_distance = 2 * half;
+    const bool fp64 = is_double_type(cfg.type);
+    const bool real_forward = is_real_forward_type(cfg.type);
+    const bool real_inverse = cfg.type == "c2r" || cfg.type == "z2d";
+    const std::size_t real_bytes = fp64 ? sizeof(flagfftDoubleReal) : sizeof(flagfftReal);
+    const std::size_t complex_bytes = fp64 ? sizeof(flagfftDoubleComplex) : sizeof(flagfftComplex);
+    const std::size_t inplace_bytes =
+        is_complex_type(cfg.type) ? static_cast<std::size_t>(cfg.batch) * n * complex_bytes
+                                  : static_cast<std::size_t>(cfg.batch) * padded_real_distance * real_bytes;
+    const std::size_t in_bytes =
+        cfg.inplace ? inplace_bytes
+                    : static_cast<std::size_t>(cfg.batch) *
+                          (real_forward ? n * real_bytes : (real_inverse ? half * complex_bytes : n * complex_bytes));
+    const std::size_t out_bytes =
+        cfg.inplace ? in_bytes
+                    : static_cast<std::size_t>(cfg.batch) *
+                          (real_forward ? half * complex_bytes : (real_inverse ? n * real_bytes : n * complex_bytes));
+
+    void *d_in_flagfft = nullptr;
+    void *d_out_flagfft = nullptr;
+    void *d_in_cufft = nullptr;
+    void *d_out_cufft = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_in_flagfft, in_bytes));
+    CUDA_CHECK(cudaMalloc(&d_in_cufft, in_bytes));
+    if (cfg.inplace) {
+        d_out_flagfft = d_in_flagfft;
+        d_out_cufft = d_in_cufft;
+    } else {
+        CUDA_CHECK(cudaMalloc(&d_out_flagfft, out_bytes));
+        CUDA_CHECK(cudaMalloc(&d_out_cufft, out_bytes));
+    }
+
+    if (cfg.type == "c2c") {
+        auto host = sample_input(n, cfg.batch);
+        CUDA_CHECK(cudaMemcpy(d_in_flagfft, host.data(), host.size() * sizeof(flagfftComplex), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_in_cufft, host.data(), host.size() * sizeof(flagfftComplex), cudaMemcpyHostToDevice));
+    } else if (cfg.type == "z2z") {
+        auto host = sample_input_z(n, cfg.batch);
+        CUDA_CHECK(cudaMemcpy(d_in_flagfft, host.data(), host.size() * sizeof(flagfftDoubleComplex), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_in_cufft, host.data(), host.size() * sizeof(flagfftDoubleComplex), cudaMemcpyHostToDevice));
+    } else if (cfg.type == "r2c") {
+        auto host = sample_input_r(n, cfg.batch, cfg.inplace ? padded_real_distance : n);
+        CUDA_CHECK(cudaMemcpy(d_in_flagfft, host.data(), host.size() * sizeof(flagfftReal), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_in_cufft, host.data(), host.size() * sizeof(flagfftReal), cudaMemcpyHostToDevice));
+    } else if (cfg.type == "d2z") {
+        auto host = sample_input_d(n, cfg.batch, cfg.inplace ? padded_real_distance : n);
+        CUDA_CHECK(cudaMemcpy(d_in_flagfft, host.data(), host.size() * sizeof(flagfftDoubleReal), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_in_cufft, host.data(), host.size() * sizeof(flagfftDoubleReal), cudaMemcpyHostToDevice));
+    } else if (cfg.type == "c2r") {
+        auto host = sample_compact_complex<flagfftComplex>(half, cfg.batch);
+        CUDA_CHECK(cudaMemcpy(d_in_flagfft, host.data(), host.size() * sizeof(flagfftComplex), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_in_cufft, host.data(), host.size() * sizeof(flagfftComplex), cudaMemcpyHostToDevice));
+    } else if (cfg.type == "z2d") {
+        auto host = sample_compact_complex<flagfftDoubleComplex>(half, cfg.batch);
+        CUDA_CHECK(cudaMemcpy(d_in_flagfft, host.data(), host.size() * sizeof(flagfftDoubleComplex), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_in_cufft, host.data(), host.size() * sizeof(flagfftDoubleComplex), cudaMemcpyHostToDevice));
+    }
     CudaStream stream;
 
     flagfftHandle ff_plan = nullptr;
-    FLAGFFT_CHECK(flagfftPlan1d(&ff_plan, n, FLAGFFT_C2C, batch));
+    FLAGFFT_CHECK(flagfftPlan1d(&ff_plan, n, flagfft_type_for(cfg.type), cfg.batch));
     FLAGFFT_CHECK(flagfftSetStream(ff_plan, stream.stream));
 
-    if (print_path) {
+    if (cfg.print_path) {
         const char *desc = flagfftGetPlanDescription(ff_plan);
         if (desc != nullptr) {
             std::printf("%s\n", desc);
@@ -164,46 +350,38 @@ BenchResult bench_one(int n,
     }
 
     cufftHandle cf_plan = 0;
-    CUFFT_CHECK(cufftPlan1d(&cf_plan, n, CUFFT_C2C, batch));
+    CUFFT_CHECK(cufftPlan1d(&cf_plan, n, cufft_type_for(cfg.type), cfg.batch));
     CUFFT_CHECK(cufftSetStream(cf_plan, stream.stream));
 
-    const int cufft_dir = (direction == FLAGFFT_FORWARD) ? CUFFT_FORWARD : CUFFT_INVERSE;
-
-    for (int i = 0; i < n_warmup; ++i) {
-        FLAGFFT_CHECK(flagfftExecC2C(ff_plan, d_in, d_out_flagfft, direction));
-        CUFFT_CHECK(cufftExecC2C(cf_plan,
-                                 reinterpret_cast<cufftComplex *>(d_in),
-                                 reinterpret_cast<cufftComplex *>(d_out_cufft),
-                                 cufft_dir));
+    for (int i = 0; i < cfg.n_warmup; ++i) {
+        exec_flagfft(ff_plan, cfg, d_in_flagfft, d_out_flagfft);
+        exec_cufft(cf_plan, cfg, d_in_cufft, d_out_cufft);
     }
     CUDA_CHECK(cudaStreamSynchronize(stream.stream));
 
-    std::vector<float> ff_times(n_iters);
-    std::vector<float> cf_times(n_iters);
+    std::vector<float> ff_times(cfg.n_iters);
+    std::vector<float> cf_times(cfg.n_iters);
     CudaTimer timer;
 
     auto time_flagfft = [&]() -> float {
         timer.record_start(stream.stream);
-        for (int launch = 0; launch < launches_per_sample; ++launch) {
-            FLAGFFT_CHECK(flagfftExecC2C(ff_plan, d_in, d_out_flagfft, direction));
+        for (int launch = 0; launch < cfg.launches_per_sample; ++launch) {
+            exec_flagfft(ff_plan, cfg, d_in_flagfft, d_out_flagfft);
         }
         timer.record_stop(stream.stream);
-        return timer.elapsed_ms() / static_cast<float>(launches_per_sample);
+        return timer.elapsed_ms() / static_cast<float>(cfg.launches_per_sample);
     };
 
     auto time_cufft = [&]() -> float {
         timer.record_start(stream.stream);
-        for (int launch = 0; launch < launches_per_sample; ++launch) {
-            CUFFT_CHECK(cufftExecC2C(cf_plan,
-                                     reinterpret_cast<cufftComplex *>(d_in),
-                                     reinterpret_cast<cufftComplex *>(d_out_cufft),
-                                     cufft_dir));
+        for (int launch = 0; launch < cfg.launches_per_sample; ++launch) {
+            exec_cufft(cf_plan, cfg, d_in_cufft, d_out_cufft);
         }
         timer.record_stop(stream.stream);
-        return timer.elapsed_ms() / static_cast<float>(launches_per_sample);
+        return timer.elapsed_ms() / static_cast<float>(cfg.launches_per_sample);
     };
 
-    for (int i = 0; i < n_iters; ++i) {
+    for (int i = 0; i < cfg.n_iters; ++i) {
         if ((i & 1) == 0) {
             cf_times[i] = time_cufft();
             ff_times[i] = time_flagfft();
@@ -215,9 +393,12 @@ BenchResult bench_one(int n,
 
     FLAGFFT_CHECK(flagfftDestroy(ff_plan));
     CUFFT_CHECK(cufftDestroy(cf_plan));
-    CUDA_CHECK(cudaFree(d_in));
-    CUDA_CHECK(cudaFree(d_out_flagfft));
-    CUDA_CHECK(cudaFree(d_out_cufft));
+    CUDA_CHECK(cudaFree(d_in_flagfft));
+    CUDA_CHECK(cudaFree(d_in_cufft));
+    if (!cfg.inplace) {
+        CUDA_CHECK(cudaFree(d_out_flagfft));
+        CUDA_CHECK(cudaFree(d_out_cufft));
+    }
 
     return {median(std::move(ff_times)), median(std::move(cf_times))};
 }
@@ -303,6 +484,7 @@ void print_usage(const char *argv0) {
     std::printf(
         "Usage: %s [--lengths N1,N2,...] [--batch B] [--warmup W] [--iters K]\n"
         "          [--launches-per-sample K]\n"
+        "          [--type c2c|z2z|r2c|d2z|c2r|z2d] [--inplace]\n"
         "          [--direction forward|inverse] [--tune|--retune]\n"
         "          [--tune-db PATH] [--tune-command CMD]\n"
         "          [--tune-static-limit N] [--tune-finalists N]\n"
@@ -329,6 +511,15 @@ bool parse_args(int argc, char **argv, BenchConfig &cfg) {
                 return false;
             }
             cfg.lengths = std::move(parsed);
+        } else if (arg == "--type") {
+            const char *v = need_value("--type");
+            if (!v) return false;
+            cfg.type = v;
+            if (cfg.type != "c2c" && cfg.type != "z2z" && cfg.type != "r2c" &&
+                cfg.type != "d2z" && cfg.type != "c2r" && cfg.type != "z2d") {
+                std::fprintf(stderr, "unknown type: %s\n", v);
+                return false;
+            }
         } else if (arg == "--batch") {
             const char *v = need_value("--batch");
             if (!v) return false;
@@ -380,6 +571,8 @@ bool parse_args(int argc, char **argv, BenchConfig &cfg) {
             cfg.tune_finalists = std::atoi(v);
         } else if (arg == "--print-path") {
             cfg.print_path = true;
+        } else if (arg == "--inplace") {
+            cfg.inplace = true;
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argv[0]);
             std::exit(0);
@@ -402,6 +595,14 @@ bool parse_args(int argc, char **argv, BenchConfig &cfg) {
     if (cfg.tune_static_limit <= 0 || cfg.tune_finalists <= 0) {
         std::fprintf(stderr, "invalid tune config: static_limit=%d finalists=%d\n",
                      cfg.tune_static_limit, cfg.tune_finalists);
+        return false;
+    }
+    if (!is_complex_type(cfg.type) && cfg.direction != FLAGFFT_FORWARD) {
+        std::fprintf(stderr, "--direction is only meaningful for --type c2c|z2z\n");
+        return false;
+    }
+    if (cfg.tune && cfg.type != "c2c") {
+        std::fprintf(stderr, "--tune/--retune currently supports only --type c2c\n");
         return false;
     }
     return true;
@@ -452,7 +653,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    std::printf("FlagFFT vs cuFFT benchmark (warmup=%d, samples=%d, launches_per_sample=%d, direction=%s, tune_db=%s)\n",
+    std::printf("FlagFFT vs cuFFT benchmark (type=%s, inplace=%s, warmup=%d, samples=%d, launches_per_sample=%d, direction=%s, tune_db=%s)\n",
+                cfg.type.c_str(),
+                cfg.inplace ? "yes" : "no",
                 cfg.n_warmup,
                 cfg.n_iters,
                 cfg.launches_per_sample,
@@ -466,9 +669,7 @@ int main(int argc, char **argv) {
     std::printf("------------------------------------------------------\n");
 
     for (int n : cfg.lengths) {
-        BenchResult r = bench_one(n, cfg.batch, cfg.direction,
-                                  cfg.n_warmup, cfg.n_iters, cfg.launches_per_sample,
-                                  cfg.print_path);
+        BenchResult r = bench_one(n, cfg);
         float speedup = (r.flagfft_ms > 0.f) ? (r.cufft_ms / r.flagfft_ms) : 0.f;
         std::printf("%-10d %-7d %-13.5f %-12.5f %-8.2fx\n",
                     n, cfg.batch, r.flagfft_ms, r.cufft_ms, speedup);

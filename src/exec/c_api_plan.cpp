@@ -75,9 +75,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.plan_key = PlanKey::from_node(plan->executable.root);
 
         TritonCompiler compiler;
-        if (plan->desc.type == FLAGFFT_R2C) {
+        if (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z) {
             plan->executable.forward = compiler.compile_raw_r2c_node(
                 plan->executable.root, plan->executable.forward_request, plan->desc.batch);
+        } else if (plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D) {
+            plan->executable.inverse = compiler.compile_raw_c2r_node(
+                plan->executable.root, plan->executable.inverse_request, plan->desc.batch);
         } else {
             plan->executable.forward = compiler.compile_raw_node(
                 plan->executable.root, plan->executable.forward_request, plan->desc.batch);
@@ -104,8 +107,12 @@ extern "C" flagfftResult flagfftPlan1d(flagfftHandle *plan,
                                        flagfftType type,
                                        int batch) {
     int n[1] = {nx};
-    const int odist = type == FLAGFFT_R2C ? nx / 2 + 1 : nx;
-    return flagfftPlanMany(plan, 1, n, nullptr, 1, nx, nullptr, 1, odist, type, batch);
+    const bool real_forward = type == FLAGFFT_R2C || type == FLAGFFT_D2Z;
+    const bool real_inverse = type == FLAGFFT_C2R || type == FLAGFFT_Z2D;
+    const int half = nx / 2 + 1;
+    const int idist = real_inverse ? half : nx;
+    const int odist = real_forward ? half : nx;
+    return flagfftPlanMany(plan, 1, n, nullptr, 1, idist, nullptr, 1, odist, type, batch);
 }
 
 extern "C" flagfftResult flagfftPlan2d(flagfftHandle *plan,
@@ -165,10 +172,16 @@ extern "C" flagfftResult flagfftPlanMany(flagfftHandle *plan,
         return type_result;
     }
 
-    desc.inembed = inembed == nullptr ? desc.n : flagfft::copy_dims(inembed, rank);
+    if (inembed != nullptr) {
+        desc.inembed = flagfft::copy_dims(inembed, rank);
+    } else if ((type == FLAGFFT_C2R || type == FLAGFFT_Z2D) && rank == 1) {
+        desc.inembed = {desc.n[0] / 2 + 1};
+    } else {
+        desc.inembed = desc.n;
+    }
     if (onembed != nullptr) {
         desc.onembed = flagfft::copy_dims(onembed, rank);
-    } else if (type == FLAGFFT_R2C && rank == 1) {
+    } else if ((type == FLAGFFT_R2C || type == FLAGFFT_D2Z) && rank == 1) {
         desc.onembed = {desc.n[0] / 2 + 1};
     } else {
         desc.onembed = desc.n;

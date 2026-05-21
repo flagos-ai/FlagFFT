@@ -1,5 +1,6 @@
 #include "flagfft/core.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <sstream>
 
@@ -327,9 +328,18 @@ flagfftResult CompiledRawR2CNode::execute(CUdeviceptr input,
                                           const RawExecutionContext &context) const {
     try {
         constexpr int64_t block = 256;
+        const int64_t half = length / 2 + 1;
+        const bool in_place = input == output;
+        const int64_t padded_real_distance = 2 * half;
+        const int64_t input_distance =
+            in_place ? std::max(context.input_distance, padded_real_distance)
+                     : (context.input_distance > 0 ? context.input_distance : length);
+        const int64_t output_distance =
+            context.output_distance > 0 ? context.output_distance : half;
         std::vector<RuntimeKernelArg> expand_args = {
             RuntimeKernelArg::device(input),
             RuntimeKernelArg::device(complex_input.ptr),
+            RuntimeKernelArg::i64(input_distance),
             RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
@@ -342,6 +352,7 @@ flagfftResult CompiledRawR2CNode::execute(CUdeviceptr input,
         std::vector<RuntimeKernelArg> pack_args = {
             RuntimeKernelArg::device(full_output.ptr),
             RuntimeKernelArg::device(output),
+            RuntimeKernelArg::i64(output_distance),
             RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         pack_kernel->launch(context.stream,
@@ -352,6 +363,69 @@ flagfftResult CompiledRawR2CNode::execute(CUdeviceptr input,
         return FLAGFFT_SUCCESS;
     } catch (const std::exception &e) {
         std::fprintf(stderr, "[flagfft] R2C execute failed: %s\n", e.what());
+        std::fflush(stderr);
+        return FLAGFFT_EXEC_FAILED;
+    }
+}
+
+CompiledRawC2RNode::CompiledRawC2RNode(int64_t length,
+                                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                                       std::shared_ptr<CompiledRawNode> fft,
+                                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                                       DeviceAllocation full_input,
+                                       DeviceAllocation full_output)
+    : length(length),
+      expand_kernel(std::move(expand_kernel)),
+      fft(std::move(fft)),
+      pack_kernel(std::move(pack_kernel)),
+      full_input(std::move(full_input)),
+      full_output(std::move(full_output)) {}
+
+std::string CompiledRawC2RNode::describe() const {
+    std::ostringstream oss;
+    oss << "CompiledRawC2R(n=" << length
+        << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+        << ", fft=" << (fft ? fft->describe() : "null")
+        << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+    return oss.str();
+}
+
+flagfftResult CompiledRawC2RNode::execute(CUdeviceptr input,
+                                          CUdeviceptr output,
+                                          const RawExecutionContext &context) const {
+    try {
+        constexpr int64_t block = 256;
+        const int64_t half = length / 2 + 1;
+        const bool in_place = input == output;
+        const int64_t padded_real_distance = 2 * half;
+        const int64_t input_distance =
+            context.input_distance > 0 ? context.input_distance : half;
+        const int64_t output_distance =
+            in_place ? std::max(context.output_distance, padded_real_distance)
+                     : (context.output_distance > 0 ? context.output_distance : length);
+        std::vector<RuntimeKernelArg> expand_args = {
+            RuntimeKernelArg::device(input),
+            RuntimeKernelArg::device(full_input.ptr),
+            RuntimeKernelArg::i64(input_distance),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
+
+        flagfftResult result = fft->execute(full_input.ptr, full_output.ptr, context);
+        if (result != FLAGFFT_SUCCESS) {
+            return result;
+        }
+
+        std::vector<RuntimeKernelArg> pack_args = {
+            RuntimeKernelArg::device(full_output.ptr),
+            RuntimeKernelArg::device(output),
+            RuntimeKernelArg::i64(output_distance),
+            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        };
+        pack_kernel->launch(context.stream, pack_args, ceil_div(length, block), context.batch, 1);
+        return FLAGFFT_SUCCESS;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[flagfft] C2R execute failed: %s\n", e.what());
         std::fflush(stderr);
         return FLAGFFT_EXEC_FAILED;
     }
