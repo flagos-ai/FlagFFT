@@ -11,9 +11,6 @@ requires-python = ">=3.10"
 dependencies = [
 ]
 
-[project.scripts]
-flagfft-tuner = "src.cli_tools.flagfft_tuner:main"
-
 [project.optional-dependencies]
 test = [
     "pytest",
@@ -33,7 +30,7 @@ version = ">=3.18"
 
 [tool.scikit-build.cmake.define]
 FLAGFFT_BUILD_PYTHON = "OFF"
-FLAGFFT_BUILD_TESTS = "OFF"
+FLAGFFT_BUILD_CLI = "OFF"
 FLAGFFT_LIBTRITON_JIT_BACKEND = "CUDA"
 
 [tool.scikit-build.ninja]

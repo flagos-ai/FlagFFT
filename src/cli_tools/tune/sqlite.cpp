@@ -49,7 +49,8 @@ void init_tune_db(const std::string &db_path) {
 
 bool lookup_tune_winner(const std::string &db_path, int64_t fft_length,
                         const std::string &batch_bucket, int64_t batch,
-                        const std::string &direction, std::string &plan_json_out) {
+                        const std::string &direction, const std::string &device_arch,
+                        std::string &plan_json_out) {
     auto fps = tune_fingerprints();
     auto db_opt = tuned_db_path();
     (void)db_opt;
@@ -65,7 +66,7 @@ bool lookup_tune_winner(const std::string &db_path, int64_t fft_length,
         "ORDER BY measured_at DESC LIMIT 1");
 
     stmt.bind_int64(1, kPlanSchemaVersion);
-    stmt.bind_text(2, "sm_80");
+    stmt.bind_text(2, device_arch);
     stmt.bind_int64(3, fft_length);
     stmt.bind_text(4, batch_bucket);
     stmt.bind_text(5, "complex64");
@@ -99,7 +100,7 @@ void insert_measurement(const std::string &db_path, const TuneMeasurement &m) {
         ")");
 
     stmt.bind_int64(1, kPlanSchemaVersion);
-    stmt.bind_text(2, "sm_80");
+    stmt.bind_text(2, m.device_arch);
     stmt.bind_int64(3, m.fft_length);
     stmt.bind_text(4, batch_bucket(m.batch));
     stmt.bind_int64(5, m.batch);
@@ -134,7 +135,8 @@ void insert_measurement(const std::string &db_path, const TuneMeasurement &m) {
 }
 
 void mark_superseded(const std::string &db_path, int64_t fft_length,
-                     const std::string &batch_bucket, const std::string &direction) {
+                     const std::string &batch_bucket, const std::string &direction,
+                     const std::string &device_arch) {
     auto fps = tune_fingerprints();
     SqliteDb db(db_path);
 
@@ -146,7 +148,7 @@ void mark_superseded(const std::string &db_path, int64_t fft_length,
         "AND runtime_fingerprint=? AND status='valid'");
 
     stmt.bind_int64(1, kPlanSchemaVersion);
-    stmt.bind_text(2, "sm_80");
+    stmt.bind_text(2, device_arch);
     stmt.bind_int64(3, fft_length);
     stmt.bind_text(4, batch_bucket);
     stmt.bind_text(5, "complex64");

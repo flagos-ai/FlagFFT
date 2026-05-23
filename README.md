@@ -44,7 +44,8 @@ debugging. The returned pointer is valid for the lifetime of the plan.
 - `src/runtime/`: CUDA Driver helpers.
 - `src/exec/`: cuFFT-style C API, raw pointer execution nodes, and tuned plan
   lookup.
-- `src/tune/`: C++ offline tuning CLI and SQLite measurement orchestration.
+- `src/cli_tools/`: unified native CLI, shared execution/timing code, and
+  SQLite tuning orchestration.
 
 The C API uses an opaque `flagfftHandle`. Internally it owns the immutable plan
 description, stream/lifecycle state, compiled forward and inverse raw execution
@@ -72,25 +73,17 @@ complex-to-real pack. Rank>1 and non-contiguous C API requests keep returning
 
 ## Build
 
-Configure and build the C++ library. Optional targets are controlled by CMake
-`-D` switches in the same build directory; the default build only produces
-`flagfft`.
-
-```sh
-cmake -S . -B build -GNinja
-cmake --build build
-```
-
-Enable optional targets by reconfiguring the same directory:
+Configure and build the C++ library. The optional native validation,
+benchmarking, and tuning entrypoint is built with `FLAGFFT_BUILD_CLI=ON`.
 
 ```sh
 cmake -S . -B build -GNinja \
-  -DFLAGFFT_BUILD_TESTS=ON \
-  -DFLAGFFT_BUILD_BENCHMARKS=ON
-cmake --build build
+  -DFLAGFFT_BUILD_CLI=ON
+cmake --build build --target flagfft-cli
 ```
 
-`FLAGFFT_BUILD_TESTS` and `FLAGFFT_BUILD_BENCHMARKS` are disabled by default.
+The removed `FLAGFFT_BUILD_TESTS` and `FLAGFFT_BUILD_BENCHMARKS` switches no
+longer create gtest, `bench_vs_cufft`, or `flagfft-tuner` executables.
 
 When plan creation emits Triton JIT source, it uses `FLAGFFT_PYTHON` if set,
 otherwise `python3`. Generated source/metadata and tuned-plan SQLite defaults
@@ -98,80 +91,56 @@ are stored in `.flagfft` next to the running executable. Tuned plan lookups
 read from `FLAGFFT_TUNE_DB` if set, or the default `.flagfft/tuned_plans.sqlite`
 next to the executable.
 
-## Tuning
+## Native CLI
 
-The C++ tuning tool `flagfft-tuner` benchmarks candidate plans directly via the
-raw C API, verifies the winner against cuFFT, and persists results to a SQLite
-database that the runtime reads at plan creation time.
-
-```sh
-cmake -S . -B build -GNinja -DFLAGFFT_BUILD_BENCHMARKS=ON
-cmake --build build
-./build/flagfft-tuner --db /path/to/tuned_plans.sqlite --lengths 256 1024 4096
-```
-
-Options:
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--lengths N...` | (required) | FFT lengths to tune |
-| `--batch B` | `1` | Batch size |
-| `--direction` | `forward` | `forward` or `inverse` |
-| `--api` | `fft` | `fft` (forward) or `ifft` (inverse) |
-| `--warmup W` | `10` | Number of warmup kernel launches |
-| `--iters K` | `100` | Number of timed iterations |
-| `--db PATH` | (required) | SQLite database path |
-| `--retune` | off | Re-benchmark prior winner alongside candidates |
-| `--static-limit N` | `32` | Max candidate plans to benchmark |
-| `--finalists N` | `3` | Number of top candidates verified against cuFFT |
-
-The tune database is compatible with the C API runtime: set `FLAGFFT_TUNE_DB`
-to the same path and `flagfftPlan1d` will use the tuned winner automatically.
-
-## Benchmark
-
-The supported benchmark entrypoint is the C++ C API tool:
+`flagfft-cli` is the only native executable interface for validation,
+measurement, and offline tuning:
 
 ```sh
-cmake -S . -B build -GNinja -DFLAGFFT_BUILD_BENCHMARKS=ON
-cmake --build build --target bench_vs_cufft
-./build/bench_vs_cufft --lengths 256,1024 --batch 64
-./build/bench_vs_cufft --lengths 4096 --batch 256 --retune
+./build/flagfft-cli test --suite correctness --api c2c --shape 256 --batch 4 --json
+./build/flagfft-cli bench --api r2c --shape 4096 --batch 64 --warmup 10 --iters 100 \
+  --launches-per-sample 10 --json
+./build/flagfft-cli tune --api c2c --shape 256 --db /tmp/plans.sqlite \
+  --warmup 10 --iters 100 --static-limit 32 --finalists 3 --json
 ```
 
-Options:
+Common case options are `--api c2c|z2z|r2c|d2z|c2r|z2d`,
+repeatable `--shape N|NxM|NxMxK`, `--batch`, `--direction forward|inverse`,
+`--placement out-of-place|in-place`, `--plan-api
+plan1d|plan2d|plan3d|planmany`, and `--stream`. Repeated shapes share the
+other case options.
+The legacy comma-separated `--lengths` option is not part of this unified
+interface; pass one or more complete `--shape` options instead.
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--lengths N1,N2,...` | `256,1024,4096,...` | Comma-separated FFT lengths |
-| `--batch B` | `64` | Batch size |
-| `--direction` | `forward` | `forward` or `inverse` |
-| `--warmup W` | `10` | Number of warmup iterations |
-| `--iters K` | `100` | Number of timed samples |
-| `--launches-per-sample K` | `10` | Group size per timed sample |
-| `--tune` | off | Tune before benchmark if winner absent |
-| `--retune` | off | Tune before benchmark (supersedes winner) |
-| `--tune-db PATH` | `.flagfft/tuned_plans.sqlite` | Tune database path |
-| `--tune-command CMD` | `flagfft-tuner` | Tune executable |
-| `--tune-static-limit N` | `32` | Max tune candidates |
-| `--tune-finalists N` | `3` | Top candidates to verify |
-| `--print-path` | off | Print execution plan and kernel details |
+`test --suite plan` runs route/key assertions, `test --suite api-errors`
+checks C API error contracts, and `test --suite correctness` executes cases
+against cuFFT. `bench` runs the same correctness comparison before reporting
+CUDA event `median`/`p90` timings and speedup; `--print-path` adds the plan
+description. `tune` benchmarks candidates, verifies finalists against cuFFT,
+and writes the winning plan to SQLite; `--retune` supersedes an earlier winner.
+Set `FLAGFFT_TUNE_DB` to that database when running `test` or `bench` to use it.
+Integer option tokens must be fully numeric; for example, `--shape 16suffix`
+and `--batch 2suffix` are rejected as invalid arguments. Correctness reports
+include `non_finite_values`; any nonzero count fails both `test` and the
+pre-benchmark correctness gate.
 
-`--tune` keeps an existing SQLite winner, while `--retune` supersedes it. The
-tool passes `--db` to `flagfft-tuner` so tuning records are written to the same
-`.flagfft/tuned_plans.sqlite` directory that the benchmark executable reads.
+### Capability Matrix
 
-The benchmark binds both libraries to one explicit CUDA stream, alternates the
-timed order per sample, and reports the median per-launch time from grouped
-launches. Use `--launches-per-sample` to control the group size. Output labels
-the FlagFFT kernel backend and whether FlagFFT used auto planning, an existing
-SQLite winner, or a per-shape tune/retune; cuFFT is reported as default
-contiguous `cufftPlan1d`.
+| Command | Supported now | Reported `unsupported` |
+|---|---|---|
+| `test correctness`, `bench` | Six 1D APIs with `plan1d`, both complex directions, valid real direction, in/out-of-place; padded real in-place `planmany` | Rank 2/3 and other `planmany` layouts |
+| `tune` | 1D `c2c` complex64, out-of-place `plan1d`, either direction | Other APIs, ranks, or layouts |
+
+The JSON `status` and process code contract is stable: `passed`=`0`,
+`failed` or invalid arguments=`1`, setup/runtime `error`=`2`, and
+`skipped` (only after a successful CUDA query reports no device) or
+`unsupported`=`77`. CUDA runtime initialization/query failures are `error`=`2`.
 
 ### Path printing
 
-`--print-path` calls `flagfftGetPlanDescription` after plan creation and prints
-the plan node tree and compiled kernel details before the timing table:
+`bench --print-path --json` calls `flagfftGetPlanDescription` after plan
+creation and returns the plan node tree and compiled kernel details in
+`plan_description`:
 
 ```
 === FlagFFT Plan ===
@@ -199,24 +168,17 @@ debugging and understanding how the planner routes a given FFT size.
 
 ## Validation
 
-C++ plan tests and cuFFT comparison tests are registered with CTest:
+Pytest invokes `flagfft-cli --json` for all native planner/API/correctness,
+benchmark, and tune coverage:
 
 ```sh
-cmake -S . -B build -GNinja -DFLAGFFT_BUILD_TESTS=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
+cmake -S . -B build -GNinja -DFLAGFFT_BUILD_CLI=ON
+cmake --build build --target flagfft-cli
+pytest
 ```
 
-The gtest suite compares `flagfftExecC2C` and `flagfftExecZ2Z` against the
-matching `cufftExecC2C`/`cufftExecZ2Z` reference for multiple batch sizes and
-covers leaf, single-layer four-step, nested four-step, Bluestein native routes,
-stream selection, invalid calls, unsupported ranks, and out-of-place-only
-execution for both precisions. Python tests live under `tests/python/` and cover
-codegen behavior only, including leaf, fused four-step, Bluestein, and generic
-four-step reshape-pack source generation.
-
-Benchmark pytest wrappers live under `benchmark/` and invoke `bench_vs_cufft`
-directly; they do not call Python FFT runtime APIs.
+Python codegen tests remain under `tests/python/`. No standalone benchmark,
+tuner, or gtest native entrypoint is built.
 
 ## License
 

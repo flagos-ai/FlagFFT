@@ -23,7 +23,7 @@ inline constexpr int kExitSkipped = 77;
 
 enum class FftApi { C2C, Z2Z, R2C, D2Z, C2R, Z2D };
 enum class Placement { InPlace, OutOfPlace };
-enum class PlanApi { Auto, Tuned };
+enum class PlanApi { Plan1d, Plan2d, Plan3d, PlanMany };
 
 FftApi parse_fft_api(const std::string &value);
 std::string fft_api_name(FftApi api);
@@ -52,13 +52,10 @@ std::string direction_name(int direction);
 int parse_direction(const std::string &value);
 
 bool has_cuda_device(std::string &reason);
-std::vector<std::string> split_csv(const std::string &value);
-std::vector<int> parse_lengths_csv(const std::string &value);
 std::string shell_quote(const std::string &value);
 std::string executable_path(const char *argv0);
 std::string executable_dir(const char *argv0);
 std::string default_tune_db(const char *argv0);
-std::string default_tune_command(const char *argv0);
 
 void check_cuda(cudaError_t result, const std::string &context);
 void check_cufft(cufftResult result, const std::string &context);

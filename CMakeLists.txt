@@ -2,8 +2,7 @@ cmake_minimum_required(VERSION 3.18)
 
 project(flagfft LANGUAGES CXX)
 
-option(FLAGFFT_BUILD_TESTS "Build C++ tests" OFF)
-option(FLAGFFT_BUILD_BENCHMARKS "Build C++ benchmark executables" OFF)
+option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 set(FLAGFFT_LIBTRITON_JIT_BACKEND "CUDA" CACHE STRING "libtriton_jit backend used by FlagFFT")
 set_property(CACHE FLAGFFT_LIBTRITON_JIT_BACKEND PROPERTY STRINGS "CUDA")
 
@@ -71,11 +70,16 @@ install(TARGETS flagfft
         ARCHIVE DESTINATION "lib")
 install(DIRECTORY include/ DESTINATION "include")
 
-if(TARGET CUDA::cufft)
+if(FLAGFFT_BUILD_CLI)
+    if(NOT TARGET CUDA::cufft)
+        message(FATAL_ERROR "FLAGFFT_BUILD_CLI requires the CUDA::cufft target")
+    endif()
     add_library(flagfft_cli_common OBJECT
         src/cli_tools/common/runtime_raii.cpp
         src/cli_tools/common/plan_handles.cpp
         src/cli_tools/common/cli_utils.cpp
+        src/cli_tools/common/case.cpp
+        src/cli_tools/common/runner.cpp
     )
     target_compile_features(flagfft_cli_common PUBLIC cxx_std_20)
     target_include_directories(flagfft_cli_common PUBLIC
@@ -89,93 +93,29 @@ if(TARGET CUDA::cufft)
         CUDA::cufft
         nlohmann_json::nlohmann_json
     )
-endif()
 
-if(FLAGFFT_BUILD_TESTS)
-    include(CTest)
-    if(BUILD_TESTING)
-        find_package(GTest QUIET)
-        if(NOT GTest_FOUND)
-            include(FetchContent)
-            FetchContent_Declare(
-                googletest
-                URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-                DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-            )
-            set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-            FetchContent_MakeAvailable(googletest)
-        endif()
-
-        add_executable(flagfft_plan_tests tests/ctest/flagfft_plan_test.cpp)
-        target_compile_features(flagfft_plan_tests PRIVATE cxx_std_20)
-        target_include_directories(flagfft_plan_tests PRIVATE src/utils/include src)
-        target_link_libraries(flagfft_plan_tests
-            PRIVATE
-                flagfft
-                CUDA::cuda_driver
-                GTest::gtest_main
-        )
-        add_test(NAME flagfft_plan_tests COMMAND flagfft_plan_tests)
-
-        if(TARGET CUDA::cufft)
-            add_executable(flagfft_c_api_tests tests/ctest/flagfft_c_api_test.cpp)
-            target_compile_features(flagfft_c_api_tests PRIVATE cxx_std_20)
-            target_include_directories(flagfft_c_api_tests PRIVATE src/utils/include src)
-            target_link_libraries(flagfft_c_api_tests
-                PRIVATE
-                    flagfft
-                    CUDA::cudart
-                    CUDA::cufft
-                    GTest::gtest_main
-            )
-            add_test(NAME flagfft_c_api_tests COMMAND flagfft_c_api_tests)
-            set_tests_properties(flagfft_c_api_tests PROPERTIES
-                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-            )
-        else()
-            message(WARNING "CUDA::cufft target was not found; skipping cuFFT comparison tests")
-        endif()
-    endif()
-endif()
-
-if(FLAGFFT_BUILD_BENCHMARKS)
-    if(TARGET CUDA::cufft)
-        add_executable(bench_vs_cufft benchmark/bench_vs_cufft.cpp)
-        target_compile_features(bench_vs_cufft PRIVATE cxx_std_20)
-        target_include_directories(bench_vs_cufft PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
-            src
-        )
-        target_link_libraries(bench_vs_cufft
-            PRIVATE
-                flagfft
-                CUDA::cudart
-                CUDA::cufft
-        )
-
-        add_executable(flagfft-tuner
-            src/cli_tools/flagfft-tuner/main.cpp
-            src/cli_tools/flagfft-tuner/bench.cpp
-            src/cli_tools/flagfft-tuner/sqlite.cpp
-        )
-        target_compile_features(flagfft-tuner PRIVATE cxx_std_20)
-        target_include_directories(flagfft-tuner PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
-            src/utils/include
-            src/utils
-            src/exec
-            src
-        )
-        target_link_libraries(flagfft-tuner
-            PRIVATE
-                flagfft
-                flagfft_cli_common
-                CUDA::cudart
-                CUDA::cufft
-                SQLite3::SQLite3
-                nlohmann_json::nlohmann_json
-        )
-    else()
-        message(WARNING "CUDA::cufft not found; bench_vs_cufft will not be built")
-    endif()
+    add_executable(flagfft-cli
+        src/cli_tools/flagfft-cli/main.cpp
+        src/cli_tools/tune/driver.cpp
+        src/cli_tools/tune/bench.cpp
+        src/cli_tools/tune/sqlite.cpp
+    )
+    target_compile_features(flagfft-cli PRIVATE cxx_std_20)
+    target_include_directories(flagfft-cli PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        src/utils/include
+        src/utils
+        src/exec
+        src
+    )
+    target_link_libraries(flagfft-cli
+        PRIVATE
+            flagfft
+            flagfft_cli_common
+            CUDA::cudart
+            CUDA::cufft
+            SQLite3::SQLite3
+            nlohmann_json::nlohmann_json
+    )
+    install(TARGETS flagfft-cli RUNTIME DESTINATION "bin")
 endif()

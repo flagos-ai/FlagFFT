@@ -49,7 +49,7 @@ static double p90(std::vector<double> v) {
 
 static flagfft::cli::FlagfftPlanHandle build_plan_from_json_str(
     const std::string &plan_json_str, int64_t n, int64_t batch,
-    int device_index, const std::string &device_arch) {
+    const std::string &direction, int device_index, const std::string &device_arch) {
     if (device_index < 0) {
         throw std::runtime_error("no CUDA device available");
     }
@@ -76,7 +76,7 @@ static flagfft::cli::FlagfftPlanHandle build_plan_from_json_str(
     forward_req.device_index = device_index;
     forward_req.device_arch = device_arch;
     forward_req.input_layout = "contiguous";
-    forward_req.direction = "forward";
+    forward_req.direction = direction;
     forward_req.batch = batch;
 
     TritonCompiler compiler;
@@ -91,8 +91,13 @@ static flagfft::cli::FlagfftPlanHandle build_plan_from_json_str(
     plan->desc.device_index = device_index;
     plan->desc.device_arch = device_arch;
     plan->executable.root = std::move(root);
-    plan->executable.forward = std::move(compiled);
-    plan->executable.forward_request = forward_req;
+    if (direction == "inverse") {
+        plan->executable.inverse = std::move(compiled);
+        plan->executable.inverse_request = forward_req;
+    } else {
+        plan->executable.forward = std::move(compiled);
+        plan->executable.forward_request = forward_req;
+    }
     plan->state.initialized = true;
     handle->impl = plan;
     return flagfft::cli::FlagfftPlanHandle(handle);
@@ -115,7 +120,7 @@ BenchTiming bench_candidate(int64_t n, int64_t batch, const std::string &directi
     flagfft::cli::Timer timer;
 
     auto t0 = std::chrono::steady_clock::now();
-    auto plan = build_plan_from_json_str(plan_json_str, n, batch,
+    auto plan = build_plan_from_json_str(plan_json_str, n, batch, direction,
                                          device_index, device_arch);
     auto t1 = std::chrono::steady_clock::now();
     result.compile_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -172,7 +177,7 @@ BenchError verify_against_cufft(int64_t n, int64_t batch, const std::string &dir
 
     flagfft::cli::Stream stream;
 
-    auto ff_plan = build_plan_from_json_str(plan_json_str, n, batch,
+    auto ff_plan = build_plan_from_json_str(plan_json_str, n, batch, direction,
                                             device_index, device_arch);
     check_flagfft(flagfftSetStream(ff_plan.get(), stream.get()), "flagfftSetStream");
 

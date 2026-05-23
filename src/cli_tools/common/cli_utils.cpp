@@ -22,45 +22,53 @@ std::string cuda_error_message(cudaError_t result, const std::string &context) {
 }  // namespace
 
 FftApi parse_fft_api(const std::string &value) {
-    if (value == "C2C") return FftApi::C2C;
-    if (value == "Z2Z") return FftApi::Z2Z;
-    if (value == "R2C") return FftApi::R2C;
-    if (value == "D2Z") return FftApi::D2Z;
-    if (value == "C2R") return FftApi::C2R;
-    if (value == "Z2D") return FftApi::Z2D;
+    if (value == "c2c" || value == "C2C") return FftApi::C2C;
+    if (value == "z2z" || value == "Z2Z") return FftApi::Z2Z;
+    if (value == "r2c" || value == "R2C") return FftApi::R2C;
+    if (value == "d2z" || value == "D2Z") return FftApi::D2Z;
+    if (value == "c2r" || value == "C2R") return FftApi::C2R;
+    if (value == "z2d" || value == "Z2D") return FftApi::Z2D;
     throw AssertionFailure("unknown FFT API: " + value);
 }
 
 std::string fft_api_name(FftApi api) {
     switch (api) {
-        case FftApi::C2C: return "C2C";
-        case FftApi::Z2Z: return "Z2Z";
-        case FftApi::R2C: return "R2C";
-        case FftApi::D2Z: return "D2Z";
-        case FftApi::C2R: return "C2R";
-        case FftApi::Z2D: return "Z2D";
+        case FftApi::C2C: return "c2c";
+        case FftApi::Z2Z: return "z2z";
+        case FftApi::R2C: return "r2c";
+        case FftApi::D2Z: return "d2z";
+        case FftApi::C2R: return "c2r";
+        case FftApi::Z2D: return "z2d";
     }
     return "unknown";
 }
 
 Placement parse_placement(const std::string &value) {
-    if (value == "inplace" || value == "in" || value == "ip") return Placement::InPlace;
-    if (value == "outofplace" || value == "out" || value == "oop") return Placement::OutOfPlace;
+    if (value == "in-place" || value == "inplace" || value == "in" || value == "ip") return Placement::InPlace;
+    if (value == "out-of-place" || value == "outofplace" || value == "out" || value == "oop") return Placement::OutOfPlace;
     throw AssertionFailure("unknown placement: " + value);
 }
 
 std::string placement_name(Placement p) {
-    return p == Placement::InPlace ? "inplace" : "outofplace";
+    return p == Placement::InPlace ? "in-place" : "out-of-place";
 }
 
 PlanApi parse_plan_api(const std::string &value) {
-    if (value == "auto") return PlanApi::Auto;
-    if (value == "tuned") return PlanApi::Tuned;
+    if (value == "plan1d") return PlanApi::Plan1d;
+    if (value == "plan2d") return PlanApi::Plan2d;
+    if (value == "plan3d") return PlanApi::Plan3d;
+    if (value == "planmany") return PlanApi::PlanMany;
     throw AssertionFailure("unknown plan API: " + value);
 }
 
 std::string plan_api_name(PlanApi api) {
-    return api == PlanApi::Auto ? "auto" : "tuned";
+    switch (api) {
+        case PlanApi::Plan1d: return "plan1d";
+        case PlanApi::Plan2d: return "plan2d";
+        case PlanApi::Plan3d: return "plan3d";
+        case PlanApi::PlanMany: return "planmany";
+    }
+    return "unknown";
 }
 
 CliException::CliException(std::string message, int exit_code)
@@ -132,48 +140,13 @@ bool has_cuda_device(std::string &reason) {
     int count = 0;
     cudaError_t result = cudaGetDeviceCount(&count);
     if (result != cudaSuccess) {
-        reason = cuda_error_message(result, "cudaGetDeviceCount");
-        return false;
+        throw CliException(cuda_error_message(result, "cudaGetDeviceCount"), kExitRuntimeError);
     }
     if (count <= 0) {
         reason = "no CUDA device available";
         return false;
     }
     return true;
-}
-
-std::vector<std::string> split_csv(const std::string &value) {
-    std::vector<std::string> out;
-    std::size_t i = 0;
-    while (i <= value.size()) {
-        std::size_t j = value.find(',', i);
-        if (j == std::string::npos) {
-            j = value.size();
-        }
-        if (j > i) {
-            out.push_back(value.substr(i, j - i));
-        }
-        if (j == value.size()) {
-            break;
-        }
-        i = j + 1;
-    }
-    return out;
-}
-
-std::vector<int> parse_lengths_csv(const std::string &value) {
-    std::vector<int> out;
-    for (const std::string &part : split_csv(value)) {
-        int n = std::stoi(part);
-        if (n <= 0) {
-            throw AssertionFailure("FFT lengths must be positive");
-        }
-        out.push_back(n);
-    }
-    if (out.empty()) {
-        throw AssertionFailure("--lengths produced no values");
-    }
-    return out;
 }
 
 std::string shell_quote(const std::string &value) {
@@ -198,7 +171,7 @@ std::string executable_path(const char *argv0) {
     }
     std::filesystem::path from_argv = argv0 == nullptr ? std::filesystem::path{} : argv0;
     if (from_argv.empty()) {
-        return (std::filesystem::current_path() / "flagfft-test").string();
+        return (std::filesystem::current_path() / "flagfft-cli").string();
     }
     std::error_code ec;
     return std::filesystem::absolute(from_argv, ec).string();
@@ -212,16 +185,6 @@ std::string default_tune_db(const char *argv0) {
     return (std::filesystem::path(executable_dir(argv0)) / ".flagfft" /
             "tuned_plans.sqlite")
         .string();
-}
-
-std::string default_tune_command(const char *argv0) {
-    std::filesystem::path sibling =
-        std::filesystem::path(executable_dir(argv0)) / "flagfft-tuner";
-    std::error_code ec;
-    if (std::filesystem::is_regular_file(sibling, ec)) {
-        return sibling.string();
-    }
-    return "flagfft-tuner";
 }
 
 void check_cuda(cudaError_t result, const std::string &context) {
@@ -272,7 +235,7 @@ int exit_code_for_report(const json &report) {
     if (status == "passed") {
         return kExitPassed;
     }
-    if (status == "skipped") {
+    if (status == "skipped" || status == "unsupported") {
         return kExitSkipped;
     }
     return kExitFailed;
