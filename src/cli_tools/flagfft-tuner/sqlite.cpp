@@ -1,4 +1,4 @@
-#include "tune_sqlite.hpp"
+#include "sqlite.hpp"
 
 #include "flagfft/core.hpp"
 #include "flagfft/tune_json.hpp"

@@ -1,5 +1,5 @@
-#include "tune_bench.hpp"
-#include "tune_sqlite.hpp"
+#include "bench.hpp"
+#include "sqlite.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +13,7 @@
 #include "flagfft/core.hpp"
 #include "flagfft/tune_json.hpp"
 #include "c_api_internal.hpp"
+#include "cli_tools/common/cli_utils.hpp"
 
 namespace {
 
@@ -42,7 +43,6 @@ bool parse_args(int argc, char **argv, TuneArgs &args) {
             return argv[++i];
         };
         if (arg == "--lengths") {
-            // Remaining positional args are lengths
             ++i;
             while (i < argc && argv[i][0] != '-') {
                 args.lengths.push_back(std::atoll(argv[i]));
@@ -89,9 +89,9 @@ bool parse_args(int argc, char **argv, TuneArgs &args) {
             args.device_index = std::atoi(v);
         } else if (arg == "-h" || arg == "--help") {
             std::printf(
-                "Usage: flagfft_tune [--lengths N...] [--batch B] [--warmup W] [--iters K]\n"
-                "                    [--db PATH] [--retune] [--static-limit N] [--finalists N]\n"
-                "                    [--direction forward|inverse] [--api fft|ifft]\n");
+                "Usage: flagfft-tuner [--lengths N...] [--batch B] [--warmup W] [--iters K]\n"
+                "                      [--db PATH] [--retune] [--static-limit N] [--finalists N]\n"
+                "                      [--direction forward|inverse] [--api fft|ifft]\n");
             std::exit(0);
         } else {
             std::fprintf(stderr, "unknown argument: %s\n", arg.c_str());
@@ -110,9 +110,9 @@ bool parse_args(int argc, char **argv, TuneArgs &args) {
 }
 
 bool detect_device(int &device_index, std::string &device_arch) {
-    int count = 0;
-    if (cudaGetDeviceCount(&count) != cudaSuccess || count <= 0) {
-        std::fprintf(stderr, "no CUDA device available\n");
+    std::string reason;
+    if (!flagfft::cli::has_cuda_device(reason)) {
+        std::fprintf(stderr, "%s\n", reason.c_str());
         return false;
     }
 
@@ -121,8 +121,10 @@ bool detect_device(int &device_index, std::string &device_arch) {
     }
 
     cudaDeviceProp props{};
-    if (cudaGetDeviceProperties(&props, device_index) != cudaSuccess) {
-        std::fprintf(stderr, "failed to get device properties for device %d\n", device_index);
+    cudaError_t result = cudaGetDeviceProperties(&props, device_index);
+    if (result != cudaSuccess) {
+        std::fprintf(stderr, "failed to get device properties for device %d\n",
+                     device_index);
         return false;
     }
 
@@ -160,7 +162,6 @@ void tune_length(const TuneArgs &args, int64_t n) {
 
     std::vector<PlanCandidate> candidates = builder.build_tune_candidates(n, 0);
 
-    // Filter to raw-supported nodes only
     std::vector<PlanCandidate> supported;
     for (auto &c : candidates) {
         if (raw_supported_node(c.node)) {
@@ -177,7 +178,6 @@ void tune_length(const TuneArgs &args, int64_t n) {
         supported.resize(static_cast<std::size_t>(args.static_limit));
     }
 
-    // If retune, check if there's a prior winner and add it as candidate
     if (args.retune) {
         std::string prior_json;
         if (tune::lookup_tune_winner(args.db_path, n, bucket, args.batch,
@@ -197,7 +197,6 @@ void tune_length(const TuneArgs &args, int64_t n) {
         }
     }
 
-    // Benchmark each candidate
     struct ScoredCandidate {
         PlanCandidate candidate;
         tune::BenchTiming timing;
@@ -222,10 +221,6 @@ void tune_length(const TuneArgs &args, int64_t n) {
             std::printf(" median=%.4fms\n", timing.median_ms);
 
             tune::BenchError err{};
-            if (args.finalists > 0) {
-                // Only verify correctness for the top candidates (we'll do after ranking)
-            }
-
             scored.push_back({cand, timing, err, std::move(plan_json_str)});
         } catch (const std::exception &exc) {
             std::printf(" FAILED: %s\n", exc.what());
@@ -247,13 +242,11 @@ void tune_length(const TuneArgs &args, int64_t n) {
         return;
     }
 
-    // Sort by median time
     std::sort(scored.begin(), scored.end(),
               [](const ScoredCandidate &a, const ScoredCandidate &b) {
                   return a.timing.median_ms < b.timing.median_ms;
               });
 
-    // Verify correctness for top finalists
     int verified = 0;
     for (auto &s : scored) {
         if (verified >= args.finalists) break;
@@ -269,10 +262,8 @@ void tune_length(const TuneArgs &args, int64_t n) {
         }
     }
 
-    // Mark previous winners superseded
     tune::mark_superseded(args.db_path, n, bucket, args.direction);
 
-    // Insert results
     for (std::size_t i = 0; i < scored.size(); ++i) {
         auto &s = scored[i];
         tune::TuneMeasurement m;
@@ -321,7 +312,6 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    // Create the CWD-relative .flagfft cache dir for kernel cache
     std::filesystem::create_directories(
         std::filesystem::current_path() / ".flagfft");
 

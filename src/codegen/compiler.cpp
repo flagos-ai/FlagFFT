@@ -14,7 +14,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         const int64_t element_bytes = complex_element_bytes(request.input_dtype);
         if (row_leaf != nullptr && col_leaf != nullptr) {
             DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
-            DeviceAllocation stage1 = allocate_device_bytes(
+            DeviceAllocation stage1 = runtime::Memory::allocate(
                 static_cast<std::size_t>(batch * four_step->length * element_bytes));
             return std::make_shared<CompiledRawFourStepFusedNode>(
                 four_step->length,
@@ -38,11 +38,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         DeviceAllocation b_time =
             build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
         const int64_t element_bytes = complex_element_bytes(request.input_dtype);
-        DeviceAllocation a_buf = allocate_device_bytes(
+        DeviceAllocation a_buf = runtime::Memory::allocate(
             static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
-        DeviceAllocation work_buf = allocate_device_bytes(
+        DeviceAllocation work_buf = runtime::Memory::allocate(
             static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
-        DeviceAllocation b_fft_buf = allocate_device_bytes(
+        DeviceAllocation b_fft_buf = runtime::Memory::allocate(
             static_cast<std::size_t>(bluestein->conv_length * element_bytes));
         return std::make_shared<CompiledRawBluesteinNode>(
             bluestein->length,
@@ -67,9 +67,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     const int64_t n = request.requested_n;
     DeviceAllocation complex_input =
-        allocate_device_bytes(static_cast<std::size_t>(batch * n * element_bytes));
+        runtime::Memory::allocate(static_cast<std::size_t>(batch * n * element_bytes));
     DeviceAllocation full_output =
-        allocate_device_bytes(static_cast<std::size_t>(batch * n * element_bytes));
+        runtime::Memory::allocate(static_cast<std::size_t>(batch * n * element_bytes));
     return std::make_shared<CompiledRawR2CNode>(
         n,
         compile_real_to_complex_kernel(request, n),
@@ -85,9 +85,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     const int64_t n = request.requested_n;
     DeviceAllocation full_input =
-        allocate_device_bytes(static_cast<std::size_t>(batch * n * element_bytes));
+        runtime::Memory::allocate(static_cast<std::size_t>(batch * n * element_bytes));
     DeviceAllocation full_output =
-        allocate_device_bytes(static_cast<std::size_t>(batch * n * element_bytes));
+        runtime::Memory::allocate(static_cast<std::size_t>(batch * n * element_bytes));
     return std::make_shared<CompiledRawC2RNode>(
         n,
         compile_compact_to_hermitian_full_kernel(request, n),
@@ -236,9 +236,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_generic(c
         compile_raw_node(node.col_plan, request, batch * n1);
 
     DeviceAllocation twiddle = build_raw_four_step_twiddle(request, n1, n2);
-    DeviceAllocation stage1 = allocate_device_bytes(
+    DeviceAllocation stage1 = runtime::Memory::allocate(
         static_cast<std::size_t>(batch * n * element_bytes));
-    DeviceAllocation stage2 = allocate_device_bytes(
+    DeviceAllocation stage2 = runtime::Memory::allocate(
         static_cast<std::size_t>(batch * n * element_bytes));
 
     auto reshape_in_kernel = compile_reshape_pack_kernel(request, n1, n2);

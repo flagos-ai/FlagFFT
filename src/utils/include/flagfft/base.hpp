@@ -57,7 +57,6 @@ int64_t lane_block_for(int64_t lanes);
 std::string shell_quote(const std::string &value);
 std::filesystem::path executable_directory();
 std::filesystem::path default_cache_dir();
-void cuda_check(CUresult result, const std::string &context);
 void hash_combine(std::size_t &seed, std::size_t value);
 
 template <typename T>

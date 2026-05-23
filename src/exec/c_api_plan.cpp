@@ -1,5 +1,6 @@
 #include "c_api_internal.hpp"
 #include "flagfft/tune_json.hpp"
+#include "runtime/device.hpp"
 
 namespace flagfft {
 namespace {
@@ -39,7 +40,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         return FLAGFFT_NOT_SUPPORTED;
     }
 
-    flagfftResult device_result = ensure_current_cuda_device(desc.device_index, desc.device_arch);
+    flagfftResult device_result = runtime::ensure_device(desc.device_index, desc.device_arch);
     if (device_result != FLAGFFT_SUCCESS) {
         return device_result;
     }

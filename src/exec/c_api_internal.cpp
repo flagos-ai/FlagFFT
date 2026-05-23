@@ -48,55 +48,6 @@ flagfftResult type_metadata(flagfftType type,
     return FLAGFFT_INVALID_TYPE;
 }
 
-flagfftResult ensure_current_cuda_device(int &device_index, std::string &device_arch) {
-    CUresult result = cuInit(0);
-    if (result != CUDA_SUCCESS) {
-        return FLAGFFT_INVALID_DEVICE;
-    }
-
-    CUcontext context = nullptr;
-    result = cuCtxGetCurrent(&context);
-    if (result != CUDA_SUCCESS) {
-        return FLAGFFT_INVALID_DEVICE;
-    }
-
-    CUdevice device = 0;
-    if (context == nullptr) {
-        result = cuDeviceGet(&device, 0);
-        if (result != CUDA_SUCCESS) {
-            return FLAGFFT_INVALID_DEVICE;
-        }
-        result = cuDevicePrimaryCtxRetain(&context, device);
-        if (result != CUDA_SUCCESS) {
-            return FLAGFFT_INVALID_DEVICE;
-        }
-        result = cuCtxSetCurrent(context);
-        if (result != CUDA_SUCCESS) {
-            return FLAGFFT_INVALID_DEVICE;
-        }
-    } else {
-        result = cuCtxGetDevice(&device);
-        if (result != CUDA_SUCCESS) {
-            return FLAGFFT_INVALID_DEVICE;
-        }
-    }
-
-    int major = 0;
-    int minor = 0;
-    result = cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device);
-    if (result != CUDA_SUCCESS) {
-        return FLAGFFT_INVALID_DEVICE;
-    }
-    result = cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device);
-    if (result != CUDA_SUCCESS) {
-        return FLAGFFT_INVALID_DEVICE;
-    }
-
-    device_index = static_cast<int>(device);
-    device_arch = "sm_" + std::to_string(major) + std::to_string(minor);
-    return FLAGFFT_SUCCESS;
-}
-
 std::vector<int64_t> copy_dims(const int *values, int rank) {
     std::vector<int64_t> out;
     out.reserve(static_cast<std::size_t>(rank));

@@ -38,6 +38,9 @@ set(FLAGFFT_CORE_SOURCES
     src/plan/auto_candidates.cpp
     src/plan/tune_candidates.cpp
     src/runtime/cuda_runtime.cpp
+    src/runtime/cuda/memory.cpp
+    src/runtime/cuda/check.cpp
+    src/runtime/cuda/device.cpp
     src/codegen/jit_cache.cpp
     src/codegen/plan_kernel_keys.cpp
     src/codegen/tables.cpp
@@ -57,6 +60,7 @@ target_include_directories(flagfft
         $<INSTALL_INTERFACE:include>
     PRIVATE
         src/utils/include
+        src
 )
 target_link_libraries(flagfft PRIVATE CUDA::cuda_driver TritonJIT::triton_jit SQLite3::SQLite3 nlohmann_json::nlohmann_json)
 set_target_properties(flagfft PROPERTIES OUTPUT_NAME flagfft)
@@ -66,6 +70,26 @@ install(TARGETS flagfft
         RUNTIME DESTINATION "bin"
         ARCHIVE DESTINATION "lib")
 install(DIRECTORY include/ DESTINATION "include")
+
+if(TARGET CUDA::cufft)
+    add_library(flagfft_cli_common OBJECT
+        src/cli_tools/common/runtime_raii.cpp
+        src/cli_tools/common/plan_handles.cpp
+        src/cli_tools/common/cli_utils.cpp
+    )
+    target_compile_features(flagfft_cli_common PUBLIC cxx_std_20)
+    target_include_directories(flagfft_cli_common PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        src/utils/include
+        src
+    )
+    target_link_libraries(flagfft_cli_common PUBLIC
+        flagfft
+        CUDA::cudart
+        CUDA::cufft
+        nlohmann_json::nlohmann_json
+    )
+endif()
 
 if(FLAGFFT_BUILD_TESTS)
     include(CTest)
@@ -84,7 +108,7 @@ if(FLAGFFT_BUILD_TESTS)
 
         add_executable(flagfft_plan_tests tests/ctest/flagfft_plan_test.cpp)
         target_compile_features(flagfft_plan_tests PRIVATE cxx_std_20)
-        target_include_directories(flagfft_plan_tests PRIVATE src/utils/include)
+        target_include_directories(flagfft_plan_tests PRIVATE src/utils/include src)
         target_link_libraries(flagfft_plan_tests
             PRIVATE
                 flagfft
@@ -96,6 +120,7 @@ if(FLAGFFT_BUILD_TESTS)
         if(TARGET CUDA::cufft)
             add_executable(flagfft_c_api_tests tests/ctest/flagfft_c_api_test.cpp)
             target_compile_features(flagfft_c_api_tests PRIVATE cxx_std_20)
+            target_include_directories(flagfft_c_api_tests PRIVATE src/utils/include src)
             target_link_libraries(flagfft_c_api_tests
                 PRIVATE
                     flagfft
@@ -119,6 +144,7 @@ if(FLAGFFT_BUILD_BENCHMARKS)
         target_compile_features(bench_vs_cufft PRIVATE cxx_std_20)
         target_include_directories(bench_vs_cufft PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/include
+            src
         )
         target_link_libraries(bench_vs_cufft
             PRIVATE
@@ -127,21 +153,23 @@ if(FLAGFFT_BUILD_BENCHMARKS)
                 CUDA::cufft
         )
 
-        add_executable(flagfft_tune
-            src/tune/tune_main.cpp
-            src/tune/tune_bench.cpp
-            src/tune/tune_sqlite.cpp
+        add_executable(flagfft-tuner
+            src/cli_tools/flagfft-tuner/main.cpp
+            src/cli_tools/flagfft-tuner/bench.cpp
+            src/cli_tools/flagfft-tuner/sqlite.cpp
         )
-        target_compile_features(flagfft_tune PRIVATE cxx_std_20)
-        target_include_directories(flagfft_tune PRIVATE
+        target_compile_features(flagfft-tuner PRIVATE cxx_std_20)
+        target_include_directories(flagfft-tuner PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/include
             src/utils/include
             src/utils
             src/exec
+            src
         )
-        target_link_libraries(flagfft_tune
+        target_link_libraries(flagfft-tuner
             PRIVATE
                 flagfft
+                flagfft_cli_common
                 CUDA::cudart
                 CUDA::cufft
                 SQLite3::SQLite3

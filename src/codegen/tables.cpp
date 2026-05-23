@@ -120,31 +120,6 @@ std::pair<std::vector<double>, std::vector<double>> build_dft_matrix_d(int64_t r
     return build_dft_matrix_t<double>(radix, direction);
 }
 
-DeviceAllocation allocate_device_bytes(std::size_t bytes) {
-    if (bytes == 0) {
-        return {};
-    }
-    CUdeviceptr ptr = 0;
-    cuda_check(cuMemAlloc(&ptr, bytes), "cuMemAlloc");
-    return DeviceAllocation(ptr, bytes);
-}
-
-DeviceAllocation device_allocation_from_floats(const std::vector<float> &values) {
-    DeviceAllocation allocation = allocate_device_bytes(values.size() * sizeof(float));
-    if (allocation.ptr != 0) {
-        cuda_check(cuMemcpyHtoD(allocation.ptr, values.data(), allocation.bytes), "cuMemcpyHtoD");
-    }
-    return allocation;
-}
-
-DeviceAllocation device_allocation_from_doubles(const std::vector<double> &values) {
-    DeviceAllocation allocation = allocate_device_bytes(values.size() * sizeof(double));
-    if (allocation.ptr != 0) {
-        cuda_check(cuMemcpyHtoD(allocation.ptr, values.data(), allocation.bytes), "cuMemcpyHtoD");
-    }
-    return allocation;
-}
-
 DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2) {
     const bool is_double = dtype_is_double(request.input_dtype);
     const std::size_t total = static_cast<std::size_t>(n1 * n2 * 2);
@@ -162,7 +137,7 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
                 interleaved[index + 1] = std::sin(angle);
             }
         }
-        return device_allocation_from_doubles(interleaved);
+        return runtime::Memory::from_doubles(interleaved);
     }
     std::vector<float> interleaved(total);
     for (int64_t row = 0; row < n2; ++row) {
@@ -177,7 +152,7 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
             interleaved[index + 1] = static_cast<float>(std::sin(angle));
         }
     }
-    return device_allocation_from_floats(interleaved);
+    return runtime::Memory::from_floats(interleaved);
 }
 
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign) {
@@ -194,7 +169,7 @@ DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n,
             interleaved[offset] = std::cos(angle);
             interleaved[offset + 1] = std::sin(angle);
         }
-        return device_allocation_from_doubles(interleaved);
+        return runtime::Memory::from_doubles(interleaved);
     }
     std::vector<float> interleaved(total);
     for (int64_t idx = 0; idx < n; ++idx) {
@@ -205,7 +180,7 @@ DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n,
         interleaved[offset] = static_cast<float>(std::cos(angle));
         interleaved[offset + 1] = static_cast<float>(std::sin(angle));
     }
-    return device_allocation_from_floats(interleaved);
+    return runtime::Memory::from_floats(interleaved);
 }
 
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m) {
@@ -228,7 +203,7 @@ DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int
                 interleaved[mirror + 1] = i;
             }
         }
-        return device_allocation_from_doubles(interleaved);
+        return runtime::Memory::from_doubles(interleaved);
     }
     std::vector<float> interleaved(static_cast<std::size_t>(m * 2), 0.0f);
     for (int64_t idx = 0; idx < n; ++idx) {
@@ -246,7 +221,7 @@ DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int
             interleaved[mirror + 1] = i;
         }
     }
-    return device_allocation_from_floats(interleaved);
+    return runtime::Memory::from_floats(interleaved);
 }
 
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf,
@@ -257,24 +232,24 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf,
         if (is_double) {
             auto twiddles = build_stage_twiddles_d(
                 leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
-            tables.push_back(device_allocation_from_doubles(twiddles.first));
-            tables.push_back(device_allocation_from_doubles(twiddles.second));
+            tables.push_back(runtime::Memory::from_doubles(twiddles.first));
+            tables.push_back(runtime::Memory::from_doubles(twiddles.second));
         } else {
             auto twiddles = build_stage_twiddles(
                 leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
-            tables.push_back(device_allocation_from_floats(twiddles.first));
-            tables.push_back(device_allocation_from_floats(twiddles.second));
+            tables.push_back(runtime::Memory::from_floats(twiddles.first));
+            tables.push_back(runtime::Memory::from_floats(twiddles.second));
         }
     }
     for (int64_t radix : leaf.generic_radices) {
         if (is_double) {
             auto dft = build_dft_matrix_d(radix, request.direction);
-            tables.push_back(device_allocation_from_doubles(dft.first));
-            tables.push_back(device_allocation_from_doubles(dft.second));
+            tables.push_back(runtime::Memory::from_doubles(dft.first));
+            tables.push_back(runtime::Memory::from_doubles(dft.second));
         } else {
             auto dft = build_dft_matrix(radix, request.direction);
-            tables.push_back(device_allocation_from_floats(dft.first));
-            tables.push_back(device_allocation_from_floats(dft.second));
+            tables.push_back(runtime::Memory::from_floats(dft.first));
+            tables.push_back(runtime::Memory::from_floats(dft.second));
         }
     }
     return tables;

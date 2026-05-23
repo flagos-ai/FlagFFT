@@ -1,4 +1,5 @@
 #include "flagfft/core.hpp"
+#include "runtime/device.hpp"
 
 namespace flagfft {
 
@@ -16,7 +17,7 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
     context.device_arch = request.device_arch;
     if (request.device_type == "cuda") {
         context.max_dynamic_smem_bytes =
-            cuda_device_max_dynamic_shared_memory_bytes(request.device_index);
+            runtime::max_dynamic_smem_bytes(request.device_index);
     }
     return context;
 }

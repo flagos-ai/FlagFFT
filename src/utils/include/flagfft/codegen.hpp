@@ -3,6 +3,8 @@
 #include <string>
 
 #include "flagfft/runtime.hpp"
+#include "runtime/memory.hpp"
+#include "runtime/types.hpp"
 
 namespace flagfft {
 
@@ -23,12 +25,12 @@ std::pair<std::vector<double>, std::vector<double>> build_dft_matrix_d(int64_t r
 enum class RuntimeArgKind { DevicePtr, Int32, Int64 };
 
 struct RuntimeKernelArg {
-    static RuntimeKernelArg device(CUdeviceptr value);
+    static RuntimeKernelArg device(runtime::DevicePtr value);
     static RuntimeKernelArg i32(int32_t value);
     static RuntimeKernelArg i64(int64_t value);
 
     RuntimeArgKind kind = RuntimeArgKind::DevicePtr;
-    CUdeviceptr device_ptr = 0;
+    runtime::DevicePtr device_ptr = 0;
     int32_t int32_value = 0;
     int64_t int64_value = 0;
 };
@@ -36,7 +38,7 @@ struct RuntimeKernelArg {
 struct RuntimeKernel {
     ~RuntimeKernel();
     void compile();
-    void launch(CUstream stream,
+    void launch(runtime::StreamHandle stream,
                 const std::vector<RuntimeKernelArg> &kernel_args,
                 int64_t grid_x,
                 int64_t grid_y,
@@ -52,23 +54,11 @@ struct RuntimeKernel {
     std::mutex mutex;
 };
 
-struct DeviceAllocation {
-    DeviceAllocation() = default;
-    DeviceAllocation(CUdeviceptr ptr, std::size_t bytes);
-    ~DeviceAllocation();
-    DeviceAllocation(const DeviceAllocation &) = delete;
-    DeviceAllocation &operator=(const DeviceAllocation &) = delete;
-    DeviceAllocation(DeviceAllocation &&other) noexcept;
-    DeviceAllocation &operator=(DeviceAllocation &&other) noexcept;
-    void reset();
-
-    CUdeviceptr ptr = 0;
-    std::size_t bytes = 0;
-};
+using DeviceAllocation = runtime::Memory;
 
 struct RawExecutionContext {
     const FFTRequest &request;
-    CUstream stream = nullptr;
+    runtime::StreamHandle stream = nullptr;
     int64_t batch = 0;
     int64_t input_distance = 0;
     int64_t output_distance = 0;
@@ -76,8 +66,8 @@ struct RawExecutionContext {
 
 struct CompiledRawNode {
     virtual ~CompiledRawNode() = default;
-    virtual flagfftResult execute(CUdeviceptr input,
-                                  CUdeviceptr output,
+    virtual flagfftResult execute(runtime::DevicePtr input,
+                                  runtime::DevicePtr output,
                                   const RawExecutionContext &context) const = 0;
     virtual std::string describe() const = 0;
 };
@@ -86,8 +76,8 @@ struct CompiledRawLeafNode final : CompiledRawNode {
     CompiledRawLeafNode(int64_t length,
                         std::shared_ptr<RuntimeKernel> kernel,
                         std::vector<DeviceAllocation> tables);
-    flagfftResult execute(CUdeviceptr input,
-                          CUdeviceptr output,
+    flagfftResult execute(runtime::DevicePtr input,
+                          runtime::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
@@ -106,8 +96,8 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
                                  std::vector<DeviceAllocation> col_tables,
                                  DeviceAllocation twiddle,
                                  DeviceAllocation stage1);
-    flagfftResult execute(CUdeviceptr input,
-                          CUdeviceptr output,
+    flagfftResult execute(runtime::DevicePtr input,
+                          runtime::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
@@ -134,8 +124,8 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
                              DeviceAllocation a_buf,
                              DeviceAllocation work_buf,
                              DeviceAllocation b_fft_buf);
-    flagfftResult execute(CUdeviceptr input,
-                          CUdeviceptr output,
+    flagfftResult execute(runtime::DevicePtr input,
+                          runtime::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
     void ensure_b_fft(const RawExecutionContext &context) const;
@@ -167,8 +157,8 @@ struct CompiledRawFourStepGenericNode final : CompiledRawNode {
                                    DeviceAllocation twiddle,
                                    DeviceAllocation stage1,
                                    DeviceAllocation stage2);
-    flagfftResult execute(CUdeviceptr input,
-                          CUdeviceptr output,
+    flagfftResult execute(runtime::DevicePtr input,
+                          runtime::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
@@ -192,8 +182,8 @@ struct CompiledRawR2CNode final : CompiledRawNode {
                        std::shared_ptr<RuntimeKernel> pack_kernel,
                        DeviceAllocation complex_input,
                        DeviceAllocation full_output);
-    flagfftResult execute(CUdeviceptr input,
-                          CUdeviceptr output,
+    flagfftResult execute(runtime::DevicePtr input,
+                          runtime::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
@@ -212,8 +202,8 @@ struct CompiledRawC2RNode final : CompiledRawNode {
                        std::shared_ptr<RuntimeKernel> pack_kernel,
                        DeviceAllocation full_input,
                        DeviceAllocation full_output);
-    flagfftResult execute(CUdeviceptr input,
-                          CUdeviceptr output,
+    flagfftResult execute(runtime::DevicePtr input,
+                          runtime::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
@@ -283,9 +273,6 @@ private:
 
 std::string triton_target_for_request(const FFTRequest &request);
 FFTRequest forward_child_request(const FFTRequest &request);
-DeviceAllocation allocate_device_bytes(std::size_t bytes);
-DeviceAllocation device_allocation_from_floats(const std::vector<float> &values);
-DeviceAllocation device_allocation_from_doubles(const std::vector<double> &values);
 DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2);
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign);
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m);

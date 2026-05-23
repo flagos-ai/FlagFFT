@@ -100,14 +100,14 @@ next to the executable.
 
 ## Tuning
 
-The C++ tuning tool `flagfft_tune` benchmarks candidate plans directly via the
+The C++ tuning tool `flagfft-tuner` benchmarks candidate plans directly via the
 raw C API, verifies the winner against cuFFT, and persists results to a SQLite
 database that the runtime reads at plan creation time.
 
 ```sh
 cmake -S . -B build -GNinja -DFLAGFFT_BUILD_BENCHMARKS=ON
 cmake --build build
-./build/flagfft_tune --db /path/to/tuned_plans.sqlite --lengths 256 1024 4096
+./build/flagfft-tuner --db /path/to/tuned_plans.sqlite --lengths 256 1024 4096
 ```
 
 Options:
@@ -152,13 +152,13 @@ Options:
 | `--tune` | off | Tune before benchmark if winner absent |
 | `--retune` | off | Tune before benchmark (supersedes winner) |
 | `--tune-db PATH` | `.flagfft/tuned_plans.sqlite` | Tune database path |
-| `--tune-command CMD` | `flagfft_tune` | Tune executable |
+| `--tune-command CMD` | `flagfft-tuner` | Tune executable |
 | `--tune-static-limit N` | `32` | Max tune candidates |
 | `--tune-finalists N` | `3` | Top candidates to verify |
 | `--print-path` | off | Print execution plan and kernel details |
 
 `--tune` keeps an existing SQLite winner, while `--retune` supersedes it. The
-tool passes `--db` to `flagfft_tune` so tuning records are written to the same
+tool passes `--db` to `flagfft-tuner` so tuning records are written to the same
 `.flagfft/tuned_plans.sqlite` directory that the benchmark executable reads.
 
 The benchmark binds both libraries to one explicit CUDA stream, alternates the

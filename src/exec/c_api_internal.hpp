@@ -33,7 +33,7 @@ struct FlagFFTPlanDesc {
 struct FlagFFTPlanState {
     bool initialized = false;
     bool destroyed = false;
-    CUstream stream = nullptr;
+    runtime::StreamHandle stream = nullptr;
     flagfftResult last_error = FLAGFFT_SUCCESS;
 };
 
@@ -61,7 +61,6 @@ flagfftResult type_metadata(flagfftType type,
                             FlagFFTTransformKind &kind,
                             bool &real_input,
                             bool &real_output);
-flagfftResult ensure_current_cuda_device(int &device_index, std::string &device_arch);
 std::vector<int64_t> copy_dims(const int *values, int rank);
 bool is_supported_minimal_desc(const FlagFFTPlanDesc &desc);
 bool raw_supported_node(const PlanNodePtr &node);

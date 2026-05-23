@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-flagfft-tune = "src.tune.flagfft_tune:main"
+flagfft-tuner = "src.cli_tools.flagfft_tuner:main"
 
 [project.optional-dependencies]
 test = [
