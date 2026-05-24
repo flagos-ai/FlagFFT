@@ -75,6 +75,13 @@ complex-to-real pack. Rank>1 and non-contiguous C API requests keep returning
 
 Configure and build the C++ library. The optional native validation,
 benchmarking, and tuning entrypoint is built with `FLAGFFT_BUILD_CLI=ON`.
+`pip install`/wheel packaging is not provided; CMake is the supported build
+and install entrypoint.
+
+The build environment must provide CMake, Ninja, a CUDA toolkit, SQLite3,
+Python 3.10+ development files, PyTorch, and pybind11. Runtime JIT generation
+and Python tests additionally require a Triton/TLE-enabled Python environment
+and `pytest`.
 
 ```sh
 cmake -S . -B build -GNinja \
@@ -174,7 +181,7 @@ benchmark, and tune coverage:
 ```sh
 cmake -S . -B build -GNinja -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
-pytest
+pytest -q
 ```
 
 Python codegen tests remain under `tests/python/`. No standalone benchmark,

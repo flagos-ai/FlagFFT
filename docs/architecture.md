@@ -15,7 +15,7 @@ timing, and tuning enter through `flagfft-cli`.
   it through libtriton_jit, and contains codelets under `src/codegen/codelet/`.
 - `src/runtime/` owns CUDA Driver helpers and RAII device allocations used by
   raw plans.
-- `src/utils/` owns shared request/key utilities, nanobind glue, and internal
+- `src/utils/` owns shared request/key utilities, JSON/SQLite tuning support, and internal
   headers under `src/utils/include/flagfft/`.
 
 The native C API supports arbitrary-length contiguous rank-1 batched C2C,
@@ -25,7 +25,7 @@ that verified padded rank-1 form is also supported through `PlanMany`. Rank
 
 ## Raw Execution Nodes
 
-Raw nodes mirror the existing plan tree but do not depend on PyTorch tensors:
+Raw nodes mirror the existing plan tree:
 
 - `CompiledRawLeafNode` launches a contiguous leaf kernel with plan-owned
   twiddle and DFT table allocations.
@@ -34,10 +34,6 @@ Raw nodes mirror the existing plan tree but do not depend on PyTorch tensors:
   stage buffer.
 - `CompiledRawBluesteinNode` handles prime and awkward composite lengths through
   JIT prepare, pointwise, finalize, and convolution FFT child kernels.
-
-The old `CompiledNode` tensor path remains only to support the optional
-`FLAGFFT_BUILD_PYTHON=ON` debug/tune module. It is not part of the default
-runtime build surface.
 
 ## CLI Tools
 
@@ -66,6 +62,10 @@ The default CMake build produces only `flagfft`. `FLAGFFT_BUILD_CLI=ON` adds
 and `flagfft-tuner` targets were removed; native coverage is driven by pytest
 against the single CLI.
 
+CMake is the sole supported build/install entrypoint. The repository does not
+provide Python wheel or `pip install` packaging; Python is an internal JIT and
+test-time dependency.
+
 ## Python Boundary
 
 Deleted runtime wrappers: top-level `flagfft.py`, `src/api.py`, and
@@ -73,6 +73,7 @@ Deleted runtime wrappers: top-level `flagfft.py`, `src/api.py`, and
 
 Retained Python files:
 
+- `src/__init__.py`
 - `src/codegen/`
 - `src/codegen/codelet/`
 
