@@ -7,25 +7,25 @@
 namespace flagfft {
 namespace {
 
-std::vector<RuntimeKernelArg> raw_kernel_args(std::initializer_list<runtime::DevicePtr> ptrs,
+std::vector<JitKernelArg> raw_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
                                           const std::vector<DeviceAllocation> &tables,
                                           int64_t batch) {
-    std::vector<RuntimeKernelArg> args;
+    std::vector<JitKernelArg> args;
     args.reserve(ptrs.size() + tables.size() + 1);
-    for (runtime::DevicePtr ptr : ptrs) {
-        args.push_back(RuntimeKernelArg::device(ptr));
+    for (adaptor::DevicePtr ptr : ptrs) {
+        args.push_back(JitKernelArg::device(ptr));
     }
     for (const DeviceAllocation &table : tables) {
-        args.push_back(RuntimeKernelArg::device(table.get()));
+        args.push_back(JitKernelArg::device(table.get()));
     }
-    args.push_back(RuntimeKernelArg::i32(static_cast<int32_t>(batch)));
+    args.push_back(JitKernelArg::i32(static_cast<int32_t>(batch)));
     return args;
 }
 
 }  // namespace
 
 CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
-                                         std::shared_ptr<RuntimeKernel> kernel,
+                                         std::shared_ptr<JitKernel> kernel,
                                          std::vector<DeviceAllocation> tables)
     : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {}
 
@@ -39,11 +39,11 @@ std::string CompiledRawLeafNode::describe() const {
     return oss.str();
 }
 
-flagfftResult CompiledRawLeafNode::execute(runtime::DevicePtr input,
-                                           runtime::DevicePtr output,
+flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
+                                           adaptor::DevicePtr output,
                                            const RawExecutionContext &context) const {
     try {
-        std::vector<RuntimeKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
+        std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
 
         kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
         return FLAGFFT_SUCCESS;
@@ -58,9 +58,9 @@ CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(
     int64_t length,
     int64_t n1,
     int64_t n2,
-    std::shared_ptr<RuntimeKernel> row_kernel,
+    std::shared_ptr<JitKernel> row_kernel,
     std::vector<DeviceAllocation> row_tables,
-    std::shared_ptr<RuntimeKernel> col_kernel,
+    std::shared_ptr<JitKernel> col_kernel,
     std::vector<DeviceAllocation> col_tables,
     DeviceAllocation twiddle,
     DeviceAllocation stage1)
@@ -83,15 +83,15 @@ std::string CompiledRawFourStepFusedNode::describe() const {
     return oss.str();
 }
 
-flagfftResult CompiledRawFourStepFusedNode::execute(runtime::DevicePtr input,
-                                                    runtime::DevicePtr output,
+flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
+                                                    adaptor::DevicePtr output,
                                                     const RawExecutionContext &context) const {
     try {
-        std::vector<RuntimeKernelArg> row_args =
+        std::vector<JitKernelArg> row_args =
             raw_kernel_args({input, stage1.get()}, row_tables, context.batch);
         row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
 
-        std::vector<RuntimeKernelArg> col_args =
+        std::vector<JitKernelArg> col_args =
             raw_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, context.batch);
         col_kernel->launch(context.stream, col_args,
                            ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
@@ -107,9 +107,9 @@ flagfftResult CompiledRawFourStepFusedNode::execute(runtime::DevicePtr input,
 CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
                                                    int64_t conv_length,
                                                    std::shared_ptr<CompiledRawNode> fft,
-                                                   std::shared_ptr<RuntimeKernel> prepare_kernel,
-                                                   std::shared_ptr<RuntimeKernel> pointwise_kernel,
-                                                   std::shared_ptr<RuntimeKernel> finalize_kernel,
+                                                   std::shared_ptr<JitKernel> prepare_kernel,
+                                                   std::shared_ptr<JitKernel> pointwise_kernel,
+                                                   std::shared_ptr<JitKernel> finalize_kernel,
                                                    DeviceAllocation chirp,
                                                    DeviceAllocation b_time,
                                                    DeviceAllocation a_buf,
@@ -151,19 +151,19 @@ void CompiledRawBluesteinNode::ensure_b_fft(const RawExecutionContext &context) 
     b_fft_ready = true;
 }
 
-flagfftResult CompiledRawBluesteinNode::execute(runtime::DevicePtr input,
-                                                runtime::DevicePtr output,
+flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
+                                                adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
     try {
         ensure_b_fft(context);
 
-        std::vector<RuntimeKernelArg> prepare_args = {
-            RuntimeKernelArg::device(input),
-            RuntimeKernelArg::device(chirp.get()),
-            RuntimeKernelArg::device(a_buf.get()),
-            RuntimeKernelArg::i64(length),
-            RuntimeKernelArg::i64(conv_length),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> prepare_args = {
+            JitKernelArg::device(input),
+            JitKernelArg::device(chirp.get()),
+            JitKernelArg::device(a_buf.get()),
+            JitKernelArg::i64(length),
+            JitKernelArg::i64(conv_length),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), context.batch, 1);
 
@@ -173,12 +173,12 @@ flagfftResult CompiledRawBluesteinNode::execute(runtime::DevicePtr input,
             return result;
         }
 
-        std::vector<RuntimeKernelArg> pointwise_args = {
-            RuntimeKernelArg::device(work_buf.get()),
-            RuntimeKernelArg::device(b_fft_buf.get()),
-            RuntimeKernelArg::device(a_buf.get()),
-            RuntimeKernelArg::i64(conv_length),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> pointwise_args = {
+            JitKernelArg::device(work_buf.get()),
+            JitKernelArg::device(b_fft_buf.get()),
+            JitKernelArg::device(a_buf.get()),
+            JitKernelArg::i64(conv_length),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         pointwise_kernel->launch(context.stream,
                                  pointwise_args,
@@ -191,13 +191,13 @@ flagfftResult CompiledRawBluesteinNode::execute(runtime::DevicePtr input,
             return result;
         }
 
-        std::vector<RuntimeKernelArg> finalize_args = {
-            RuntimeKernelArg::device(work_buf.get()),
-            RuntimeKernelArg::device(chirp.get()),
-            RuntimeKernelArg::device(output),
-            RuntimeKernelArg::i64(length),
-            RuntimeKernelArg::i64(conv_length),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> finalize_args = {
+            JitKernelArg::device(work_buf.get()),
+            JitKernelArg::device(chirp.get()),
+            JitKernelArg::device(output),
+            JitKernelArg::i64(length),
+            JitKernelArg::i64(conv_length),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, 256), context.batch, 1);
         return FLAGFFT_SUCCESS;
@@ -214,9 +214,9 @@ CompiledRawFourStepGenericNode::CompiledRawFourStepGenericNode(
     int64_t n2,
     std::shared_ptr<CompiledRawNode> row_child,
     std::shared_ptr<CompiledRawNode> col_child,
-    std::shared_ptr<RuntimeKernel> reshape_in_kernel,
-    std::shared_ptr<RuntimeKernel> twiddle_reshape_kernel,
-    std::shared_ptr<RuntimeKernel> final_pack_kernel,
+    std::shared_ptr<JitKernel> reshape_in_kernel,
+    std::shared_ptr<JitKernel> twiddle_reshape_kernel,
+    std::shared_ptr<JitKernel> final_pack_kernel,
     DeviceAllocation twiddle,
     DeviceAllocation stage1,
     DeviceAllocation stage2)
@@ -241,17 +241,17 @@ std::string CompiledRawFourStepGenericNode::describe() const {
     return oss.str();
 }
 
-flagfftResult CompiledRawFourStepGenericNode::execute(runtime::DevicePtr input,
-                                                     runtime::DevicePtr output,
+flagfftResult CompiledRawFourStepGenericNode::execute(adaptor::DevicePtr input,
+                                                     adaptor::DevicePtr output,
                                                      const RawExecutionContext &context) const {
     try {
         const int64_t total = n1 * n2;
         const int64_t reshape_block = 256;
 
-        std::vector<RuntimeKernelArg> reshape_in_args = {
-            RuntimeKernelArg::device(input),
-            RuntimeKernelArg::device(stage1.get()),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> reshape_in_args = {
+            JitKernelArg::device(input),
+            JitKernelArg::device(stage1.get()),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         reshape_in_kernel->launch(context.stream,
                                   reshape_in_args,
@@ -265,11 +265,11 @@ flagfftResult CompiledRawFourStepGenericNode::execute(runtime::DevicePtr input,
             return result;
         }
 
-        std::vector<RuntimeKernelArg> twiddle_args = {
-            RuntimeKernelArg::device(stage2.get()),
-            RuntimeKernelArg::device(twiddle.get()),
-            RuntimeKernelArg::device(stage1.get()),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> twiddle_args = {
+            JitKernelArg::device(stage2.get()),
+            JitKernelArg::device(twiddle.get()),
+            JitKernelArg::device(stage1.get()),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         twiddle_reshape_kernel->launch(context.stream,
                                        twiddle_args,
@@ -283,10 +283,10 @@ flagfftResult CompiledRawFourStepGenericNode::execute(runtime::DevicePtr input,
             return result;
         }
 
-        std::vector<RuntimeKernelArg> final_args = {
-            RuntimeKernelArg::device(stage2.get()),
-            RuntimeKernelArg::device(output),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> final_args = {
+            JitKernelArg::device(stage2.get()),
+            JitKernelArg::device(output),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         final_pack_kernel->launch(context.stream,
                                   final_args,
@@ -302,9 +302,9 @@ flagfftResult CompiledRawFourStepGenericNode::execute(runtime::DevicePtr input,
 }
 
 CompiledRawR2CNode::CompiledRawR2CNode(int64_t length,
-                                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                                       std::shared_ptr<JitKernel> expand_kernel,
                                        std::shared_ptr<CompiledRawNode> fft,
-                                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                                       std::shared_ptr<JitKernel> pack_kernel,
                                        DeviceAllocation complex_input,
                                        DeviceAllocation full_output)
     : length(length),
@@ -323,8 +323,8 @@ std::string CompiledRawR2CNode::describe() const {
     return oss.str();
 }
 
-flagfftResult CompiledRawR2CNode::execute(runtime::DevicePtr input,
-                                          runtime::DevicePtr output,
+flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
+                                          adaptor::DevicePtr output,
                                           const RawExecutionContext &context) const {
     try {
         constexpr int64_t block = 256;
@@ -336,11 +336,11 @@ flagfftResult CompiledRawR2CNode::execute(runtime::DevicePtr input,
                      : (context.input_distance > 0 ? context.input_distance : length);
         const int64_t output_distance =
             context.output_distance > 0 ? context.output_distance : half;
-        std::vector<RuntimeKernelArg> expand_args = {
-            RuntimeKernelArg::device(input),
-            RuntimeKernelArg::device(complex_input.get()),
-            RuntimeKernelArg::i64(input_distance),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> expand_args = {
+            JitKernelArg::device(input),
+            JitKernelArg::device(complex_input.get()),
+            JitKernelArg::i64(input_distance),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
 
@@ -349,11 +349,11 @@ flagfftResult CompiledRawR2CNode::execute(runtime::DevicePtr input,
             return result;
         }
 
-        std::vector<RuntimeKernelArg> pack_args = {
-            RuntimeKernelArg::device(full_output.get()),
-            RuntimeKernelArg::device(output),
-            RuntimeKernelArg::i64(output_distance),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> pack_args = {
+            JitKernelArg::device(full_output.get()),
+            JitKernelArg::device(output),
+            JitKernelArg::i64(output_distance),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         pack_kernel->launch(context.stream,
                             pack_args,
@@ -369,9 +369,9 @@ flagfftResult CompiledRawR2CNode::execute(runtime::DevicePtr input,
 }
 
 CompiledRawC2RNode::CompiledRawC2RNode(int64_t length,
-                                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                                       std::shared_ptr<JitKernel> expand_kernel,
                                        std::shared_ptr<CompiledRawNode> fft,
-                                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                                       std::shared_ptr<JitKernel> pack_kernel,
                                        DeviceAllocation full_input,
                                        DeviceAllocation full_output)
     : length(length),
@@ -390,8 +390,8 @@ std::string CompiledRawC2RNode::describe() const {
     return oss.str();
 }
 
-flagfftResult CompiledRawC2RNode::execute(runtime::DevicePtr input,
-                                          runtime::DevicePtr output,
+flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
+                                          adaptor::DevicePtr output,
                                           const RawExecutionContext &context) const {
     try {
         constexpr int64_t block = 256;
@@ -403,11 +403,11 @@ flagfftResult CompiledRawC2RNode::execute(runtime::DevicePtr input,
         const int64_t output_distance =
             in_place ? std::max(context.output_distance, padded_real_distance)
                      : (context.output_distance > 0 ? context.output_distance : length);
-        std::vector<RuntimeKernelArg> expand_args = {
-            RuntimeKernelArg::device(input),
-            RuntimeKernelArg::device(full_input.get()),
-            RuntimeKernelArg::i64(input_distance),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> expand_args = {
+            JitKernelArg::device(input),
+            JitKernelArg::device(full_input.get()),
+            JitKernelArg::i64(input_distance),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
 
@@ -416,11 +416,11 @@ flagfftResult CompiledRawC2RNode::execute(runtime::DevicePtr input,
             return result;
         }
 
-        std::vector<RuntimeKernelArg> pack_args = {
-            RuntimeKernelArg::device(full_output.get()),
-            RuntimeKernelArg::device(output),
-            RuntimeKernelArg::i64(output_distance),
-            RuntimeKernelArg::i32(static_cast<int32_t>(context.batch)),
+        std::vector<JitKernelArg> pack_args = {
+            JitKernelArg::device(full_output.get()),
+            JitKernelArg::device(output),
+            JitKernelArg::i64(output_distance),
+            JitKernelArg::i32(static_cast<int32_t>(context.batch)),
         };
         pack_kernel->launch(context.stream, pack_args, ceil_div(length, block), context.batch, 1);
         return FLAGFFT_SUCCESS;

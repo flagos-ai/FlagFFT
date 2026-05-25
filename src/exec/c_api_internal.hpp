@@ -33,7 +33,7 @@ struct FlagFFTPlanDesc {
 struct FlagFFTPlanState {
     bool initialized = false;
     bool destroyed = false;
-    runtime::StreamHandle stream = nullptr;
+    adaptor::StreamHandle stream = nullptr;
     flagfftResult last_error = FLAGFFT_SUCCESS;
 };
 

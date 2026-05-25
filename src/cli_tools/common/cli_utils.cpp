@@ -9,17 +9,9 @@
 
 #include <unistd.h>
 
+#include "adaptor/adaptor.h"
+
 namespace flagfft::cli {
-namespace {
-
-std::string cuda_error_message(cudaError_t result, const std::string &context) {
-    std::ostringstream oss;
-    oss << context << ": CUDA " << static_cast<int>(result)
-        << " (" << cudaGetErrorString(result) << ")";
-    return oss.str();
-}
-
-}  // namespace
 
 FftApi parse_fft_api(const std::string &value) {
     if (value == "c2c" || value == "C2C") return FftApi::C2C;
@@ -137,16 +129,15 @@ int parse_direction(const std::string &value) {
 }
 
 bool has_cuda_device(std::string &reason) {
-    int count = 0;
-    cudaError_t result = cudaGetDeviceCount(&count);
-    if (result != cudaSuccess) {
-        throw CliException(cuda_error_message(result, "cudaGetDeviceCount"), kExitRuntimeError);
-    }
-    if (count <= 0) {
+    try {
+        if (adaptor::device_count() > 0) {
+            return true;
+        }
         reason = "no CUDA device available";
         return false;
+    } catch (const std::exception &error) {
+        throw CliException(error.what(), kExitRuntimeError);
     }
-    return true;
 }
 
 std::string shell_quote(const std::string &value) {
@@ -185,12 +176,6 @@ std::string default_tune_db(const char *argv0) {
     return (std::filesystem::path(executable_dir(argv0)) / ".flagfft" /
             "tuned_plans.sqlite")
         .string();
-}
-
-void check_cuda(cudaError_t result, const std::string &context) {
-    if (result != cudaSuccess) {
-        throw CliException(cuda_error_message(result, context), kExitRuntimeError);
-    }
 }
 
 void check_cufft(cufftResult result, const std::string &context) {

@@ -137,7 +137,7 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
                 interleaved[index + 1] = std::sin(angle);
             }
         }
-        return runtime::Memory::from_doubles(interleaved);
+        return adaptor::Memory::from_doubles(interleaved);
     }
     std::vector<float> interleaved(total);
     for (int64_t row = 0; row < n2; ++row) {
@@ -152,7 +152,7 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
             interleaved[index + 1] = static_cast<float>(std::sin(angle));
         }
     }
-    return runtime::Memory::from_floats(interleaved);
+    return adaptor::Memory::from_floats(interleaved);
 }
 
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign) {
@@ -169,7 +169,7 @@ DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n,
             interleaved[offset] = std::cos(angle);
             interleaved[offset + 1] = std::sin(angle);
         }
-        return runtime::Memory::from_doubles(interleaved);
+        return adaptor::Memory::from_doubles(interleaved);
     }
     std::vector<float> interleaved(total);
     for (int64_t idx = 0; idx < n; ++idx) {
@@ -180,7 +180,7 @@ DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n,
         interleaved[offset] = static_cast<float>(std::cos(angle));
         interleaved[offset + 1] = static_cast<float>(std::sin(angle));
     }
-    return runtime::Memory::from_floats(interleaved);
+    return adaptor::Memory::from_floats(interleaved);
 }
 
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m) {
@@ -203,7 +203,7 @@ DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int
                 interleaved[mirror + 1] = i;
             }
         }
-        return runtime::Memory::from_doubles(interleaved);
+        return adaptor::Memory::from_doubles(interleaved);
     }
     std::vector<float> interleaved(static_cast<std::size_t>(m * 2), 0.0f);
     for (int64_t idx = 0; idx < n; ++idx) {
@@ -221,7 +221,7 @@ DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int
             interleaved[mirror + 1] = i;
         }
     }
-    return runtime::Memory::from_floats(interleaved);
+    return adaptor::Memory::from_floats(interleaved);
 }
 
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf,
@@ -232,24 +232,24 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf,
         if (is_double) {
             auto twiddles = build_stage_twiddles_d(
                 leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
-            tables.push_back(runtime::Memory::from_doubles(twiddles.first));
-            tables.push_back(runtime::Memory::from_doubles(twiddles.second));
+            tables.push_back(adaptor::Memory::from_doubles(twiddles.first));
+            tables.push_back(adaptor::Memory::from_doubles(twiddles.second));
         } else {
             auto twiddles = build_stage_twiddles(
                 leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
-            tables.push_back(runtime::Memory::from_floats(twiddles.first));
-            tables.push_back(runtime::Memory::from_floats(twiddles.second));
+            tables.push_back(adaptor::Memory::from_floats(twiddles.first));
+            tables.push_back(adaptor::Memory::from_floats(twiddles.second));
         }
     }
     for (int64_t radix : leaf.generic_radices) {
         if (is_double) {
             auto dft = build_dft_matrix_d(radix, request.direction);
-            tables.push_back(runtime::Memory::from_doubles(dft.first));
-            tables.push_back(runtime::Memory::from_doubles(dft.second));
+            tables.push_back(adaptor::Memory::from_doubles(dft.first));
+            tables.push_back(adaptor::Memory::from_doubles(dft.second));
         } else {
             auto dft = build_dft_matrix(radix, request.direction);
-            tables.push_back(runtime::Memory::from_floats(dft.first));
-            tables.push_back(runtime::Memory::from_floats(dft.second));
+            tables.push_back(adaptor::Memory::from_floats(dft.first));
+            tables.push_back(adaptor::Memory::from_floats(dft.second));
         }
     }
     return tables;

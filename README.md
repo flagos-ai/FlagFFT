@@ -6,13 +6,17 @@ is retained only for Triton/TLE JIT source generation (internal codegen).
 
 ## Current API
 
-The public header is `include/flagfft/flagfft.h` and exposes:
+The public header is `include/flagfft.h` and exposes:
 
 - `flagfftPlan1d`, `flagfftPlan2d`, `flagfftPlan3d`, `flagfftPlanMany`
 - `flagfftExecC2C`, `flagfftExecZ2Z`, `flagfftExecR2C`, `flagfftExecD2Z`,
   `flagfftExecC2R`, `flagfftExecZ2D`
 - `flagfftSetStream`, `flagfftDestroy`
 - `flagfftGetPlanDescription`
+
+`flagfftSetStream` accepts the backend-neutral opaque `flagfftStream_t`
+declared in `include/flagfft.h`. With the current CUDA backend, callers may
+pass a `cudaStream_t` directly without changing stream behavior.
 
 The native runtime supports arbitrary-length contiguous rank-1 batched
 `FLAGFFT_C2C` (`complex64`) and `FLAGFFT_Z2Z` (`complex128`) transforms on
@@ -41,7 +45,7 @@ debugging. The returned pointer is valid for the lifetime of the plan.
   selection, JSON deserialization, and tune candidate enumeration.
 - `src/codegen/`: C++ libtriton_jit invocation/cache logic plus Python kernel
   source generation. Codelets live in `src/codegen/codelet/`.
-- `src/runtime/`: CUDA Driver helpers.
+- `src/adaptor/`: backend abstraction and the current CUDA Driver implementation.
 - `src/exec/`: cuFFT-style C API, raw pointer execution nodes, and tuned plan
   lookup.
 - `src/cli_tools/`: unified native CLI, shared execution/timing code, and
@@ -55,10 +59,12 @@ Python, compile kernels, rebuild plans, or allocate large buffers.
 ## Kernel Backend
 
 FlagFFT is JIT-only. It requires the `deps/libtriton_jit` submodule and targets
-CUDA through `FLAGFFT_LIBTRITON_JIT_BACKEND=CUDA`.
+CUDA through `BACKEND=CUDA`. The same option selects the FlagFFT adaptor and
+the `libtriton_jit` backend; CUDA is the only adaptor backend currently
+provided.
 
 ```sh
-cmake -S . -B build -GNinja
+cmake -S . -B build -GNinja -DBACKEND=CUDA
 cmake --build build
 ```
 
@@ -84,8 +90,7 @@ and Python tests additionally require a Triton/TLE-enabled Python environment
 and `pytest`.
 
 ```sh
-cmake -S . -B build -GNinja \
-  -DFLAGFFT_BUILD_CLI=ON
+cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
 ```
 
@@ -122,9 +127,11 @@ interface; pass one or more complete `--shape` options instead.
 `test --suite plan` runs route/key assertions, `test --suite api-errors`
 checks C API error contracts, and `test --suite correctness` executes cases
 against cuFFT. `bench` runs the same correctness comparison before reporting
-CUDA event `median`/`p90` timings and speedup; `--print-path` adds the plan
+backend event `median`/`p90` timings and speedup; `--print-path` adds the plan
 description. `tune` benchmarks candidates, verifies finalists against cuFFT,
 and writes the winning plan to SQLite; `--retune` supersedes an earlier winner.
+The cuFFT use in this CLI is a CUDA-only correctness and performance oracle;
+the FlagFFT library API and its stream handle do not expose CUDA types.
 Set `FLAGFFT_TUNE_DB` to that database when running `test` or `bench` to use it.
 Integer option tokens must be fully numeric; for example, `--shape 16suffix`
 and `--batch 2suffix` are rejected as invalid arguments. Correctness reports
@@ -179,7 +186,7 @@ Pytest invokes `flagfft-cli --json` for all native planner/API/correctness,
 benchmark, and tune coverage:
 
 ```sh
-cmake -S . -B build -GNinja -DFLAGFFT_BUILD_CLI=ON
+cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
 pytest -q
 ```

@@ -116,7 +116,7 @@ FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction)
     const bool is_double = desc.precision == FlagFFTPrecision::Float64;
     request.input_dtype = is_double ? "complex128" : "complex64";
     request.output_dtype = is_double ? "complex128" : "complex64";
-    request.device_type = "cuda";
+    request.device_type = adaptor::backend_name();
     request.device_index = desc.device_index;
     request.device_arch = desc.device_arch;
     request.input_layout = "contiguous";

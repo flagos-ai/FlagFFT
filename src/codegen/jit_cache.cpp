@@ -78,7 +78,7 @@ int64_t json_int_field(const std::string &json, const std::string &field) {
 
 struct KernelCacheState {
     std::mutex mutex;
-    std::unordered_map<KernelKey, std::shared_ptr<RuntimeKernel>, KernelKeyHash> cache;
+    std::unordered_map<KernelKey, std::shared_ptr<JitKernel>, KernelKeyHash> cache;
     int64_t hits = 0;
     int64_t misses = 0;
 };
@@ -90,7 +90,7 @@ KernelCacheState &kernel_cache_state() {
 
 }  // namespace
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &key) const {
+std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) const {
     reject_legacy_backend_env();
     KernelCacheState &state = kernel_cache_state();
     {
@@ -181,7 +181,7 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_kernel(const KernelKey &k
     }
 
     std::string artifact_json = run_command_capture_stdout(jit_command.str());
-    auto kernel = std::make_shared<RuntimeKernel>();
+    auto kernel = std::make_shared<JitKernel>();
     kernel->kernel_name = json_string_field(artifact_json, "kernel_name");
     kernel->module_path = json_string_field(artifact_json, "module_path");
     kernel->signature = json_string_field(artifact_json, "signature");

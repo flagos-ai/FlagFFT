@@ -40,7 +40,7 @@ BufferLayout layout_for(const CaseSpec &spec) {
     return {n, half, padded, scalar, in_bytes, out_bytes, std::max(in_bytes, out_bytes)};
 }
 
-void seed_input(void *device, const BufferLayout &layout, const CaseSpec &spec) {
+void seed_input(DeviceMemory &device, const BufferLayout &layout, const CaseSpec &spec) {
     const std::size_t count = layout.in_bytes / layout.scalar_bytes;
     if (layout.scalar_bytes == sizeof(float)) {
         std::vector<float> host(count);
@@ -54,8 +54,7 @@ void seed_input(void *device, const BufferLayout &layout, const CaseSpec &spec) 
                 if (layout.n % 2 == 0) host[static_cast<std::size_t>(batch * row + layout.n + 1)] = 0.0f;
             }
         }
-        check_cuda(cudaMemcpy(device, host.data(), layout.in_bytes, cudaMemcpyHostToDevice),
-                   "copy seeded float input");
+        device.copy_from_host(host.data(), layout.in_bytes);
     } else {
         std::vector<double> host(count);
         for (std::size_t i = 0; i < count; ++i) {
@@ -68,8 +67,7 @@ void seed_input(void *device, const BufferLayout &layout, const CaseSpec &spec) 
                 if (layout.n % 2 == 0) host[static_cast<std::size_t>(batch * row + layout.n + 1)] = 0.0;
             }
         }
-        check_cuda(cudaMemcpy(device, host.data(), layout.in_bytes, cudaMemcpyHostToDevice),
-                   "copy seeded double input");
+        device.copy_from_host(host.data(), layout.in_bytes);
     }
 }
 
@@ -180,22 +178,29 @@ struct Execution {
             ff_out.allocate(layout.out_bytes);
             cf_out.allocate(layout.out_bytes);
         }
-        seed_input(ff_in.get(), layout, spec);
-        seed_input(cf_in.get(), layout, spec);
+        seed_input(ff_in, layout, spec);
+        seed_input(cf_in, layout, spec);
         ff_plan = make_flagfft_plan(spec, layout);
         cf_plan = make_cufft_plan(spec, layout);
         if (explicit_stream) {
             stream = std::make_unique<Stream>();
             check_flagfft(flagfftSetStream(ff_plan.get(), stream->get()), "flagfftSetStream");
-            check_cufft(cufftSetStream(cf_plan.get(), stream->get()), "cufftSetStream");
+            check_cufft(cufftSetStream(cf_plan.get(), reinterpret_cast<cudaStream_t>(stream->get())),
+                        "cufftSetStream");
         }
     }
 
     void *ff_output() { return spec.placement == Placement::InPlace ? ff_in.get() : ff_out.get(); }
     void *cf_output() { return spec.placement == Placement::InPlace ? cf_in.get() : cf_out.get(); }
+    const DeviceMemory &ff_output_memory() const {
+        return spec.placement == Placement::InPlace ? ff_in : ff_out;
+    }
+    const DeviceMemory &cf_output_memory() const {
+        return spec.placement == Placement::InPlace ? cf_in : cf_out;
+    }
     void sync() {
         if (stream) stream->sync();
-        else check_cuda(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
+        else adaptor::synchronize();
     }
 
     CaseSpec spec;
@@ -229,8 +234,8 @@ json compare_outputs(Execution &run) {
     if (run.layout.scalar_bytes == sizeof(float)) {
         std::vector<float> actual(bytes / sizeof(float));
         std::vector<float> expected(actual.size());
-        check_cuda(cudaMemcpy(actual.data(), run.ff_output(), bytes, cudaMemcpyDeviceToHost), "copy FlagFFT output");
-        check_cuda(cudaMemcpy(expected.data(), run.cf_output(), bytes, cudaMemcpyDeviceToHost), "copy cuFFT output");
+        run.ff_output_memory().copy_to_host(actual.data(), bytes);
+        run.cf_output_memory().copy_to_host(expected.data(), bytes);
         for (int b = 0; b < run.spec.batch; ++b) {
             const int count = is_real_inverse_api(run.spec.api) ? run.layout.n
                               : is_real_forward_api(run.spec.api) ? 2 * run.layout.half
@@ -245,8 +250,8 @@ json compare_outputs(Execution &run) {
     } else {
         std::vector<double> actual(bytes / sizeof(double));
         std::vector<double> expected(actual.size());
-        check_cuda(cudaMemcpy(actual.data(), run.ff_output(), bytes, cudaMemcpyDeviceToHost), "copy FlagFFT output");
-        check_cuda(cudaMemcpy(expected.data(), run.cf_output(), bytes, cudaMemcpyDeviceToHost), "copy cuFFT output");
+        run.ff_output_memory().copy_to_host(actual.data(), bytes);
+        run.cf_output_memory().copy_to_host(expected.data(), bytes);
         for (int b = 0; b < run.spec.batch; ++b) {
             const int count = is_real_inverse_api(run.spec.api) ? run.layout.n
                               : is_real_forward_api(run.spec.api) ? 2 * run.layout.half

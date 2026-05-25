@@ -6,6 +6,10 @@
 
 namespace flagfft {
 
+int64_t ceil_div(int64_t numerator, int64_t denominator) {
+    return (numerator + denominator - 1) / denominator;
+}
+
 bool contains(const std::vector<int64_t> &values, int64_t value) {
     return std::find(values.begin(), values.end(), value) != values.end();
 }

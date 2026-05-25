@@ -30,7 +30,7 @@ json tune_one(const CaseSpec &spec, const std::string &db_path, int warmup, int 
     request.norm = "backward";
     request.input_dtype = "complex64";
     request.output_dtype = "complex64";
-    request.device_type = "cuda";
+    request.device_type = adaptor::backend_name();
     request.device_index = device_index;
     request.device_arch = device_arch;
     request.input_layout = "contiguous";
@@ -142,9 +142,7 @@ json tune_one(const CaseSpec &spec, const std::string &db_path, int warmup, int 
 json run_tune_cases(const std::vector<CaseSpec> &cases, const std::string &db_path,
                     int warmup, int iters, int static_limit, int finalists, bool retune) {
     int device_index = 0;
-    cudaDeviceProp props{};
-    check_cuda(cudaGetDeviceProperties(&props, device_index), "cudaGetDeviceProperties");
-    const std::string device_arch = "sm_" + std::to_string(props.major) + std::to_string(props.minor);
+    const std::string device_arch = adaptor::device_architecture(device_index);
     std::filesystem::path db_parent = std::filesystem::path(db_path).parent_path();
     if (!db_parent.empty()) std::filesystem::create_directories(db_parent);
     flagfft::tune::init_tune_db(db_path);

@@ -1,9 +1,8 @@
 #pragma once
 
-#include <cuda_runtime_api.h>
 #include <cufft.h>
 
-#include "flagfft/flagfft.h"
+#include "flagfft.h"
 
 namespace flagfft::cli {
 

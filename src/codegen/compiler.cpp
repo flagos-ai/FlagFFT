@@ -14,7 +14,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         const int64_t element_bytes = complex_element_bytes(request.input_dtype);
         if (row_leaf != nullptr && col_leaf != nullptr) {
             DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
-            DeviceAllocation stage1 = runtime::Memory::allocate(
+            DeviceAllocation stage1 = adaptor::Memory(
                 static_cast<std::size_t>(batch * four_step->length * element_bytes));
             return std::make_shared<CompiledRawFourStepFusedNode>(
                 four_step->length,
@@ -38,11 +38,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         DeviceAllocation b_time =
             build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
         const int64_t element_bytes = complex_element_bytes(request.input_dtype);
-        DeviceAllocation a_buf = runtime::Memory::allocate(
+        DeviceAllocation a_buf = adaptor::Memory(
             static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
-        DeviceAllocation work_buf = runtime::Memory::allocate(
+        DeviceAllocation work_buf = adaptor::Memory(
             static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
-        DeviceAllocation b_fft_buf = runtime::Memory::allocate(
+        DeviceAllocation b_fft_buf = adaptor::Memory(
             static_cast<std::size_t>(bluestein->conv_length * element_bytes));
         return std::make_shared<CompiledRawBluesteinNode>(
             bluestein->length,
@@ -67,9 +67,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     const int64_t n = request.requested_n;
     DeviceAllocation complex_input =
-        runtime::Memory::allocate(static_cast<std::size_t>(batch * n * element_bytes));
+        adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
     DeviceAllocation full_output =
-        runtime::Memory::allocate(static_cast<std::size_t>(batch * n * element_bytes));
+        adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
     return std::make_shared<CompiledRawR2CNode>(
         n,
         compile_real_to_complex_kernel(request, n),
@@ -85,9 +85,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     const int64_t n = request.requested_n;
     DeviceAllocation full_input =
-        runtime::Memory::allocate(static_cast<std::size_t>(batch * n * element_bytes));
+        adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
     DeviceAllocation full_output =
-        runtime::Memory::allocate(static_cast<std::size_t>(batch * n * element_bytes));
+        adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
     return std::make_shared<CompiledRawC2RNode>(
         n,
         compile_compact_to_hermitian_full_kernel(request, n),
@@ -109,12 +109,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                     leaf.num_warps,
                                     leaf.generic_radices,
                                     leaf.smem_size);
-    std::shared_ptr<RuntimeKernel> kernel = compile_kernel(key);
+    std::shared_ptr<JitKernel> kernel = compile_kernel(key);
     return std::make_shared<CompiledRawLeafNode>(
         leaf.length, std::move(kernel), build_raw_leaf_tables(leaf, request));
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_four_step_row_kernel(const LeafPlanNode &leaf,
+std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                                         const FFTRequest &request,
                                                                         int64_t n1,
                                                                         int64_t n2) {
@@ -133,7 +133,7 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_four_step_row_kernel(cons
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_four_step_col_kernel(const LeafPlanNode &leaf,
+std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const LeafPlanNode &leaf,
                                                                         const FFTRequest &request,
                                                                         int64_t n1,
                                                                         int64_t n2) {
@@ -152,7 +152,7 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_four_step_col_kernel(cons
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_prepare_kernel(const FFTRequest &request,
+std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_prepare_kernel(const FFTRequest &request,
                                                                             int64_t n,
                                                                             int64_t m) {
     std::string target = triton_target_for_request(request);
@@ -160,7 +160,7 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_prepare_kernel(
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_pointwise_kernel(const FFTRequest &request,
+std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_pointwise_kernel(const FFTRequest &request,
                                                                               int64_t n,
                                                                               int64_t m) {
     std::string target = triton_target_for_request(request);
@@ -168,7 +168,7 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_pointwise_kerne
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_finalize_kernel(const FFTRequest &request,
+std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                              int64_t n,
                                                                              int64_t m) {
     std::string target = triton_target_for_request(request);
@@ -176,7 +176,7 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_bluestein_finalize_kernel
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_reshape_pack_kernel(const FFTRequest &request,
+std::shared_ptr<JitKernel> TritonCompiler::compile_reshape_pack_kernel(const FFTRequest &request,
                                                                            int64_t n1,
                                                                            int64_t n2) {
     std::string target = triton_target_for_request(request);
@@ -184,7 +184,7 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_reshape_pack_kernel(const
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_twiddle_reshape_pack_kernel(const FFTRequest &request,
+std::shared_ptr<JitKernel> TritonCompiler::compile_twiddle_reshape_pack_kernel(const FFTRequest &request,
                                                                                    int64_t n1,
                                                                                    int64_t n2) {
     std::string target = triton_target_for_request(request);
@@ -192,21 +192,21 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_twiddle_reshape_pack_kern
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_real_to_complex_kernel(const FFTRequest &request,
+std::shared_ptr<JitKernel> TritonCompiler::compile_real_to_complex_kernel(const FFTRequest &request,
                                                                               int64_t n) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::real_to_complex(target, request.input_dtype, n);
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_r2c_half_pack_kernel(const FFTRequest &request,
+std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_half_pack_kernel(const FFTRequest &request,
                                                                            int64_t n) {
     std::string target = triton_target_for_request(request);
     KernelKey key = KernelKey::r2c_half_pack(target, request.input_dtype, n);
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_compact_to_hermitian_full_kernel(
+std::shared_ptr<JitKernel> TritonCompiler::compile_compact_to_hermitian_full_kernel(
     const FFTRequest &request,
     int64_t n) {
     std::string target = triton_target_for_request(request);
@@ -214,7 +214,7 @@ std::shared_ptr<RuntimeKernel> TritonCompiler::compile_compact_to_hermitian_full
     return compile_kernel(key);
 }
 
-std::shared_ptr<RuntimeKernel> TritonCompiler::compile_complex_to_real_kernel(
+std::shared_ptr<JitKernel> TritonCompiler::compile_complex_to_real_kernel(
     const FFTRequest &request,
     int64_t n) {
     std::string target = triton_target_for_request(request);
@@ -236,9 +236,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_generic(c
         compile_raw_node(node.col_plan, request, batch * n1);
 
     DeviceAllocation twiddle = build_raw_four_step_twiddle(request, n1, n2);
-    DeviceAllocation stage1 = runtime::Memory::allocate(
+    DeviceAllocation stage1 = adaptor::Memory(
         static_cast<std::size_t>(batch * n * element_bytes));
-    DeviceAllocation stage2 = runtime::Memory::allocate(
+    DeviceAllocation stage2 = adaptor::Memory(
         static_cast<std::size_t>(batch * n * element_bytes));
 
     auto reshape_in_kernel = compile_reshape_pack_kernel(request, n1, n2);

@@ -1,7 +1,6 @@
 #pragma once
 
-#include <cuda.h>
-#include <flagfft/flagfft.h>
+#include <flagfft.h>
 
 #include <algorithm>
 #include <array>
@@ -53,6 +52,7 @@ bool contains(const std::vector<int64_t> &values, int64_t value);
 int64_t product(const std::vector<int64_t> &values);
 std::string join_ints(const std::vector<int64_t> &values);
 int64_t ceil_power_of_two(int64_t value);
+int64_t ceil_div(int64_t numerator, int64_t denominator);
 int64_t lane_block_for(int64_t lanes);
 std::string shell_quote(const std::string &value);
 std::filesystem::path executable_directory();

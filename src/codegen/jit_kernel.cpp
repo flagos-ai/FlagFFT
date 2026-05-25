@@ -2,74 +2,63 @@
 
 #include "triton_jit/triton_jit_function.h"
 
-#include "runtime/check.hpp"
-#include "runtime/types.hpp"
-
 namespace flagfft {
 
-int64_t ceil_div(int64_t numerator, int64_t denominator) {
-    return (numerator + denominator - 1) / denominator;
-}
-
-RuntimeKernelArg RuntimeKernelArg::device(runtime::DevicePtr value) {
-    RuntimeKernelArg arg;
-    arg.kind = RuntimeArgKind::DevicePtr;
+JitKernelArg JitKernelArg::device(adaptor::DevicePtr value) {
+    JitKernelArg arg;
+    arg.kind = JitArgKind::DevicePtr;
     arg.device_ptr = value;
     return arg;
 }
 
-RuntimeKernelArg RuntimeKernelArg::i32(int32_t value) {
-    RuntimeKernelArg arg;
-    arg.kind = RuntimeArgKind::Int32;
+JitKernelArg JitKernelArg::i32(int32_t value) {
+    JitKernelArg arg;
+    arg.kind = JitArgKind::Int32;
     arg.int32_value = value;
     return arg;
 }
 
-RuntimeKernelArg RuntimeKernelArg::i64(int64_t value) {
-    RuntimeKernelArg arg;
-    arg.kind = RuntimeArgKind::Int64;
+JitKernelArg JitKernelArg::i64(int64_t value) {
+    JitKernelArg arg;
+    arg.kind = JitArgKind::Int64;
     arg.int64_value = value;
     return arg;
 }
 
-RuntimeKernel::~RuntimeKernel() = default;
+JitKernel::~JitKernel() = default;
 
-void RuntimeKernel::compile() {
+void JitKernel::compile() {
     std::lock_guard<std::mutex> lock(mutex);
     if (jit_function != nullptr) {
         return;
     }
-    runtime::check(cuInit(0), "cuInit");
-    CUdevice device = 0;
-    runtime::check(cuCtxGetDevice(&device), "cuCtxGetDevice");
-    jit_function =
-        &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
+    jit_function = &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
     auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
     function->compile(signature,
                       static_cast<unsigned int>(num_warps),
                       static_cast<unsigned int>(num_stages),
-                      static_cast<int>(device));
+                      triton_jit::DefaultBackend::get_device_index());
 }
 
-void RuntimeKernel::launch(runtime::StreamHandle stream,
-                       const std::vector<RuntimeKernelArg> &kernel_args,
+void JitKernel::launch(adaptor::StreamHandle stream,
+                       const std::vector<JitKernelArg> &kernel_args,
                        int64_t grid_x,
                        int64_t grid_y,
                        int64_t grid_z) {
     compile();
-    runtime::DevicePtr global_scratch = 0;
-    runtime::DevicePtr profile_scratch = 0;
+    adaptor::DevicePtr global_scratch = 0;
+    adaptor::DevicePtr profile_scratch = 0;
     std::vector<void *> args;
     args.reserve(kernel_args.size() + 2);
-    for (const RuntimeKernelArg &arg : kernel_args) {
+    for (const JitKernelArg &arg : kernel_args) {
         switch (arg.kind) {
-            case RuntimeArgKind::DevicePtr:
-                args.push_back(const_cast<runtime::DevicePtr *>(&arg.device_ptr));
+            case JitArgKind::DevicePtr:
+                args.push_back(const_cast<adaptor::DevicePtr *>(&arg.device_ptr));
                 break;
-            case RuntimeArgKind::Int32:
+            case JitArgKind::Int32:
                 args.push_back(const_cast<int32_t *>(&arg.int32_value));
                 break;
-            case RuntimeArgKind::Int64:
+            case JitArgKind::Int64:
                 args.push_back(const_cast<int64_t *>(&arg.int64_value));
                 break;
         }
@@ -77,7 +66,7 @@ void RuntimeKernel::launch(runtime::StreamHandle stream,
     args.push_back(&global_scratch);
     args.push_back(&profile_scratch);
     auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
-    function->launch_with_raw_args(stream,
+    function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
                                    static_cast<unsigned int>(grid_x),
                                    static_cast<unsigned int>(grid_y),
                                    static_cast<unsigned int>(grid_z),

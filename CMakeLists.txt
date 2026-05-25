@@ -3,21 +3,19 @@ cmake_minimum_required(VERSION 3.18)
 project(flagfft LANGUAGES CXX)
 
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
-set(FLAGFFT_LIBTRITON_JIT_BACKEND "CUDA" CACHE STRING "libtriton_jit backend used by FlagFFT")
-set_property(CACHE FLAGFFT_LIBTRITON_JIT_BACKEND PROPERTY STRINGS "CUDA")
+set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA")
 
-if(NOT FLAGFFT_LIBTRITON_JIT_BACKEND STREQUAL "CUDA")
-    message(FATAL_ERROR "FlagFFT currently supports only FLAGFFT_LIBTRITON_JIT_BACKEND=CUDA")
+if(NOT BACKEND STREQUAL "CUDA")
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
-find_package(CUDAToolkit REQUIRED)
 find_package(SQLite3 REQUIRED)
 
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit/CMakeLists.txt")
     message(FATAL_ERROR "deps/libtriton_jit is required")
 endif()
-set(BACKEND "${FLAGFFT_LIBTRITON_JIT_BACKEND}" CACHE STRING "Target backend for libtriton_jit" FORCE)
 set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORCE)
 set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
 add_subdirectory(deps/libtriton_jit)
@@ -36,10 +34,7 @@ set(FLAGFFT_CORE_SOURCES
     src/plan/cost_model.cpp
     src/plan/auto_candidates.cpp
     src/plan/tune_candidates.cpp
-    src/runtime/cuda_runtime.cpp
-    src/runtime/cuda/memory.cpp
-    src/runtime/cuda/check.cpp
-    src/runtime/cuda/device.cpp
+    src/codegen/jit_kernel.cpp
     src/codegen/jit_cache.cpp
     src/codegen/plan_kernel_keys.cpp
     src/codegen/tables.cpp
@@ -52,6 +47,7 @@ set(FLAGFFT_CORE_SOURCES
 )
 
 add_library(flagfft SHARED ${FLAGFFT_CORE_SOURCES})
+add_subdirectory(src/adaptor)
 target_compile_features(flagfft PUBLIC cxx_std_20)
 target_include_directories(flagfft
     PUBLIC
@@ -61,7 +57,7 @@ target_include_directories(flagfft
         src/utils/include
         src
 )
-target_link_libraries(flagfft PRIVATE CUDA::cuda_driver TritonJIT::triton_jit SQLite3::SQLite3 nlohmann_json::nlohmann_json)
+target_link_libraries(flagfft PRIVATE TritonJIT::triton_jit SQLite3::SQLite3 nlohmann_json::nlohmann_json)
 set_target_properties(flagfft PROPERTIES OUTPUT_NAME flagfft)
 
 install(TARGETS flagfft
@@ -71,11 +67,12 @@ install(TARGETS flagfft
 install(DIRECTORY include/ DESTINATION "include")
 
 if(FLAGFFT_BUILD_CLI)
+    # cuFFT is used only by the CUDA validation/performance oracle in the CLI.
+    find_package(CUDAToolkit REQUIRED)
     if(NOT TARGET CUDA::cufft)
         message(FATAL_ERROR "FLAGFFT_BUILD_CLI requires the CUDA::cufft target")
     endif()
     add_library(flagfft_cli_common OBJECT
-        src/cli_tools/common/runtime_raii.cpp
         src/cli_tools/common/plan_handles.cpp
         src/cli_tools/common/cli_utils.cpp
         src/cli_tools/common/case.cpp
@@ -89,7 +86,6 @@ if(FLAGFFT_BUILD_CLI)
     )
     target_link_libraries(flagfft_cli_common PUBLIC
         flagfft
-        CUDA::cudart
         CUDA::cufft
         nlohmann_json::nlohmann_json
     )
@@ -112,7 +108,6 @@ if(FLAGFFT_BUILD_CLI)
         PRIVATE
             flagfft
             flagfft_cli_common
-            CUDA::cudart
             CUDA::cufft
             SQLite3::SQLite3
             nlohmann_json::nlohmann_json

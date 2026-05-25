@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cuda_runtime_api.h>
 #include <cufft.h>
 
 #include <cstdint>
@@ -10,7 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "flagfft/flagfft.h"
+#include "flagfft.h"
 
 namespace flagfft::cli {
 
@@ -57,7 +56,6 @@ std::string executable_path(const char *argv0);
 std::string executable_dir(const char *argv0);
 std::string default_tune_db(const char *argv0);
 
-void check_cuda(cudaError_t result, const std::string &context);
 void check_cufft(cufftResult result, const std::string &context);
 void check_flagfft(flagfftResult result, const std::string &context);
 void expect_flagfft(flagfftResult actual, flagfftResult expected, const std::string &context);

@@ -6,15 +6,18 @@ timing, and tuning enter through `flagfft-cli`.
 
 ## C++ Runtime
 
-- `include/flagfft/flagfft.h` declares the cuFFT-style opaque handle API.
+- `include/flagfft.h` declares the cuFFT-style opaque handle API, including
+  the backend-neutral `flagfftStream_t` public stream handle.
 - `src/exec/` owns `flagfftHandle` lifecycle, plan creation, stream state,
   plan cache, raw pointer exec dispatch, and optional legacy tensor execution.
 - `src/plan/` maps a validated `FFTRequest` to a `PlanNode` tree and is split
   into node, factorization, cost, auto-candidate, and tune-candidate units.
 - `src/codegen/` emits Python Triton/TLE source during plan creation, compiles
   it through libtriton_jit, and contains codelets under `src/codegen/codelet/`.
-- `src/runtime/` owns CUDA Driver helpers and RAII device allocations used by
-  raw plans.
+- `src/adaptor/` owns device allocation, stream/event operations, target
+  identity, and device capability queries. Its current backend implementation
+  is CUDA Driver based; the common plan/codegen/exec code does not depend on
+  CUDA device types.
 - `src/utils/` owns shared request/key utilities, JSON/SQLite tuning support, and internal
   headers under `src/utils/include/flagfft/`.
 
@@ -37,8 +40,10 @@ Raw nodes mirror the existing plan tree:
 
 ## CLI Tools
 
-`src/cli_tools/common/` owns `CaseSpec`, the capability query, deterministic
-buffer generation, FlagFFT/cuFFT dispatch, comparison, and CUDA event timer.
+`src/cli_tools/common/` owns `CaseSpec`, deterministic buffer generation,
+FlagFFT/cuFFT dispatch, and comparison. Device memory, stream, synchronization,
+timer, and query operations use `src/adaptor/`; cuFFT remains in the CLI only
+as the CUDA validation/performance oracle.
 Each subcommand queries that capability layer before plan creation:
 
 - `test` embeds route/key and error-contract suites, or runs shared correctness cases.
@@ -61,6 +66,10 @@ The default CMake build produces only `flagfft`. `FLAGFFT_BUILD_CLI=ON` adds
 `flagfft-cli` and its cuFFT dependency. The previous gtest, `bench_vs_cufft`,
 and `flagfft-tuner` targets were removed; native coverage is driven by pytest
 against the single CLI.
+
+`BACKEND=CUDA` selects both the FlagFFT adaptor implementation and
+`libtriton_jit` backend. CUDA is the only backend delivered in this version;
+other values fail configuration until an adaptor implementation exists.
 
 CMake is the sole supported build/install entrypoint. The repository does not
 provide Python wheel or `pip install` packaging; Python is an internal JIT and

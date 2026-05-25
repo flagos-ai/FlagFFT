@@ -1,10 +1,11 @@
 #pragma once
 
-#include <cuda_runtime_api.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Opaque backend stream handle; native backend stream handles are interoperable. */
+typedef void *flagfftStream_t;
 
 typedef enum flagfftResult_t {
     FLAGFFT_SUCCESS = 0,
@@ -83,7 +84,7 @@ flagfftResult flagfftExecZ2D(flagfftHandle plan,
                              flagfftDoubleComplex *idata,
                              flagfftDoubleReal *odata);
 
-flagfftResult flagfftSetStream(flagfftHandle plan, cudaStream_t stream);
+flagfftResult flagfftSetStream(flagfftHandle plan, flagfftStream_t stream);
 flagfftResult flagfftDestroy(flagfftHandle plan);
 const char *flagfftGetPlanDescription(flagfftHandle plan);
 

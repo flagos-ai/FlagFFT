@@ -1,6 +1,5 @@
 #include "bench.hpp"
 
-#include <cuda_runtime_api.h>
 #include <cufft.h>
 
 #include <algorithm>
@@ -8,7 +7,7 @@
 #include <random>
 #include <chrono>
 
-#include "flagfft/flagfft.h"
+#include "flagfft.h"
 #include "flagfft/tune_json.hpp"
 #include "c_api_internal.hpp"
 #include "cli_tools/common/cli_utils.hpp"
@@ -18,7 +17,6 @@
 namespace flagfft {
 namespace tune {
 
-using flagfft::cli::check_cuda;
 using flagfft::cli::check_cufft;
 using flagfft::cli::check_flagfft;
 
@@ -72,7 +70,7 @@ static flagfft::cli::FlagfftPlanHandle build_plan_from_json_str(
     forward_req.norm = "backward";
     forward_req.input_dtype = "complex64";
     forward_req.output_dtype = "complex64";
-    forward_req.device_type = "cuda";
+    forward_req.device_type = adaptor::backend_name();
     forward_req.device_index = device_index;
     forward_req.device_arch = device_arch;
     forward_req.input_layout = "contiguous";
@@ -113,8 +111,7 @@ BenchTiming bench_candidate(int64_t n, int64_t batch, const std::string &directi
     std::size_t bytes = host.size() * sizeof(float);
     flagfft::cli::DeviceMemory d_in(bytes);
     flagfft::cli::DeviceMemory d_out(bytes);
-    check_cuda(cudaMemcpy(d_in.get(), host.data(), bytes, cudaMemcpyHostToDevice),
-               "cudaMemcpy H2D");
+    d_in.copy_from_host(host.data(), bytes);
 
     flagfft::cli::Stream stream;
     flagfft::cli::Timer timer;
@@ -172,8 +169,7 @@ BenchError verify_against_cufft(int64_t n, int64_t batch, const std::string &dir
     flagfft::cli::DeviceMemory d_in(bytes);
     flagfft::cli::DeviceMemory d_out_ff(bytes);
     flagfft::cli::DeviceMemory d_out_cf(bytes);
-    check_cuda(cudaMemcpy(d_in.get(), host.data(), bytes, cudaMemcpyHostToDevice),
-               "cudaMemcpy H2D");
+    d_in.copy_from_host(host.data(), bytes);
 
     flagfft::cli::Stream stream;
 
@@ -185,7 +181,8 @@ BenchError verify_against_cufft(int64_t n, int64_t batch, const std::string &dir
     check_cufft(cufftPlan1d(cf_plan.put(), static_cast<int>(n), CUFFT_C2C,
                             static_cast<int>(batch)),
                 "cufftPlan1d");
-    check_cufft(cufftSetStream(cf_plan.get(), stream.get()), "cufftSetStream");
+    check_cufft(cufftSetStream(cf_plan.get(), reinterpret_cast<cudaStream_t>(stream.get())),
+                "cufftSetStream");
 
     int ff_dir = direction == "forward" ? FLAGFFT_FORWARD : FLAGFFT_INVERSE;
     int cf_dir = direction == "forward" ? CUFFT_FORWARD : CUFFT_INVERSE;
@@ -204,10 +201,8 @@ BenchError verify_against_cufft(int64_t n, int64_t batch, const std::string &dir
 
     std::vector<float> out_ff(host.size());
     std::vector<float> out_cf(host.size());
-    check_cuda(cudaMemcpy(out_ff.data(), d_out_ff.get(), bytes, cudaMemcpyDeviceToHost),
-               "cudaMemcpy D2H ff");
-    check_cuda(cudaMemcpy(out_cf.data(), d_out_cf.get(), bytes, cudaMemcpyDeviceToHost),
-               "cudaMemcpy D2H cf");
+    d_out_ff.copy_to_host(out_ff.data(), bytes);
+    d_out_cf.copy_to_host(out_cf.data(), bytes);
 
     BenchError err{};
     double sum_sq = 0.0;

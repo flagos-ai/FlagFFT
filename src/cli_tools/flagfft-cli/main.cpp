@@ -163,9 +163,10 @@ json run_plan_suite() {
     expect_true(nested->row_plan->kind == flagfft::PlanNodeKind::FourStep ||
                 nested->col_plan->kind == flagfft::PlanNodeKind::FourStep,
                 "large four-step plan must contain a nested route");
-    const auto fwd = flagfft::KernelKey::leaf("cuda:80:32", "forward", "complex64", 16, {16}, 1, 1, {}, 0);
-    const auto inv = flagfft::KernelKey::leaf("cuda:80:32", "inverse", "complex64", 16, {16}, 1, 1, {}, 0);
-    const auto fp64 = flagfft::KernelKey::leaf("cuda:80:32", "forward", "complex128", 16, {16}, 1, 1, {}, 0);
+    const std::string target = flagfft::adaptor::triton_target("sm_80");
+    const auto fwd = flagfft::KernelKey::leaf(target, "forward", "complex64", 16, {16}, 1, 1, {}, 0);
+    const auto inv = flagfft::KernelKey::leaf(target, "inverse", "complex64", 16, {16}, 1, 1, {}, 0);
+    const auto fp64 = flagfft::KernelKey::leaf(target, "forward", "complex128", 16, {16}, 1, 1, {}, 0);
     expect_true(!(fwd == inv) && !(fwd == fp64), "kernel keys must distinguish direction and dtype");
     return {{"name", "plan"}, {"assertions", 6}, {"status", "passed"}};
 }

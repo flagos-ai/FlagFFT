@@ -28,8 +28,8 @@ extern "C" flagfftResult flagfftExecC2C(flagfftHandle handle,
         inverse ? plan->executable.inverse : plan->executable.forward;
     flagfft::RawExecutionContext context{
         request, plan->state.stream, plan->desc.batch, plan->desc.idist, plan->desc.odist};
-    return compiled->execute(reinterpret_cast<flagfft::runtime::DevicePtr>(idata),
-                             reinterpret_cast<flagfft::runtime::DevicePtr>(odata),
+    return compiled->execute(reinterpret_cast<flagfft::adaptor::DevicePtr>(idata),
+                             reinterpret_cast<flagfft::adaptor::DevicePtr>(odata),
                              context);
 }
 
@@ -59,8 +59,8 @@ extern "C" flagfftResult flagfftExecZ2Z(flagfftHandle handle,
         inverse ? plan->executable.inverse : plan->executable.forward;
     flagfft::RawExecutionContext context{
         request, plan->state.stream, plan->desc.batch, plan->desc.idist, plan->desc.odist};
-    return compiled->execute(reinterpret_cast<flagfft::runtime::DevicePtr>(idata),
-                             reinterpret_cast<flagfft::runtime::DevicePtr>(odata),
+    return compiled->execute(reinterpret_cast<flagfft::adaptor::DevicePtr>(idata),
+                             reinterpret_cast<flagfft::adaptor::DevicePtr>(odata),
                              context);
 }
 
@@ -82,8 +82,8 @@ extern "C" flagfftResult flagfftExecR2C(flagfftHandle handle,
     flagfft::RawExecutionContext context{
         plan->executable.forward_request, plan->state.stream, plan->desc.batch,
         plan->desc.idist, plan->desc.odist};
-    return plan->executable.forward->execute(reinterpret_cast<flagfft::runtime::DevicePtr>(idata),
-                                             reinterpret_cast<flagfft::runtime::DevicePtr>(odata),
+    return plan->executable.forward->execute(reinterpret_cast<flagfft::adaptor::DevicePtr>(idata),
+                                             reinterpret_cast<flagfft::adaptor::DevicePtr>(odata),
                                              context);
 }
 
@@ -105,8 +105,8 @@ extern "C" flagfftResult flagfftExecD2Z(flagfftHandle handle,
     flagfft::RawExecutionContext context{
         plan->executable.forward_request, plan->state.stream, plan->desc.batch,
         plan->desc.idist, plan->desc.odist};
-    return plan->executable.forward->execute(reinterpret_cast<flagfft::runtime::DevicePtr>(idata),
-                                             reinterpret_cast<flagfft::runtime::DevicePtr>(odata),
+    return plan->executable.forward->execute(reinterpret_cast<flagfft::adaptor::DevicePtr>(idata),
+                                             reinterpret_cast<flagfft::adaptor::DevicePtr>(odata),
                                              context);
 }
 
@@ -128,8 +128,8 @@ extern "C" flagfftResult flagfftExecC2R(flagfftHandle handle,
     flagfft::RawExecutionContext context{
         plan->executable.inverse_request, plan->state.stream, plan->desc.batch,
         plan->desc.idist, plan->desc.odist};
-    return plan->executable.inverse->execute(reinterpret_cast<flagfft::runtime::DevicePtr>(idata),
-                                             reinterpret_cast<flagfft::runtime::DevicePtr>(odata),
+    return plan->executable.inverse->execute(reinterpret_cast<flagfft::adaptor::DevicePtr>(idata),
+                                             reinterpret_cast<flagfft::adaptor::DevicePtr>(odata),
                                              context);
 }
 
@@ -151,18 +151,18 @@ extern "C" flagfftResult flagfftExecZ2D(flagfftHandle handle,
     flagfft::RawExecutionContext context{
         plan->executable.inverse_request, plan->state.stream, plan->desc.batch,
         plan->desc.idist, plan->desc.odist};
-    return plan->executable.inverse->execute(reinterpret_cast<flagfft::runtime::DevicePtr>(idata),
-                                             reinterpret_cast<flagfft::runtime::DevicePtr>(odata),
+    return plan->executable.inverse->execute(reinterpret_cast<flagfft::adaptor::DevicePtr>(idata),
+                                             reinterpret_cast<flagfft::adaptor::DevicePtr>(odata),
                                              context);
 }
 
-extern "C" flagfftResult flagfftSetStream(flagfftHandle handle, cudaStream_t stream) {
+extern "C" flagfftResult flagfftSetStream(flagfftHandle handle, flagfftStream_t stream) {
     flagfft::FlagFFTPlan *plan = flagfft::checked_plan(handle);
     if (plan == nullptr || plan->state.destroyed) {
         return FLAGFFT_INVALID_PLAN;
     }
     std::lock_guard<std::mutex> lock(plan->mutex);
-    plan->state.stream = reinterpret_cast<flagfft::runtime::StreamHandle>(stream);
+    plan->state.stream = stream;
     return FLAGFFT_SUCCESS;
 }
 

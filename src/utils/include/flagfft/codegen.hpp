@@ -2,9 +2,8 @@
 
 #include <string>
 
-#include "flagfft/runtime.hpp"
-#include "runtime/memory.hpp"
-#include "runtime/types.hpp"
+#include "flagfft/plan.hpp"
+#include "adaptor/adaptor.h"
 
 namespace flagfft {
 
@@ -22,24 +21,24 @@ std::pair<std::vector<float>, std::vector<float>> build_dft_matrix(int64_t radix
 std::pair<std::vector<double>, std::vector<double>> build_dft_matrix_d(int64_t radix,
                                                                        const std::string &direction);
 
-enum class RuntimeArgKind { DevicePtr, Int32, Int64 };
+enum class JitArgKind { DevicePtr, Int32, Int64 };
 
-struct RuntimeKernelArg {
-    static RuntimeKernelArg device(runtime::DevicePtr value);
-    static RuntimeKernelArg i32(int32_t value);
-    static RuntimeKernelArg i64(int64_t value);
+struct JitKernelArg {
+    static JitKernelArg device(adaptor::DevicePtr value);
+    static JitKernelArg i32(int32_t value);
+    static JitKernelArg i64(int64_t value);
 
-    RuntimeArgKind kind = RuntimeArgKind::DevicePtr;
-    runtime::DevicePtr device_ptr = 0;
+    JitArgKind kind = JitArgKind::DevicePtr;
+    adaptor::DevicePtr device_ptr = 0;
     int32_t int32_value = 0;
     int64_t int64_value = 0;
 };
 
-struct RuntimeKernel {
-    ~RuntimeKernel();
+struct JitKernel {
+    ~JitKernel();
     void compile();
-    void launch(runtime::StreamHandle stream,
-                const std::vector<RuntimeKernelArg> &kernel_args,
+    void launch(adaptor::StreamHandle stream,
+                const std::vector<JitKernelArg> &kernel_args,
                 int64_t grid_x,
                 int64_t grid_y,
                 int64_t grid_z);
@@ -54,11 +53,11 @@ struct RuntimeKernel {
     std::mutex mutex;
 };
 
-using DeviceAllocation = runtime::Memory;
+using DeviceAllocation = adaptor::Memory;
 
 struct RawExecutionContext {
     const FFTRequest &request;
-    runtime::StreamHandle stream = nullptr;
+    adaptor::StreamHandle stream = nullptr;
     int64_t batch = 0;
     int64_t input_distance = 0;
     int64_t output_distance = 0;
@@ -66,23 +65,23 @@ struct RawExecutionContext {
 
 struct CompiledRawNode {
     virtual ~CompiledRawNode() = default;
-    virtual flagfftResult execute(runtime::DevicePtr input,
-                                  runtime::DevicePtr output,
+    virtual flagfftResult execute(adaptor::DevicePtr input,
+                                  adaptor::DevicePtr output,
                                   const RawExecutionContext &context) const = 0;
     virtual std::string describe() const = 0;
 };
 
 struct CompiledRawLeafNode final : CompiledRawNode {
     CompiledRawLeafNode(int64_t length,
-                        std::shared_ptr<RuntimeKernel> kernel,
+                        std::shared_ptr<JitKernel> kernel,
                         std::vector<DeviceAllocation> tables);
-    flagfftResult execute(runtime::DevicePtr input,
-                          runtime::DevicePtr output,
+    flagfftResult execute(adaptor::DevicePtr input,
+                          adaptor::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
     int64_t length;
-    std::shared_ptr<RuntimeKernel> kernel;
+    std::shared_ptr<JitKernel> kernel;
     std::vector<DeviceAllocation> tables;
 };
 
@@ -90,23 +89,23 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
     CompiledRawFourStepFusedNode(int64_t length,
                                  int64_t n1,
                                  int64_t n2,
-                                 std::shared_ptr<RuntimeKernel> row_kernel,
+                                 std::shared_ptr<JitKernel> row_kernel,
                                  std::vector<DeviceAllocation> row_tables,
-                                 std::shared_ptr<RuntimeKernel> col_kernel,
+                                 std::shared_ptr<JitKernel> col_kernel,
                                  std::vector<DeviceAllocation> col_tables,
                                  DeviceAllocation twiddle,
                                  DeviceAllocation stage1);
-    flagfftResult execute(runtime::DevicePtr input,
-                          runtime::DevicePtr output,
+    flagfftResult execute(adaptor::DevicePtr input,
+                          adaptor::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
     int64_t length;
     int64_t n1;
     int64_t n2;
-    std::shared_ptr<RuntimeKernel> row_kernel;
+    std::shared_ptr<JitKernel> row_kernel;
     std::vector<DeviceAllocation> row_tables;
-    std::shared_ptr<RuntimeKernel> col_kernel;
+    std::shared_ptr<JitKernel> col_kernel;
     std::vector<DeviceAllocation> col_tables;
     DeviceAllocation twiddle;
     DeviceAllocation stage1;
@@ -116,16 +115,16 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
     CompiledRawBluesteinNode(int64_t length,
                              int64_t conv_length,
                              std::shared_ptr<CompiledRawNode> fft,
-                             std::shared_ptr<RuntimeKernel> prepare_kernel,
-                             std::shared_ptr<RuntimeKernel> pointwise_kernel,
-                             std::shared_ptr<RuntimeKernel> finalize_kernel,
+                             std::shared_ptr<JitKernel> prepare_kernel,
+                             std::shared_ptr<JitKernel> pointwise_kernel,
+                             std::shared_ptr<JitKernel> finalize_kernel,
                              DeviceAllocation chirp,
                              DeviceAllocation b_time,
                              DeviceAllocation a_buf,
                              DeviceAllocation work_buf,
                              DeviceAllocation b_fft_buf);
-    flagfftResult execute(runtime::DevicePtr input,
-                          runtime::DevicePtr output,
+    flagfftResult execute(adaptor::DevicePtr input,
+                          adaptor::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
     void ensure_b_fft(const RawExecutionContext &context) const;
@@ -133,9 +132,9 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
     int64_t length;
     int64_t conv_length;
     std::shared_ptr<CompiledRawNode> fft;
-    std::shared_ptr<RuntimeKernel> prepare_kernel;
-    std::shared_ptr<RuntimeKernel> pointwise_kernel;
-    std::shared_ptr<RuntimeKernel> finalize_kernel;
+    std::shared_ptr<JitKernel> prepare_kernel;
+    std::shared_ptr<JitKernel> pointwise_kernel;
+    std::shared_ptr<JitKernel> finalize_kernel;
     DeviceAllocation chirp;
     DeviceAllocation b_time;
     DeviceAllocation a_buf;
@@ -151,14 +150,14 @@ struct CompiledRawFourStepGenericNode final : CompiledRawNode {
                                    int64_t n2,
                                    std::shared_ptr<CompiledRawNode> row_child,
                                    std::shared_ptr<CompiledRawNode> col_child,
-                                   std::shared_ptr<RuntimeKernel> reshape_in_kernel,
-                                   std::shared_ptr<RuntimeKernel> twiddle_reshape_kernel,
-                                   std::shared_ptr<RuntimeKernel> final_pack_kernel,
+                                   std::shared_ptr<JitKernel> reshape_in_kernel,
+                                   std::shared_ptr<JitKernel> twiddle_reshape_kernel,
+                                   std::shared_ptr<JitKernel> final_pack_kernel,
                                    DeviceAllocation twiddle,
                                    DeviceAllocation stage1,
                                    DeviceAllocation stage2);
-    flagfftResult execute(runtime::DevicePtr input,
-                          runtime::DevicePtr output,
+    flagfftResult execute(adaptor::DevicePtr input,
+                          adaptor::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
@@ -167,9 +166,9 @@ struct CompiledRawFourStepGenericNode final : CompiledRawNode {
     int64_t n2;
     std::shared_ptr<CompiledRawNode> row_child;
     std::shared_ptr<CompiledRawNode> col_child;
-    std::shared_ptr<RuntimeKernel> reshape_in_kernel;
-    std::shared_ptr<RuntimeKernel> twiddle_reshape_kernel;
-    std::shared_ptr<RuntimeKernel> final_pack_kernel;
+    std::shared_ptr<JitKernel> reshape_in_kernel;
+    std::shared_ptr<JitKernel> twiddle_reshape_kernel;
+    std::shared_ptr<JitKernel> final_pack_kernel;
     DeviceAllocation twiddle;
     DeviceAllocation stage1;
     DeviceAllocation stage2;
@@ -177,40 +176,40 @@ struct CompiledRawFourStepGenericNode final : CompiledRawNode {
 
 struct CompiledRawR2CNode final : CompiledRawNode {
     CompiledRawR2CNode(int64_t length,
-                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                       std::shared_ptr<JitKernel> expand_kernel,
                        std::shared_ptr<CompiledRawNode> fft,
-                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                       std::shared_ptr<JitKernel> pack_kernel,
                        DeviceAllocation complex_input,
                        DeviceAllocation full_output);
-    flagfftResult execute(runtime::DevicePtr input,
-                          runtime::DevicePtr output,
+    flagfftResult execute(adaptor::DevicePtr input,
+                          adaptor::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
     int64_t length;
-    std::shared_ptr<RuntimeKernel> expand_kernel;
+    std::shared_ptr<JitKernel> expand_kernel;
     std::shared_ptr<CompiledRawNode> fft;
-    std::shared_ptr<RuntimeKernel> pack_kernel;
+    std::shared_ptr<JitKernel> pack_kernel;
     DeviceAllocation complex_input;
     DeviceAllocation full_output;
 };
 
 struct CompiledRawC2RNode final : CompiledRawNode {
     CompiledRawC2RNode(int64_t length,
-                       std::shared_ptr<RuntimeKernel> expand_kernel,
+                       std::shared_ptr<JitKernel> expand_kernel,
                        std::shared_ptr<CompiledRawNode> fft,
-                       std::shared_ptr<RuntimeKernel> pack_kernel,
+                       std::shared_ptr<JitKernel> pack_kernel,
                        DeviceAllocation full_input,
                        DeviceAllocation full_output);
-    flagfftResult execute(runtime::DevicePtr input,
-                          runtime::DevicePtr output,
+    flagfftResult execute(adaptor::DevicePtr input,
+                          adaptor::DevicePtr output,
                           const RawExecutionContext &context) const override;
     std::string describe() const override;
 
     int64_t length;
-    std::shared_ptr<RuntimeKernel> expand_kernel;
+    std::shared_ptr<JitKernel> expand_kernel;
     std::shared_ptr<CompiledRawNode> fft;
-    std::shared_ptr<RuntimeKernel> pack_kernel;
+    std::shared_ptr<JitKernel> pack_kernel;
     DeviceAllocation full_input;
     DeviceAllocation full_output;
 };
@@ -234,38 +233,38 @@ private:
     std::shared_ptr<CompiledRawNode> compile_raw_four_step_generic(const FourStepPlanNode &node,
                                                                    const FFTRequest &request,
                                                                    int64_t batch);
-    std::shared_ptr<RuntimeKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
+    std::shared_ptr<JitKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t n1,
                                                             int64_t n2);
-    std::shared_ptr<RuntimeKernel> compile_four_step_col_kernel(const LeafPlanNode &leaf,
+    std::shared_ptr<JitKernel> compile_four_step_col_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t n1,
                                                             int64_t n2);
-    std::shared_ptr<RuntimeKernel> compile_bluestein_prepare_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_bluestein_prepare_kernel(const FFTRequest &request,
                                                                 int64_t n,
                                                                 int64_t m);
-    std::shared_ptr<RuntimeKernel> compile_bluestein_pointwise_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_bluestein_pointwise_kernel(const FFTRequest &request,
                                                                   int64_t n,
                                                                   int64_t m);
-    std::shared_ptr<RuntimeKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                  int64_t n,
                                                                  int64_t m);
-    std::shared_ptr<RuntimeKernel> compile_reshape_pack_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_reshape_pack_kernel(const FFTRequest &request,
                                                                int64_t n1,
                                                                int64_t n2);
-    std::shared_ptr<RuntimeKernel> compile_twiddle_reshape_pack_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_twiddle_reshape_pack_kernel(const FFTRequest &request,
                                                                        int64_t n1,
                                                                        int64_t n2);
-    std::shared_ptr<RuntimeKernel> compile_real_to_complex_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_real_to_complex_kernel(const FFTRequest &request,
                                                                   int64_t n);
-    std::shared_ptr<RuntimeKernel> compile_r2c_half_pack_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_r2c_half_pack_kernel(const FFTRequest &request,
                                                                int64_t n);
-    std::shared_ptr<RuntimeKernel> compile_compact_to_hermitian_full_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_compact_to_hermitian_full_kernel(const FFTRequest &request,
                                                                             int64_t n);
-    std::shared_ptr<RuntimeKernel> compile_complex_to_real_kernel(const FFTRequest &request,
+    std::shared_ptr<JitKernel> compile_complex_to_real_kernel(const FFTRequest &request,
                                                                   int64_t n);
-    std::shared_ptr<RuntimeKernel> compile_kernel(const KernelKey &key) const;
+    std::shared_ptr<JitKernel> compile_kernel(const KernelKey &key) const;
     std::filesystem::path out_dir() const;
     std::string python_executable() const;
     std::string triton_jit_source_entrypoint() const;
