@@ -12,8 +12,10 @@ timing, and tuning enter through `flagfft-cli`.
   plan cache, raw pointer exec dispatch, and optional legacy tensor execution.
 - `src/plan/` maps a validated `FFTRequest` to a `PlanNode` tree and is split
   into node, factorization, cost, auto-candidate, and tune-candidate units.
-- `src/codegen/` emits Python Triton/TLE source during plan creation, compiles
-  it through libtriton_jit, and contains codelets under `src/codegen/codelet/`.
+- `src/codegen/` invokes installed Python Triton/TLE source generation during
+  plan creation and compiles the result through libtriton_jit.
+- `python/flagfft_codegen/` provides the pip-installable source generator and
+  its bundled codelets.
 - `src/adaptor/` owns device allocation, stream/event operations, target
   identity, and device capability queries. Its current backend implementation
   is CUDA Driver based; the common plan/codegen/exec code does not depend on
@@ -63,29 +65,31 @@ FlagFFT or cuFFT output, or their difference, is non-finite.
 ## Build Options
 
 The default CMake build produces only `flagfft`. `FLAGFFT_BUILD_CLI=ON` adds
-`flagfft-cli` and its cuFFT dependency. The previous gtest, `bench_vs_cufft`,
-and `flagfft-tuner` targets were removed; native coverage is driven by pytest
-against the single CLI.
+`flagfft-cli` and its cuFFT dependency. `FLAGFFT_BUILD_TESTS=ON` adds the
+Google Test targets under `ctest/`; CLI behavior remains covered by pytest.
+The standalone `bench_vs_cufft` and `flagfft-tuner` targets were removed.
 
 `BACKEND=CUDA` selects both the FlagFFT adaptor implementation and
 `libtriton_jit` backend. CUDA is the only backend delivered in this version;
 other values fail configuration until an adaptor implementation exists.
 
-CMake is the sole supported build/install entrypoint. The repository does not
-provide Python wheel or `pip install` packaging; Python is an internal JIT and
-test-time dependency.
+CMake is the native build/install entrypoint. The pure Python
+`flagfft-codegen` package is installed separately with `pip install .` into
+the Triton/TLE-enabled interpreter selected at runtime by `FLAGFFT_PYTHON` or
+`python3`.
 
 ## Python Boundary
 
 Deleted runtime wrappers: top-level `flagfft.py`, `src/api.py`, and
 `src/flagfft.py`.
 
-Retained Python files:
+Retained Python package:
 
-- `src/__init__.py`
-- `src/codegen/`
-- `src/codegen/codelet/`
+- `python/flagfft_codegen/`
+- `python/flagfft_codegen/codelet/`
 
+The native runtime invokes `python -m flagfft_codegen.jit_source`; the chosen
+Python environment must already supply compatible Triton/TLE dependencies.
 Generated JIT source/metadata live in `.flagfft` beside the executable.
 `flagfft-cli tune --db PATH` writes measurements and one validated rank-zero
 winner with the detected CUDA architecture. Runtime plan lookup consumes that

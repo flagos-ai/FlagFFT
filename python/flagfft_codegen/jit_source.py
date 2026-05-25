@@ -8,30 +8,7 @@ from textwrap import dedent
 from pathlib import Path
 from typing import Any
 
-if __package__ in {None, ""}:
-    _project_root = str(Path(__file__).resolve().parents[2])
-    sys.path.insert(0, _project_root)
-    # Drop any scikit-build-core editable finder that pins src/* to a stale
-    # site-packages copy; we want the in-tree sources to win.
-    sys.meta_path = [
-        finder for finder in sys.meta_path
-        if "ScikitBuildRedirectingFinder" not in type(finder).__name__
-    ]
-    for _mod in list(sys.modules):
-        if _mod == "src" or _mod.startswith("src."):
-            sys.modules.pop(_mod, None)
-    # Load the in-tree kernels.py by file path so that a previously installed
-    # `src` regular package in site-packages cannot shadow it.
-    _kernels_path = Path(__file__).resolve().parent / "kernels.py"
-    _spec = importlib.util.spec_from_file_location(
-        "src.codegen.kernels", str(_kernels_path)
-    )
-    if _spec is not None and _spec.loader is not None:
-        _kernels_mod = importlib.util.module_from_spec(_spec)
-        sys.modules["src.codegen.kernels"] = _kernels_mod
-        _spec.loader.exec_module(_kernels_mod)
-
-from src.codegen.kernels import (
+from .kernels import (
     LeafPlan,
     _CODELET_DIR,
     _build_four_step_col_kernel_source,

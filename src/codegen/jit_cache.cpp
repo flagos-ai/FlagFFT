@@ -216,12 +216,7 @@ std::string TritonCompiler::python_executable() const {
 }
 
 std::string TritonCompiler::triton_jit_source_entrypoint() const {
-    std::filesystem::path local_script =
-        std::filesystem::current_path() / "src" / "codegen" / "jit_source.py";
-    if (std::filesystem::exists(local_script)) {
-        return shell_quote(local_script.string());
-    }
-    return "-m src.codegen.jit_source";
+    return "-m flagfft_codegen.jit_source";
 }
 
 }  // namespace flagfft

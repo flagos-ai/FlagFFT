@@ -1,56 +1,35 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "python"))
 
 
 @pytest.fixture(scope="module")
 def kernels():
     pytest.importorskip("triton")
-    for name in list(sys.modules):
-        if name == "src" or name.startswith("src."):
-            del sys.modules[name]
-    src_spec = importlib.util.spec_from_file_location(
-        "src",
-        ROOT / "src" / "__init__.py",
-        submodule_search_locations=[str(ROOT / "src")],
-    )
-    assert src_spec is not None and src_spec.loader is not None
-    src_module = importlib.util.module_from_spec(src_spec)
-    sys.modules["src"] = src_module
-    src_spec.loader.exec_module(src_module)
-
-    codegen_spec = importlib.util.spec_from_file_location(
-        "src.codegen",
-        ROOT / "src" / "codegen" / "__init__.py",
-        submodule_search_locations=[str(ROOT / "src" / "codegen")],
-    )
-    assert codegen_spec is not None
-    codegen_module = importlib.util.module_from_spec(codegen_spec)
-    sys.modules["src.codegen"] = codegen_module
-
-    kernels_spec = importlib.util.spec_from_file_location(
-        "src.codegen.kernels", ROOT / "src" / "codegen" / "kernels.py"
-    )
-    assert kernels_spec is not None and kernels_spec.loader is not None
-    module = importlib.util.module_from_spec(kernels_spec)
-    sys.modules["src.codegen.kernels"] = module
     try:
-        kernels_spec.loader.exec_module(module)
-        return module
+        return importlib.import_module("flagfft_codegen.kernels")
+    except (ImportError, ModuleNotFoundError) as exc:
+        pytest.skip(f"Triton/TLE codegen dependencies are unavailable: {exc}")
+
+
+@pytest.fixture(scope="module")
+def jit_source():
+    pytest.importorskip("triton")
+    try:
+        return importlib.import_module("flagfft_codegen.jit_source")
     except (ImportError, ModuleNotFoundError) as exc:
         pytest.skip(f"Triton/TLE codegen dependencies are unavailable: {exc}")
 
 
 def test_codelet_directory_lives_under_codegen(kernels) -> None:
-    assert kernels._CODELET_DIR == ROOT / "src" / "codegen" / "codelet"
+    assert kernels._CODELET_DIR == ROOT / "python" / "flagfft_codegen" / "codelet"
     assert (kernels._CODELET_DIR / "utils.py").is_file()
     assert (kernels._CODELET_DIR / "radix16.py").is_file()
 
@@ -114,31 +93,13 @@ def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(128, 2048, "complex128") == 1
 
 
-def test_jit_csv_parsing_accepts_empty_and_populated_lists(kernels) -> None:
-    pytest.importorskip("triton")
-    jit_source_spec = importlib.util.spec_from_file_location(
-        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
-    )
-    assert jit_source_spec is not None and jit_source_spec.loader is not None
-    module = importlib.util.module_from_spec(jit_source_spec)
-    sys.modules["src.codegen.jit_source"] = module
-    jit_source_spec.loader.exec_module(module)
-
-    assert module._csv_ints("") == ()
-    assert module._csv_ints("16,8,4") == (16, 8, 4)
+def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:
+    assert jit_source._csv_ints("") == ()
+    assert jit_source._csv_ints("16,8,4") == (16, 8, 4)
 
 
-def test_jit_bluestein_source_metadata(tmp_path) -> None:
-    pytest.importorskip("triton")
-    jit_source_spec = importlib.util.spec_from_file_location(
-        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
-    )
-    assert jit_source_spec is not None and jit_source_spec.loader is not None
-    module = importlib.util.module_from_spec(jit_source_spec)
-    sys.modules["src.codegen.jit_source"] = module
-    jit_source_spec.loader.exec_module(module)
-
-    metadata = module._emit_bluestein_jit_kernel(
+def test_jit_bluestein_source_metadata(jit_source, tmp_path) -> None:
+    metadata = jit_source._emit_bluestein_jit_kernel(
         kernel="bluestein_prepare",
         n=331,
         m=1024,
@@ -153,24 +114,15 @@ def test_jit_bluestein_source_metadata(tmp_path) -> None:
     assert (tmp_path / "flagfft_jit_bluestein_prepare_n331_m1024_f32.py").is_file()
 
 
-def test_jit_reshape_pack_source_metadata(tmp_path) -> None:
-    pytest.importorskip("triton")
-    jit_source_spec = importlib.util.spec_from_file_location(
-        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
-    )
-    assert jit_source_spec is not None and jit_source_spec.loader is not None
-    module = importlib.util.module_from_spec(jit_source_spec)
-    sys.modules["src.codegen.jit_source"] = module
-    jit_source_spec.loader.exec_module(module)
-
-    reshape = module._emit_reshape_jit_kernel(
+def test_jit_reshape_pack_source_metadata(jit_source, tmp_path) -> None:
+    reshape = jit_source._emit_reshape_jit_kernel(
         kernel="reshape_pack",
         n1=64,
         n2=128,
         dtype="complex128",
         out_dir=tmp_path,
     )
-    twiddle = module._emit_reshape_jit_kernel(
+    twiddle = jit_source._emit_reshape_jit_kernel(
         kernel="twiddle_reshape_pack",
         n1=128,
         n2=64,
@@ -189,35 +141,26 @@ def test_jit_reshape_pack_source_metadata(tmp_path) -> None:
     assert (tmp_path / "flagfft_jit_twiddle_reshape_pack_n128_64_f32.py").is_file()
 
 
-def test_jit_r2c_pointwise_source_metadata(tmp_path) -> None:
-    pytest.importorskip("triton")
-    jit_source_spec = importlib.util.spec_from_file_location(
-        "src.codegen.jit_source", ROOT / "src" / "codegen" / "jit_source.py"
-    )
-    assert jit_source_spec is not None and jit_source_spec.loader is not None
-    module = importlib.util.module_from_spec(jit_source_spec)
-    sys.modules["src.codegen.jit_source"] = module
-    jit_source_spec.loader.exec_module(module)
-
-    expand = module._emit_r2c_pointwise_jit_kernel(
+def test_jit_r2c_pointwise_source_metadata(jit_source, tmp_path) -> None:
+    expand = jit_source._emit_r2c_pointwise_jit_kernel(
         kernel="real_to_complex",
         n=17,
         dtype="complex64",
         out_dir=tmp_path,
     )
-    pack = module._emit_r2c_pointwise_jit_kernel(
+    pack = jit_source._emit_r2c_pointwise_jit_kernel(
         kernel="r2c_half_pack",
         n=17,
         dtype="complex64",
         out_dir=tmp_path,
     )
-    expand_inverse = module._emit_r2c_pointwise_jit_kernel(
+    expand_inverse = jit_source._emit_r2c_pointwise_jit_kernel(
         kernel="compact_to_hermitian_full",
         n=17,
         dtype="complex128",
         out_dir=tmp_path,
     )
-    pack_inverse = module._emit_r2c_pointwise_jit_kernel(
+    pack_inverse = jit_source._emit_r2c_pointwise_jit_kernel(
         kernel="complex_to_real",
         n=17,
         dtype="complex128",

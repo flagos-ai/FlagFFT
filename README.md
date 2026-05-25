@@ -43,8 +43,9 @@ debugging. The returned pointer is valid for the lifetime of the plan.
   SQLite wrapper, and internal headers under `src/utils/include/flagfft/`.
 - `src/plan/`: plan node definitions, factorization, cost model, automatic route
   selection, JSON deserialization, and tune candidate enumeration.
-- `src/codegen/`: C++ libtriton_jit invocation/cache logic plus Python kernel
-  source generation. Codelets live in `src/codegen/codelet/`.
+- `src/codegen/`: C++ libtriton_jit invocation/cache logic.
+- `python/flagfft_codegen/`: installable Python kernel source generator and
+  its codelets.
 - `src/adaptor/`: backend abstraction and the current CUDA Driver implementation.
 - `src/exec/`: cuFFT-style C API, raw pointer execution nodes, and tuned plan
   lookup.
@@ -81,27 +82,34 @@ complex-to-real pack. Rank>1 and non-contiguous C API requests keep returning
 
 Configure and build the C++ library. The optional native validation,
 benchmarking, and tuning entrypoint is built with `FLAGFFT_BUILD_CLI=ON`.
-`pip install`/wheel packaging is not provided; CMake is the supported build
-and install entrypoint.
+Python code generation is distributed as the pure Python `flagfft-codegen`
+package in this repository; CMake builds and installs the native library
+separately.
 
 The build environment must provide CMake, Ninja, a CUDA toolkit, SQLite3,
 Python 3.10+ development files, PyTorch, and pybind11. Runtime JIT generation
-and Python tests additionally require a Triton/TLE-enabled Python environment
-and `pytest`.
+and Python tests additionally require a preconfigured Triton/TLE-enabled
+Python environment and `pytest`. Install the codegen package into the Python
+environment that will execute JIT generation:
 
 ```sh
+python3 -m pip install .
 cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
+cmake --install build --prefix /path/to/flagfft-install
 ```
 
-The removed `FLAGFFT_BUILD_TESTS` and `FLAGFFT_BUILD_BENCHMARKS` switches no
-longer create gtest, `bench_vs_cufft`, or `flagfft-tuner` executables.
+`FLAGFFT_BUILD_TESTS=ON` builds the C++ Google Test suite under `ctest/`.
+The removed `FLAGFFT_BUILD_BENCHMARKS` switch no longer creates standalone
+`bench_vs_cufft` or `flagfft-tuner` executables.
 
 When plan creation emits Triton JIT source, it uses `FLAGFFT_PYTHON` if set,
-otherwise `python3`. Generated source/metadata and tuned-plan SQLite defaults
-are stored in `.flagfft` next to the running executable. Tuned plan lookups
-read from `FLAGFFT_TUNE_DB` if set, or the default `.flagfft/tuned_plans.sqlite`
-next to the executable.
+otherwise `python3`, to run `python -m flagfft_codegen.jit_source`. The
+selected interpreter must have `flagfft-codegen` installed and provide the
+compatible Triton/TLE environment. Generated source/metadata and tuned-plan
+SQLite defaults are stored in `.flagfft` next to the running executable.
+Tuned plan lookups read from `FLAGFFT_TUNE_DB` if set, or the default
+`.flagfft/tuned_plans.sqlite` next to the executable.
 
 ## Native CLI
 
@@ -186,13 +194,15 @@ Pytest invokes `flagfft-cli --json` for all native planner/API/correctness,
 benchmark, and tune coverage:
 
 ```sh
+python3 -m pip install .
 cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
 pytest -q
 ```
 
-Python codegen tests remain under `tests/python/`. No standalone benchmark,
-tuner, or gtest native entrypoint is built.
+Python codegen tests remain under `tests/python/` and exercise the
+`flagfft_codegen` package. C++ Google Test coverage is enabled separately with
+`FLAGFFT_BUILD_TESTS=ON`; no standalone benchmark or tuner executable is built.
 
 ## License
 

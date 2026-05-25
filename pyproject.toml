@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flagfft-codegen"
+version = "0.2.2"
+description = "Python Triton/TLE source generation support for FlagFFT"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["flagfft_codegen*"]
+
+[tool.setuptools.package-data]
+flagfft_codegen = ["codelet/*.py"]
