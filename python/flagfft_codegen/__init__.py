@@ -1,9 +1,9 @@
 from .kernels import (
-    LeafPlan,
     _CODELET_DIR,
     _FOUR_STEP_NUM_WARPS,
     _FOUR_STEP_TILE_COLS,
     _FOUR_STEP_TILE_ROWS,
+    LeafPlan,
     _build_compact_to_hermitian_full_kernel_source,
     _build_complex_to_real_kernel_source,
     _build_four_step_col_kernel_source,

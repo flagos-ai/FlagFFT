@@ -1,6 +1,5 @@
 @triton.jit
 def _fwd_rad8_b1(r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7):
-
     e02r = r0 + r4
     e02i = i0 + i4
     d02r = r0 - r4
@@ -61,6 +60,20 @@ def _fwd_rad8_b1(r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7)
     y7i = E3i - T3i
 
     return (
-        y0r, y1r, y2r, y3r, y4r, y5r, y6r, y7r,
-        y0i, y1i, y2i, y3i, y4i, y5i, y6i, y7i,
+        y0r,
+        y1r,
+        y2r,
+        y3r,
+        y4r,
+        y5r,
+        y6r,
+        y7r,
+        y0i,
+        y1i,
+        y2i,
+        y3i,
+        y4i,
+        y5i,
+        y6i,
+        y7i,
     )

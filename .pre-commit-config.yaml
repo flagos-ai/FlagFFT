@@ -4,8 +4,11 @@ repos:
   hooks:
   - id: check-yaml
   - id: end-of-file-fixer
+    exclude: ^python/flagfft_codegen/codelet/
   - id: trailing-whitespace
+    exclude: ^python/flagfft_codegen/codelet/
   - id: flake8
+    exclude: ^python/flagfft_codegen/codelet/
     args: ["--ignore=F405,E731,W503,E203", --max-line-length=120]
     # F405 : Name may be undefined, or defined from star imports: module
     # E731 : Do not assign a lambda expression, use a def
@@ -23,10 +26,13 @@ repos:
   rev: 5.12.0
   hooks:
     - id: isort
+      exclude: ^python/flagfft_codegen/codelet/
       args: ["--profile", "black"]
 
 - repo: https://github.com/psf/black.git
   rev: 23.7.0
   hooks:
     - id: black
+      exclude: ^python/flagfft_codegen/codelet/
     - id: black-jupyter
+      exclude: ^python/flagfft_codegen/codelet/

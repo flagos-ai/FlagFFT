@@ -7,9 +7,9 @@
 namespace flagfft::cli {
 
 struct TimingConfig {
-    int warmup = 10;
-    int iters = 100;
-    int launches_per_sample = 10;
+  int warmup = 10;
+  int iters = 100;
+  int launches_per_sample = 10;
 };
 
 json run_correctness(const CaseSpec &spec, bool include_path = false);

@@ -1,7 +1,78 @@
 @triton.jit
-def _fwd_rad17_b1(r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, i0, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11, i12, i13, i14, i15, i16):
-    y0r = r0 + r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10 + r11 + r12 + r13 + r14 + r15 + r16
-    y0i = i0 + i1 + i2 + i3 + i4 + i5 + i6 + i7 + i8 + i9 + i10 + i11 + i12 + i13 + i14 + i15 + i16
+def _fwd_rad17_b1(
+    r0,
+    r1,
+    r2,
+    r3,
+    r4,
+    r5,
+    r6,
+    r7,
+    r8,
+    r9,
+    r10,
+    r11,
+    r12,
+    r13,
+    r14,
+    r15,
+    r16,
+    i0,
+    i1,
+    i2,
+    i3,
+    i4,
+    i5,
+    i6,
+    i7,
+    i8,
+    i9,
+    i10,
+    i11,
+    i12,
+    i13,
+    i14,
+    i15,
+    i16,
+):
+    y0r = (
+        r0
+        + r1
+        + r2
+        + r3
+        + r4
+        + r5
+        + r6
+        + r7
+        + r8
+        + r9
+        + r10
+        + r11
+        + r12
+        + r13
+        + r14
+        + r15
+        + r16
+    )
+    y0i = (
+        i0
+        + i1
+        + i2
+        + i3
+        + i4
+        + i5
+        + i6
+        + i7
+        + i8
+        + i9
+        + i10
+        + i11
+        + i12
+        + i13
+        + i14
+        + i15
+        + i16
+    )
     y1r = r0
     y1i = i0
     y16r = r0
@@ -322,4 +393,39 @@ def _fwd_rad17_b1(r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r1
     y8i = y8i + 0.0922683594633017 * dp8i + 0.9957341762950346 * dm8r
     y9r = y9r + 0.0922683594633017 * dp8r + 0.9957341762950346 * dm8i
     y9i = y9i + 0.0922683594633017 * dp8i - 0.9957341762950346 * dm8r
-    return y0r, y1r, y2r, y3r, y4r, y5r, y6r, y7r, y8r, y9r, y10r, y11r, y12r, y13r, y14r, y15r, y16r, y0i, y1i, y2i, y3i, y4i, y5i, y6i, y7i, y8i, y9i, y10i, y11i, y12i, y13i, y14i, y15i, y16i
+    return (
+        y0r,
+        y1r,
+        y2r,
+        y3r,
+        y4r,
+        y5r,
+        y6r,
+        y7r,
+        y8r,
+        y9r,
+        y10r,
+        y11r,
+        y12r,
+        y13r,
+        y14r,
+        y15r,
+        y16r,
+        y0i,
+        y1i,
+        y2i,
+        y3i,
+        y4i,
+        y5i,
+        y6i,
+        y7i,
+        y8i,
+        y9i,
+        y10i,
+        y11i,
+        y12i,
+        y13i,
+        y14i,
+        y15i,
+        y16i,
+    )

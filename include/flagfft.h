@@ -8,43 +8,43 @@ extern "C" {
 typedef void *flagfftStream_t;
 
 typedef enum flagfftResult_t {
-    FLAGFFT_SUCCESS = 0,
-    FLAGFFT_INVALID_PLAN = 1,
-    FLAGFFT_ALLOC_FAILED = 2,
-    FLAGFFT_INVALID_TYPE = 3,
-    FLAGFFT_INVALID_VALUE = 4,
-    FLAGFFT_INTERNAL_ERROR = 5,
-    FLAGFFT_EXEC_FAILED = 6,
-    FLAGFFT_SETUP_FAILED = 7,
-    FLAGFFT_INVALID_SIZE = 8,
-    FLAGFFT_UNALIGNED_DATA = 9,
-    FLAGFFT_INCOMPLETE_PARAMETER_LIST = 10,
-    FLAGFFT_INVALID_DEVICE = 11,
-    FLAGFFT_PARSE_ERROR = 12,
-    FLAGFFT_NO_WORKSPACE = 13,
-    FLAGFFT_NOT_SUPPORTED = 14,
+  FLAGFFT_SUCCESS = 0,
+  FLAGFFT_INVALID_PLAN = 1,
+  FLAGFFT_ALLOC_FAILED = 2,
+  FLAGFFT_INVALID_TYPE = 3,
+  FLAGFFT_INVALID_VALUE = 4,
+  FLAGFFT_INTERNAL_ERROR = 5,
+  FLAGFFT_EXEC_FAILED = 6,
+  FLAGFFT_SETUP_FAILED = 7,
+  FLAGFFT_INVALID_SIZE = 8,
+  FLAGFFT_UNALIGNED_DATA = 9,
+  FLAGFFT_INCOMPLETE_PARAMETER_LIST = 10,
+  FLAGFFT_INVALID_DEVICE = 11,
+  FLAGFFT_PARSE_ERROR = 12,
+  FLAGFFT_NO_WORKSPACE = 13,
+  FLAGFFT_NOT_SUPPORTED = 14,
 } flagfftResult;
 
 typedef enum flagfftType_t {
-    FLAGFFT_R2C = 0x2a,
-    FLAGFFT_C2R = 0x2c,
-    FLAGFFT_C2C = 0x29,
-    FLAGFFT_D2Z = 0x6a,
-    FLAGFFT_Z2D = 0x6c,
-    FLAGFFT_Z2Z = 0x69,
+  FLAGFFT_R2C = 0x2a,
+  FLAGFFT_C2R = 0x2c,
+  FLAGFFT_C2C = 0x29,
+  FLAGFFT_D2Z = 0x6a,
+  FLAGFFT_Z2D = 0x6c,
+  FLAGFFT_Z2Z = 0x69,
 } flagfftType;
 
 #define FLAGFFT_FORWARD (-1)
 #define FLAGFFT_INVERSE 1
 
 typedef struct flagfftComplex_t {
-    float x;
-    float y;
+  float x;
+  float y;
 } flagfftComplex;
 
 typedef struct flagfftDoubleComplex_t {
-    double x;
-    double y;
+  double x;
+  double y;
 } flagfftDoubleComplex;
 
 typedef float flagfftReal;
@@ -67,22 +67,15 @@ flagfftResult flagfftPlanMany(flagfftHandle *plan,
                               flagfftType type,
                               int batch);
 
-flagfftResult flagfftExecC2C(flagfftHandle plan,
-                             flagfftComplex *idata,
-                             flagfftComplex *odata,
-                             int direction);
+flagfftResult flagfftExecC2C(flagfftHandle plan, flagfftComplex *idata, flagfftComplex *odata, int direction);
 flagfftResult flagfftExecZ2Z(flagfftHandle plan,
                              flagfftDoubleComplex *idata,
                              flagfftDoubleComplex *odata,
                              int direction);
 flagfftResult flagfftExecR2C(flagfftHandle plan, flagfftReal *idata, flagfftComplex *odata);
-flagfftResult flagfftExecD2Z(flagfftHandle plan,
-                             flagfftDoubleReal *idata,
-                             flagfftDoubleComplex *odata);
+flagfftResult flagfftExecD2Z(flagfftHandle plan, flagfftDoubleReal *idata, flagfftDoubleComplex *odata);
 flagfftResult flagfftExecC2R(flagfftHandle plan, flagfftComplex *idata, flagfftReal *odata);
-flagfftResult flagfftExecZ2D(flagfftHandle plan,
-                             flagfftDoubleComplex *idata,
-                             flagfftDoubleReal *odata);
+flagfftResult flagfftExecZ2D(flagfftHandle plan, flagfftDoubleComplex *idata, flagfftDoubleReal *odata);
 
 flagfftResult flagfftSetStream(flagfftHandle plan, flagfftStream_t stream);
 flagfftResult flagfftDestroy(flagfftHandle plan);

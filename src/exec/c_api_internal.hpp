@@ -3,7 +3,7 @@
 #include "flagfft/core.hpp"
 
 struct flagfftPlan_t {
-    void *impl = nullptr;
+  void *impl = nullptr;
 };
 
 namespace flagfft {
@@ -12,48 +12,48 @@ enum class FlagFFTPrecision { Float32, Float64 };
 enum class FlagFFTTransformKind { C2C, Z2Z, R2C, D2Z, C2R, Z2D };
 
 struct FlagFFTPlanDesc {
-    int rank = 0;
-    std::vector<int64_t> n;
-    std::vector<int64_t> inembed;
-    int64_t istride = 1;
-    int64_t idist = 0;
-    std::vector<int64_t> onembed;
-    int64_t ostride = 1;
-    int64_t odist = 0;
-    int64_t batch = 1;
-    flagfftType type = FLAGFFT_C2C;
-    FlagFFTPrecision precision = FlagFFTPrecision::Float32;
-    FlagFFTTransformKind kind = FlagFFTTransformKind::C2C;
-    bool real_input = false;
-    bool real_output = false;
-    int device_index = 0;
-    std::string device_arch;
+  int rank = 0;
+  std::vector<int64_t> n;
+  std::vector<int64_t> inembed;
+  int64_t istride = 1;
+  int64_t idist = 0;
+  std::vector<int64_t> onembed;
+  int64_t ostride = 1;
+  int64_t odist = 0;
+  int64_t batch = 1;
+  flagfftType type = FLAGFFT_C2C;
+  FlagFFTPrecision precision = FlagFFTPrecision::Float32;
+  FlagFFTTransformKind kind = FlagFFTTransformKind::C2C;
+  bool real_input = false;
+  bool real_output = false;
+  int device_index = 0;
+  std::string device_arch;
 };
 
 struct FlagFFTPlanState {
-    bool initialized = false;
-    bool destroyed = false;
-    adaptor::StreamHandle stream = nullptr;
-    flagfftResult last_error = FLAGFFT_SUCCESS;
+  bool initialized = false;
+  bool destroyed = false;
+  adaptor::StreamHandle stream = nullptr;
+  flagfftResult last_error = FLAGFFT_SUCCESS;
 };
 
 struct FlagFFTExecutable {
-    FFTRequest forward_request;
-    FFTRequest inverse_request;
-    ProblemKey forward_problem_key;
-    ProblemKey inverse_problem_key;
-    PlanKey plan_key;
-    PlanNodePtr root;
-    std::shared_ptr<CompiledRawNode> forward;
-    std::shared_ptr<CompiledRawNode> inverse;
+  FFTRequest forward_request;
+  FFTRequest inverse_request;
+  ProblemKey forward_problem_key;
+  ProblemKey inverse_problem_key;
+  PlanKey plan_key;
+  PlanNodePtr root;
+  std::shared_ptr<CompiledRawNode> forward;
+  std::shared_ptr<CompiledRawNode> inverse;
 };
 
 struct FlagFFTPlan {
-    FlagFFTPlanDesc desc;
-    FlagFFTPlanState state;
-    FlagFFTExecutable executable;
-    mutable std::string description_cache;
-    std::mutex mutex;
+  FlagFFTPlanDesc desc;
+  FlagFFTPlanState state;
+  FlagFFTExecutable executable;
+  mutable std::string description_cache;
+  std::mutex mutex;
 };
 
 flagfftResult type_metadata(flagfftType type,

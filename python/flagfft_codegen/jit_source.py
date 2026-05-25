@@ -4,18 +4,18 @@ import argparse
 import importlib.util
 import json
 import sys
-from textwrap import dedent
 from pathlib import Path
+from textwrap import dedent
 from typing import Any
 
 from .kernels import (
-    LeafPlan,
     _CODELET_DIR,
+    LeafPlan,
+    _build_compact_to_hermitian_full_kernel_source,
+    _build_complex_to_real_kernel_source,
     _build_four_step_col_kernel_source,
     _build_four_step_row_kernel_source,
     _build_leaf_kernel_source,
-    _build_compact_to_hermitian_full_kernel_source,
-    _build_complex_to_real_kernel_source,
     _build_r2c_half_pack_kernel_source,
     _build_real_to_complex_kernel_source,
     _build_reshape_pack_kernel_source,
@@ -24,7 +24,6 @@ from .kernels import (
     four_step_col_inner_pack_for,
     lane_block_for,
 )
-
 
 _BLUESTEIN_BLOCK = 256
 _BLUESTEIN_NUM_WARPS = 4
@@ -264,11 +263,15 @@ def _emit_reshape_jit_kernel(
     out_dir: Path,
 ) -> dict[str, Any]:
     if kernel == "reshape_pack":
-        kernel_name, kernel_source, arg_names = _build_reshape_pack_kernel_source(n1, n2, dtype)
-    elif kernel == "twiddle_reshape_pack":
-        kernel_name, kernel_source, arg_names = _build_twiddle_reshape_pack_kernel_source(
+        kernel_name, kernel_source, arg_names = _build_reshape_pack_kernel_source(
             n1, n2, dtype
         )
+    elif kernel == "twiddle_reshape_pack":
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+        ) = _build_twiddle_reshape_pack_kernel_source(n1, n2, dtype)
     else:
         raise ValueError(f"unsupported reshape kernel kind: {kernel}")
 
@@ -303,13 +306,23 @@ def _emit_r2c_pointwise_jit_kernel(
     out_dir: Path,
 ) -> dict[str, Any]:
     if kernel == "real_to_complex":
-        kernel_name, kernel_source, arg_names = _build_real_to_complex_kernel_source(n, dtype)
+        kernel_name, kernel_source, arg_names = _build_real_to_complex_kernel_source(
+            n, dtype
+        )
     elif kernel == "r2c_half_pack":
-        kernel_name, kernel_source, arg_names = _build_r2c_half_pack_kernel_source(n, dtype)
+        kernel_name, kernel_source, arg_names = _build_r2c_half_pack_kernel_source(
+            n, dtype
+        )
     elif kernel == "compact_to_hermitian_full":
-        kernel_name, kernel_source, arg_names = _build_compact_to_hermitian_full_kernel_source(n, dtype)
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+        ) = _build_compact_to_hermitian_full_kernel_source(n, dtype)
     elif kernel == "complex_to_real":
-        kernel_name, kernel_source, arg_names = _build_complex_to_real_kernel_source(n, dtype)
+        kernel_name, kernel_source, arg_names = _build_complex_to_real_kernel_source(
+            n, dtype
+        )
     else:
         raise ValueError(f"unsupported R2C pointwise kernel kind: {kernel}")
 
@@ -393,9 +406,7 @@ def emit_jit_kernel(
     factor_tag = "_".join(str(x) for x in factors)
     dtype_tag = _dtype_suffix(dtype)
     if kernel == "leaf":
-        module_name = (
-            f"flagfft_jit_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
-        )
+        module_name = f"flagfft_jit_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
     else:
         module_name = (
             f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
@@ -424,13 +435,17 @@ def emit_jit_kernel(
         dtype=dtype,
     )
     if kernel == "four_step_col":
-        metadata["inner_pack"] = four_step_col_inner_pack_for(four_step_n1, four_step_n2, dtype)
+        metadata["inner_pack"] = four_step_col_inner_pack_for(
+            four_step_n1, four_step_n2, dtype
+        )
     (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
     return metadata
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate FlagFFT libtriton_jit kernel sources")
+    parser = argparse.ArgumentParser(
+        description="Generate FlagFFT libtriton_jit kernel sources"
+    )
     parser.add_argument(
         "--kernel",
         choices=(
@@ -455,7 +470,9 @@ def main() -> None:
     parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
-    parser.add_argument("--direction", choices=("forward", "inverse"), default="forward")
+    parser.add_argument(
+        "--direction", choices=("forward", "inverse"), default="forward"
+    )
     parser.add_argument(
         "--dtype", choices=("complex64", "complex128"), default="complex64"
     )
@@ -470,7 +487,9 @@ def main() -> None:
 
     if args.kernel.startswith("bluestein_"):
         if args.bluestein_n is None or args.bluestein_m is None:
-            parser.error(f"--kernel {args.kernel} requires --bluestein-n and --bluestein-m")
+            parser.error(
+                f"--kernel {args.kernel} requires --bluestein-n and --bluestein-m"
+            )
         metadata = _emit_bluestein_jit_kernel(
             kernel=args.kernel,
             n=args.bluestein_n,
@@ -483,7 +502,9 @@ def main() -> None:
 
     if args.kernel in {"reshape_pack", "twiddle_reshape_pack"}:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
-            parser.error(f"--kernel {args.kernel} requires --reshape-n1 and --reshape-n2")
+            parser.error(
+                f"--kernel {args.kernel} requires --reshape-n1 and --reshape-n2"
+            )
         metadata = _emit_reshape_jit_kernel(
             kernel=args.kernel,
             n1=args.reshape_n1,
@@ -494,7 +515,12 @@ def main() -> None:
         print(json.dumps(metadata, sort_keys=True))
         return
 
-    if args.kernel in {"real_to_complex", "r2c_half_pack", "compact_to_hermitian_full", "complex_to_real"}:
+    if args.kernel in {
+        "real_to_complex",
+        "r2c_half_pack",
+        "compact_to_hermitian_full",
+        "complex_to_real",
+    }:
         if args.length is None or args.length <= 0:
             parser.error(f"--kernel {args.kernel} requires --length")
         metadata = _emit_r2c_pointwise_jit_kernel(
@@ -518,7 +544,9 @@ def main() -> None:
         )
     if args.kernel in {"four_step_row", "four_step_col"}:
         if args.four_step_n1 <= 0 or args.four_step_n2 <= 0:
-            parser.error(f"--kernel {args.kernel} requires --four-step-n1 and --four-step-n2")
+            parser.error(
+                f"--kernel {args.kernel} requires --four-step-n1 and --four-step-n2"
+            )
 
     metadata = emit_jit_kernel(
         kernel=args.kernel,

@@ -8,13 +8,13 @@
 namespace flagfft::cli {
 
 struct CaseSpec {
-    FftApi api = FftApi::C2C;
-    std::vector<int> shape{16};
-    int batch = 1;
-    int direction = FLAGFFT_FORWARD;
-    Placement placement = Placement::OutOfPlace;
-    PlanApi plan_api = PlanApi::Plan1d;
-    bool stream = false;
+  FftApi api = FftApi::C2C;
+  std::vector<int> shape {16};
+  int batch = 1;
+  int direction = FLAGFFT_FORWARD;
+  Placement placement = Placement::OutOfPlace;
+  PlanApi plan_api = PlanApi::Plan1d;
+  bool stream = false;
 };
 
 enum class Operation { Test, Bench, Tune };

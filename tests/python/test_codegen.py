@@ -107,7 +107,14 @@ def test_jit_bluestein_source_metadata(jit_source, tmp_path) -> None:
     )
 
     assert metadata["kernel_type"] == "bluestein_prepare"
-    assert metadata["arg_names"] == ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"]
+    assert metadata["arg_names"] == [
+        "in_ptr",
+        "chirp_ptr",
+        "out_ptr",
+        "n",
+        "m",
+        "nbatch",
+    ]
     assert metadata["signature"] == "*fp32:16,*fp32:16,*fp32:16,i64,i64,i32"
     assert metadata["bluestein_n"] == 331
     assert metadata["bluestein_m"] == 1024

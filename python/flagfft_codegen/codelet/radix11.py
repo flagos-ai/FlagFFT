@@ -1,5 +1,28 @@
 @triton.jit
-def _fwd_rad11_b1(r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, i0, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10):
+def _fwd_rad11_b1(
+    r0,
+    r1,
+    r2,
+    r3,
+    r4,
+    r5,
+    r6,
+    r7,
+    r8,
+    r9,
+    r10,
+    i0,
+    i1,
+    i2,
+    i3,
+    i4,
+    i5,
+    i6,
+    i7,
+    i8,
+    i9,
+    i10,
+):
     y0r = r0 + r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10
     y0i = i0 + i1 + i2 + i3 + i4 + i5 + i6 + i7 + i8 + i9 + i10
     y1r = r0
@@ -142,4 +165,27 @@ def _fwd_rad11_b1(r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, i0, i1, i2, i3, i
     y5i = y5i - 0.1423148382732854 * dp5i - 0.9898214418809327 * dm5r
     y6r = y6r - 0.1423148382732854 * dp5r - 0.9898214418809327 * dm5i
     y6i = y6i - 0.1423148382732854 * dp5i + 0.9898214418809327 * dm5r
-    return y0r, y1r, y2r, y3r, y4r, y5r, y6r, y7r, y8r, y9r, y10r, y0i, y1i, y2i, y3i, y4i, y5i, y6i, y7i, y8i, y9i, y10i
+    return (
+        y0r,
+        y1r,
+        y2r,
+        y3r,
+        y4r,
+        y5r,
+        y6r,
+        y7r,
+        y8r,
+        y9r,
+        y10r,
+        y0i,
+        y1i,
+        y2i,
+        y3i,
+        y4i,
+        y5i,
+        y6i,
+        y7i,
+        y8i,
+        y9i,
+        y10i,
+    )

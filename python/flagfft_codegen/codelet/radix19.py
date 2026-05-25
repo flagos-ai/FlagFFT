@@ -1,7 +1,86 @@
 @triton.jit
-def _fwd_rad19_b1(r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, i0, i1, i2, i3, i4, i5, i6, i7, i8, i9, i10, i11, i12, i13, i14, i15, i16, i17, i18):
-    y0r = r0 + r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10 + r11 + r12 + r13 + r14 + r15 + r16 + r17 + r18
-    y0i = i0 + i1 + i2 + i3 + i4 + i5 + i6 + i7 + i8 + i9 + i10 + i11 + i12 + i13 + i14 + i15 + i16 + i17 + i18
+def _fwd_rad19_b1(
+    r0,
+    r1,
+    r2,
+    r3,
+    r4,
+    r5,
+    r6,
+    r7,
+    r8,
+    r9,
+    r10,
+    r11,
+    r12,
+    r13,
+    r14,
+    r15,
+    r16,
+    r17,
+    r18,
+    i0,
+    i1,
+    i2,
+    i3,
+    i4,
+    i5,
+    i6,
+    i7,
+    i8,
+    i9,
+    i10,
+    i11,
+    i12,
+    i13,
+    i14,
+    i15,
+    i16,
+    i17,
+    i18,
+):
+    y0r = (
+        r0
+        + r1
+        + r2
+        + r3
+        + r4
+        + r5
+        + r6
+        + r7
+        + r8
+        + r9
+        + r10
+        + r11
+        + r12
+        + r13
+        + r14
+        + r15
+        + r16
+        + r17
+        + r18
+    )
+    y0i = (
+        i0
+        + i1
+        + i2
+        + i3
+        + i4
+        + i5
+        + i6
+        + i7
+        + i8
+        + i9
+        + i10
+        + i11
+        + i12
+        + i13
+        + i14
+        + i15
+        + i16
+        + i17
+        + i18
+    )
     y1r = r0
     y1i = i0
     y18r = r0
@@ -398,4 +477,43 @@ def _fwd_rad19_b1(r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r1
     y9i = y9i + -0.08257934547232886 * dp9i - 0.9965844930066702 * dm9r
     y10r = y10r + -0.08257934547232886 * dp9r - 0.9965844930066702 * dm9i
     y10i = y10i - 0.08257934547232886 * dp9i + 0.9965844930066702 * dm9r
-    return y0r, y1r, y2r, y3r, y4r, y5r, y6r, y7r, y8r, y9r, y10r, y11r, y12r, y13r, y14r, y15r, y16r, y17r, y18r, y0i, y1i, y2i, y3i, y4i, y5i, y6i, y7i, y8i, y9i, y10i, y11i, y12i, y13i, y14i, y15i, y16i, y17i, y18i
+    return (
+        y0r,
+        y1r,
+        y2r,
+        y3r,
+        y4r,
+        y5r,
+        y6r,
+        y7r,
+        y8r,
+        y9r,
+        y10r,
+        y11r,
+        y12r,
+        y13r,
+        y14r,
+        y15r,
+        y16r,
+        y17r,
+        y18r,
+        y0i,
+        y1i,
+        y2i,
+        y3i,
+        y4i,
+        y5i,
+        y6i,
+        y7i,
+        y8i,
+        y9i,
+        y10i,
+        y11i,
+        y12i,
+        y13i,
+        y14i,
+        y15i,
+        y16i,
+        y17i,
+        y18i,
+    )

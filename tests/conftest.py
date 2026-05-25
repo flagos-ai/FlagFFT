@@ -21,7 +21,9 @@ def pytest_addoption(parser):
 @pytest.fixture(scope="session")
 def flagfft_cli(request) -> Path:
     configured = request.config.getoption("--flagfft-cli")
-    path = Path(configured or os.environ.get("FLAGFFT_CLI_EXE", ROOT / "build" / "flagfft-cli"))
+    path = Path(
+        configured or os.environ.get("FLAGFFT_CLI_EXE", ROOT / "build" / "flagfft-cli")
+    )
     if not path.exists():
         pytest.skip(f"flagfft-cli is not built: {path}")
     return path

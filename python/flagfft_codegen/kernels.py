@@ -8,7 +8,6 @@ from typing import Literal
 
 import triton
 import triton.language as tl
-import triton.experimental.tle.language as tle
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _MODULE_DIR.parents[1]
@@ -20,7 +19,9 @@ _FOUR_STEP_COL_INNER_PACK = 2
 _FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
 _LEAF_PACK_TARGET_THREADS = 32
 _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
-_NATURAL_ORDER_CODELET_RADICES = frozenset({2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19})
+_NATURAL_ORDER_CODELET_RADICES = frozenset(
+    {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}
+)
 SPECIALIZED_INLINE_CODELET_RADICES: set[int] = set()
 
 
@@ -132,12 +133,20 @@ def _transpose_complex_kernel(
     mask = (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
 
     src_base = src_ptr + pid_batch * src_batch_stride
-    src_offsets = src_base + row_offsets[:, None] * src_row_stride + col_offsets[None, :] * src_col_stride
+    src_offsets = (
+        src_base
+        + row_offsets[:, None] * src_row_stride
+        + col_offsets[None, :] * src_col_stride
+    )
     src_real = tl.load(src_offsets, mask=mask, other=0.0)
     src_imag = tl.load(src_offsets + 1, mask=mask, other=0.0)
 
     dst_base = dst_ptr + pid_batch * dst_batch_stride
-    dst_offsets = dst_base + col_offsets[None, :] * dst_row_stride + row_offsets[:, None] * dst_col_stride
+    dst_offsets = (
+        dst_base
+        + col_offsets[None, :] * dst_row_stride
+        + row_offsets[:, None] * dst_col_stride
+    )
     tl.store(dst_offsets, src_real, mask=mask)
     tl.store(dst_offsets + 1, src_imag, mask=mask)
 
@@ -169,17 +178,29 @@ def _twiddle_transpose_complex_kernel(
     mask = (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
 
     src_base = src_ptr + pid_batch * src_batch_stride
-    src_offsets = src_base + row_offsets[:, None] * src_row_stride + col_offsets[None, :] * src_col_stride
+    src_offsets = (
+        src_base
+        + row_offsets[:, None] * src_row_stride
+        + col_offsets[None, :] * src_col_stride
+    )
     src_real = tl.load(src_offsets, mask=mask, other=0.0)
     src_imag = tl.load(src_offsets + 1, mask=mask, other=0.0)
 
-    tw_offsets = twiddle_ptr + row_offsets[:, None] * twiddle_row_stride + col_offsets[None, :] * twiddle_col_stride
+    tw_offsets = (
+        twiddle_ptr
+        + row_offsets[:, None] * twiddle_row_stride
+        + col_offsets[None, :] * twiddle_col_stride
+    )
     tw_real = tl.load(tw_offsets, mask=mask, other=0.0)
     tw_imag = tl.load(tw_offsets + 1, mask=mask, other=0.0)
     out_real, out_imag = _cmul(src_real, src_imag, tw_real, tw_imag)
 
     dst_base = dst_ptr + pid_batch * dst_batch_stride
-    dst_offsets = dst_base + col_offsets[None, :] * dst_row_stride + row_offsets[:, None] * dst_col_stride
+    dst_offsets = (
+        dst_base
+        + col_offsets[None, :] * dst_row_stride
+        + row_offsets[:, None] * dst_col_stride
+    )
     tl.store(dst_offsets, out_real, mask=mask)
     tl.store(dst_offsets + 1, out_imag, mask=mask)
 
@@ -266,7 +287,6 @@ def _bluestein_finalize_kernel(
     tl.store(dst + 1, yi, mask=mask)
 
 
-
 def _fmt_const(value: float) -> str:
     if abs(value) < 1e-8:
         value = 0.0
@@ -292,8 +312,12 @@ def _emit_inline_constant_codelet(
     sign = _direction_sign(direction)
     tl_dtype = _tl_real_dtype(dtype)
     for kout in range(radix):
-        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})")
-        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})")
+        lines.append(
+            f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})"
+        )
+        lines.append(
+            f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})"
+        )
 
     for kout in range(radix):
         for nin in range(radix):
@@ -310,17 +334,27 @@ def _emit_inline_constant_codelet(
     return lines
 
 
-def _emit_table_codelet(indent: str, radix: int, lane_block: int, dtype: str = "complex64") -> list[str]:
+def _emit_table_codelet(
+    indent: str, radix: int, lane_block: int, dtype: str = "complex64"
+) -> list[str]:
     lines: list[str] = []
     tl_dtype = _tl_real_dtype(dtype)
     for kout in range(radix):
-        lines.append(f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})")
-        lines.append(f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})")
+        lines.append(
+            f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})"
+        )
+        lines.append(
+            f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})"
+        )
 
     for kout in range(radix):
         for nin in range(radix):
-            lines.append(f"{indent}wr = tl.load(dft{radix}_r_ptr + {kout * radix + nin})")
-            lines.append(f"{indent}wi = tl.load(dft{radix}_i_ptr + {kout * radix + nin})")
+            lines.append(
+                f"{indent}wr = tl.load(dft{radix}_r_ptr + {kout * radix + nin})"
+            )
+            lines.append(
+                f"{indent}wi = tl.load(dft{radix}_i_ptr + {kout * radix + nin})"
+            )
             lines.append(f"{indent}pr, pi = _cmul(r{nin}, i{nin}, wr, wi)")
             lines.append(f"{indent}acc_r_{kout} += pr")
             lines.append(f"{indent}acc_i_{kout} += pi")
@@ -379,7 +413,9 @@ def _emit_input_base(
     return lines
 
 
-def _emit_input_index(indent: str, out_var: str, factors: tuple[int, ...], digit: int) -> list[str]:
+def _emit_input_index(
+    indent: str, out_var: str, factors: tuple[int, ...], digit: int
+) -> list[str]:
     offset = digit * _time_major_stride(factors, 0)
     if offset == 0:
         return [f"{indent}{out_var} = input_base"]
@@ -410,7 +446,9 @@ def _emit_output_base(
     return lines
 
 
-def _emit_output_index(indent: str, out_var: str, factors: tuple[int, ...], digit: int) -> list[str]:
+def _emit_output_index(
+    indent: str, out_var: str, factors: tuple[int, ...], digit: int
+) -> list[str]:
     last_stride = math.prod(factors[: len(factors) - 1])
     offset = digit * last_stride
     if offset == 0:
@@ -433,26 +471,38 @@ def _emit_route_base(
 
     stride = 1
     for axis in range(stage):
-        lines.append(f"{indent}digit_route{stage}_{axis} = rem_route{stage} % {factors[axis]}")
+        lines.append(
+            f"{indent}digit_route{stage}_{axis} = rem_route{stage} % {factors[axis]}"
+        )
         lines.append(f"{indent}rem_route{stage} = rem_route{stage} // {factors[axis]}")
         if stride == 1:
-            lines.append(f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis}")
+            lines.append(
+                f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis}"
+            )
         else:
-            lines.append(f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis} * {stride}")
+            lines.append(
+                f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis} * {stride}"
+            )
         stride *= factors[axis]
 
     stride *= factors[stage]
 
     for axis in range(len(factors) - 1, stage, -1):
-        lines.append(f"{indent}digit_route{stage}_{axis} = rem_route{stage} % {factors[axis]}")
+        lines.append(
+            f"{indent}digit_route{stage}_{axis} = rem_route{stage} % {factors[axis]}"
+        )
         lines.append(f"{indent}rem_route{stage} = rem_route{stage} // {factors[axis]}")
         if axis == stage + 1:
             lines.append(f"{indent}next_digit{stage} = digit_route{stage}_{axis}")
         else:
             if stride == 1:
-                lines.append(f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis}")
+                lines.append(
+                    f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis}"
+                )
             else:
-                lines.append(f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis} * {stride}")
+                lines.append(
+                    f"{indent}route_codelet_base{stage} += digit_route{stage}_{axis} * {stride}"
+                )
             stride *= factors[axis]
 
     return lines
@@ -473,7 +523,9 @@ def _emit_route_index(
     if offset == 0:
         lines = [f"{indent}next_codelet{stage}_{suffix} = route_codelet_base{stage}"]
     else:
-        lines = [f"{indent}next_codelet{stage}_{suffix} = route_codelet_base{stage} + {offset}"]
+        lines = [
+            f"{indent}next_codelet{stage}_{suffix} = route_codelet_base{stage} + {offset}"
+        ]
     lines.append(
         f"{indent}{out_var} = (next_codelet{stage}_{suffix} % {lanes}) + "
         f"{lanes} * ((next_codelet{stage}_{suffix} // {lanes}) * {radix_next} + next_digit{stage})"
@@ -531,20 +583,28 @@ def _emit_stage_block(
                     f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other={zero})"
                 )
             elif io_mode == "four_step_row":
-                lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner")
                 lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, mask=lane_mask, other={zero})"
+                    f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
                 )
                 lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, mask=lane_mask, other={zero})"
+                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                    f"mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                    f"mask=lane_mask, other={zero})"
                 )
             else:
-                lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner")
                 lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, mask=lane_mask, other={zero})"
+                    f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
                 lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, mask=lane_mask, other={zero})"
+                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                    f"mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                    f"mask=lane_mask, other={zero})"
                 )
                 lines.append(
                     f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
@@ -552,16 +612,24 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
                 )
-                lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
+                lines.append(
+                    f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
+                )
         else:
             lines.append(
-                f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, (phys{j},)), mask=lane_mask, other={zero})"
+                f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, (phys{j},)), "
+                f"mask=lane_mask, other={zero})"
             )
             lines.append(
-                f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, (phys{j},)), mask=lane_mask, other={zero})"
+                f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, (phys{j},)), "
+                f"mask=lane_mask, other={zero})"
             )
-            lines.append(f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})")
-            lines.append(f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})")
+            lines.append(
+                f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+            )
+            lines.append(
+                f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+            )
             lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if radix == 16:
@@ -584,7 +652,9 @@ def _emit_stage_block(
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
-        lines.extend(_emit_inline_constant_codelet(indent, radix, lane_block, direction, dtype))
+        lines.extend(
+            _emit_inline_constant_codelet(indent, radix, lane_block, direction, dtype)
+        )
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
 
@@ -636,7 +706,9 @@ def _emit_stage_block(
     return lines
 
 
-def _leaf_kernel_params(plan: LeafPlan, *, include_four_step_twiddle: bool = False) -> list[str]:
+def _leaf_kernel_params(
+    plan: LeafPlan, *, include_four_step_twiddle: bool = False
+) -> list[str]:
     factors = plan.factors
     generic_radices = plan.generic_radices
     params = ["in_ptr"]
@@ -719,7 +791,9 @@ def _build_leaf_kernel_source_for_io(
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
             body.append("    current_batch = batch_id + batch_slot")
-            body.append(f"    lane_mask = (lane < {plan.lanes}) & (current_batch < nbatch)")
+            body.append(
+                f"    lane_mask = (lane < {plan.lanes}) & (current_batch < nbatch)"
+            )
             body.append(f"    batch_base = current_batch * {n}")
             body.append(f"    smem_offset = batch_slot * {smem_slot_stride}")
     else:
@@ -727,26 +801,34 @@ def _build_leaf_kernel_source_for_io(
             body.append(f"    inner_slot = lane_vec % {inner_pack}")
             body.append(f"    lane = lane_vec // {inner_pack}")
             body.append("    four_step_inner = four_step_inner_base + inner_slot")
-            body.append(f"    lane_mask = (lane < {plan.lanes}) & (four_step_inner < {four_step_n1})")
+            body.append(
+                f"    lane_mask = (lane < {plan.lanes}) & (four_step_inner < {four_step_n1})"
+            )
             body.append(f"    smem_offset = inner_slot * {smem_slot_stride}")
         else:
             body.append("    lane = lane_vec")
             body.append(f"    lane_mask = lane < {plan.lanes}")
-        body.append(f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}")
+        body.append(
+            f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}"
+        )
 
     if len(factors) > 1:
         tl_dtype = _tl_real_dtype(plan.dtype)
         body.append(
-            f"    smem_a_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            f"    smem_a_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+            f"nv_mma_shared_layout=False)"
         )
         body.append(
-            f"    smem_a_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            f"    smem_a_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+            f"nv_mma_shared_layout=False)"
         )
         body.append(
-            f"    smem_b_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            f"    smem_b_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+            f"nv_mma_shared_layout=False)"
         )
         body.append(
-            f"    smem_b_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            f"    smem_b_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+            f"nv_mma_shared_layout=False)"
         )
 
     for stage in range(len(factors)):
@@ -773,17 +855,25 @@ def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
     return _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
 
 
-def _build_four_step_row_kernel_source(plan: LeafPlan, n1: int, n2: int) -> tuple[str, str]:
+def _build_four_step_row_kernel_source(
+    plan: LeafPlan, n1: int, n2: int
+) -> tuple[str, str]:
     if plan.length != n1:
-        raise ValueError(f"four-step row kernel length must equal n1: length={plan.length}, n1={n1}")
+        raise ValueError(
+            f"four-step row kernel length must equal n1: length={plan.length}, n1={n1}"
+        )
     return _build_leaf_kernel_source_for_io(
         plan, io_mode="four_step_row", four_step_n1=n1, four_step_n2=n2
     )
 
 
-def _build_four_step_col_kernel_source(plan: LeafPlan, n1: int, n2: int) -> tuple[str, str]:
+def _build_four_step_col_kernel_source(
+    plan: LeafPlan, n1: int, n2: int
+) -> tuple[str, str]:
     if plan.length != n2:
-        raise ValueError(f"four-step col kernel length must equal n2: length={plan.length}, n2={n2}")
+        raise ValueError(
+            f"four-step col kernel length must equal n2: length={plan.length}, n2={n2}"
+        )
     return _build_leaf_kernel_source_for_io(
         plan, io_mode="four_step_col", four_step_n1=n1, four_step_n2=n2
     )

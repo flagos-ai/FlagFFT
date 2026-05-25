@@ -32,17 +32,17 @@ PlanApi parse_plan_api(const std::string &value);
 std::string plan_api_name(PlanApi api);
 
 class CliException : public std::runtime_error {
-public:
-    CliException(std::string message, int exit_code);
-    int exit_code() const noexcept;
+ public:
+  CliException(std::string message, int exit_code);
+  int exit_code() const noexcept;
 
-private:
-    int exit_code_;
+ private:
+  int exit_code_;
 };
 
 class AssertionFailure : public CliException {
-public:
-    explicit AssertionFailure(std::string message);
+ public:
+  explicit AssertionFailure(std::string message);
 };
 
 std::string flagfft_result_name(flagfftResult result);

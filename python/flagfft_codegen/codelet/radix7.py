@@ -1,6 +1,5 @@
 @triton.jit
 def _fwd_rad7_b1(r0, r1, r2, r3, r4, r5, r6, i0, i1, i2, i3, i4, i5, i6):
-
     p0r = r1 + r6
     p0i = i1 + i6
     p1r = r1 - r6
