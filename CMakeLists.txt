@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.18)
 project(flagfft LANGUAGES CXX)
 
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
+option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
 set_property(CACHE BACKEND PROPERTY STRINGS "CUDA")
 
@@ -113,4 +114,9 @@ if(FLAGFFT_BUILD_CLI)
             nlohmann_json::nlohmann_json
     )
     install(TARGETS flagfft-cli RUNTIME DESTINATION "bin")
+endif()
+
+if(FLAGFFT_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(ctest)
 endif()
