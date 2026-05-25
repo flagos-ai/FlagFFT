@@ -94,8 +94,7 @@ cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
 ```
 
-The removed `FLAGFFT_BUILD_TESTS` and `FLAGFFT_BUILD_BENCHMARKS` switches no
-longer create gtest, `bench_vs_cufft`, or `flagfft-tuner` executables.
+`FLAGFFT_BUILD_TESTS=ON` enables the C++ test suite (see [C++ Tests](#c-tests)).
 
 When plan creation emits Triton JIT source, it uses `FLAGFFT_PYTHON` if set,
 otherwise `python3`. Generated source/metadata and tuned-plan SQLite defaults
@@ -193,6 +192,55 @@ pytest -q
 
 Python codegen tests remain under `tests/python/`. No standalone benchmark,
 tuner, or gtest native entrypoint is built.
+
+## C++ Tests
+
+The C++ test suite lives under `ctest/` and uses Google Test with a unified
+`flagfft_test::adaptor` interface to support multiple GPU platforms from a
+single set of test sources.
+
+```sh
+cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --verbose
+```
+
+Google Test is fetched automatically by `deps/libtriton_jit` via FetchContent;
+no additional installation is required.
+
+### Architecture
+
+The test adaptor `flagfft_test::adaptor` provides:
+
+- **Convenience Plan / Exec wrappers** — thin wrappers around the C API that
+  assert `FLAGFFT_SUCCESS` via Google Test macros
+- **`RefHandle`** — RAII wrapper for the platform-specific reference FFT plan
+  handle (`cufftHandle` on CUDA, empty on the null backend)
+- **Reference FFT interface** — `ref_plan_1d/2d/3d`, `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d`
+  mirroring the public FlagFFT API
+- **Device memory utilities** — `allocate_device`, `copy_host_to_device`, etc.
+- **Comparison helpers** — `max_relative_error` and friends for tolerance checks
+
+### Backends
+
+| Backend | Reference | Behaviour |
+|---|---|---|
+| `BACKEND=CUDA` | cuFFT | Plan lifecycle + elementwise comparison against cuFFT for all transform types |
+| `BACKEND=NULL` | none | Plan lifecycle + roundtrip self-consistency (reference comparisons are skipped) |
+
+Adding a new GPU platform requires only a `ctest/backend/<name>/adaptor.cpp`
+implementing all functions in the `flagfft_test::adaptor` namespace; no test
+source changes are needed.
+
+### Test files
+
+| File | Coverage |
+|------|----------|
+| `test_plan.cpp` | Plan creation/destruction/description, invalid-parameter error codes |
+| `test_exec_c2c.cpp` | `FLAGFFT_C2C` forward, inverse, roundtrip, batch, 2D/3D |
+| `test_exec_z2z.cpp` | `FLAGFFT_Z2Z` double-precision complex |
+| `test_exec_r2c_c2r.cpp` | `FLAGFFT_R2C`/`FLAGFFT_C2R` roundtrip and reference comparison |
+| `test_exec_d2z_z2d.cpp` | `FLAGFFT_D2Z`/`FLAGFFT_Z2D` double-precision real |
 
 ## License
 
