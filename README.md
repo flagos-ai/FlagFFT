@@ -251,6 +251,46 @@ source changes are needed.
 | `test_exec_r2c_c2r.cpp` | `FLAGFFT_R2C`/`FLAGFFT_C2R` roundtrip and reference comparison |
 | `test_exec_d2z_z2d.cpp` | `FLAGFFT_D2Z`/`FLAGFFT_Z2D` double-precision real |
 
+## Code Style
+
+This project uses [pre-commit](https://pre-commit.com/) to enforce consistent
+formatting and linting. The configuration covers:
+
+- **clang-format** (v13, Google style with custom overrides in `.clang-format`)
+- **isort** and **black** for Python
+- **flake8** for Python linting
+- Generic checks: YAML syntax, trailing whitespace, end-of-file newlines
+
+### Installing clang-format
+
+The pre-commit hook pulls `clang-format` v13 automatically, but if you need it
+locally (e.g. for editor integration):
+
+```sh
+# Ubuntu / Debian
+apt install clang-format-13
+
+# Or via pip (requires a working Python environment)
+pip install clang-format==13.0.0
+```
+
+### Installing and using pre-commit
+
+```sh
+# Install pre-commit itself
+pip install pre-commit
+
+# Install the git hook scripts (runs checks on every commit)
+pre-commit install
+
+# Run all hooks manually against all files (useful for first setup)
+pre-commit run --all-files
+```
+
+After `pre-commit install`, every `git commit` will automatically run the
+configured hooks. Rejected commits must be re-staged and re-committed after the
+hooks fix the files in-place.
+
 ## License
 
 FlagFFT is licensed under the [Apache 2.0 license](./LICENSE).
