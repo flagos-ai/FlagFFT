@@ -1,34 +1,27 @@
 #include "bench.hpp"
 
-#include <cufft.h>
-
 #include <algorithm>
 #include <chrono>
-#include <cmath>
-#include <random>
+#include <cstring>
 
+#include "adaptor/adaptor.h"
+#include "adaptor/test_adaptor.h"
 #include "c_api_internal.hpp"
 #include "cli_tools/common/cli_utils.hpp"
 #include "cli_tools/common/plan_handles.hpp"
-#include "cli_tools/common/runtime_raii.hpp"
 #include "flagfft.h"
 #include "flagfft/tune_json.hpp"
 
 namespace flagfft {
 namespace tune {
 
-  using flagfft::cli::check_cufft;
   using flagfft::cli::check_flagfft;
 
   std::vector<float> generate_random_input(int64_t n, int64_t batch) {
-    std::mt19937 rng(1234 + static_cast<unsigned>(n * 17 + batch));
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    std::size_t samples = static_cast<std::size_t>(n * batch * 2);
-    std::vector<float> data(samples);
-    for (auto &v : data) {
-      v = dist(rng);
-    }
-    return data;
+    auto cx = test_adaptor::random_complex(static_cast<int>(n * batch));
+    std::vector<float> result(cx.size() * 2);
+    std::memcpy(result.data(), cx.data(), cx.size() * sizeof(flagfftComplex));
+    return result;
   }
 
   static double median(std::vector<double> v) {
@@ -116,12 +109,12 @@ namespace tune {
 
     auto host = generate_random_input(n, batch);
     std::size_t bytes = host.size() * sizeof(float);
-    flagfft::cli::DeviceMemory d_in(bytes);
-    flagfft::cli::DeviceMemory d_out(bytes);
+    adaptor::Memory d_in(bytes);
+    adaptor::Memory d_out(bytes);
     d_in.copy_from_host(host.data(), bytes);
 
-    flagfft::cli::Stream stream;
-    flagfft::cli::Timer timer;
+    adaptor::Stream stream;
+    adaptor::EventTimer timer;
 
     auto t0 = std::chrono::steady_clock::now();
     auto plan = build_plan_from_json_str(plan_json_str, n, batch, direction, device_index, device_arch);
@@ -134,8 +127,8 @@ namespace tune {
 
     timer.start(stream.get());
     check_flagfft(flagfftExecC2C(plan.get(),
-                                 reinterpret_cast<flagfftComplex *>(d_in.get()),
-                                 reinterpret_cast<flagfftComplex *>(d_out.get()),
+                                 reinterpret_cast<flagfftComplex *>(d_in.data()),
+                                 reinterpret_cast<flagfftComplex *>(d_out.data()),
                                  ff_dir),
                   "flagfftExecC2C (first)");
     timer.stop(stream.get());
@@ -143,8 +136,8 @@ namespace tune {
 
     for (int i = 1; i < n_warmup; ++i) {
       check_flagfft(flagfftExecC2C(plan.get(),
-                                   reinterpret_cast<flagfftComplex *>(d_in.get()),
-                                   reinterpret_cast<flagfftComplex *>(d_out.get()),
+                                   reinterpret_cast<flagfftComplex *>(d_in.data()),
+                                   reinterpret_cast<flagfftComplex *>(d_out.data()),
                                    ff_dir),
                     "flagfftExecC2C (warmup)");
     }
@@ -154,8 +147,8 @@ namespace tune {
     for (int i = 0; i < n_iters; ++i) {
       timer.start(stream.get());
       check_flagfft(flagfftExecC2C(plan.get(),
-                                   reinterpret_cast<flagfftComplex *>(d_in.get()),
-                                   reinterpret_cast<flagfftComplex *>(d_out.get()),
+                                   reinterpret_cast<flagfftComplex *>(d_in.data()),
+                                   reinterpret_cast<flagfftComplex *>(d_out.data()),
                                    ff_dir),
                     "flagfftExecC2C (bench)");
       timer.stop(stream.get());
@@ -175,53 +168,40 @@ namespace tune {
                                   const std::string &device_arch) {
     auto host = generate_random_input(n, batch);
     std::size_t bytes = host.size() * sizeof(float);
-    flagfft::cli::DeviceMemory d_in(bytes);
-    flagfft::cli::DeviceMemory d_out_ff(bytes);
-    flagfft::cli::DeviceMemory d_out_cf(bytes);
+    adaptor::Memory d_in(bytes);
+    adaptor::Memory d_out_ff(bytes);
+    adaptor::Memory d_out_ref(bytes);
     d_in.copy_from_host(host.data(), bytes);
 
-    flagfft::cli::Stream stream;
+    adaptor::Stream stream;
 
     auto ff_plan = build_plan_from_json_str(plan_json_str, n, batch, direction, device_index, device_arch);
     check_flagfft(flagfftSetStream(ff_plan.get(), stream.get()), "flagfftSetStream");
 
-    flagfft::cli::CufftPlanHandle cf_plan;
-    check_cufft(cufftPlan1d(cf_plan.put(), static_cast<int>(n), CUFFT_C2C, static_cast<int>(batch)),
-                "cufftPlan1d");
-    check_cufft(cufftSetStream(cf_plan.get(), reinterpret_cast<cudaStream_t>(stream.get())),
-                "cufftSetStream");
+    test_adaptor::RefPlanHandle ref_plan;
+    test_adaptor::ref_plan_1d(ref_plan, static_cast<int>(n), FLAGFFT_C2C, static_cast<int>(batch));
 
     int ff_dir = direction == "forward" ? FLAGFFT_FORWARD : FLAGFFT_INVERSE;
-    int cf_dir = direction == "forward" ? CUFFT_FORWARD : CUFFT_INVERSE;
+    int ref_dir = direction == "forward" ? FLAGFFT_FORWARD : FLAGFFT_INVERSE;
 
     check_flagfft(flagfftExecC2C(ff_plan.get(),
-                                 reinterpret_cast<flagfftComplex *>(d_in.get()),
-                                 reinterpret_cast<flagfftComplex *>(d_out_ff.get()),
+                                 reinterpret_cast<flagfftComplex *>(d_in.data()),
+                                 reinterpret_cast<flagfftComplex *>(d_out_ff.data()),
                                  ff_dir),
                   "flagfftExecC2C");
-    check_cufft(cufftExecC2C(cf_plan.get(),
-                             reinterpret_cast<cufftComplex *>(d_in.get()),
-                             reinterpret_cast<cufftComplex *>(d_out_cf.get()),
-                             cf_dir),
-                "cufftExecC2C");
-    stream.sync();
+    test_adaptor::ref_exec_c2c(ref_plan,
+                               reinterpret_cast<flagfftComplex *>(d_in.data()),
+                               reinterpret_cast<flagfftComplex *>(d_out_ref.data()),
+                               ref_dir);
+    adaptor::synchronize();
 
     std::vector<float> out_ff(host.size());
-    std::vector<float> out_cf(host.size());
+    std::vector<float> out_ref(host.size());
     d_out_ff.copy_to_host(out_ff.data(), bytes);
-    d_out_cf.copy_to_host(out_cf.data(), bytes);
+    d_out_ref.copy_to_host(out_ref.data(), bytes);
 
-    BenchError err {};
-    double sum_sq = 0.0;
-    for (std::size_t i = 0; i < out_ff.size(); ++i) {
-      double diff = static_cast<double>(out_ff[i]) - static_cast<double>(out_cf[i]);
-      double abs_diff = std::abs(diff);
-      if (abs_diff > err.max_abs) {
-        err.max_abs = abs_diff;
-      }
-      sum_sq += diff * diff;
-    }
-    err.rms = std::sqrt(sum_sq / static_cast<double>(out_ff.size()));
+    auto metric = test_adaptor::compute_error(out_ff.data(), out_ref.data(), out_ff.size());
+    BenchError err {metric.max_abs, metric.rms};
     return err;
   }
 
