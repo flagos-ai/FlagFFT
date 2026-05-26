@@ -22,6 +22,10 @@ set(TEST_TARGETS
     test_plan
     test_exec_c2c
     test_exec_z2z
+    test_exec_r2c
+    test_exec_c2r
+    test_exec_d2z
+    test_exec_z2d
     test_exec_r2c_c2r
     test_exec_d2z_z2d
 )
