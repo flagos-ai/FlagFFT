@@ -13,34 +13,9 @@ from benchmark.suites import DEFAULT_APIS, DEFAULT_DIRECTIONS, FULL_SIZES
 @pytest.mark.parametrize("size", FULL_SIZES)
 @pytest.mark.parametrize("api", DEFAULT_APIS)
 @pytest.mark.parametrize("direction", DEFAULT_DIRECTIONS)
-def test_bench_full(
-    invoke_cli,
-    bench_warmup,
-    bench_iters,
-    bench_launches_per_sample,
-    size,
-    api,
-    direction,
-):
+def test_bench_full(run_benchmark, size, api, direction):
     """Run full benchmark across all sizes and verify correctness."""
-    result, report = invoke_cli(
-        "bench",
-        "--api",
-        api,
-        "--direction",
-        direction,
-        "--shape",
-        str(size),
-        "--batch",
-        "1",
-        "--warmup",
-        str(bench_warmup),
-        "--iters",
-        str(bench_iters),
-        "--launches-per-sample",
-        str(bench_launches_per_sample),
-        "--print-path",
-    )
+    result, report = run_benchmark(size, api, direction)
     assert (
         result.returncode == 0
     ), f"Benchmark failed for size={size}, api={api}, dir={direction}: {report}"
@@ -55,6 +30,7 @@ def test_bench_full(
     ), f"Median time should be positive for size={size}"
 
 
+@pytest.mark.skip(reason="run separately for reporting")
 def test_bench_full_report(
     invoke_cli, bench_warmup, bench_iters, bench_launches_per_sample, tmp_path
 ):

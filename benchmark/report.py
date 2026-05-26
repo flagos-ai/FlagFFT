@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 
@@ -96,8 +97,6 @@ def generate_json_report(report: dict[str, Any]) -> str:
 
 
 def _geometric_mean(values: list[float]) -> float:
-    import math
-
     if not values:
         return 0.0
     log_sum = sum(math.log(max(v, 1e-12)) for v in values)

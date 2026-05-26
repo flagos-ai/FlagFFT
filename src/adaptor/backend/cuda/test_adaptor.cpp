@@ -7,6 +7,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+static_assert(sizeof(flagfftComplex) == 2 * sizeof(float), "flagfftComplex must have no padding");
+static_assert(sizeof(flagfftDoubleComplex) == 2 * sizeof(double),
+              "flagfftDoubleComplex must have no padding");
+
 namespace flagfft::test_adaptor {
 
 // =========================================================================
@@ -49,8 +53,9 @@ RefPlanHandle& RefPlanHandle::operator=(RefPlanHandle&& other) noexcept {
 std::uintptr_t RefPlanHandle::get() const {
   return impl_;
 }
-std::uintptr_t* RefPlanHandle::ptr() {
-  return &impl_;
+void RefPlanHandle::replace(std::uintptr_t new_handle) {
+  if (impl_) cufftDestroy(to_cufft(impl_));
+  impl_ = new_handle;
 }
 
 // =========================================================================
@@ -82,18 +87,24 @@ static void check_cufft(cufftResult r, const std::string& context) {
 // =========================================================================
 
 void ref_plan_1d(RefPlanHandle& plan, int nx, flagfftType type, int batch) {
-  auto r = cufftPlan1d(reinterpret_cast<cufftHandle*>(plan.ptr()), nx, to_cufft_type(type), batch);
+  cufftHandle h;
+  auto r = cufftPlan1d(&h, nx, to_cufft_type(type), batch);
   check_cufft(r, "cufftPlan1d");
+  plan.replace(from_cufft(h));
 }
 
 void ref_plan_2d(RefPlanHandle& plan, int nx, int ny, flagfftType type) {
-  auto r = cufftPlan2d(reinterpret_cast<cufftHandle*>(plan.ptr()), nx, ny, to_cufft_type(type));
+  cufftHandle h;
+  auto r = cufftPlan2d(&h, nx, ny, to_cufft_type(type));
   check_cufft(r, "cufftPlan2d");
+  plan.replace(from_cufft(h));
 }
 
 void ref_plan_3d(RefPlanHandle& plan, int nx, int ny, int nz, flagfftType type) {
-  auto r = cufftPlan3d(reinterpret_cast<cufftHandle*>(plan.ptr()), nx, ny, nz, to_cufft_type(type));
+  cufftHandle h;
+  auto r = cufftPlan3d(&h, nx, ny, nz, to_cufft_type(type));
   check_cufft(r, "cufftPlan3d");
+  plan.replace(from_cufft(h));
 }
 
 // =========================================================================
@@ -189,11 +200,11 @@ std::vector<flagfftDoubleReal> random_double_real(int n) {
 // Correctness comparison
 // =========================================================================
 
-inline float complex_abs(const flagfftComplex& c) {
+static float complex_abs(const flagfftComplex& c) {
   return std::sqrt(c.x * c.x + c.y * c.y);
 }
 
-inline double complex_abs(const flagfftDoubleComplex& c) {
+static double complex_abs(const flagfftDoubleComplex& c) {
   return std::sqrt(c.x * c.x + c.y * c.y);
 }
 
@@ -273,6 +284,14 @@ ErrorMetric compute_error(const double* a, const double* b, std::size_t n) {
   }
   err.rms = std::sqrt(sum_sq / static_cast<double>(n));
   return err;
+}
+
+ErrorMetric compute_error(const flagfftComplex* a, const flagfftComplex* b, std::size_t n) {
+  return compute_error(reinterpret_cast<const float*>(a), reinterpret_cast<const float*>(b), n * 2);
+}
+
+ErrorMetric compute_error(const flagfftDoubleComplex* a, const flagfftDoubleComplex* b, std::size_t n) {
+  return compute_error(reinterpret_cast<const double*>(a), reinterpret_cast<const double*>(b), n * 2);
 }
 
 }  // namespace flagfft::test_adaptor

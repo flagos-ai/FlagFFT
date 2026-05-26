@@ -182,7 +182,6 @@ namespace tune {
     test_adaptor::ref_plan_1d(ref_plan, static_cast<int>(n), FLAGFFT_C2C, static_cast<int>(batch));
 
     int ff_dir = direction == "forward" ? FLAGFFT_FORWARD : FLAGFFT_INVERSE;
-    int ref_dir = direction == "forward" ? FLAGFFT_FORWARD : FLAGFFT_INVERSE;
 
     check_flagfft(flagfftExecC2C(ff_plan.get(),
                                  reinterpret_cast<flagfftComplex *>(d_in.data()),
@@ -192,7 +191,7 @@ namespace tune {
     test_adaptor::ref_exec_c2c(ref_plan,
                                reinterpret_cast<flagfftComplex *>(d_in.data()),
                                reinterpret_cast<flagfftComplex *>(d_out_ref.data()),
-                               ref_dir);
+                               ff_dir);
     adaptor::synchronize();
 
     std::vector<float> out_ff(host.size());
@@ -200,7 +199,9 @@ namespace tune {
     d_out_ff.copy_to_host(out_ff.data(), bytes);
     d_out_ref.copy_to_host(out_ref.data(), bytes);
 
-    auto metric = test_adaptor::compute_error(out_ff.data(), out_ref.data(), out_ff.size());
+    auto metric = test_adaptor::compute_error(reinterpret_cast<const flagfftComplex *>(out_ff.data()),
+                                              reinterpret_cast<const flagfftComplex *>(out_ref.data()),
+                                              out_ff.size() / 2);
     BenchError err {metric.max_abs, metric.rms};
     return err;
   }

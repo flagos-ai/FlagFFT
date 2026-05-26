@@ -23,7 +23,7 @@ class RefPlanHandle {
   RefPlanHandle& operator=(const RefPlanHandle&) = delete;
 
   std::uintptr_t get() const;
-  std::uintptr_t* ptr();
+  void replace(std::uintptr_t new_handle);
 
  private:
   std::uintptr_t impl_;
@@ -83,5 +83,7 @@ double max_relative_error_real(const flagfftDoubleReal* a, const flagfftDoubleRe
 
 ErrorMetric compute_error(const float* a, const float* b, std::size_t n);
 ErrorMetric compute_error(const double* a, const double* b, std::size_t n);
+ErrorMetric compute_error(const flagfftComplex* a, const flagfftComplex* b, std::size_t n);
+ErrorMetric compute_error(const flagfftDoubleComplex* a, const flagfftDoubleComplex* b, std::size_t n);
 
 }  // namespace flagfft::test_adaptor

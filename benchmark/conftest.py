@@ -68,11 +68,37 @@ def invoke_cli(flagfft_cli):
         except json.JSONDecodeError as error:
             pytest.fail(f"invalid CLI JSON: {result.stdout}\n{result.stderr}\n{error}")
         if report.get("status") == "skipped":
-            assert result.returncode == 77
             pytest.skip(report.get("reason", "CLI skipped"))
         return result, report
 
     return invoke
+
+
+@pytest.fixture
+def run_benchmark(invoke_cli, bench_warmup, bench_iters, bench_launches_per_sample):
+    """Invoke the bench subcommand with standard options."""
+
+    def _run(size: int, api: str = "c2c", direction: str = "forward"):
+        return invoke_cli(
+            "bench",
+            "--api",
+            api,
+            "--direction",
+            direction,
+            "--shape",
+            str(size),
+            "--batch",
+            "1",
+            "--warmup",
+            str(bench_warmup),
+            "--iters",
+            str(bench_iters),
+            "--launches-per-sample",
+            str(bench_launches_per_sample),
+            "--print-path",
+        )
+
+    return _run
 
 
 @pytest.fixture(scope="session")

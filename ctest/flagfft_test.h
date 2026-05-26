@@ -4,7 +4,6 @@
 
 #include <cmath>
 #include <cstdlib>
-#include <cstring>
 #include <vector>
 
 #include "adaptor/adaptor.h"
