@@ -1,0 +1,278 @@
+#include "adaptor/test_adaptor.h"
+
+#include <cuda_runtime_api.h>
+#include <cufft.h>
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+namespace flagfft::test_adaptor {
+
+// =========================================================================
+// RefHandle — cuFFT implementation
+// =========================================================================
+
+static cufftHandle to_cufft(std::uintptr_t v) {
+  return static_cast<cufftHandle>(static_cast<std::intptr_t>(v));
+}
+static std::uintptr_t from_cufft(cufftHandle h) {
+  return static_cast<std::uintptr_t>(static_cast<std::intptr_t>(h));
+}
+
+RefPlanHandle::RefPlanHandle() : impl_(0) {
+  cufftHandle h;
+  if (cufftCreate(&h) != CUFFT_SUCCESS) {
+    std::fprintf(stderr, "RefPlanHandle: cufftCreate failed\n");
+    return;
+  }
+  impl_ = from_cufft(h);
+}
+
+RefPlanHandle::~RefPlanHandle() {
+  if (impl_) cufftDestroy(to_cufft(impl_));
+}
+
+RefPlanHandle::RefPlanHandle(RefPlanHandle&& other) noexcept : impl_(other.impl_) {
+  other.impl_ = 0;
+}
+
+RefPlanHandle& RefPlanHandle::operator=(RefPlanHandle&& other) noexcept {
+  if (this != &other) {
+    if (impl_) cufftDestroy(to_cufft(impl_));
+    impl_ = other.impl_;
+    other.impl_ = 0;
+  }
+  return *this;
+}
+
+std::uintptr_t RefPlanHandle::get() const {
+  return impl_;
+}
+std::uintptr_t* RefPlanHandle::ptr() {
+  return &impl_;
+}
+
+// =========================================================================
+// Backend lifecycle
+// =========================================================================
+
+void initialize() {
+}
+std::string backend_name() {
+  return "cuda";
+}
+
+// =========================================================================
+// Helpers
+// =========================================================================
+
+static cufftType to_cufft_type(flagfftType type) {
+  return static_cast<cufftType>(static_cast<int>(type));
+}
+
+static void check_cufft(cufftResult r, const std::string& context) {
+  if (r != CUFFT_SUCCESS) {
+    std::fprintf(stderr, "%s failed with code %d\n", context.c_str(), static_cast<int>(r));
+  }
+}
+
+// =========================================================================
+// Plan creation
+// =========================================================================
+
+void ref_plan_1d(RefPlanHandle& plan, int nx, flagfftType type, int batch) {
+  auto r = cufftPlan1d(reinterpret_cast<cufftHandle*>(plan.ptr()), nx, to_cufft_type(type), batch);
+  check_cufft(r, "cufftPlan1d");
+}
+
+void ref_plan_2d(RefPlanHandle& plan, int nx, int ny, flagfftType type) {
+  auto r = cufftPlan2d(reinterpret_cast<cufftHandle*>(plan.ptr()), nx, ny, to_cufft_type(type));
+  check_cufft(r, "cufftPlan2d");
+}
+
+void ref_plan_3d(RefPlanHandle& plan, int nx, int ny, int nz, flagfftType type) {
+  auto r = cufftPlan3d(reinterpret_cast<cufftHandle*>(plan.ptr()), nx, ny, nz, to_cufft_type(type));
+  check_cufft(r, "cufftPlan3d");
+}
+
+// =========================================================================
+// Plan execution
+// =========================================================================
+
+void ref_exec_c2c(RefPlanHandle& plan, flagfftComplex* idata, flagfftComplex* odata, int direction) {
+  check_cufft(cufftExecC2C(to_cufft(plan.get()),
+                           reinterpret_cast<cufftComplex*>(idata),
+                           reinterpret_cast<cufftComplex*>(odata),
+                           direction),
+              "cufftExecC2C");
+}
+
+void ref_exec_z2z(RefPlanHandle& plan,
+                  flagfftDoubleComplex* idata,
+                  flagfftDoubleComplex* odata,
+                  int direction) {
+  check_cufft(cufftExecZ2Z(to_cufft(plan.get()),
+                           reinterpret_cast<cufftDoubleComplex*>(idata),
+                           reinterpret_cast<cufftDoubleComplex*>(odata),
+                           direction),
+              "cufftExecZ2Z");
+}
+
+void ref_exec_r2c(RefPlanHandle& plan, flagfftReal* idata, flagfftComplex* odata) {
+  check_cufft(cufftExecR2C(to_cufft(plan.get()),
+                           reinterpret_cast<cufftReal*>(idata),
+                           reinterpret_cast<cufftComplex*>(odata)),
+              "cufftExecR2C");
+}
+
+void ref_exec_d2z(RefPlanHandle& plan, flagfftDoubleReal* idata, flagfftDoubleComplex* odata) {
+  check_cufft(cufftExecD2Z(to_cufft(plan.get()),
+                           reinterpret_cast<cufftDoubleReal*>(idata),
+                           reinterpret_cast<cufftDoubleComplex*>(odata)),
+              "cufftExecD2Z");
+}
+
+void ref_exec_c2r(RefPlanHandle& plan, flagfftComplex* idata, flagfftReal* odata) {
+  check_cufft(cufftExecC2R(to_cufft(plan.get()),
+                           reinterpret_cast<cufftComplex*>(idata),
+                           reinterpret_cast<cufftReal*>(odata)),
+              "cufftExecC2R");
+}
+
+void ref_exec_z2d(RefPlanHandle& plan, flagfftDoubleComplex* idata, flagfftDoubleReal* odata) {
+  check_cufft(cufftExecZ2D(to_cufft(plan.get()),
+                           reinterpret_cast<cufftDoubleComplex*>(idata),
+                           reinterpret_cast<cufftDoubleReal*>(odata)),
+              "cufftExecZ2D");
+}
+
+// =========================================================================
+// Data generation
+// =========================================================================
+
+std::vector<flagfftComplex> random_complex(int n) {
+  std::vector<flagfftComplex> v(n);
+  for (int i = 0; i < n; ++i) {
+    v[i].x = static_cast<float>(std::rand()) / RAND_MAX * 2.0f - 1.0f;
+    v[i].y = static_cast<float>(std::rand()) / RAND_MAX * 2.0f - 1.0f;
+  }
+  return v;
+}
+
+std::vector<flagfftDoubleComplex> random_double_complex(int n) {
+  std::vector<flagfftDoubleComplex> v(n);
+  for (int i = 0; i < n; ++i) {
+    v[i].x = static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0;
+    v[i].y = static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0;
+  }
+  return v;
+}
+
+std::vector<flagfftReal> random_real(int n) {
+  std::vector<flagfftReal> v(n);
+  for (int i = 0; i < n; ++i) {
+    v[i] = static_cast<float>(std::rand()) / RAND_MAX * 2.0f - 1.0f;
+  }
+  return v;
+}
+
+std::vector<flagfftDoubleReal> random_double_real(int n) {
+  std::vector<flagfftDoubleReal> v(n);
+  for (int i = 0; i < n; ++i) {
+    v[i] = static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0;
+  }
+  return v;
+}
+
+// =========================================================================
+// Correctness comparison
+// =========================================================================
+
+inline float complex_abs(const flagfftComplex& c) {
+  return std::sqrt(c.x * c.x + c.y * c.y);
+}
+
+inline double complex_abs(const flagfftDoubleComplex& c) {
+  return std::sqrt(c.x * c.x + c.y * c.y);
+}
+
+double max_relative_error(const flagfftComplex* a, const flagfftComplex* b, int n) {
+  double max_err = 0.0;
+  for (int i = 0; i < n; ++i) {
+    double diff = std::abs(complex_abs(a[i]) - complex_abs(b[i]));
+    double denom = complex_abs(b[i]);
+    if (denom > 0.0) {
+      double rel = diff / denom;
+      if (rel > max_err) max_err = rel;
+    }
+  }
+  return max_err;
+}
+
+double max_relative_error(const flagfftDoubleComplex* a, const flagfftDoubleComplex* b, int n) {
+  double max_err = 0.0;
+  for (int i = 0; i < n; ++i) {
+    double diff = std::abs(complex_abs(a[i]) - complex_abs(b[i]));
+    double denom = complex_abs(b[i]);
+    if (denom > 0.0) {
+      double rel = diff / denom;
+      if (rel > max_err) max_err = rel;
+    }
+  }
+  return max_err;
+}
+
+double max_relative_error_real(const flagfftReal* a, const flagfftReal* b, int n) {
+  double max_err = 0.0;
+  for (int i = 0; i < n; ++i) {
+    double diff = std::abs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
+    double denom = std::abs(static_cast<double>(b[i]));
+    if (denom > 0.0) {
+      double rel = diff / denom;
+      if (rel > max_err) max_err = rel;
+    }
+  }
+  return max_err;
+}
+
+double max_relative_error_real(const flagfftDoubleReal* a, const flagfftDoubleReal* b, int n) {
+  double max_err = 0.0;
+  for (int i = 0; i < n; ++i) {
+    double diff = std::abs(a[i] - b[i]);
+    double denom = std::abs(b[i]);
+    if (denom > 0.0) {
+      double rel = diff / denom;
+      if (rel > max_err) max_err = rel;
+    }
+  }
+  return max_err;
+}
+
+ErrorMetric compute_error(const float* a, const float* b, std::size_t n) {
+  ErrorMetric err {};
+  double sum_sq = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
+    double abs_diff = std::abs(diff);
+    if (abs_diff > err.max_abs) err.max_abs = abs_diff;
+    sum_sq += diff * diff;
+  }
+  err.rms = std::sqrt(sum_sq / static_cast<double>(n));
+  return err;
+}
+
+ErrorMetric compute_error(const double* a, const double* b, std::size_t n) {
+  ErrorMetric err {};
+  double sum_sq = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    double diff = a[i] - b[i];
+    double abs_diff = std::abs(diff);
+    if (abs_diff > err.max_abs) err.max_abs = abs_diff;
+    sum_sq += diff * diff;
+  }
+  err.rms = std::sqrt(sum_sq / static_cast<double>(n));
+  return err;
+}
+
+}  // namespace flagfft::test_adaptor

@@ -4,6 +4,6 @@
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
-  flagfft_test::adaptor::initialize();
+  flagfft::test_adaptor::initialize();
   return RUN_ALL_TESTS();
 }

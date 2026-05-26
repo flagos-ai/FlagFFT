@@ -1,6 +1,6 @@
 #include "flagfft_test.h"
 
-using namespace flagfft_test::adaptor;
+using namespace flagfft::test_adaptor;
 
 constexpr double kRelTol = 1e-10;  // double precision
 
@@ -10,30 +10,31 @@ TEST(Z2Z_1D, ForwardPowerOfTwo) {
   Plan1d(&plan, N, FLAGFFT_Z2Z, 1);
 
   auto h_in = random_double_complex(N);
-  auto* d_in = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_out = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_ref = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  ASSERT_NE(d_in, nullptr);
+  flagfft::adaptor::Memory d_in(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_out(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_ref(N * sizeof(flagfftDoubleComplex));
+  d_in.copy_from_host(h_in.data(), N * sizeof(flagfftDoubleComplex));
 
-  copy_host_to_device(h_in.data(), d_in, N * sizeof(flagfftDoubleComplex));
+  ExecZ2Z(plan,
+          static_cast<flagfftDoubleComplex*>(d_in.data()),
+          static_cast<flagfftDoubleComplex*>(d_out.data()),
+          FLAGFFT_FORWARD);
 
-  ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
-
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
-  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  ref_exec_z2z(ref,
+               static_cast<flagfftDoubleComplex*>(d_in.data()),
+               static_cast<flagfftDoubleComplex*>(d_ref.data()),
+               FLAGFFT_FORWARD);
 
   std::vector<flagfftDoubleComplex> h_out(N);
   std::vector<flagfftDoubleComplex> h_ref_out(N);
-  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
-  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_out.copy_to_host(h_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_ref.copy_to_host(h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
 
   double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
   EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
-  free_device(d_in);
-  free_device(d_out);
-  free_device(d_ref);
   flagfftDestroy(plan);
 }
 
@@ -43,30 +44,31 @@ TEST(Z2Z_1D, InversePowerOfTwo) {
   Plan1d(&plan, N, FLAGFFT_Z2Z, 1);
 
   auto h_in = random_double_complex(N);
-  auto* d_in = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_out = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_ref = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  ASSERT_NE(d_in, nullptr);
+  flagfft::adaptor::Memory d_in(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_out(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_ref(N * sizeof(flagfftDoubleComplex));
+  d_in.copy_from_host(h_in.data(), N * sizeof(flagfftDoubleComplex));
 
-  copy_host_to_device(h_in.data(), d_in, N * sizeof(flagfftDoubleComplex));
+  ExecZ2Z(plan,
+          static_cast<flagfftDoubleComplex*>(d_in.data()),
+          static_cast<flagfftDoubleComplex*>(d_out.data()),
+          FLAGFFT_INVERSE);
 
-  ExecZ2Z(plan, d_in, d_out, FLAGFFT_INVERSE);
-
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
-  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_INVERSE);
+  ref_exec_z2z(ref,
+               static_cast<flagfftDoubleComplex*>(d_in.data()),
+               static_cast<flagfftDoubleComplex*>(d_ref.data()),
+               FLAGFFT_INVERSE);
 
   std::vector<flagfftDoubleComplex> h_out(N);
   std::vector<flagfftDoubleComplex> h_ref_out(N);
-  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
-  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_out.copy_to_host(h_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_ref.copy_to_host(h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
 
   double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
   EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
-  free_device(d_in);
-  free_device(d_out);
-  free_device(d_ref);
   flagfftDestroy(plan);
 }
 
@@ -76,18 +78,22 @@ TEST(Z2Z_1D, RoundtripForwardInverse) {
   Plan1d(&plan, N, FLAGFFT_Z2Z, 1);
 
   auto h_in = random_double_complex(N);
-  auto* d_in = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_mid = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_out = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  ASSERT_NE(d_in, nullptr);
+  flagfft::adaptor::Memory d_in(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_mid(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_out(N * sizeof(flagfftDoubleComplex));
+  d_in.copy_from_host(h_in.data(), N * sizeof(flagfftDoubleComplex));
 
-  copy_host_to_device(h_in.data(), d_in, N * sizeof(flagfftDoubleComplex));
-
-  ExecZ2Z(plan, d_in, d_mid, FLAGFFT_FORWARD);
-  ExecZ2Z(plan, d_mid, d_out, FLAGFFT_INVERSE);
+  ExecZ2Z(plan,
+          static_cast<flagfftDoubleComplex*>(d_in.data()),
+          static_cast<flagfftDoubleComplex*>(d_mid.data()),
+          FLAGFFT_FORWARD);
+  ExecZ2Z(plan,
+          static_cast<flagfftDoubleComplex*>(d_mid.data()),
+          static_cast<flagfftDoubleComplex*>(d_out.data()),
+          FLAGFFT_INVERSE);
 
   std::vector<flagfftDoubleComplex> h_out(N);
-  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_out.copy_to_host(h_out.data(), N * sizeof(flagfftDoubleComplex));
 
   for (int i = 0; i < N; ++i) {
     double expected_x = h_in[i].x * N;
@@ -96,9 +102,6 @@ TEST(Z2Z_1D, RoundtripForwardInverse) {
     EXPECT_NEAR(h_out[i].y, expected_y, N * kRelTol) << "Mismatch at index " << i << " (imag)";
   }
 
-  free_device(d_in);
-  free_device(d_mid);
-  free_device(d_out);
   flagfftDestroy(plan);
 }
 
@@ -108,30 +111,31 @@ TEST(Z2Z_1D, NonPowerOfTwo) {
   Plan1d(&plan, N, FLAGFFT_Z2Z, 1);
 
   auto h_in = random_double_complex(N);
-  auto* d_in = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_out = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_ref = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  ASSERT_NE(d_in, nullptr);
+  flagfft::adaptor::Memory d_in(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_out(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_ref(N * sizeof(flagfftDoubleComplex));
+  d_in.copy_from_host(h_in.data(), N * sizeof(flagfftDoubleComplex));
 
-  copy_host_to_device(h_in.data(), d_in, N * sizeof(flagfftDoubleComplex));
+  ExecZ2Z(plan,
+          static_cast<flagfftDoubleComplex*>(d_in.data()),
+          static_cast<flagfftDoubleComplex*>(d_out.data()),
+          FLAGFFT_FORWARD);
 
-  ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
-
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
-  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  ref_exec_z2z(ref,
+               static_cast<flagfftDoubleComplex*>(d_in.data()),
+               static_cast<flagfftDoubleComplex*>(d_ref.data()),
+               FLAGFFT_FORWARD);
 
   std::vector<flagfftDoubleComplex> h_out(N);
   std::vector<flagfftDoubleComplex> h_ref_out(N);
-  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
-  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_out.copy_to_host(h_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_ref.copy_to_host(h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
 
   double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
   EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
-  free_device(d_in);
-  free_device(d_out);
-  free_device(d_ref);
   flagfftDestroy(plan);
 }
 
@@ -143,30 +147,31 @@ TEST(Z2Z_1D, Batch) {
   Plan1d(&plan, N, FLAGFFT_Z2Z, B);
 
   auto h_in = random_double_complex(total);
-  auto* d_in = static_cast<flagfftDoubleComplex*>(allocate_device(total * sizeof(flagfftDoubleComplex)));
-  auto* d_out = static_cast<flagfftDoubleComplex*>(allocate_device(total * sizeof(flagfftDoubleComplex)));
-  auto* d_ref = static_cast<flagfftDoubleComplex*>(allocate_device(total * sizeof(flagfftDoubleComplex)));
-  ASSERT_NE(d_in, nullptr);
+  flagfft::adaptor::Memory d_in(total * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_out(total * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_ref(total * sizeof(flagfftDoubleComplex));
+  d_in.copy_from_host(h_in.data(), total * sizeof(flagfftDoubleComplex));
 
-  copy_host_to_device(h_in.data(), d_in, total * sizeof(flagfftDoubleComplex));
+  ExecZ2Z(plan,
+          static_cast<flagfftDoubleComplex*>(d_in.data()),
+          static_cast<flagfftDoubleComplex*>(d_out.data()),
+          FLAGFFT_FORWARD);
 
-  ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
-
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_Z2Z, B);
-  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  ref_exec_z2z(ref,
+               static_cast<flagfftDoubleComplex*>(d_in.data()),
+               static_cast<flagfftDoubleComplex*>(d_ref.data()),
+               FLAGFFT_FORWARD);
 
   std::vector<flagfftDoubleComplex> h_out(total);
   std::vector<flagfftDoubleComplex> h_ref_out(total);
-  copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftDoubleComplex));
-  copy_device_to_host(d_ref, h_ref_out.data(), total * sizeof(flagfftDoubleComplex));
+  d_out.copy_to_host(h_out.data(), total * sizeof(flagfftDoubleComplex));
+  d_ref.copy_to_host(h_ref_out.data(), total * sizeof(flagfftDoubleComplex));
 
   double max_err = max_relative_error(h_out.data(), h_ref_out.data(), total);
   EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
-  free_device(d_in);
-  free_device(d_out);
-  free_device(d_ref);
   flagfftDestroy(plan);
 }
 
@@ -178,29 +183,30 @@ TEST(Z2Z_2D, ForwardSmall) {
   Plan2d(&plan, NX, NY, FLAGFFT_Z2Z);
 
   auto h_in = random_double_complex(N);
-  auto* d_in = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_out = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  auto* d_ref = static_cast<flagfftDoubleComplex*>(allocate_device(N * sizeof(flagfftDoubleComplex)));
-  ASSERT_NE(d_in, nullptr);
+  flagfft::adaptor::Memory d_in(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_out(N * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory d_ref(N * sizeof(flagfftDoubleComplex));
+  d_in.copy_from_host(h_in.data(), N * sizeof(flagfftDoubleComplex));
 
-  copy_host_to_device(h_in.data(), d_in, N * sizeof(flagfftDoubleComplex));
+  ExecZ2Z(plan,
+          static_cast<flagfftDoubleComplex*>(d_in.data()),
+          static_cast<flagfftDoubleComplex*>(d_out.data()),
+          FLAGFFT_FORWARD);
 
-  ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
-
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_2d(ref, NX, NY, FLAGFFT_Z2Z);
-  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  ref_exec_z2z(ref,
+               static_cast<flagfftDoubleComplex*>(d_in.data()),
+               static_cast<flagfftDoubleComplex*>(d_ref.data()),
+               FLAGFFT_FORWARD);
 
   std::vector<flagfftDoubleComplex> h_out(N);
   std::vector<flagfftDoubleComplex> h_ref_out(N);
-  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
-  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_out.copy_to_host(h_out.data(), N * sizeof(flagfftDoubleComplex));
+  d_ref.copy_to_host(h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
 
   double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
   EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
-  free_device(d_in);
-  free_device(d_out);
-  free_device(d_ref);
   flagfftDestroy(plan);
 }
