@@ -241,4 +241,36 @@ inline std::vector<flagfftDoubleReal> random_double_real(int n) {
   return v;
 }
 
+// =========================================================================
+// 1D Test parameterization
+// =========================================================================
+
+struct Test1DParam {
+  int N;
+  int batch;
+};
+
+// Registry — add/remove sizes and batch values here
+constexpr int k1DSizesSmall[] = {16, 23, 64, 81};
+constexpr int k1DSizesMedium[] = {243, 256, 361, 512, 997};
+constexpr int k1DSizesLarge[] = {2048, 4096, 8192, 16384};
+constexpr int k1DBatchValues[] = {1, 4, 256};
+
+inline std::vector<Test1DParam> Generate1DParams(const int* sizes, int numSizes) {
+  std::vector<Test1DParam> params;
+  for (int i = 0; i < numSizes; ++i)
+    for (int b : k1DBatchValues) params.push_back({sizes[i], b});
+  return params;
+}
+
+inline std::vector<Test1DParam> Generate1DParamsSmall() {
+  return Generate1DParams(k1DSizesSmall, sizeof(k1DSizesSmall) / sizeof(k1DSizesSmall[0]));
+}
+inline std::vector<Test1DParam> Generate1DParamsMedium() {
+  return Generate1DParams(k1DSizesMedium, sizeof(k1DSizesMedium) / sizeof(k1DSizesMedium[0]));
+}
+inline std::vector<Test1DParam> Generate1DParamsLarge() {
+  return Generate1DParams(k1DSizesLarge, sizeof(k1DSizesLarge) / sizeof(k1DSizesLarge[0]));
+}
+
 }  // namespace flagfft_test::adaptor
