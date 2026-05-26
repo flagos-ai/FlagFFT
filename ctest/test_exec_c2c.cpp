@@ -94,6 +94,21 @@ TEST_P(C2C_1D_Test, Roundtrip) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Small, C2C_1D_Test, ::testing::ValuesIn(Generate1DParamsSmall()));
-INSTANTIATE_TEST_SUITE_P(Medium, C2C_1D_Test, ::testing::ValuesIn(Generate1DParamsMedium()));
-INSTANTIATE_TEST_SUITE_P(Large, C2C_1D_Test, ::testing::ValuesIn(Generate1DParamsLarge()));
+INSTANTIATE_TEST_SUITE_P(Small,
+                         C2C_1D_Test,
+                         ::testing::ValuesIn(Generate1DParamsSmall()),
+                         [](const auto& info) {
+                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
+                         });
+INSTANTIATE_TEST_SUITE_P(Medium,
+                         C2C_1D_Test,
+                         ::testing::ValuesIn(Generate1DParamsMedium()),
+                         [](const auto& info) {
+                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
+                         });
+INSTANTIATE_TEST_SUITE_P(Large,
+                         C2C_1D_Test,
+                         ::testing::ValuesIn(Generate1DParamsLarge()),
+                         [](const auto& info) {
+                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
+                         });
