@@ -6,14 +6,6 @@ using namespace flagfft_test::adaptor;
 constexpr double kRelTol = 1e-4;
 
 // =========================================================================
-// Helper
-// =========================================================================
-
-static bool has_ref() {
-  return backend_name() != "null";
-}
-
-// =========================================================================
 // 1D C2C
 // =========================================================================
 
@@ -34,19 +26,17 @@ TEST(C2C_1D, ForwardPowerOfTwo) {
 
   ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_C2C, 1);
-    ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_C2C, 1);
+  ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftComplex> h_out(N);
-    std::vector<flagfftComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
+  std::vector<flagfftComplex> h_out(N);
+  std::vector<flagfftComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -69,19 +59,17 @@ TEST(C2C_1D, InversePowerOfTwo) {
 
   ExecC2C(plan, d_in, d_out, FLAGFFT_INVERSE);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_C2C, 1);
-    ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_INVERSE);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_C2C, 1);
+  ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_INVERSE);
 
-    std::vector<flagfftComplex> h_out(N);
-    std::vector<flagfftComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
+  std::vector<flagfftComplex> h_out(N);
+  std::vector<flagfftComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -137,19 +125,17 @@ TEST(C2C_1D, NonPowerOfTwo) {
 
   ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_C2C, 1);
-    ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_C2C, 1);
+  ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftComplex> h_out(N);
-    std::vector<flagfftComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
+  std::vector<flagfftComplex> h_out(N);
+  std::vector<flagfftComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -174,19 +160,17 @@ TEST(C2C_1D, Batch) {
 
   ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_C2C, B);
-    ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_C2C, B);
+  ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftComplex> h_out(total);
-    std::vector<flagfftComplex> h_ref_out(total);
-    copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), total * sizeof(flagfftComplex));
+  std::vector<flagfftComplex> h_out(total);
+  std::vector<flagfftComplex> h_ref_out(total);
+  copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), total * sizeof(flagfftComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), total);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), total);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -215,19 +199,17 @@ TEST(C2C_2D, ForwardSmall) {
 
   ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_2d(ref, NX, NY, FLAGFFT_C2C);
-    ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_2d(ref, NX, NY, FLAGFFT_C2C);
+  ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftComplex> h_out(N);
-    std::vector<flagfftComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
+  std::vector<flagfftComplex> h_out(N);
+  std::vector<flagfftComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -257,19 +239,17 @@ TEST(C2C_3D, ForwardSmall) {
 
   ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_3d(ref, NX, NY, NZ, FLAGFFT_C2C);
-    ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_3d(ref, NX, NY, NZ, FLAGFFT_C2C);
+  ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftComplex> h_out(N);
-    std::vector<flagfftComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
+  std::vector<flagfftComplex> h_out(N);
+  std::vector<flagfftComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);

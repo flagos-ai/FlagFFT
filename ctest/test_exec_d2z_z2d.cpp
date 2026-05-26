@@ -4,10 +4,6 @@ using namespace flagfft_test::adaptor;
 
 constexpr double kRelTol = 1e-10;  // double precision
 
-static bool has_ref() {
-  return backend_name() != "null";
-}
-
 static int d2z_out_n(int nx) {
   return nx / 2 + 1;
 }
@@ -62,19 +58,17 @@ TEST(D2Z, ForwardVsReference) {
 
   ExecD2Z(plan, d_in, d_out);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_D2Z, 1);
-    ref_exec_d2z(ref, d_in, d_ref);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_D2Z, 1);
+  ref_exec_d2z(ref, d_in, d_ref);
 
-    std::vector<flagfftDoubleComplex> h_out(C_OUT);
-    std::vector<flagfftDoubleComplex> h_ref_out(C_OUT);
-    copy_device_to_host(d_out, h_out.data(), C_OUT * sizeof(flagfftDoubleComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), C_OUT * sizeof(flagfftDoubleComplex));
+  std::vector<flagfftDoubleComplex> h_out(C_OUT);
+  std::vector<flagfftDoubleComplex> h_ref_out(C_OUT);
+  copy_device_to_host(d_out, h_out.data(), C_OUT * sizeof(flagfftDoubleComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), C_OUT * sizeof(flagfftDoubleComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), C_OUT);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), C_OUT);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);

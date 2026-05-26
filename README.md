@@ -224,7 +224,7 @@ The test adaptor `flagfft_test::adaptor` provides:
 - **Convenience Plan / Exec wrappers** — thin wrappers around the C API that
   assert `FLAGFFT_SUCCESS` via Google Test macros
 - **`RefHandle`** — RAII wrapper for the platform-specific reference FFT plan
-  handle (`cufftHandle` on CUDA, empty on the null backend)
+  handle (`cufftHandle` on CUDA)
 - **Reference FFT interface** — `ref_plan_1d/2d/3d`, `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d`
   mirroring the public FlagFFT API
 - **Device memory utilities** — `allocate_device`, `copy_host_to_device`, etc.
@@ -235,7 +235,6 @@ The test adaptor `flagfft_test::adaptor` provides:
 | Backend | Reference | Behaviour |
 |---|---|---|
 | `BACKEND=CUDA` | cuFFT | Plan lifecycle + elementwise comparison against cuFFT for all transform types |
-| `BACKEND=NULL` | none | Plan lifecycle + roundtrip self-consistency (reference comparisons are skipped) |
 
 Adding a new GPU platform requires only a `ctest/backend/<name>/adaptor.cpp`
 implementing all functions in the `flagfft_test::adaptor` namespace; no test

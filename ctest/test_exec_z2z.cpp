@@ -4,10 +4,6 @@ using namespace flagfft_test::adaptor;
 
 constexpr double kRelTol = 1e-10;  // double precision
 
-static bool has_ref() {
-  return backend_name() != "null";
-}
-
 TEST(Z2Z_1D, ForwardPowerOfTwo) {
   constexpr int N = 256;
   flagfftHandle plan = nullptr;
@@ -23,19 +19,17 @@ TEST(Z2Z_1D, ForwardPowerOfTwo) {
 
   ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
-    ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
+  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftDoubleComplex> h_out(N);
-    std::vector<flagfftDoubleComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
+  std::vector<flagfftDoubleComplex> h_out(N);
+  std::vector<flagfftDoubleComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -58,19 +52,17 @@ TEST(Z2Z_1D, InversePowerOfTwo) {
 
   ExecZ2Z(plan, d_in, d_out, FLAGFFT_INVERSE);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
-    ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_INVERSE);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
+  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_INVERSE);
 
-    std::vector<flagfftDoubleComplex> h_out(N);
-    std::vector<flagfftDoubleComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
+  std::vector<flagfftDoubleComplex> h_out(N);
+  std::vector<flagfftDoubleComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -125,19 +117,17 @@ TEST(Z2Z_1D, NonPowerOfTwo) {
 
   ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
-    ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_Z2Z, 1);
+  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftDoubleComplex> h_out(N);
-    std::vector<flagfftDoubleComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
+  std::vector<flagfftDoubleComplex> h_out(N);
+  std::vector<flagfftDoubleComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -162,19 +152,17 @@ TEST(Z2Z_1D, Batch) {
 
   ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_Z2Z, B);
-    ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_Z2Z, B);
+  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftDoubleComplex> h_out(total);
-    std::vector<flagfftDoubleComplex> h_ref_out(total);
-    copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftDoubleComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), total * sizeof(flagfftDoubleComplex));
+  std::vector<flagfftDoubleComplex> h_out(total);
+  std::vector<flagfftDoubleComplex> h_ref_out(total);
+  copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftDoubleComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), total * sizeof(flagfftDoubleComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), total);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), total);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
@@ -199,19 +187,17 @@ TEST(Z2Z_2D, ForwardSmall) {
 
   ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_2d(ref, NX, NY, FLAGFFT_Z2Z);
-    ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
+  RefHandle ref;
+  ref_plan_2d(ref, NX, NY, FLAGFFT_Z2Z);
+  ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
 
-    std::vector<flagfftDoubleComplex> h_out(N);
-    std::vector<flagfftDoubleComplex> h_ref_out(N);
-    copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
+  std::vector<flagfftDoubleComplex> h_out(N);
+  std::vector<flagfftDoubleComplex> h_ref_out(N);
+  copy_device_to_host(d_out, h_out.data(), N * sizeof(flagfftDoubleComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), N * sizeof(flagfftDoubleComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), N);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);

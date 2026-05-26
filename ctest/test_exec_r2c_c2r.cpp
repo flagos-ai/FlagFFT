@@ -4,10 +4,6 @@ using namespace flagfft_test::adaptor;
 
 constexpr double kRelTol = 1e-4;  // single precision
 
-static bool has_ref() {
-  return backend_name() != "null";
-}
-
 // R2C output size: N → N/2 + 1 complex elements
 static int r2c_out_n(int nx) {
   return nx / 2 + 1;
@@ -64,19 +60,17 @@ TEST(R2C, ForwardVsReference) {
 
   ExecR2C(plan, d_in, d_out);
 
-  if (has_ref()) {
-    RefHandle ref;
-    ref_plan_1d(ref, N, FLAGFFT_R2C, 1);
-    ref_exec_r2c(ref, d_in, d_ref);
+  RefHandle ref;
+  ref_plan_1d(ref, N, FLAGFFT_R2C, 1);
+  ref_exec_r2c(ref, d_in, d_ref);
 
-    std::vector<flagfftComplex> h_out(C_OUT);
-    std::vector<flagfftComplex> h_ref_out(C_OUT);
-    copy_device_to_host(d_out, h_out.data(), C_OUT * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref_out.data(), C_OUT * sizeof(flagfftComplex));
+  std::vector<flagfftComplex> h_out(C_OUT);
+  std::vector<flagfftComplex> h_ref_out(C_OUT);
+  copy_device_to_host(d_out, h_out.data(), C_OUT * sizeof(flagfftComplex));
+  copy_device_to_host(d_ref, h_ref_out.data(), C_OUT * sizeof(flagfftComplex));
 
-    double max_err = max_relative_error(h_out.data(), h_ref_out.data(), C_OUT);
-    EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
-  }
+  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), C_OUT);
+  EXPECT_LT(max_err, kRelTol) << "Max relative error: " << max_err;
 
   free_device(d_in);
   free_device(d_out);
