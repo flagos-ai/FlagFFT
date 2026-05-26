@@ -18,6 +18,12 @@ class C2R_1D_Test : public ::testing::TestWithParam<Test1DParam> {
 
     h_in = random_complex(total_in);
 
+    // Ensure Hermitian symmetry: DC and Nyquist bins must have zero imaginary part
+    for (int b = 0; b < batch; ++b) {
+      h_in[b * (N / 2 + 1) + 0].y = 0.0f;
+      if (N % 2 == 0) h_in[b * (N / 2 + 1) + N / 2].y = 0.0f;
+    }
+
     d_in = static_cast<flagfftComplex*>(allocate_device(total_in * sizeof(flagfftComplex)));
     d_out = static_cast<flagfftReal*>(allocate_device(total_out * sizeof(flagfftReal)));
     d_ref = static_cast<flagfftReal*>(allocate_device(total_out * sizeof(flagfftReal)));

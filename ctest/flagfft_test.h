@@ -154,12 +154,11 @@ inline double complex_abs(const flagfftDoubleComplex& c) {
 inline double max_relative_error(const flagfftComplex* a, const flagfftComplex* b, int n) {
   double max_err = 0.0;
   for (int i = 0; i < n; ++i) {
-    double diff = std::abs(complex_abs(a[i]) - complex_abs(b[i]));
-    double denom = complex_abs(b[i]);
-    if (denom > 0.0) {
-      double rel = diff / denom;
-      if (rel > max_err) max_err = rel;
-    }
+    double denom = std::max(static_cast<double>(complex_abs(b[i])), 1.0);
+    double err_r = std::abs(static_cast<double>(a[i].x) - static_cast<double>(b[i].x)) / denom;
+    double err_i = std::abs(static_cast<double>(a[i].y) - static_cast<double>(b[i].y)) / denom;
+    if (err_r > max_err) max_err = err_r;
+    if (err_i > max_err) max_err = err_i;
   }
   return max_err;
 }
@@ -167,12 +166,11 @@ inline double max_relative_error(const flagfftComplex* a, const flagfftComplex* 
 inline double max_relative_error(const flagfftDoubleComplex* a, const flagfftDoubleComplex* b, int n) {
   double max_err = 0.0;
   for (int i = 0; i < n; ++i) {
-    double diff = std::abs(complex_abs(a[i]) - complex_abs(b[i]));
-    double denom = complex_abs(b[i]);
-    if (denom > 0.0) {
-      double rel = diff / denom;
-      if (rel > max_err) max_err = rel;
-    }
+    double denom = std::max(complex_abs(b[i]), 1.0);
+    double err_r = std::abs(a[i].x - b[i].x) / denom;
+    double err_i = std::abs(a[i].y - b[i].y) / denom;
+    if (err_r > max_err) max_err = err_r;
+    if (err_i > max_err) max_err = err_i;
   }
   return max_err;
 }
