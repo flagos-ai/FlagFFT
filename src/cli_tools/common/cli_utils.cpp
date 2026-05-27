@@ -52,26 +52,15 @@ std::string placement_name(Placement p) {
   return p == Placement::InPlace ? "in-place" : "out-of-place";
 }
 
-PlanApi parse_plan_api(const std::string &value) {
-  if (value == "plan1d") return PlanApi::Plan1d;
-  if (value == "plan2d") return PlanApi::Plan2d;
-  if (value == "plan3d") return PlanApi::Plan3d;
-  if (value == "planmany") return PlanApi::PlanMany;
-  throw AssertionFailure("unknown plan API: " + value);
+int parse_rank(const std::string &value) {
+  if (value == "1") return 1;
+  if (value == "2") return 2;
+  if (value == "3") return 3;
+  throw AssertionFailure("invalid --rank: " + value + " (expected 1, 2, or 3)");
 }
 
-std::string plan_api_name(PlanApi api) {
-  switch (api) {
-    case PlanApi::Plan1d:
-      return "plan1d";
-    case PlanApi::Plan2d:
-      return "plan2d";
-    case PlanApi::Plan3d:
-      return "plan3d";
-    case PlanApi::PlanMany:
-      return "planmany";
-  }
-  return "unknown";
+std::string rank_name(int rank) {
+  return std::to_string(rank);
 }
 
 CliException::CliException(std::string message, int exit_code)
@@ -119,40 +108,6 @@ std::string flagfft_result_name(flagfftResult result) {
       return "FLAGFFT_NOT_SUPPORTED";
   }
   return "FLAGFFT_UNKNOWN";
-}
-
-std::string cufft_result_name(cufftResult result) {
-  switch (result) {
-    case CUFFT_SUCCESS:
-      return "CUFFT_SUCCESS";
-    case CUFFT_INVALID_PLAN:
-      return "CUFFT_INVALID_PLAN";
-    case CUFFT_ALLOC_FAILED:
-      return "CUFFT_ALLOC_FAILED";
-    case CUFFT_INVALID_TYPE:
-      return "CUFFT_INVALID_TYPE";
-    case CUFFT_INVALID_VALUE:
-      return "CUFFT_INVALID_VALUE";
-    case CUFFT_INTERNAL_ERROR:
-      return "CUFFT_INTERNAL_ERROR";
-    case CUFFT_EXEC_FAILED:
-      return "CUFFT_EXEC_FAILED";
-    case CUFFT_SETUP_FAILED:
-      return "CUFFT_SETUP_FAILED";
-    case CUFFT_INVALID_SIZE:
-      return "CUFFT_INVALID_SIZE";
-    case CUFFT_UNALIGNED_DATA:
-      return "CUFFT_UNALIGNED_DATA";
-    case CUFFT_INVALID_DEVICE:
-      return "CUFFT_INVALID_DEVICE";
-    case CUFFT_NO_WORKSPACE:
-      return "CUFFT_NO_WORKSPACE";
-    case CUFFT_NOT_IMPLEMENTED:
-      return "CUFFT_NOT_IMPLEMENTED";
-    case CUFFT_NOT_SUPPORTED:
-      return "CUFFT_NOT_SUPPORTED";
-  }
-  return "CUFFT_UNKNOWN";
 }
 
 std::string direction_name(int direction) {
@@ -211,18 +166,6 @@ std::string executable_path(const char *argv0) {
 
 std::string executable_dir(const char *argv0) {
   return std::filesystem::path(executable_path(argv0)).parent_path().string();
-}
-
-std::string default_tune_db(const char *argv0) {
-  return (std::filesystem::path(executable_dir(argv0)) / ".flagfft" / "tuned_plans.sqlite").string();
-}
-
-void check_cufft(cufftResult result, const std::string &context) {
-  if (result != CUFFT_SUCCESS) {
-    std::ostringstream oss;
-    oss << context << ": " << cufft_result_name(result) << " (" << static_cast<int>(result) << ")";
-    throw CliException(oss.str(), kExitRuntimeError);
-  }
 }
 
 void check_flagfft(flagfftResult result, const std::string &context) {

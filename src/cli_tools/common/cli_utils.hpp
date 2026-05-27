@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cufft.h>
-
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -22,14 +20,14 @@ inline constexpr int kExitSkipped = 77;
 
 enum class FftApi { C2C, Z2Z, R2C, D2Z, C2R, Z2D };
 enum class Placement { InPlace, OutOfPlace };
-enum class PlanApi { Plan1d, Plan2d, Plan3d, PlanMany };
 
-FftApi parse_fft_api(const std::string &value);
+FftApi parse_fft_api(const std::string& value);
 std::string fft_api_name(FftApi api);
-Placement parse_placement(const std::string &value);
+Placement parse_placement(const std::string& value);
 std::string placement_name(Placement p);
-PlanApi parse_plan_api(const std::string &value);
-std::string plan_api_name(PlanApi api);
+
+int parse_rank(const std::string& value);
+std::string rank_name(int rank);
 
 class CliException : public std::runtime_error {
  public:
@@ -46,22 +44,19 @@ class AssertionFailure : public CliException {
 };
 
 std::string flagfft_result_name(flagfftResult result);
-std::string cufft_result_name(cufftResult result);
 std::string direction_name(int direction);
-int parse_direction(const std::string &value);
+int parse_direction(const std::string& value);
 
-bool has_cuda_device(std::string &reason);
-std::string shell_quote(const std::string &value);
-std::string executable_path(const char *argv0);
-std::string executable_dir(const char *argv0);
-std::string default_tune_db(const char *argv0);
+bool has_cuda_device(std::string& reason);
+std::string shell_quote(const std::string& value);
+std::string executable_path(const char* argv0);
+std::string executable_dir(const char* argv0);
 
-void check_cufft(cufftResult result, const std::string &context);
-void check_flagfft(flagfftResult result, const std::string &context);
-void expect_flagfft(flagfftResult actual, flagfftResult expected, const std::string &context);
-void expect_true(bool condition, const std::string &context);
+void check_flagfft(flagfftResult result, const std::string& context);
+void expect_flagfft(flagfftResult actual, flagfftResult expected, const std::string& context);
+void expect_true(bool condition, const std::string& context);
 
-int exit_code_for_report(const json &report);
+int exit_code_for_report(const json& report);
 int emit_json_report(json report);
 
 }  // namespace flagfft::cli
