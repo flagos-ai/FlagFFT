@@ -29,13 +29,75 @@ selected at exec time for complex transforms. Both single-layer and nested
 fused four-step routes are supported, so very large composite lengths
 (e.g. `n = 2^23`) plan as multi-level four-step trees instead of falling back
 to Bluestein.
-Rank>1 and non-contiguous/custom stride or embed C API requests still return
-`FLAGFFT_NOT_SUPPORTED`.
+Rank>1 requests still return `FLAGFFT_NOT_SUPPORTED`. `flagfftPlanMany`
+accepts the contiguous rank-1 layouts produced by `flagfftPlan1d`, plus the
+cuFFT-compatible padded real in-place layout described below; other custom
+stride, distance, or embed layouts return `FLAGFFT_NOT_SUPPORTED`.
 
 `flagfftGetPlanDescription(plan)` returns a human-readable string describing
 the plan node tree, kernel names, module paths, and compilation details.
 Useful for understanding which execution path was selected and for performance
 debugging. The returned pointer is valid for the lifetime of the plan.
+
+## C API Usage
+
+Callers provide device buffers and may attach a CUDA stream through the opaque
+stream type. Complex forward and inverse transforms are unnormalized, matching
+cuFFT: applying forward followed by inverse produces `n * input`.
+
+```cpp
+#include <cuda_runtime_api.h>
+#include <flagfft.h>
+
+int main() {
+  constexpr int n = 256;
+  constexpr int batch = 4;
+  flagfftComplex* d_input = nullptr;
+  flagfftComplex* d_output = nullptr;
+  cudaMalloc(reinterpret_cast<void**>(&d_input), n * batch * sizeof(flagfftComplex));
+  cudaMalloc(reinterpret_cast<void**>(&d_output), n * batch * sizeof(flagfftComplex));
+
+  flagfftHandle plan = nullptr;
+  cudaStream_t stream = nullptr;
+  cudaStreamCreate(&stream);
+
+  flagfftResult status = flagfftPlan1d(&plan, n, FLAGFFT_C2C, batch);
+  if (status == FLAGFFT_SUCCESS) {
+    status = flagfftSetStream(plan, stream);
+  }
+  if (status == FLAGFFT_SUCCESS) {
+    status = flagfftExecC2C(plan, d_input, d_output, FLAGFFT_FORWARD);
+    cudaStreamSynchronize(stream);
+  }
+  if (plan != nullptr) {
+    flagfftDestroy(plan);
+  }
+
+  cudaStreamDestroy(stream);
+  cudaFree(d_output);
+  cudaFree(d_input);
+  return status == FLAGFFT_SUCCESS ? 0 : 1;
+}
+```
+
+For an in-place rank-1 real forward transform, allocate
+`2 * (n / 2 + 1)` real scalars per batch and describe the padded input row
+with `flagfftPlanMany`:
+
+```cpp
+int dims[1] = {n};
+int padded[1] = {2 * (n / 2 + 1)};
+int compact[1] = {n / 2 + 1};
+flagfftHandle plan = nullptr;
+flagfftPlanMany(&plan, 1, dims, padded, 1, padded[0], compact, 1,
+                compact[0], FLAGFFT_R2C, batch);
+flagfftExecR2C(plan, d_real_in_place,
+               reinterpret_cast<flagfftComplex*>(d_real_in_place));
+```
+
+Use the reversed compact/padded distances with `FLAGFFT_C2R` for an in-place
+real inverse transform. `flagfftPlan2d` and `flagfftPlan3d` are present for API
+compatibility but currently return `FLAGFFT_NOT_SUPPORTED`.
 
 ## Architecture
 
@@ -53,9 +115,10 @@ debugging. The returned pointer is valid for the lifetime of the plan.
   SQLite tuning orchestration.
 
 The C API uses an opaque `flagfftHandle`. Internally it owns the immutable plan
-description, stream/lifecycle state, compiled forward and inverse raw execution
-nodes, and device buffers for twiddle/table/stage data. Exec calls do not import
-Python, compile kernels, rebuild plans, or allocate large buffers.
+description, stream/lifecycle state, compiled raw execution node(s), and device
+buffers for twiddle/table/stage data. Complex plans compile both directions;
+real plans compile only the applicable forward or inverse operation. Exec calls
+do not import Python, compile kernels, rebuild plans, or allocate large buffers.
 
 ## Kernel Backend
 
@@ -75,8 +138,8 @@ supports leaf, fused leaf/leaf four-step, generic nested four-step (FourStep of
 arbitrary supported children), and Bluestein fallback routes for arbitrary 1D
 complex lengths. Real transforms use pointwise staging around the complex FFT
 route: real-to-complex, half-spectrum pack, compact Hermitian expansion, and
-complex-to-real pack. Rank>1 and non-contiguous C API requests keep returning
-`FLAGFFT_NOT_SUPPORTED`.
+complex-to-real pack. Rank>1 and unsupported custom rank-1 layouts keep
+returning `FLAGFFT_NOT_SUPPORTED`.
 
 ## Build
 
@@ -107,7 +170,9 @@ selected interpreter must have `flagfft-codegen` installed and provide the
 compatible Triton/TLE environment. Generated source/metadata and tuned-plan
 SQLite defaults are stored in `.flagfft` next to the running executable.
 Tuned plan lookups read from `FLAGFFT_TUNE_DB` if set, or the default
-`.flagfft/tuned_plans.sqlite` next to the executable.
+`.flagfft/tuned_plans.sqlite` next to the executable. Set
+`FLAGFFT_TUNE_DISABLE=1` to disable tuned-plan lookup and use automatic
+planning only.
 
 ## Native CLI
 
@@ -133,9 +198,10 @@ interface; pass one or more complete `--shape` options instead.
 `test --suite plan` runs route/key assertions, `test --suite api-errors`
 checks C API error contracts, and `test --suite correctness` executes cases
 against cuFFT. `bench` runs the same correctness comparison before reporting
-backend event `median`/`p90` timings and speedup; `--print-path` adds the plan
-description. `tune` benchmarks candidates, verifies finalists against cuFFT,
-and writes the winning plan to SQLite; `--retune` supersedes an earlier winner.
+backend event `median`/`p90` timings and speedup. For `test --suite
+correctness` and `bench`, `--print-path` adds the plan description. `tune`
+benchmarks candidates, verifies finalists against cuFFT, and writes the
+winning plan to SQLite; `--retune` supersedes an earlier winner.
 The cuFFT use in this CLI is a CUDA-only correctness and performance oracle;
 the FlagFFT library API and its stream handle do not expose CUDA types.
 Set `FLAGFFT_TUNE_DB` to that database when running `test` or `bench` to use it.
@@ -158,9 +224,9 @@ The JSON `status` and process code contract is stable: `passed`=`0`,
 
 ### Path printing
 
-`bench --print-path --json` calls `flagfftGetPlanDescription` after plan
-creation and returns the plan node tree and compiled kernel details in
-`plan_description`:
+`test --suite correctness --print-path --json` and `bench --print-path --json`
+call `flagfftGetPlanDescription` after plan creation and return the plan node
+tree and compiled kernel details in `plan_description`:
 
 ```
 === FlagFFT Plan ===
