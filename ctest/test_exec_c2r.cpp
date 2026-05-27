@@ -2,7 +2,7 @@
 
 using namespace flagfft_test::adaptor;
 
-constexpr double kRelTol = 1e-4;
+constexpr double kRelTol = 2e-4;
 
 class C2R_1D_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:

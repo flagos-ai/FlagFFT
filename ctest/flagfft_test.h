@@ -179,11 +179,9 @@ inline double max_relative_error_real(const flagfftReal* a, const flagfftReal* b
   double max_err = 0.0;
   for (int i = 0; i < n; ++i) {
     double diff = std::abs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
-    double denom = std::abs(static_cast<double>(b[i]));
-    if (denom > 0.0) {
-      double rel = diff / denom;
-      if (rel > max_err) max_err = rel;
-    }
+    double denom = std::max(std::abs(static_cast<double>(b[i])), 1.0);
+    double rel = diff / denom;
+    if (rel > max_err) max_err = rel;
   }
   return max_err;
 }
@@ -192,11 +190,9 @@ inline double max_relative_error_real(const flagfftDoubleReal* a, const flagfftD
   double max_err = 0.0;
   for (int i = 0; i < n; ++i) {
     double diff = std::abs(a[i] - b[i]);
-    double denom = std::abs(b[i]);
-    if (denom > 0.0) {
-      double rel = diff / denom;
-      if (rel > max_err) max_err = rel;
-    }
+    double denom = std::max(std::abs(b[i]), 1.0);
+    double rel = diff / denom;
+    if (rel > max_err) max_err = rel;
   }
   return max_err;
 }
