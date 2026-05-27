@@ -30,11 +30,16 @@ def test_help(flagfft_cli) -> None:
     ],
 )
 def test_rejects_integer_options_with_trailing_characters(
-    invoke_cli, arguments
+    flagfft_cli, arguments
 ) -> None:
-    result, report = invoke_cli(*arguments)
+    result = subprocess.run(
+        [str(flagfft_cli), *arguments],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
     assert result.returncode == 1
-    assert report["status"] == "failed"
+    assert "invalid" in result.stderr.lower()
 
 
 def test_bench_basic_table(flagfft_cli) -> None:
