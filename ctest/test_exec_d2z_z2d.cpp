@@ -2,8 +2,6 @@
 
 using namespace flagfft_test::adaptor;
 
-constexpr double kRelTol = 1e-10;
-
 class D2Z_Z2D_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
   void SetUp() override {
@@ -18,7 +16,7 @@ class D2Z_Z2D_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
     Plan1d(&plan_fwd, N, FLAGFFT_D2Z, batch);
     Plan1d(&plan_inv, N, FLAGFFT_Z2D, batch);
 
-    h_in = random_double_real(total_real);
+    h_in = random_double_real(total_real, accuracy_seed(FLAGFFT_D2Z, N, batch));
 
     d_in = static_cast<flagfftDoubleReal*>(allocate_device(total_real * sizeof(flagfftDoubleReal)));
     d_mid = static_cast<flagfftDoubleComplex*>(allocate_device(total_complex * sizeof(flagfftDoubleComplex)));
@@ -55,29 +53,40 @@ TEST_P(D2Z_Z2D_Roundtrip_Test, Roundtrip1D) {
   ExecZ2D(plan_inv, d_mid, d_out);
 
   std::vector<flagfftDoubleReal> h_out(total_real);
+  std::vector<flagfftDoubleReal> h_expected(total_real);
   copy_device_to_host(d_out, h_out.data(), total_real * sizeof(flagfftDoubleReal));
 
   for (int i = 0; i < total_real; ++i) {
-    double expected = h_in[i] * N;
-    EXPECT_NEAR(h_out[i], expected, N * kRelTol) << "N=" << N << " batch=" << batch << " i=" << i;
+    h_expected[i] = h_in[i] * N;
   }
+  expect_roundtrip_accuracy(error_stats(h_out.data(), h_expected.data(), N, batch),
+                            FLAGFFT_D2Z,
+                            FLAGFFT_Z2D,
+                            N,
+                            batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(Small,
+INSTANTIATE_TEST_SUITE_P(Smoke,
                          D2Z_Z2D_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsSmall()),
+                         ::testing::ValuesIn(Generate1DParamsSmoke()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
-INSTANTIATE_TEST_SUITE_P(Medium,
+INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
                          D2Z_Z2D_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsMedium()),
+                         ::testing::ValuesIn(Generate1DParamsExtendedSmall()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
-INSTANTIATE_TEST_SUITE_P(Large,
+INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
                          D2Z_Z2D_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsLarge()),
+                         ::testing::ValuesIn(Generate1DParamsExtendedMedium()),
+                         [](const auto& info) {
+                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
+                         });
+INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
+                         D2Z_Z2D_Roundtrip_Test,
+                         ::testing::ValuesIn(Generate1DParamsExtendedLarge()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

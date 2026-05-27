@@ -211,7 +211,8 @@ single set of test sources.
 ```sh
 cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_TESTS=ON
 cmake --build build
-ctest --test-dir build --verbose
+ctest --test-dir build --verbose                              # full suite
+FLAGFFT_TEST_PROFILE=smoke ctest --test-dir build --verbose  # quick validation
 ```
 
 Google Test is fetched automatically by `deps/libtriton_jit` via FetchContent;
@@ -228,13 +229,14 @@ The test adaptor `flagfft_test::adaptor` provides:
 - **Reference FFT interface** — `ref_plan_1d/2d/3d`, `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d`
   mirroring the public FlagFFT API
 - **Device memory utilities** — `allocate_device`, `copy_host_to_device`, etc.
-- **Comparison helpers** — `max_relative_error` and friends for tolerance checks
+- **Accuracy helpers** — per-batch normwise `rel_l2`/`rel_linf` comparison
+  against same-precision cuFFT, with stable deterministic inputs
 
 ### Backends
 
 | Backend | Reference | Behaviour |
 |---|---|---|
-| `BACKEND=CUDA` | cuFFT | Plan lifecycle + elementwise comparison against cuFFT for all transform types |
+| `BACKEND=CUDA` | cuFFT | Plan lifecycle + same-precision normwise comparison against cuFFT for all transform types |
 
 Adding a new GPU platform requires only a `ctest/backend/<name>/adaptor.cpp`
 implementing all functions in the `flagfft_test::adaptor` namespace; no test
@@ -244,11 +246,36 @@ source changes are needed.
 
 | File | Coverage |
 |------|----------|
-| `test_plan.cpp` | Plan creation/destruction/description, invalid-parameter error codes |
-| `test_exec_c2c.cpp` | `FLAGFFT_C2C` forward, inverse, roundtrip, batch, 2D/3D |
+| `test_plan.cpp` | 1D plan lifecycle/error codes and current unsupported 2D/3D contract |
+| `test_exec_c2c.cpp` | `FLAGFFT_C2C` forward, inverse, roundtrip and batch |
 | `test_exec_z2z.cpp` | `FLAGFFT_Z2Z` double-precision complex |
-| `test_exec_r2c_c2r.cpp` | `FLAGFFT_R2C`/`FLAGFFT_C2R` roundtrip and reference comparison |
-| `test_exec_d2z_z2d.cpp` | `FLAGFFT_D2Z`/`FLAGFFT_Z2D` double-precision real |
+| `test_exec_r2c.cpp`, `test_exec_c2r.cpp` | Float real forward/inverse reference comparison and C2R regressions |
+| `test_exec_d2z.cpp`, `test_exec_z2d.cpp` | Double real forward/inverse reference comparison |
+| `test_exec_r2c_c2r.cpp`, `test_exec_d2z_z2d.cpp` | Real-transform roundtrip validation |
+
+### Numerical Acceptance
+
+The reference gate is output alignment with cuFFT at the same precision.
+Each batch is evaluated independently and the maximum batch statistic is
+checked:
+
+```text
+rel_l2   = ||flagfft - cufft||_2   / ||cufft||_2
+rel_linf = ||flagfft - cufft||_inf / ||cufft||_inf
+```
+
+Float and double use the same formulas and transform-class constants, scaled
+by unit roundoff and a documented length-based work factor. Set
+`FLAGFFT_TEST_REPORT_ACCURACY=1` when executing a test binary to print the
+normalized statistics used to re-characterize those constants. Reference
+cases use deterministic inputs at scales `2^-20`, `1`, and `2^20`.
+Pointwise relative error with a denominator floor is diagnostic output only;
+it is not the pass/fail metric.
+
+CTest registers one process per test executable so the process can reuse its
+JIT initialization across parameter cases. `FLAGFFT_TEST_PROFILE=smoke`
+applies a runtime Google Test filter; Extended cases remain compiled into the
+same binaries.
 
 ## Code Style
 

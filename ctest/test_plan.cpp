@@ -27,12 +27,12 @@ TEST(Plan1D, InvalidParameters) {
   flagfftHandle plan = nullptr;
   // Zero size
   flagfftResult r = flagfftPlan1d(&plan, 0, FLAGFFT_C2C, 1);
-  EXPECT_NE(r, FLAGFFT_SUCCESS);
+  EXPECT_EQ(r, FLAGFFT_INVALID_SIZE);
   EXPECT_EQ(plan, nullptr);
 
   // Null plan pointer
   r = flagfftPlan1d(nullptr, 256, FLAGFFT_C2C, 1);
-  EXPECT_NE(r, FLAGFFT_SUCCESS);
+  EXPECT_EQ(r, FLAGFFT_INVALID_VALUE);
 }
 
 TEST(Plan1D, GetDescription) {
@@ -49,20 +49,19 @@ TEST(Plan1D, GetDescription) {
 // =========================================================================
 
 TEST(Plan2D, CreateDestroyAllTypes) {
-  GTEST_SKIP() << "2D plans not yet supported";
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {
     flagfftHandle plan = nullptr;
-    EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, type), FLAGFFT_SUCCESS);
-    EXPECT_NE(plan, nullptr);
-    EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+    EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, type), FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(plan, nullptr);
   }
 }
 
 TEST(Plan2D, InvalidParameters) {
   flagfftHandle plan = nullptr;
-  EXPECT_NE(flagfftPlan2d(&plan, 0, 32, FLAGFFT_C2C), FLAGFFT_SUCCESS);
-  EXPECT_NE(flagfftPlan2d(nullptr, 64, 32, FLAGFFT_C2C), FLAGFFT_SUCCESS);
+  EXPECT_EQ(flagfftPlan2d(&plan, 0, 32, FLAGFFT_C2C), FLAGFFT_INVALID_SIZE);
+  EXPECT_EQ(plan, nullptr);
+  EXPECT_EQ(flagfftPlan2d(nullptr, 64, 32, FLAGFFT_C2C), FLAGFFT_INVALID_VALUE);
 }
 
 // =========================================================================
@@ -70,18 +69,17 @@ TEST(Plan2D, InvalidParameters) {
 // =========================================================================
 
 TEST(Plan3D, CreateDestroyAllTypes) {
-  GTEST_SKIP() << "3D plans not yet supported";
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {
     flagfftHandle plan = nullptr;
-    EXPECT_EQ(flagfftPlan3d(&plan, 32, 16, 8, type), FLAGFFT_SUCCESS);
-    EXPECT_NE(plan, nullptr);
-    EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+    EXPECT_EQ(flagfftPlan3d(&plan, 32, 16, 8, type), FLAGFFT_NOT_SUPPORTED);
+    EXPECT_EQ(plan, nullptr);
   }
 }
 
 TEST(Plan3D, InvalidParameters) {
   flagfftHandle plan = nullptr;
-  EXPECT_NE(flagfftPlan3d(&plan, 0, 16, 8, FLAGFFT_C2C), FLAGFFT_SUCCESS);
-  EXPECT_NE(flagfftPlan3d(nullptr, 32, 16, 8, FLAGFFT_C2C), FLAGFFT_SUCCESS);
+  EXPECT_EQ(flagfftPlan3d(&plan, 0, 16, 8, FLAGFFT_C2C), FLAGFFT_INVALID_SIZE);
+  EXPECT_EQ(plan, nullptr);
+  EXPECT_EQ(flagfftPlan3d(nullptr, 32, 16, 8, FLAGFFT_C2C), FLAGFFT_INVALID_VALUE);
 }

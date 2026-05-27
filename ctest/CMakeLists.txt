@@ -4,7 +4,6 @@ enable_testing()
 if(NOT TARGET gtest)
     find_package(GTest REQUIRED)
 endif()
-include(GoogleTest)
 
 # Test adaptor library (backend-specific, mirrors src/adaptor/ pattern)
 add_library(flagfft_test_adaptor STATIC)
@@ -35,5 +34,7 @@ foreach(test_name ${TEST_TARGETS})
     target_link_libraries(${test_name} PRIVATE flagfft_test_adaptor gtest)
     target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_features(${test_name} PRIVATE cxx_std_20)
-    gtest_discover_tests(${test_name})
+    # A FlagFFT executable shares JIT initialization across its GTest cases.
+    # Register it once rather than spawning one process per discovered case.
+    add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

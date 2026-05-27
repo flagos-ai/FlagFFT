@@ -1,7 +1,7 @@
 # 1D FFT Test Refactor Design
 
 **Date:** 2026-05-26
-**Status:** Approved
+**Status:** Amended 2026-05-27 (cuFFT conformance and runtime tiers)
 
 ## Goal
 
@@ -20,12 +20,15 @@ ctest/
 ├── test_exec_z2d.cpp          # Z2D: Inverse vs Ref               (NEW)
 ├── test_exec_r2c_c2r.cpp      # R2C<->C2R Roundtrip                (existing, refactored)
 ├── test_exec_d2z_z2d.cpp      # D2Z<->Z2D Roundtrip                (existing, refactored)
-├── test_plan.cpp              # Plan tests                         (unchanged)
+├── test_plan.cpp              # Plan and unsupported-rank contract tests
 ├── main.cpp                   # Test runner                        (unchanged)
 └── CMakeLists.txt             # Updated target list
 ```
 
-Original files (`test_exec_c2c.cpp`, `test_exec_z2z.cpp`, `test_exec_r2c_c2r.cpp`, `test_exec_d2z_z2d.cpp`) are rewritten as 1D-only. 2D/3D tests are removed for now (to be refactored separately in the same pattern later).
+Original execution files are rewritten as 1D-only. `Plan2D` and `Plan3D`
+remain present as contract tests: the current API must return
+`FLAGFFT_NOT_SUPPORTED` for all transform types until multidimensional plans
+are implemented.
 
 ## Test Registry (shared in flagfft_test.h)
 
@@ -66,27 +69,27 @@ Sizes and batch values are defined in one place. Adding/removing entries is a si
 
 | Suite | Validation |
 |-------|-----------|
-| `ForwardVsReference` | Compare with cuFFT, check max relative error < tolerance |
-| `InverseVsReference` | Compare with cuFFT, check max relative error < tolerance |
-| `Roundtrip` | F -> I, verify output = N * input within tolerance |
+| `ForwardVsReference` | Compare with same-precision cuFFT using normwise `rel_l2` and `rel_linf` |
+| `InverseVsReference` | Compare with same-precision cuFFT using normwise `rel_l2` and `rel_linf` |
+| `Roundtrip` | F -> I, verify output = N * input using the same normwise metric |
 
 ### R2C / D2Z (1 TEST_P suite x 39 params = 39 cases)
 
 | Suite | Validation |
 |-------|-----------|
-| `ForwardVsReference` | Compare with cuFFT, check max relative error < tolerance |
+| `ForwardVsReference` | Compare with same-precision cuFFT using normwise metrics |
 
 ### C2R / Z2D (1 TEST_P suite x 39 params = 39 cases)
 
 | Suite | Validation |
 |-------|-----------|
-| `InverseVsReference` | Compare with cuFFT, check max relative error < tolerance |
+| `InverseVsReference` | Compare with same-precision cuFFT using normwise metrics |
 
 ### Roundtrip files (1 TEST_P suite x 39 params = 39 cases)
 
 | Suite | Validation |
 |-------|-----------|
-| `Roundtrip1D` | F -> I, verify output = N * input within tolerance |
+| `Roundtrip1D` | F -> I, verify output = N * input using normwise metrics |
 
 ## TEST_P Fixture Design
 
@@ -103,22 +106,88 @@ protected:
 };
 ```
 
-Instantiation groups by Small/Medium/Large for clear failure attribution:
+All parameter cases are compiled and registered. Instantiation separates a
+representative quick subset from the remainder solely for runtime filtering:
 
 ```cpp
-INSTANTIATE_TEST_SUITE_P(Small,  C2C_1D_Test, Generate1DParamsSmall());
-INSTANTIATE_TEST_SUITE_P(Medium, C2C_1D_Test, Generate1DParamsMedium());
-INSTANTIATE_TEST_SUITE_P(Large,  C2C_1D_Test, Generate1DParamsLarge());
+INSTANTIATE_TEST_SUITE_P(Smoke,          C2C_1D_Test, Generate1DParamsSmoke());
+INSTANTIATE_TEST_SUITE_P(ExtendedSmall,  C2C_1D_Test, Generate1DParamsExtendedSmall());
+INSTANTIATE_TEST_SUITE_P(ExtendedMedium, C2C_1D_Test, Generate1DParamsExtendedMedium());
+INSTANTIATE_TEST_SUITE_P(ExtendedLarge,  C2C_1D_Test, Generate1DParamsExtendedLarge());
 ```
 
-`Generate1DParams*()` are shared helper functions in `flagfft_test.h` that compute the cartesian product of the corresponding size array with `k1DBatchValues`.
+`Smoke` consists of representative Direct, Bluestein, and FourStep cases.
+The Extended groups contain the rest of the original cartesian product.
+CTest registers one invocation per test executable rather than one invocation
+per discovered Google Test case, because the GPU/JIT initialization must be
+shared across parameters. A plain `ctest --test-dir build` executes the
+complete matrix once per executable. Quick local validation applies a runtime
+filter without removing any compiled case:
 
-## Tolerances
+```sh
+FLAGFFT_TEST_PROFILE=smoke ctest --test-dir build
+```
 
-| Precision | Types | Tolerance |
-|-----------|-------|-----------|
-| Single (float) | C2C, R2C, C2R | 1e-4 |
-| Double | Z2Z, D2Z, Z2D | 1e-10 |
+## Numerical Acceptance Standard
+
+Product conformance is alignment with cuFFT at the same input and output
+precision: float FlagFFT is compared with cuFFT float and double FlagFFT with
+cuFFT double. A float-to-double high-precision diagnostic may be used for
+investigation, but is not the pass/fail oracle. Both promotions in that
+diagnostic are bit-exact; its remaining reference uncertainty is at double
+arithmetic scale.
+
+For each batch independently:
+
+```text
+e_i       = flagfft_i - cufft_i
+rel_l2    = sqrt(sum |e_i|^2) / sqrt(sum |cufft_i|^2)
+rel_linf  = max |e_i| / max |cufft_i|
+u(dtype)  = epsilon(dtype) / 2
+M(N)      = ceil_power_of_two(2*N - 1)
+work(N)   = N                         , N <= 64
+          = 3 * ceil(log2(M(N))) + 3 , N > 64
+limit     = C(class, metric) * u(dtype) * work(N)
+```
+
+Complex norms use complex magnitudes, not independent component ratios.
+Batch maxima are gated so that a large batch does not hide a failing
+transform. A pointwise denominator floor of `max(|ref|, 1)` is retained only
+for diagnostic messages; zero input is tested as an exact-zero behavior.
+
+The work-factor rationale is:
+
+- For `N <= 64`, the implementation can use direct DFT summation, whose
+  rounding accumulation is modeled as `O(N*u)` rather than `O(log(N)*u)`.
+- For `N > 64`, the length-only budget deliberately envelopes a worst-case
+  Bluestein route. Bluestein requires a convolution of at least `2*N-1`;
+  FlagFFT's supported-length selection does not exceed `M(N)`, and the raw
+  fallback path uses `M(N)` directly.
+- Bluestein runs three child FFT contributions visible in the output
+  (precomputed chirp FFT, input FFT, inverse convolution FFT) and three
+  pointwise complex-multiplication stages (prepare, convolution product,
+  finalize), producing the `3*log2(M)+3` model.
+- The `O(u log N)` FFT-stage basis follows Higham, *Accuracy and Stability of
+  Numerical Algorithms*, 2nd ed., Chapter 24. The coefficients `3` and `+3`
+  are FlagFFT execution-graph accounting, not constants quoted from Higham.
+
+Inputs use a deterministic generator and each reference case is evaluated at
+scales `2^-20`, `1`, and `2^20`; power-of-two scaling leaves the represented
+signal exact while checking that the acceptance metric is not magnitude
+dependent. Constants are shared by float/double within each transform class
+and were frozen with margin `K=2` from this 936-measurement reference matrix
+on NVIDIA A100-SXM4-40GB with CUDA/cuFFT 13.2:
+
+| Transform class | APIs | Max normalized `rel_l2` | `C_l2` | Max normalized `rel_linf` | `C_linf` |
+|---|---|---:|---:|---:|---:|
+| Complex | C2C, Z2Z | 0.6209693273 | 1.2419386546 | 0.9671984544 | 1.9343969088 |
+| Real forward | R2C, D2Z | 0.6173405002 | 1.2346810004 | 0.9130279098 | 1.8260558196 |
+| Real inverse | C2R, Z2D | 0.4886148521 | 0.9772297042 | 0.6860913487 | 1.3721826973 |
+
+The class peaks currently occur on double paths, so sharing constants remains
+conservative for float. A future split by precision requires repeated
+characterization showing a normalized ratio greater than two and a documented
+precision-specific implementation reason.
 
 ## CMakeLists.txt Changes
 
@@ -140,7 +209,7 @@ set(TEST_TARGETS
 
 ## Out of Scope
 
-- 2D/3D tests (removed from existing files, to be refactored later)
+- Implementing 2D/3D transforms; tests cover their current unsupported contract
 - Python tests (`tests/`)
-- `test_plan.cpp` (unchanged)
+- CLI tolerance policy; the CLI is scheduled for removal
 - CLI tests

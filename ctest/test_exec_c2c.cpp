@@ -2,8 +2,6 @@
 
 using namespace flagfft_test::adaptor;
 
-constexpr double kRelTol = 1e-4;
-
 class C2C_1D_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
   void SetUp() override {
@@ -15,7 +13,7 @@ class C2C_1D_Test : public ::testing::TestWithParam<Test1DParam> {
     plan = nullptr;
     Plan1d(&plan, N, FLAGFFT_C2C, batch);
 
-    h_in = random_complex(total);
+    h_in = random_complex(total, accuracy_seed(FLAGFFT_C2C, N, batch));
 
     auto bytes = total * sizeof(flagfftComplex);
     d_in = static_cast<flagfftComplex*>(allocate_device(bytes));
@@ -46,35 +44,45 @@ class C2C_1D_Test : public ::testing::TestWithParam<Test1DParam> {
 };
 
 TEST_P(C2C_1D_Test, ForwardVsReference) {
-  ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
-
   RefHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
-  ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
-
   std::vector<flagfftComplex> h_out(total);
   std::vector<flagfftComplex> h_ref(total);
-  copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
-  copy_device_to_host(d_ref, h_ref.data(), total * sizeof(flagfftComplex));
-
-  double max_err = max_relative_error(h_out.data(), h_ref.data(), total);
-  EXPECT_LT(max_err, kRelTol) << "N=" << N << " batch=" << batch << " max relative error: " << max_err;
+  for (double scale : kAccuracyInputScales) {
+    auto input = h_in;
+    scale_input(input, scale);
+    copy_host_to_device(input.data(), d_in, total * sizeof(flagfftComplex));
+    ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
+    ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
+    copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
+    copy_device_to_host(d_ref, h_ref.data(), total * sizeof(flagfftComplex));
+    expect_reference_accuracy(error_stats(h_out.data(), h_ref.data(), N, batch),
+                              FLAGFFT_C2C,
+                              N,
+                              batch,
+                              input_scale_name(scale));
+  }
 }
 
 TEST_P(C2C_1D_Test, InverseVsReference) {
-  ExecC2C(plan, d_in, d_out, FLAGFFT_INVERSE);
-
   RefHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
-  ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_INVERSE);
-
   std::vector<flagfftComplex> h_out(total);
   std::vector<flagfftComplex> h_ref(total);
-  copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
-  copy_device_to_host(d_ref, h_ref.data(), total * sizeof(flagfftComplex));
-
-  double max_err = max_relative_error(h_out.data(), h_ref.data(), total);
-  EXPECT_LT(max_err, kRelTol) << "N=" << N << " batch=" << batch << " max relative error: " << max_err;
+  for (double scale : kAccuracyInputScales) {
+    auto input = h_in;
+    scale_input(input, scale);
+    copy_host_to_device(input.data(), d_in, total * sizeof(flagfftComplex));
+    ExecC2C(plan, d_in, d_out, FLAGFFT_INVERSE);
+    ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_INVERSE);
+    copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
+    copy_device_to_host(d_ref, h_ref.data(), total * sizeof(flagfftComplex));
+    expect_reference_accuracy(error_stats(h_out.data(), h_ref.data(), N, batch),
+                              FLAGFFT_C2C,
+                              N,
+                              batch,
+                              input_scale_name(scale));
+  }
 }
 
 TEST_P(C2C_1D_Test, Roundtrip) {
@@ -83,33 +91,41 @@ TEST_P(C2C_1D_Test, Roundtrip) {
   ExecC2C(plan, d_mid, d_out, FLAGFFT_INVERSE);
 
   std::vector<flagfftComplex> h_out(total);
+  std::vector<flagfftComplex> h_expected(total);
   copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
 
   for (int i = 0; i < total; ++i) {
-    double expected_x = h_in[i].x * N;
-    double expected_y = h_in[i].y * N;
-    EXPECT_NEAR(h_out[i].x, expected_x, N * kRelTol)
-        << "N=" << N << " batch=" << batch << " i=" << i << " (real)";
-    EXPECT_NEAR(h_out[i].y, expected_y, N * kRelTol)
-        << "N=" << N << " batch=" << batch << " i=" << i << " (imag)";
+    h_expected[i].x = h_in[i].x * N;
+    h_expected[i].y = h_in[i].y * N;
   }
+  expect_roundtrip_accuracy(error_stats(h_out.data(), h_expected.data(), N, batch),
+                            FLAGFFT_C2C,
+                            FLAGFFT_C2C,
+                            N,
+                            batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(Small,
+INSTANTIATE_TEST_SUITE_P(Smoke,
                          C2C_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsSmall()),
+                         ::testing::ValuesIn(Generate1DParamsSmoke()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
-INSTANTIATE_TEST_SUITE_P(Medium,
+INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
                          C2C_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsMedium()),
+                         ::testing::ValuesIn(Generate1DParamsExtendedSmall()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
-INSTANTIATE_TEST_SUITE_P(Large,
+INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
                          C2C_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsLarge()),
+                         ::testing::ValuesIn(Generate1DParamsExtendedMedium()),
+                         [](const auto& info) {
+                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
+                         });
+INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
+                         C2C_1D_Test,
+                         ::testing::ValuesIn(Generate1DParamsExtendedLarge()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

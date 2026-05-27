@@ -2,8 +2,6 @@
 
 using namespace flagfft_test::adaptor;
 
-constexpr double kRelTol = 1e-10;
-
 class D2Z_1D_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
   void SetUp() override {
@@ -16,7 +14,7 @@ class D2Z_1D_Test : public ::testing::TestWithParam<Test1DParam> {
     plan = nullptr;
     Plan1d(&plan, N, FLAGFFT_D2Z, batch);
 
-    h_in = random_double_real(total_in);
+    h_in = random_double_real(total_in, accuracy_seed(FLAGFFT_D2Z, N, batch));
 
     d_in = static_cast<flagfftDoubleReal*>(allocate_device(total_in * sizeof(flagfftDoubleReal)));
     d_out = static_cast<flagfftDoubleComplex*>(allocate_device(total_out * sizeof(flagfftDoubleComplex)));
@@ -47,36 +45,47 @@ class D2Z_1D_Test : public ::testing::TestWithParam<Test1DParam> {
 };
 
 TEST_P(D2Z_1D_Test, ForwardVsReference) {
-  ExecD2Z(plan, d_in, d_out);
-
   RefHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_D2Z, batch);
-  ref_exec_d2z(ref, d_in, d_ref);
-
   std::vector<flagfftDoubleComplex> h_out(total_out);
   std::vector<flagfftDoubleComplex> h_ref_out(total_out);
-  copy_device_to_host(d_out, h_out.data(), total_out * sizeof(flagfftDoubleComplex));
-  copy_device_to_host(d_ref, h_ref_out.data(), total_out * sizeof(flagfftDoubleComplex));
-
-  double max_err = max_relative_error(h_out.data(), h_ref_out.data(), total_out);
-  EXPECT_LT(max_err, kRelTol) << "N=" << N << " batch=" << batch << " max relative error: " << max_err;
+  for (double scale : kAccuracyInputScales) {
+    auto input = h_in;
+    scale_input(input, scale);
+    copy_host_to_device(input.data(), d_in, total_in * sizeof(flagfftDoubleReal));
+    ExecD2Z(plan, d_in, d_out);
+    ref_exec_d2z(ref, d_in, d_ref);
+    copy_device_to_host(d_out, h_out.data(), total_out * sizeof(flagfftDoubleComplex));
+    copy_device_to_host(d_ref, h_ref_out.data(), total_out * sizeof(flagfftDoubleComplex));
+    expect_reference_accuracy(error_stats(h_out.data(), h_ref_out.data(), N / 2 + 1, batch),
+                              FLAGFFT_D2Z,
+                              N,
+                              batch,
+                              input_scale_name(scale));
+  }
 }
 
-INSTANTIATE_TEST_SUITE_P(Small,
+INSTANTIATE_TEST_SUITE_P(Smoke,
                          D2Z_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsSmall()),
+                         ::testing::ValuesIn(Generate1DParamsSmoke()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
-INSTANTIATE_TEST_SUITE_P(Medium,
+INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
                          D2Z_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsMedium()),
+                         ::testing::ValuesIn(Generate1DParamsExtendedSmall()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
-INSTANTIATE_TEST_SUITE_P(Large,
+INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
                          D2Z_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsLarge()),
+                         ::testing::ValuesIn(Generate1DParamsExtendedMedium()),
+                         [](const auto& info) {
+                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
+                         });
+INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
+                         D2Z_1D_Test,
+                         ::testing::ValuesIn(Generate1DParamsExtendedLarge()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
