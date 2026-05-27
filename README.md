@@ -205,13 +205,13 @@ Python codegen tests remain under `tests/python/` and exercise the
 ## C++ Tests
 
 The C++ test suite lives under `ctest/` and uses Google Test with a unified
-`flagfft_test::adaptor` interface to support multiple GPU platforms from a
+`flagfft::test_adaptor` interface to support multiple GPU platforms from a
 single set of test sources.
 
 ```sh
 cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_TESTS=ON
 cmake --build build
-ctest --test-dir build --verbose
+ctest --test-dir build -R "1D"   # 1D-only (skip pre-existing NOT_SUPPORTED for 2D/3D)
 ```
 
 Google Test is fetched automatically by `deps/libtriton_jit` via FetchContent;
@@ -219,16 +219,26 @@ no additional installation is required.
 
 ### Architecture
 
-The test adaptor `flagfft_test::adaptor` provides:
+The test adaptor (`src/adaptor/test_adaptor.h`, backend impl in
+`src/adaptor/backend/<name>/test_adaptor.cpp`) is a shared layer used by both
+ctest and the CLI bench command. It builds as a CMake OBJECT library
+(`flagfft_test_adaptor`) and provides:
 
-- **Convenience Plan / Exec wrappers** — thin wrappers around the C API that
-  assert `FLAGFFT_SUCCESS` via Google Test macros
-- **`RefHandle`** — RAII wrapper for the platform-specific reference FFT plan
-  handle (`cufftHandle` on CUDA)
+- **`RefPlanHandle`** — type-erased RAII wrapper for the platform-specific
+  reference FFT plan handle (`cufftHandle` on CUDA). Uses `replace()` to set
+  the handle from a locally-constructed backend handle, avoiding
+  strict-aliasing UB.
 - **Reference FFT interface** — `ref_plan_1d/2d/3d`, `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d`
-  mirroring the public FlagFFT API
-- **Device memory utilities** — `allocate_device`, `copy_host_to_device`, etc.
-- **Comparison helpers** — `max_relative_error` and friends for tolerance checks
+  mirroring the public FlagFFT API. The benchmark CLI uses `ref_plan_1d` +
+  `ref_exec_c2c` as a correctness oracle.
+- **Device memory** — `adaptor::Memory` (RAII device allocation with
+  `copy_from_host`/`copy_to_host`), `adaptor::Stream`, `adaptor::EventTimer`
+- **Comparison helpers** — `compute_error` returns `{max_abs, rms}` for
+  `float*`, `double*`, `flagfftComplex*`, and `flagfftDoubleComplex*`
+- **Random input generation** — `random_complex`, `random_real` for test data
+
+FlagFFT C API convenience wrappers (`Plan1d`, `ExecC2C`, etc.) remain in
+`ctest/flagfft_test.h` and assert `FLAGFFT_SUCCESS` via Google Test macros.
 
 ### Backends
 
@@ -236,9 +246,9 @@ The test adaptor `flagfft_test::adaptor` provides:
 |---|---|---|
 | `BACKEND=CUDA` | cuFFT | Plan lifecycle + elementwise comparison against cuFFT for all transform types |
 
-Adding a new GPU platform requires only a `ctest/backend/<name>/adaptor.cpp`
-implementing all functions in the `flagfft_test::adaptor` namespace; no test
-source changes are needed.
+Adding a new GPU platform requires implementing the functions declared in
+`src/adaptor/test_adaptor.h` under `src/adaptor/backend/<name>/test_adaptor.cpp`;
+no test source changes are needed.
 
 ### Test files
 
@@ -249,6 +259,97 @@ source changes are needed.
 | `test_exec_z2z.cpp` | `FLAGFFT_Z2Z` double-precision complex |
 | `test_exec_r2c_c2r.cpp` | `FLAGFFT_R2C`/`FLAGFFT_C2R` roundtrip and reference comparison |
 | `test_exec_d2z_z2d.cpp` | `FLAGFFT_D2Z`/`FLAGFFT_Z2D` double-precision real |
+
+## Python Benchmark Suite
+
+The `benchmark/` directory provides parametrized pytest-based performance
+benchmarking that invokes `flagfft-cli bench` and validates correctness,
+timings, and speedup against cuFFT.
+
+### Quick start
+
+```sh
+# Build the CLI first
+cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
+cmake --build build --target flagfft-cli
+
+# Smoke test (2 sizes, fast — verify the pipeline works)
+pytest benchmark/test_bench_smoke.py -v
+
+# Full benchmark (13 sizes)
+pytest benchmark/test_bench_full.py -v
+
+# Generate Markdown + JSON report (one-shot, skipped by default)
+pytest benchmark/test_bench_full.py::test_bench_full_report -v -s
+```
+
+### Test sizes
+
+| Suite | Sizes | Count |
+|-------|-------|-------|
+| Smoke | 256, 512 | 2 |
+| Full | 16, 23, 64, 81, 243, 256, 361, 512, 997, 2048, 4096, 8192, 16384 | 13 |
+
+The full suite covers powers of two (`16`–`16384`), primes (`23`, `997`),
+composite non-powers-of-two (`81`, `243`, `361`), and mixed factors.
+
+Each size is tested against `c2c` and `z2z` APIs in both `forward` and
+`inverse` directions (4 combinations per size). Every case verifies:
+- CLI exit code 0
+- `correctness.passed == true` (against cuFFT reference)
+- `timing.flagfft_median_ms > 0`
+
+### CLI options
+
+Customise warmup, iterations, and CLI path via pytest flags:
+
+```sh
+pytest benchmark/test_bench_smoke.py -v \
+  --bench-warmup 20 --bench-iters 50 --bench-launches-per-sample 3
+
+pytest benchmark/test_bench_full.py -v \
+  --flagfft-cli ./build/flagfft-cli
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--flagfft-cli` | `build/flagfft-cli` or `$FLAGFFT_CLI_EXE` | Path to the CLI binary |
+| `--bench-warmup` | 5 | Warmup iterations before timing |
+| `--bench-iters` | 10 | Timed benchmark iterations |
+| `--bench-launches-per-sample` | 1 | Kernel launches per sample |
+
+If no CUDA device is available, tests are skipped automatically.
+
+### Fixtures
+
+`conftest.py` exposes these fixtures for custom benchmark scripts:
+
+| Fixture | Scope | Description |
+|---------|-------|-------------|
+| `flagfft_cli` | session | Resolved path to `flagfft-cli` |
+| `invoke_cli` | function | Call `flagfft-cli` with args, returns `(result, report)` |
+| `run_benchmark` | function | Shortcut: `run_benchmark(size, api, direction)` with all bench options preset |
+| `bench_warmup` | session | `--bench-warmup` value |
+| `bench_iters` | session | `--bench-iters` value |
+| `bench_launches_per_sample` | session | `--bench-launches-per-sample` value |
+
+### Report generation
+
+`report.py` produces Markdown tables and pretty-printed JSON from aggregated
+benchmark results:
+
+```python
+from benchmark.report import generate_markdown, generate_json_report
+
+results = {"cases": [...]}   # collected CLI JSON outputs
+print(generate_markdown(results))
+print(generate_json_report(results))
+```
+
+The Markdown report includes a per-case table (size, API, direction, FlagFFT
+ms, cuFFT ms, speedup, correctness) and summary statistics (pass rate, median
+range, geometric mean). `test_bench_full_report` demonstrates end-to-end
+collection + report writing to `tmp_path`.
 
 ## Code Style
 
