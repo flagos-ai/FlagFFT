@@ -1,6 +1,6 @@
 #include "flagfft_test.h"
 
-using namespace flagfft_test::adaptor;
+#include <cstring>
 
 // =========================================================================
 // 1D plan tests

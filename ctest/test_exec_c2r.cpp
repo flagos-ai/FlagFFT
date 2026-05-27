@@ -1,6 +1,6 @@
 #include "flagfft_test.h"
 
-using namespace flagfft_test::adaptor;
+using namespace flagfft_test;
 
 class C2R_1D_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
@@ -22,20 +22,20 @@ class C2R_1D_Test : public ::testing::TestWithParam<Test1DParam> {
       if (N % 2 == 0) h_in[b * (N / 2 + 1) + N / 2].y = 0.0f;
     }
 
-    d_in = static_cast<flagfftComplex*>(allocate_device(total_in * sizeof(flagfftComplex)));
-    d_out = static_cast<flagfftReal*>(allocate_device(total_out * sizeof(flagfftReal)));
-    d_ref = static_cast<flagfftReal*>(allocate_device(total_out * sizeof(flagfftReal)));
+    in_memory.allocate(total_in * sizeof(flagfftComplex));
+    out_memory.allocate(total_out * sizeof(flagfftReal));
+    ref_memory.allocate(total_out * sizeof(flagfftReal));
+    d_in = static_cast<flagfftComplex*>(in_memory.data());
+    d_out = static_cast<flagfftReal*>(out_memory.data());
+    d_ref = static_cast<flagfftReal*>(ref_memory.data());
     ASSERT_NE(d_in, nullptr);
     ASSERT_NE(d_out, nullptr);
     ASSERT_NE(d_ref, nullptr);
 
-    copy_host_to_device(h_in.data(), d_in, total_in * sizeof(flagfftComplex));
+    in_memory.copy_from_host(h_in.data(), total_in * sizeof(flagfftComplex));
   }
 
   void TearDown() override {
-    if (d_in) free_device(d_in);
-    if (d_out) free_device(d_out);
-    if (d_ref) free_device(d_ref);
     if (plan) flagfftDestroy(plan);
   }
 
@@ -45,24 +45,27 @@ class C2R_1D_Test : public ::testing::TestWithParam<Test1DParam> {
   int total_out = 0;
   flagfftHandle plan = nullptr;
   std::vector<flagfftComplex> h_in;
+  flagfft::adaptor::Memory in_memory;
+  flagfft::adaptor::Memory out_memory;
+  flagfft::adaptor::Memory ref_memory;
   flagfftComplex* d_in = nullptr;
   flagfftReal* d_out = nullptr;
   flagfftReal* d_ref = nullptr;
 };
 
 TEST_P(C2R_1D_Test, InverseVsReference) {
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2R, batch);
   std::vector<flagfftReal> h_out(total_out);
   std::vector<flagfftReal> h_ref_out(total_out);
   for (double scale : kAccuracyInputScales) {
     auto input = h_in;
     scale_input(input, scale);
-    copy_host_to_device(input.data(), d_in, total_in * sizeof(flagfftComplex));
+    in_memory.copy_from_host(input.data(), total_in * sizeof(flagfftComplex));
     ExecC2R(plan, d_in, d_out);
     ref_exec_c2r(ref, d_in, d_ref);
-    copy_device_to_host(d_out, h_out.data(), total_out * sizeof(flagfftReal));
-    copy_device_to_host(d_ref, h_ref_out.data(), total_out * sizeof(flagfftReal));
+    out_memory.copy_to_host(h_out.data(), total_out * sizeof(flagfftReal));
+    ref_memory.copy_to_host(h_ref_out.data(), total_out * sizeof(flagfftReal));
     expect_reference_accuracy(error_stats(h_out.data(), h_ref_out.data(), N, batch),
                               FLAGFFT_C2R,
                               N,
@@ -79,11 +82,14 @@ TEST(ExtendedC2RRegression, LargeBatchMultipleSeeds) {
   flagfftHandle plan = nullptr;
   Plan1d(&plan, kN, FLAGFFT_C2R, kBatch);
 
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, kN, FLAGFFT_C2R, kBatch);
-  auto* d_in = static_cast<flagfftComplex*>(allocate_device(kTotalIn * sizeof(flagfftComplex)));
-  auto* d_out = static_cast<flagfftReal*>(allocate_device(kTotalOut * sizeof(flagfftReal)));
-  auto* d_ref = static_cast<flagfftReal*>(allocate_device(kTotalOut * sizeof(flagfftReal)));
+  flagfft::adaptor::Memory in_memory(kTotalIn * sizeof(flagfftComplex));
+  flagfft::adaptor::Memory out_memory(kTotalOut * sizeof(flagfftReal));
+  flagfft::adaptor::Memory ref_memory(kTotalOut * sizeof(flagfftReal));
+  auto* d_in = static_cast<flagfftComplex*>(in_memory.data());
+  auto* d_out = static_cast<flagfftReal*>(out_memory.data());
+  auto* d_ref = static_cast<flagfftReal*>(ref_memory.data());
   ASSERT_NE(d_in, nullptr);
   ASSERT_NE(d_out, nullptr);
   ASSERT_NE(d_ref, nullptr);
@@ -97,20 +103,17 @@ TEST(ExtendedC2RRegression, LargeBatchMultipleSeeds) {
       h_in[b * (kN / 2 + 1)].y = 0.0f;
       h_in[b * (kN / 2 + 1) + kN / 2].y = 0.0f;
     }
-    copy_host_to_device(h_in.data(), d_in, kTotalIn * sizeof(flagfftComplex));
+    in_memory.copy_from_host(h_in.data(), kTotalIn * sizeof(flagfftComplex));
     ExecC2R(plan, d_in, d_out);
     ref_exec_c2r(ref, d_in, d_ref);
-    copy_device_to_host(d_out, h_out.data(), kTotalOut * sizeof(flagfftReal));
-    copy_device_to_host(d_ref, h_ref_out.data(), kTotalOut * sizeof(flagfftReal));
+    out_memory.copy_to_host(h_out.data(), kTotalOut * sizeof(flagfftReal));
+    ref_memory.copy_to_host(h_ref_out.data(), kTotalOut * sizeof(flagfftReal));
     expect_reference_accuracy(error_stats(h_out.data(), h_ref_out.data(), kN, kBatch),
                               FLAGFFT_C2R,
                               kN,
                               kBatch);
   }
 
-  free_device(d_in);
-  free_device(d_out);
-  free_device(d_ref);
   EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }
 
@@ -121,19 +124,19 @@ TEST(SmokeC2RAccuracy, ZeroInputIsExact) {
   Plan1d(&plan, kN, FLAGFFT_C2R);
   std::vector<flagfftComplex> h_in(kInputCount, {0.0f, 0.0f});
   std::vector<flagfftReal> h_out(kN);
-  auto* d_in = static_cast<flagfftComplex*>(allocate_device(kInputCount * sizeof(flagfftComplex)));
-  auto* d_out = static_cast<flagfftReal*>(allocate_device(kN * sizeof(flagfftReal)));
+  flagfft::adaptor::Memory in_memory(kInputCount * sizeof(flagfftComplex));
+  flagfft::adaptor::Memory out_memory(kN * sizeof(flagfftReal));
+  auto* d_in = static_cast<flagfftComplex*>(in_memory.data());
+  auto* d_out = static_cast<flagfftReal*>(out_memory.data());
   ASSERT_NE(d_in, nullptr);
   ASSERT_NE(d_out, nullptr);
-  copy_host_to_device(h_in.data(), d_in, kInputCount * sizeof(flagfftComplex));
+  in_memory.copy_from_host(h_in.data(), kInputCount * sizeof(flagfftComplex));
   ExecC2R(plan, d_in, d_out);
-  copy_device_to_host(d_out, h_out.data(), kN * sizeof(flagfftReal));
+  out_memory.copy_to_host(h_out.data(), kN * sizeof(flagfftReal));
   for (flagfftReal value : h_out) {
     EXPECT_EQ(value, 0.0f);
     EXPECT_TRUE(std::isfinite(value));
   }
-  free_device(d_in);
-  free_device(d_out);
   EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }
 

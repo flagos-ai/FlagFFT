@@ -14,44 +14,22 @@
 
 #include <cstdint>
 
+#include "adaptor/adaptor.h"
+#include "adaptor/test_adaptor.h"
 #include "flagfft.h"
 
-namespace flagfft_test::adaptor {
+namespace flagfft_test {
 
-// =========================================================================
-// RefHandle — RAII wrapper for the platform-specific reference FFT plan
-// =========================================================================
-
-class RefHandle {
- public:
-  RefHandle();
-  ~RefHandle();
-  RefHandle(RefHandle&&) noexcept;
-  RefHandle& operator=(RefHandle&&) noexcept;
-  RefHandle(const RefHandle&) = delete;
-
-  uintptr_t get() const;
-  uintptr_t* ptr();
-
- private:
-  uintptr_t impl_;  // cufftHandle / rocfft_plan / 0
-};
-
-// =========================================================================
-// Backend lifecycle
-// =========================================================================
-
-void initialize();
-std::string backend_name();
-
-// =========================================================================
-// Device memory
-// =========================================================================
-
-void* allocate_device(std::size_t bytes);
-void free_device(void* ptr);
-void copy_host_to_device(const void* src, void* dst, std::size_t bytes);
-void copy_device_to_host(const void* src, void* dst, std::size_t bytes);
+using flagfft::test_adaptor::ref_exec_c2c;
+using flagfft::test_adaptor::ref_exec_c2r;
+using flagfft::test_adaptor::ref_exec_d2z;
+using flagfft::test_adaptor::ref_exec_r2c;
+using flagfft::test_adaptor::ref_exec_z2d;
+using flagfft::test_adaptor::ref_exec_z2z;
+using flagfft::test_adaptor::ref_plan_1d;
+using flagfft::test_adaptor::ref_plan_2d;
+using flagfft::test_adaptor::ref_plan_3d;
+using flagfft::test_adaptor::RefPlanHandle;
 
 // =========================================================================
 // Convenience Plan wrappers (assert success, otherwise GTEST_FAIL)
@@ -128,20 +106,6 @@ inline void ExecZ2D(flagfftHandle plan, flagfftDoubleComplex* idata, flagfftDoub
     FAIL() << "flagfftExecZ2D failed with code " << r;
   }
 }
-
-// =========================================================================
-// Reference FFT interface (implemented per backend)
-// =========================================================================
-
-void ref_plan_1d(RefHandle& plan, int nx, flagfftType type, int batch);
-void ref_plan_2d(RefHandle& plan, int nx, int ny, flagfftType type);
-void ref_plan_3d(RefHandle& plan, int nx, int ny, int nz, flagfftType type);
-void ref_exec_c2c(RefHandle& plan, flagfftComplex* idata, flagfftComplex* odata, int direction);
-void ref_exec_z2z(RefHandle& plan, flagfftDoubleComplex* idata, flagfftDoubleComplex* odata, int direction);
-void ref_exec_r2c(RefHandle& plan, flagfftReal* idata, flagfftComplex* odata);
-void ref_exec_d2z(RefHandle& plan, flagfftDoubleReal* idata, flagfftDoubleComplex* odata);
-void ref_exec_c2r(RefHandle& plan, flagfftComplex* idata, flagfftReal* odata);
-void ref_exec_z2d(RefHandle& plan, flagfftDoubleComplex* idata, flagfftDoubleReal* odata);
 
 // =========================================================================
 // Accuracy comparison helpers
@@ -569,4 +533,4 @@ inline std::vector<Test1DParam> Generate1DParamsExtendedLarge() {
   return Generate1DParamsExtended(k1DSizesLarge, sizeof(k1DSizesLarge) / sizeof(k1DSizesLarge[0]));
 }
 
-}  // namespace flagfft_test::adaptor
+}  // namespace flagfft_test

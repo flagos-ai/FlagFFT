@@ -896,3 +896,10 @@ Expected: Zero compile errors, all 9 targets built successfully.
 | 11 | Build | Verify | (no commit) |
 
 **Total: 9 commits** (Tasks 1+2 combined), 11 tasks.
+# Adaptor Integration Note
+
+This plan records the original 1D test refactor. In the integrated tree, its
+test cases and numerical policy are preserved, while device storage and
+reference plans use `flagfft::adaptor::Memory` and
+`flagfft::test_adaptor::RefPlanHandle` from `src/adaptor/`; the legacy
+`flagfft_test::adaptor` allocation/reference examples below are historical.

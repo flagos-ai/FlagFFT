@@ -1,6 +1,6 @@
 #include "flagfft_test.h"
 
-using namespace flagfft_test::adaptor;
+using namespace flagfft_test;
 
 class R2C_C2R_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
@@ -18,20 +18,20 @@ class R2C_C2R_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
 
     h_in = random_real(total_real, accuracy_seed(FLAGFFT_R2C, N, batch));
 
-    d_in = static_cast<flagfftReal*>(allocate_device(total_real * sizeof(flagfftReal)));
-    d_mid = static_cast<flagfftComplex*>(allocate_device(total_complex * sizeof(flagfftComplex)));
-    d_out = static_cast<flagfftReal*>(allocate_device(total_real * sizeof(flagfftReal)));
+    in_memory.allocate(total_real * sizeof(flagfftReal));
+    mid_memory.allocate(total_complex * sizeof(flagfftComplex));
+    out_memory.allocate(total_real * sizeof(flagfftReal));
+    d_in = static_cast<flagfftReal*>(in_memory.data());
+    d_mid = static_cast<flagfftComplex*>(mid_memory.data());
+    d_out = static_cast<flagfftReal*>(out_memory.data());
     ASSERT_NE(d_in, nullptr);
     ASSERT_NE(d_mid, nullptr);
     ASSERT_NE(d_out, nullptr);
 
-    copy_host_to_device(h_in.data(), d_in, total_real * sizeof(flagfftReal));
+    in_memory.copy_from_host(h_in.data(), total_real * sizeof(flagfftReal));
   }
 
   void TearDown() override {
-    if (d_in) free_device(d_in);
-    if (d_mid) free_device(d_mid);
-    if (d_out) free_device(d_out);
     if (plan_fwd) flagfftDestroy(plan_fwd);
     if (plan_inv) flagfftDestroy(plan_inv);
   }
@@ -43,6 +43,9 @@ class R2C_C2R_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
   flagfftHandle plan_fwd = nullptr;
   flagfftHandle plan_inv = nullptr;
   std::vector<flagfftReal> h_in;
+  flagfft::adaptor::Memory in_memory;
+  flagfft::adaptor::Memory mid_memory;
+  flagfft::adaptor::Memory out_memory;
   flagfftReal* d_in = nullptr;
   flagfftComplex* d_mid = nullptr;
   flagfftReal* d_out = nullptr;
@@ -54,7 +57,7 @@ TEST_P(R2C_C2R_Roundtrip_Test, Roundtrip1D) {
 
   std::vector<flagfftReal> h_out(total_real);
   std::vector<flagfftReal> h_expected(total_real);
-  copy_device_to_host(d_out, h_out.data(), total_real * sizeof(flagfftReal));
+  out_memory.copy_to_host(h_out.data(), total_real * sizeof(flagfftReal));
 
   for (int i = 0; i < total_real; ++i) {
     h_expected[i] = h_in[i] * N;

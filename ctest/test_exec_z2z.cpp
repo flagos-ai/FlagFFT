@@ -1,6 +1,6 @@
 #include "flagfft_test.h"
 
-using namespace flagfft_test::adaptor;
+using namespace flagfft_test;
 
 class Z2Z_1D_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
@@ -16,20 +16,20 @@ class Z2Z_1D_Test : public ::testing::TestWithParam<Test1DParam> {
     h_in = random_double_complex(total, accuracy_seed(FLAGFFT_Z2Z, N, batch));
 
     auto bytes = total * sizeof(flagfftDoubleComplex);
-    d_in = static_cast<flagfftDoubleComplex*>(allocate_device(bytes));
-    d_out = static_cast<flagfftDoubleComplex*>(allocate_device(bytes));
-    d_ref = static_cast<flagfftDoubleComplex*>(allocate_device(bytes));
+    in_memory.allocate(bytes);
+    out_memory.allocate(bytes);
+    ref_memory.allocate(bytes);
+    d_in = static_cast<flagfftDoubleComplex*>(in_memory.data());
+    d_out = static_cast<flagfftDoubleComplex*>(out_memory.data());
+    d_ref = static_cast<flagfftDoubleComplex*>(ref_memory.data());
     ASSERT_NE(d_in, nullptr);
     ASSERT_NE(d_out, nullptr);
     ASSERT_NE(d_ref, nullptr);
 
-    copy_host_to_device(h_in.data(), d_in, bytes);
+    in_memory.copy_from_host(h_in.data(), bytes);
   }
 
   void TearDown() override {
-    if (d_in) free_device(d_in);
-    if (d_out) free_device(d_out);
-    if (d_ref) free_device(d_ref);
     if (plan) flagfftDestroy(plan);
   }
 
@@ -38,24 +38,27 @@ class Z2Z_1D_Test : public ::testing::TestWithParam<Test1DParam> {
   int total = 0;
   flagfftHandle plan = nullptr;
   std::vector<flagfftDoubleComplex> h_in;
+  flagfft::adaptor::Memory in_memory;
+  flagfft::adaptor::Memory out_memory;
+  flagfft::adaptor::Memory ref_memory;
   flagfftDoubleComplex* d_in = nullptr;
   flagfftDoubleComplex* d_out = nullptr;
   flagfftDoubleComplex* d_ref = nullptr;
 };
 
 TEST_P(Z2Z_1D_Test, ForwardVsReference) {
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_Z2Z, batch);
   std::vector<flagfftDoubleComplex> h_out(total);
   std::vector<flagfftDoubleComplex> h_ref(total);
   for (double scale : kAccuracyInputScales) {
     auto input = h_in;
     scale_input(input, scale);
-    copy_host_to_device(input.data(), d_in, total * sizeof(flagfftDoubleComplex));
+    in_memory.copy_from_host(input.data(), total * sizeof(flagfftDoubleComplex));
     ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
     ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_FORWARD);
-    copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftDoubleComplex));
-    copy_device_to_host(d_ref, h_ref.data(), total * sizeof(flagfftDoubleComplex));
+    out_memory.copy_to_host(h_out.data(), total * sizeof(flagfftDoubleComplex));
+    ref_memory.copy_to_host(h_ref.data(), total * sizeof(flagfftDoubleComplex));
     expect_reference_accuracy(error_stats(h_out.data(), h_ref.data(), N, batch),
                               FLAGFFT_Z2Z,
                               N,
@@ -65,18 +68,18 @@ TEST_P(Z2Z_1D_Test, ForwardVsReference) {
 }
 
 TEST_P(Z2Z_1D_Test, InverseVsReference) {
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_Z2Z, batch);
   std::vector<flagfftDoubleComplex> h_out(total);
   std::vector<flagfftDoubleComplex> h_ref(total);
   for (double scale : kAccuracyInputScales) {
     auto input = h_in;
     scale_input(input, scale);
-    copy_host_to_device(input.data(), d_in, total * sizeof(flagfftDoubleComplex));
+    in_memory.copy_from_host(input.data(), total * sizeof(flagfftDoubleComplex));
     ExecZ2Z(plan, d_in, d_out, FLAGFFT_INVERSE);
     ref_exec_z2z(ref, d_in, d_ref, FLAGFFT_INVERSE);
-    copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftDoubleComplex));
-    copy_device_to_host(d_ref, h_ref.data(), total * sizeof(flagfftDoubleComplex));
+    out_memory.copy_to_host(h_out.data(), total * sizeof(flagfftDoubleComplex));
+    ref_memory.copy_to_host(h_ref.data(), total * sizeof(flagfftDoubleComplex));
     expect_reference_accuracy(error_stats(h_out.data(), h_ref.data(), N, batch),
                               FLAGFFT_Z2Z,
                               N,
@@ -92,7 +95,7 @@ TEST_P(Z2Z_1D_Test, Roundtrip) {
 
   std::vector<flagfftDoubleComplex> h_out(total);
   std::vector<flagfftDoubleComplex> h_expected(total);
-  copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftDoubleComplex));
+  out_memory.copy_to_host(h_out.data(), total * sizeof(flagfftDoubleComplex));
 
   for (int i = 0; i < total; ++i) {
     h_expected[i].x = h_in[i].x * N;

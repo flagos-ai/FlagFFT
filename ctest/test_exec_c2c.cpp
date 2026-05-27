@@ -1,6 +1,6 @@
 #include "flagfft_test.h"
 
-using namespace flagfft_test::adaptor;
+using namespace flagfft_test;
 
 class C2C_1D_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
@@ -16,20 +16,20 @@ class C2C_1D_Test : public ::testing::TestWithParam<Test1DParam> {
     h_in = random_complex(total, accuracy_seed(FLAGFFT_C2C, N, batch));
 
     auto bytes = total * sizeof(flagfftComplex);
-    d_in = static_cast<flagfftComplex*>(allocate_device(bytes));
-    d_out = static_cast<flagfftComplex*>(allocate_device(bytes));
-    d_ref = static_cast<flagfftComplex*>(allocate_device(bytes));
+    in_memory.allocate(bytes);
+    out_memory.allocate(bytes);
+    ref_memory.allocate(bytes);
+    d_in = static_cast<flagfftComplex*>(in_memory.data());
+    d_out = static_cast<flagfftComplex*>(out_memory.data());
+    d_ref = static_cast<flagfftComplex*>(ref_memory.data());
     ASSERT_NE(d_in, nullptr);
     ASSERT_NE(d_out, nullptr);
     ASSERT_NE(d_ref, nullptr);
 
-    copy_host_to_device(h_in.data(), d_in, bytes);
+    in_memory.copy_from_host(h_in.data(), bytes);
   }
 
   void TearDown() override {
-    if (d_in) free_device(d_in);
-    if (d_out) free_device(d_out);
-    if (d_ref) free_device(d_ref);
     if (plan) flagfftDestroy(plan);
   }
 
@@ -38,24 +38,27 @@ class C2C_1D_Test : public ::testing::TestWithParam<Test1DParam> {
   int total = 0;
   flagfftHandle plan = nullptr;
   std::vector<flagfftComplex> h_in;
+  flagfft::adaptor::Memory in_memory;
+  flagfft::adaptor::Memory out_memory;
+  flagfft::adaptor::Memory ref_memory;
   flagfftComplex* d_in = nullptr;
   flagfftComplex* d_out = nullptr;
   flagfftComplex* d_ref = nullptr;
 };
 
 TEST_P(C2C_1D_Test, ForwardVsReference) {
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
   std::vector<flagfftComplex> h_out(total);
   std::vector<flagfftComplex> h_ref(total);
   for (double scale : kAccuracyInputScales) {
     auto input = h_in;
     scale_input(input, scale);
-    copy_host_to_device(input.data(), d_in, total * sizeof(flagfftComplex));
+    in_memory.copy_from_host(input.data(), total * sizeof(flagfftComplex));
     ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
     ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_FORWARD);
-    copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref.data(), total * sizeof(flagfftComplex));
+    out_memory.copy_to_host(h_out.data(), total * sizeof(flagfftComplex));
+    ref_memory.copy_to_host(h_ref.data(), total * sizeof(flagfftComplex));
     expect_reference_accuracy(error_stats(h_out.data(), h_ref.data(), N, batch),
                               FLAGFFT_C2C,
                               N,
@@ -65,18 +68,18 @@ TEST_P(C2C_1D_Test, ForwardVsReference) {
 }
 
 TEST_P(C2C_1D_Test, InverseVsReference) {
-  RefHandle ref;
+  RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
   std::vector<flagfftComplex> h_out(total);
   std::vector<flagfftComplex> h_ref(total);
   for (double scale : kAccuracyInputScales) {
     auto input = h_in;
     scale_input(input, scale);
-    copy_host_to_device(input.data(), d_in, total * sizeof(flagfftComplex));
+    in_memory.copy_from_host(input.data(), total * sizeof(flagfftComplex));
     ExecC2C(plan, d_in, d_out, FLAGFFT_INVERSE);
     ref_exec_c2c(ref, d_in, d_ref, FLAGFFT_INVERSE);
-    copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
-    copy_device_to_host(d_ref, h_ref.data(), total * sizeof(flagfftComplex));
+    out_memory.copy_to_host(h_out.data(), total * sizeof(flagfftComplex));
+    ref_memory.copy_to_host(h_ref.data(), total * sizeof(flagfftComplex));
     expect_reference_accuracy(error_stats(h_out.data(), h_ref.data(), N, batch),
                               FLAGFFT_C2C,
                               N,
@@ -92,7 +95,7 @@ TEST_P(C2C_1D_Test, Roundtrip) {
 
   std::vector<flagfftComplex> h_out(total);
   std::vector<flagfftComplex> h_expected(total);
-  copy_device_to_host(d_out, h_out.data(), total * sizeof(flagfftComplex));
+  out_memory.copy_to_host(h_out.data(), total * sizeof(flagfftComplex));
 
   for (int i = 0; i < total; ++i) {
     h_expected[i].x = h_in[i].x * N;

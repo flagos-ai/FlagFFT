@@ -67,6 +67,27 @@ install(TARGETS flagfft
         ARCHIVE DESTINATION "lib")
 install(DIRECTORY include/ DESTINATION "include")
 
+# Test adaptor — reference FFT oracle for correctness checks and benchmarking.
+# Reused by flagfft-cli (bench/verify) and ctest (correctness tests).
+# Only built when CLI or tests are enabled (both need cuFFT).
+if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
+    find_package(CUDAToolkit REQUIRED)
+    add_library(flagfft_test_adaptor OBJECT
+        src/adaptor/backend/cuda/test_adaptor.cpp
+    )
+    target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
+    target_include_directories(flagfft_test_adaptor PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        src/utils/include
+        src
+    )
+    target_link_libraries(flagfft_test_adaptor PUBLIC
+        CUDA::cufft
+        CUDA::cudart
+        CUDA::cuda_driver
+    )
+endif()
+
 if(FLAGFFT_BUILD_CLI)
     # cuFFT is used only by the CUDA validation/performance oracle in the CLI.
     find_package(CUDAToolkit REQUIRED)
@@ -109,6 +130,7 @@ if(FLAGFFT_BUILD_CLI)
         PRIVATE
             flagfft
             flagfft_cli_common
+            flagfft_test_adaptor
             CUDA::cufft
             SQLite3::SQLite3
             nlohmann_json::nlohmann_json

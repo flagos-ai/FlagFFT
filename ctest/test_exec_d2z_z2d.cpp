@@ -1,6 +1,6 @@
 #include "flagfft_test.h"
 
-using namespace flagfft_test::adaptor;
+using namespace flagfft_test;
 
 class D2Z_Z2D_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
@@ -18,20 +18,20 @@ class D2Z_Z2D_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
 
     h_in = random_double_real(total_real, accuracy_seed(FLAGFFT_D2Z, N, batch));
 
-    d_in = static_cast<flagfftDoubleReal*>(allocate_device(total_real * sizeof(flagfftDoubleReal)));
-    d_mid = static_cast<flagfftDoubleComplex*>(allocate_device(total_complex * sizeof(flagfftDoubleComplex)));
-    d_out = static_cast<flagfftDoubleReal*>(allocate_device(total_real * sizeof(flagfftDoubleReal)));
+    in_memory.allocate(total_real * sizeof(flagfftDoubleReal));
+    mid_memory.allocate(total_complex * sizeof(flagfftDoubleComplex));
+    out_memory.allocate(total_real * sizeof(flagfftDoubleReal));
+    d_in = static_cast<flagfftDoubleReal*>(in_memory.data());
+    d_mid = static_cast<flagfftDoubleComplex*>(mid_memory.data());
+    d_out = static_cast<flagfftDoubleReal*>(out_memory.data());
     ASSERT_NE(d_in, nullptr);
     ASSERT_NE(d_mid, nullptr);
     ASSERT_NE(d_out, nullptr);
 
-    copy_host_to_device(h_in.data(), d_in, total_real * sizeof(flagfftDoubleReal));
+    in_memory.copy_from_host(h_in.data(), total_real * sizeof(flagfftDoubleReal));
   }
 
   void TearDown() override {
-    if (d_in) free_device(d_in);
-    if (d_mid) free_device(d_mid);
-    if (d_out) free_device(d_out);
     if (plan_fwd) flagfftDestroy(plan_fwd);
     if (plan_inv) flagfftDestroy(plan_inv);
   }
@@ -43,6 +43,9 @@ class D2Z_Z2D_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
   flagfftHandle plan_fwd = nullptr;
   flagfftHandle plan_inv = nullptr;
   std::vector<flagfftDoubleReal> h_in;
+  flagfft::adaptor::Memory in_memory;
+  flagfft::adaptor::Memory mid_memory;
+  flagfft::adaptor::Memory out_memory;
   flagfftDoubleReal* d_in = nullptr;
   flagfftDoubleComplex* d_mid = nullptr;
   flagfftDoubleReal* d_out = nullptr;
@@ -54,7 +57,7 @@ TEST_P(D2Z_Z2D_Roundtrip_Test, Roundtrip1D) {
 
   std::vector<flagfftDoubleReal> h_out(total_real);
   std::vector<flagfftDoubleReal> h_expected(total_real);
-  copy_device_to_host(d_out, h_out.data(), total_real * sizeof(flagfftDoubleReal));
+  out_memory.copy_to_host(h_out.data(), total_real * sizeof(flagfftDoubleReal));
 
   for (int i = 0; i < total_real; ++i) {
     h_expected[i] = h_in[i] * N;
