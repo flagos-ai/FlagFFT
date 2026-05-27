@@ -4,7 +4,7 @@
 
 namespace flagfft::cli {
 
-std::vector<int> parse_shape(const std::string &value) {
+std::vector<int> parse_shape(const std::string& value) {
   std::vector<int> shape;
   std::size_t start = 0;
   while (start <= value.size()) {
@@ -23,9 +23,9 @@ std::vector<int> parse_shape(const std::string &value) {
         throw AssertionFailure("shape dimensions must be positive");
       }
       shape.push_back(n);
-    } catch (const std::invalid_argument &) {
+    } catch (const std::invalid_argument&) {
       throw AssertionFailure("invalid --shape: " + value);
-    } catch (const std::out_of_range &) {
+    } catch (const std::out_of_range&) {
       throw AssertionFailure("invalid --shape: " + value);
     }
     if (end == std::string::npos) break;
@@ -37,16 +37,14 @@ std::vector<int> parse_shape(const std::string &value) {
   return shape;
 }
 
-json case_json(const CaseSpec &spec) {
+json case_json(const CaseSpec& spec) {
   return {
       {      "api",         fft_api_name(spec.api)},
       {    "shape",                     spec.shape},
-      {     "rank",              spec.shape.size()},
+      {     "rank",                      spec.rank},
       {    "batch",                     spec.batch},
       {"direction", direction_name(spec.direction)},
       {"placement", placement_name(spec.placement)},
-      { "plan_api",   plan_api_name(spec.plan_api)},
-      {   "stream",                    spec.stream},
   };
 }
 
@@ -66,34 +64,6 @@ bool is_real_inverse_api(FftApi api) {
   return api == FftApi::C2R || api == FftApi::Z2D;
 }
 
-std::string unsupported_reason(const CaseSpec &spec, Operation operation) {
-  if (spec.shape.size() != 1) {
-    return "rank-2 and rank-3 transforms are expressible but not implemented";
-  }
-  if (operation == Operation::Tune) {
-    if (spec.api != FftApi::C2C || spec.placement != Placement::OutOfPlace ||
-        spec.plan_api != PlanApi::Plan1d) {
-      return "tuning currently supports only 1D out-of-place c2c with plan1d";
-    }
-    return {};
-  }
-  if (spec.plan_api == PlanApi::Plan2d || spec.plan_api == PlanApi::Plan3d) {
-    return "plan2d and plan3d are not implemented";
-  }
-  if (spec.plan_api == PlanApi::PlanMany &&
-      !(spec.placement == Placement::InPlace &&
-        (is_real_forward_api(spec.api) || is_real_inverse_api(spec.api)))) {
-    return "planmany is enabled only for verified in-place padded real layouts";
-  }
-  if (is_real_forward_api(spec.api) && spec.direction != FLAGFFT_FORWARD) {
-    return "real-to-complex APIs support only forward direction";
-  }
-  if (is_real_inverse_api(spec.api) && spec.direction != FLAGFFT_INVERSE) {
-    return "complex-to-real APIs support only inverse direction";
-  }
-  return {};
-}
-
 flagfftType flagfft_type(FftApi api) {
   switch (api) {
     case FftApi::C2C:
@@ -110,24 +80,6 @@ flagfftType flagfft_type(FftApi api) {
       return FLAGFFT_Z2D;
   }
   return FLAGFFT_C2C;
-}
-
-cufftType cufft_type(FftApi api) {
-  switch (api) {
-    case FftApi::C2C:
-      return CUFFT_C2C;
-    case FftApi::Z2Z:
-      return CUFFT_Z2Z;
-    case FftApi::R2C:
-      return CUFFT_R2C;
-    case FftApi::D2Z:
-      return CUFFT_D2Z;
-    case FftApi::C2R:
-      return CUFFT_C2R;
-    case FftApi::Z2D:
-      return CUFFT_Z2D;
-  }
-  return CUFFT_C2C;
 }
 
 }  // namespace flagfft::cli
