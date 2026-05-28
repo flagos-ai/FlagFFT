@@ -1,13 +1,6 @@
 #include "cli_utils.hpp"
 
-#include <algorithm>
-#include <array>
-#include <cstdlib>
-#include <filesystem>
-#include <iostream>
 #include <sstream>
-
-#include <unistd.h>
 
 #include "adaptor/adaptor.h"
 
@@ -59,8 +52,23 @@ int parse_rank(const std::string &value) {
   throw AssertionFailure("invalid --rank: " + value + " (expected 1, 2, or 3)");
 }
 
-std::string rank_name(int rank) {
-  return std::to_string(rank);
+int parse_positive(const std::string &name, const char *value, bool allow_zero) {
+  try {
+    const std::string token = value;
+    std::size_t consumed = 0;
+    const int result = std::stoi(token, &consumed);
+    if (consumed != token.size()) {
+      throw AssertionFailure("invalid value for " + name);
+    }
+    if ((allow_zero && result < 0) || (!allow_zero && result <= 0)) {
+      throw AssertionFailure(name + " must be " + (allow_zero ? "non-negative" : "positive"));
+    }
+    return result;
+  } catch (const std::invalid_argument &) {
+    throw AssertionFailure("invalid value for " + name);
+  } catch (const std::out_of_range &) {
+    throw AssertionFailure("invalid value for " + name);
+  }
 }
 
 CliException::CliException(std::string message, int exit_code)
@@ -136,80 +144,12 @@ bool has_cuda_device(std::string &reason) {
   }
 }
 
-std::string shell_quote(const std::string &value) {
-  std::string out = "'";
-  for (char c : value) {
-    if (c == '\'') {
-      out += "'\\''";
-    } else {
-      out += c;
-    }
-  }
-  out += "'";
-  return out;
-}
-
-std::string executable_path(const char *argv0) {
-  std::array<char, 4096> buffer {};
-  ssize_t n = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
-  if (n > 0) {
-    buffer[static_cast<std::size_t>(n)] = '\0';
-    return buffer.data();
-  }
-  std::filesystem::path from_argv = argv0 == nullptr ? std::filesystem::path {} : argv0;
-  if (from_argv.empty()) {
-    return (std::filesystem::current_path() / "flagfft-cli").string();
-  }
-  std::error_code ec;
-  return std::filesystem::absolute(from_argv, ec).string();
-}
-
-std::string executable_dir(const char *argv0) {
-  return std::filesystem::path(executable_path(argv0)).parent_path().string();
-}
-
 void check_flagfft(flagfftResult result, const std::string &context) {
   if (result != FLAGFFT_SUCCESS) {
     std::ostringstream oss;
     oss << context << ": " << flagfft_result_name(result) << " (" << static_cast<int>(result) << ")";
     throw CliException(oss.str(), kExitRuntimeError);
   }
-}
-
-void expect_flagfft(flagfftResult actual, flagfftResult expected, const std::string &context) {
-  if (actual != expected) {
-    std::ostringstream oss;
-    oss << context << ": expected " << flagfft_result_name(expected) << ", got "
-        << flagfft_result_name(actual) << " (" << static_cast<int>(actual) << ")";
-    throw AssertionFailure(oss.str());
-  }
-}
-
-void expect_true(bool condition, const std::string &context) {
-  if (!condition) {
-    throw AssertionFailure(context);
-  }
-}
-
-int exit_code_for_report(const json &report) {
-  if (report.contains("_exit_code")) {
-    return report.at("_exit_code").get<int>();
-  }
-  const std::string status = report.value("status", "failed");
-  if (status == "passed") {
-    return kExitPassed;
-  }
-  if (status == "skipped" || status == "unsupported") {
-    return kExitSkipped;
-  }
-  return kExitFailed;
-}
-
-int emit_json_report(json report) {
-  const int code = exit_code_for_report(report);
-  report.erase("_exit_code");
-  std::cout << report.dump() << "\n";
-  return code;
 }
 
 }  // namespace flagfft::cli

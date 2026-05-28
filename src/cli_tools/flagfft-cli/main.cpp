@@ -43,25 +43,6 @@ void print_usage() {
                "  --print-path              Include plan description in output\n";
 }
 
-int parse_positive(const std::string& name, const char* value, bool allow_zero = false) {
-  try {
-    const std::string token = value;
-    std::size_t consumed = 0;
-    const int result = std::stoi(token, &consumed);
-    if (consumed != token.size()) {
-      throw AssertionFailure("invalid value for " + name);
-    }
-    if ((allow_zero && result < 0) || (!allow_zero && result <= 0)) {
-      throw AssertionFailure(name + " must be " + (allow_zero ? "non-negative" : "positive"));
-    }
-    return result;
-  } catch (const std::invalid_argument&) {
-    throw AssertionFailure("invalid value for " + name);
-  } catch (const std::out_of_range&) {
-    throw AssertionFailure("invalid value for " + name);
-  }
-}
-
 Args parse_args(int argc, char** argv) {
   if (argc < 2 || std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h") {
     print_usage();

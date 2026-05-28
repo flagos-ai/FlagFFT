@@ -27,7 +27,8 @@ Placement parse_placement(const std::string& value);
 std::string placement_name(Placement p);
 
 int parse_rank(const std::string& value);
-std::string rank_name(int rank);
+
+int parse_positive(const std::string& name, const char* value, bool allow_zero = false);
 
 class CliException : public std::runtime_error {
  public:
@@ -48,15 +49,7 @@ std::string direction_name(int direction);
 int parse_direction(const std::string& value);
 
 bool has_cuda_device(std::string& reason);
-std::string shell_quote(const std::string& value);
-std::string executable_path(const char* argv0);
-std::string executable_dir(const char* argv0);
 
 void check_flagfft(flagfftResult result, const std::string& context);
-void expect_flagfft(flagfftResult actual, flagfftResult expected, const std::string& context);
-void expect_true(bool condition, const std::string& context);
-
-int exit_code_for_report(const json& report);
-int emit_json_report(json report);
 
 }  // namespace flagfft::cli
