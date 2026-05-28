@@ -189,6 +189,8 @@ Common case options are `--api c2c|z2z|r2c|d2z|c2r|z2d`,
 `--batch`, `--direction forward|inverse`, and `--placement
 out-of-place|in-place`. `--print-path` adds the plan description. `tune` is
 currently a placeholder and exits with an unsupported status.
+Real-to-complex APIs (`r2c`, `d2z`) only accept `forward`; complex-to-real
+APIs (`c2r`, `z2d`) only accept `inverse`.
 The cuFFT use in this CLI is a CUDA-only correctness and performance oracle;
 the FlagFFT library API and its stream handle do not expose CUDA types.
 Integer option tokens must be fully numeric; for example, `--shape 16suffix`
@@ -342,8 +344,8 @@ same binaries.
 ## Python Benchmark Suite
 
 The `benchmark/` directory provides parametrized pytest-based performance
-benchmarking that invokes `flagfft-cli bench` and validates correctness,
-timings, and speedup against cuFFT.
+benchmarking that invokes `flagfft-cli bench` and records timing and speedup
+against the reference implementation.
 
 ### Quick start
 
@@ -352,49 +354,53 @@ timings, and speedup against cuFFT.
 cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
 
-# Smoke test (2 sizes, fast — verify the pipeline works)
-pytest benchmark/test_bench_smoke.py -v
+# Quick CLI verification with warmup=1 and iters=1
+pytest tests/test_bench_cli.py -v --flagfft-cli ./build/flagfft-cli
 
-# Full benchmark (13 sizes)
-pytest benchmark/test_bench_full.py -v
-
-# Generate Markdown + JSON report (one-shot, skipped by default)
-pytest benchmark/test_bench_full.py::test_bench_full_report -v -s
+# Smoke benchmark suite
+pytest benchmark/test_bench.py -v --bench-suite=smoke \
+  --flagfft-cli ./build/flagfft-cli
+# Add -p no:xdist if pytest-xdist is installed
 ```
 
 ### Test sizes
 
 | Suite | Sizes | Count |
 |-------|-------|-------|
-| Smoke | 256, 512 | 2 |
-| Full | 16, 23, 64, 81, 243, 256, 361, 512, 997, 2048, 4096, 8192, 16384 | 13 |
+| Smoke | 16, 256, 2048 | 3 |
+| Typical | All sizes at batch 1, plus selected multi-batch cases | 13 sizes |
+| Full | 16, 23, 64, 81, 243, 256, 361, 512, 997, 2048, 4096, 8192, 16384 | 13 sizes |
 
 The full suite covers powers of two (`16`–`16384`), primes (`23`, `997`),
 composite non-powers-of-two (`81`, `243`, `361`), and mixed factors.
 
-Each size is tested against `c2c` and `z2z` APIs in both `forward` and
-`inverse` directions (4 combinations per size). Every case verifies:
+Each suite expands all six APIs with their valid directions: `c2c` and `z2z`
+use both `forward` and `inverse`; `r2c` and `d2z` use `forward`; `c2r` and
+`z2d` use `inverse`. Quick CLI verification asserts:
 - CLI exit code 0
-- `correctness.passed == true` (against cuFFT reference)
 - `timing.flagfft_median_ms > 0`
+- `timing.ref_median_ms > 0`
+- `timing.speedup` is present
 
 ### CLI options
 
 Customise warmup, iterations, and CLI path via pytest flags:
 
 ```sh
-pytest benchmark/test_bench_smoke.py -v \
+pytest benchmark/test_bench.py -v --bench-suite=smoke \
   --bench-warmup 20 --bench-iters 50
 
-pytest benchmark/test_bench_full.py -v \
+pytest benchmark/test_bench.py -v \
   --flagfft-cli ./build/flagfft-cli
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--flagfft-cli` | `build/flagfft-cli` or `$FLAGFFT_CLI_EXE` | Path to the CLI binary |
-| `--bench-warmup` | 5 | Warmup iterations before timing |
-| `--bench-iters` | 10 | Timed benchmark iterations |
+| `--bench-warmup` | 10 | Warmup iterations before timing |
+| `--bench-iters` | 100 | Timed benchmark iterations |
+| `--bench-suite` | `typical` | Suite: `smoke`, `typical`, or `full` |
+| `--bench-csv` | auto path | CSV output path; empty string disables CSV |
 
 If no CUDA device is available, tests are skipped automatically.
 
@@ -409,24 +415,26 @@ If no CUDA device is available, tests are skipped automatically.
 | `run_benchmark` | function | Shortcut: `run_benchmark(size, api, direction)` with all bench options preset |
 | `bench_warmup` | session | `--bench-warmup` value |
 | `bench_iters` | session | `--bench-iters` value |
+| `bench_suite` | session | `--bench-suite` value |
+| `bench_csv` | session | `--bench-csv` value |
 
 ### Report generation
 
-`report.py` produces Markdown tables and pretty-printed JSON from aggregated
-benchmark results:
+`benchmark.utils.report` produces console tables, CSV, Markdown, and
+pretty-printed JSON from aggregated benchmark results:
 
 ```python
-from benchmark.report import generate_markdown, generate_json_report
+from benchmark.utils.report import generate_csv, generate_markdown, generate_json_report
 
 results = {"cases": [...]}   # collected CLI JSON outputs
 print(generate_markdown(results))
+print(generate_csv(results["cases"]))
 print(generate_json_report(results))
 ```
 
 The Markdown report includes a per-case table (size, API, direction, FlagFFT
-ms, cuFFT ms, speedup, correctness) and summary statistics (pass rate, median
-range, geometric mean). `test_bench_full_report` demonstrates end-to-end
-collection + report writing to `tmp_path`.
+ms, reference ms, speedup, and optional correctness) and summary statistics.
+CSV uses `ref_median_ms` for the reference timing column.
 
 ## Code Style
 

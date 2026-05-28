@@ -1,6 +1,6 @@
 """Benchmark conftest: loads the shared pytest plugin with benchmark defaults.
 
-Ensure bench tests run serially: use -p no:xdist.
+If pytest-xdist is installed, add -p no:xdist to force serial execution.
 """
 
 from __future__ import annotations
