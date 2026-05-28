@@ -64,6 +64,8 @@ def test_bench_basic_table(flagfft_cli) -> None:
     assert "speedup" in result.stdout
     assert "flagfft_median_ms" in result.stdout
     assert "ref_median_ms" in result.stdout
+    assert "warmup" in result.stdout
+    assert "iters" in result.stdout
 
 
 def test_bench_json(invoke_cli) -> None:

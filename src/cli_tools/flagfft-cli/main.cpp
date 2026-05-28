@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
     if (args.json_output) {
       std::cout << format_json(args.cases, results, args.warmup, args.iters).dump(2) << "\n";
     } else {
-      std::cout << format_table(args.cases, results);
+      std::cout << format_table(args.cases, results, args.warmup, args.iters);
     }
 
     return 0;

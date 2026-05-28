@@ -7,11 +7,14 @@
 
 namespace flagfft::cli::bench {
 
-std::string format_table(const std::vector<CaseSpec>& cases, const std::vector<BenchResult>& results) {
+std::string format_table(const std::vector<CaseSpec>& cases,
+                         const std::vector<BenchResult>& results,
+                         int warmup,
+                         int iters) {
   std::ostringstream out;
   out << std::left << std::setw(12) << "shape" << std::setw(8) << "api" << std::setw(7) << "batch"
-      << std::setw(11) << "direction" << std::setw(14) << "placement" << std::setw(17) << "flagfft_median_ms"
-      << std::setw(14) << "ref_median_ms"
+      << std::setw(11) << "direction" << std::setw(14) << "placement" << std::setw(8) << "warmup"
+      << std::setw(7) << "iters" << std::setw(17) << "flagfft_median_ms" << std::setw(14) << "ref_median_ms"
       << "speedup\n";
 
   for (std::size_t i = 0; i < cases.size(); ++i) {
@@ -26,9 +29,9 @@ std::string format_table(const std::vector<CaseSpec>& cases, const std::vector<B
 
     out << std::left << std::setw(12) << shape_str << std::setw(8) << fft_api_name(spec.api) << std::setw(7)
         << spec.batch << std::setw(11) << direction_name(spec.direction) << std::setw(14)
-        << placement_name(spec.placement) << std::fixed << std::setprecision(4) << std::setw(17)
-        << r.flagfft.median_ms << std::setw(14) << r.reference.median_ms << std::setprecision(2) << r.speedup
-        << "x\n";
+        << placement_name(spec.placement) << std::setw(8) << warmup << std::setw(7) << iters << std::fixed
+        << std::setprecision(4) << std::setw(17) << r.flagfft.median_ms << std::setw(14)
+        << r.reference.median_ms << std::setprecision(2) << r.speedup << "x\n";
   }
   return out.str();
 }

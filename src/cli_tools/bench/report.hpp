@@ -8,7 +8,10 @@
 
 namespace flagfft::cli::bench {
 
-std::string format_table(const std::vector<CaseSpec>& cases, const std::vector<BenchResult>& results);
+std::string format_table(const std::vector<CaseSpec>& cases,
+                         const std::vector<BenchResult>& results,
+                         int warmup,
+                         int iters);
 
 nlohmann::json format_json(const std::vector<CaseSpec>& cases,
                            const std::vector<BenchResult>& results,
