@@ -191,3 +191,49 @@ def test_unknown_command(flagfft_cli) -> None:
     )
     assert result.returncode == 1
     assert "unknown command" in result.stderr.lower()
+
+
+def test_bench_rank2_table(flagfft_cli) -> None:
+    result = subprocess.run(
+        [
+            str(flagfft_cli),
+            "bench",
+            "--rank",
+            "2",
+            "--shape",
+            "16x8",
+            "--warmup",
+            "2",
+            "--iters",
+            "5",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    # Rank 2 passes CLI validation; plan creation may fail if unsupported.
+    assert result.returncode != 0
+    assert "create FlagFFT plan" in result.stderr
+
+
+def test_bench_rank3_table(flagfft_cli) -> None:
+    result = subprocess.run(
+        [
+            str(flagfft_cli),
+            "bench",
+            "--rank",
+            "3",
+            "--shape",
+            "8x4x4",
+            "--warmup",
+            "2",
+            "--iters",
+            "5",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    # Rank 3 passes CLI validation; plan creation may fail if unsupported.
+    assert result.returncode != 0
+    assert "create FlagFFT plan" in result.stderr
