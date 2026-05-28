@@ -1,9 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 #include <nlohmann/json.hpp>
 
