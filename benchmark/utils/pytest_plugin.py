@@ -93,7 +93,7 @@ def _and_markexpr(current: str, condition: str) -> str:
 
 @pytest.fixture(scope="session")
 def flagfft_cli(request) -> Path:
-    configured = request.config.getoption("--flagfft-cli")
+    configured = request.config.getoption("flagfft_cli")
     path = Path(
         configured or os.environ.get("FLAGFFT_CLI_EXE", ROOT / "build" / "flagfft-cli")
     )
@@ -160,7 +160,7 @@ def run_benchmark(invoke_cli, bench_warmup, bench_iters):
 
 @pytest.fixture(scope="session")
 def bench_warmup(request) -> int:
-    val = request.config.getoption("--bench-warmup")
+    val = request.config.getoption("bench_warmup")
     if val is not None:
         return val
     return _DEFAULTS["warmup"]
@@ -168,7 +168,7 @@ def bench_warmup(request) -> int:
 
 @pytest.fixture(scope="session")
 def bench_iters(request) -> int:
-    val = request.config.getoption("--bench-iters")
+    val = request.config.getoption("bench_iters")
     if val is not None:
         return val
     return _DEFAULTS["iters"]
@@ -176,7 +176,7 @@ def bench_iters(request) -> int:
 
 @pytest.fixture(scope="session")
 def bench_suite(request) -> str:
-    val = request.config.getoption("--bench-suite")
+    val = request.config.getoption("bench_suite")
     if val is not None:
         return val
     return _DEFAULTS["suite"]
@@ -185,7 +185,7 @@ def bench_suite(request) -> str:
 @pytest.fixture(scope="session")
 def bench_csv(request) -> str | None:
     """Resolved CSV path. None = auto, '' = disabled, otherwise user path."""
-    val = request.config.getoption("--bench-csv")
+    val = request.config.getoption("bench_csv")
     if val is not None:
         return val if val != "" else ""
     return _DEFAULTS["csv"]
@@ -209,7 +209,7 @@ def record_result(bench_collector):
 
 
 def _resolve_csv_path(config) -> Path | None:
-    csv_opt = config.getoption("bench-csv")
+    csv_opt = config.getoption("bench_csv")
     if csv_opt is not None and csv_opt == "":
         return None  # explicitly disabled
     if csv_opt is not None:
@@ -236,11 +236,11 @@ def pytest_sessionfinish(session):
     results = collector.get_results()
 
     # Resolve suite/warmup/iters from actual config options (not _DEFAULTS directly)
-    suite = session.config.getoption("bench-suite") or _DEFAULTS["suite"]
-    warmup = session.config.getoption("bench-warmup")
+    suite = session.config.getoption("bench_suite") or _DEFAULTS["suite"]
+    warmup = session.config.getoption("bench_warmup")
     if warmup is None:
         warmup = _DEFAULTS["warmup"]
-    iters = session.config.getoption("bench-iters")
+    iters = session.config.getoption("bench_iters")
     if iters is None:
         iters = _DEFAULTS["iters"]
 

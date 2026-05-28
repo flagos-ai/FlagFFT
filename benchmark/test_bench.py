@@ -13,12 +13,11 @@ from benchmark.utils.suites import get_suite
 
 def pytest_generate_tests(metafunc):
     """Parametrize at collection time, filtered by --bench-suite."""
-    try:
-        suite_name = metafunc.config.getoption("bench_suite")
-    except ValueError:
-        suite_name = None
+    suite_name = metafunc.config.getoption("bench_suite")
     if suite_name is None:
-        suite_name = "typical"
+        from benchmark.utils.pytest_plugin import _DEFAULTS
+
+        suite_name = _DEFAULTS["suite"]
     suite = get_suite(suite_name)
 
     from benchmark.utils.suites import expand_params
