@@ -230,9 +230,15 @@ def pytest_sessionfinish(session):
         return
 
     results = collector.get_results()
-    suite = _DEFAULTS["suite"]
-    warmup = _DEFAULTS["warmup"]
-    iters = _DEFAULTS["iters"]
+
+    # Resolve suite/warmup/iters from actual config options (not _DEFAULTS directly)
+    suite = session.config.getoption("bench-suite") or _DEFAULTS["suite"]
+    warmup = session.config.getoption("bench-warmup")
+    if warmup is None:
+        warmup = _DEFAULTS["warmup"]
+    iters = session.config.getoption("bench-iters")
+    if iters is None:
+        iters = _DEFAULTS["iters"]
 
     # Console table
     table = generate_console_table(results, suite, warmup, iters)
