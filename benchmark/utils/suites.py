@@ -48,7 +48,7 @@ def expand_params(suite: dict):
     Handles the 'extra' key for TYPICAL suite: additional (size, batch)
     pairs beyond the base sizes x batches cross product.
     """
-    apis = ["c2c", "z2z", "r2c", "c2r", "d2z", "z2d"]
+    apis = ALL_APIS
     seen = set()
 
     # Base: sizes x batches x apis
