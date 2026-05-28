@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include <algorithm>
 #include <cstdint>
 
 #include "adaptor/adaptor.h"
@@ -488,49 +489,133 @@ struct Test1DParam {
   int batch;
 };
 
-// Registry — add/remove sizes and batch values here
-constexpr int k1DSizesSmall[] = {16, 23, 64, 81};
-constexpr int k1DSizesMedium[] = {243, 256, 361, 512, 997};
-constexpr int k1DSizesLarge[] = {2048, 4096, 8192, 16384};
-constexpr int k1DBatchValues[] = {1, 4, 256};
+// =========================================================================
+// Algorithm-specific size and batch definitions
+// =========================================================================
 
-inline std::vector<Test1DParam> Generate1DParams(const int* sizes, int numSizes) {
+// Cooley-Tukey sizes: fully factorable by supported radices {2..19}
+constexpr int k1DSizesCT[] = {16, 64, 81, 243, 256, 361, 512, 2048, 4096, 8192, 16384};
+constexpr int k1DNumSizesCT = sizeof(k1DSizesCT) / sizeof(k1DSizesCT[0]);
+
+constexpr int k1DSizesCTSmall[] = {16, 64, 81};
+constexpr int k1DSizesCTMedium[] = {243, 256, 361, 512};
+constexpr int k1DSizesCTLarge[] = {2048, 4096, 8192, 16384};
+
+// Bluestein sizes: primes that cannot be factored by supported radices
+constexpr int k1DSizesBS[] = {23, 997};
+constexpr int k1DNumSizesBS = sizeof(k1DSizesBS) / sizeof(k1DSizesBS[0]);
+
+constexpr int k1DSizesBSSmall[] = {23};
+constexpr int k1DSizesBSMedium[] = {997};
+
+// Batch mode arrays
+constexpr int kBatchSingle[] = {1};
+constexpr int kBatchMulti[] = {4, 256};
+
+inline std::vector<Test1DParam> GenerateFiltered1DParams(const int* sizes,
+                                                         int numSizes,
+                                                         const int* batches,
+                                                         int numBatches) {
   std::vector<Test1DParam> params;
   for (int i = 0; i < numSizes; ++i)
-    for (int b : k1DBatchValues) params.push_back({sizes[i], b});
+    for (int b = 0; b < numBatches; ++b) params.push_back({sizes[i], batches[b]});
   return params;
 }
 
-inline bool IsSmoke1DParam(const Test1DParam& param) {
-  return param.batch == 1 && (param.N == 16 || param.N == 997 || param.N == 16384);
+// Smoke filters per algorithm
+inline bool IsSmoke1DParamCT(const Test1DParam& param) {
+  return param.batch == 1 && (param.N == 16 || param.N == 16384);
 }
 
-inline std::vector<Test1DParam> Generate1DParamsSmoke() {
+inline bool IsSmoke1DParamBS(const Test1DParam& param) {
+  return param.batch == 1 && param.N == 997;
+}
+
+// ---------------------------------------------------------------------------
+// Cooley-Tukey Single (batch=1) generators
+// ---------------------------------------------------------------------------
+
+inline std::vector<Test1DParam> Generate1DParamsCTSmokeSingle() {
   return {
       {   16, 1},
-      {  997, 1},
       {16384, 1}
   };
 }
 
-inline std::vector<Test1DParam> Generate1DParamsExtended(const int* sizes, int numSizes) {
-  std::vector<Test1DParam> params;
-  for (const auto& param : Generate1DParams(sizes, numSizes)) {
-    if (!IsSmoke1DParam(param)) {
-      params.push_back(param);
-    }
-  }
+inline std::vector<Test1DParam> Generate1DParamsCTExtendedSmallSingle() {
+  auto params = GenerateFiltered1DParams(k1DSizesCTSmall, 3, kBatchSingle, 1);
+  params.erase(std::remove_if(params.begin(), params.end(), IsSmoke1DParamCT), params.end());
   return params;
 }
 
-inline std::vector<Test1DParam> Generate1DParamsExtendedSmall() {
-  return Generate1DParamsExtended(k1DSizesSmall, sizeof(k1DSizesSmall) / sizeof(k1DSizesSmall[0]));
+inline std::vector<Test1DParam> Generate1DParamsCTExtendedMediumSingle() {
+  auto params = GenerateFiltered1DParams(k1DSizesCTMedium, 4, kBatchSingle, 1);
+  params.erase(std::remove_if(params.begin(), params.end(), IsSmoke1DParamCT), params.end());
+  return params;
 }
-inline std::vector<Test1DParam> Generate1DParamsExtendedMedium() {
-  return Generate1DParamsExtended(k1DSizesMedium, sizeof(k1DSizesMedium) / sizeof(k1DSizesMedium[0]));
+
+inline std::vector<Test1DParam> Generate1DParamsCTExtendedLargeSingle() {
+  auto params = GenerateFiltered1DParams(k1DSizesCTLarge, 4, kBatchSingle, 1);
+  params.erase(std::remove_if(params.begin(), params.end(), IsSmoke1DParamCT), params.end());
+  return params;
 }
-inline std::vector<Test1DParam> Generate1DParamsExtendedLarge() {
-  return Generate1DParamsExtended(k1DSizesLarge, sizeof(k1DSizesLarge) / sizeof(k1DSizesLarge[0]));
+
+// ---------------------------------------------------------------------------
+// Cooley-Tukey Batch (batch in {4,256}) generators
+// ---------------------------------------------------------------------------
+
+inline std::vector<Test1DParam> Generate1DParamsCTExtendedSmallBatch() {
+  return GenerateFiltered1DParams(k1DSizesCTSmall, 3, kBatchMulti, 2);
+}
+
+inline std::vector<Test1DParam> Generate1DParamsCTExtendedMediumBatch() {
+  return GenerateFiltered1DParams(k1DSizesCTMedium, 4, kBatchMulti, 2);
+}
+
+inline std::vector<Test1DParam> Generate1DParamsCTExtendedLargeBatch() {
+  return GenerateFiltered1DParams(k1DSizesCTLarge, 4, kBatchMulti, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Bluestein Single (batch=1) generators
+// ---------------------------------------------------------------------------
+
+inline std::vector<Test1DParam> Generate1DParamsBSSmokeSingle() {
+  return {
+      {997, 1}
+  };
+}
+
+inline std::vector<Test1DParam> Generate1DParamsBSExtendedSmallSingle() {
+  auto params = GenerateFiltered1DParams(k1DSizesBSSmall, 1, kBatchSingle, 1);
+  params.erase(std::remove_if(params.begin(), params.end(), IsSmoke1DParamBS), params.end());
+  return params;
+}
+
+inline std::vector<Test1DParam> Generate1DParamsBSExtendedMediumSingle() {
+  auto params = GenerateFiltered1DParams(k1DSizesBSMedium, 1, kBatchSingle, 1);
+  params.erase(std::remove_if(params.begin(), params.end(), IsSmoke1DParamBS), params.end());
+  return params;
+}
+
+inline std::vector<Test1DParam> Generate1DParamsBSExtendedLargeSingle() {
+  return {};
+}
+
+// ---------------------------------------------------------------------------
+// Bluestein Batch (batch in {4,256}) generators
+// ---------------------------------------------------------------------------
+
+inline std::vector<Test1DParam> Generate1DParamsBSExtendedSmallBatch() {
+  return GenerateFiltered1DParams(k1DSizesBSSmall, 1, kBatchMulti, 2);
+}
+
+inline std::vector<Test1DParam> Generate1DParamsBSExtendedMediumBatch() {
+  return GenerateFiltered1DParams(k1DSizesBSMedium, 1, kBatchMulti, 2);
+}
+
+inline std::vector<Test1DParam> Generate1DParamsBSExtendedLargeBatch() {
+  return {};
 }
 
 }  // namespace flagfft_test

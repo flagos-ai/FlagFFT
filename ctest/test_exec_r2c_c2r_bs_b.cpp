@@ -2,7 +2,7 @@
 
 using namespace flagfft_test;
 
-class R2C_C2R_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
+class R2C_C2RBSBatch_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
   void SetUp() override {
     auto p = GetParam();
@@ -51,7 +51,7 @@ class R2C_C2R_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
   flagfftReal* d_out = nullptr;
 };
 
-TEST_P(R2C_C2R_Roundtrip_Test, Roundtrip1D) {
+TEST_P(R2C_C2RBSBatch_Test, Roundtrip1D) {
   ExecR2C(plan_fwd, d_in, d_mid);
   ExecC2R(plan_inv, d_mid, d_out);
 
@@ -69,27 +69,21 @@ TEST_P(R2C_C2R_Roundtrip_Test, Roundtrip1D) {
                             batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
-                         R2C_C2R_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsSmoke()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
 INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         R2C_C2R_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedSmall()),
+                         R2C_C2RBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedSmallBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         R2C_C2R_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedMedium()),
+                         R2C_C2RBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedMediumBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         R2C_C2R_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedLarge()),
+                         R2C_C2RBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedLargeBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

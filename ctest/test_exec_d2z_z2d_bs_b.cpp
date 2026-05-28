@@ -2,7 +2,7 @@
 
 using namespace flagfft_test;
 
-class D2Z_Z2D_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
+class D2Z_Z2DBSBatch_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
   void SetUp() override {
     auto p = GetParam();
@@ -51,7 +51,7 @@ class D2Z_Z2D_Roundtrip_Test : public ::testing::TestWithParam<Test1DParam> {
   flagfftDoubleReal* d_out = nullptr;
 };
 
-TEST_P(D2Z_Z2D_Roundtrip_Test, Roundtrip1D) {
+TEST_P(D2Z_Z2DBSBatch_Test, Roundtrip1D) {
   ExecD2Z(plan_fwd, d_in, d_mid);
   ExecZ2D(plan_inv, d_mid, d_out);
 
@@ -69,27 +69,21 @@ TEST_P(D2Z_Z2D_Roundtrip_Test, Roundtrip1D) {
                             batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
-                         D2Z_Z2D_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsSmoke()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
 INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         D2Z_Z2D_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedSmall()),
+                         D2Z_Z2DBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedSmallBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         D2Z_Z2D_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedMedium()),
+                         D2Z_Z2DBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedMediumBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         D2Z_Z2D_Roundtrip_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedLarge()),
+                         D2Z_Z2DBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedLargeBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
