@@ -269,6 +269,6 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "bench" in item.keywords:
             continue
-        fixture_names = getattr(item, "fixturenames", set())
+        fixture_names = set(getattr(item, "fixturenames", set()))
         if fixture_names & {"invoke_cli", "run_benchmark"}:
             item.add_marker(pytest.mark.bench)

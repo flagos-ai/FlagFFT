@@ -112,6 +112,12 @@ Args parse_args(int argc, char** argv) {
     if (static_cast<int>(c.shape.size()) != c.rank) {
       throw AssertionFailure("--shape dimension count does not match --rank");
     }
+    if (is_real_forward_api(c.api) && c.direction != FLAGFFT_FORWARD) {
+      throw AssertionFailure(fft_api_name(c.api) + " only supports forward direction");
+    }
+    if (is_real_inverse_api(c.api) && c.direction != FLAGFFT_INVERSE) {
+      throw AssertionFailure(fft_api_name(c.api) + " only supports inverse direction");
+    }
   }
 
   return args;

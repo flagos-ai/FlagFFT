@@ -20,16 +20,17 @@ def _build_table(records: list[dict[str, Any]]) -> str:
         "Direction",
         "Batch",
         "FlagFFT (ms)",
-        "cuFFT (ms)",
+        "Reference (ms)",
         "Speedup",
         "Correctness",
     ]
     rows = [headers]
 
     for r in records:
-        correctness = r.get("correctness", {})
-        passed = correctness.get("passed", False)
+        correctness = r.get("correctness")
+        passed = correctness.get("passed") if isinstance(correctness, dict) else None
         timing = r.get("timing", {})
+        ref_median_ms = timing.get("ref_median_ms", timing.get("cufft_median_ms", 0))
         rows.append(
             [
                 str(r.get("size", "")),
@@ -37,9 +38,9 @@ def _build_table(records: list[dict[str, Any]]) -> str:
                 str(r.get("direction", "")),
                 str(r.get("batch", "")),
                 f"{timing.get('flagfft_median_ms', 0):.4f}",
-                f"{timing.get('cufft_median_ms', 0):.4f}",
+                f"{ref_median_ms:.4f}",
                 f"{timing.get('speedup', 0):.2f}x",
-                "PASS" if passed else "FAIL",
+                "N/A" if passed is None else ("PASS" if passed else "FAIL"),
             ]
         )
 
@@ -67,7 +68,10 @@ def _geometric_mean(values: list[float]) -> float:
 
 def _compute_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Extract summary statistics from benchmark records."""
-    passed = sum(1 for r in records if r.get("correctness", {}).get("passed", False))
+    correctness_records = [r for r in records if isinstance(r.get("correctness"), dict)]
+    passed = sum(
+        1 for r in correctness_records if r["correctness"].get("passed", False)
+    )
     total = len(records)
     timings = [r.get("timing", {}) for r in records]
     flagfft_ms = [
@@ -79,6 +83,7 @@ def _compute_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "passed": passed,
         "total": total,
+        "correctness_total": len(correctness_records),
         "flagfft_ms": flagfft_ms,
         "speedups": speedups,
     }
@@ -92,20 +97,19 @@ def generate_console_table(
 ) -> str:
     """Generate a console-printable benchmark report with table and summary."""
     stats = _compute_stats(records)
-    passed, total = stats["passed"], stats["total"]
+    passed = stats["passed"]
 
     lines = [
         "=" * 84,
-        (
-            f"FlagFFT Benchmark Report  |  Suite: {suite}  |  Warmup: {warmup}"
-            f"  |  Iters: {iters}  |  Passed: {passed}/{total}"
-        ),
+        f"FlagFFT Benchmark Report  |  Suite: {suite}  |  Warmup: {warmup}"
+        f"  |  Iters: {iters}",
         "",
         _build_table(records),
     ]
 
     if records:
-        lines.append(f"Correctness: {passed}/{total} passed")
+        if stats["correctness_total"]:
+            lines.append(f"Correctness: {passed}/{stats['correctness_total']} passed")
         if stats["flagfft_ms"]:
             lines.append(
                 f"FlagFFT median range: {min(stats['flagfft_ms']):.4f}"
@@ -130,7 +134,7 @@ CSV_COLUMNS = [
     "batch",
     "backend",
     "flagfft_median_ms",
-    "cufft_median_ms",
+    "ref_median_ms",
     "speedup",
     "correctness_passed",
     "max_abs",
@@ -146,7 +150,14 @@ def generate_csv(records: list[dict[str, Any]]) -> str:
     writer = csv.DictWriter(output, fieldnames=CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
     for r in records:
-        correctness = r.get("correctness", {})
+        correctness = r.get("correctness")
+        correctness_passed = (
+            correctness.get("passed", False) if isinstance(correctness, dict) else ""
+        )
+        max_abs = (
+            correctness.get("max_abs", "") if isinstance(correctness, dict) else ""
+        )
+        rms = correctness.get("rms", "") if isinstance(correctness, dict) else ""
         timing = r.get("timing", {})
         writer.writerow(
             {
@@ -156,11 +167,13 @@ def generate_csv(records: list[dict[str, Any]]) -> str:
                 "batch": r.get("batch", ""),
                 "backend": r.get("backend", ""),
                 "flagfft_median_ms": timing.get("flagfft_median_ms", 0),
-                "cufft_median_ms": timing.get("cufft_median_ms", 0),
+                "ref_median_ms": timing.get(
+                    "ref_median_ms", timing.get("cufft_median_ms", 0)
+                ),
                 "speedup": timing.get("speedup", 0),
-                "correctness_passed": correctness.get("passed", False),
-                "max_abs": correctness.get("max_abs", ""),
-                "rms": correctness.get("rms", ""),
+                "correctness_passed": correctness_passed,
+                "max_abs": max_abs,
+                "rms": rms,
                 "warmup": r.get("warmup", ""),
                 "iters": r.get("iters", ""),
             }

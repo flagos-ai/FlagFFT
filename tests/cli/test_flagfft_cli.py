@@ -193,6 +193,38 @@ def test_rank_shape_mismatch(flagfft_cli) -> None:
     assert "dimension" in result.stderr.lower() or "rank" in result.stderr.lower()
 
 
+@pytest.mark.parametrize(
+    ("api", "direction"),
+    [
+        ("r2c", "inverse"),
+        ("d2z", "inverse"),
+        ("c2r", "forward"),
+        ("z2d", "forward"),
+    ],
+)
+def test_rejects_invalid_real_transform_direction(flagfft_cli, api, direction) -> None:
+    result = subprocess.run(
+        [
+            str(flagfft_cli),
+            "bench",
+            "--rank",
+            "1",
+            "--shape",
+            "16",
+            "--api",
+            api,
+            "--direction",
+            direction,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert api in result.stderr.lower()
+    assert "direction" in result.stderr.lower()
+
+
 def test_unknown_command(flagfft_cli) -> None:
     result = subprocess.run(
         [str(flagfft_cli), "test"], text=True, capture_output=True, check=False

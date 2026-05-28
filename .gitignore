@@ -10,3 +10,4 @@ AGENTS.md
 *.egg-info/
 test_fft
 build/
+benchmark/results/*.csv

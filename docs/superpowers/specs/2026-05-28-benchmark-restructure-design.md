@@ -152,8 +152,8 @@ No global state — the session fixture ensures single instance per pytest sessi
 
 Retain existing `generate_markdown()` and `generate_json_report()`. Add:
 
-- `generate_csv(records)` — CSV string. Columns: `size,api,direction,batch,backend,flagfft_median_ms,cufft_median_ms,speedup,correctness_passed,max_abs,rms,warmup,iters`
-- `generate_console_table(records, suite, warmup, iters)` — Markdown-formatted table + summary stats (geometric mean, pass rate, speedup)
+- `generate_csv(records)` — CSV string. Columns: `size,api,direction,batch,backend,flagfft_median_ms,ref_median_ms,speedup,correctness_passed,max_abs,rms,warmup,iters`
+- `generate_console_table(records, suite, warmup, iters)` — Markdown-formatted table + summary stats (geometric mean, optional pass rate, speedup)
 
 The `backend` column captures the active GPU backend name from the CLI JSON report.
 
@@ -177,7 +177,7 @@ Default: `benchmark/results/benchmark_YYYYMMDD_HHMMSS.csv`
 - `@pytest.mark.bench` — marks for serial requirement
 - Runs ALL 312 combinations with warm=1, iter=1 (hardcoded, ignores `--bench-warmup/--bench-iters`)
 - `pytest_generate_tests` parametrizes over full `ALL_SIZES × ALL_BATCHES × expand_api_directions(ALL_APIS)`
-- Full assertions: exit code 0, correctness passed, timing fields present
+- Full assertions: exit code 0 and timing fields present; bench-only JSON does not include `correctness`
 - Default `--bench-csv ""` (no CSV); user can opt in with `--bench-csv path.csv`
 
 ## pyproject.toml Changes
