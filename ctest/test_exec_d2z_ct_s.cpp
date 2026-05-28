@@ -2,7 +2,7 @@
 
 using namespace flagfft_test;
 
-class D2Z_1D_Test : public ::testing::TestWithParam<Test1DParam> {
+class D2ZCTSingle_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
   void SetUp() override {
     auto p = GetParam();
@@ -47,7 +47,7 @@ class D2Z_1D_Test : public ::testing::TestWithParam<Test1DParam> {
   flagfftDoubleComplex* d_ref = nullptr;
 };
 
-TEST_P(D2Z_1D_Test, ForwardVsReference) {
+TEST_P(D2ZCTSingle_Test, ForwardVsReference) {
   RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_D2Z, batch);
   std::vector<flagfftDoubleComplex> h_out(total_out);
@@ -69,26 +69,26 @@ TEST_P(D2Z_1D_Test, ForwardVsReference) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Smoke,
-                         D2Z_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsSmoke()),
+                         D2ZCTSingle_Test,
+                         ::testing::ValuesIn(Generate1DParamsCTSmokeSingle()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         D2Z_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedSmall()),
+                         D2ZCTSingle_Test,
+                         ::testing::ValuesIn(Generate1DParamsCTExtendedSmallSingle()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         D2Z_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedMedium()),
+                         D2ZCTSingle_Test,
+                         ::testing::ValuesIn(Generate1DParamsCTExtendedMediumSingle()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         D2Z_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedLarge()),
+                         D2ZCTSingle_Test,
+                         ::testing::ValuesIn(Generate1DParamsCTExtendedLargeSingle()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

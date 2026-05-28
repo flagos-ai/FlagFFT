@@ -2,7 +2,7 @@
 
 using namespace flagfft_test;
 
-class Z2D_1D_Test : public ::testing::TestWithParam<Test1DParam> {
+class Z2DBSSingle_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
   void SetUp() override {
     auto p = GetParam();
@@ -16,7 +16,6 @@ class Z2D_1D_Test : public ::testing::TestWithParam<Test1DParam> {
 
     h_in = random_double_complex(total_in, accuracy_seed(FLAGFFT_Z2D, N, batch));
 
-    // Ensure Hermitian symmetry: DC and Nyquist bins must have zero imaginary part
     for (int b = 0; b < batch; ++b) {
       h_in[b * (N / 2 + 1) + 0].y = 0.0;
       if (N % 2 == 0) h_in[b * (N / 2 + 1) + N / 2].y = 0.0;
@@ -53,7 +52,7 @@ class Z2D_1D_Test : public ::testing::TestWithParam<Test1DParam> {
   flagfftDoubleReal* d_ref = nullptr;
 };
 
-TEST_P(Z2D_1D_Test, InverseVsReference) {
+TEST_P(Z2DBSSingle_Test, InverseVsReference) {
   RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_Z2D, batch);
   std::vector<flagfftDoubleReal> h_out(total_out);
@@ -74,50 +73,27 @@ TEST_P(Z2D_1D_Test, InverseVsReference) {
   }
 }
 
-TEST(SmokeZ2DAccuracy, ZeroInputIsExact) {
-  constexpr int kN = 256;
-  constexpr int kInputCount = kN / 2 + 1;
-  flagfftHandle plan = nullptr;
-  Plan1d(&plan, kN, FLAGFFT_Z2D);
-  std::vector<flagfftDoubleComplex> h_in(kInputCount, {0.0, 0.0});
-  std::vector<flagfftDoubleReal> h_out(kN);
-  flagfft::adaptor::Memory in_memory(kInputCount * sizeof(flagfftDoubleComplex));
-  flagfft::adaptor::Memory out_memory(kN * sizeof(flagfftDoubleReal));
-  auto* d_in = static_cast<flagfftDoubleComplex*>(in_memory.data());
-  auto* d_out = static_cast<flagfftDoubleReal*>(out_memory.data());
-  ASSERT_NE(d_in, nullptr);
-  ASSERT_NE(d_out, nullptr);
-  in_memory.copy_from_host(h_in.data(), kInputCount * sizeof(flagfftDoubleComplex));
-  ExecZ2D(plan, d_in, d_out);
-  out_memory.copy_to_host(h_out.data(), kN * sizeof(flagfftDoubleReal));
-  for (flagfftDoubleReal value : h_out) {
-    EXPECT_EQ(value, 0.0);
-    EXPECT_TRUE(std::isfinite(value));
-  }
-  EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
-}
-
 INSTANTIATE_TEST_SUITE_P(Smoke,
-                         Z2D_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsSmoke()),
+                         Z2DBSSingle_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSSmokeSingle()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         Z2D_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedSmall()),
+                         Z2DBSSingle_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedSmallSingle()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         Z2D_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedMedium()),
+                         Z2DBSSingle_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedMediumSingle()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         Z2D_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedLarge()),
+                         Z2DBSSingle_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedLargeSingle()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

@@ -2,7 +2,7 @@
 
 using namespace flagfft_test;
 
-class R2C_1D_Test : public ::testing::TestWithParam<Test1DParam> {
+class R2CBSBatch_Test : public ::testing::TestWithParam<Test1DParam> {
  protected:
   void SetUp() override {
     auto p = GetParam();
@@ -47,7 +47,7 @@ class R2C_1D_Test : public ::testing::TestWithParam<Test1DParam> {
   flagfftComplex* d_ref = nullptr;
 };
 
-TEST_P(R2C_1D_Test, ForwardVsReference) {
+TEST_P(R2CBSBatch_Test, ForwardVsReference) {
   RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_R2C, batch);
   std::vector<flagfftComplex> h_out(total_out);
@@ -68,27 +68,21 @@ TEST_P(R2C_1D_Test, ForwardVsReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
-                         R2C_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsSmoke()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
 INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         R2C_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedSmall()),
+                         R2CBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedSmallBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         R2C_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedMedium()),
+                         R2CBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedMediumBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
 INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         R2C_1D_Test,
-                         ::testing::ValuesIn(Generate1DParamsExtendedLarge()),
+                         R2CBSBatch_Test,
+                         ::testing::ValuesIn(Generate1DParamsBSExtendedLargeBatch()),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
