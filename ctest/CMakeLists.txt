@@ -39,4 +39,7 @@ foreach(test_name ${TEST_TARGETS})
     # A FlagFFT executable shares JIT initialization across its GTest cases.
     # Register it once rather than spawning one process per discovered case.
     add_test(NAME ${test_name} COMMAND ${test_name})
+    set_tests_properties(${test_name} PROPERTIES
+        SKIP_REGULAR_EXPRESSION "cuInit failed|Which is: 11"
+    )
 endforeach()

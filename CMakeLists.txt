@@ -89,7 +89,7 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
 endif()
 
 if(FLAGFFT_BUILD_CLI)
-    # cuFFT is used only by the CUDA validation/performance oracle in the CLI.
+    # cuFFT is only needed by test_adaptor (not by CLI directly).
     find_package(CUDAToolkit REQUIRED)
     if(NOT TARGET CUDA::cufft)
         message(FATAL_ERROR "FLAGFFT_BUILD_CLI requires the CUDA::cufft target")
@@ -98,7 +98,6 @@ if(FLAGFFT_BUILD_CLI)
         src/cli_tools/common/plan_handles.cpp
         src/cli_tools/common/cli_utils.cpp
         src/cli_tools/common/case.cpp
-        src/cli_tools/common/runner.cpp
     )
     target_compile_features(flagfft_cli_common PUBLIC cxx_std_20)
     target_include_directories(flagfft_cli_common PUBLIC
@@ -108,15 +107,14 @@ if(FLAGFFT_BUILD_CLI)
     )
     target_link_libraries(flagfft_cli_common PUBLIC
         flagfft
-        CUDA::cufft
         nlohmann_json::nlohmann_json
     )
 
     add_executable(flagfft-cli
         src/cli_tools/flagfft-cli/main.cpp
-        src/cli_tools/tune/driver.cpp
-        src/cli_tools/tune/bench.cpp
-        src/cli_tools/tune/sqlite.cpp
+        src/cli_tools/bench/runner.cpp
+        src/cli_tools/bench/report.cpp
+        src/cli_tools/tune/tune.cpp
     )
     target_compile_features(flagfft-cli PRIVATE cxx_std_20)
     target_include_directories(flagfft-cli PRIVATE
@@ -132,7 +130,6 @@ if(FLAGFFT_BUILD_CLI)
             flagfft_cli_common
             flagfft_test_adaptor
             CUDA::cufft
-            SQLite3::SQLite3
             nlohmann_json::nlohmann_json
     )
     install(TARGETS flagfft-cli RUNTIME DESTINATION "bin")

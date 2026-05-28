@@ -46,15 +46,14 @@ Raw nodes mirror the existing plan tree:
 FlagFFT/cuFFT dispatch, and comparison. Device memory, stream, synchronization,
 timer, and query operations use `src/adaptor/`; cuFFT remains in the CLI only
 as the CUDA validation/performance oracle.
-Each subcommand queries that capability layer before plan creation:
+The bench subcommand queries that capability layer before plan creation:
 
-- `test` embeds route/key and error-contract suites, or runs shared correctness cases.
-- `bench` requires shared correctness to pass before returning timing values.
-- `tune` uses the shared case contract and `src/cli_tools/tune/` SQLite/candidate
-  code; only 1D out-of-place C2C is enabled in this tuning backend.
+- `bench` binds FlagFFT and cuFFT reference plans to one adaptor stream before
+  warmup and timing so reported event durations cover the actual kernel work.
+- `tune` is currently a placeholder and exits with an unsupported status.
 
-The unified interface accepts repeatable `--shape` values and does not retain
-the removed legacy `--lengths` CSV parsing path.
+The unified interface accepts comma-separated `--shape` values and does not
+retain the removed legacy `--lengths` CSV parsing path.
 
 The JSON status boundary is `passed`/`0`, `failed`/`1`, runtime `error`/`2`,
 and `skipped` or `unsupported`/`77`. A failed CUDA device query is a runtime

@@ -1,13 +1,6 @@
 #include "cli_utils.hpp"
 
-#include <algorithm>
-#include <array>
-#include <cstdlib>
-#include <filesystem>
-#include <iostream>
 #include <sstream>
-
-#include <unistd.h>
 
 #include "adaptor/adaptor.h"
 
@@ -52,26 +45,30 @@ std::string placement_name(Placement p) {
   return p == Placement::InPlace ? "in-place" : "out-of-place";
 }
 
-PlanApi parse_plan_api(const std::string &value) {
-  if (value == "plan1d") return PlanApi::Plan1d;
-  if (value == "plan2d") return PlanApi::Plan2d;
-  if (value == "plan3d") return PlanApi::Plan3d;
-  if (value == "planmany") return PlanApi::PlanMany;
-  throw AssertionFailure("unknown plan API: " + value);
+int parse_rank(const std::string &value) {
+  if (value == "1") return 1;
+  if (value == "2") return 2;
+  if (value == "3") return 3;
+  throw AssertionFailure("invalid --rank: " + value + " (expected 1, 2, or 3)");
 }
 
-std::string plan_api_name(PlanApi api) {
-  switch (api) {
-    case PlanApi::Plan1d:
-      return "plan1d";
-    case PlanApi::Plan2d:
-      return "plan2d";
-    case PlanApi::Plan3d:
-      return "plan3d";
-    case PlanApi::PlanMany:
-      return "planmany";
+int parse_positive(const std::string &name, const char *value, bool allow_zero) {
+  try {
+    const std::string token = value;
+    std::size_t consumed = 0;
+    const int result = std::stoi(token, &consumed);
+    if (consumed != token.size()) {
+      throw AssertionFailure("invalid value for " + name);
+    }
+    if ((allow_zero && result < 0) || (!allow_zero && result <= 0)) {
+      throw AssertionFailure(name + " must be " + (allow_zero ? "non-negative" : "positive"));
+    }
+    return result;
+  } catch (const std::invalid_argument &) {
+    throw AssertionFailure("invalid value for " + name);
+  } catch (const std::out_of_range &) {
+    throw AssertionFailure("invalid value for " + name);
   }
-  return "unknown";
 }
 
 CliException::CliException(std::string message, int exit_code)
@@ -121,40 +118,6 @@ std::string flagfft_result_name(flagfftResult result) {
   return "FLAGFFT_UNKNOWN";
 }
 
-std::string cufft_result_name(cufftResult result) {
-  switch (result) {
-    case CUFFT_SUCCESS:
-      return "CUFFT_SUCCESS";
-    case CUFFT_INVALID_PLAN:
-      return "CUFFT_INVALID_PLAN";
-    case CUFFT_ALLOC_FAILED:
-      return "CUFFT_ALLOC_FAILED";
-    case CUFFT_INVALID_TYPE:
-      return "CUFFT_INVALID_TYPE";
-    case CUFFT_INVALID_VALUE:
-      return "CUFFT_INVALID_VALUE";
-    case CUFFT_INTERNAL_ERROR:
-      return "CUFFT_INTERNAL_ERROR";
-    case CUFFT_EXEC_FAILED:
-      return "CUFFT_EXEC_FAILED";
-    case CUFFT_SETUP_FAILED:
-      return "CUFFT_SETUP_FAILED";
-    case CUFFT_INVALID_SIZE:
-      return "CUFFT_INVALID_SIZE";
-    case CUFFT_UNALIGNED_DATA:
-      return "CUFFT_UNALIGNED_DATA";
-    case CUFFT_INVALID_DEVICE:
-      return "CUFFT_INVALID_DEVICE";
-    case CUFFT_NO_WORKSPACE:
-      return "CUFFT_NO_WORKSPACE";
-    case CUFFT_NOT_IMPLEMENTED:
-      return "CUFFT_NOT_IMPLEMENTED";
-    case CUFFT_NOT_SUPPORTED:
-      return "CUFFT_NOT_SUPPORTED";
-  }
-  return "CUFFT_UNKNOWN";
-}
-
 std::string direction_name(int direction) {
   return direction == FLAGFFT_INVERSE ? "inverse" : "forward";
 }
@@ -181,92 +144,12 @@ bool has_cuda_device(std::string &reason) {
   }
 }
 
-std::string shell_quote(const std::string &value) {
-  std::string out = "'";
-  for (char c : value) {
-    if (c == '\'') {
-      out += "'\\''";
-    } else {
-      out += c;
-    }
-  }
-  out += "'";
-  return out;
-}
-
-std::string executable_path(const char *argv0) {
-  std::array<char, 4096> buffer {};
-  ssize_t n = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
-  if (n > 0) {
-    buffer[static_cast<std::size_t>(n)] = '\0';
-    return buffer.data();
-  }
-  std::filesystem::path from_argv = argv0 == nullptr ? std::filesystem::path {} : argv0;
-  if (from_argv.empty()) {
-    return (std::filesystem::current_path() / "flagfft-cli").string();
-  }
-  std::error_code ec;
-  return std::filesystem::absolute(from_argv, ec).string();
-}
-
-std::string executable_dir(const char *argv0) {
-  return std::filesystem::path(executable_path(argv0)).parent_path().string();
-}
-
-std::string default_tune_db(const char *argv0) {
-  return (std::filesystem::path(executable_dir(argv0)) / ".flagfft" / "tuned_plans.sqlite").string();
-}
-
-void check_cufft(cufftResult result, const std::string &context) {
-  if (result != CUFFT_SUCCESS) {
-    std::ostringstream oss;
-    oss << context << ": " << cufft_result_name(result) << " (" << static_cast<int>(result) << ")";
-    throw CliException(oss.str(), kExitRuntimeError);
-  }
-}
-
 void check_flagfft(flagfftResult result, const std::string &context) {
   if (result != FLAGFFT_SUCCESS) {
     std::ostringstream oss;
     oss << context << ": " << flagfft_result_name(result) << " (" << static_cast<int>(result) << ")";
     throw CliException(oss.str(), kExitRuntimeError);
   }
-}
-
-void expect_flagfft(flagfftResult actual, flagfftResult expected, const std::string &context) {
-  if (actual != expected) {
-    std::ostringstream oss;
-    oss << context << ": expected " << flagfft_result_name(expected) << ", got "
-        << flagfft_result_name(actual) << " (" << static_cast<int>(actual) << ")";
-    throw AssertionFailure(oss.str());
-  }
-}
-
-void expect_true(bool condition, const std::string &context) {
-  if (!condition) {
-    throw AssertionFailure(context);
-  }
-}
-
-int exit_code_for_report(const json &report) {
-  if (report.contains("_exit_code")) {
-    return report.at("_exit_code").get<int>();
-  }
-  const std::string status = report.value("status", "failed");
-  if (status == "passed") {
-    return kExitPassed;
-  }
-  if (status == "skipped" || status == "unsupported") {
-    return kExitSkipped;
-  }
-  return kExitFailed;
-}
-
-int emit_json_report(json report) {
-  const int code = exit_code_for_report(report);
-  report.erase("_exit_code");
-  std::cout << report.dump() << "\n";
-  return code;
 }
 
 }  // namespace flagfft::cli

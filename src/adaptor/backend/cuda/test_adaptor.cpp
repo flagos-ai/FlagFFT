@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
+#include <string>
 
 static_assert(sizeof(flagfftComplex) == 2 * sizeof(float), "flagfftComplex must have no padding");
 static_assert(sizeof(flagfftDoubleComplex) == 2 * sizeof(double),
@@ -105,6 +107,13 @@ void ref_plan_3d(RefPlanHandle& plan, int nx, int ny, int nz, flagfftType type) 
   auto r = cufftPlan3d(&h, nx, ny, nz, to_cufft_type(type));
   check_cufft(r, "cufftPlan3d");
   plan.replace(from_cufft(h));
+}
+
+void ref_set_stream(RefPlanHandle& plan, flagfftStream_t stream) {
+  auto r = cufftSetStream(to_cufft(plan.get()), reinterpret_cast<cudaStream_t>(stream));
+  if (r != CUFFT_SUCCESS) {
+    throw std::runtime_error("cufftSetStream failed with code " + std::to_string(static_cast<int>(r)));
+  }
 }
 
 // =========================================================================
