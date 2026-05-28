@@ -31,9 +31,7 @@ def test_bench_full(run_benchmark, size, api, direction):
 
 
 @pytest.mark.skip(reason="run separately for reporting")
-def test_bench_full_report(
-    invoke_cli, bench_warmup, bench_iters, bench_launches_per_sample, tmp_path
-):
+def test_bench_full_report(invoke_cli, bench_warmup, bench_iters, tmp_path):
     """Aggregate all benchmark results and generate Markdown + JSON reports."""
     results = {"cases": []}
 
@@ -54,8 +52,6 @@ def test_bench_full_report(
                     str(bench_warmup),
                     "--iters",
                     str(bench_iters),
-                    "--launches-per-sample",
-                    str(bench_launches_per_sample),
                     "--print-path",
                 )
                 assert result.returncode == 0

@@ -176,39 +176,23 @@ planning only.
 
 ## Native CLI
 
-`flagfft-cli` is the only native executable interface for validation,
-measurement, and offline tuning:
+`flagfft-cli` is the native executable interface for benchmark measurement:
 
 ```sh
-./build/flagfft-cli test --suite correctness --api c2c --shape 256 --batch 4 --json
-./build/flagfft-cli bench --api r2c --shape 4096 --batch 64 --warmup 10 --iters 100 \
-  --launches-per-sample 10 --json
-./build/flagfft-cli tune --api c2c --shape 256 --db /tmp/plans.sqlite \
-  --warmup 10 --iters 100 --static-limit 32 --finalists 3 --json
+./build/flagfft-cli bench --rank 1 --api r2c --shape 4096 --batch 64 \
+  --warmup 10 --iters 100 --json
+./build/flagfft-cli tune
 ```
 
 Common case options are `--api c2c|z2z|r2c|d2z|c2r|z2d`,
-repeatable `--shape N|NxM|NxMxK`, `--batch`, `--direction forward|inverse`,
-`--placement out-of-place|in-place`, `--plan-api
-plan1d|plan2d|plan3d|planmany`, and `--stream`. Repeated shapes share the
-other case options.
-The legacy comma-separated `--lengths` option is not part of this unified
-interface; pass one or more complete `--shape` options instead.
-
-`test --suite plan` runs route/key assertions, `test --suite api-errors`
-checks C API error contracts, and `test --suite correctness` executes cases
-against cuFFT. `bench` runs the same correctness comparison before reporting
-backend event `median`/`p90` timings and speedup. For `test --suite
-correctness` and `bench`, `--print-path` adds the plan description. `tune`
-benchmarks candidates, verifies finalists against cuFFT, and writes the
-winning plan to SQLite; `--retune` supersedes an earlier winner.
+`--rank 1|2|3`, `--shape N|NxM|NxMxK` (comma-separated for multiple cases),
+`--batch`, `--direction forward|inverse`, and `--placement
+out-of-place|in-place`. `--print-path` adds the plan description. `tune` is
+currently a placeholder and exits with an unsupported status.
 The cuFFT use in this CLI is a CUDA-only correctness and performance oracle;
 the FlagFFT library API and its stream handle do not expose CUDA types.
-Set `FLAGFFT_TUNE_DB` to that database when running `test` or `bench` to use it.
 Integer option tokens must be fully numeric; for example, `--shape 16suffix`
-and `--batch 2suffix` are rejected as invalid arguments. Correctness reports
-include `non_finite_values`; any nonzero count fails both `test` and the
-pre-benchmark correctness gate.
+and `--batch 2suffix` are rejected as invalid arguments.
 
 ### Capability Matrix
 
@@ -295,9 +279,10 @@ ctest and the CLI bench command. It builds as a CMake OBJECT library
   reference FFT plan handle (`cufftHandle` on CUDA). Uses `replace()` to set
   the handle from a locally-constructed backend handle, avoiding
   strict-aliasing UB.
-- **Reference FFT interface** — `ref_plan_1d/2d/3d`, `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d`
-  mirroring the public FlagFFT API. The benchmark CLI uses `ref_plan_1d` +
-  `ref_exec_c2c` as a correctness oracle.
+- **Reference FFT interface** — `ref_plan_1d/2d/3d`, `ref_set_stream`,
+  `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d` mirroring the public FlagFFT API. The
+  benchmark CLI binds FlagFFT and reference plans to the same `adaptor::Stream`
+  before timing so CUDA events enclose the measured kernels.
 - **Device memory** — `adaptor::Memory` (RAII device allocation with
   `copy_from_host`/`copy_to_host`), `adaptor::Stream`, `adaptor::EventTimer`
 - **Comparison helpers** — `compute_error` returns `{max_abs, rms}` for
@@ -399,7 +384,7 @@ Customise warmup, iterations, and CLI path via pytest flags:
 
 ```sh
 pytest benchmark/test_bench_smoke.py -v \
-  --bench-warmup 20 --bench-iters 50 --bench-launches-per-sample 3
+  --bench-warmup 20 --bench-iters 50
 
 pytest benchmark/test_bench_full.py -v \
   --flagfft-cli ./build/flagfft-cli
@@ -410,7 +395,6 @@ pytest benchmark/test_bench_full.py -v \
 | `--flagfft-cli` | `build/flagfft-cli` or `$FLAGFFT_CLI_EXE` | Path to the CLI binary |
 | `--bench-warmup` | 5 | Warmup iterations before timing |
 | `--bench-iters` | 10 | Timed benchmark iterations |
-| `--bench-launches-per-sample` | 1 | Kernel launches per sample |
 
 If no CUDA device is available, tests are skipped automatically.
 
@@ -425,7 +409,6 @@ If no CUDA device is available, tests are skipped automatically.
 | `run_benchmark` | function | Shortcut: `run_benchmark(size, api, direction)` with all bench options preset |
 | `bench_warmup` | session | `--bench-warmup` value |
 | `bench_iters` | session | `--bench-iters` value |
-| `bench_launches_per_sample` | session | `--bench-launches-per-sample` value |
 
 ### Report generation
 

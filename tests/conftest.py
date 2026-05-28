@@ -45,6 +45,10 @@ def invoke_cli(flagfft_cli):
             timeout=timeout,
             check=False,
         )
+        if not result.stdout.strip() and (
+            result.returncode == 77 or "cuInit failed" in result.stderr
+        ):
+            pytest.skip(result.stderr.strip() or "CLI skipped")
         try:
             report = json.loads(result.stdout)
         except json.JSONDecodeError as error:

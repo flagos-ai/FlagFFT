@@ -218,6 +218,8 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
   };
 
   Stream stream;
+  check_flagfft(flagfftSetStream(ff_plan.get(), stream.get()), "flagfftSetStream");
+  test_adaptor::ref_set_stream(ref_plan, stream.get());
   Timer timer;
 
   // Warmup

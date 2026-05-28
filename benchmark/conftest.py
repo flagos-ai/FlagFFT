@@ -28,12 +28,6 @@ def pytest_addoption(parser):
         default=10,
         help="Number of benchmark iterations (default: 10)",
     )
-    parser.addoption(
-        "--bench-launches-per-sample",
-        type=int,
-        default=1,
-        help="Launches per sample for bench (default: 1)",
-    )
 
 
 @pytest.fixture(scope="session")
@@ -63,6 +57,10 @@ def invoke_cli(flagfft_cli):
             timeout=timeout,
             check=False,
         )
+        if not result.stdout.strip() and (
+            result.returncode == 77 or "cuInit failed" in result.stderr
+        ):
+            pytest.skip(result.stderr.strip() or "CLI skipped")
         try:
             report = json.loads(result.stdout)
         except json.JSONDecodeError as error:
@@ -75,7 +73,7 @@ def invoke_cli(flagfft_cli):
 
 
 @pytest.fixture
-def run_benchmark(invoke_cli, bench_warmup, bench_iters, bench_launches_per_sample):
+def run_benchmark(invoke_cli, bench_warmup, bench_iters):
     """Invoke the bench subcommand with standard options."""
 
     def _run(size: int, api: str = "c2c", direction: str = "forward"):
@@ -93,8 +91,6 @@ def run_benchmark(invoke_cli, bench_warmup, bench_iters, bench_launches_per_samp
             str(bench_warmup),
             "--iters",
             str(bench_iters),
-            "--launches-per-sample",
-            str(bench_launches_per_sample),
             "--print-path",
         )
 
@@ -109,8 +105,3 @@ def bench_warmup(request) -> int:
 @pytest.fixture(scope="session")
 def bench_iters(request) -> int:
     return request.config.getoption("--bench-iters")
-
-
-@pytest.fixture(scope="session")
-def bench_launches_per_sample(request) -> int:
-    return request.config.getoption("--bench-launches-per-sample")

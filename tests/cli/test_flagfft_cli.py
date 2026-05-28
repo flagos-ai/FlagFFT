@@ -6,6 +6,11 @@ import subprocess
 import pytest
 
 
+def skip_if_cuda_unavailable(result: subprocess.CompletedProcess[str]) -> None:
+    if result.returncode == 2 and "cuInit failed" in result.stderr:
+        pytest.skip(result.stderr.strip())
+
+
 def test_help(flagfft_cli) -> None:
     result = subprocess.run(
         [str(flagfft_cli), "--help"], text=True, capture_output=True, check=False
@@ -60,6 +65,7 @@ def test_bench_basic_table(flagfft_cli) -> None:
         capture_output=True,
         check=False,
     )
+    skip_if_cuda_unavailable(result)
     assert result.returncode == 0
     assert "speedup" in result.stdout
     assert "flagfft_median_ms" in result.stdout
@@ -109,6 +115,7 @@ def test_bench_multi_shape(flagfft_cli) -> None:
         capture_output=True,
         check=False,
     )
+    skip_if_cuda_unavailable(result)
     assert result.returncode == 0
     lines = result.stdout.strip().split("\n")
     assert len(lines) >= 3  # header + 2 data rows
@@ -150,6 +157,7 @@ def test_bench_print_path(flagfft_cli) -> None:
         capture_output=True,
         check=False,
     )
+    skip_if_cuda_unavailable(result)
     assert result.returncode == 0
     report = json.loads(result.stdout)
     assert "FlagFFT Plan" in report["cases"][0]["plan_description"]
@@ -211,6 +219,7 @@ def test_bench_rank2_table(flagfft_cli) -> None:
         capture_output=True,
         check=False,
     )
+    skip_if_cuda_unavailable(result)
     # Rank 2 passes CLI validation; plan creation may fail if unsupported.
     assert result.returncode != 0
     assert "create FlagFFT plan" in result.stderr
@@ -234,6 +243,7 @@ def test_bench_rank3_table(flagfft_cli) -> None:
         capture_output=True,
         check=False,
     )
+    skip_if_cuda_unavailable(result)
     # Rank 3 passes CLI validation; plan creation may fail if unsupported.
     assert result.returncode != 0
     assert "create FlagFFT plan" in result.stderr

@@ -36,6 +36,7 @@ class RefPlanHandle {
 void ref_plan_1d(RefPlanHandle& plan, int nx, flagfftType type, int batch);
 void ref_plan_2d(RefPlanHandle& plan, int nx, int ny, flagfftType type);
 void ref_plan_3d(RefPlanHandle& plan, int nx, int ny, int nz, flagfftType type);
+void ref_set_stream(RefPlanHandle& plan, flagfftStream_t stream);
 
 // =========================================================================
 // Plan execution
