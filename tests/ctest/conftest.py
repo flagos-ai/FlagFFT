@@ -20,7 +20,7 @@ def pytest_addoption(parser):
 @pytest.fixture(scope="session")
 def ctest_build_dir(request) -> Path:
     configured = request.config.getoption("--ctest-build-dir")
-    path = Path(configured or ROOT / "build" / "ctest")
+    path = Path(configured) if configured else ROOT / "build" / "ctest"
     if not path.is_dir():
         pytest.skip(f"ctest build directory not found: {path}")
     return path
@@ -33,16 +33,23 @@ def run_ctest(ctest_build_dir: Path):
         if not exe.is_file():
             pytest.skip(f"ctest executable not found: {exe}")
         env = os.environ.copy()
-        result = subprocess.run(
-            [str(exe)],
-            cwd=ctest_build_dir,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                [str(exe)],
+                cwd=ctest_build_dir,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            pytest.fail(
+                f"ctest {target} timed out after {timeout}s\n"
+                f"STDOUT:\n{exc.stdout or ''}\n"
+                f"STDERR:\n{exc.stderr or ''}"
+            )
         return result
 
     return run
