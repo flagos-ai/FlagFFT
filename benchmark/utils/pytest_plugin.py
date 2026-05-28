@@ -83,6 +83,8 @@ def pytest_configure(config):
 def _and_markexpr(current: str, condition: str) -> str:
     if not current:
         return condition
+    if condition in current:
+        return current
     return f"{current} and {condition}"
 
 
@@ -207,14 +209,16 @@ def record_result(bench_collector):
 
 
 def _resolve_csv_path(config) -> Path | None:
-    csv_opt = config.getoption("--bench-csv")
+    csv_opt = config.getoption("bench-csv")
     if csv_opt is not None and csv_opt == "":
         return None  # explicitly disabled
     if csv_opt is not None:
         return Path(csv_opt)
-    # Use _DEFAULTS['csv']; if None use auto path
+    # Use _DEFAULTS['csv']; if explicit path use it, if "" disable, if None auto
     default = _DEFAULTS.get("csv")
-    if default is not None and default == "":
+    if default is not None and default != "":
+        return Path(default)
+    if default == "":
         return None
     results_dir = ROOT / "benchmark" / "results"
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
