@@ -23,39 +23,40 @@ namespace {
   }
 
   struct BufferLayout {
-    int n;
-    int half;
+    int innermost;
     int padded;
+    int outer_count;
     std::size_t scalar_bytes;
     std::size_t allocation_bytes;
   };
 
   BufferLayout layout_for(const CaseSpec& spec) {
-    const int n = spec.shape[0];
-    const int half = n / 2 + 1;
+    const int innermost = spec.shape.back();
+    int outer = spec.rank == 1 ? spec.batch : 1;
+    for (std::size_t i = 0; i + 1 < spec.shape.size(); ++i) outer *= spec.shape[i];
+
+    const int half = innermost / 2 + 1;
     const int padded = 2 * half;
     const std::size_t scalar = is_double_api(spec.api) ? sizeof(double) : sizeof(float);
+    const bool complex = is_complex_api(spec.api);
     const bool real_forward = is_real_forward_api(spec.api);
     const bool real_inverse = is_real_inverse_api(spec.api);
-    const bool complex = is_complex_api(spec.api);
 
-    const int inplace_scalars = complex ? 2 * n : padded;
+    const int in_scalars = real_forward ? innermost : (real_inverse ? padded : 2 * innermost);
+    const int out_scalars = real_forward ? padded : (real_inverse ? innermost : 2 * innermost);
+    const int inplace_scalars = complex ? 2 * innermost : padded;
 
-    const int in_scalars = real_forward ? n : (real_inverse ? 2 * half : 2 * n);
-    const int out_scalars = real_forward ? 2 * half : (real_inverse ? n : 2 * n);
+    const int eff_in = spec.placement == Placement::InPlace ? inplace_scalars : in_scalars;
+    const int eff_out = spec.placement == Placement::InPlace ? inplace_scalars : out_scalars;
+    const auto in_bytes = static_cast<std::size_t>(outer) * eff_in * scalar;
+    const auto out_bytes = static_cast<std::size_t>(outer) * eff_out * scalar;
 
-    const std::size_t eff_in = spec.placement == Placement::InPlace ? inplace_scalars : in_scalars;
-    const std::size_t eff_out = spec.placement == Placement::InPlace ? inplace_scalars : out_scalars;
-
-    const std::size_t in_bytes = static_cast<std::size_t>(spec.batch) * eff_in * scalar;
-    const std::size_t out_bytes = static_cast<std::size_t>(spec.batch) * eff_out * scalar;
-
-    return {n, half, padded, scalar, std::max(in_bytes, out_bytes)};
+    return {innermost, padded, outer, scalar, std::max(in_bytes, out_bytes)};
   }
 
   void seed_input(DeviceMemory& device, const BufferLayout& layout, const CaseSpec& spec) {
     const std::size_t count = layout.allocation_bytes / layout.scalar_bytes;
-    const int n = layout.n;
+    const int n = layout.innermost;
 
     if (layout.scalar_bytes == sizeof(float)) {
       std::vector<float> host(count);
@@ -63,9 +64,9 @@ namespace {
         host[i] = std::sin(static_cast<float>(i + 1) * 0.173f);
       }
       if (is_real_inverse_api(spec.api)) {
-        for (int b = 0; b < spec.batch; ++b) {
-          host[static_cast<std::size_t>(b * layout.padded + 1)] = 0.0f;
-          if (n % 2 == 0) host[static_cast<std::size_t>(b * layout.padded + n + 1)] = 0.0f;
+        for (int row = 0; row < layout.outer_count; ++row) {
+          host[static_cast<std::size_t>(row * layout.padded + 1)] = 0.0f;
+          if (n % 2 == 0) host[static_cast<std::size_t>(row * layout.padded + n + 1)] = 0.0f;
         }
       }
       device.copy_from_host(host.data(), layout.allocation_bytes);
@@ -75,9 +76,9 @@ namespace {
         host[i] = std::sin(static_cast<double>(i + 1) * 0.173);
       }
       if (is_real_inverse_api(spec.api)) {
-        for (int b = 0; b < spec.batch; ++b) {
-          host[static_cast<std::size_t>(b * layout.padded + 1)] = 0.0;
-          if (n % 2 == 0) host[static_cast<std::size_t>(b * layout.padded + n + 1)] = 0.0;
+        for (int row = 0; row < layout.outer_count; ++row) {
+          host[static_cast<std::size_t>(row * layout.padded + 1)] = 0.0;
+          if (n % 2 == 0) host[static_cast<std::size_t>(row * layout.padded + n + 1)] = 0.0;
         }
       }
       device.copy_from_host(host.data(), layout.allocation_bytes);
@@ -88,7 +89,7 @@ namespace {
     flagfftHandle raw = nullptr;
     flagfftResult result = FLAGFFT_NOT_SUPPORTED;
     if (spec.rank == 1) {
-      result = flagfftPlan1d(&raw, layout.n, flagfft_type(spec.api), spec.batch);
+      result = flagfftPlan1d(&raw, layout.innermost, flagfft_type(spec.api), spec.batch);
     } else if (spec.rank == 2) {
       result = flagfftPlan2d(&raw, spec.shape[0], spec.shape[1], flagfft_type(spec.api));
     } else if (spec.rank == 3) {
@@ -101,7 +102,7 @@ namespace {
   test_adaptor::RefPlanHandle make_ref_plan(const CaseSpec& spec, const BufferLayout& layout) {
     test_adaptor::RefPlanHandle plan;
     if (spec.rank == 1) {
-      test_adaptor::ref_plan_1d(plan, layout.n, flagfft_type(spec.api), spec.batch);
+      test_adaptor::ref_plan_1d(plan, layout.innermost, flagfft_type(spec.api), spec.batch);
     } else if (spec.rank == 2) {
       test_adaptor::ref_plan_2d(plan, spec.shape[0], spec.shape[1], flagfft_type(spec.api));
     } else if (spec.rank == 3) {
