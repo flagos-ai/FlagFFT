@@ -65,6 +65,25 @@ def _geometric_mean(values: list[float]) -> float:
     return math.exp(log_sum / len(values))
 
 
+def _compute_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract summary statistics from benchmark records."""
+    passed = sum(1 for r in records if r.get("correctness", {}).get("passed", False))
+    total = len(records)
+    timings = [r.get("timing", {}) for r in records]
+    flagfft_ms = [
+        t.get("flagfft_median_ms", 0)
+        for t in timings
+        if t.get("flagfft_median_ms", 0) > 0
+    ]
+    speedups = [t.get("speedup", 0) for t in timings if t.get("speedup", 0) > 0]
+    return {
+        "passed": passed,
+        "total": total,
+        "flagfft_ms": flagfft_ms,
+        "speedups": speedups,
+    }
+
+
 def generate_console_table(
     records: list[dict[str, Any]],
     suite: str,
@@ -72,8 +91,8 @@ def generate_console_table(
     iters: int,
 ) -> str:
     """Generate a console-printable benchmark report with table and summary."""
-    passed = sum(1 for r in records if r.get("correctness", {}).get("passed", False))
-    total = len(records)
+    stats = _compute_stats(records)
+    passed, total = stats["passed"], stats["total"]
 
     lines = [
         "=" * 84,
@@ -86,22 +105,20 @@ def generate_console_table(
     ]
 
     if records:
-        timings = [r.get("timing", {}) for r in records]
-        flagfft_ms = [
-            t.get("flagfft_median_ms", 0)
-            for t in timings
-            if t.get("flagfft_median_ms", 0) > 0
-        ]
-        speedups = [t.get("speedup", 0) for t in timings if t.get("speedup", 0) > 0]
-
         lines.append(f"Correctness: {passed}/{total} passed")
-        if flagfft_ms:
+        if stats["flagfft_ms"]:
             lines.append(
-                f"FlagFFT median range: {min(flagfft_ms):.4f} - {max(flagfft_ms):.4f} ms"
+                f"FlagFFT median range: {min(stats['flagfft_ms']):.4f}"
+                f" - {max(stats['flagfft_ms']):.4f} ms"
             )
-            lines.append(f"Geometric mean: {_geometric_mean(flagfft_ms):.4f} ms")
-        if speedups:
-            lines.append(f"Overall speedup (geomean): {_geometric_mean(speedups):.2f}x")
+            lines.append(
+                f"Geometric mean: {_geometric_mean(stats['flagfft_ms']):.4f} ms"
+            )
+        if stats["speedups"]:
+            lines.append(
+                f"Overall speedup (geomean):"
+                f" {_geometric_mean(stats['speedups']):.2f}x"
+            )
 
     return "\n".join(lines) + "\n"
 
@@ -170,20 +187,21 @@ def generate_markdown(report: dict[str, Any]) -> str:
     lines = ["# FlagFFT Benchmark Report\n"]
     lines.append(_build_table(records))
 
-    passed = sum(1 for r in records if r["correctness"].get("passed", False))
-    total = len(records)
-    lines.append(f"**Correctness:** {passed}/{total} passed")
-    if records:
-        medians = [
-            r["timing"].get("flagfft_median_ms", 0)
-            for r in records
-            if r["timing"].get("flagfft_median_ms", 0) > 0
-        ]
-        if medians:
-            lines.append(
-                f"**FlagFFT median range:** {min(medians):.4f} - {max(medians):.4f} ms"
-            )
-            lines.append(f"**Geometric mean:** {_geometric_mean(medians):.4f} ms")
+    stats = _compute_stats(records)
+    lines.append(f"**Correctness:** {stats['passed']}/{stats['total']} passed")
+    if stats["flagfft_ms"]:
+        lines.append(
+            f"**FlagFFT median range:** {min(stats['flagfft_ms']):.4f}"
+            f" - {max(stats['flagfft_ms']):.4f} ms"
+        )
+        lines.append(
+            f"**Geometric mean:** {_geometric_mean(stats['flagfft_ms']):.4f} ms"
+        )
+    if stats["speedups"]:
+        lines.append(
+            f"**Overall speedup (geomean):**"
+            f" {_geometric_mean(stats['speedups']):.2f}x"
+        )
 
     return "\n".join(lines) + "\n"
 
