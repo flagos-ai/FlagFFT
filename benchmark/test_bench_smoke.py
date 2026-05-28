@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from benchmark.suites import DEFAULT_APIS, DEFAULT_DIRECTIONS, SMOKE_SIZES
+from benchmark.utils.suites import DEFAULT_APIS, DEFAULT_DIRECTIONS, SMOKE_SIZES
 
 
 @pytest.mark.parametrize("size", SMOKE_SIZES)

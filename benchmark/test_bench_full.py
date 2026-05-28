@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from benchmark.report import generate_json_report, generate_markdown
-from benchmark.suites import DEFAULT_APIS, DEFAULT_DIRECTIONS, FULL_SIZES
+from benchmark.utils.report import generate_json_report, generate_markdown
+from benchmark.utils.suites import DEFAULT_APIS, DEFAULT_DIRECTIONS, FULL_SIZES
 
 
 @pytest.mark.parametrize("size", FULL_SIZES)
