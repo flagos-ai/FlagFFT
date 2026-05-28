@@ -39,6 +39,8 @@ SUITES = {"smoke": SMOKE, "typical": TYPICAL, "full": FULL}
 
 def get_suite(name: str) -> dict:
     """Return suite definition by name."""
+    if name not in SUITES:
+        raise KeyError(f"Unknown benchmark suite {name!r}. Choices: {list(SUITES)}")
     return SUITES[name]
 
 

@@ -261,11 +261,14 @@ def pytest_sessionfinish(session):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Apply @pytest.mark.bench to all items in benchmark/ or tests/ dirs
-    that use run_benchmark or invoke_cli for bench testing."""
-    bench_dirs = ("benchmark", "tests")
+    """Apply @pytest.mark.bench to items that use bench-related fixtures.
+
+    Only marks test functions that depend on invoke_cli or run_benchmark,
+    avoiding false positives on non-bench tests in benchmark/ or tests/.
+    """
     for item in items:
-        path = str(item.fspath)
-        if any(f"/{d}/" in path or path.startswith(f"{d}/") for d in bench_dirs):
-            if "bench" not in item.keywords:
-                item.add_marker(pytest.mark.bench)
+        if "bench" in item.keywords:
+            continue
+        fixture_names = getattr(item, "fixturenames", set())
+        if fixture_names & {"invoke_cli", "run_benchmark"}:
+            item.add_marker(pytest.mark.bench)
