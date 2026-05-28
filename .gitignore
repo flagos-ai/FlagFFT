@@ -4,6 +4,7 @@ __pycache__
 .claude
 .codex
 .agents
+.worktrees/
 .nsys
 CLAUDE.md
 AGENTS.md
