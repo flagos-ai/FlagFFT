@@ -367,6 +367,11 @@ The `benchmark/` directory provides parametrized pytest-based performance
 benchmarking that invokes `flagfft-cli bench` and records timing and speedup
 against the reference implementation.
 
+Pytest loads the shared benchmark fixtures via `pyproject.toml`:
+`addopts = "-p benchmark.utils.pytest_plugin"`. Keep plugin registration out of
+subdirectory `conftest.py` files; newer pytest versions reject that pattern, and
+early manual imports can trigger assertion-rewrite warnings.
+
 ### Quick start
 
 ```sh
@@ -423,7 +428,7 @@ If no CUDA device is available, tests are skipped automatically.
 
 ### Fixtures
 
-`conftest.py` exposes these fixtures for custom benchmark scripts:
+The shared pytest plugin exposes these fixtures for custom benchmark scripts:
 
 | Fixture | Scope | Description |
 |---------|-------|-------------|

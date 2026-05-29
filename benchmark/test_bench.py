@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from benchmark.utils.defaults import DEFAULTS
 from benchmark.utils.suites import get_suite
 
 
@@ -16,9 +17,7 @@ def pytest_generate_tests(metafunc):
     """Parametrize at collection time, filtered by --bench-suite."""
     suite_name = metafunc.config.getoption("bench_suite")
     if suite_name is None:
-        from benchmark.utils.pytest_plugin import _DEFAULTS
-
-        suite_name = _DEFAULTS["suite"]
+        suite_name = DEFAULTS["suite"]
     suite = get_suite(suite_name)
 
     from benchmark.utils.suites import expand_params

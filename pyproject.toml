@@ -21,4 +21,6 @@ include = ["flagfft_codegen*"]
 flagfft_codegen = ["codelet/*.py"]
 
 [tool.pytest.ini_options]
+addopts = "-p benchmark.utils.pytest_plugin"
+pythonpath = ["."]
 markers = ["bench: performance benchmark tests (require serial execution, use -p no:xdist)"]

@@ -1,10 +1,6 @@
 """Shared pytest plugin for benchmark CLI invocation, collection, and reporting.
 
-Loaded by both benchmark/conftest.py and tests/conftest.py via
-``pytest_plugins = ["benchmark.utils.pytest_plugin"]``.
-
-Override defaults by setting keys in ``_DEFAULTS`` *before* the
-``pytest_plugins`` assignment in the loading conftest.
+Loaded from ``pyproject.toml`` via ``addopts = "-p benchmark.utils.pytest_plugin"``.
 """
 
 from __future__ import annotations
@@ -18,17 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from benchmark.utils.defaults import DEFAULTS
+
 ROOT = Path(__file__).resolve().parents[2]
 
-# ── Overridable defaults ───────────────────────────────────────
-# conftest files set values in this dict before loading the plugin.
-
-_DEFAULTS = {
-    "warmup": 10,
-    "iters": 100,
-    "csv": None,  # None = auto-generate path; "" = disabled
-    "suite": "typical",
-}
+_DEFAULTS = DEFAULTS
 
 # ── pytest options ──────────────────────────────────────────────
 
