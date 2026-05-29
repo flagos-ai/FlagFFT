@@ -240,19 +240,39 @@ debugging and understanding how the planner routes a given FFT size.
 
 ## Validation
 
-Pytest invokes `flagfft-cli --json` for all native planner/API/correctness,
-benchmark, and tune coverage:
+The repository keeps two canonical runtime validation paths:
+
+1. `tests/ctest/` pytest wrappers execute the Google Test binaries under
+   `ctest/`, which then call the FlagFFT C API and compare against the backend
+   reference implementation.
+2. `benchmark/` pytest cases execute `flagfft-cli bench`, collect per-case
+   FlagFFT/reference timings, and print speedup ratios.
+
+Python codegen tests remain under `tests/python/` and exercise the
+`flagfft_codegen` package. Lightweight CLI contract tests live under
+`tests/cli/`; they are not the performance benchmark entrypoint.
+
+Build the native test and benchmark targets before running the wrappers:
 
 ```sh
 python3 -m pip install .
-cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
-cmake --build build --target flagfft-cli
-pytest -q
+cmake -S . -B build -GNinja -DBACKEND=CUDA \
+  -DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON
+cmake --build build
+
+# Correctness chain: pytest -> Google Test executable -> FlagFFT
+pytest tests/ctest/ -v --ctest-build-dir build/ctest
+
+# Performance chain: pytest -> flagfft-cli bench -> FlagFFT/reference timing
+pytest benchmark/test_bench.py -v --bench-suite=smoke \
+  --flagfft-cli ./build/flagfft-cli
+# Add -p no:xdist if pytest-xdist is installed
 ```
 
-Python codegen tests remain under `tests/python/` and exercise the
-`flagfft_codegen` package. C++ Google Test coverage is enabled separately with
-`FLAGFFT_BUILD_TESTS=ON`; no standalone benchmark or tuner executable is built.
+The benchmark report includes `FlagFFT (ms)`, `Reference (ms)`, per-case
+`Speedup`, and an overall geometric-mean speedup. `speedup` is computed as
+`ref_median_ms / flagfft_median_ms`, so values above `1.00x` mean FlagFFT is
+faster than the reference for that case.
 
 ## C++ Tests
 
@@ -308,14 +328,14 @@ no test source changes are needed.
 
 ### Test files
 
-| File | Coverage |
+| File pattern | Coverage |
 |------|----------|
 | `test_plan.cpp` | 1D plan lifecycle/error codes and current unsupported 2D/3D contract |
-| `test_exec_c2c.cpp` | `FLAGFFT_C2C` forward, inverse, roundtrip and batch |
-| `test_exec_z2z.cpp` | `FLAGFFT_Z2Z` double-precision complex |
-| `test_exec_r2c.cpp`, `test_exec_c2r.cpp` | Float real forward/inverse reference comparison and C2R regressions |
-| `test_exec_d2z.cpp`, `test_exec_z2d.cpp` | Double real forward/inverse reference comparison |
-| `test_exec_r2c_c2r.cpp`, `test_exec_d2z_z2d.cpp` | Real-transform roundtrip validation |
+| `test_exec_c2c_{fwd,inv}_{ct,bs}_{s,b}.cpp` | `FLAGFFT_C2C` forward/inverse, Cooley-Tukey/Bluestein routes, single/multi-batch |
+| `test_exec_z2z_{fwd,inv}_{ct,bs}_{s,b}.cpp` | `FLAGFFT_Z2Z` double-precision complex coverage |
+| `test_exec_r2c_{ct,bs}_{s,b}.cpp`, `test_exec_c2r_{ct,bs}_{s,b}.cpp` | Float real forward/inverse reference comparison |
+| `test_exec_d2z_{ct,bs}_{s,b}.cpp`, `test_exec_z2d_{ct,bs}_{s,b}.cpp` | Double real forward/inverse reference comparison |
+| `test_exec_r2c_c2r_{ct,bs}_{s,b}.cpp`, `test_exec_d2z_z2d_{ct,bs}_{s,b}.cpp` | Real-transform roundtrip validation |
 
 ### Numerical Acceptance
 
@@ -353,9 +373,6 @@ against the reference implementation.
 # Build the CLI first
 cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
-
-# Quick CLI verification with warmup=1 and iters=1
-pytest tests/test_bench_cli.py -v --flagfft-cli ./build/flagfft-cli
 
 # Smoke benchmark suite
 pytest benchmark/test_bench.py -v --bench-suite=smoke \

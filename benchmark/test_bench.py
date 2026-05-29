@@ -49,3 +49,16 @@ def test_bench(size, batch, api, direction, run_benchmark, record_result):
         pytest.fail(
             f"Benchmark process failed for {api}/{direction} size={size} batch={batch}"
         )
+
+    timing = case.get("timing", {})
+    assert timing.get("flagfft_median_ms", 0) > 0, (
+        f"Missing positive FlagFFT timing for {api}/{direction} "
+        f"size={size} batch={batch}"
+    )
+    assert timing.get("ref_median_ms", 0) > 0, (
+        f"Missing positive reference timing for {api}/{direction} "
+        f"size={size} batch={batch}"
+    )
+    assert (
+        timing.get("speedup", 0) > 0
+    ), f"Missing positive speedup for {api}/{direction} size={size} batch={batch}"

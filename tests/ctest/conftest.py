@@ -20,7 +20,7 @@ def pytest_addoption(parser):
 @pytest.fixture(scope="session")
 def ctest_build_dir(request) -> Path:
     configured = request.config.getoption("--ctest-build-dir")
-    path = Path(configured) if configured else ROOT / "build" / "ctest"
+    path = (Path(configured) if configured else ROOT / "build" / "ctest").resolve()
     if not path.is_dir():
         pytest.skip(f"ctest build directory not found: {path}")
     return path
