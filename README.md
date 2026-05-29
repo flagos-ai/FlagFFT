@@ -489,6 +489,10 @@ pre-commit install
 pre-commit run --all-files
 ```
 
+The GitHub Actions linter workflow runs the same `pre-commit run --all-files`
+checks for pushes and pull requests targeting `main`. It can also be launched
+manually from `.github/workflows/linter.yml`.
+
 After `pre-commit install`, every `git commit` will automatically run the
 configured hooks. Rejected commits must be re-staged and re-committed after the
 hooks fix the files in-place.
