@@ -11,12 +11,23 @@ struct Test2DSize {
   int n1;
 };
 
+constexpr Test2DSize k2DSmoke[] = {
+    {16, 16},
+};
+
 constexpr Test2DSize k2DSizes[] = {
     { 16,  16},
     { 64,  64},
     {128, 256},
     {256, 128},
     {256, 256},
+};
+
+// Non-smooth sizes to exercise Bluestein path in one dimension (smooth in the other).
+// Note: both-dimensions-Bluestein (e.g. {23,23}) is not yet supported.
+constexpr Test2DSize k2DBluesteinSizes[] = {
+    {997,  16},
+    { 16, 997},
 };
 
 constexpr int k2DNumSizes = sizeof(k2DSizes) / sizeof(k2DSizes[0]);
@@ -121,28 +132,75 @@ TEST_P(C2C2D, ForwardReference) {
   flagfft_test::RefPlanHandle ref_plan;
   flagfft_test::ref_plan_2d(ref_plan, n0, n1, FLAGFFT_C2C);
 
-  // FlagFFT forward
-  flagfft_test::ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
-  out_mem.copy_to_host(h_out.data(), bytes);
-
-  // Reference forward - process each batch separately
-  std::vector<flagfftComplex> h_ref(total * batch);
   flagfft::adaptor::Memory ref_in_mem(total * sizeof(flagfftComplex));
   flagfft::adaptor::Memory ref_out_mem(total * sizeof(flagfftComplex));
   auto* d_ref_in = static_cast<flagfftComplex*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftComplex*>(ref_out_mem.data());
-  for (int b = 0; b < batch; ++b) {
-    ref_in_mem.copy_from_host(h_in.data() + b * total, total * sizeof(flagfftComplex));
-    flagfft_test::ref_exec_c2c(ref_plan, d_ref_in, d_ref_out, FLAGFFT_FORWARD);
-    ref_out_mem.copy_to_host(h_ref.data() + b * total, total * sizeof(flagfftComplex));
-  }
 
-  // Compare
-  flagfft_test::ErrorStats stats = flagfft_test::error_stats(h_out.data(), h_ref.data(), total, batch);
-  flagfft_test::expect_reference_accuracy(stats, FLAGFFT_C2C, total, batch);
+  for (double scale : flagfft_test::kAccuracyInputScales) {
+    auto input = h_in;
+    flagfft_test::scale_input(input, scale);
+    in_mem.copy_from_host(input.data(), bytes);
+
+    // FlagFFT forward
+    flagfft_test::ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
+    out_mem.copy_to_host(h_out.data(), bytes);
+
+    // Reference forward - process each batch separately
+    std::vector<flagfftComplex> h_ref(total * batch);
+    for (int b = 0; b < batch; ++b) {
+      ref_in_mem.copy_from_host(input.data() + b * total, total * sizeof(flagfftComplex));
+      flagfft_test::ref_exec_c2c(ref_plan, d_ref_in, d_ref_out, FLAGFFT_FORWARD);
+      ref_out_mem.copy_to_host(h_ref.data() + b * total, total * sizeof(flagfftComplex));
+    }
+
+    flagfft_test::ErrorStats stats = flagfft_test::error_stats(h_out.data(), h_ref.data(), total, batch);
+    flagfft_test::expect_reference_accuracy(stats,
+                                            FLAGFFT_C2C,
+                                            total,
+                                            batch,
+                                            flagfft_test::input_scale_name(scale));
+  }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, C2C2D, ::testing::Values(Test2DParam {16, 16, 1}));
+TEST_P(C2C2D, InverseReference) {
+  if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+
+  flagfft_test::RefPlanHandle ref_plan;
+  flagfft_test::ref_plan_2d(ref_plan, n0, n1, FLAGFFT_C2C);
+
+  flagfft::adaptor::Memory ref_in_mem(total * sizeof(flagfftComplex));
+  flagfft::adaptor::Memory ref_out_mem(total * sizeof(flagfftComplex));
+  auto* d_ref_in = static_cast<flagfftComplex*>(ref_in_mem.data());
+  auto* d_ref_out = static_cast<flagfftComplex*>(ref_out_mem.data());
+
+  for (double scale : flagfft_test::kAccuracyInputScales) {
+    auto input = h_in;
+    flagfft_test::scale_input(input, scale);
+    in_mem.copy_from_host(input.data(), bytes);
+
+    // FlagFFT inverse
+    flagfft_test::ExecC2C(plan, d_in, d_out, FLAGFFT_INVERSE);
+    out_mem.copy_to_host(h_out.data(), bytes);
+
+    // Reference inverse - process each batch separately
+    std::vector<flagfftComplex> h_ref(total * batch);
+    for (int b = 0; b < batch; ++b) {
+      ref_in_mem.copy_from_host(input.data() + b * total, total * sizeof(flagfftComplex));
+      flagfft_test::ref_exec_c2c(ref_plan, d_ref_in, d_ref_out, FLAGFFT_INVERSE);
+      ref_out_mem.copy_to_host(h_ref.data() + b * total, total * sizeof(flagfftComplex));
+    }
+
+    flagfft_test::ErrorStats stats = flagfft_test::error_stats(h_out.data(), h_ref.data(), total, batch);
+    flagfft_test::expect_reference_accuracy(stats,
+                                            FLAGFFT_C2C,
+                                            total,
+                                            batch,
+                                            flagfft_test::input_scale_name(scale));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Smoke, C2C2D, ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
 
 INSTANTIATE_TEST_SUITE_P(Extended,
                          C2C2D,
@@ -151,6 +209,12 @@ INSTANTIATE_TEST_SUITE_P(Extended,
 INSTANTIATE_TEST_SUITE_P(Batch,
                          C2C2D,
                          ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
+
+INSTANTIATE_TEST_SUITE_P(
+    Bluestein,
+    C2C2D,
+    ::testing::ValuesIn(Generate2DParams(
+        k2DBluesteinSizes, sizeof(k2DBluesteinSizes) / sizeof(k2DBluesteinSizes[0]), k2DBatchSingle, 1)));
 
 // =========================================================================
 // Z2Z 2D tests
@@ -221,30 +285,85 @@ TEST_P(Z2Z2D, ForwardReference) {
   flagfft_test::RefPlanHandle ref_plan;
   flagfft_test::ref_plan_2d(ref_plan, n0, n1, FLAGFFT_Z2Z);
 
-  flagfft_test::ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
-  out_mem.copy_to_host(h_out.data(), bytes);
-
-  // Reference forward - process each batch separately
-  std::vector<flagfftDoubleComplex> h_ref(total * batch);
   flagfft::adaptor::Memory ref_in_mem(total * sizeof(flagfftDoubleComplex));
   flagfft::adaptor::Memory ref_out_mem(total * sizeof(flagfftDoubleComplex));
   auto* d_ref_in = static_cast<flagfftDoubleComplex*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftDoubleComplex*>(ref_out_mem.data());
-  for (int b = 0; b < batch; ++b) {
-    ref_in_mem.copy_from_host(h_in.data() + b * total, total * sizeof(flagfftDoubleComplex));
-    flagfft_test::ref_exec_z2z(ref_plan, d_ref_in, d_ref_out, FLAGFFT_FORWARD);
-    ref_out_mem.copy_to_host(h_ref.data() + b * total, total * sizeof(flagfftDoubleComplex));
-  }
 
-  flagfft_test::ErrorStats stats = flagfft_test::error_stats(h_out.data(), h_ref.data(), total, batch);
-  flagfft_test::expect_reference_accuracy(stats, FLAGFFT_Z2Z, total, batch);
+  for (double scale : flagfft_test::kAccuracyInputScales) {
+    auto input = h_in;
+    flagfft_test::scale_input(input, scale);
+    in_mem.copy_from_host(input.data(), bytes);
+
+    flagfft_test::ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
+    out_mem.copy_to_host(h_out.data(), bytes);
+
+    std::vector<flagfftDoubleComplex> h_ref(total * batch);
+    for (int b = 0; b < batch; ++b) {
+      ref_in_mem.copy_from_host(input.data() + b * total, total * sizeof(flagfftDoubleComplex));
+      flagfft_test::ref_exec_z2z(ref_plan, d_ref_in, d_ref_out, FLAGFFT_FORWARD);
+      ref_out_mem.copy_to_host(h_ref.data() + b * total, total * sizeof(flagfftDoubleComplex));
+    }
+
+    flagfft_test::ErrorStats stats = flagfft_test::error_stats(h_out.data(), h_ref.data(), total, batch);
+    flagfft_test::expect_reference_accuracy(stats,
+                                            FLAGFFT_Z2Z,
+                                            total,
+                                            batch,
+                                            flagfft_test::input_scale_name(scale));
+  }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, Z2Z2D, ::testing::Values(Test2DParam {16, 16, 1}));
+TEST_P(Z2Z2D, InverseReference) {
+  if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+
+  flagfft_test::RefPlanHandle ref_plan;
+  flagfft_test::ref_plan_2d(ref_plan, n0, n1, FLAGFFT_Z2Z);
+
+  flagfft::adaptor::Memory ref_in_mem(total * sizeof(flagfftDoubleComplex));
+  flagfft::adaptor::Memory ref_out_mem(total * sizeof(flagfftDoubleComplex));
+  auto* d_ref_in = static_cast<flagfftDoubleComplex*>(ref_in_mem.data());
+  auto* d_ref_out = static_cast<flagfftDoubleComplex*>(ref_out_mem.data());
+
+  for (double scale : flagfft_test::kAccuracyInputScales) {
+    auto input = h_in;
+    flagfft_test::scale_input(input, scale);
+    in_mem.copy_from_host(input.data(), bytes);
+
+    flagfft_test::ExecZ2Z(plan, d_in, d_out, FLAGFFT_INVERSE);
+    out_mem.copy_to_host(h_out.data(), bytes);
+
+    std::vector<flagfftDoubleComplex> h_ref(total * batch);
+    for (int b = 0; b < batch; ++b) {
+      ref_in_mem.copy_from_host(input.data() + b * total, total * sizeof(flagfftDoubleComplex));
+      flagfft_test::ref_exec_z2z(ref_plan, d_ref_in, d_ref_out, FLAGFFT_INVERSE);
+      ref_out_mem.copy_to_host(h_ref.data() + b * total, total * sizeof(flagfftDoubleComplex));
+    }
+
+    flagfft_test::ErrorStats stats = flagfft_test::error_stats(h_out.data(), h_ref.data(), total, batch);
+    flagfft_test::expect_reference_accuracy(stats,
+                                            FLAGFFT_Z2Z,
+                                            total,
+                                            batch,
+                                            flagfft_test::input_scale_name(scale));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Smoke, Z2Z2D, ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
 
 INSTANTIATE_TEST_SUITE_P(Extended,
                          Z2Z2D,
                          ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
+
+INSTANTIATE_TEST_SUITE_P(Batch,
+                         Z2Z2D,
+                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
+
+INSTANTIATE_TEST_SUITE_P(
+    Bluestein,
+    Z2Z2D,
+    ::testing::ValuesIn(Generate2DParams(
+        k2DBluesteinSizes, sizeof(k2DBluesteinSizes) / sizeof(k2DBluesteinSizes[0]), k2DBatchSingle, 1)));
 
 // =========================================================================
 // R2C + C2R 2D roundtrip tests
