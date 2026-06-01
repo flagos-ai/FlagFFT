@@ -56,6 +56,15 @@ PlanNodePtr plan_node_from_json(PlanBuilder &builder, const nlohmann::json &node
   if (kind == "stockham_autosort") {
     return std::make_shared<StockhamPlanNode>(length, node.at("factors").get<std::vector<int64_t>>());
   }
+  if (kind == "two_dim") {
+    int64_t n0 = node.at("n0").get<int64_t>();
+    int64_t n1 = node.at("n1").get<int64_t>();
+    return std::make_shared<TwoDimPlanNode>(n0,
+                                            n1,
+                                            TwoDimStrategy::RTRT,
+                                            plan_node_from_json(builder, node.at("row")),
+                                            plan_node_from_json(builder, node.at("col")));
+  }
   throw std::runtime_error("unsupported plan node kind in forced plan: " + kind);
 }
 

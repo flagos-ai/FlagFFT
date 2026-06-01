@@ -171,15 +171,27 @@ def test_tune_placeholder(flagfft_cli) -> None:
     assert "not yet supported" in result.stderr.lower()
 
 
-def test_batch_only_rank1(flagfft_cli) -> None:
+def test_batch_rejected_for_rank3(flagfft_cli) -> None:
     result = subprocess.run(
-        [str(flagfft_cli), "bench", "--rank", "2", "--shape", "16x16", "--batch", "4"],
+        [str(flagfft_cli), "bench", "--rank", "3", "--shape", "8x4x4", "--batch", "4"],
         text=True,
         capture_output=True,
         check=False,
     )
     assert result.returncode == 1
     assert "batch" in result.stderr.lower()
+
+
+def test_rank2_real_api_rejected(flagfft_cli) -> None:
+    result = subprocess.run(
+        [str(flagfft_cli), "bench", "--rank", "2", "--shape", "16x16", "--api", "r2c"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "rank 2" in result.stderr.lower()
+    assert "c2c" in result.stderr.lower()
 
 
 def test_rank_shape_mismatch(flagfft_cli) -> None:
@@ -252,9 +264,35 @@ def test_bench_rank2_table(flagfft_cli) -> None:
         check=False,
     )
     skip_if_cuda_unavailable(result)
-    # Rank 2 passes CLI validation; plan creation may fail if unsupported.
-    assert result.returncode != 0
-    assert "create FlagFFT plan" in result.stderr
+    assert result.returncode == 0
+    assert "16x8" in result.stdout
+    assert "speedup" in result.stdout
+
+
+def test_bench_rank2_batch_table(flagfft_cli) -> None:
+    result = subprocess.run(
+        [
+            str(flagfft_cli),
+            "bench",
+            "--rank",
+            "2",
+            "--shape",
+            "16x8",
+            "--batch",
+            "4",
+            "--warmup",
+            "2",
+            "--iters",
+            "5",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    skip_if_cuda_unavailable(result)
+    assert result.returncode == 0
+    assert "16x8" in result.stdout
+    assert "speedup" in result.stdout
 
 
 def test_bench_rank3_table(flagfft_cli) -> None:

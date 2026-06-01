@@ -49,7 +49,27 @@ TEST(Plan1D, GetDescription) {
 // =========================================================================
 
 TEST(Plan2D, CreateDestroyAllTypes) {
-  flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
+  flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z};
+  for (auto type : types) {
+    flagfftHandle plan = nullptr;
+    EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, type), FLAGFFT_SUCCESS);
+    EXPECT_NE(plan, nullptr);
+    EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+  }
+}
+
+TEST(Plan2D, BatchedPlanManyComplex) {
+  int n[2] = {64, 32};
+  const int dist = n[0] * n[1];
+  flagfftHandle plan = nullptr;
+  EXPECT_EQ(flagfftPlanMany(&plan, 2, n, nullptr, 1, dist, nullptr, 1, dist, FLAGFFT_C2C, 4),
+            FLAGFFT_SUCCESS);
+  EXPECT_NE(plan, nullptr);
+  EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+}
+
+TEST(Plan2D, RealTypesNotSupportedYet) {
+  flagfftType types[] = {FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {
     flagfftHandle plan = nullptr;
     EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, type), FLAGFFT_NOT_SUPPORTED);
@@ -57,11 +77,28 @@ TEST(Plan2D, CreateDestroyAllTypes) {
   }
 }
 
+TEST(Plan2D, CustomStrideNotSupportedYet) {
+  int n[2] = {64, 32};
+  flagfftHandle plan = nullptr;
+  EXPECT_EQ(flagfftPlanMany(&plan, 2, n, nullptr, 2, n[0] * n[1], nullptr, 1, n[0] * n[1], FLAGFFT_C2C, 1),
+            FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
+}
+
 TEST(Plan2D, InvalidParameters) {
   flagfftHandle plan = nullptr;
   EXPECT_EQ(flagfftPlan2d(&plan, 0, 32, FLAGFFT_C2C), FLAGFFT_INVALID_SIZE);
   EXPECT_EQ(plan, nullptr);
   EXPECT_EQ(flagfftPlan2d(nullptr, 64, 32, FLAGFFT_C2C), FLAGFFT_INVALID_VALUE);
+}
+
+TEST(Plan2D, GetDescription) {
+  flagfftHandle plan = nullptr;
+  ASSERT_EQ(flagfftPlan2d(&plan, 64, 32, FLAGFFT_C2C), FLAGFFT_SUCCESS);
+  const char* desc = flagfftGetPlanDescription(plan);
+  EXPECT_NE(desc, nullptr);
+  EXPECT_GT(std::strlen(desc), 0u);
+  EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }
 
 // =========================================================================

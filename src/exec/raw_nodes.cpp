@@ -417,4 +417,95 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw2DNode::CompiledRaw2DNode(int64_t n0,
+                                     int64_t n1,
+                                     std::shared_ptr<CompiledRawNode> row_fft,
+                                     std::shared_ptr<CompiledRawNode> col_fft,
+                                     std::shared_ptr<JitKernel> transpose_fwd,
+                                     std::shared_ptr<JitKernel> transpose_inv,
+                                     DeviceAllocation temp1,
+                                     DeviceAllocation temp2)
+    : n0(n0),
+      n1(n1),
+      row_fft(std::move(row_fft)),
+      col_fft(std::move(col_fft)),
+      transpose_fwd(std::move(transpose_fwd)),
+      transpose_inv(std::move(transpose_inv)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw2DNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2D(n0=" << n0 << ", n1=" << n1
+      << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
+      << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
+      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->kernel_name : "null")
+      << ", transpose_inv=" << (transpose_inv ? transpose_inv->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
+                                         adaptor::DevicePtr output,
+                                         const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t total = n0 * n1;
+    // Grid tile size for 2D transpose.  Must match the tile_size baked into
+    // the compiled transpose kernel — see kernels.py:_build_tiled_transpose_kernel_source
+    // (default tile_size=32) and jit_source.py:_emit_tiled_transpose_jit_kernel (ditto).
+    constexpr int64_t tile_size = 32;
+
+    // Step 1: Row FFT (input -> temp1)
+    // Shape: (batch, n0, n1) -> row FFT along last dimension
+    // batch for row FFT = batch * n0
+    RawExecutionContext row_context {context.request, context.stream, batch * n0};
+    flagfftResult result = row_fft->execute(input, temp1.get(), row_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 2: Transpose (temp1 -> temp2)
+    // Shape: (batch, n0, n1) -> (batch, n1, n0)
+    std::vector<JitKernelArg> transpose_fwd_args = {
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::device(temp2.get()),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_fwd->launch(context.stream,
+                          transpose_fwd_args,
+                          ceil_div(n1, tile_size),
+                          ceil_div(n0, tile_size),
+                          batch);
+
+    // Step 3: Col FFT (temp2 -> temp1)
+    // After transpose, shape is (batch, n1, n0)
+    // Col FFT along last dimension (n0), batch = batch * n1
+    RawExecutionContext col_context {context.request, context.stream, batch * n1};
+    result = col_fft->execute(temp2.get(), temp1.get(), col_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 4: Transpose back (temp1 -> output)
+    // Shape: (batch, n1, n0) -> (batch, n0, n1)
+    std::vector<JitKernelArg> transpose_inv_args = {
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_inv->launch(context.stream,
+                          transpose_inv_args,
+                          ceil_div(n0, tile_size),
+                          ceil_div(n1, tile_size),
+                          batch);
+
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 2D execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 }  // namespace flagfft

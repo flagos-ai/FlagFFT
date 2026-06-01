@@ -29,10 +29,12 @@ selected at exec time for complex transforms. Both single-layer and nested
 fused four-step routes are supported, so very large composite lengths
 (e.g. `n = 2^23`) plan as multi-level four-step trees instead of falling back
 to Bluestein.
-Rank>1 requests still return `FLAGFFT_NOT_SUPPORTED`. `flagfftPlanMany`
-accepts the contiguous rank-1 layouts produced by `flagfftPlan1d`, plus the
-cuFFT-compatible padded real in-place layout described below; other custom
-stride, distance, or embed layouts return `FLAGFFT_NOT_SUPPORTED`.
+Contiguous row-major rank-2 `FLAGFFT_C2C` and `FLAGFFT_Z2Z` are supported
+through `flagfftPlan2d` and batched `flagfftPlanMany`. The current 2D complex
+path is an RTRT decomposition: row FFT, tiled transpose, row FFT over the
+transposed columns, and tiled transpose back. Rank-2 real transforms, rank 3,
+and custom rank-2 stride, distance, or embed layouts return
+`FLAGFFT_NOT_SUPPORTED`.
 
 `flagfftGetPlanDescription(plan)` returns a human-readable string describing
 the plan node tree, kernel names, module paths, and compilation details.
@@ -96,8 +98,9 @@ flagfftExecR2C(plan, d_real_in_place,
 ```
 
 Use the reversed compact/padded distances with `FLAGFFT_C2R` for an in-place
-real inverse transform. `flagfftPlan2d` and `flagfftPlan3d` are present for API
-compatibility but currently return `FLAGFFT_NOT_SUPPORTED`.
+real inverse transform. `flagfftPlan2d` currently supports only complex
+`C2C`/`Z2Z`; `flagfftPlan3d` is present for API compatibility but currently
+returns `FLAGFFT_NOT_SUPPORTED`.
 
 ## Architecture
 
@@ -189,6 +192,7 @@ Common case options are `--api c2c|z2z|r2c|d2z|c2r|z2d`,
 `--batch`, `--direction forward|inverse`, and `--placement
 out-of-place|in-place`. `--print-path` adds the plan description. `tune` is
 currently a placeholder and exits with an unsupported status.
+`--batch` is accepted for rank 1 and for rank-2 complex `c2c`/`z2z` cases.
 Real-to-complex APIs (`r2c`, `d2z`) only accept `forward`; complex-to-real
 APIs (`c2r`, `z2d`) only accept `inverse`.
 The cuFFT use in this CLI is a CUDA-only correctness and performance oracle;
@@ -200,7 +204,7 @@ and `--batch 2suffix` are rejected as invalid arguments.
 
 | Command | Supported now | Reported `unsupported` |
 |---|---|---|
-| `test correctness`, `bench` | Six 1D APIs with `plan1d`, both complex directions, valid real direction, in/out-of-place; padded real in-place `planmany` | Rank 2/3 and other `planmany` layouts |
+| `test correctness`, `bench` | Six 1D APIs with `plan1d`, both complex directions, valid real direction, in/out-of-place; padded real in-place `planmany`; contiguous rank-2 `c2c`/`z2z` including batch | Rank-2 real APIs, rank 3, and other `planmany` layouts |
 | `tune` | 1D `c2c` complex64, out-of-place `plan1d`, either direction | Other APIs, ranks, or layouts |
 
 The JSON `status` and process code contract is stable: `passed`=`0`,

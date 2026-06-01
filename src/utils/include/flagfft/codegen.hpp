@@ -216,6 +216,30 @@ struct CompiledRawC2RNode final : CompiledRawNode {
   DeviceAllocation full_output;
 };
 
+struct CompiledRaw2DNode final : CompiledRawNode {
+  CompiledRaw2DNode(int64_t n0,
+                    int64_t n1,
+                    std::shared_ptr<CompiledRawNode> row_fft,
+                    std::shared_ptr<CompiledRawNode> col_fft,
+                    std::shared_ptr<JitKernel> transpose_fwd,
+                    std::shared_ptr<JitKernel> transpose_inv,
+                    DeviceAllocation temp1,
+                    DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  std::shared_ptr<CompiledRawNode> row_fft;
+  std::shared_ptr<CompiledRawNode> col_fft;
+  std::shared_ptr<JitKernel> transpose_fwd;
+  std::shared_ptr<JitKernel> transpose_inv;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
 class TritonCompiler {
  public:
   std::shared_ptr<CompiledRawNode> compile_raw_node(const PlanNodePtr &node,
@@ -227,6 +251,9 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> compile_raw_c2r_node(const PlanNodePtr &node,
                                                         const FFTRequest &request,
                                                         int64_t batch);
+  std::shared_ptr<CompiledRaw2DNode> compile_raw_2d_node(const std::shared_ptr<TwoDimPlanNode> &node,
+                                                         const FFTRequest &request,
+                                                         int64_t batch);
   static void clear_kernel_cache();
 
  private:
@@ -259,6 +286,9 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_r2c_half_pack_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_compact_to_hermitian_full_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_complex_to_real_kernel(const FFTRequest &request, int64_t n);
+  std::shared_ptr<JitKernel> compile_tiled_transpose_kernel(const FFTRequest &request,
+                                                            int64_t n0,
+                                                            int64_t n1);
   std::shared_ptr<JitKernel> compile_kernel(const KernelKey &key) const;
   std::filesystem::path out_dir() const;
   std::string python_executable() const;

@@ -23,6 +23,10 @@ std::string PlanKey::repr() const {
   if (root_kind == PlanNodeKind::FourStep) {
     out << ";n1=" << n1 << ";n2=" << n2;
   }
+  // TwoDim repr: PlanKey n1 stores n0 and n2 stores n1 (see nodes.cpp).
+  if (root_kind == PlanNodeKind::TwoDim) {
+    out << ";n0=" << n1 << ";n1=" << n2;
+  }
   if (root_kind == PlanNodeKind::Bluestein) {
     out << ";conv_length=" << conv_length;
   }

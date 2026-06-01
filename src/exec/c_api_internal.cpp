@@ -89,6 +89,37 @@ bool is_supported_minimal_desc(const FlagFFTPlanDesc &desc) {
          valid_input_embed && valid_output_embed;
 }
 
+bool is_supported_2d_desc(const FlagFFTPlanDesc &desc) {
+  if (desc.rank != 2 || desc.batch <= 0) {
+    return false;
+  }
+  // Only C2C and Z2Z are supported for 2D FFT
+  // R2C/C2R/D2Z/Z2D require special handling that is not yet implemented
+  if (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_Z2Z) {
+    return false;
+  }
+  if (desc.n.size() != 2 || desc.n[0] <= 0 || desc.n[1] <= 0) {
+    return false;
+  }
+  if (desc.istride != 1 || desc.ostride != 1) {
+    return false;
+  }
+  const int64_t n0 = desc.n[0];
+  const int64_t n1 = desc.n[1];
+  // Pre-plumbed for future 2D real FFT support (R2C/C2R/D2Z/Z2D).
+  // The early-return above rejects all real types, so these currently
+  // always evaluate to the C2C/Z2Z path.
+  const bool real_forward = desc.type == FLAGFFT_R2C || desc.type == FLAGFFT_D2Z;
+  const bool real_inverse = desc.type == FLAGFFT_C2R || desc.type == FLAGFFT_Z2D;
+  const int64_t half_n1 = n1 / 2 + 1;
+  const int64_t input_logical = real_inverse ? n0 * half_n1 : n0 * n1;
+  const int64_t output_logical = real_forward ? n0 * half_n1 : n0 * n1;
+  if (desc.idist < input_logical || desc.odist < output_logical) {
+    return false;
+  }
+  return true;
+}
+
 bool raw_supported_node(const PlanNodePtr &node) {
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) != nullptr) {
     return true;
@@ -99,18 +130,29 @@ bool raw_supported_node(const PlanNodePtr &node) {
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     return raw_supported_node(bluestein->fft_plan);
   }
+  if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
+    return raw_supported_node(two_dim->row_plan) && raw_supported_node(two_dim->col_plan);
+  }
   return false;
 }
 
 FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction) {
   FFTRequest request;
-  request.fft_length = desc.n[0];
-  request.input_shape = {desc.batch, desc.n[0]};
-  request.input_strides = {desc.n[0], 1};
+  const int64_t logical_size = product(desc.n);
+  request.fft_length = desc.rank == 1 ? desc.n[0] : logical_size;
+  if (desc.rank == 1) {
+    request.input_shape = {desc.batch, desc.n[0]};
+    request.input_strides = {desc.idist, desc.istride};
+    request.raw_dim = 1;
+    request.normalized_dim = 1;
+  } else {
+    request.input_shape = {desc.batch, desc.n[0], desc.n[1]};
+    request.input_strides = {desc.idist, desc.n[1] * desc.istride, desc.istride};
+    request.raw_dim = 2;
+    request.normalized_dim = 2;
+  }
   request.n = std::nullopt;
-  request.requested_n = desc.n[0];
-  request.raw_dim = 1;
-  request.normalized_dim = 1;
+  request.requested_n = request.fft_length;
   request.norm = "backward";
   const bool is_double = desc.precision == FlagFFTPrecision::Float64;
   request.input_dtype = is_double ? "complex128" : "complex64";

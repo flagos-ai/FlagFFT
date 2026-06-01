@@ -25,8 +25,11 @@ timing, and tuning enter through `flagfft-cli`.
 
 The native C API supports arbitrary-length contiguous rank-1 batched C2C,
 Z2Z, R2C, D2Z, C2R, and Z2D plans. Real in-place operation uses padded rows;
-that verified padded rank-1 form is also supported through `PlanMany`. Rank
-2/3 and other custom layouts remain unsupported.
+that verified padded rank-1 form is also supported through `PlanMany`.
+Contiguous row-major rank-2 C2C/Z2Z plans are supported through `Plan2d` and
+batched `PlanMany`; the current execution strategy is row FFT, tiled
+transpose, row FFT, tiled transpose back. Rank-2 real transforms, rank 3, and
+other custom layouts remain unsupported.
 
 ## Raw Execution Nodes
 
@@ -39,6 +42,9 @@ Raw nodes mirror the existing plan tree:
   stage buffer.
 - `CompiledRawBluesteinNode` handles prime and awkward composite lengths through
   JIT prepare, pointwise, finalize, and convolution FFT child kernels.
+- `CompiledRaw2DNode` handles contiguous complex 2D plans with an RTRT route.
+  This is the correctness baseline for future rocFFT-style `2D_SINGLE` and
+  row-plus-block-column strategies.
 
 ## CLI Tools
 

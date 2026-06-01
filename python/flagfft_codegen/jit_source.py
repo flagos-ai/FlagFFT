@@ -19,6 +19,7 @@ from .kernels import (
     _build_r2c_half_pack_kernel_source,
     _build_real_to_complex_kernel_source,
     _build_reshape_pack_kernel_source,
+    _build_tiled_transpose_kernel_source,
     _build_twiddle_reshape_pack_kernel_source,
     contiguous_batch_pack_for,
     four_step_col_inner_pack_for,
@@ -442,6 +443,41 @@ def emit_jit_kernel(
     return metadata
 
 
+def _emit_tiled_transpose_jit_kernel(
+    *,
+    n0: int,
+    n1: int,
+    dtype: str = "complex64",
+    tile_size: int = 32,  # must match constexpr tile_size in raw_nodes.cpp CompiledRaw2DNode::execute()
+    out_dir: Path,
+) -> dict[str, Any]:
+    kernel_name, kernel_source, arg_names = _build_tiled_transpose_kernel_source(
+        n0, n1, dtype, tile_size
+    )
+    suffix = _dtype_suffix(dtype)
+    module_name = f"flagfft_jit_tiled_transpose_n{n0}_{n1}_{suffix}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{module_name}.py"
+    module_path.write_text(_module_source(kernel_source))
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": kernel_name,
+        "signature": _signature(arg_names, dtype),
+        "num_warps": 4,
+        "num_stages": 1,
+        "batch_per_block": 1,
+        "arg_names": arg_names,
+        "kernel_type": "tiled_transpose",
+        "dtype": dtype,
+        "reshape_n1": int(n0),
+        "reshape_n2": int(n1),
+        "tile_size": int(tile_size),
+        "block": tile_size * tile_size,
+    }
+    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate FlagFFT libtriton_jit kernel sources"
@@ -457,6 +493,7 @@ def main() -> None:
             "bluestein_finalize",
             "reshape_pack",
             "twiddle_reshape_pack",
+            "tiled_transpose",
             "real_to_complex",
             "r2c_half_pack",
             "compact_to_hermitian_full",
@@ -482,6 +519,7 @@ def main() -> None:
     parser.add_argument("--bluestein-m", type=int)
     parser.add_argument("--reshape-n1", type=int, default=0)
     parser.add_argument("--reshape-n2", type=int, default=0)
+    parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
 
@@ -510,6 +548,21 @@ def main() -> None:
             n1=args.reshape_n1,
             n2=args.reshape_n2,
             dtype=args.dtype,
+            out_dir=args.out_dir,
+        )
+        print(json.dumps(metadata, sort_keys=True))
+        return
+
+    if args.kernel == "tiled_transpose":
+        if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
+            parser.error(
+                "--kernel tiled_transpose requires --reshape-n1 and --reshape-n2"
+            )
+        metadata = _emit_tiled_transpose_jit_kernel(
+            n0=args.reshape_n1,
+            n1=args.reshape_n2,
+            dtype=args.dtype,
+            tile_size=args.tile_size,
             out_dir=args.out_dir,
         )
         print(json.dumps(metadata, sort_keys=True))

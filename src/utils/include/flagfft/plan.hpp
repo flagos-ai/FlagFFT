@@ -70,6 +70,21 @@ struct BluesteinPlanNode final : PlanNode {
   PlanNodePtr fft_plan;
 };
 
+enum class TwoDimStrategy { RTRT };
+
+struct TwoDimPlanNode final : PlanNode {
+  TwoDimPlanNode(int64_t n0, int64_t n1, TwoDimStrategy strategy, PlanNodePtr row_plan, PlanNodePtr col_plan);
+  std::string describe(int indent = 0) const override;
+
+  int64_t n0;
+  int64_t n1;
+  TwoDimStrategy strategy;
+  PlanNodePtr row_plan;
+  PlanNodePtr col_plan;
+};
+
+std::string two_dim_strategy_name(TwoDimStrategy strategy);
+
 struct PlanCandidate {
   PlanNodePtr node;
   double cost = 0.0;

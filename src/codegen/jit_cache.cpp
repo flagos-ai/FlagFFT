@@ -140,6 +140,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::ComplexToReal:
       kernel_kind = "complex_to_real";
       break;
+    case KernelKind::TiledTranspose:
+      kernel_kind = "tiled_transpose";
+      break;
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
@@ -161,7 +164,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::BluesteinFinalize) {
     jit_command << " --bluestein-n " << key.bluestein_n << " --bluestein-m " << key.bluestein_m;
   }
-  if (key.kind == KernelKind::ReshapePack || key.kind == KernelKind::TwiddleReshapePack) {
+  if (key.kind == KernelKind::ReshapePack || key.kind == KernelKind::TwiddleReshapePack ||
+      key.kind == KernelKind::TiledTranspose) {
     jit_command << " --reshape-n1 " << key.reshape_n1 << " --reshape-n2 " << key.reshape_n2;
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||

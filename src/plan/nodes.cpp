@@ -96,6 +96,33 @@ BluesteinPlanNode::BluesteinPlanNode(int64_t length, int64_t conv_length, PlanNo
     : PlanNode(length, PlanNodeKind::Bluestein), conv_length(conv_length), fft_plan(std::move(fft_plan)) {
 }
 
+TwoDimPlanNode::TwoDimPlanNode(
+    int64_t n0, int64_t n1, TwoDimStrategy strategy, PlanNodePtr row_plan, PlanNodePtr col_plan)
+    : PlanNode(n0 * n1, PlanNodeKind::TwoDim),
+      n0(n0),
+      n1(n1),
+      strategy(strategy),
+      row_plan(std::move(row_plan)),
+      col_plan(std::move(col_plan)) {
+}
+
+std::string two_dim_strategy_name(TwoDimStrategy strategy) {
+  switch (strategy) {
+    case TwoDimStrategy::RTRT:
+      return "RTRT";
+  }
+  return "unknown";
+}
+
+std::string TwoDimPlanNode::describe(int indent) const {
+  std::ostringstream oss;
+  oss << indent_str(indent) << "TwoDim(strategy=" << two_dim_strategy_name(strategy) << ", n0=" << n0
+      << ", n1=" << n1 << ")\n";
+  oss << row_plan->describe(indent + 2) << "\n";
+  oss << col_plan->describe(indent + 2);
+  return oss.str();
+}
+
 PlanKey PlanKey::from_node(const PlanNodePtr &node) {
   if (node == nullptr) {
     throw std::runtime_error("cannot build a plan key from a null plan node");
@@ -133,6 +160,15 @@ PlanKey PlanKey::from_node(const PlanNodePtr &node) {
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     key.conv_length = bluestein->conv_length;
     key.child_keys.push_back(PlanKey::from_node(bluestein->fft_plan).repr());
+    return key;
+  }
+  // PlanKey reuses generic n1/n2 fields: for TwoDim nodes, n1 stores n0
+  // and n2 stores n1.
+  if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
+    key.n1 = two_dim->n0;
+    key.n2 = two_dim->n1;
+    key.child_keys.push_back(PlanKey::from_node(two_dim->row_plan).repr());
+    key.child_keys.push_back(PlanKey::from_node(two_dim->col_plan).repr());
     return key;
   }
 

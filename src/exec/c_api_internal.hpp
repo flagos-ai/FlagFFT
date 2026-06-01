@@ -63,6 +63,7 @@ flagfftResult type_metadata(flagfftType type,
                             bool &real_output);
 std::vector<int64_t> copy_dims(const int *values, int rank);
 bool is_supported_minimal_desc(const FlagFFTPlanDesc &desc);
+bool is_supported_2d_desc(const FlagFFTPlanDesc &desc);
 bool raw_supported_node(const PlanNodePtr &node);
 FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction);
 flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc);

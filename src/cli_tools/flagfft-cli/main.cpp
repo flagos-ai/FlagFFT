@@ -34,7 +34,7 @@ void print_usage() {
                "                           rank 2: --shape 23x42,128x64\n"
                "                           rank 3: --shape 128x128x128\n"
                "  --api c2c|z2z|r2c|d2z|c2r|z2d   FFT type (default: c2c)\n"
-               "  --batch N                 Batch size, rank 1 only (default: 1)\n"
+               "  --batch N                 Batch size for rank 1 and complex rank 2 (default: 1)\n"
                "  --direction forward|inverse       (default: forward)\n"
                "  --placement out-of-place|in-place (default: out-of-place)\n"
                "  --warmup N                Warmup iterations (default: 10)\n"
@@ -106,8 +106,11 @@ Args parse_args(int argc, char** argv) {
   }
 
   for (const auto& c : args.cases) {
-    if (c.rank != 1 && c.batch != 1) {
-      throw AssertionFailure("--batch is only supported with --rank 1");
+    if (c.rank == 2 && !is_complex_api(c.api)) {
+      throw AssertionFailure("rank 2 currently supports only c2c and z2z");
+    }
+    if (c.rank > 2 && c.batch != 1) {
+      throw AssertionFailure("--batch is only supported with --rank 1 or complex --rank 2");
     }
     if (static_cast<int>(c.shape.size()) != c.rank) {
       throw AssertionFailure("--shape dimension count does not match --rank");

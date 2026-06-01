@@ -41,6 +41,12 @@ nlohmann::json plan_node_to_json(const PlanNodePtr &node) {
   } else if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     out["conv_length"] = bluestein->conv_length;
     out["fft_plan"] = plan_node_to_json(bluestein->fft_plan);
+  } else if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
+    out["n0"] = two_dim->n0;
+    out["n1"] = two_dim->n1;
+    out["strategy"] = two_dim_strategy_name(two_dim->strategy);
+    out["row"] = plan_node_to_json(two_dim->row_plan);
+    out["col"] = plan_node_to_json(two_dim->col_plan);
   }
   return out;
 }

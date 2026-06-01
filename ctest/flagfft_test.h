@@ -51,6 +51,16 @@ inline void Plan2d(flagfftHandle* plan, int nx, int ny, flagfftType type) {
   }
 }
 
+inline void PlanMany2d(flagfftHandle* plan, int nx, int ny, flagfftType type, int batch = 1) {
+  int n[2] = {nx, ny};
+  const int dist = nx * ny;
+  flagfftResult r = flagfftPlanMany(plan, 2, n, nullptr, 1, dist, nullptr, 1, dist, type, batch);
+  if (r != FLAGFFT_SUCCESS) {
+    FAIL() << "flagfftPlanMany(rank=2, nx=" << nx << ", ny=" << ny << ", type=" << type << ", batch=" << batch
+           << ") failed with code " << r;
+  }
+}
+
 inline void Plan3d(flagfftHandle* plan, int nx, int ny, int nz, flagfftType type) {
   flagfftResult r = flagfftPlan3d(plan, nx, ny, nz, type);
   if (r != FLAGFFT_SUCCESS) {

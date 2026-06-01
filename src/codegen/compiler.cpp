@@ -55,6 +55,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::move(work_buf),
         std::move(b_fft_buf));
   }
+  if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
+    return compile_raw_2d_node(two_dim, request, batch);
+  }
   throw std::runtime_error("raw C API does not support plan node kind: " + plan_node_kind_name(node->kind));
 }
 
@@ -210,6 +213,58 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_complex_to_real_kernel(const 
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::complex_to_real(target, request.input_dtype, n);
   return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_tiled_transpose_kernel(const FFTRequest &request,
+                                                                          int64_t n0,
+                                                                          int64_t n1) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::tiled_transpose(target, request.input_dtype, n0, n1);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<CompiledRaw2DNode> TritonCompiler::compile_raw_2d_node(
+    const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+
+  // Build row FFT request (axis-1, length=n1, batch=batch*n0)
+  FFTRequest row_request = request;
+  row_request.fft_length = n1;
+  row_request.input_shape = {batch * n0, n1};
+  row_request.input_strides = {n1, 1};
+  row_request.requested_n = n1;
+  row_request.batch = batch * n0;
+
+  // Build col FFT request (axis-0, length=n0, batch=batch*n1)
+  FFTRequest col_request = request;
+  col_request.fft_length = n0;
+  col_request.input_shape = {batch * n1, n0};
+  col_request.input_strides = {n0, 1};
+  col_request.requested_n = n0;
+  col_request.batch = batch * n1;
+
+  // Compile row and col FFT nodes
+  std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+  std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * n1);
+
+  // Compile transpose kernels
+  auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, n1);
+  auto transpose_inv = compile_tiled_transpose_kernel(request, n1, n0);
+
+  // Allocate temporary buffers
+  DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+  DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+
+  return std::make_shared<CompiledRaw2DNode>(n0,
+                                             n1,
+                                             std::move(row_fft),
+                                             std::move(col_fft),
+                                             std::move(transpose_fwd),
+                                             std::move(transpose_inv),
+                                             std::move(temp1),
+                                             std::move(temp2));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_generic(const FourStepPlanNode &node,

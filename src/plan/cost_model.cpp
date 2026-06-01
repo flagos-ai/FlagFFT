@@ -51,6 +51,9 @@ int PlanBuilder::priority(const PlanNodePtr &node) {
   if (node->kind == PlanNodeKind::DirectDft) {
     return 4;
   }
+  if (node->kind == PlanNodeKind::TwoDim) {
+    return 5;
+  }
   return 99;
 }
 

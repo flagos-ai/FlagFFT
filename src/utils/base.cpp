@@ -92,6 +92,8 @@ std::string plan_node_kind_name(PlanNodeKind kind) {
       return "stockham_autosort";
     case PlanNodeKind::Bluestein:
       return "bluestein";
+    case PlanNodeKind::TwoDim:
+      return "two_dim";
   }
   return "unknown";
 }
@@ -126,6 +128,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "compact_to_hermitian_full";
     case KernelKind::ComplexToReal:
       return "complex_to_real";
+    case KernelKind::TiledTranspose:
+      return "tiled_transpose";
   }
   return "unknown";
 }

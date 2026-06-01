@@ -1096,6 +1096,70 @@ def _build_complex_to_real_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "output_distance", "nbatch"]
 
 
+# NOTE: tile_size default (32) must match the constexpr tile_size in
+# src/exec/raw_nodes.cpp CompiledRaw2DNode::execute().
+def _build_tiled_transpose_kernel_source(
+    n0: int, n1: int, dtype: str, tile_size: int = 32
+) -> tuple[str, list[str], list[str]]:
+    """Emit a tiled (batch, M=n0, N=n1) -> (batch, N, M) transpose kernel.
+
+    Decomposes the matrix into tile_size x tile_size blocks across the grid — each
+    program loads one block from global memory and writes it transposed.  No shared
+    memory is used; the tiling is purely for grid parallelism.
+    """
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    total_complex = n0 * n1
+    total_float = total_complex * 2  # interleaved complex: 2 floats per element
+    kernel_name = f"_tiled_transpose_kernel_n{n0}_{n1}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            nbatch,
+        ):
+            # Program IDs
+            pid_tile_col = tl.program_id(0)
+            pid_tile_row = tl.program_id(1)
+            pid_batch = tl.program_id(2)
+
+            # Tile offsets
+            tile_row_start = pid_tile_row * {tile_size}
+            tile_col_start = pid_tile_col * {tile_size}
+
+            # Row and column offsets within tile
+            row_offsets = tile_row_start + tl.arange(0, {tile_size})
+            col_offsets = tile_col_start + tl.arange(0, {tile_size})
+
+            # Mask for valid elements
+            row_mask = row_offsets < {n0}
+            col_mask = col_offsets < {n1}
+            mask = row_mask[:, None] & col_mask[None, :]
+
+            # Clamp offsets to valid range to avoid out-of-bounds addresses
+            safe_row = tl.minimum(row_offsets, {n0 - 1})
+            safe_col = tl.minimum(col_offsets, {n1 - 1})
+
+            # Source element offsets in floats (row-major: batch * n0 * n1 * 2 + (row * n1 + col) * 2)
+            src_elem_offsets = pid_batch * {total_float} + (safe_row[:, None] * {n1} + safe_col[None, :]) * 2
+
+            # Load from source (complex elements are interleaved: real, imag)
+            src_real = tl.load(in_ptr + src_elem_offsets, mask=mask, other={zero})
+            src_imag = tl.load(in_ptr + src_elem_offsets + 1, mask=mask, other={zero})
+
+            # Destination element offsets in floats (transposed: batch * n0 * n1 * 2 + (col * n0 + row) * 2)
+            dst_elem_offsets = pid_batch * {total_float} + (safe_col[None, :] * {n0} + safe_row[:, None]) * 2
+
+            # Store to destination (transposed)
+            tl.store(out_ptr + dst_elem_offsets, src_real, mask=mask)
+            tl.store(out_ptr + dst_elem_offsets + 1, src_imag, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
 __all__ = [
     "LeafPlan",
     "_CODELET_DIR",
@@ -1113,6 +1177,7 @@ __all__ = [
     "_build_real_to_complex_kernel_source",
     "_build_reshape_pack_kernel_source",
     "_build_twiddle_reshape_pack_kernel_source",
+    "_build_tiled_transpose_kernel_source",
     "_transpose_complex_kernel",
     "_twiddle_transpose_complex_kernel",
     "contiguous_batch_pack_for",

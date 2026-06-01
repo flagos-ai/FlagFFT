@@ -32,7 +32,7 @@ namespace {
 
   BufferLayout layout_for(const CaseSpec& spec) {
     const int innermost = spec.shape.back();
-    int outer = spec.rank == 1 ? spec.batch : 1;
+    int outer = spec.batch;
     for (std::size_t i = 0; i + 1 < spec.shape.size(); ++i) outer *= spec.shape[i];
 
     const int half = innermost / 2 + 1;
@@ -91,7 +91,10 @@ namespace {
     if (spec.rank == 1) {
       result = flagfftPlan1d(&raw, layout.innermost, flagfft_type(spec.api), spec.batch);
     } else if (spec.rank == 2) {
-      result = flagfftPlan2d(&raw, spec.shape[0], spec.shape[1], flagfft_type(spec.api));
+      int n[2] = {spec.shape[0], spec.shape[1]};
+      const int dist = n[0] * n[1];
+      result =
+          flagfftPlanMany(&raw, 2, n, nullptr, 1, dist, nullptr, 1, dist, flagfft_type(spec.api), spec.batch);
     } else if (spec.rank == 3) {
       result = flagfftPlan3d(&raw, spec.shape[0], spec.shape[1], spec.shape[2], flagfft_type(spec.api));
     }
@@ -152,7 +155,7 @@ namespace {
     }
   }
 
-  void exec_ref(test_adaptor::RefPlanHandle& plan, const CaseSpec& spec, void* input, void* output) {
+  void exec_ref_one(test_adaptor::RefPlanHandle& plan, const CaseSpec& spec, void* input, void* output) {
     switch (spec.api) {
       case FftApi::C2C:
         test_adaptor::ref_exec_c2c(plan,
@@ -187,6 +190,33 @@ namespace {
                                    static_cast<flagfftDoubleReal*>(output));
         break;
     }
+  }
+
+  void exec_ref(test_adaptor::RefPlanHandle& plan, const CaseSpec& spec, void* input, void* output) {
+    if (spec.rank != 2 || spec.batch == 1) {
+      exec_ref_one(plan, spec, input, output);
+      return;
+    }
+
+    const int elements_per_batch = spec.shape[0] * spec.shape[1];
+    if (spec.api == FftApi::C2C) {
+      auto* in = static_cast<flagfftComplex*>(input);
+      auto* out = static_cast<flagfftComplex*>(output);
+      for (int b = 0; b < spec.batch; ++b) {
+        exec_ref_one(plan, spec, in + b * elements_per_batch, out + b * elements_per_batch);
+      }
+      return;
+    }
+    if (spec.api == FftApi::Z2Z) {
+      auto* in = static_cast<flagfftDoubleComplex*>(input);
+      auto* out = static_cast<flagfftDoubleComplex*>(output);
+      for (int b = 0; b < spec.batch; ++b) {
+        exec_ref_one(plan, spec, in + b * elements_per_batch, out + b * elements_per_batch);
+      }
+      return;
+    }
+
+    throw AssertionFailure("rank 2 reference batch execution supports only c2c and z2z");
   }
 
 }  // namespace

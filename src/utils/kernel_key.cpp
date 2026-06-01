@@ -141,6 +141,16 @@ KernelKey KernelKey::twiddle_reshape_pack(std::string target, std::string dtype,
   return key;
 }
 
+KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1) {
+  KernelKey key;
+  key.kind = KernelKind::TiledTranspose;
+  key.target = std::move(target);
+  key.dtype = std::move(dtype);
+  key.reshape_n1 = n0;
+  key.reshape_n2 = n1;
+  return key;
+}
+
 KernelKey KernelKey::real_to_complex(std::string target, std::string dtype, int64_t length) {
   KernelKey key;
   key.kind = KernelKind::RealToComplex;
