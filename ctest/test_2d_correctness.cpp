@@ -23,9 +23,9 @@ constexpr Test2DSize k2DSizes[] = {
     {256, 256},
 };
 
-// Non-smooth sizes to exercise Bluestein path in one dimension (smooth in the other).
-// Note: both-dimensions-Bluestein (e.g. {23,23}) is not yet supported.
+// Non-smooth sizes to exercise Bluestein path (one or both dimensions).
 constexpr Test2DSize k2DBluesteinSizes[] = {
+    { 23,  23},
     {997,  16},
     { 16, 997},
 };

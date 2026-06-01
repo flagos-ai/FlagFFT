@@ -73,6 +73,9 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         row_plan = lookup_or_build_root(builder, request_from_desc(row_desc, "inverse"));
       }
       if (!raw_supported_node(row_plan)) {
+        row_plan = raw_compatible_bluestein_plan(n1, builder, row_forward_request);
+      }
+      if (!raw_supported_node(row_plan)) {
         return FLAGFFT_NOT_SUPPORTED;
       }
 
@@ -91,6 +94,9 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       PlanNodePtr col_plan = lookup_or_build_root(builder, col_forward_request);
       if (!raw_supported_node(col_plan)) {
         col_plan = lookup_or_build_root(builder, request_from_desc(col_desc, "inverse"));
+      }
+      if (!raw_supported_node(col_plan)) {
+        col_plan = raw_compatible_bluestein_plan(n0, builder, col_forward_request);
       }
       if (!raw_supported_node(col_plan)) {
         return FLAGFFT_NOT_SUPPORTED;
