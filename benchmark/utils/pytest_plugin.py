@@ -127,15 +127,20 @@ def invoke_cli(flagfft_cli):
 def run_benchmark(invoke_cli, bench_warmup, bench_iters):
     """Invoke the bench subcommand with configured warmup/iters."""
 
-    def _run(size: int, api: str = "c2c", direction: str = "forward", batch: int = 1):
-        return invoke_cli(
+    def _run(size, api: str = "c2c", direction: str = "forward", batch: int = 1):
+        is_2d = isinstance(size, str) and "x" in size
+        cmd = [
             "bench",
             "--api",
             api,
             "--direction",
             direction,
-            "--shape",
-            str(size),
+        ]
+        if is_2d:
+            cmd += ["--rank", "2", "--shape", size]
+        else:
+            cmd += ["--shape", str(size)]
+        cmd += [
             "--batch",
             str(batch),
             "--warmup",
@@ -143,7 +148,8 @@ def run_benchmark(invoke_cli, bench_warmup, bench_iters):
             "--iters",
             str(bench_iters),
             "--print-path",
-        )
+        ]
+        return invoke_cli(*cmd)
 
     return _run
 
