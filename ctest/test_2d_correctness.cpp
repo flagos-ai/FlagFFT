@@ -366,59 +366,47 @@ INSTANTIATE_TEST_SUITE_P(
         k2DBluesteinSizes, sizeof(k2DBluesteinSizes) / sizeof(k2DBluesteinSizes[0]), k2DBatchSingle, 1)));
 
 // =========================================================================
-// R2C + C2R 2D roundtrip tests
+// R2C/C2R 2D — not yet supported, verify rejection
 // =========================================================================
 
-class R2CC2R2D : public ::testing::TestWithParam<Test2DParam> {
- protected:
-  void SetUp() override {
-    // R2C/C2R 2D not yet supported
-  }
-
-  void TearDown() override {
-  }
-};
-
-TEST_P(R2CC2R2D, Roundtrip) {
-  GTEST_SKIP() << "R2C/C2R 2D not yet supported";
+TEST(Real2D, R2CPlanNotSupported) {
+  flagfftHandle plan = nullptr;
+  EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, FLAGFFT_R2C), FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
 }
 
-TEST_P(R2CC2R2D, ForwardReference) {
-  GTEST_SKIP() << "R2C/C2R 2D not yet supported";
+TEST(Real2D, C2RPlanNotSupported) {
+  flagfftHandle plan = nullptr;
+  EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, FLAGFFT_C2R), FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, R2CC2R2D, ::testing::Values(Test2DParam {16, 16, 1}));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         R2CC2R2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-// =========================================================================
-// D2Z + Z2D 2D roundtrip tests
-// =========================================================================
-
-class D2ZZ2D2D : public ::testing::TestWithParam<Test2DParam> {
- protected:
-  void SetUp() override {
-    // D2Z/Z2D 2D not yet supported
-  }
-
-  void TearDown() override {
-  }
-};
-
-TEST_P(D2ZZ2D2D, Roundtrip) {
-  GTEST_SKIP() << "D2Z/Z2D 2D not yet supported";
+TEST(Real2D, D2ZPlanNotSupported) {
+  flagfftHandle plan = nullptr;
+  EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, FLAGFFT_D2Z), FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
 }
 
-TEST_P(D2ZZ2D2D, ForwardReference) {
-  GTEST_SKIP() << "D2Z/Z2D 2D not yet supported";
+TEST(Real2D, Z2DPlanNotSupported) {
+  flagfftHandle plan = nullptr;
+  EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, FLAGFFT_Z2D), FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, D2ZZ2D2D, ::testing::Values(Test2DParam {16, 16, 1}));
+TEST(Real2D, R2CPlanManyNotSupported) {
+  flagfftHandle plan = nullptr;
+  int n[2] = {64, 32};
+  EXPECT_EQ(flagfftPlanMany(&plan, 2, n, nullptr, 1, 64 * 32, nullptr, 1, 64 * 17, FLAGFFT_R2C, 1),
+            FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
+}
 
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         D2ZZ2D2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
+TEST(Real2D, D2ZPlanManyNotSupported) {
+  flagfftHandle plan = nullptr;
+  int n[2] = {64, 32};
+  EXPECT_EQ(flagfftPlanMany(&plan, 2, n, nullptr, 1, 64 * 32, nullptr, 1, 64 * 17, FLAGFFT_D2Z, 1),
+            FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
+}
 
 }  // namespace

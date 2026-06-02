@@ -4,6 +4,7 @@ import pytest
 
 CTEST_TARGETS = [
     "test_plan",
+    "test_2d_correctness",
     "test_exec_c2c_fwd_ct_s",
     "test_exec_c2c_fwd_ct_b",
     "test_exec_c2c_fwd_bs_s",

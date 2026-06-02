@@ -80,7 +80,7 @@ static cufftType to_cufft_type(flagfftType type) {
 
 static void check_cufft(cufftResult r, const std::string& context) {
   if (r != CUFFT_SUCCESS) {
-    std::fprintf(stderr, "%s failed with code %d\n", context.c_str(), static_cast<int>(r));
+    throw std::runtime_error(context + " failed with code " + std::to_string(static_cast<int>(r)));
   }
 }
 
