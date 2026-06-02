@@ -85,6 +85,19 @@ TEST(Plan2D, CustomStrideNotSupportedYet) {
   EXPECT_EQ(plan, nullptr);
 }
 
+TEST(Plan2D, PaddedDistRejected) {
+  // idist/odist > logical size must be rejected until 2D execution handles strides
+  int n[2] = {64, 32};
+  const int logical = n[0] * n[1];
+  flagfftHandle plan = nullptr;
+  EXPECT_EQ(flagfftPlanMany(&plan, 2, n, nullptr, 1, logical + 16, nullptr, 1, logical, FLAGFFT_C2C, 1),
+            FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
+  EXPECT_EQ(flagfftPlanMany(&plan, 2, n, nullptr, 1, logical, nullptr, 1, logical + 16, FLAGFFT_C2C, 1),
+            FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(plan, nullptr);
+}
+
 TEST(Plan2D, InvalidParameters) {
   flagfftHandle plan = nullptr;
   EXPECT_EQ(flagfftPlan2d(&plan, 0, 32, FLAGFFT_C2C), FLAGFFT_INVALID_SIZE);
