@@ -4,6 +4,31 @@ FlagFFT is an experimental C++ FFT library with a cuFFT-style API and
 Triton/TLE-generated CUDA kernels. The public runtime interface is C; Python
 is retained only for Triton/TLE JIT source generation (internal codegen).
 
+## Quick Start
+
+Build and run the native CLI in an environment with CMake, Ninja, CUDA,
+Python, PyTorch, and the Triton/TLE dependencies available:
+
+```sh
+python3 -m pip install .
+cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
+cmake --build build --target flagfft-cli
+./build/flagfft-cli bench --rank 1 --api c2c --shape 4096 --batch 64 \
+  --warmup 10 --iters 100 --json
+```
+
+The repository also provides Dockerfiles for preparing a build environment.
+They do not compile FlagFFT into the image; after starting the container, run
+the same build commands inside the mounted source tree:
+
+```sh
+docker build -f docker/Dockerfile -t flagfft-ubuntu2404:latest .
+docker run --rm -it --gpus all \
+  -v "$PWD":/workspace/FlagFFT-dev \
+  -w /workspace/FlagFFT-dev \
+  flagfft-ubuntu2404:latest
+```
+
 ## Current API
 
 The public header is `include/flagfft.h` and exposes:
@@ -166,6 +191,50 @@ cmake --install build --prefix /path/to/flagfft-install
 ```
 
 `FLAGFFT_BUILD_TESTS=ON` enables the C++ test suite (see [C++ Tests](#c-tests)).
+
+### Docker Build Environment
+
+`docker/Dockerfile` builds a base Ubuntu 24.04 environment with Python 3.12,
+PyTorch CUDA wheels, CUDA toolkit 13.2, FlagTree, CMake, Ninja, pybind11, and
+other native build dependencies. The image only contains the environment; it
+does not compile this repository during `docker build`.
+
+```sh
+docker build -f docker/Dockerfile -t flagfft-ubuntu2404:latest .
+```
+
+If GitHub access needs to be rewritten to a mirror, pass the optional build
+argument:
+
+```sh
+docker build -f docker/Dockerfile \
+  -t flagfft-ubuntu2404:latest \
+  --build-arg GIT_URL_REWRITE_TO=https://example.com/github-mirror/ \
+  .
+```
+
+Run the container with GPU access and mount the source tree, then build
+FlagFFT inside the container:
+
+```sh
+docker run --rm -it --gpus all \
+  -v "$PWD":/workspace/FlagFFT-dev \
+  -w /workspace/FlagFFT-dev \
+  flagfft-ubuntu2404:latest
+
+python3 -m pip install .
+cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
+cmake --build build --target flagfft-cli
+```
+
+`docker/Dockerfile.dev` is an optional developer shell image based on the base
+image. It adds zsh, Oh My Zsh, Node.js, and Codex tooling:
+
+```sh
+docker build -f docker/Dockerfile.dev \
+  --build-arg BASE_IMAGE=flagfft-ubuntu2404:latest \
+  -t flagfft-dev:latest .
+```
 
 When plan creation emits Triton JIT source, it uses `FLAGFFT_PYTHON` if set,
 otherwise `python3`, to run `python -m flagfft_codegen.jit_source`. The
@@ -379,7 +448,7 @@ early manual imports can trigger assertion-rewrite warnings.
 ### Quick start
 
 ```sh
-# Build the CLI first
+# Build the CLI first, either on the host or inside the Docker environment
 cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
 cmake --build build --target flagfft-cli
 
