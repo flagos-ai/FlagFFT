@@ -267,6 +267,122 @@ std::shared_ptr<CompiledRaw2DNode> TritonCompiler::compile_raw_2d_node(
                                              std::move(temp2));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
+    const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+  const int64_t half_n1 = n1 / 2 + 1;
+
+  // Build row C2C FFT request (axis-1, length=n1, batch=batch*n0)
+  FFTRequest row_request = request;
+  row_request.fft_length = n1;
+  row_request.input_shape = {batch * n0, n1};
+  row_request.input_strides = {n1, 1};
+  row_request.requested_n = n1;
+  row_request.batch = batch * n0;
+
+  // Build col C2C FFT request (axis-0, length=n0, batch=batch*half_n1)
+  FFTRequest col_request = request;
+  col_request.fft_length = n0;
+  col_request.input_shape = {batch * half_n1, n0};
+  col_request.input_strides = {n0, 1};
+  col_request.requested_n = n0;
+  col_request.batch = batch * half_n1;
+
+  // Compile kernels
+  auto expand_kernel = compile_real_to_complex_kernel(request, n1);
+  std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+  auto pack_kernel = compile_r2c_half_pack_kernel(request, n1);
+  std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
+
+  // R2C transposes: (n0, half_n1) <-> (half_n1, n0)
+  auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
+  auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+
+  // Allocate buffers
+  // row_fft_buf: full complex output from row R2C FFT (batch*n0*n1 complex)
+  DeviceAllocation row_fft_buf = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+  // temp1: transposed data (batch * half_n1 * n0 complex)
+  DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * half_n1 * n0 * element_bytes));
+  // temp2: col FFT output (batch * half_n1 * n0 complex)
+  DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * half_n1 * n0 * element_bytes));
+
+  return std::make_shared<CompiledRaw2DR2CNode>(n0,
+                                                n1,
+                                                std::move(expand_kernel),
+                                                std::move(row_fft),
+                                                std::move(pack_kernel),
+                                                std::move(col_fft),
+                                                std::move(transpose_fwd),
+                                                std::move(transpose_inv),
+                                                std::move(row_fft_buf),
+                                                std::move(temp1),
+                                                std::move(temp2));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
+    const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+  const int64_t half_n1 = n1 / 2 + 1;
+
+  // C2R is the reverse of R2C:
+  // 1. Transpose (n0, half_n1) -> (half_n1, n0)
+  // 2. Col IFFT along n0 (batch * half_n1)
+  // 3. Transpose back (half_n1, n0) -> (n0, half_n1)
+  // 4. Expand half-packed -> full Hermitian (n0, half_n1) -> (n0, n1)
+  // 5. Row IFFT along n1 (batch * n0)
+  // 6. Pack complex -> real
+
+  // Build col C2C IFFT request (length=n0, batch=batch*half_n1)
+  FFTRequest col_request = request;
+  col_request.fft_length = n0;
+  col_request.input_shape = {batch * half_n1, n0};
+  col_request.input_strides = {n0, 1};
+  col_request.requested_n = n0;
+  col_request.batch = batch * half_n1;
+
+  // Build row C2C IFFT request (length=n1, batch=batch*n0)
+  FFTRequest row_request = request;
+  row_request.fft_length = n1;
+  row_request.input_shape = {batch * n0, n1};
+  row_request.input_strides = {n1, 1};
+  row_request.requested_n = n1;
+  row_request.batch = batch * n0;
+
+  // Compile kernels
+  auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n1);
+  std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
+  std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+  auto pack_kernel = compile_complex_to_real_kernel(request, n1);
+
+  // C2R transposes: (n0, half_n1) <-> (half_n1, n0)
+  auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
+  auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+
+  // Allocate buffers
+  // temp1: transposed data (batch * half_n1 * n0 complex)
+  DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * half_n1 * n0 * element_bytes));
+  // temp2: col IFFT output (batch * half_n1 * n0 complex)
+  DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * half_n1 * n0 * element_bytes));
+  // temp3: expanded full Hermitian (batch * n0 * n1 complex) + row IFFT output
+  DeviceAllocation temp3 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+
+  return std::make_shared<CompiledRaw2DC2RNode>(n0,
+                                                n1,
+                                                std::move(expand_kernel),
+                                                std::move(col_fft),
+                                                std::move(row_fft),
+                                                std::move(transpose_fwd),
+                                                std::move(transpose_inv),
+                                                std::move(pack_kernel),
+                                                std::move(temp1),
+                                                std::move(temp2),
+                                                std::move(temp3));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_generic(const FourStepPlanNode &node,
                                                                                const FFTRequest &request,
                                                                                int64_t batch) {

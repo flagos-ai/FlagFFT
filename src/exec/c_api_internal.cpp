@@ -93,9 +93,8 @@ bool is_supported_2d_desc(const FlagFFTPlanDesc &desc) {
   if (desc.rank != 2 || desc.batch <= 0) {
     return false;
   }
-  // Only C2C and Z2Z are supported for 2D FFT
-  // R2C/C2R/D2Z/Z2D require special handling that is not yet implemented
-  if (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_Z2Z) {
+  if (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_Z2Z && desc.type != FLAGFFT_R2C &&
+      desc.type != FLAGFFT_D2Z && desc.type != FLAGFFT_C2R && desc.type != FLAGFFT_Z2D) {
     return false;
   }
   if (desc.n.size() != 2 || desc.n[0] <= 0 || desc.n[1] <= 0) {
@@ -106,9 +105,6 @@ bool is_supported_2d_desc(const FlagFFTPlanDesc &desc) {
   }
   const int64_t n0 = desc.n[0];
   const int64_t n1 = desc.n[1];
-  // Pre-plumbed for future 2D real FFT support (R2C/C2R/D2Z/Z2D).
-  // The early-return above rejects all real types, so these currently
-  // always evaluate to the C2C/Z2Z path.
   const bool real_forward = desc.type == FLAGFFT_R2C || desc.type == FLAGFFT_D2Z;
   const bool real_inverse = desc.type == FLAGFFT_C2R || desc.type == FLAGFFT_Z2D;
   const int64_t half_n1 = n1 / 2 + 1;

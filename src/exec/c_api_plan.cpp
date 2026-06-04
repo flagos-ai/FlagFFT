@@ -55,32 +55,55 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       const int64_t n0 = plan->desc.n[0];
       const int64_t n1 = plan->desc.n[1];
       const int64_t batch = plan->desc.batch;
+      const int64_t half_n1 = n1 / 2 + 1;
+      const bool real_forward = plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z;
+      const bool real_inverse = plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D;
+      const flagfftType c2c_type =
+          (plan->desc.type == FLAGFFT_Z2D || plan->desc.type == FLAGFFT_D2Z || plan->desc.type == FLAGFFT_Z2Z)
+              ? FLAGFFT_Z2Z
+              : FLAGFFT_C2C;
 
+      // For R2C/D2Z:
+      //   Row: R2C along n1 (batch*n0), col: C2C along n0 (batch*half_n1)
+      // For C2R/Z2D:
+      //   Col: C2C along n0 (batch*half_n1), row: C2C along n1 (batch*n0)
+      // Both use "forward" for R2C, "inverse" for C2R
+
+      // Build row descriptor
       FlagFFTPlanDesc row_desc = plan->desc;
       row_desc.rank = 1;
       row_desc.n = {n1};
-      row_desc.inembed = {n1};
-      row_desc.onembed = {n1};
       row_desc.istride = 1;
       row_desc.ostride = 1;
-      row_desc.idist = n1;
-      row_desc.odist = n1;
-      row_desc.batch = batch * n0;
+      if (real_forward) {
+        // R2C/D2Z row: real input -> half-packed complex output
+        row_desc.type = plan->desc.type;
+        row_desc.inembed = {n1};
+        row_desc.onembed = {half_n1};
+        row_desc.idist = n1;
+        row_desc.odist = half_n1;
+        row_desc.batch = batch * n0;
+      } else if (real_inverse) {
+        // C2R/Z2D row: C2C IFFT along n1 on full complex data
+        row_desc.type = c2c_type;
+        row_desc.inembed = {n1};
+        row_desc.onembed = {n1};
+        row_desc.idist = n1;
+        row_desc.odist = n1;
+        row_desc.batch = batch * n0;
+      } else {
+        row_desc.type = c2c_type;
+        row_desc.inembed = {n1};
+        row_desc.onembed = {n1};
+        row_desc.idist = n1;
+        row_desc.odist = n1;
+        row_desc.batch = batch * n0;
+      }
 
-      FFTRequest row_forward_request = request_from_desc(row_desc, "forward");
-      PlanNodePtr row_plan = lookup_or_build_root(builder, row_forward_request);
-      if (!raw_supported_node(row_plan)) {
-        row_plan = lookup_or_build_root(builder, request_from_desc(row_desc, "inverse"));
-      }
-      if (!raw_supported_node(row_plan)) {
-        row_plan = raw_compatible_bluestein_plan(n1, builder, row_forward_request);
-      }
-      if (!raw_supported_node(row_plan)) {
-        return FLAGFFT_NOT_SUPPORTED;
-      }
-
+      // Build column descriptor (always C2C/Z2Z)
       FlagFFTPlanDesc col_desc = plan->desc;
       col_desc.rank = 1;
+      col_desc.type = c2c_type;
       col_desc.n = {n0};
       col_desc.inembed = {n0};
       col_desc.onembed = {n0};
@@ -88,15 +111,37 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       col_desc.ostride = 1;
       col_desc.idist = n0;
       col_desc.odist = n0;
-      col_desc.batch = batch * n1;
+      col_desc.batch = batch * half_n1;
 
-      FFTRequest col_forward_request = request_from_desc(col_desc, "forward");
-      PlanNodePtr col_plan = lookup_or_build_root(builder, col_forward_request);
+      // For C2R/Z2D, row FFT should be inverse (IFFT)
+      // For R2C/D2Z or C2C/Z2Z, row FFT should be forward
+      const std::string row_direction = real_inverse ? "inverse" : "forward";
+      FFTRequest row_request = request_from_desc(row_desc, row_direction);
+      PlanNodePtr row_plan = lookup_or_build_root(builder, row_request);
+      if (!raw_supported_node(row_plan)) {
+        row_plan = lookup_or_build_root(
+            builder,
+            request_from_desc(row_desc, row_direction == "forward" ? "inverse" : "forward"));
+      }
+      if (!raw_supported_node(row_plan)) {
+        row_plan = raw_compatible_bluestein_plan(n1, builder, row_request);
+      }
+      if (!raw_supported_node(row_plan)) {
+        return FLAGFFT_NOT_SUPPORTED;
+      }
+
+      // For C2R/Z2D, column FFT should be inverse (IFFT)
+      // For R2C/D2Z or C2C/Z2Z, column FFT should be forward
+      const std::string col_direction = real_inverse ? "inverse" : "forward";
+      FFTRequest col_request = request_from_desc(col_desc, col_direction);
+      PlanNodePtr col_plan = lookup_or_build_root(builder, col_request);
       if (!raw_supported_node(col_plan)) {
-        col_plan = lookup_or_build_root(builder, request_from_desc(col_desc, "inverse"));
+        col_plan = lookup_or_build_root(
+            builder,
+            request_from_desc(col_desc, col_direction == "forward" ? "inverse" : "forward"));
       }
       if (!raw_supported_node(col_plan)) {
-        col_plan = raw_compatible_bluestein_plan(n0, builder, col_forward_request);
+        col_plan = raw_compatible_bluestein_plan(n0, builder, col_request);
       }
       if (!raw_supported_node(col_plan)) {
         return FLAGFFT_NOT_SUPPORTED;
@@ -135,24 +180,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     TritonCompiler compiler;
     if (is_2d) {
       auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(plan->executable.root);
-      // NOTE: The R2C/C2R/D2Z/Z2D branches below are currently unreachable
-      // because is_supported_2d_desc() rejects all non-C2C/non-Z2Z types.
-      // These are forward-looking infrastructure for future 2D real FFT support.
       if (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z) {
-        // For R2C/D2Z: compile C2C 2D plan, then wrap with R2C handling
-        // Use compile_raw_node which will call compile_raw_2d_node for TwoDimPlanNode
-        plan->executable.forward = compiler.compile_raw_r2c_node(plan->executable.root,
-                                                                 plan->executable.forward_request,
-                                                                 plan->desc.batch);
-        plan->executable.inverse =
-            compiler.compile_raw_2d_node(two_dim, plan->executable.inverse_request, plan->desc.batch);
-      } else if (plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D) {
-        // For C2R/Z2D: compile C2C 2D plan, then wrap with C2R handling
         plan->executable.forward =
-            compiler.compile_raw_2d_node(two_dim, plan->executable.forward_request, plan->desc.batch);
-        plan->executable.inverse = compiler.compile_raw_c2r_node(plan->executable.root,
-                                                                 plan->executable.inverse_request,
-                                                                 plan->desc.batch);
+            compiler.compile_raw_2d_r2c_node(two_dim, plan->executable.forward_request, plan->desc.batch);
+      } else if (plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D) {
+        plan->executable.inverse =
+            compiler.compile_raw_2d_c2r_node(two_dim, plan->executable.inverse_request, plan->desc.batch);
       } else {
         plan->executable.forward =
             compiler.compile_raw_2d_node(two_dim, plan->executable.forward_request, plan->desc.batch);

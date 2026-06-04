@@ -508,4 +508,246 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw2DR2CNode::CompiledRaw2DR2CNode(int64_t n0,
+                                           int64_t n1,
+                                           std::shared_ptr<JitKernel> expand_kernel,
+                                           std::shared_ptr<CompiledRawNode> row_fft,
+                                           std::shared_ptr<JitKernel> pack_kernel,
+                                           std::shared_ptr<CompiledRawNode> col_fft,
+                                           std::shared_ptr<JitKernel> transpose_fwd,
+                                           std::shared_ptr<JitKernel> transpose_inv,
+                                           DeviceAllocation row_fft_buf,
+                                           DeviceAllocation temp1,
+                                           DeviceAllocation temp2)
+    : n0(n0),
+      n1(n1),
+      expand_kernel(std::move(expand_kernel)),
+      row_fft(std::move(row_fft)),
+      pack_kernel(std::move(pack_kernel)),
+      col_fft(std::move(col_fft)),
+      transpose_fwd(std::move(transpose_fwd)),
+      transpose_inv(std::move(transpose_inv)),
+      row_fft_buf(std::move(row_fft_buf)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw2DR2CNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DR2C(n0=" << n0 << ", n1=" << n1
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null")
+      << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
+      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->kernel_name : "null")
+      << ", transpose_inv=" << (transpose_inv ? transpose_inv->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
+                                            adaptor::DevicePtr output,
+                                            const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    constexpr int64_t block = 256;
+    constexpr int64_t tile_size = 32;
+    const int64_t half_n1 = n1 / 2 + 1;
+
+    // Step 1: Expand real input to complex
+    // Input: (batch*n0, n1) real -> row_fft_buf: (batch*n0, n1) complex
+    // Each row is processed independently, so total rows = batch * n0
+    // input_distance is per-row distance in the input buffer
+    const int64_t input_distance = n1;  // Each row in input has n1 real elements
+    const int64_t total_rows = batch * n0;
+    std::vector<JitKernelArg> expand_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(row_fft_buf.get()),
+        JitKernelArg::i64(input_distance),
+        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
+    };
+    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
+
+    // Step 2: Row C2C FFT
+    // row_fft_buf: (batch*n0, n1) complex -> row_fft_buf: (batch*n0, n1) complex (in-place)
+    RawExecutionContext row_context {context.request, context.stream, batch * n0};
+    flagfftResult result = row_fft->execute(row_fft_buf.get(), row_fft_buf.get(), row_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 3: Pack half spectrum
+    // row_fft_buf: (batch*n0, n1) complex -> output: (batch*n0, n1/2+1) complex
+    // Each row is processed independently, so total rows = batch * n0
+    // output_distance is per-row distance in the output buffer
+    const int64_t output_distance = half_n1;  // Each row in output has half_n1 complex elements
+    std::vector<JitKernelArg> pack_args = {
+        JitKernelArg::device(row_fft_buf.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(output_distance),
+        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
+    };
+    pack_kernel->launch(context.stream, pack_args, ceil_div(half_n1, block), total_rows, 1);
+
+    // Step 4: Transpose (n0, n1/2+1) -> (n1/2+1, n0)
+    // transpose_fwd kernel is compiled for (n0, half_n1) -> (half_n1, n0)
+    std::vector<JitKernelArg> transpose_fwd_args = {
+        JitKernelArg::device(output),
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_fwd->launch(context.stream,
+                          transpose_fwd_args,
+                          ceil_div(half_n1, tile_size),
+                          ceil_div(n0, tile_size),
+                          batch);
+
+    // Step 5: Col C2C FFT
+    // temp1: (n1/2+1, n0) complex -> temp2: (n1/2+1, n0) complex
+    RawExecutionContext col_context {context.request, context.stream, batch * half_n1};
+    result = col_fft->execute(temp1.get(), temp2.get(), col_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 6: Transpose back (n1/2+1, n0) -> (n0, n1/2+1)
+    // transpose_inv kernel is compiled for (half_n1, n0) -> (n0, half_n1)
+    std::vector<JitKernelArg> transpose_inv_args = {
+        JitKernelArg::device(temp2.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_inv->launch(context.stream,
+                          transpose_inv_args,
+                          ceil_div(n0, tile_size),
+                          ceil_div(half_n1, tile_size),
+                          batch);
+
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 2D R2C execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw2DC2RNode::CompiledRaw2DC2RNode(int64_t n0,
+                                           int64_t n1,
+                                           std::shared_ptr<JitKernel> expand_kernel,
+                                           std::shared_ptr<CompiledRawNode> col_fft,
+                                           std::shared_ptr<CompiledRawNode> row_fft,
+                                           std::shared_ptr<JitKernel> transpose_fwd,
+                                           std::shared_ptr<JitKernel> transpose_inv,
+                                           std::shared_ptr<JitKernel> pack_kernel,
+                                           DeviceAllocation temp1,
+                                           DeviceAllocation temp2,
+                                           DeviceAllocation temp3)
+    : n0(n0),
+      n1(n1),
+      expand_kernel(std::move(expand_kernel)),
+      col_fft(std::move(col_fft)),
+      row_fft(std::move(row_fft)),
+      transpose_fwd(std::move(transpose_fwd)),
+      transpose_inv(std::move(transpose_inv)),
+      pack_kernel(std::move(pack_kernel)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)),
+      temp3(std::move(temp3)) {
+}
+
+std::string CompiledRaw2DC2RNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DC2R(n0=" << n0 << ", n1=" << n1
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
+      << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
+      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->kernel_name : "null")
+      << ", transpose_inv=" << (transpose_inv ? transpose_inv->kernel_name : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
+                                            adaptor::DevicePtr output,
+                                            const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    constexpr int64_t block = 256;
+    constexpr int64_t tile_size = 32;
+    const int64_t half_n1 = n1 / 2 + 1;
+    const int64_t total_rows = batch * n0;
+
+    // C2R is the reverse of R2C:
+    // 1. Transpose (n0, half_n1) -> (half_n1, n0)
+    // 2. Col IFFT along n0 (batch = batch * half_n1)
+    // 3. Transpose back (half_n1, n0) -> (n0, half_n1)
+    // 4. Expand half-packed -> full Hermitian (n0, half_n1) -> (n0, n1)
+    // 5. Row IFFT along n1 (batch = batch * n0)
+    // 6. Pack complex -> real
+
+    // Step 1: Transpose (n0, half_n1) -> (half_n1, n0)
+    std::vector<JitKernelArg> transpose_fwd_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_fwd->launch(context.stream,
+                          transpose_fwd_args,
+                          ceil_div(half_n1, tile_size),
+                          ceil_div(n0, tile_size),
+                          batch);
+
+    // Step 2: Col C2C IFFT along n0 (batch = batch * half_n1)
+    RawExecutionContext col_context {context.request, context.stream, batch * half_n1};
+    flagfftResult result = col_fft->execute(temp1.get(), temp2.get(), col_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 3: Transpose back (half_n1, n0) -> (n0, half_n1)
+    std::vector<JitKernelArg> transpose_inv_args = {
+        JitKernelArg::device(temp2.get()),
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_inv->launch(context.stream,
+                          transpose_inv_args,
+                          ceil_div(n0, tile_size),
+                          ceil_div(half_n1, tile_size),
+                          batch);
+
+    // Step 4: Expand half-packed -> full Hermitian
+    // temp1: (batch*n0, half_n1) complex -> temp3: (batch*n0, n1) complex
+    std::vector<JitKernelArg> expand_args = {
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::device(temp3.get()),
+        JitKernelArg::i64(half_n1),
+        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
+    };
+    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
+
+    // Step 5: Row C2C IFFT along n1 (batch = batch * n0, in-place)
+    RawExecutionContext row_context {context.request, context.stream, total_rows};
+    result = row_fft->execute(temp3.get(), temp3.get(), row_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 6: Pack complex -> real
+    // temp3: (batch*n0, n1) complex -> output: (batch*n0, n1) real
+    std::vector<JitKernelArg> pack_args = {
+        JitKernelArg::device(temp3.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(n1),
+        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
+    };
+    pack_kernel->launch(context.stream, pack_args, ceil_div(n1, block), total_rows, 1);
+
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 2D C2R execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 }  // namespace flagfft

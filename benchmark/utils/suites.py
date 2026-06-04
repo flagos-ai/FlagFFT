@@ -9,8 +9,8 @@ ALL_BATCHES = [1, 4, 256]
 # All APIs from ctest coverage
 ALL_APIS = ["c2c", "z2z", "r2c", "c2r", "d2z", "z2d"]
 
-# 2D complex APIs only (rank 2 does not support real transforms yet)
-ALL_APIS_2D = ["c2c", "z2z"]
+# 2D APIs: complex and real transforms
+ALL_APIS_2D = ["c2c", "z2z", "r2c", "d2z", "c2r", "z2d"]
 
 # Direction support per API
 API_DIRECTIONS = {
@@ -71,6 +71,7 @@ def expand_params(suite: dict):
 
     Also yields 2D entries from 'sizes_2d' x 'batches_2d' x ALL_APIS_2D.
     2D sizes are strings like "256x256" (detected by the caller to set rank=2).
+    R2C/D2Z use forward direction; C2R/Z2D use inverse direction.
     """
     apis = ALL_APIS
     seen = set()
