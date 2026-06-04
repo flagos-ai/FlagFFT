@@ -178,10 +178,10 @@ package in this repository; CMake builds and installs the native library
 separately.
 
 The build environment must provide CMake, Ninja, a CUDA toolkit, SQLite3,
-Python 3.10+ development files, PyTorch, and pybind11. Runtime JIT generation
-and Python tests additionally require a preconfigured Triton/TLE-enabled
-Python environment and `pytest`. Install the codegen package into the Python
-environment that will execute JIT generation:
+Python 3.10+ development files, PyTorch, pybind11, and `pytest`. Runtime JIT
+generation and Python tests additionally require a preconfigured
+Triton/TLE-enabled Python environment. Install the codegen package into the
+Python environment that will execute JIT generation:
 
 ```sh
 python3 -m pip install .
@@ -196,8 +196,8 @@ cmake --install build --prefix /path/to/flagfft-install
 
 `docker/Dockerfile` builds a base Ubuntu 24.04 environment with Python 3.12,
 PyTorch CUDA wheels, CUDA toolkit 13.2, FlagTree, CMake, Ninja, pybind11, and
-other native build dependencies. The image only contains the environment; it
-does not compile this repository during `docker build`.
+`pytest`, plus other native build dependencies. The image only contains the
+environment; it does not compile this repository during `docker build`.
 
 ```sh
 docker build -f docker/Dockerfile -t flagfft-ubuntu2404:latest .
