@@ -84,12 +84,21 @@ TEST(Plan2D, BatchedPlanManyComplex) {
   EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }
 
-TEST(Plan2D, RealTypesNotSupportedYet) {
-  flagfftType types[] = {FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
-  for (auto type : types) {
+TEST(Plan2D, RealTypesSupported) {
+  // R2C/D2Z forward and C2R/Z2D inverse are now supported
+  flagfftType forward_types[] = {FLAGFFT_R2C, FLAGFFT_D2Z};
+  for (auto type : forward_types) {
     flagfftHandle plan = nullptr;
-    EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, type), FLAGFFT_NOT_SUPPORTED);
-    EXPECT_EQ(plan, nullptr);
+    EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, type), FLAGFFT_SUCCESS);
+    EXPECT_NE(plan, nullptr);
+    EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+  }
+  flagfftType inverse_types[] = {FLAGFFT_C2R, FLAGFFT_Z2D};
+  for (auto type : inverse_types) {
+    flagfftHandle plan = nullptr;
+    EXPECT_EQ(flagfftPlan2d(&plan, 64, 32, type), FLAGFFT_SUCCESS);
+    EXPECT_NE(plan, nullptr);
+    EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
   }
 }
 
