@@ -70,6 +70,16 @@ struct BluesteinPlanNode final : PlanNode {
   PlanNodePtr fft_plan;
 };
 
+struct RaderPlanNode final : PlanNode {
+  RaderPlanNode(int64_t prime, int64_t root, std::vector<int64_t> idx, PlanNodePtr conv_plan);
+  std::string describe(int indent = 0) const override;
+
+  int64_t prime;
+  int64_t root;
+  std::vector<int64_t> idx;
+  PlanNodePtr conv_plan;
+};
+
 enum class TwoDimStrategy { RTRT };
 
 struct TwoDimPlanNode final : PlanNode {
@@ -131,10 +141,12 @@ class PlanBuilder {
   double estimate_direct_dft_cost(int64_t n);
   double four_step_cost(int64_t n1, int64_t n2);
   double bluestein_cost(int64_t n, int64_t conv_length);
+  double rader_cost(int64_t n);
   int priority(const PlanNodePtr &node);
   std::vector<int64_t> enumerate_divisors(int64_t n);
   int64_t next_supported_convolution_length(int64_t minimum);
   PlanNodePtr make_bluestein_plan(int64_t n);
+  PlanNodePtr make_rader_plan(int64_t n);
   std::vector<PlanCandidate> build_auto_candidates(int64_t n);
   std::vector<PlanCandidate> build_leaf_tune_candidates(int64_t n);
   PlanCandidate select_candidate(const std::vector<PlanCandidate> &candidates);

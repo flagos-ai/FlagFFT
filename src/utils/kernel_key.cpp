@@ -121,6 +121,36 @@ KernelKey KernelKey::bluestein_finalize(std::string target, std::string dtype, i
   return key;
 }
 
+KernelKey KernelKey::rader_prepare(std::string target, std::string dtype, int64_t n, int64_t m) {
+  KernelKey key;
+  key.kind = KernelKind::RaderPrepare;
+  key.target = std::move(target);
+  key.dtype = std::move(dtype);
+  key.rader_n = n;
+  key.rader_m = m;
+  return key;
+}
+
+KernelKey KernelKey::rader_pointwise(std::string target, std::string dtype, int64_t n, int64_t m) {
+  KernelKey key;
+  key.kind = KernelKind::RaderPointwise;
+  key.target = std::move(target);
+  key.dtype = std::move(dtype);
+  key.rader_n = n;
+  key.rader_m = m;
+  return key;
+}
+
+KernelKey KernelKey::rader_finalize(std::string target, std::string dtype, int64_t n, int64_t m) {
+  KernelKey key;
+  key.kind = KernelKind::RaderFinalize;
+  key.target = std::move(target);
+  key.dtype = std::move(dtype);
+  key.rader_n = n;
+  key.rader_m = m;
+  return key;
+}
+
 KernelKey KernelKey::reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2) {
   KernelKey key;
   key.kind = KernelKind::ReshapePack;
@@ -193,7 +223,8 @@ bool KernelKey::operator==(const KernelKey &other) const {
          num_warps == other.num_warps && generic_radices == other.generic_radices &&
          smem_size == other.smem_size && four_step_n1 == other.four_step_n1 &&
          four_step_n2 == other.four_step_n2 && bluestein_n == other.bluestein_n &&
-         bluestein_m == other.bluestein_m && reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2;
+         bluestein_m == other.bluestein_m && rader_n == other.rader_n && rader_m == other.rader_m &&
+         reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2;
 }
 
 std::string KernelKey::repr() const {
@@ -210,6 +241,10 @@ std::string KernelKey::repr() const {
   if (kind == KernelKind::BluesteinPrepare || kind == KernelKind::BluesteinPointwise ||
       kind == KernelKind::BluesteinFinalize) {
     out << ";bluestein_n=" << bluestein_n << ";bluestein_m=" << bluestein_m;
+  }
+  if (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderPointwise ||
+      kind == KernelKind::RaderFinalize) {
+    out << ";rader_n=" << rader_n << ";rader_m=" << rader_m;
   }
   if (kind == KernelKind::ReshapePack || kind == KernelKind::TwiddleReshapePack) {
     out << ";reshape_n1=" << reshape_n1 << ";reshape_n2=" << reshape_n2;
@@ -237,6 +272,8 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.four_step_n2);
   hash_value(seed, key.bluestein_n);
   hash_value(seed, key.bluestein_m);
+  hash_value(seed, key.rader_n);
+  hash_value(seed, key.rader_m);
   hash_value(seed, key.reshape_n1);
   hash_value(seed, key.reshape_n2);
   return seed;

@@ -511,12 +511,13 @@ constexpr int k1DSizesCTSmall[] = {16, 64, 81};
 constexpr int k1DSizesCTMedium[] = {243, 256, 361, 512};
 constexpr int k1DSizesCTLarge[] = {2048, 4096, 8192, 16384};
 
-// Bluestein sizes: primes that cannot be factored by supported radices
-constexpr int k1DSizesBS[] = {23, 997};
+// Prime fallback sizes. Larger entries should choose Rader; 23 remains a
+// small direct-DFT fallback.
+constexpr int k1DSizesBS[] = {23, 67, 997, 1009};
 constexpr int k1DNumSizesBS = sizeof(k1DSizesBS) / sizeof(k1DSizesBS[0]);
 
 constexpr int k1DSizesBSSmall[] = {23};
-constexpr int k1DSizesBSMedium[] = {997};
+constexpr int k1DSizesBSMedium[] = {67, 997, 1009};
 
 // Batch mode arrays
 constexpr int kBatchSingle[] = {1};
@@ -603,7 +604,7 @@ inline std::vector<Test1DParam> Generate1DParamsBSExtendedSmallSingle() {
 }
 
 inline std::vector<Test1DParam> Generate1DParamsBSExtendedMediumSingle() {
-  auto params = GenerateFiltered1DParams(k1DSizesBSMedium, 1, kBatchSingle, 1);
+  auto params = GenerateFiltered1DParams(k1DSizesBSMedium, 3, kBatchSingle, 1);
   params.erase(std::remove_if(params.begin(), params.end(), IsSmoke1DParamBS), params.end());
   return params;
 }
@@ -621,7 +622,7 @@ inline std::vector<Test1DParam> Generate1DParamsBSExtendedSmallBatch() {
 }
 
 inline std::vector<Test1DParam> Generate1DParamsBSExtendedMediumBatch() {
-  return GenerateFiltered1DParams(k1DSizesBSMedium, 1, kBatchMulti, 2);
+  return GenerateFiltered1DParams(k1DSizesBSMedium, 3, kBatchMulti, 2);
 }
 
 inline std::vector<Test1DParam> Generate1DParamsBSExtendedLargeBatch() {

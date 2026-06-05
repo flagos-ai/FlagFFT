@@ -1,5 +1,7 @@
 #include "flagfft/core.hpp"
 
+#include "rader_utils.hpp"
+
 namespace flagfft {
 
 std::vector<int64_t> PlanBuilder::enumerate_divisors(int64_t n) {
@@ -42,6 +44,13 @@ PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
   PlanNodePtr fft_plan = build_auto_node(conv_length);
   return std::make_shared<BluesteinPlanNode>(n, conv_length, std::move(fft_plan));
+}
+
+PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
+  int64_t root = find_primitive_root(n);
+  std::vector<int64_t> idx = build_rader_index_table(n, root);
+  PlanNodePtr conv_plan = build_auto_node(n - 1);
+  return std::make_shared<RaderPlanNode>(n, root, std::move(idx), std::move(conv_plan));
 }
 
 std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
@@ -88,6 +97,10 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     PlanNodePtr node = make_bluestein_plan(n);
     auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
     candidates.push_back({node, bluestein_cost(n, bluestein->conv_length), priority(node)});
+    if (is_prime_length(n)) {
+      PlanNodePtr rader = make_rader_plan(n);
+      candidates.push_back({rader, rader_cost(n), priority(rader)});
+    }
   }
   return candidates;
 }

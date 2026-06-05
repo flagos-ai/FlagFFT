@@ -129,6 +129,9 @@ bool raw_supported_node(const PlanNodePtr &node) {
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     return raw_supported_node(bluestein->fft_plan);
   }
+  if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
+    return raw_supported_node(rader->conv_plan);
+  }
   if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     return raw_supported_node(two_dim->row_plan) && raw_supported_node(two_dim->col_plan);
   }

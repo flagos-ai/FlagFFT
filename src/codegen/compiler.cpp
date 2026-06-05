@@ -55,6 +55,30 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::move(work_buf),
         std::move(b_fft_buf));
   }
+  if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
+    FFTRequest child_request = forward_child_request(request);
+    std::shared_ptr<CompiledRawNode> fft = compile_raw_node(rader->conv_plan, child_request, batch);
+    DeviceAllocation idx = build_raw_rader_idx_table(rader->idx);
+    DeviceAllocation b_time = build_raw_rader_conv_kernel(request, rader->prime, rader->idx);
+    const int64_t conv_length = rader->prime - 1;
+    const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+    DeviceAllocation a_buf = adaptor::Memory(static_cast<std::size_t>(batch * conv_length * element_bytes));
+    DeviceAllocation work_buf =
+        adaptor::Memory(static_cast<std::size_t>(batch * conv_length * element_bytes));
+    DeviceAllocation b_fft_buf = adaptor::Memory(static_cast<std::size_t>(conv_length * element_bytes));
+    return std::make_shared<CompiledRawRaderNode>(
+        rader->prime,
+        conv_length,
+        std::move(fft),
+        compile_rader_prepare_kernel(request, rader->prime, conv_length),
+        compile_rader_pointwise_kernel(request, rader->prime, conv_length),
+        compile_rader_finalize_kernel(request, rader->prime, conv_length),
+        std::move(idx),
+        std::move(b_time),
+        std::move(a_buf),
+        std::move(work_buf),
+        std::move(b_fft_buf));
+  }
   if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     return compile_raw_2d_node(two_dim, request, batch);
   }
@@ -168,6 +192,30 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_finalize_kernel(con
                                                                              int64_t m) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::bluestein_finalize(target, request.input_dtype, n, m);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_rader_prepare_kernel(const FFTRequest &request,
+                                                                        int64_t n,
+                                                                        int64_t m) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::rader_prepare(target, request.input_dtype, n, m);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_rader_pointwise_kernel(const FFTRequest &request,
+                                                                          int64_t n,
+                                                                          int64_t m) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::rader_pointwise(target, request.input_dtype, n, m);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_rader_finalize_kernel(const FFTRequest &request,
+                                                                         int64_t n,
+                                                                         int64_t m) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::rader_finalize(target, request.input_dtype, n, m);
   return compile_kernel(key);
 }
 

@@ -215,6 +215,48 @@ DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int
   return adaptor::Memory::from_floats(interleaved);
 }
 
+DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx) {
+  std::vector<int32_t> table;
+  table.reserve(idx.size());
+  for (int64_t value : idx) {
+    table.push_back(static_cast<int32_t>(value));
+  }
+  DeviceAllocation allocation(table.size() * sizeof(int32_t));
+  allocation.copy_from_host(table.data(), allocation.size());
+  return allocation;
+}
+
+DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
+                                             int64_t n,
+                                             const std::vector<int64_t> &idx) {
+  const bool is_double = dtype_is_double(request.input_dtype);
+  const int64_t m = n - 1;
+  if (static_cast<int64_t>(idx.size()) != m) {
+    throw std::runtime_error("Rader index table length does not match prime length");
+  }
+  double sign = request.direction == "inverse" ? 1.0 : -1.0;
+  if (is_double) {
+    std::vector<double> interleaved(static_cast<std::size_t>(m * 2), 0.0);
+    for (int64_t offset = 0; offset < m; ++offset) {
+      double angle = sign * 2.0 * kPi * static_cast<double>(idx[static_cast<std::size_t>(offset)]) /
+                     static_cast<double>(n);
+      std::size_t dst = static_cast<std::size_t>(offset * 2);
+      interleaved[dst] = std::cos(angle);
+      interleaved[dst + 1] = std::sin(angle);
+    }
+    return adaptor::Memory::from_doubles(interleaved);
+  }
+  std::vector<float> interleaved(static_cast<std::size_t>(m * 2), 0.0f);
+  for (int64_t offset = 0; offset < m; ++offset) {
+    double angle = sign * 2.0 * kPi * static_cast<double>(idx[static_cast<std::size_t>(offset)]) /
+                   static_cast<double>(n);
+    std::size_t dst = static_cast<std::size_t>(offset * 2);
+    interleaved[dst] = static_cast<float>(std::cos(angle));
+    interleaved[dst + 1] = static_cast<float>(std::sin(angle));
+  }
+  return adaptor::Memory::from_floats(interleaved);
+}
+
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request) {
   const bool is_double = dtype_is_double(request.input_dtype);
   std::vector<DeviceAllocation> tables;

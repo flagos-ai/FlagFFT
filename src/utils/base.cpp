@@ -92,6 +92,8 @@ std::string plan_node_kind_name(PlanNodeKind kind) {
       return "stockham_autosort";
     case PlanNodeKind::Bluestein:
       return "bluestein";
+    case PlanNodeKind::Rader:
+      return "rader";
     case PlanNodeKind::TwoDim:
       return "two_dim";
   }
@@ -116,6 +118,12 @@ std::string kernel_kind_name(KernelKind kind) {
       return "bluestein_pointwise";
     case KernelKind::BluesteinFinalize:
       return "bluestein_finalize";
+    case KernelKind::RaderPrepare:
+      return "rader_prepare";
+    case KernelKind::RaderPointwise:
+      return "rader_pointwise";
+    case KernelKind::RaderFinalize:
+      return "rader_finalize";
     case KernelKind::ReshapePack:
       return "reshape_pack";
     case KernelKind::TwiddleReshapePack:

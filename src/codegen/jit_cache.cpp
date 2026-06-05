@@ -122,6 +122,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::BluesteinFinalize:
       kernel_kind = "bluestein_finalize";
       break;
+    case KernelKind::RaderPrepare:
+      kernel_kind = "rader_prepare";
+      break;
+    case KernelKind::RaderPointwise:
+      kernel_kind = "rader_pointwise";
+      break;
+    case KernelKind::RaderFinalize:
+      kernel_kind = "rader_finalize";
+      break;
     case KernelKind::ReshapePack:
       kernel_kind = "reshape_pack";
       break;
@@ -163,6 +172,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::BluesteinPrepare || key.kind == KernelKind::BluesteinPointwise ||
       key.kind == KernelKind::BluesteinFinalize) {
     jit_command << " --bluestein-n " << key.bluestein_n << " --bluestein-m " << key.bluestein_m;
+  }
+  if (key.kind == KernelKind::RaderPrepare || key.kind == KernelKind::RaderPointwise ||
+      key.kind == KernelKind::RaderFinalize) {
+    jit_command << " --rader-n " << key.rader_n << " --rader-m " << key.rader_m;
   }
   if (key.kind == KernelKind::ReshapePack || key.kind == KernelKind::TwiddleReshapePack ||
       key.kind == KernelKind::TiledTranspose) {

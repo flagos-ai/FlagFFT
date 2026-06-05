@@ -7,7 +7,7 @@ bool PlanKey::operator==(const PlanKey &other) const {
          factors == other.factors && remainder == other.remainder && lanes == other.lanes &&
          num_warps == other.num_warps && generic_radices == other.generic_radices &&
          smem_size == other.smem_size && n1 == other.n1 && n2 == other.n2 &&
-         conv_length == other.conv_length && child_keys == other.child_keys;
+         conv_length == other.conv_length && root == other.root && child_keys == other.child_keys;
 }
 
 std::string PlanKey::repr() const {
@@ -29,6 +29,9 @@ std::string PlanKey::repr() const {
   }
   if (root_kind == PlanNodeKind::Bluestein) {
     out << ";conv_length=" << conv_length;
+  }
+  if (root_kind == PlanNodeKind::Rader) {
+    out << ";conv_length=" << conv_length << ";root=" << root << ";idx=[" << join_ints(factors) << "]";
   }
   if (!child_keys.empty()) {
     out << ";children=[";
@@ -57,6 +60,7 @@ std::size_t PlanKeyHash::operator()(const PlanKey &key) const {
   hash_value(seed, key.n1);
   hash_value(seed, key.n2);
   hash_value(seed, key.conv_length);
+  hash_value(seed, key.root);
   hash_vector(seed, key.child_keys);
   return seed;
 }

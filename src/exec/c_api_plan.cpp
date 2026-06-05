@@ -1,6 +1,7 @@
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
 #include "flagfft/tune_json.hpp"
+#include "plan/rader_utils.hpp"
 
 namespace flagfft {
 namespace {
@@ -9,6 +10,17 @@ namespace {
     int64_t conv_length = ceil_power_of_two(2 * length - 1);
     PlanNodePtr child = builder.build(conv_length, request);
     PlanNodePtr candidate = std::make_shared<BluesteinPlanNode>(length, conv_length, std::move(child));
+    return raw_supported_node(candidate) ? candidate : nullptr;
+  }
+
+  PlanNodePtr raw_compatible_rader_plan(int64_t length, PlanBuilder &builder, const FFTRequest &request) {
+    if (!is_prime_length(length) || length <= kDirectDftMaxN) {
+      return nullptr;
+    }
+    int64_t root = find_primitive_root(length);
+    std::vector<int64_t> idx = build_rader_index_table(length, root);
+    PlanNodePtr child = builder.build(length - 1, request);
+    PlanNodePtr candidate = std::make_shared<RaderPlanNode>(length, root, std::move(idx), std::move(child));
     return raw_supported_node(candidate) ? candidate : nullptr;
   }
 
@@ -100,6 +112,21 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         row_desc.batch = batch * n0;
       }
 
+      FFTRequest row_forward_request = request_from_desc(row_desc, "forward");
+      PlanNodePtr row_plan = lookup_or_build_root(builder, row_forward_request);
+      if (!raw_supported_node(row_plan)) {
+        row_plan = lookup_or_build_root(builder, request_from_desc(row_desc, "inverse"));
+      }
+      if (!raw_supported_node(row_plan)) {
+        row_plan = raw_compatible_rader_plan(n1, builder, row_forward_request);
+      }
+      if (!raw_supported_node(row_plan)) {
+        row_plan = raw_compatible_bluestein_plan(n1, builder, row_forward_request);
+      }
+      if (!raw_supported_node(row_plan)) {
+        return FLAGFFT_NOT_SUPPORTED;
+      }
+
       // Build column descriptor (always C2C/Z2Z)
       FlagFFTPlanDesc col_desc = plan->desc;
       col_desc.rank = 1;
@@ -141,7 +168,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
             request_from_desc(col_desc, col_direction == "forward" ? "inverse" : "forward"));
       }
       if (!raw_supported_node(col_plan)) {
-        col_plan = raw_compatible_bluestein_plan(n0, builder, col_request);
+        col_plan = raw_compatible_rader_plan(n0, builder, col_forward_request);
+      }
+      if (!raw_supported_node(col_plan)) {
+        col_plan = raw_compatible_bluestein_plan(n0, builder, col_forward_request);
       }
       if (!raw_supported_node(col_plan)) {
         return FLAGFFT_NOT_SUPPORTED;
@@ -160,6 +190,13 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       plan->executable.root = lookup_or_build_root(builder, plan->executable.forward_request);
       if (!raw_supported_node(plan->executable.root)) {
         plan->executable.root = lookup_or_build_root(builder, plan->executable.inverse_request);
+      }
+      if (!raw_supported_node(plan->executable.root)) {
+        if (PlanNodePtr fallback = raw_compatible_rader_plan(plan->executable.forward_request.requested_n,
+                                                             builder,
+                                                             plan->executable.forward_request)) {
+          plan->executable.root = std::move(fallback);
+        }
       }
       if (!raw_supported_node(plan->executable.root)) {
         if (PlanNodePtr fallback = raw_compatible_bluestein_plan(plan->executable.forward_request.requested_n,

@@ -44,6 +44,22 @@ TEST(Plan1D, GetDescription) {
   EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }
 
+TEST(Plan1D, PrimeLengthUsesRader) {
+  flagfftHandle plan = nullptr;
+  ASSERT_EQ(flagfftPlan1d(&plan, 67, FLAGFFT_C2C, 1), FLAGFFT_SUCCESS);
+  const char* desc = flagfftGetPlanDescription(plan);
+  ASSERT_NE(desc, nullptr);
+  EXPECT_NE(std::strstr(desc, "Rader"), nullptr) << desc;
+  EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+}
+
+TEST(Plan1D, PrimeLengthRaderSupportsRealWrappers) {
+  flagfftHandle plan = nullptr;
+  EXPECT_EQ(flagfftPlan1d(&plan, 67, FLAGFFT_R2C, 1), FLAGFFT_SUCCESS);
+  EXPECT_NE(plan, nullptr);
+  EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+}
+
 // =========================================================================
 // 2D plan tests
 // =========================================================================
@@ -111,6 +127,15 @@ TEST(Plan2D, GetDescription) {
   const char* desc = flagfftGetPlanDescription(plan);
   EXPECT_NE(desc, nullptr);
   EXPECT_GT(std::strlen(desc), 0u);
+  EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+}
+
+TEST(Plan2D, PrimeAxisUsesRader) {
+  flagfftHandle plan = nullptr;
+  ASSERT_EQ(flagfftPlan2d(&plan, 67, 32, FLAGFFT_C2C), FLAGFFT_SUCCESS);
+  const char* desc = flagfftGetPlanDescription(plan);
+  ASSERT_NE(desc, nullptr);
+  EXPECT_NE(std::strstr(desc, "Rader"), nullptr) << desc;
   EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }
 

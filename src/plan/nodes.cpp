@@ -61,6 +61,14 @@ std::string BluesteinPlanNode::describe(int indent) const {
   return oss.str();
 }
 
+std::string RaderPlanNode::describe(int indent) const {
+  std::ostringstream oss;
+  oss << indent_str(indent) << "Rader(p=" << prime << ", root=" << root << ", conv_length=" << (prime - 1)
+      << ")\n";
+  oss << conv_plan->describe(indent + 2);
+  return oss.str();
+}
+
 LeafPlanNode::LeafPlanNode(int64_t length,
                            std::vector<int64_t> factors,
                            int64_t remainder,
@@ -94,6 +102,14 @@ FourStepPlanNode::FourStepPlanNode(int64_t length, int64_t n1, int64_t n2, PlanN
 
 BluesteinPlanNode::BluesteinPlanNode(int64_t length, int64_t conv_length, PlanNodePtr fft_plan)
     : PlanNode(length, PlanNodeKind::Bluestein), conv_length(conv_length), fft_plan(std::move(fft_plan)) {
+}
+
+RaderPlanNode::RaderPlanNode(int64_t prime, int64_t root, std::vector<int64_t> idx, PlanNodePtr conv_plan)
+    : PlanNode(prime, PlanNodeKind::Rader),
+      prime(prime),
+      root(root),
+      idx(std::move(idx)),
+      conv_plan(std::move(conv_plan)) {
 }
 
 TwoDimPlanNode::TwoDimPlanNode(
@@ -160,6 +176,13 @@ PlanKey PlanKey::from_node(const PlanNodePtr &node) {
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     key.conv_length = bluestein->conv_length;
     key.child_keys.push_back(PlanKey::from_node(bluestein->fft_plan).repr());
+    return key;
+  }
+  if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
+    key.conv_length = rader->prime - 1;
+    key.root = rader->root;
+    key.factors = rader->idx;
+    key.child_keys.push_back(PlanKey::from_node(rader->conv_plan).repr());
     return key;
   }
   // PlanKey reuses generic n1/n2 fields: for TwoDim nodes, n1 stores n0
