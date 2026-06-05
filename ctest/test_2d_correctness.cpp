@@ -31,6 +31,7 @@ constexpr Test2DSize k2DBluesteinSizes[] = {
 };
 
 constexpr int k2DNumSizes = sizeof(k2DSizes) / sizeof(k2DSizes[0]);
+constexpr int k2DNumBluesteinSizes = sizeof(k2DBluesteinSizes) / sizeof(k2DBluesteinSizes[0]);
 constexpr int k2DBatchSingle[] = {1};
 constexpr int k2DBatchMulti[] = {4};
 
@@ -461,6 +462,11 @@ INSTANTIATE_TEST_SUITE_P(Batch,
                          R2C2D,
                          ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
 
+INSTANTIATE_TEST_SUITE_P(
+    Bluestein,
+    R2C2D,
+    ::testing::ValuesIn(Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1)));
+
 // =========================================================================
 // C2R 2D tests
 // =========================================================================
@@ -557,6 +563,11 @@ INSTANTIATE_TEST_SUITE_P(Batch,
                          C2R2D,
                          ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
 
+INSTANTIATE_TEST_SUITE_P(
+    Bluestein,
+    C2R2D,
+    ::testing::ValuesIn(Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1)));
+
 // =========================================================================
 // D2Z 2D tests
 // =========================================================================
@@ -647,6 +658,15 @@ INSTANTIATE_TEST_SUITE_P(Extended,
                          D2Z2D,
                          ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
 
+INSTANTIATE_TEST_SUITE_P(Batch,
+                         D2Z2D,
+                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
+
+INSTANTIATE_TEST_SUITE_P(
+    Bluestein,
+    D2Z2D,
+    ::testing::ValuesIn(Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1)));
+
 // =========================================================================
 // Z2D 2D tests
 // =========================================================================
@@ -736,6 +756,15 @@ INSTANTIATE_TEST_SUITE_P(Smoke, Z2D2D, ::testing::ValuesIn(Generate2DParams(k2DS
 INSTANTIATE_TEST_SUITE_P(Extended,
                          Z2D2D,
                          ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
+
+INSTANTIATE_TEST_SUITE_P(Batch,
+                         Z2D2D,
+                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
+
+INSTANTIATE_TEST_SUITE_P(
+    Bluestein,
+    Z2D2D,
+    ::testing::ValuesIn(Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1)));
 
 // =========================================================================
 // R2C + C2R roundtrip 2D tests
@@ -831,6 +860,10 @@ INSTANTIATE_TEST_SUITE_P(Extended,
                          R2CC2RRoundtrip2D,
                          ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
 
+INSTANTIATE_TEST_SUITE_P(Batch,
+                         R2CC2RRoundtrip2D,
+                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
+
 // =========================================================================
 // D2Z + Z2D roundtrip 2D tests
 // =========================================================================
@@ -924,5 +957,9 @@ INSTANTIATE_TEST_SUITE_P(Smoke,
 INSTANTIATE_TEST_SUITE_P(Extended,
                          D2ZZ2DRoundtrip2D,
                          ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
+
+INSTANTIATE_TEST_SUITE_P(Batch,
+                         D2ZZ2DRoundtrip2D,
+                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
 
 }  // namespace
