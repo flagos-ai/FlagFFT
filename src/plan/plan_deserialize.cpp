@@ -50,6 +50,14 @@ PlanNodePtr plan_node_from_json(PlanBuilder &builder, const nlohmann::json &node
                                                conv_length,
                                                plan_node_from_json(builder, node.at("fft_plan")));
   }
+  if (kind == "rader") {
+    int64_t root = node.at("root").get<int64_t>();
+    std::vector<int64_t> idx = node.at("idx").get<std::vector<int64_t>>();
+    return std::make_shared<RaderPlanNode>(length,
+                                           root,
+                                           std::move(idx),
+                                           plan_node_from_json(builder, node.at("conv_plan")));
+  }
   if (kind == "direct_dft") {
     return std::make_shared<DirectDFTPlanNode>(length);
   }

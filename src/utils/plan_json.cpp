@@ -41,6 +41,12 @@ nlohmann::json plan_node_to_json(const PlanNodePtr &node) {
   } else if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     out["conv_length"] = bluestein->conv_length;
     out["fft_plan"] = plan_node_to_json(bluestein->fft_plan);
+  } else if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
+    out["prime"] = rader->prime;
+    out["root"] = rader->root;
+    out["idx"] = rader->idx;
+    out["conv_length"] = rader->prime - 1;
+    out["conv_plan"] = plan_node_to_json(rader->conv_plan);
   } else if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     out["n0"] = two_dim->n0;
     out["n1"] = two_dim->n1;
@@ -92,6 +98,7 @@ nlohmann::json plan_key_to_json(const PlanKey &key) {
   out["n1"] = key.n1;
   out["n2"] = key.n2;
   out["conv_length"] = key.conv_length;
+  out["root"] = key.root;
   out["child_keys"] = key.child_keys;
   out["hash"] = static_cast<uint64_t>(PlanKeyHash {}(key));
   return out;
@@ -135,6 +142,8 @@ nlohmann::json kernel_key_to_json(const KernelKey &key) {
   out["four_step_n2"] = key.four_step_n2;
   out["bluestein_n"] = key.bluestein_n;
   out["bluestein_m"] = key.bluestein_m;
+  out["rader_n"] = key.rader_n;
+  out["rader_m"] = key.rader_m;
   out["hash"] = static_cast<uint64_t>(KernelKeyHash {}(key));
   return out;
 }

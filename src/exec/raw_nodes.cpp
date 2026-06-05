@@ -203,6 +203,107 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
+                                           int64_t conv_length,
+                                           std::shared_ptr<CompiledRawNode> fft,
+                                           std::shared_ptr<JitKernel> prepare_kernel,
+                                           std::shared_ptr<JitKernel> pointwise_kernel,
+                                           std::shared_ptr<JitKernel> finalize_kernel,
+                                           DeviceAllocation idx,
+                                           DeviceAllocation b_time,
+                                           DeviceAllocation a_buf,
+                                           DeviceAllocation work_buf,
+                                           DeviceAllocation b_fft_buf)
+    : length(length),
+      conv_length(conv_length),
+      fft(std::move(fft)),
+      prepare_kernel(std::move(prepare_kernel)),
+      pointwise_kernel(std::move(pointwise_kernel)),
+      finalize_kernel(std::move(finalize_kernel)),
+      idx(std::move(idx)),
+      b_time(std::move(b_time)),
+      a_buf(std::move(a_buf)),
+      work_buf(std::move(work_buf)),
+      b_fft_buf(std::move(b_fft_buf)) {
+}
+
+std::string CompiledRawRaderNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawRader(n=" << length << ", conv_length=" << conv_length
+      << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->kernel_name : "null")
+      << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->kernel_name : "null")
+      << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->kernel_name : "null")
+      << ", fft=" << (fft ? fft->describe() : "null") << ")";
+  return oss.str();
+}
+
+void CompiledRawRaderNode::ensure_b_fft(const RawExecutionContext &context) const {
+  std::lock_guard<std::mutex> lock(b_fft_mutex);
+  if (b_fft_ready) {
+    return;
+  }
+  RawExecutionContext child_context {context.request, context.stream, 1};
+  flagfftResult result = fft->execute(b_time.get(), b_fft_buf.get(), child_context);
+  if (result != FLAGFFT_SUCCESS) {
+    throw std::runtime_error("failed to precompute Rader convolution FFT");
+  }
+  b_fft_ready = true;
+}
+
+flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
+                                            adaptor::DevicePtr output,
+                                            const RawExecutionContext &context) const {
+  try {
+    ensure_b_fft(context);
+
+    std::vector<JitKernelArg> prepare_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(idx.get()),
+        JitKernelArg::device(a_buf.get()),
+        JitKernelArg::i64(length),
+        JitKernelArg::i64(conv_length),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), context.batch, 1);
+
+    RawExecutionContext child_context {context.request, context.stream, context.batch};
+    flagfftResult result = fft->execute(a_buf.get(), work_buf.get(), child_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    std::vector<JitKernelArg> pointwise_args = {
+        JitKernelArg::device(work_buf.get()),
+        JitKernelArg::device(b_fft_buf.get()),
+        JitKernelArg::device(a_buf.get()),
+        JitKernelArg::i64(conv_length),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 256), context.batch, 1);
+
+    result = fft->execute(a_buf.get(), work_buf.get(), child_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    std::vector<JitKernelArg> finalize_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(work_buf.get()),
+        JitKernelArg::device(idx.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(length),
+        JitKernelArg::i64(conv_length),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    finalize_kernel->launch(context.stream, finalize_args, ceil_div(conv_length, 256), context.batch, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] Rader execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawFourStepGenericNode::CompiledRawFourStepGenericNode(
     int64_t length,
     int64_t n1,

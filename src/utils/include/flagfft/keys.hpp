@@ -43,6 +43,7 @@ struct PlanKey {
   int64_t n1 = 0;
   int64_t n2 = 0;
   int64_t conv_length = 0;
+  int64_t root = 0;
   std::vector<std::string> child_keys;
 
   static PlanKey from_node(const PlanNodePtr &node);
@@ -69,6 +70,8 @@ struct KernelKey {
   int64_t four_step_n2 = 0;
   int64_t bluestein_n = 0;
   int64_t bluestein_m = 0;
+  int64_t rader_n = 0;
+  int64_t rader_m = 0;
   int64_t reshape_n1 = 0;
   int64_t reshape_n2 = 0;
 
@@ -108,6 +111,9 @@ struct KernelKey {
   static KernelKey bluestein_prepare(std::string target, std::string dtype, int64_t n, int64_t m);
   static KernelKey bluestein_pointwise(std::string target, std::string dtype, int64_t n, int64_t m);
   static KernelKey bluestein_finalize(std::string target, std::string dtype, int64_t n, int64_t m);
+  static KernelKey rader_prepare(std::string target, std::string dtype, int64_t n, int64_t m);
+  static KernelKey rader_pointwise(std::string target, std::string dtype, int64_t n, int64_t m);
+  static KernelKey rader_finalize(std::string target, std::string dtype, int64_t n, int64_t m);
   static KernelKey reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
   static KernelKey twiddle_reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
   static KernelKey tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1);

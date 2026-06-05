@@ -146,6 +146,39 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
   mutable std::mutex b_fft_mutex;
 };
 
+struct CompiledRawRaderNode final : CompiledRawNode {
+  CompiledRawRaderNode(int64_t length,
+                       int64_t conv_length,
+                       std::shared_ptr<CompiledRawNode> fft,
+                       std::shared_ptr<JitKernel> prepare_kernel,
+                       std::shared_ptr<JitKernel> pointwise_kernel,
+                       std::shared_ptr<JitKernel> finalize_kernel,
+                       DeviceAllocation idx,
+                       DeviceAllocation b_time,
+                       DeviceAllocation a_buf,
+                       DeviceAllocation work_buf,
+                       DeviceAllocation b_fft_buf);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  void ensure_b_fft(const RawExecutionContext &context) const;
+
+  int64_t length;
+  int64_t conv_length;
+  std::shared_ptr<CompiledRawNode> fft;
+  std::shared_ptr<JitKernel> prepare_kernel;
+  std::shared_ptr<JitKernel> pointwise_kernel;
+  std::shared_ptr<JitKernel> finalize_kernel;
+  DeviceAllocation idx;
+  DeviceAllocation b_time;
+  DeviceAllocation a_buf;
+  DeviceAllocation work_buf;
+  mutable DeviceAllocation b_fft_buf;
+  mutable bool b_fft_ready = false;
+  mutable std::mutex b_fft_mutex;
+};
+
 struct CompiledRawFourStepGenericNode final : CompiledRawNode {
   CompiledRawFourStepGenericNode(int64_t length,
                                  int64_t n1,
@@ -278,6 +311,9 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                int64_t n,
                                                                int64_t m);
+  std::shared_ptr<JitKernel> compile_rader_prepare_kernel(const FFTRequest &request, int64_t n, int64_t m);
+  std::shared_ptr<JitKernel> compile_rader_pointwise_kernel(const FFTRequest &request, int64_t n, int64_t m);
+  std::shared_ptr<JitKernel> compile_rader_finalize_kernel(const FFTRequest &request, int64_t n, int64_t m);
   std::shared_ptr<JitKernel> compile_reshape_pack_kernel(const FFTRequest &request, int64_t n1, int64_t n2);
   std::shared_ptr<JitKernel> compile_twiddle_reshape_pack_kernel(const FFTRequest &request,
                                                                  int64_t n1,
@@ -300,6 +336,10 @@ FFTRequest forward_child_request(const FFTRequest &request);
 DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2);
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign);
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m);
+DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx);
+DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
+                                             int64_t n,
+                                             const std::vector<int64_t> &idx);
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request);
 
 }  // namespace flagfft

@@ -287,6 +287,131 @@ def _bluestein_finalize_kernel(
     tl.store(dst + 1, yi, mask=mask)
 
 
+def _build_rader_prepare_kernel_source(dtype: str) -> tuple[str, str, list[str]]:
+    zero = _zero_other(dtype)
+    return (
+        "_rader_prepare_kernel",
+        dedent(
+            f"""
+            @triton.jit
+            def _rader_prepare_kernel(
+                in_ptr,
+                idx_ptr,
+                out_ptr,
+                n,
+                m,
+                nbatch,
+            ):
+                pid_block = tl.program_id(0)
+                pid_batch = tl.program_id(1)
+                offsets = pid_block * 256 + tl.arange(0, 256)
+                mask = offsets < m
+                inv_offsets = tl.where(offsets == 0, 0, m - offsets)
+                src_index = tl.load(idx_ptr + inv_offsets, mask=mask, other=0)
+
+                src = in_ptr + (pid_batch * n + src_index) * 2
+                xr = tl.load(src, mask=mask, other={zero})
+                xi = tl.load(src + 1, mask=mask, other={zero})
+
+                dst = out_ptr + (pid_batch * m + offsets) * 2
+                tl.store(dst, xr, mask=mask)
+                tl.store(dst + 1, xi, mask=mask)
+            """
+        ),
+        ["in_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],
+    )
+
+
+def _build_rader_pointwise_kernel_source(dtype: str) -> tuple[str, str, list[str]]:
+    zero = _zero_other(dtype)
+    return (
+        "_rader_pointwise_kernel",
+        dedent(
+            f"""
+            @triton.jit
+            def _rader_pointwise_kernel(
+                a_ptr,
+                b_ptr,
+                out_ptr,
+                m,
+                nbatch,
+            ):
+                pid_block = tl.program_id(0)
+                pid_batch = tl.program_id(1)
+                offsets = pid_block * 256 + tl.arange(0, 256)
+                mask = offsets < m
+
+                a = a_ptr + (pid_batch * m + offsets) * 2
+                b = b_ptr + offsets * 2
+                ar = tl.load(a, mask=mask, other={zero})
+                ai = tl.load(a + 1, mask=mask, other={zero})
+                br = tl.load(b, mask=mask, other={zero})
+                bi = tl.load(b + 1, mask=mask, other={zero})
+                pr, pi = _cmul(ar, ai, br, bi)
+
+                dst = out_ptr + (pid_batch * m + offsets) * 2
+                tl.store(dst, pr, mask=mask)
+                tl.store(dst + 1, -pi, mask=mask)
+            """
+        ),
+        ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
+    )
+
+
+def _build_rader_finalize_kernel_source(
+    n: int, dtype: str
+) -> tuple[str, str, list[str]]:
+    zero = _zero_other(dtype)
+    div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
+    sum_block = 1
+    while sum_block < n:
+        sum_block <<= 1
+    return (
+        "_rader_finalize_kernel",
+        dedent(
+            f"""
+            @triton.jit
+            def _rader_finalize_kernel(
+                input_ptr,
+                conv_ptr,
+                idx_ptr,
+                out_ptr,
+                n,
+                m,
+                nbatch,
+            ):
+                pid_block = tl.program_id(0)
+                pid_batch = tl.program_id(1)
+                offsets = pid_block * 256 + tl.arange(0, 256)
+                mask = offsets < m
+
+                src = conv_ptr + (pid_batch * m + offsets) * 2
+                cr = tl.load(src, mask=mask, other={zero}) / {div_cast}
+                ci = -tl.load(src + 1, mask=mask, other={zero}) / {div_cast}
+                x0 = input_ptr + pid_batch * n * 2
+                x0r = tl.load(x0)
+                x0i = tl.load(x0 + 1)
+
+                dst_index = tl.load(idx_ptr + offsets, mask=mask, other=0)
+                dst = out_ptr + (pid_batch * n + dst_index) * 2
+                tl.store(dst, x0r + cr, mask=mask)
+                tl.store(dst + 1, x0i + ci, mask=mask)
+
+                sum_offsets = tl.arange(0, {sum_block})
+                sum_mask = sum_offsets < n
+                sum_src = input_ptr + (pid_batch * n + sum_offsets) * 2
+                sr = tl.load(sum_src, mask=sum_mask, other={zero})
+                si = tl.load(sum_src + 1, mask=sum_mask, other={zero})
+                out0 = out_ptr + pid_batch * n * 2
+                block0 = pid_block == 0
+                tl.store(out0, tl.sum(sr, axis=0), mask=block0)
+                tl.store(out0 + 1, tl.sum(si, axis=0), mask=block0)
+            """
+        ),
+        ["input_ptr", "conv_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],
+    )
+
+
 def _fmt_const(value: float) -> str:
     if abs(value) < 1e-8:
         value = 0.0

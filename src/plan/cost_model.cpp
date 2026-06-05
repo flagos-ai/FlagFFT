@@ -35,6 +35,11 @@ double PlanBuilder::bluestein_cost(int64_t n, int64_t conv_length) {
   return 3.0 * cost_for(conv_length) + static_cast<double>(n + conv_length);
 }
 
+double PlanBuilder::rader_cost(int64_t n) {
+  int64_t conv_length = n - 1;
+  return 3.0 * cost_for(conv_length) + static_cast<double>(n + 3 * conv_length);
+}
+
 int PlanBuilder::priority(const PlanNodePtr &node) {
   if (node->kind == PlanNodeKind::CtLeaf) {
     return 0;
@@ -46,6 +51,9 @@ int PlanBuilder::priority(const PlanNodePtr &node) {
     return 2;
   }
   if (node->kind == PlanNodeKind::Bluestein) {
+    return 3;
+  }
+  if (node->kind == PlanNodeKind::Rader) {
     return 3;
   }
   if (node->kind == PlanNodeKind::DirectDft) {

@@ -32,6 +32,7 @@ set(FLAGFFT_CORE_SOURCES
     src/plan/builder_context.cpp
     src/plan/plan_deserialize.cpp
     src/plan/factorization.cpp
+    src/plan/rader_utils.cpp
     src/plan/cost_model.cpp
     src/plan/auto_candidates.cpp
     src/plan/tune_candidates.cpp

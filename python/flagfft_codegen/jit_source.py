@@ -29,6 +29,9 @@ from .kernels import (
 _BLUESTEIN_BLOCK = 256
 _BLUESTEIN_NUM_WARPS = 4
 _BLUESTEIN_NUM_STAGES = 4
+_RADER_BLOCK = 256
+_RADER_NUM_WARPS = 4
+_RADER_NUM_STAGES = 4
 _RESHAPE_NUM_WARPS = 4
 _RESHAPE_NUM_STAGES = 1
 
@@ -80,6 +83,8 @@ def _arg_signature(name: str, dtype: str) -> str:
         return "i32"
     if name in {"n", "m", "input_distance", "output_distance"}:
         return "i64"
+    if name == "idx_ptr":
+        return "*i32:16"
     return _pointer_signature(dtype)
 
 
@@ -250,6 +255,166 @@ def _emit_bluestein_jit_kernel(
         "bluestein_n": int(n),
         "bluestein_m": int(m),
         "block": _BLUESTEIN_BLOCK,
+    }
+    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
+def _next_power_of_two(value: int) -> int:
+    result = 1
+    while result < value:
+        result <<= 1
+    return result
+
+
+def _rader_kernel_source(
+    kind: str, n: int, m: int, dtype: str
+) -> tuple[str, str, list[str]]:
+    zero = _zero_literal(dtype)
+    div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
+    sum_block = _next_power_of_two(n)
+    if kind == "rader_prepare":
+        return (
+            "_rader_prepare_kernel",
+            dedent(
+                f"""
+                @triton.jit
+                def _rader_prepare_kernel(
+                    in_ptr,
+                    idx_ptr,
+                    out_ptr,
+                    n,
+                    m,
+                    nbatch,
+                ):
+                    pid_block = tl.program_id(0)
+                    pid_batch = tl.program_id(1)
+                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    mask = offsets < m
+                    inv_offsets = tl.where(offsets == 0, 0, m - offsets)
+                    src_index = tl.load(idx_ptr + inv_offsets, mask=mask, other=0)
+
+                    src = in_ptr + (pid_batch * n + src_index) * 2
+                    xr = tl.load(src, mask=mask, other={zero})
+                    xi = tl.load(src + 1, mask=mask, other={zero})
+
+                    dst = out_ptr + (pid_batch * m + offsets) * 2
+                    tl.store(dst, xr, mask=mask)
+                    tl.store(dst + 1, xi, mask=mask)
+                """
+            ),
+            ["in_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],
+        )
+    if kind == "rader_pointwise":
+        return (
+            "_rader_pointwise_kernel",
+            dedent(
+                f"""
+                @triton.jit
+                def _rader_pointwise_kernel(
+                    a_ptr,
+                    b_ptr,
+                    out_ptr,
+                    m,
+                    nbatch,
+                ):
+                    pid_block = tl.program_id(0)
+                    pid_batch = tl.program_id(1)
+                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    mask = offsets < m
+
+                    a = a_ptr + (pid_batch * m + offsets) * 2
+                    b = b_ptr + offsets * 2
+                    ar = tl.load(a, mask=mask, other={zero})
+                    ai = tl.load(a + 1, mask=mask, other={zero})
+                    br = tl.load(b, mask=mask, other={zero})
+                    bi = tl.load(b + 1, mask=mask, other={zero})
+                    pr, pi = _cmul(ar, ai, br, bi)
+
+                    dst = out_ptr + (pid_batch * m + offsets) * 2
+                    tl.store(dst, pr, mask=mask)
+                    tl.store(dst + 1, -pi, mask=mask)
+                """
+            ),
+            ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
+        )
+    if kind == "rader_finalize":
+        return (
+            "_rader_finalize_kernel",
+            dedent(
+                f"""
+                @triton.jit
+                def _rader_finalize_kernel(
+                    input_ptr,
+                    conv_ptr,
+                    idx_ptr,
+                    out_ptr,
+                    n,
+                    m,
+                    nbatch,
+                ):
+                    pid_block = tl.program_id(0)
+                    pid_batch = tl.program_id(1)
+                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    mask = offsets < m
+
+                    src = conv_ptr + (pid_batch * m + offsets) * 2
+                    cr = tl.load(src, mask=mask, other={zero}) / {div_cast}
+                    ci = -tl.load(src + 1, mask=mask, other={zero}) / {div_cast}
+                    x0 = input_ptr + pid_batch * n * 2
+                    x0r = tl.load(x0)
+                    x0i = tl.load(x0 + 1)
+                    yr = x0r + cr
+                    yi = x0i + ci
+
+                    dst_index = tl.load(idx_ptr + offsets, mask=mask, other=0)
+                    dst = out_ptr + (pid_batch * n + dst_index) * 2
+                    tl.store(dst, yr, mask=mask)
+                    tl.store(dst + 1, yi, mask=mask)
+
+                    sum_offsets = tl.arange(0, {sum_block})
+                    sum_mask = sum_offsets < n
+                    sum_src = input_ptr + (pid_batch * n + sum_offsets) * 2
+                    sr = tl.load(sum_src, mask=sum_mask, other={zero})
+                    si = tl.load(sum_src + 1, mask=sum_mask, other={zero})
+                    out0 = out_ptr + pid_batch * n * 2
+                    block0 = pid_block == 0
+                    tl.store(out0, tl.sum(sr, axis=0), mask=block0)
+                    tl.store(out0 + 1, tl.sum(si, axis=0), mask=block0)
+                """
+            ),
+            ["input_ptr", "conv_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],
+        )
+    raise ValueError(f"unsupported JIT kernel kind: {kind}")
+
+
+def _emit_rader_jit_kernel(
+    *,
+    kernel: str,
+    n: int,
+    m: int,
+    dtype: str = "complex64",
+    out_dir: Path,
+) -> dict[str, Any]:
+    kernel_name, kernel_source, arg_names = _rader_kernel_source(kernel, n, m, dtype)
+    suffix = _dtype_suffix(dtype)
+    module_name = f"flagfft_jit_{kernel}_n{n}_m{m}_{suffix}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{module_name}.py"
+    module_path.write_text(_module_source(kernel_source))
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": kernel_name,
+        "signature": _signature(arg_names, dtype),
+        "num_warps": _RADER_NUM_WARPS,
+        "num_stages": _RADER_NUM_STAGES,
+        "batch_per_block": 1,
+        "arg_names": arg_names,
+        "kernel_type": kernel,
+        "dtype": dtype,
+        "rader_n": int(n),
+        "rader_m": int(m),
+        "block": _RADER_BLOCK,
     }
     (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
     return metadata
@@ -491,6 +656,9 @@ def main() -> None:
             "bluestein_prepare",
             "bluestein_pointwise",
             "bluestein_finalize",
+            "rader_prepare",
+            "rader_pointwise",
+            "rader_finalize",
             "reshape_pack",
             "twiddle_reshape_pack",
             "tiled_transpose",
@@ -517,6 +685,8 @@ def main() -> None:
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--bluestein-n", type=int)
     parser.add_argument("--bluestein-m", type=int)
+    parser.add_argument("--rader-n", type=int)
+    parser.add_argument("--rader-m", type=int)
     parser.add_argument("--reshape-n1", type=int, default=0)
     parser.add_argument("--reshape-n2", type=int, default=0)
     parser.add_argument("--tile-size", type=int, default=32)
@@ -532,6 +702,19 @@ def main() -> None:
             kernel=args.kernel,
             n=args.bluestein_n,
             m=args.bluestein_m,
+            dtype=args.dtype,
+            out_dir=args.out_dir,
+        )
+        print(json.dumps(metadata, sort_keys=True))
+        return
+
+    if args.kernel.startswith("rader_"):
+        if args.rader_n is None or args.rader_m is None:
+            parser.error(f"--kernel {args.kernel} requires --rader-n and --rader-m")
+        metadata = _emit_rader_jit_kernel(
+            kernel=args.kernel,
+            n=args.rader_n,
+            m=args.rader_m,
             dtype=args.dtype,
             out_dir=args.out_dir,
         )

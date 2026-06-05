@@ -94,7 +94,7 @@ struct FFTRequest {
   int64_t batch = 0;
 };
 
-enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, TwoDim };
+enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim };
 enum class KernelKind {
   Leaf,
   FourStepRow,
@@ -104,6 +104,9 @@ enum class KernelKind {
   BluesteinPrepare,
   BluesteinPointwise,
   BluesteinFinalize,
+  RaderPrepare,
+  RaderPointwise,
+  RaderFinalize,
   ReshapePack,
   TwiddleReshapePack,
   RealToComplex,
