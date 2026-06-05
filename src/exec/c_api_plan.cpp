@@ -140,23 +140,6 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       col_desc.odist = n0;
       col_desc.batch = batch * half_n1;
 
-      // For C2R/Z2D, row FFT should be inverse (IFFT)
-      // For R2C/D2Z or C2C/Z2Z, row FFT should be forward
-      const std::string row_direction = real_inverse ? "inverse" : "forward";
-      FFTRequest row_request = request_from_desc(row_desc, row_direction);
-      PlanNodePtr row_plan = lookup_or_build_root(builder, row_request);
-      if (!raw_supported_node(row_plan)) {
-        row_plan = lookup_or_build_root(
-            builder,
-            request_from_desc(row_desc, row_direction == "forward" ? "inverse" : "forward"));
-      }
-      if (!raw_supported_node(row_plan)) {
-        row_plan = raw_compatible_bluestein_plan(n1, builder, row_request);
-      }
-      if (!raw_supported_node(row_plan)) {
-        return FLAGFFT_NOT_SUPPORTED;
-      }
-
       // For C2R/Z2D, column FFT should be inverse (IFFT)
       // For R2C/D2Z or C2C/Z2Z, column FFT should be forward
       const std::string col_direction = real_inverse ? "inverse" : "forward";
@@ -168,10 +151,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
             request_from_desc(col_desc, col_direction == "forward" ? "inverse" : "forward"));
       }
       if (!raw_supported_node(col_plan)) {
-        col_plan = raw_compatible_rader_plan(n0, builder, col_forward_request);
+        col_plan = raw_compatible_rader_plan(n0, builder, col_request);
       }
       if (!raw_supported_node(col_plan)) {
-        col_plan = raw_compatible_bluestein_plan(n0, builder, col_forward_request);
+        col_plan = raw_compatible_bluestein_plan(n0, builder, col_request);
       }
       if (!raw_supported_node(col_plan)) {
         return FLAGFFT_NOT_SUPPORTED;
