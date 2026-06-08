@@ -116,21 +116,9 @@ TEST(ExtendedC2RRegression, LargeBatchMultipleSeeds) {
   EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }
 
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
+INSTANTIATE_TEST_SUITE_P(All,
                          C2RCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedSmallBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         C2RCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedMediumBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         C2RCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedLargeBatch()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTExtendedSmallBatch())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

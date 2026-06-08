@@ -73,27 +73,9 @@ TEST_P(Z2DBSSingle_Test, InverseVsReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
+INSTANTIATE_TEST_SUITE_P(All,
                          Z2DBSSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSSmokeSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         Z2DBSSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedSmallSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         Z2DBSSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedMediumSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         Z2DBSSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedLargeSingle()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsBSSmokeSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

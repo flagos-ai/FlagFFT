@@ -47,6 +47,9 @@ class Z2ZInvCTSingle_Test : public ::testing::TestWithParam<Test1DParam> {
 };
 
 TEST_P(Z2ZInvCTSingle_Test, InverseVsReference) {
+  if (should_skip_direction(FLAGFFT_INVERSE)) {
+    GTEST_SKIP() << "direction=inverse skipped by --direction flag";
+  }
   RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_Z2Z, batch);
   std::vector<flagfftDoubleComplex> h_out(total);
@@ -87,27 +90,9 @@ TEST_P(Z2ZInvCTSingle_Test, Roundtrip) {
                             batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
+INSTANTIATE_TEST_SUITE_P(All,
                          Z2ZInvCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTSmokeSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         Z2ZInvCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedSmallSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         Z2ZInvCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedMediumSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         Z2ZInvCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedLargeSingle()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTSmokeSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

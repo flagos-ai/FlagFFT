@@ -47,6 +47,9 @@ class C2CInvCTSingle_Test : public ::testing::TestWithParam<Test1DParam> {
 };
 
 TEST_P(C2CInvCTSingle_Test, InverseVsReference) {
+  if (should_skip_direction(FLAGFFT_INVERSE)) {
+    GTEST_SKIP() << "direction=inverse skipped by --direction flag";
+  }
   RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
   std::vector<flagfftComplex> h_out(total);
@@ -87,27 +90,9 @@ TEST_P(C2CInvCTSingle_Test, Roundtrip) {
                             batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
+INSTANTIATE_TEST_SUITE_P(All,
                          C2CInvCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTSmokeSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         C2CInvCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedSmallSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         C2CInvCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedMediumSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         C2CInvCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedLargeSingle()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTSmokeSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

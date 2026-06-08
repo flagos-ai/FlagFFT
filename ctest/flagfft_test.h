@@ -672,6 +672,17 @@ inline std::vector<double> filter_scales() {
   return {kAccuracyInputScales, kAccuracyInputScales + 3};
 }
 
+inline std::vector<Test1DParam> override_params(std::vector<Test1DParam> defaults) {
+  if (g_test_params.nx > 0 || g_test_params.batch > 0) {
+    int nx = g_test_params.nx > 0 ? g_test_params.nx : defaults[0].N;
+    int batch = g_test_params.batch > 0 ? g_test_params.batch : defaults[0].batch;
+    return {
+        {nx, batch}
+    };
+  }
+  return defaults;
+}
+
 inline bool should_skip_direction(int direction_flag) {
   // direction_flag: FLAGFFT_FORWARD=0, FLAGFFT_INVERSE=1
   if (g_test_params.direction < 0) return false;  // -1 = don't filter

@@ -47,6 +47,9 @@ class C2CFwdCTSingle_Test : public ::testing::TestWithParam<Test1DParam> {
 };
 
 TEST_P(C2CFwdCTSingle_Test, ForwardVsReference) {
+  if (should_skip_direction(FLAGFFT_FORWARD)) {
+    GTEST_SKIP() << "direction=forward skipped by --direction flag";
+  }
   RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
   std::vector<flagfftComplex> h_out(total);
@@ -67,27 +70,9 @@ TEST_P(C2CFwdCTSingle_Test, ForwardVsReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
+INSTANTIATE_TEST_SUITE_P(All,
                          C2CFwdCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTSmokeSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         C2CFwdCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedSmallSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         C2CFwdCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedMediumSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         C2CFwdCTSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedLargeSingle()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTSmokeSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

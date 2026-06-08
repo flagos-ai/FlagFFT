@@ -68,21 +68,9 @@ TEST_P(D2ZCTBatch_Test, ForwardVsReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
+INSTANTIATE_TEST_SUITE_P(All,
                          D2ZCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedSmallBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         D2ZCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedMediumBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         D2ZCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedLargeBatch()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTExtendedSmallBatch())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

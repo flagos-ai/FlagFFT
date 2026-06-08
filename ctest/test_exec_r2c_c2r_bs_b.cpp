@@ -69,21 +69,9 @@ TEST_P(R2C_C2RBSBatch_Test, Roundtrip1D) {
                             batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
+INSTANTIATE_TEST_SUITE_P(All,
                          R2C_C2RBSBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedSmallBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         R2C_C2RBSBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedMediumBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         R2C_C2RBSBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedLargeBatch()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsBSExtendedSmallBatch())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

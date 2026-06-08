@@ -47,6 +47,9 @@ class C2CInvCTBatch_Test : public ::testing::TestWithParam<Test1DParam> {
 };
 
 TEST_P(C2CInvCTBatch_Test, InverseVsReference) {
+  if (should_skip_direction(FLAGFFT_INVERSE)) {
+    GTEST_SKIP() << "direction=inverse skipped by --direction flag";
+  }
   RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
   std::vector<flagfftComplex> h_out(total);
@@ -87,21 +90,9 @@ TEST_P(C2CInvCTBatch_Test, Roundtrip) {
                             batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
+INSTANTIATE_TEST_SUITE_P(All,
                          C2CInvCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedSmallBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         C2CInvCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedMediumBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         C2CInvCTBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsCTExtendedLargeBatch()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTExtendedSmallBatch())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

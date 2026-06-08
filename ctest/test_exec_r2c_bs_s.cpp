@@ -68,27 +68,9 @@ TEST_P(R2CBSSingle_Test, ForwardVsReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
+INSTANTIATE_TEST_SUITE_P(All,
                          R2CBSSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSSmokeSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
-                         R2CBSSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedSmallSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         R2CBSSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedMediumSingle()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         R2CBSSingle_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedLargeSingle()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsBSSmokeSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

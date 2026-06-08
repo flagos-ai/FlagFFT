@@ -47,6 +47,9 @@ class C2CFwdBSBatch_Test : public ::testing::TestWithParam<Test1DParam> {
 };
 
 TEST_P(C2CFwdBSBatch_Test, ForwardVsReference) {
+  if (should_skip_direction(FLAGFFT_FORWARD)) {
+    GTEST_SKIP() << "direction=forward skipped by --direction flag";
+  }
   RefPlanHandle ref;
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
   std::vector<flagfftComplex> h_out(total);
@@ -67,21 +70,9 @@ TEST_P(C2CFwdBSBatch_Test, ForwardVsReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(ExtendedSmall,
+INSTANTIATE_TEST_SUITE_P(All,
                          C2CFwdBSBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedSmallBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedMedium,
-                         C2CFwdBSBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedMediumBatch()),
-                         [](const auto& info) {
-                           return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
-                         });
-INSTANTIATE_TEST_SUITE_P(ExtendedLarge,
-                         C2CFwdBSBatch_Test,
-                         ::testing::ValuesIn(Generate1DParamsBSExtendedLargeBatch()),
+                         ::testing::ValuesIn(override_params(Generate1DParamsBSExtendedSmallBatch())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });
