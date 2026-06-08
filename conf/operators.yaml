@@ -1,0 +1,147 @@
+# FlagFFT 算子定义
+# 每个算子对应一个变换类型×维度组合
+# id: 算子唯一标识，格式 {type}_{rank}d
+# ctest: ctest 可执行文件名前缀
+# cli_type: flagfft-cli --api 参数值
+# rank: FFT 维度 (1, 2)
+# directions: 支持的方向 (forward, inverse)
+# algorithms: 支持的算法 (ct=Cooley-Tukey, bs=Bluestein/Rader, 2d=2D FFT)
+
+ops:
+  # ── 1D Complex-to-Complex ──────────────────────────────────────
+  - id: c2c_1d
+    description: "Complex-to-Complex 1D FFT"
+    labels: [c2c, 1d, complex]
+    ctest: test_exec_c2c
+    cli_type: c2c
+    rank: 1
+    directions: [forward, inverse]
+    algorithms: [ct, bs]
+    stages:
+      - stable: '1.0'
+
+  - id: z2z_1d
+    description: "Double-Complex to Double-Complex 1D FFT"
+    labels: [z2z, 1d, complex, double]
+    ctest: test_exec_z2z
+    cli_type: z2z
+    rank: 1
+    directions: [forward, inverse]
+    algorithms: [ct, bs]
+    stages:
+      - stable: '1.0'
+
+  # ── 1D Real-to-Complex ────────────────────────────────────────
+  - id: r2c_1d
+    description: "Real-to-Complex 1D FFT"
+    labels: [r2c, 1d, real]
+    ctest: test_exec_r2c
+    cli_type: r2c
+    rank: 1
+    directions: [forward]
+    algorithms: [ct, bs]
+    stages:
+      - stable: '1.0'
+
+  - id: d2z_1d
+    description: "Double-Real to Double-Complex 1D FFT"
+    labels: [d2z, 1d, real, double]
+    ctest: test_exec_d2z
+    cli_type: d2z
+    rank: 1
+    directions: [forward]
+    algorithms: [ct, bs]
+    stages:
+      - stable: '1.0'
+
+  # ── 1D Complex-to-Real ────────────────────────────────────────
+  - id: c2r_1d
+    description: "Complex-to-Real 1D FFT"
+    labels: [c2r, 1d, real]
+    ctest: test_exec_c2r
+    cli_type: c2r
+    rank: 1
+    directions: [inverse]
+    algorithms: [ct, bs]
+    stages:
+      - stable: '1.0'
+
+  - id: z2d_1d
+    description: "Double-Complex to Double-Real 1D FFT"
+    labels: [z2d, 1d, real, double]
+    ctest: test_exec_z2d
+    cli_type: z2d
+    rank: 1
+    directions: [inverse]
+    algorithms: [ct, bs]
+    stages:
+      - stable: '1.0'
+
+  # ── 2D Complex-to-Complex ─────────────────────────────────────
+  - id: c2c_2d
+    description: "Complex-to-Complex 2D FFT"
+    labels: [c2c, 2d, complex]
+    ctest: test_2d_correctness
+    cli_type: c2c
+    rank: 2
+    directions: [forward, inverse]
+    algorithms: [2d]
+    stages:
+      - stable: '1.0'
+
+  - id: z2z_2d
+    description: "Double-Complex to Double-Complex 2D FFT"
+    labels: [z2z, 2d, complex, double]
+    ctest: test_2d_correctness
+    cli_type: z2z
+    rank: 2
+    directions: [forward, inverse]
+    algorithms: [2d]
+    stages:
+      - stable: '1.0'
+
+  # ── 2D Real-to-Complex ────────────────────────────────────────
+  - id: r2c_2d
+    description: "Real-to-Complex 2D FFT"
+    labels: [r2c, 2d, real]
+    ctest: test_2d_correctness
+    cli_type: r2c
+    rank: 2
+    directions: [forward]
+    algorithms: [2d]
+    stages:
+      - stable: '1.0'
+
+  - id: d2z_2d
+    description: "Double-Real to Double-Complex 2D FFT"
+    labels: [d2z, 2d, real, double]
+    ctest: test_2d_correctness
+    cli_type: d2z
+    rank: 2
+    directions: [forward]
+    algorithms: [2d]
+    stages:
+      - stable: '1.0'
+
+  # ── 2D Complex-to-Real ────────────────────────────────────────
+  - id: c2r_2d
+    description: "Complex-to-Real 2D FFT"
+    labels: [c2r, 2d, real]
+    ctest: test_2d_correctness
+    cli_type: c2r
+    rank: 2
+    directions: [inverse]
+    algorithms: [2d]
+    stages:
+      - stable: '1.0'
+
+  - id: z2d_2d
+    description: "Double-Complex to Double-Real 2D FFT"
+    labels: [z2d, 2d, real, double]
+    ctest: test_2d_correctness
+    cli_type: z2d
+    rank: 2
+    directions: [inverse]
+    algorithms: [2d]
+    stages:
+      - stable: '1.0'
