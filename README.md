@@ -311,53 +311,72 @@ This shows which plan strategy was selected (Leaf, FourStep, Bluestein), the
 factorization, kernel names, and module paths — useful for performance
 debugging and understanding how the planner routes a given FFT size.
 
-## Validation
+## Testing
 
-The repository keeps two canonical runtime validation paths:
+FlagFFT uses `tools/run_tests.py` for both accuracy and performance testing.
+Python codegen unit tests remain under `tests/python/` and are run with
+`pytest tests/python/`.
 
-1. `tests/ctest/` pytest wrappers execute the Google Test binaries under
-   `ctest/`, which then call the FlagFFT C API and compare against the backend
-   reference implementation.
-2. `benchmark/` pytest cases execute `flagfft-cli bench`, collect per-case
-   FlagFFT/reference timings, and print speedup ratios.
-
-Python codegen tests remain under `tests/python/` and exercise the
-`flagfft_codegen` package. Lightweight CLI contract tests live under
-`tests/cli/`; they are not the performance benchmark entrypoint.
-
-Build the native test and benchmark targets before running the wrappers:
+### Prerequisites
 
 ```sh
-python3 -m pip install .
-cmake -S . -B build -GNinja -DBACKEND=CUDA \
-  -DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON
-cmake --build build
+# Build with tests and CLI
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON
+cmake --build build -j$(nproc)
 
-# Correctness chain: pytest -> Google Test executable -> FlagFFT
-pytest tests/ctest/ -v --ctest-build-dir build/ctest
-
-# Performance chain: pytest -> flagfft-cli bench -> FlagFFT/reference timing
-pytest benchmark/test_bench.py -v --bench-suite=smoke \
-  --flagfft-cli ./build/flagfft-cli
-# Add -p no:xdist if pytest-xdist is installed
+# Install Python dependencies
+pip install pyyaml
 ```
 
-The benchmark report includes `FlagFFT (ms)`, `Reference (ms)`, per-case
-`Speedup`, and an overall geometric-mean speedup. `speedup` is computed as
-`ref_median_ms / flagfft_median_ms`, so values above `1.00x` mean FlagFFT is
-faster than the reference for that case.
+### Quick Start
+
+```sh
+# CT smoke test (single GPU)
+python tools/run_tests.py --combination ct
+
+# Specific operators
+python tools/run_tests.py --ops c2c_1d,r2c_1d --combination ct
+
+# Full test matrix
+python tools/run_tests.py --combination full
+
+# Multi-GPU
+python tools/run_tests.py --combination ct --gpus 0,1,2,3
+
+# Accuracy only
+python tools/run_tests.py --combination ct --accuracy-only
+
+# Performance only
+python tools/run_tests.py --combination ct --performance-only
+```
+
+### Configuration
+
+- `conf/operators.yaml` — Operator definitions (transform type x dimension)
+- `conf/test_matrix.yaml` — Test parameter matrix (sizes, batches, scales)
+
+### Output
+
+- Console: Real-time progress with per-GPU status
+- JSON: Summary file (`summary.json`) with per-operator results
 
 ## C++ Tests
 
 The C++ test suite lives under `ctest/` and uses Google Test with a unified
 `flagfft::test_adaptor` interface to support multiple GPU platforms from a
-single set of test sources.
+single set of test sources. Tests are parametrized via command-line arguments
+(`--nx`, `--batch`, `--direction`, `--scale`, `--json-file`) and driven by
+`tools/run_tests.py`.
 
 ```sh
-cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_TESTS=ON
-cmake --build build
-ctest --test-dir build --verbose                              # full suite
-FLAGFFT_TEST_PROFILE=smoke ctest --test-dir build --verbose  # quick validation
+cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON
+cmake --build build -j$(nproc)
+
+# Run via the unified test runner (recommended)
+python tools/run_tests.py --combination ct
+
+# Or run individual test binaries directly
+./build/ctest/test_exec_c2c_fwd_ct_s --nx 256 --batch 64 --direction forward --scale 1 --json-file result.json
 ```
 
 Google Test is fetched automatically by `deps/libtriton_jit` via FetchContent;
@@ -375,19 +394,21 @@ ctest and the CLI bench command. It builds as a CMake OBJECT library
   the handle from a locally-constructed backend handle, avoiding
   strict-aliasing UB.
 - **Reference FFT interface** — `ref_plan_1d/2d/3d`, `ref_set_stream`,
-  `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d` mirroring the public FlagFFT API. The
-  benchmark CLI binds FlagFFT and reference plans to the same `adaptor::Stream`
-  before timing so CUDA events enclose the measured kernels.
+  `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d` mirroring the public FlagFFT API.
 - **Device memory** — `adaptor::Memory` (RAII device allocation with
   `copy_from_host`/`copy_to_host`), `adaptor::Stream`, `adaptor::EventTimer`
 - **Comparison helpers** — `compute_error` returns `{max_abs, rms}` for
   `float*`, `double*`, `flagfftComplex*`, and `flagfftDoubleComplex*`
 - **Random input generation** — `random_complex`, `random_real` for test data
 
-FlagFFT C API convenience wrappers (`Plan1d`, `ExecC2C`, etc.) remain in
-`ctest/flagfft_test.h` and assert `FLAGFFT_SUCCESS` via Google Test macros.
-The C++ tests additionally provide per-batch normwise `rel_l2`/`rel_linf`
-acceptance checks and stable deterministic inputs in `ctest/flagfft_test.h`.
+`ctest/flagfft_test.h` defines `TestParams` (nx, batch, direction, scale) and
+`override_params()` which reads command-line arguments (`--nx`, `--batch`,
+`--direction`, `--scale`, `--json-file`) to override defaults.
+`JsonTestListener` writes per-test JSON results for collection by the unified
+test runner. FlagFFT C API convenience wrappers (`Plan1d`, `ExecC2C`, etc.)
+assert `FLAGFFT_SUCCESS` via Google Test macros. The C++ tests additionally
+provide per-batch normwise `rel_l2`/`rel_linf` acceptance checks and stable
+deterministic inputs.
 
 ### Backends
 
@@ -430,106 +451,9 @@ Pointwise relative error with a denominator floor is diagnostic output only;
 it is not the pass/fail metric.
 
 CTest registers one process per test executable so the process can reuse its
-JIT initialization across parameter cases. `FLAGFFT_TEST_PROFILE=smoke`
-applies a runtime Google Test filter; Extended cases remain compiled into the
-same binaries.
-
-## Python Benchmark Suite
-
-The `benchmark/` directory provides parametrized pytest-based performance
-benchmarking that invokes `flagfft-cli bench` and records timing and speedup
-against the reference implementation.
-
-Pytest loads the shared benchmark fixtures via `pyproject.toml`:
-`addopts = "-p benchmark.utils.pytest_plugin"`. Keep plugin registration out of
-subdirectory `conftest.py` files; newer pytest versions reject that pattern, and
-early manual imports can trigger assertion-rewrite warnings.
-
-### Quick start
-
-```sh
-# Build the CLI first, either on the host or inside the Docker environment
-cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
-cmake --build build --target flagfft-cli
-
-# Smoke benchmark suite
-pytest benchmark/test_bench.py -v --bench-suite=smoke \
-  --flagfft-cli ./build/flagfft-cli
-# Add -p no:xdist if pytest-xdist is installed
-```
-
-### Test sizes
-
-| Suite | Sizes | Count |
-|-------|-------|-------|
-| Smoke | 16, 256, 2048 | 3 |
-| Typical | All sizes at batch 1, plus selected multi-batch cases | 13 sizes |
-| Full | 16, 23, 64, 81, 243, 256, 361, 512, 997, 2048, 4096, 8192, 16384 | 13 sizes |
-
-The full suite covers powers of two (`16`–`16384`), primes (`23`, `997`),
-composite non-powers-of-two (`81`, `243`, `361`), and mixed factors.
-
-Each suite expands all six APIs with their valid directions: `c2c` and `z2z`
-use both `forward` and `inverse`; `r2c` and `d2z` use `forward`; `c2r` and
-`z2d` use `inverse`. Quick CLI verification asserts:
-- CLI exit code 0
-- `timing.flagfft_median_ms > 0`
-- `timing.ref_median_ms > 0`
-- `timing.speedup` is present
-
-### CLI options
-
-Customise warmup, iterations, and CLI path via pytest flags:
-
-```sh
-pytest benchmark/test_bench.py -v --bench-suite=smoke \
-  --bench-warmup 20 --bench-iters 50
-
-pytest benchmark/test_bench.py -v \
-  --flagfft-cli ./build/flagfft-cli
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--flagfft-cli` | `build/flagfft-cli` or `$FLAGFFT_CLI_EXE` | Path to the CLI binary |
-| `--bench-warmup` | 10 | Warmup iterations before timing |
-| `--bench-iters` | 100 | Timed benchmark iterations |
-| `--bench-suite` | `typical` | Suite: `smoke`, `typical`, or `full` |
-| `--bench-csv` | auto path | CSV output path; empty string disables CSV |
-
-If no CUDA device is available, tests are skipped automatically.
-
-### Fixtures
-
-The shared pytest plugin exposes these fixtures for custom benchmark scripts:
-
-| Fixture | Scope | Description |
-|---------|-------|-------------|
-| `flagfft_cli` | session | Resolved path to `flagfft-cli` |
-| `invoke_cli` | function | Call `flagfft-cli` with args, returns `(result, report)` |
-| `run_benchmark` | function | Shortcut: `run_benchmark(size, api, direction)` with all bench options preset |
-| `bench_warmup` | session | `--bench-warmup` value |
-| `bench_iters` | session | `--bench-iters` value |
-| `bench_suite` | session | `--bench-suite` value |
-| `bench_csv` | session | `--bench-csv` value |
-
-### Report generation
-
-`benchmark.utils.report` produces console tables, CSV, Markdown, and
-pretty-printed JSON from aggregated benchmark results:
-
-```python
-from benchmark.utils.report import generate_csv, generate_markdown, generate_json_report
-
-results = {"cases": [...]}   # collected CLI JSON outputs
-print(generate_markdown(results))
-print(generate_csv(results["cases"]))
-print(generate_json_report(results))
-```
-
-The Markdown report includes a per-case table (size, API, direction, FlagFFT
-ms, reference ms, speedup, and optional correctness) and summary statistics.
-CSV uses `ref_median_ms` for the reference timing column.
+JIT initialization across parameter cases. The unified test runner
+(`tools/run_tests.py`) handles test selection, multi-GPU distribution, and
+result collection.
 
 ## Code Style
 
