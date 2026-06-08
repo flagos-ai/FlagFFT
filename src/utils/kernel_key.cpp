@@ -25,6 +25,60 @@ KernelKey KernelKey::leaf(std::string target,
   return key;
 }
 
+KernelKey KernelKey::leaf_r2c(std::string target,
+                              std::string direction,
+                              std::string dtype,
+                              int64_t length,
+                              std::vector<int64_t> factors,
+                              int64_t lanes,
+                              int64_t num_warps,
+                              std::vector<int64_t> generic_radices,
+                              int64_t smem_size) {
+  KernelKey key = KernelKey::leaf(std::move(target),
+                                  std::move(direction),
+                                  std::move(dtype),
+                                  length,
+                                  std::move(factors),
+                                  lanes,
+                                  num_warps,
+                                  std::move(generic_radices),
+                                  smem_size);
+  key.kind = KernelKind::LeafR2C;
+  return key;
+}
+
+KernelKey KernelKey::leaf_c2r(std::string target,
+                              std::string direction,
+                              std::string dtype,
+                              int64_t length,
+                              std::vector<int64_t> factors,
+                              int64_t lanes,
+                              int64_t num_warps,
+                              std::vector<int64_t> generic_radices,
+                              int64_t smem_size) {
+  KernelKey key = KernelKey::leaf(std::move(target),
+                                  std::move(direction),
+                                  std::move(dtype),
+                                  length,
+                                  std::move(factors),
+                                  lanes,
+                                  num_warps,
+                                  std::move(generic_radices),
+                                  smem_size);
+  key.kind = KernelKind::LeafC2R;
+  return key;
+}
+
+KernelKey KernelKey::direct_dft(std::string target, std::string direction, std::string dtype, int64_t length) {
+  KernelKey key;
+  key.kind = KernelKind::DirectDft;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = length;
+  return key;
+}
+
 KernelKey KernelKey::four_step_row(std::string target,
                                    std::string direction,
                                    std::string dtype,
@@ -51,6 +105,58 @@ KernelKey KernelKey::four_step_row(std::string target,
   return key;
 }
 
+KernelKey KernelKey::four_step_real_row(std::string target,
+                                        std::string direction,
+                                        std::string dtype,
+                                        int64_t n1,
+                                        int64_t n2,
+                                        int64_t length,
+                                        std::vector<int64_t> factors,
+                                        int64_t lanes,
+                                        int64_t num_warps,
+                                        std::vector<int64_t> generic_radices,
+                                        int64_t smem_size) {
+  KernelKey key = KernelKey::four_step_row(std::move(target),
+                                           std::move(direction),
+                                           std::move(dtype),
+                                           n1,
+                                           n2,
+                                           length,
+                                           std::move(factors),
+                                           lanes,
+                                           num_warps,
+                                           std::move(generic_radices),
+                                           smem_size);
+  key.kind = KernelKind::FourStepRealRow;
+  return key;
+}
+
+KernelKey KernelKey::four_step_hermitian_row(std::string target,
+                                             std::string direction,
+                                             std::string dtype,
+                                             int64_t n1,
+                                             int64_t n2,
+                                             int64_t length,
+                                             std::vector<int64_t> factors,
+                                             int64_t lanes,
+                                             int64_t num_warps,
+                                             std::vector<int64_t> generic_radices,
+                                             int64_t smem_size) {
+  KernelKey key = KernelKey::four_step_row(std::move(target),
+                                           std::move(direction),
+                                           std::move(dtype),
+                                           n1,
+                                           n2,
+                                           length,
+                                           std::move(factors),
+                                           lanes,
+                                           num_warps,
+                                           std::move(generic_radices),
+                                           smem_size);
+  key.kind = KernelKind::FourStepHermitianRow;
+  return key;
+}
+
 KernelKey KernelKey::four_step_col(std::string target,
                                    std::string direction,
                                    std::string dtype,
@@ -74,6 +180,58 @@ KernelKey KernelKey::four_step_col(std::string target,
   key.kind = KernelKind::FourStepCol;
   key.four_step_n1 = n1;
   key.four_step_n2 = n2;
+  return key;
+}
+
+KernelKey KernelKey::four_step_r2c_col(std::string target,
+                                       std::string direction,
+                                       std::string dtype,
+                                       int64_t n1,
+                                       int64_t n2,
+                                       int64_t length,
+                                       std::vector<int64_t> factors,
+                                       int64_t lanes,
+                                       int64_t num_warps,
+                                       std::vector<int64_t> generic_radices,
+                                       int64_t smem_size) {
+  KernelKey key = KernelKey::four_step_col(std::move(target),
+                                           std::move(direction),
+                                           std::move(dtype),
+                                           n1,
+                                           n2,
+                                           length,
+                                           std::move(factors),
+                                           lanes,
+                                           num_warps,
+                                           std::move(generic_radices),
+                                           smem_size);
+  key.kind = KernelKind::FourStepR2CCol;
+  return key;
+}
+
+KernelKey KernelKey::four_step_c2r_col(std::string target,
+                                       std::string direction,
+                                       std::string dtype,
+                                       int64_t n1,
+                                       int64_t n2,
+                                       int64_t length,
+                                       std::vector<int64_t> factors,
+                                       int64_t lanes,
+                                       int64_t num_warps,
+                                       std::vector<int64_t> generic_radices,
+                                       int64_t smem_size) {
+  KernelKey key = KernelKey::four_step_col(std::move(target),
+                                           std::move(direction),
+                                           std::move(dtype),
+                                           n1,
+                                           n2,
+                                           length,
+                                           std::move(factors),
+                                           lanes,
+                                           num_warps,
+                                           std::move(generic_radices),
+                                           smem_size);
+  key.kind = KernelKind::FourStepC2RCol;
   return key;
 }
 
@@ -189,11 +347,21 @@ bool KernelKey::operator==(const KernelKey &other) const {
 std::string KernelKey::repr() const {
   std::ostringstream out;
   out << "kind=" << kernel_kind_name(kind) << ";target=" << target << ";dtype=" << dtype;
-  if (kind == KernelKind::Leaf || kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) {
+  if (kind == KernelKind::DirectDft) {
+    out << ";direction=" << direction << ";length=" << length;
+  }
+  if (kind == KernelKind::Leaf || kind == KernelKind::LeafR2C || kind == KernelKind::LeafC2R ||
+      kind == KernelKind::FourStepRow ||
+      kind == KernelKind::FourStepRealRow || kind == KernelKind::FourStepHermitianRow ||
+      kind == KernelKind::FourStepCol ||
+      kind == KernelKind::FourStepR2CCol || kind == KernelKind::FourStepC2RCol) {
     out << ";direction=" << direction << ";length=" << length << ";factors=[" << join_ints(factors) << "]"
         << ";lanes=" << lanes << ";num_warps=" << num_warps << ";generic_radices=["
         << join_ints(generic_radices) << "];smem_size=" << smem_size;
-    if (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) {
+    if (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepRealRow ||
+        kind == KernelKind::FourStepHermitianRow || kind == KernelKind::FourStepCol ||
+        kind == KernelKind::FourStepR2CCol ||
+        kind == KernelKind::FourStepC2RCol) {
       out << ";four_step_n1=" << four_step_n1 << ";four_step_n2=" << four_step_n2;
     }
   }

@@ -13,9 +13,11 @@ from .kernels import (
     LeafPlan,
     _build_compact_to_hermitian_full_kernel_source,
     _build_complex_to_real_kernel_source,
+    _build_direct_dft_kernel_source,
     _build_four_step_col_kernel_source,
     _build_four_step_row_kernel_source,
     _build_leaf_kernel_source,
+    _build_leaf_kernel_source_for_io,
     _build_r2c_half_pack_kernel_source,
     _build_real_to_complex_kernel_source,
     _build_reshape_pack_kernel_source,
@@ -97,7 +99,11 @@ def _metadata(
     n2: int,
     dtype: str,
 ) -> dict[str, Any]:
-    batch_per_block = contiguous_batch_pack_for(plan) if kernel_type == "leaf" else 1
+    batch_per_block = (
+        contiguous_batch_pack_for(plan)
+        if kernel_type in {"leaf", "leaf_r2c", "leaf_c2r"}
+        else 1
+    )
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -386,15 +392,85 @@ def emit_jit_kernel(
         kernel_name, kernel_source = _build_leaf_kernel_source(plan)
         n1 = 0
         n2 = 0
+    elif kernel == "leaf_r2c":
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="contiguous_r2c"
+        )
+        n1 = 0
+        n2 = 0
+    elif kernel == "leaf_c2r":
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="contiguous_c2r"
+        )
+        n1 = 0
+        n2 = 0
+    elif kernel == "direct_dft":
+        kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
+            length, direction, dtype
+        )
+        n1 = 0
+        n2 = 0
     elif kernel == "four_step_row":
         kernel_name, kernel_source = _build_four_step_row_kernel_source(
             plan, four_step_n1, four_step_n2
         )
         n1 = four_step_n1
         n2 = four_step_n2
+    elif kernel == "four_step_real_row":
+        if plan.length != four_step_n1:
+            raise ValueError(
+                f"four-step real row kernel length must equal n1: length={plan.length}, n1={four_step_n1}"
+            )
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan,
+            io_mode="four_step_real_row",
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
+        )
+        n1 = four_step_n1
+        n2 = four_step_n2
+    elif kernel == "four_step_hermitian_row":
+        if plan.length != four_step_n1:
+            raise ValueError(
+                f"four-step Hermitian row kernel length must equal n1: length={plan.length}, n1={four_step_n1}"
+            )
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan,
+            io_mode="four_step_hermitian_row",
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
+        )
+        n1 = four_step_n1
+        n2 = four_step_n2
     elif kernel == "four_step_col":
         kernel_name, kernel_source = _build_four_step_col_kernel_source(
             plan, four_step_n1, four_step_n2
+        )
+        n1 = four_step_n1
+        n2 = four_step_n2
+    elif kernel == "four_step_r2c_col":
+        if plan.length != four_step_n2:
+            raise ValueError(
+                f"four-step R2C col kernel length must equal n2: length={plan.length}, n2={four_step_n2}"
+            )
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan,
+            io_mode="four_step_r2c_col",
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
+        )
+        n1 = four_step_n1
+        n2 = four_step_n2
+    elif kernel == "four_step_c2r_col":
+        if plan.length != four_step_n2:
+            raise ValueError(
+                f"four-step C2R col kernel length must equal n2: length={plan.length}, n2={four_step_n2}"
+            )
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan,
+            io_mode="four_step_c2r_col",
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
         )
         n1 = four_step_n1
         n2 = four_step_n2
@@ -407,6 +483,13 @@ def emit_jit_kernel(
     dtype_tag = _dtype_suffix(dtype)
     if kernel == "leaf":
         module_name = f"flagfft_jit_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
+    elif kernel == "direct_dft":
+        module_name = f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
+    elif kernel in {"leaf_r2c", "leaf_c2r"}:
+        module_name = (
+            f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
+            f"_l{lanes}_b{lane_block}_{dtype_tag}"
+        )
     else:
         module_name = (
             f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
@@ -450,8 +533,15 @@ def main() -> None:
         "--kernel",
         choices=(
             "leaf",
+            "direct_dft",
+            "leaf_r2c",
+            "leaf_c2r",
             "four_step_row",
+            "four_step_real_row",
+            "four_step_hermitian_row",
             "four_step_col",
+            "four_step_r2c_col",
+            "four_step_c2r_col",
             "bluestein_prepare",
             "bluestein_pointwise",
             "bluestein_finalize",
@@ -532,6 +622,26 @@ def main() -> None:
         print(json.dumps(metadata, sort_keys=True))
         return
 
+    if args.kernel == "direct_dft":
+        if args.length is None or args.length <= 0:
+            parser.error("--kernel direct_dft requires --length")
+        metadata = emit_jit_kernel(
+            kernel=args.kernel,
+            length=args.length,
+            factors=(),
+            lanes=1,
+            num_warps=1,
+            generic_radices=(),
+            smem_size=0,
+            direction=args.direction,
+            dtype=args.dtype,
+            four_step_n1=0,
+            four_step_n2=0,
+            out_dir=args.out_dir,
+        )
+        print(json.dumps(metadata, sort_keys=True))
+        return
+
     missing = [
         name
         for name in ("length", "factors", "lanes", "num_warps", "smem_size")
@@ -542,7 +652,14 @@ def main() -> None:
             f"--kernel {args.kernel} requires "
             + ", ".join(f"--{name.replace('_', '-')}" for name in missing)
         )
-    if args.kernel in {"four_step_row", "four_step_col"}:
+    if args.kernel in {
+        "four_step_row",
+        "four_step_real_row",
+        "four_step_hermitian_row",
+        "four_step_col",
+        "four_step_r2c_col",
+        "four_step_c2r_col",
+    }:
         if args.four_step_n1 <= 0 or args.four_step_n2 <= 0:
             parser.error(
                 f"--kernel {args.kernel} requires --four-step-n1 and --four-step-n2"

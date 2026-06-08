@@ -8,6 +8,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
     return compile_raw_leaf(*leaf, request);
   }
+  if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
+    return compile_raw_direct_dft(*direct, request);
+  }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
@@ -63,6 +66,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                                                       int64_t batch) {
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+    auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
+    auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
+    if (row_leaf != nullptr && col_leaf != nullptr) {
+      DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
+      DeviceAllocation stage1 =
+          adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * element_bytes));
+      return std::make_shared<CompiledRawR2CFourStepRealInHalfOutNode>(
+          n,
+          four_step->n1,
+          four_step->n2,
+          compile_four_step_real_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
+          build_raw_leaf_tables(*row_leaf, request),
+          compile_four_step_r2c_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
+          build_raw_leaf_tables(*col_leaf, request),
+          std::move(twiddle),
+          std::move(stage1));
+    }
+  }
+  if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+    return std::make_shared<CompiledRawR2CLeafNode>(
+        n, compile_leaf_r2c_kernel(*leaf, request), build_raw_leaf_tables(*leaf, request));
+  }
   DeviceAllocation complex_input = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
   DeviceAllocation full_output = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
   return std::make_shared<CompiledRawR2CNode>(n,
@@ -78,6 +104,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                                                       int64_t batch) {
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+    auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
+    auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
+    if (row_leaf != nullptr && col_leaf != nullptr) {
+      DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
+      DeviceAllocation stage1 =
+          adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * element_bytes));
+      return std::make_shared<CompiledRawC2RFourStepCompactInRealOutNode>(
+          n,
+          four_step->n1,
+          four_step->n2,
+          compile_four_step_hermitian_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
+          build_raw_leaf_tables(*row_leaf, request),
+          compile_four_step_c2r_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
+          build_raw_leaf_tables(*col_leaf, request),
+          std::move(twiddle),
+          std::move(stage1));
+    }
+  }
+  if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+    return std::make_shared<CompiledRawC2RLeafNode>(
+        n, compile_leaf_c2r_kernel(*leaf, request), build_raw_leaf_tables(*leaf, request));
+  }
   DeviceAllocation full_input = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
   DeviceAllocation full_output = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
   return std::make_shared<CompiledRawC2RNode>(n,
@@ -106,6 +155,49 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                                build_raw_leaf_tables(leaf, request));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const DirectDFTPlanNode &node,
+                                                                        const FFTRequest &request) {
+  return std::make_shared<CompiledRawDirectDftNode>(node.length,
+                                                   compile_direct_dft_kernel(request, node.length),
+                                                   build_raw_direct_dft_tables(node.length, request));
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPlanNode &leaf,
+                                                                    const FFTRequest &request) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::leaf_r2c(target,
+                                      request.direction,
+                                      request.input_dtype,
+                                      leaf.length,
+                                      leaf.factors,
+                                      leaf.lanes,
+                                      leaf.num_warps,
+                                      leaf.generic_radices,
+                                      leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPlanNode &leaf,
+                                                                    const FFTRequest &request) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::leaf_c2r(target,
+                                      request.direction,
+                                      request.input_dtype,
+                                      leaf.length,
+                                      leaf.factors,
+                                      leaf.lanes,
+                                      leaf.num_warps,
+                                      leaf.generic_radices,
+                                      leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_direct_dft_kernel(const FFTRequest &request, int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::direct_dft(target, request.direction, request.input_dtype, n);
+  return compile_kernel(key);
+}
+
 std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                                         const FFTRequest &request,
                                                                         int64_t n1,
@@ -125,6 +217,44 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const Le
   return compile_kernel(key);
 }
 
+std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(const LeafPlanNode &leaf,
+                                                                             const FFTRequest &request,
+                                                                             int64_t n1,
+                                                                             int64_t n2) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::four_step_real_row(target,
+                                                request.direction,
+                                                request.input_dtype,
+                                                n1,
+                                                n2,
+                                                leaf.length,
+                                                leaf.factors,
+                                                leaf.lanes,
+                                                leaf.num_warps,
+                                                leaf.generic_radices,
+                                                leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_hermitian_row_kernel(const LeafPlanNode &leaf,
+                                                                                  const FFTRequest &request,
+                                                                                  int64_t n1,
+                                                                                  int64_t n2) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::four_step_hermitian_row(target,
+                                                     request.direction,
+                                                     request.input_dtype,
+                                                     n1,
+                                                     n2,
+                                                     leaf.length,
+                                                     leaf.factors,
+                                                     leaf.lanes,
+                                                     leaf.num_warps,
+                                                     leaf.generic_radices,
+                                                     leaf.smem_size);
+  return compile_kernel(key);
+}
+
 std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const LeafPlanNode &leaf,
                                                                         const FFTRequest &request,
                                                                         int64_t n1,
@@ -141,6 +271,44 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const Le
                                            leaf.num_warps,
                                            leaf.generic_radices,
                                            leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(const LeafPlanNode &leaf,
+                                                                            const FFTRequest &request,
+                                                                            int64_t n1,
+                                                                            int64_t n2) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::four_step_r2c_col(target,
+                                               request.direction,
+                                               request.input_dtype,
+                                               n1,
+                                               n2,
+                                               leaf.length,
+                                               leaf.factors,
+                                               leaf.lanes,
+                                               leaf.num_warps,
+                                               leaf.generic_radices,
+                                               leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_c2r_col_kernel(const LeafPlanNode &leaf,
+                                                                            const FFTRequest &request,
+                                                                            int64_t n1,
+                                                                            int64_t n2) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::four_step_c2r_col(target,
+                                               request.direction,
+                                               request.input_dtype,
+                                               n1,
+                                               n2,
+                                               leaf.length,
+                                               leaf.factors,
+                                               leaf.lanes,
+                                               leaf.num_warps,
+                                               leaf.generic_radices,
+                                               leaf.smem_size);
   return compile_kernel(key);
 }
 

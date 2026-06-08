@@ -107,11 +107,32 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Leaf:
       kernel_kind = "leaf";
       break;
+    case KernelKind::LeafR2C:
+      kernel_kind = "leaf_r2c";
+      break;
+    case KernelKind::LeafC2R:
+      kernel_kind = "leaf_c2r";
+      break;
+    case KernelKind::DirectDft:
+      kernel_kind = "direct_dft";
+      break;
     case KernelKind::FourStepRow:
       kernel_kind = "four_step_row";
       break;
+    case KernelKind::FourStepRealRow:
+      kernel_kind = "four_step_real_row";
+      break;
+    case KernelKind::FourStepHermitianRow:
+      kernel_kind = "four_step_hermitian_row";
+      break;
     case KernelKind::FourStepCol:
       kernel_kind = "four_step_col";
+      break;
+    case KernelKind::FourStepR2CCol:
+      kernel_kind = "four_step_r2c_col";
+      break;
+    case KernelKind::FourStepC2RCol:
+      kernel_kind = "four_step_c2r_col";
       break;
     case KernelKind::BluesteinPrepare:
       kernel_kind = "bluestein_prepare";
@@ -147,14 +168,23 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(out_dir().string()) << " --dtype "
               << shell_quote(key.dtype);
-  if (key.kind == KernelKind::Leaf || key.kind == KernelKind::FourStepRow ||
-      key.kind == KernelKind::FourStepCol) {
+  if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
+      key.kind == KernelKind::FourStepRow ||
+      key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||
+      key.kind == KernelKind::FourStepCol ||
+      key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
     jit_command << " --length " << key.length << " --factors " << shell_quote(join_ints(key.factors))
                 << " --lanes " << key.lanes << " --num-warps " << key.num_warps << " --generic-radices "
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
                 << " --direction " << shell_quote(key.direction);
   }
-  if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepCol) {
+  if (key.kind == KernelKind::DirectDft) {
+    jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
+  }
+  if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRealRow ||
+      key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
+      key.kind == KernelKind::FourStepR2CCol ||
+      key.kind == KernelKind::FourStepC2RCol) {
     jit_command << " --four-step-n1 " << key.four_step_n1 << " --four-step-n2 " << key.four_step_n2;
   }
   if (key.kind == KernelKind::BluesteinPrepare || key.kind == KernelKind::BluesteinPointwise ||

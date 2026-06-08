@@ -100,10 +100,24 @@ std::string kernel_kind_name(KernelKind kind) {
   switch (kind) {
     case KernelKind::Leaf:
       return "leaf";
+    case KernelKind::LeafR2C:
+      return "leaf_r2c";
+    case KernelKind::LeafC2R:
+      return "leaf_c2r";
+    case KernelKind::DirectDft:
+      return "direct_dft";
     case KernelKind::FourStepRow:
       return "four_step_row";
+    case KernelKind::FourStepRealRow:
+      return "four_step_real_row";
+    case KernelKind::FourStepHermitianRow:
+      return "four_step_hermitian_row";
     case KernelKind::FourStepCol:
       return "four_step_col";
+    case KernelKind::FourStepR2CCol:
+      return "four_step_r2c_col";
+    case KernelKind::FourStepC2RCol:
+      return "four_step_c2r_col";
     case KernelKind::Transpose:
       return "transpose";
     case KernelKind::TwiddleTranspose:

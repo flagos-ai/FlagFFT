@@ -22,6 +22,23 @@ namespace {
     return args;
   }
 
+  std::vector<JitKernelArg> raw_distance_col_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
+                                                         const std::vector<DeviceAllocation> &tables,
+                                                         int64_t output_distance,
+                                                         int64_t batch) {
+    std::vector<JitKernelArg> args;
+    args.reserve(ptrs.size() + tables.size() + 2);
+    for (adaptor::DevicePtr ptr : ptrs) {
+      args.push_back(JitKernelArg::device(ptr));
+    }
+    for (const DeviceAllocation &table : tables) {
+      args.push_back(JitKernelArg::device(table.get()));
+    }
+    args.push_back(JitKernelArg::i64(output_distance));
+    args.push_back(JitKernelArg::i32(static_cast<int32_t>(batch)));
+    return args;
+  }
+
 }  // namespace
 
 CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
@@ -98,6 +115,32 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] FourStepFused execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
+                                                   std::shared_ptr<JitKernel> kernel,
+                                                   std::vector<DeviceAllocation> tables)
+    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+}
+
+std::string CompiledRawDirectDftNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawDirectDft(n=" << length << ", kernel=" << (kernel ? kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
+                                                adaptor::DevicePtr output,
+                                                const RawExecutionContext &context) const {
+  try {
+    std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
+    kernel->launch(context.stream, args, context.batch, 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] DirectDFT execute failed: %s\n", e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }
@@ -354,6 +397,181 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawR2CLeafNode::CompiledRawR2CLeafNode(int64_t length,
+                                               std::shared_ptr<JitKernel> kernel,
+                                               std::vector<DeviceAllocation> tables)
+    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+}
+
+std::string CompiledRawR2CLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawR2CLeaf(n=" << length << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+      << ", num_warps=" << (kernel ? kernel->num_warps : 0)
+      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
+                                              adaptor::DevicePtr output,
+                                              const RawExecutionContext &context) const {
+  try {
+    const int64_t half = length / 2 + 1;
+    const bool in_place = input == output;
+    const int64_t padded_real_distance = 2 * half;
+    const int64_t input_distance = in_place ? std::max(context.input_distance, padded_real_distance)
+                                            : (context.input_distance > 0 ? context.input_distance : length);
+    const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
+
+    std::vector<JitKernelArg> args;
+    args.reserve(2 + tables.size() + 3);
+    args.push_back(JitKernelArg::device(input));
+    args.push_back(JitKernelArg::device(output));
+    for (const DeviceAllocation &table : tables) {
+      args.push_back(JitKernelArg::device(table.get()));
+    }
+    args.push_back(JitKernelArg::i64(input_distance));
+    args.push_back(JitKernelArg::i64(output_distance));
+    args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] R2CLeaf execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawR2CFourStepHalfOutNode::CompiledRawR2CFourStepHalfOutNode(
+    int64_t length,
+    int64_t n1,
+    int64_t n2,
+    std::shared_ptr<JitKernel> expand_kernel,
+    std::shared_ptr<JitKernel> row_kernel,
+    std::vector<DeviceAllocation> row_tables,
+    std::shared_ptr<JitKernel> col_kernel,
+    std::vector<DeviceAllocation> col_tables,
+    DeviceAllocation twiddle,
+    DeviceAllocation complex_input,
+    DeviceAllocation stage1)
+    : length(length),
+      n1(n1),
+      n2(n2),
+      expand_kernel(std::move(expand_kernel)),
+      row_kernel(std::move(row_kernel)),
+      row_tables(std::move(row_tables)),
+      col_kernel(std::move(col_kernel)),
+      col_tables(std::move(col_tables)),
+      twiddle(std::move(twiddle)),
+      complex_input(std::move(complex_input)),
+      stage1(std::move(stage1)) {
+}
+
+std::string CompiledRawR2CFourStepHalfOutNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawR2CFourStepHalfOut(n=" << length << ", n1=" << n1 << ", n2=" << n2
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawR2CFourStepHalfOutNode::execute(adaptor::DevicePtr input,
+                                                         adaptor::DevicePtr output,
+                                                         const RawExecutionContext &context) const {
+  try {
+    constexpr int64_t block = 256;
+    const int64_t half = length / 2 + 1;
+    const bool in_place = input == output;
+    const int64_t padded_real_distance = 2 * half;
+    const int64_t input_distance = in_place ? std::max(context.input_distance, padded_real_distance)
+                                            : (context.input_distance > 0 ? context.input_distance : length);
+    const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
+
+    std::vector<JitKernelArg> expand_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(complex_input.get()),
+        JitKernelArg::i64(input_distance),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
+
+    std::vector<JitKernelArg> row_args = raw_kernel_args({complex_input.get(), stage1.get()}, row_tables, context.batch);
+    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+
+    std::vector<JitKernelArg> col_args =
+        raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, output_distance, context.batch);
+    col_kernel->launch(context.stream,
+                       col_args,
+                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] R2CFourStepHalfOut execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawR2CFourStepRealInHalfOutNode::CompiledRawR2CFourStepRealInHalfOutNode(
+    int64_t length,
+    int64_t n1,
+    int64_t n2,
+    std::shared_ptr<JitKernel> row_kernel,
+    std::vector<DeviceAllocation> row_tables,
+    std::shared_ptr<JitKernel> col_kernel,
+    std::vector<DeviceAllocation> col_tables,
+    DeviceAllocation twiddle,
+    DeviceAllocation stage1)
+    : length(length),
+      n1(n1),
+      n2(n2),
+      row_kernel(std::move(row_kernel)),
+      row_tables(std::move(row_tables)),
+      col_kernel(std::move(col_kernel)),
+      col_tables(std::move(col_tables)),
+      twiddle(std::move(twiddle)),
+      stage1(std::move(stage1)) {
+}
+
+std::string CompiledRawR2CFourStepRealInHalfOutNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawR2CFourStepRealInHalfOut(n=" << length << ", n1=" << n1 << ", n2=" << n2
+      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawR2CFourStepRealInHalfOutNode::execute(adaptor::DevicePtr input,
+                                                               adaptor::DevicePtr output,
+                                                               const RawExecutionContext &context) const {
+  try {
+    const int64_t half = length / 2 + 1;
+    const bool in_place = input == output;
+    const int64_t padded_real_distance = 2 * half;
+    const int64_t input_distance = in_place ? std::max(context.input_distance, padded_real_distance)
+                                            : (context.input_distance > 0 ? context.input_distance : length);
+    const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
+
+    std::vector<JitKernelArg> row_args =
+        raw_distance_col_kernel_args({input, stage1.get()}, row_tables, input_distance, context.batch);
+    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+
+    std::vector<JitKernelArg> col_args =
+        raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, output_distance, context.batch);
+    col_kernel->launch(context.stream,
+                       col_args,
+                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] R2CFourStepRealInHalfOut execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawC2RNode::CompiledRawC2RNode(int64_t length,
                                        std::shared_ptr<JitKernel> expand_kernel,
                                        std::shared_ptr<CompiledRawNode> fft,
@@ -412,6 +630,184 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] C2R execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawC2RLeafNode::CompiledRawC2RLeafNode(int64_t length,
+                                               std::shared_ptr<JitKernel> kernel,
+                                               std::vector<DeviceAllocation> tables)
+    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+}
+
+std::string CompiledRawC2RLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawC2RLeaf(n=" << length << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+      << ", num_warps=" << (kernel ? kernel->num_warps : 0)
+      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawC2RLeafNode::execute(adaptor::DevicePtr input,
+                                              adaptor::DevicePtr output,
+                                              const RawExecutionContext &context) const {
+  try {
+    const int64_t half = length / 2 + 1;
+    const bool in_place = input == output;
+    const int64_t padded_real_distance = 2 * half;
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
+    const int64_t output_distance = in_place
+                                        ? std::max(context.output_distance, padded_real_distance)
+                                        : (context.output_distance > 0 ? context.output_distance : length);
+
+    std::vector<JitKernelArg> args;
+    args.reserve(2 + tables.size() + 3);
+    args.push_back(JitKernelArg::device(input));
+    args.push_back(JitKernelArg::device(output));
+    for (const DeviceAllocation &table : tables) {
+      args.push_back(JitKernelArg::device(table.get()));
+    }
+    args.push_back(JitKernelArg::i64(input_distance));
+    args.push_back(JitKernelArg::i64(output_distance));
+    args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] C2RLeaf execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawC2RFourStepRealOutNode::CompiledRawC2RFourStepRealOutNode(
+    int64_t length,
+    int64_t n1,
+    int64_t n2,
+    std::shared_ptr<JitKernel> expand_kernel,
+    std::shared_ptr<JitKernel> row_kernel,
+    std::vector<DeviceAllocation> row_tables,
+    std::shared_ptr<JitKernel> col_kernel,
+    std::vector<DeviceAllocation> col_tables,
+    DeviceAllocation twiddle,
+    DeviceAllocation full_input,
+    DeviceAllocation stage1)
+    : length(length),
+      n1(n1),
+      n2(n2),
+      expand_kernel(std::move(expand_kernel)),
+      row_kernel(std::move(row_kernel)),
+      row_tables(std::move(row_tables)),
+      col_kernel(std::move(col_kernel)),
+      col_tables(std::move(col_tables)),
+      twiddle(std::move(twiddle)),
+      full_input(std::move(full_input)),
+      stage1(std::move(stage1)) {
+}
+
+std::string CompiledRawC2RFourStepRealOutNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawC2RFourStepRealOut(n=" << length << ", n1=" << n1 << ", n2=" << n2
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawC2RFourStepRealOutNode::execute(adaptor::DevicePtr input,
+                                                         adaptor::DevicePtr output,
+                                                         const RawExecutionContext &context) const {
+  try {
+    constexpr int64_t block = 256;
+    const int64_t half = length / 2 + 1;
+    const bool in_place = input == output;
+    const int64_t padded_real_distance = 2 * half;
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
+    const int64_t output_distance = in_place
+                                        ? std::max(context.output_distance, padded_real_distance)
+                                        : (context.output_distance > 0 ? context.output_distance : length);
+
+    std::vector<JitKernelArg> expand_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(full_input.get()),
+        JitKernelArg::i64(input_distance),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
+
+    std::vector<JitKernelArg> row_args = raw_kernel_args({full_input.get(), stage1.get()}, row_tables, context.batch);
+    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+
+    std::vector<JitKernelArg> col_args =
+        raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, output_distance, context.batch);
+    col_kernel->launch(context.stream,
+                       col_args,
+                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] C2RFourStepRealOut execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawC2RFourStepCompactInRealOutNode::CompiledRawC2RFourStepCompactInRealOutNode(
+    int64_t length,
+    int64_t n1,
+    int64_t n2,
+    std::shared_ptr<JitKernel> row_kernel,
+    std::vector<DeviceAllocation> row_tables,
+    std::shared_ptr<JitKernel> col_kernel,
+    std::vector<DeviceAllocation> col_tables,
+    DeviceAllocation twiddle,
+    DeviceAllocation stage1)
+    : length(length),
+      n1(n1),
+      n2(n2),
+      row_kernel(std::move(row_kernel)),
+      row_tables(std::move(row_tables)),
+      col_kernel(std::move(col_kernel)),
+      col_tables(std::move(col_tables)),
+      twiddle(std::move(twiddle)),
+      stage1(std::move(stage1)) {
+}
+
+std::string CompiledRawC2RFourStepCompactInRealOutNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawC2RFourStepCompactInRealOut(n=" << length << ", n1=" << n1 << ", n2=" << n2
+      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawC2RFourStepCompactInRealOutNode::execute(adaptor::DevicePtr input,
+                                                                  adaptor::DevicePtr output,
+                                                                  const RawExecutionContext &context) const {
+  try {
+    const int64_t half = length / 2 + 1;
+    const bool in_place = input == output;
+    const int64_t padded_real_distance = 2 * half;
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
+    const int64_t output_distance = in_place
+                                        ? std::max(context.output_distance, padded_real_distance)
+                                        : (context.output_distance > 0 ? context.output_distance : length);
+
+    std::vector<JitKernelArg> row_args =
+        raw_distance_col_kernel_args({input, stage1.get()}, row_tables, input_distance, context.batch);
+    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+
+    std::vector<JitKernelArg> col_args =
+        raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, output_distance, context.batch);
+    col_kernel->launch(context.stream,
+                       col_args,
+                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] C2RFourStepCompactInRealOut execute failed: %s\n", e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }

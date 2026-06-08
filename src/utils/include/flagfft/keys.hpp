@@ -81,6 +81,25 @@ struct KernelKey {
                         int64_t num_warps,
                         std::vector<int64_t> generic_radices,
                         int64_t smem_size);
+  static KernelKey leaf_r2c(std::string target,
+                            std::string direction,
+                            std::string dtype,
+                            int64_t length,
+                            std::vector<int64_t> factors,
+                            int64_t lanes,
+                            int64_t num_warps,
+                            std::vector<int64_t> generic_radices,
+                            int64_t smem_size);
+  static KernelKey leaf_c2r(std::string target,
+                            std::string direction,
+                            std::string dtype,
+                            int64_t length,
+                            std::vector<int64_t> factors,
+                            int64_t lanes,
+                            int64_t num_warps,
+                            std::vector<int64_t> generic_radices,
+                            int64_t smem_size);
+  static KernelKey direct_dft(std::string target, std::string direction, std::string dtype, int64_t length);
   static KernelKey four_step_row(std::string target,
                                  std::string direction,
                                  std::string dtype,
@@ -92,6 +111,28 @@ struct KernelKey {
                                  int64_t num_warps,
                                  std::vector<int64_t> generic_radices,
                                  int64_t smem_size);
+  static KernelKey four_step_real_row(std::string target,
+                                      std::string direction,
+                                      std::string dtype,
+                                      int64_t n1,
+                                      int64_t n2,
+                                      int64_t length,
+                                      std::vector<int64_t> factors,
+                                      int64_t lanes,
+                                      int64_t num_warps,
+                                      std::vector<int64_t> generic_radices,
+                                      int64_t smem_size);
+  static KernelKey four_step_hermitian_row(std::string target,
+                                           std::string direction,
+                                           std::string dtype,
+                                           int64_t n1,
+                                           int64_t n2,
+                                           int64_t length,
+                                           std::vector<int64_t> factors,
+                                           int64_t lanes,
+                                           int64_t num_warps,
+                                           std::vector<int64_t> generic_radices,
+                                           int64_t smem_size);
   static KernelKey four_step_col(std::string target,
                                  std::string direction,
                                  std::string dtype,
@@ -103,6 +144,28 @@ struct KernelKey {
                                  int64_t num_warps,
                                  std::vector<int64_t> generic_radices,
                                  int64_t smem_size);
+  static KernelKey four_step_r2c_col(std::string target,
+                                     std::string direction,
+                                     std::string dtype,
+                                     int64_t n1,
+                                     int64_t n2,
+                                     int64_t length,
+                                     std::vector<int64_t> factors,
+                                     int64_t lanes,
+                                     int64_t num_warps,
+                                     std::vector<int64_t> generic_radices,
+                                     int64_t smem_size);
+  static KernelKey four_step_c2r_col(std::string target,
+                                     std::string direction,
+                                     std::string dtype,
+                                     int64_t n1,
+                                     int64_t n2,
+                                     int64_t length,
+                                     std::vector<int64_t> factors,
+                                     int64_t lanes,
+                                     int64_t num_warps,
+                                     std::vector<int64_t> generic_radices,
+                                     int64_t smem_size);
   static KernelKey transpose(std::string target);
   static KernelKey twiddle_transpose(std::string target);
   static KernelKey bluestein_prepare(std::string target, std::string dtype, int64_t n, int64_t m);

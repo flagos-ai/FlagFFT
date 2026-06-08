@@ -245,4 +245,20 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   return tables;
 }
 
+std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request) {
+  const bool is_double = dtype_is_double(request.input_dtype);
+  std::vector<DeviceAllocation> tables;
+  tables.reserve(2);
+  if (is_double) {
+    auto dft = build_dft_matrix_d(n, request.direction);
+    tables.push_back(adaptor::Memory::from_doubles(dft.first));
+    tables.push_back(adaptor::Memory::from_doubles(dft.second));
+  } else {
+    auto dft = build_dft_matrix(n, request.direction);
+    tables.push_back(adaptor::Memory::from_floats(dft.first));
+    tables.push_back(adaptor::Memory::from_floats(dft.second));
+  }
+  return tables;
+}
+
 }  // namespace flagfft

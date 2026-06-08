@@ -93,6 +93,9 @@ bool raw_supported_node(const PlanNodePtr &node) {
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) != nullptr) {
     return true;
   }
+  if (std::dynamic_pointer_cast<DirectDFTPlanNode>(node) != nullptr) {
+    return true;
+  }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     return raw_supported_node(four_step->row_plan) && raw_supported_node(four_step->col_plan);
   }

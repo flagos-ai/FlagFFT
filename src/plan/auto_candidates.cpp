@@ -1,6 +1,11 @@
 #include "flagfft/core.hpp"
 
 namespace flagfft {
+namespace {
+
+constexpr int64_t kBluesteinConvolutionSearchWindow = 4096;
+
+}  // namespace
 
 std::vector<int64_t> PlanBuilder::enumerate_divisors(int64_t n) {
   auto it = divisor_cache_.find(n);
@@ -29,13 +34,40 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
     return 1;
   }
   int64_t power = ceil_power_of_two(minimum);
-  for (int64_t candidate = minimum; candidate <= power; ++candidate) {
+  std::vector<int64_t> candidates;
+  auto add_supported_candidate = [&](int64_t candidate) {
+    if (std::find(candidates.begin(), candidates.end(), candidate) != candidates.end()) {
+      return;
+    }
     Factorization factorization = factorize_supported_radices(candidate);
     if (factorization.remainder == 1 && !factorization.factors.empty()) {
-      return candidate;
+      candidates.push_back(candidate);
+    }
+  };
+
+  int64_t local_limit = power;
+  if (power - minimum > kBluesteinConvolutionSearchWindow) {
+    local_limit = minimum + kBluesteinConvolutionSearchWindow;
+  }
+  for (int64_t candidate = minimum; candidate <= local_limit; ++candidate) {
+    add_supported_candidate(candidate);
+  }
+  add_supported_candidate(power);
+
+  if (candidates.empty()) {
+    return power;
+  }
+
+  int64_t best = candidates.front();
+  double best_cost = 3.0 * cost_for(best) + static_cast<double>(best);
+  for (int64_t candidate : candidates) {
+    double candidate_cost = 3.0 * cost_for(candidate) + static_cast<double>(candidate);
+    if (candidate_cost < best_cost || (candidate_cost == best_cost && candidate < best)) {
+      best = candidate;
+      best_cost = candidate_cost;
     }
   }
-  return power;
+  return best;
 }
 
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
