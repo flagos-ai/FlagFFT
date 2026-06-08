@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <fstream>
+
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -628,5 +630,96 @@ inline std::vector<Test1DParam> Generate1DParamsBSExtendedMediumBatch() {
 inline std::vector<Test1DParam> Generate1DParamsBSExtendedLargeBatch() {
   return {};
 }
+
+// =========================================================================
+// Runtime parameterization support (for tools/run_tests.py)
+// =========================================================================
+
+struct TestParams {
+  int nx = 0;           // 0 = use default size arrays
+  int ny = 0;           // 0 = use default size arrays
+  int batch = 0;        // 0 = use default batch arrays
+  int direction = -1;   // -1 = all directions, 0 = forward, 1 = inverse
+  double scale = -1.0;  // -1 = use default scales
+  bool json_output = false;
+  const char* json_file = nullptr;
+};
+
+extern TestParams g_test_params;
+
+// Filter 1D params: if --nx or --batch specified on command line, use those;
+// otherwise return default params (caller decides which generator to use).
+inline std::vector<Test1DParam> filter_1d_params(const int* sizes,
+                                                 int numSizes,
+                                                 const int* batches,
+                                                 int numBatches) {
+  if (g_test_params.nx > 0 || g_test_params.batch > 0) {
+    // Command-line override: return single param
+    int nx = g_test_params.nx > 0 ? g_test_params.nx : sizes[0];
+    int batch = g_test_params.batch > 0 ? g_test_params.batch : batches[0];
+    return {
+        {nx, batch}
+    };
+  }
+  // No override: return all combinations
+  return GenerateFiltered1DParams(sizes, numSizes, batches, numBatches);
+}
+
+inline std::vector<double> filter_scales() {
+  if (g_test_params.scale >= 0) {
+    return {g_test_params.scale};
+  }
+  return {kAccuracyInputScales, kAccuracyInputScales + 3};
+}
+
+inline bool should_skip_direction(int direction_flag) {
+  // direction_flag: FLAGFFT_FORWARD=0, FLAGFFT_INVERSE=1
+  if (g_test_params.direction < 0) return false;  // -1 = don't filter
+  return g_test_params.direction != direction_flag;
+}
+
+class JsonTestListener : public ::testing::EmptyTestEventListener {
+ public:
+  explicit JsonTestListener(const char* filename) : filename_(filename ? filename : "gtest_result.json") {
+  }
+
+  void OnTestProgramEnd(const ::testing::UnitTest& unit_test) override {
+    std::ofstream out(filename_);
+    if (!out.is_open()) {
+      std::cerr << "ERROR: cannot open " << filename_ << " for writing\n";
+      return;
+    }
+
+    out << "{\n";
+    out << "  \"total\": " << unit_test.test_to_run_count() << ",\n";
+    out << "  \"passed\": " << unit_test.successful_test_count() << ",\n";
+    out << "  \"failed\": " << unit_test.failed_test_count() << ",\n";
+    out << "  \"skipped\": " << unit_test.skipped_test_count() << ",\n";
+    out << "  \"duration_ms\": " << unit_test.elapsed_time() << ",\n";
+
+    out << "  \"failures\": [\n";
+    bool first_failure = true;
+    for (int i = 0; i < unit_test.total_test_suite_count(); ++i) {
+      const auto* suite = unit_test.GetTestSuite(i);
+      for (int j = 0; j < suite->total_test_count(); ++j) {
+        const auto* test = suite->GetTestInfo(j);
+        if (test->result()->Failed()) {
+          if (!first_failure) out << ",\n";
+          first_failure = false;
+          out << "    {\n";
+          out << "      \"suite\": \"" << test->test_suite_name() << "\",\n";
+          out << "      \"name\": \"" << test->name() << "\",\n";
+          out << "      \"params\": \"" << test->value_param() << "\"\n";
+          out << "    }";
+        }
+      }
+    }
+    out << "\n  ]\n";
+    out << "}\n";
+  }
+
+ private:
+  std::string filename_;
+};
 
 }  // namespace flagfft_test
