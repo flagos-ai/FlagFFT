@@ -273,7 +273,7 @@ and `--batch 2suffix` are rejected as invalid arguments.
 
 | Command | Supported now | Reported `unsupported` |
 |---|---|---|
-| `test correctness`, `bench` | Six 1D APIs with `plan1d`, both complex directions, valid real direction, in/out-of-place; padded real in-place `planmany`; contiguous rank-2 `c2c`/`z2z` including batch | Rank-2 real APIs, rank 3, and other `planmany` layouts |
+| `bench` | Six 1D APIs with `plan1d`, both complex directions, valid real direction, in/out-of-place; padded real in-place `planmany`; contiguous rank-2 `c2c`/`z2z` including batch | Rank-2 real APIs, rank 3, and other `planmany` layouts |
 | `tune` | 1D `c2c` complex64, out-of-place `plan1d`, either direction | Other APIs, ranks, or layouts |
 
 The JSON `status` and process code contract is stable: `passed`=`0`,
@@ -283,9 +283,9 @@ The JSON `status` and process code contract is stable: `passed`=`0`,
 
 ### Path printing
 
-`test --suite correctness --print-path --json` and `bench --print-path --json`
-call `flagfftGetPlanDescription` after plan creation and return the plan node
-tree and compiled kernel details in `plan_description`:
+`bench --print-path --json` calls `flagfftGetPlanDescription` after plan
+creation and returns the plan node tree and compiled kernel details in
+`plan_description`:
 
 ```
 === FlagFFT Plan ===
