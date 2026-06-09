@@ -1,0 +1,89 @@
+name: Correctness Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch or commit to test"
+        required: false
+        default: "main"
+      combination:
+        description: "Test combination (ct/bs for quick, full for all sizes/batches/scales)"
+        required: false
+        default: "ct"
+        type: choice
+        options:
+          - ct
+          - bs
+          - full
+          - 2d
+          - 2d_full
+      gpus:
+        description: "Comma-separated GPU IDs or 'all'"
+        required: false
+        default: "0"
+      accuracy_only:
+        description: "Run only accuracy tests"
+        required: false
+        default: false
+        type: boolean
+      performance_only:
+        description: "Run only performance tests"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, VM-16-5-ubuntu]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.branch || github.ref }}
+          fetch-depth: 1
+
+      - name: Initialize submodules
+        run: |
+          git submodule update --init --recursive
+
+      - name: Install Python dependencies
+        run: |
+          pip install --no-warn-conflicts nanobind ninja cmake pybind11 pytest pyyaml
+          pip install --no-warn-conflicts -U pip "setuptools<82" wheel scikit-build-core
+
+      - name: Install project
+        run: |
+          pip install -e .
+
+      - name: Build project
+        run: |
+          cmake -S . -B build -GNinja \
+            -DBACKEND=CUDA \
+            -DFLAGFFT_BUILD_TESTS=ON \
+            -DFLAGFFT_BUILD_CLI=ON
+          cmake --build build
+
+      - name: Run unified tests
+        run: |
+          python tools/run_tests.py \
+            --combination ${{ inputs.combination || 'ct' }} \
+            --gpus ${{ inputs.gpus || '0' }} \
+            ${{ inputs.accuracy_only == true && '--accuracy-only' || '' }} \
+            ${{ inputs.performance_only == true && '--performance-only' || '' }} \
+            --output summary.json \
+            -v
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results
+          path: |
+            summary.json
+            build/ctest/Testing/
