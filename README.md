@@ -348,6 +348,9 @@ python tools/run_tests.py --combination ct --accuracy-only
 
 # Performance only
 python tools/run_tests.py --combination ct --performance-only
+
+# Custom warmup/iters
+python tools/run_tests.py --combination ct --warmup 20 --iters 200
 ```
 
 ### Configuration
@@ -446,7 +449,9 @@ Float and double use the same formulas and transform-class constants, scaled
 by unit roundoff and a documented length-based work factor. Set
 `FLAGFFT_TEST_REPORT_ACCURACY=1` when executing a test binary to print the
 normalized statistics used to re-characterize those constants. Reference
-cases use deterministic inputs at scales `2^-20`, `1`, and `2^20`.
+cases use deterministic inputs at scales `2^-20`, `1`, and `2^20` (C++ defaults;
+`tools/run_tests.py` may pass different scales via `--scale` depending on the
+selected combination in `conf/test_matrix.yaml`).
 Pointwise relative error with a denominator floor is diagnostic output only;
 it is not the pass/fail metric.
 
