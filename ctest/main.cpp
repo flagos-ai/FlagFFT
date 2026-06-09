@@ -23,9 +23,9 @@ int main(int argc, char** argv) {
     } else if (strncmp(argv[i], "--direction=", 12) == 0) {
       const char* dir = argv[i] + 12;
       if (strcmp(dir, "forward") == 0 || strcmp(dir, "fwd") == 0)
-        g_test_params.direction = 0;
+        g_test_params.direction = -1;  // FLAGFFT_FORWARD
       else if (strcmp(dir, "inverse") == 0 || strcmp(dir, "inv") == 0)
-        g_test_params.direction = 1;
+        g_test_params.direction = 1;  // FLAGFFT_INVERSE
     } else if (strncmp(argv[i], "--scale=", 8) == 0) {
       g_test_params.scale = atof(argv[i] + 8);
     } else if (strncmp(argv[i], "--json-file=", 12) == 0) {

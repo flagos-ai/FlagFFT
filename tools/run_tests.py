@@ -117,9 +117,37 @@ def parse_args() -> argparse.Namespace:
 
 # Test execution functions
 
+# Operators that include direction (fwd/inv) in their binary name
+_OPS_WITH_DIRECTION = {"c2c", "z2z"}
+
 
 def build_accuracy_cmd(case: dict, build_dir: Path) -> tuple[list[str], str]:
-    binary = build_dir / "ctest" / case["ctest"]
+    # Build binary name based on algorithm:
+    # - 2D tests use a single binary: test_2d_correctness
+    # - 1D tests: test_exec_{type}_{direction}_{algo}_{batch_mode}
+    #   For types with direction (c2c, z2z): include fwd/inv
+    #   For types without direction (r2c, c2r, d2z, z2d, r2c_c2r, d2z_z2d): no direction
+    #   batch_mode: batch=1 -> _s, batch>1 -> _b
+    ctest_base = case["ctest"]
+    algo = case["algo"]
+
+    if algo == "2d":
+        # 2D tests use a single binary for all types
+        binary_name = ctest_base
+    else:
+        batch_mode = "s" if case["batch"] == 1 else "b"
+        # Check if this operator has direction in binary name
+        # Extract the type prefix from op_id (e.g., "c2c_1d" -> "c2c")
+        type_prefix = case["op_id"].split("_")[0]
+        has_direction = type_prefix in _OPS_WITH_DIRECTION
+
+        if has_direction:
+            dir_str = "fwd" if case["direction"] == "forward" else "inv"
+            binary_name = f"{ctest_base}_{dir_str}_{algo}_{batch_mode}"
+        else:
+            binary_name = f"{ctest_base}_{algo}_{batch_mode}"
+
+    binary = build_dir / "ctest" / binary_name
     cmd = [str(binary), f"--nx={case['nx']}"]
     if case["rank"] == 2:
         cmd.append(f"--ny={case['ny']}")

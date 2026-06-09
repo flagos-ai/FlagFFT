@@ -664,7 +664,7 @@ struct TestParams {
   int nx = 0;           // 0 = use default size arrays
   int ny = 0;           // 0 = use default size arrays
   int batch = 0;        // 0 = use default batch arrays
-  int direction = -1;   // -1 = all directions, 0 = forward, 1 = inverse
+  int direction = 0;    // 0 = all directions (no filter), -1 = forward, 1 = inverse
   double scale = -1.0;  // -1 = use default scales
   bool json_output = false;
   const char* json_file = nullptr;
@@ -711,8 +711,8 @@ inline std::vector<Test1DParam> override_params(std::vector<Test1DParam> default
 }
 
 inline bool should_skip_direction(int direction_flag) {
-  // direction_flag: FLAGFFT_FORWARD=0, FLAGFFT_INVERSE=1
-  if (g_test_params.direction < 0) return false;  // -1 = don't filter
+  // direction_flag: FLAGFFT_FORWARD=-1, FLAGFFT_INVERSE=1
+  if (g_test_params.direction == 0) return false;  // 0 = no filter (unset)
   return g_test_params.direction != direction_flag;
 }
 
