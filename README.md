@@ -66,7 +66,8 @@ docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
 |---|---|---|
 | CMake | 3.18 | Build system |
 | C++ compiler | C++20 support | GCC 11+, Clang 14+ |
-| Python | 3.10 | JIT codegen + test runner |
+| Python | 3.12 | JIT codegen + test runner |
+| flagtree | 0.5.0 | triton TLE support |
 | SQLite3 | — | Tuning database |
 | CUDA Toolkit | 12.x | cudart, cuFFT (for test adaptor/benchmarks) |
 | libtriton_jit | submodule | Triton JIT compiler (`deps/libtriton_jit`) |
