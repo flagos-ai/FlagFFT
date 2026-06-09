@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import multiprocessing
 import os
 import queue
@@ -58,12 +59,14 @@ def expand_test_cases(
             if combination in ("2d", "2d_full") and algo != "2d":
                 continue
 
-            # For bs algorithm with ct combination, use bs sizes
+            # For bs algorithm, use bs sizes when combination is ct or full
             op_sizes = sizes
-            if algo == "bs" and combination == "ct":
-                op_sizes = resolve_sizes(matrix, "sizes_bs")
-            elif algo == "ct" and combination == "bs":
-                op_sizes = resolve_sizes(matrix, "sizes_ct")
+            if algo == "bs":
+                if combination in ("ct", "full"):
+                    op_sizes = resolve_sizes(matrix, "sizes_bs")
+            elif algo == "ct":
+                if combination == "bs":
+                    op_sizes = resolve_sizes(matrix, "sizes_ct")
 
             for size in op_sizes:
                 for batch in batches:
@@ -93,7 +96,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ops", default=None, help="Comma-separated operator IDs")
     parser.add_argument("--stages", default="stable", help="Comma-separated stages")
     parser.add_argument(
-        "--combination", default="ct", choices=["ct", "bs", "full", "2d", "2d_full"]
+        "--combination",
+        default="ct",
+        choices=["ct", "bs", "full", "2d", "2d_full"],
+        help="Test combination (ct/bs for quick, full for all sizes/batches/scales)",
     )
     parser.add_argument("--gpus", default="0", help="Comma-separated GPU IDs or 'all'")
     parser.add_argument("--accuracy-only", action="store_true")
@@ -101,6 +107,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--build-dir", default=str(ROOT / "build"))
     parser.add_argument("--output", default="summary.json")
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument(
+        "--warmup", type=int, default=10, help="Benchmark warmup iterations"
+    )
+    parser.add_argument("--iters", type=int, default=100, help="Benchmark iterations")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser.parse_args()
 
@@ -198,7 +208,13 @@ def parse_perf_result(output: str) -> dict[str, Any]:
         case = cases[0]
         timing = case.get("timing", {})
         return {
-            "status": "Passed" if timing.get("speedup", 0) > 0 else "Failed",
+            "status": "Passed"
+            if (
+                timing.get("speedup", 0) > 0
+                and timing.get("flagfft_median_ms", 0) > 0
+                and timing.get("ref_median_ms", 0) > 0
+            )
+            else "Failed",
             "latency_flagfft_ms": timing.get("flagfft_median_ms", 0),
             "latency_ref_ms": timing.get("ref_median_ms", 0),
             "speedup": timing.get("speedup", 0),
@@ -310,6 +326,7 @@ class LiveDisplay:
         self.total = 0
         self.is_tty = sys.stderr.isatty()
         self._last_lines = 0
+        self.completed_cases: set[str] = set()
 
     def set_total(self, total: int):
         self.total = total
@@ -325,7 +342,9 @@ class LiveDisplay:
             self.gpu_status[gpu] = f"{phase:12s} {case}"
         else:
             self.gpu_status[gpu] = f"{phase:12s} {case} [{status:>8s} {duration:.1f}s]"
-            self.completed += 1
+            if case not in self.completed_cases:
+                self.completed_cases.add(case)
+                self.completed = len(self.completed_cases)
         self._render()
 
     def _render(self):
@@ -409,6 +428,28 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
     return op_results
 
 
+def compute_speedup_stats(op_results: dict) -> dict:
+    """Compute aggregate speedup statistics across all operators."""
+    all_speedups = []
+    for op_result in op_results.values():
+        for case in op_result.get("performance", {}).get("cases", []):
+            if case.get("speedup", 0) > 0:
+                all_speedups.append(case["speedup"])
+
+    if not all_speedups:
+        return {"count": 0}
+
+    log_sum = sum(math.log(s) for s in all_speedups)
+    geo_mean = math.exp(log_sum / len(all_speedups))
+
+    return {
+        "count": len(all_speedups),
+        "geometric_mean_speedup": round(geo_mean, 4),
+        "min_speedup": round(min(all_speedups), 4),
+        "max_speedup": round(max(all_speedups), 4),
+    }
+
+
 def write_summary(
     output_path: Path, op_results: dict, config: dict, total_duration: float
 ):
@@ -431,6 +472,7 @@ def write_summary(
                 1 for r in op_results.values() if r["performance"]["status"] == "Failed"
             ),
             "total_duration_s": round(total_duration, 1),
+            "speedup_stats": compute_speedup_stats(op_results),
         },
     }
     with open(output_path, "w") as f:
@@ -494,8 +536,8 @@ def main() -> int:
                 args.timeout,
                 args.accuracy_only,
                 args.performance_only,
-                10,
-                100,
+                args.warmup,
+                args.iters,
             ),
         )
         p.start()
@@ -525,6 +567,9 @@ def main() -> int:
                 raw_results.append(msg)
         except queue.Empty:
             break
+
+    for p in workers:
+        p.join(timeout=30)
 
     display.finish()
     total_duration = time.monotonic() - start_time

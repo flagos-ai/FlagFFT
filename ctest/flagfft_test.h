@@ -716,6 +716,30 @@ inline bool should_skip_direction(int direction_flag) {
   return g_test_params.direction != direction_flag;
 }
 
+inline void write_json_escaped(std::ostream& out, const std::string& s) {
+  for (char c : s) {
+    switch (c) {
+      case '"':
+        out << "\\\"";
+        break;
+      case '\\':
+        out << "\\\\";
+        break;
+      case '\n':
+        out << "\\n";
+        break;
+      case '\r':
+        out << "\\r";
+        break;
+      case '\t':
+        out << "\\t";
+        break;
+      default:
+        out << c;
+    }
+  }
+}
+
 class JsonTestListener : public ::testing::EmptyTestEventListener {
  public:
   explicit JsonTestListener(const char* filename) : filename_(filename ? filename : "gtest_result.json") {
@@ -745,9 +769,25 @@ class JsonTestListener : public ::testing::EmptyTestEventListener {
           if (!first_failure) out << ",\n";
           first_failure = false;
           out << "    {\n";
-          out << "      \"suite\": \"" << test->test_suite_name() << "\",\n";
-          out << "      \"name\": \"" << test->name() << "\",\n";
-          out << "      \"params\": \"" << test->value_param() << "\"\n";
+          out << "      \"suite\": \"";
+          write_json_escaped(out, test->test_suite_name());
+          out << "\",\n";
+          out << "      \"name\": \"";
+          write_json_escaped(out, test->name());
+          out << "\",\n";
+          out << "      \"params\": \"";
+          write_json_escaped(out, test->value_param());
+          out << "\",\n";
+          out << "      \"message\": \"";
+          bool first_msg = true;
+          for (int k = 0; k < test->result()->total_part_count(); ++k) {
+            if (test->result()->GetTestPartResult(k).failed()) {
+              if (!first_msg) out << "; ";
+              first_msg = false;
+              write_json_escaped(out, test->result()->GetTestPartResult(k).message());
+            }
+          }
+          out << "\"\n";
           out << "    }";
         }
       }

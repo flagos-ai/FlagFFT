@@ -102,6 +102,7 @@ database when `FLAGFFT_TUNE_DB=PATH` is set.
 
 ## Tests
 
-`tests/cli/` shells out to `flagfft-cli --json` for plan/error contracts,
-cuFFT comparisons, benchmark schema, unsupported boundaries, and tuning
-database reuse. `tests/python/` continues to cover code generation.
+`ctest/` contains Google Test based accuracy tests for all operators.
+`tools/run_tests.py` is the unified test runner that orchestrates both
+accuracy and performance testing across multiple GPUs. `tests/python/`
+continues to cover code generation.
