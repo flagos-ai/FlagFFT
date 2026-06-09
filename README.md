@@ -1,509 +1,425 @@
 # FlagFFT
 
-FlagFFT is an experimental C++ FFT library with a cuFFT-style API and
-Triton/TLE-generated CUDA kernels. The public runtime interface is C; Python
-is retained only for Triton/TLE JIT source generation (internal codegen).
+FlagFFT is a JIT-compiled GPU FFT library. It generates CUDA kernels at runtime
+via [Triton/TLE](https://github.com/FlagTree/flagtree) and
+[libtriton_jit](https://github.com/Artlesbol/libtriton_jit), targeting
+arbitrary-length transforms that cuFFT does not optimally support.
+
+---
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Dependencies](#dependencies)
+- [Building](#building)
+- [API](#api)
+- [CLI Tool](#cli-tool)
+- [Testing](#testing)
+- [License](#license)
+
+---
 
 ## Quick Start
 
-Build and run the native CLI in an environment with CMake, Ninja, CUDA,
-Python, PyTorch, and the Triton/TLE dependencies available:
+Build the library, install the Python codegen package, and run the full test
+suite:
 
-```sh
-python3 -m pip install .
-cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
-cmake --build build --target flagfft-cli
-./build/flagfft-cli bench --rank 1 --api c2c --shape 4096 --batch 64 \
-  --warmup 10 --iters 100 --json
+```bash
+# 1. Clone with submodules
+git clone --recurse-submodules https://github.com/Artlesbol/FlagFFT-dev.git
+cd FlagFFT-dev
+
+# 2. Build the library, CLI, and test binaries
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+      -DFLAGFFT_BUILD_CLI=ON \
+      -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+
+# 3. Install the Python codegen package (required for JIT kernel generation)
+pip install .
+
+# 4. Run the full accuracy + performance test suite
+python tools/run_tests.py --combination full --gpus 0
 ```
 
-The repository also provides Dockerfiles for preparing a build environment.
-They do not compile FlagFFT into the image; after starting the container, run
-the same build commands inside the mounted source tree:
+The runner prints a live progress table and writes `summary.json` with
+per-operator accuracy (pass/fail) and performance (geometric mean speedup vs
+cuFFT) results.
 
-```sh
-docker build -f docker/Dockerfile -t flagfft-ubuntu2404:latest .
-docker run --rm -it --gpus all \
-  -v "$PWD":/workspace/FlagFFT-dev \
-  -w /workspace/FlagFFT-dev \
-  flagfft-ubuntu2404:latest
+### Docker
+
+A pre-built environment with all dependencies is available:
+
+```bash
+docker build -t flagfft-dev -f docker/Dockerfile .
+docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
+# Inside the container, run steps 2-4 from above.
 ```
 
-## Current API
+---
 
-The public header is `include/flagfft.h` and exposes:
+## Dependencies
 
-- `flagfftPlan1d`, `flagfftPlan2d`, `flagfftPlan3d`, `flagfftPlanMany`
-- `flagfftExecC2C`, `flagfftExecZ2Z`, `flagfftExecR2C`, `flagfftExecD2Z`,
-  `flagfftExecC2R`, `flagfftExecZ2D`
-- `flagfftSetStream`, `flagfftDestroy`
-- `flagfftGetPlanDescription`
+### Required
 
-`flagfftSetStream` accepts the backend-neutral opaque `flagfftStream_t`
-declared in `include/flagfft.h`. With the current CUDA backend, callers may
-pass a `cudaStream_t` directly without changing stream behavior.
-
-The native runtime supports arbitrary-length contiguous rank-1 batched
-`FLAGFFT_C2C` (`complex64`) and `FLAGFFT_Z2Z` (`complex128`) transforms on
-device pointers, plus `FLAGFFT_R2C`, `FLAGFFT_D2Z`, `FLAGFFT_C2R`, and
-`FLAGFFT_Z2D` compact real transforms. Real forward outputs and real inverse
-inputs use `n / 2 + 1` complex values per batch. In-place real transforms use
-the cuFFT padded physical row layout, `2 * (n / 2 + 1)` real scalars per
-batch. Forward and inverse kernels are compiled during plan creation and
-selected at exec time for complex transforms. Both single-layer and nested
-fused four-step routes are supported, so very large composite lengths
-(e.g. `n = 2^23`) plan as multi-level four-step trees instead of falling back
-to Bluestein.
-Contiguous row-major rank-2 `FLAGFFT_C2C` and `FLAGFFT_Z2Z` are supported
-through `flagfftPlan2d` and batched `flagfftPlanMany`. The current 2D complex
-path is an RTRT decomposition: row FFT, tiled transpose, row FFT over the
-transposed columns, and tiled transpose back. Rank-2 real transforms, rank 3,
-and custom rank-2 stride, distance, or embed layouts return
-`FLAGFFT_NOT_SUPPORTED`.
-
-`flagfftGetPlanDescription(plan)` returns a human-readable string describing
-the plan node tree, kernel names, module paths, and compilation details.
-Useful for understanding which execution path was selected and for performance
-debugging. The returned pointer is valid for the lifetime of the plan.
-
-## C API Usage
-
-Callers provide device buffers and may attach a CUDA stream through the opaque
-stream type. Complex forward and inverse transforms are unnormalized, matching
-cuFFT: applying forward followed by inverse produces `n * input`.
-
-```cpp
-#include <cuda_runtime_api.h>
-#include <flagfft.h>
-
-int main() {
-  constexpr int n = 256;
-  constexpr int batch = 4;
-  flagfftComplex* d_input = nullptr;
-  flagfftComplex* d_output = nullptr;
-  cudaMalloc(reinterpret_cast<void**>(&d_input), n * batch * sizeof(flagfftComplex));
-  cudaMalloc(reinterpret_cast<void**>(&d_output), n * batch * sizeof(flagfftComplex));
-
-  flagfftHandle plan = nullptr;
-  cudaStream_t stream = nullptr;
-  cudaStreamCreate(&stream);
-
-  flagfftResult status = flagfftPlan1d(&plan, n, FLAGFFT_C2C, batch);
-  if (status == FLAGFFT_SUCCESS) {
-    status = flagfftSetStream(plan, stream);
-  }
-  if (status == FLAGFFT_SUCCESS) {
-    status = flagfftExecC2C(plan, d_input, d_output, FLAGFFT_FORWARD);
-    cudaStreamSynchronize(stream);
-  }
-  if (plan != nullptr) {
-    flagfftDestroy(plan);
-  }
-
-  cudaStreamDestroy(stream);
-  cudaFree(d_output);
-  cudaFree(d_input);
-  return status == FLAGFFT_SUCCESS ? 0 : 1;
-}
-```
-
-For an in-place rank-1 real forward transform, allocate
-`2 * (n / 2 + 1)` real scalars per batch and describe the padded input row
-with `flagfftPlanMany`:
-
-```cpp
-int dims[1] = {n};
-int padded[1] = {2 * (n / 2 + 1)};
-int compact[1] = {n / 2 + 1};
-flagfftHandle plan = nullptr;
-flagfftPlanMany(&plan, 1, dims, padded, 1, padded[0], compact, 1,
-                compact[0], FLAGFFT_R2C, batch);
-flagfftExecR2C(plan, d_real_in_place,
-               reinterpret_cast<flagfftComplex*>(d_real_in_place));
-```
-
-Use the reversed compact/padded distances with `FLAGFFT_C2R` for an in-place
-real inverse transform. `flagfftPlan2d` currently supports only complex
-`C2C`/`Z2Z`; `flagfftPlan3d` is present for API compatibility but currently
-returns `FLAGFFT_NOT_SUPPORTED`.
-
-## Architecture
-
-- `src/utils/`: shared C++ utilities, request/key types, JSON serialization,
-  SQLite wrapper, and internal headers under `src/utils/include/flagfft/`.
-- `src/plan/`: plan node definitions, factorization, cost model, automatic route
-  selection, JSON deserialization, and tune candidate enumeration.
-- `src/codegen/`: C++ libtriton_jit invocation/cache logic.
-- `python/flagfft_codegen/`: installable Python kernel source generator and
-  its codelets.
-- `src/adaptor/`: backend abstraction and the current CUDA Driver implementation.
-- `src/exec/`: cuFFT-style C API, raw pointer execution nodes, and tuned plan
-  lookup.
-- `src/cli_tools/`: unified native CLI, shared execution/timing code, and
-  SQLite tuning orchestration.
-
-The C API uses an opaque `flagfftHandle`. Internally it owns the immutable plan
-description, stream/lifecycle state, compiled raw execution node(s), and device
-buffers for twiddle/table/stage data. Complex plans compile both directions;
-real plans compile only the applicable forward or inverse operation. Exec calls
-do not import Python, compile kernels, rebuild plans, or allocate large buffers.
-
-## Kernel Backend
-
-FlagFFT is JIT-only. It requires the `deps/libtriton_jit` submodule and targets
-CUDA through `BACKEND=CUDA`. The same option selects the FlagFFT adaptor and
-the `libtriton_jit` backend; CUDA is the only adaptor backend currently
-provided.
-
-```sh
-cmake -S . -B build -GNinja -DBACKEND=CUDA
-cmake --build build
-```
-
-Plan creation emits Triton source and calls libtriton_jit compile APIs so the
-first exec call does not pay Python compilation latency. The raw C API
-supports leaf, fused leaf/leaf four-step, generic nested four-step (FourStep of
-arbitrary supported children), and Bluestein fallback routes for arbitrary 1D
-complex lengths. Real transforms use pointwise staging around the complex FFT
-route: real-to-complex, half-spectrum pack, compact Hermitian expansion, and
-complex-to-real pack. Rank>1 and unsupported custom rank-1 layouts keep
-returning `FLAGFFT_NOT_SUPPORTED`.
-
-## Build
-
-Configure and build the C++ library. The optional native validation,
-benchmarking, and tuning entrypoint is built with `FLAGFFT_BUILD_CLI=ON`.
-Python code generation is distributed as the pure Python `flagfft-codegen`
-package in this repository; CMake builds and installs the native library
-separately.
-
-The build environment must provide CMake, Ninja, a CUDA toolkit, SQLite3,
-Python 3.10+ development files, PyTorch, pybind11, and `pytest`. Runtime JIT
-generation and Python tests additionally require a preconfigured
-Triton/TLE-enabled Python environment. Install the codegen package into the
-Python environment that will execute JIT generation:
-
-```sh
-python3 -m pip install .
-cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
-cmake --build build --target flagfft-cli
-cmake --install build --prefix /path/to/flagfft-install
-```
-
-`FLAGFFT_BUILD_TESTS=ON` enables the C++ test suite (see [C++ Tests](#c-tests)).
-
-### Docker Build Environment
-
-`docker/Dockerfile` builds a base Ubuntu 24.04 environment with Python 3.12,
-PyTorch CUDA wheels, CUDA toolkit 13.2, FlagTree, CMake, Ninja, pybind11, and
-`pytest`, plus other native build dependencies. The image only contains the
-environment; it does not compile this repository during `docker build`.
-
-```sh
-docker build -f docker/Dockerfile -t flagfft-ubuntu2404:latest .
-```
-
-If GitHub access needs to be rewritten to a mirror, pass the optional build
-argument:
-
-```sh
-docker build -f docker/Dockerfile \
-  -t flagfft-ubuntu2404:latest \
-  --build-arg GIT_URL_REWRITE_TO=https://example.com/github-mirror/ \
-  .
-```
-
-Run the container with GPU access and mount the source tree, then build
-FlagFFT inside the container:
-
-```sh
-docker run --rm -it --gpus all \
-  -v "$PWD":/workspace/FlagFFT-dev \
-  -w /workspace/FlagFFT-dev \
-  flagfft-ubuntu2404:latest
-
-python3 -m pip install .
-cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_CLI=ON
-cmake --build build --target flagfft-cli
-```
-
-`docker/Dockerfile.dev` is an optional developer shell image based on the base
-image. It adds zsh, Oh My Zsh, Node.js, and Codex tooling:
-
-```sh
-docker build -f docker/Dockerfile.dev \
-  --build-arg BASE_IMAGE=flagfft-ubuntu2404:latest \
-  -t flagfft-dev:latest .
-```
-
-When plan creation emits Triton JIT source, it uses `FLAGFFT_PYTHON` if set,
-otherwise `python3`, to run `python -m flagfft_codegen.jit_source`. The
-selected interpreter must have `flagfft-codegen` installed and provide the
-compatible Triton/TLE environment. Generated source/metadata and tuned-plan
-SQLite defaults are stored in `.flagfft` next to the running executable.
-Tuned plan lookups read from `FLAGFFT_TUNE_DB` if set, or the default
-`.flagfft/tuned_plans.sqlite` next to the executable. Set
-`FLAGFFT_TUNE_DISABLE=1` to disable tuned-plan lookup and use automatic
-planning only.
-
-## Native CLI
-
-`flagfft-cli` is the native executable interface for benchmark measurement:
-
-```sh
-./build/flagfft-cli bench --rank 1 --api r2c --shape 4096 --batch 64 \
-  --warmup 10 --iters 100 --json
-./build/flagfft-cli tune
-```
-
-Common case options are `--api c2c|z2z|r2c|d2z|c2r|z2d`,
-`--rank 1|2|3`, `--shape N|NxM|NxMxK` (comma-separated for multiple cases),
-`--batch`, `--direction forward|inverse`, and `--placement
-out-of-place|in-place`. `--print-path` adds the plan description. `tune` is
-currently a placeholder and exits with an unsupported status.
-`--batch` is accepted for rank 1 and for rank-2 complex `c2c`/`z2z` cases.
-Real-to-complex APIs (`r2c`, `d2z`) only accept `forward`; complex-to-real
-APIs (`c2r`, `z2d`) only accept `inverse`.
-The cuFFT use in this CLI is a CUDA-only correctness and performance oracle;
-the FlagFFT library API and its stream handle do not expose CUDA types.
-Integer option tokens must be fully numeric; for example, `--shape 16suffix`
-and `--batch 2suffix` are rejected as invalid arguments.
-
-### Capability Matrix
-
-| Command | Supported now | Reported `unsupported` |
+| Dependency | Minimum Version | Notes |
 |---|---|---|
-| `bench` | Six 1D APIs with `plan1d`, both complex directions, valid real direction, in/out-of-place; padded real in-place `planmany`; contiguous rank-2 `c2c`/`z2z` including batch | Rank-2 real APIs, rank 3, and other `planmany` layouts |
-| `tune` | 1D `c2c` complex64, out-of-place `plan1d`, either direction | Other APIs, ranks, or layouts |
+| CMake | 3.18 | Build system |
+| C++ compiler | C++20 support | GCC 11+, Clang 14+ |
+| Python | 3.10 | JIT codegen + test runner |
+| SQLite3 | — | Tuning database |
+| CUDA Toolkit | 12.x | cudart, cuFFT (for test adaptor/benchmarks) |
+| libtriton_jit | submodule | Triton JIT compiler (`deps/libtriton_jit`) |
+| PyYAML | — | Test runner (`pip install pyyaml`) |
 
-The JSON `status` and process code contract is stable: `passed`=`0`,
-`failed` or invalid arguments=`1`, setup/runtime `error`=`2`, and
-`skipped` (only after a successful CUDA query reports no device) or
-`unsupported`=`77`. CUDA runtime initialization/query failures are `error`=`2`.
+### Optional
 
-### Path printing
+| Dependency | Purpose |
+|---|---|
+| Google Test | C++ unit tests (auto-fetched via FetchContent when `FLAGFFT_BUILD_TESTS=ON`) |
+| Ninja | Faster build backend (`cmake -G Ninja`) |
+| pytest | Python codegen tests |
 
-`bench --print-path --json` calls `flagfftGetPlanDescription` after plan
-creation and returns the plan node tree and compiled kernel details in
-`plan_description`:
+### Submodule
 
-```
-=== FlagFFT Plan ===
-rank=1 n=[10007] batch=1 type=41
+Initialize the required submodule before building:
 
--- Plan tree --
-Bluestein(n=10007, conv_length=20020)
-  FourStep(n=20020, n1=13, n2=1540)
-    LeafPlan(n=13, factors=[13], lanes=1, num_warps=1, smem_size=0)
-    LeafPlan(n=1540, factors=[11,10,7,2], lanes=2, num_warps=1, smem_size=2048)
-
--- Forward execution --
-CompiledRawBluestein(n=10007, conv_length=20020,
-  prepare_kernel=_bluestein_prepare_kernel,
-  pointwise_kernel=_bluestein_pointwise_kernel,
-  finalize_kernel=_bluestein_finalize_kernel,
-  fft=CompiledRawFourStepFused(n=20020, n1=13, n2=1540,
-    row_kernel=four_step_row_fft_kernel_13_n13_1540_l1_b1,
-    col_kernel=four_step_col_fft_kernel_11_10_7_2_n13_1540_l2_b2))
+```bash
+git submodule update --init --recursive
 ```
 
-This shows which plan strategy was selected (Leaf, FourStep, Bluestein), the
-factorization, kernel names, and module paths — useful for performance
-debugging and understanding how the planner routes a given FFT size.
+This pulls in `deps/libtriton_jit`, which provides the Triton JIT compiler and
+`nlohmann_json`.
+
+---
+
+## Building
+
+### Basic Build (library only)
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+This produces `build/libflagfft.so`.
+
+### Build Options
+
+| Option | Default | Description |
+|---|---|---|
+| `FLAGFFT_BUILD_CLI` | `OFF` | Build the `flagfft-cli` benchmark/verification tool |
+| `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test + CUDA) |
+| `BACKEND` | `CUDA` | GPU backend selector (only `CUDA` is currently supported) |
+| `CMAKE_BUILD_TYPE` | — | `Release`, `Debug`, `RelWithDebInfo` |
+
+### Full Build (library + CLI + tests)
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+      -DFLAGFFT_BUILD_CLI=ON \
+      -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+```
+
+### Environment Variables
+
+| Variable | Description |
+|---|---|
+| `FLAGFFT_PYTHON` | Path to the Python interpreter used by JIT codegen (default: `python3` from PATH) |
+| `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `~/.flagfft/tune.db`) |
+| `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
+
+### Install
+
+```bash
+cmake --install build --prefix /usr/local
+```
+
+Installs `libflagfft.so`, the public header (`flagfft.h`), and `flagfft-cli` (if
+built).
+
+---
+
+## API
+
+FlagFFT exposes a cuFFT-compatible C API in `include/flagfft.h`.
+
+### Plan Creation
+
+```c
+flagfftPlan1d(plan, nx, type, batch)
+flagfftPlan2d(plan, nx, ny, type)
+flagfftPlan3d(plan, nx, ny, nz, type)        // NOT_SUPPORTED
+flagfftPlanMany(plan, rank, n, inembed, istride, idist,
+                onembed, ostride, odist, type, batch)
+```
+
+### Execution
+
+```c
+// Complex-to-Complex (single & double precision)
+flagfftExecC2C(plan, idata, odata, direction)
+flagfftExecZ2Z(plan, idata, odata, direction)
+
+// Real-to-Complex (forward)
+flagfftExecR2C(plan, idata, odata)
+flagfftExecD2Z(plan, idata, odata)
+
+// Complex-to-Real (inverse)
+flagfftExecC2R(plan, idata, odata)
+flagfftExecZ2D(plan, idata, odata)
+```
+
+### Management
+
+```c
+flagfftSetStream(plan, stream)    // Attach a CUDA stream
+flagfftDestroy(plan)              // Free plan resources
+flagfftGetPlanDescription(plan)   // Human-readable plan summary
+```
+
+### Data Types
+
+| FlagFFT Type | C Type | Description |
+|---|---|---|
+| `flagfftComplex` | `float2` | Single-precision complex |
+| `flagfftDoubleComplex` | `double2` | Double-precision complex |
+| `flagfftReal` | `float` | Single-precision real |
+| `flagfftDoubleReal` | `double` | Double-precision real |
+
+### Transform Types
+
+| Type Constant | Transform |
+|---|---|
+| `FLAGFFT_C2C` | Complex → Complex |
+| `FLAGFFT_Z2Z` | Double Complex → Double Complex |
+| `FLAGFFT_R2C` | Real → Complex |
+| `FLAGFFT_D2Z` | Double Real → Double Complex |
+| `FLAGFFT_C2R` | Complex → Real |
+| `FLAGFFT_Z2D` | Double Complex → Double Real |
+
+### Currently Supported
+
+| Feature | Status |
+|---|---|
+| Rank-1 arbitrary-length C2C, Z2Z | ✅ Cooley-Tukey + Bluestein/Rader |
+| Rank-1 arbitrary-length R2C, D2Z (forward) | ✅ |
+| Rank-1 arbitrary-length C2R, Z2D (inverse) | ✅ |
+| Rank-1 roundtrip (R2C→C2R, D2Z→Z2D) | ✅ |
+| Rank-2 contiguous row-major C2C, Z2Z | ✅ RTRT decomposition |
+| Rank-2 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ |
+| Batched transforms | ✅ |
+| In-place and out-of-place | ✅ |
+| CUDA stream attachment | ✅ |
+
+### Planned / Not Yet Supported
+
+| Feature | Status |
+|---|---|
+| Rank-3 transforms (`flagfftPlan3d`) | ❌ Returns `FLAGFFT_NOT_SUPPORTED` |
+| Rank-2 more exec algos | RTRT only now |
+
+---
+
+## CLI Tool
+
+`flagfft-cli` is a native benchmark and verification tool. Build it with
+`-DFLAGFFT_BUILD_CLI=ON`.
+
+### Subcommands
+
+#### `bench` — Benchmark FFT performance
+
+```bash
+flagfft-cli bench [OPTIONS]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--rank` | `1` | Transform rank: `1` or `2` |
+| `--api` | `c2c` | Transform type: `c2c`, `z2z`, `r2c`, `d2z`, `c2r`, `z2d` |
+| `--shape` | required | Transform size(s), comma-separated: `1024`, `256x256`, `1024,2048,4096` |
+| `--batch` | `1` | Batch size |
+| `--direction` | `forward` | `forward` or `inverse` |
+| `--placement` | `out-of-place` | `out-of-place` or `in-place` |
+| `--warmup` | `10` | Warmup iterations |
+| `--iters` | `100` | Measurement iterations |
+| `--json` | — | Output results as JSON |
+| `--print-path` | — | Print the execution plan decomposition path (use with `--json`) |
+
+**Examples:**
+
+```bash
+# Benchmark 1D C2C FFT of size 4096, batch 256
+flagfft-cli bench --api c2c --shape 4096 --batch 256
+
+# Benchmark 2D Z2Z FFT
+flagfft-cli bench --rank 2 --api z2z --shape 256x256
+
+# Compare multiple sizes with JSON output
+flagfft-cli bench --api r2c --shape 1024,2048,4096,8192 --json
+
+# Print the kernel execution plan
+flagfft-cli bench --api c2c --shape 997 --print-path --json
+```
+
+#### `tune` — Auto-tuning (planned)
+
+```bash
+flagfft-cli tune [OPTIONS]
+```
+
+Currently a placeholder; exits with `FLAGFFT_NOT_SUPPORTED`.
+
+### Exit Codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Passed |
+| `1` | Failed / invalid arguments |
+| `2` | Runtime error |
+| `77` | Skipped / unsupported |
+
+---
 
 ## Testing
 
-FlagFFT uses `tools/run_tests.py` for both accuracy and performance testing.
-Python codegen unit tests remain under `tests/python/` and are run with
-`pytest tests/python/`.
+FlagFFT has three layers of testing: a unified Python test runner, C++ unit
+tests (Google Test), and Python codegen tests (pytest).
 
-### Prerequisites
+### Unified Test Runner
 
-```sh
-# Build with tests and CLI
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON
-cmake --build build -j$(nproc)
+`tools/run_tests.py` is the primary entry point for running the full test
+suite. It orchestrates both accuracy tests (C++ ctest binaries comparing
+FlagFFT output against cuFFT) and performance benchmarks (flagfft-cli bench).
 
-# Install Python dependencies
-pip install pyyaml
+#### Usage
+
+```bash
+python tools/run_tests.py [OPTIONS]
 ```
 
-### Quick Start
-
-```sh
-# CT smoke test (single GPU)
-python tools/run_tests.py --combination ct
-
-# Specific operators
-python tools/run_tests.py --ops c2c_1d,r2c_1d --combination ct
-
-# Full test matrix
-python tools/run_tests.py --combination full
-
-# Multi-GPU
-python tools/run_tests.py --combination ct --gpus 0,1,2,3
-
-# Accuracy only
-python tools/run_tests.py --combination ct --accuracy-only
-
-# Performance only
-python tools/run_tests.py --combination ct --performance-only
-
-# Custom warmup/iters
-python tools/run_tests.py --combination ct --warmup 20 --iters 200
-```
-
-### Configuration
-
-- `conf/operators.yaml` — Operator definitions (transform type x dimension)
-- `conf/test_matrix.yaml` — Test parameter matrix (sizes, batches, scales)
-
-### Output
-
-- Console: Real-time progress with per-GPU status
-- JSON: Summary file (`summary.json`) with per-operator results
-
-## C++ Tests
-
-The C++ test suite lives under `ctest/` and uses Google Test with a unified
-`flagfft::test_adaptor` interface to support multiple GPU platforms from a
-single set of test sources. Tests are parametrized via command-line arguments
-(`--nx`, `--batch`, `--direction`, `--scale`, `--json-file`) and driven by
-`tools/run_tests.py`.
-
-```sh
-cmake -S . -B build -GNinja -DBACKEND=CUDA -DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON
-cmake --build build -j$(nproc)
-
-# Run via the unified test runner (recommended)
-python tools/run_tests.py --combination ct
-
-# Or run individual test binaries directly
-./build/ctest/test_exec_c2c_fwd_ct_s --nx 256 --batch 64 --direction forward --scale 1 --json-file result.json
-```
-
-Google Test is fetched automatically by `deps/libtriton_jit` via FetchContent;
-no additional installation is required.
-
-### Architecture
-
-The test adaptor (`src/adaptor/test_adaptor.h`, backend impl in
-`src/adaptor/backend/<name>/test_adaptor.cpp`) is a shared layer used by both
-ctest and the CLI bench command. It builds as a CMake OBJECT library
-(`flagfft_test_adaptor`) and provides:
-
-- **`RefPlanHandle`** — type-erased RAII wrapper for the platform-specific
-  reference FFT plan handle (`cufftHandle` on CUDA). Uses `replace()` to set
-  the handle from a locally-constructed backend handle, avoiding
-  strict-aliasing UB.
-- **Reference FFT interface** — `ref_plan_1d/2d/3d`, `ref_set_stream`,
-  `ref_exec_c2c/z2z/r2c/d2z/c2r/z2d` mirroring the public FlagFFT API.
-- **Device memory** — `adaptor::Memory` (RAII device allocation with
-  `copy_from_host`/`copy_to_host`), `adaptor::Stream`, `adaptor::EventTimer`
-- **Comparison helpers** — `compute_error` returns `{max_abs, rms}` for
-  `float*`, `double*`, `flagfftComplex*`, and `flagfftDoubleComplex*`
-- **Random input generation** — `random_complex`, `random_real` for test data
-
-`ctest/flagfft_test.h` defines `TestParams` (nx, batch, direction, scale) and
-`override_params()` which reads command-line arguments (`--nx`, `--batch`,
-`--direction`, `--scale`, `--json-file`) to override defaults.
-`JsonTestListener` writes per-test JSON results for collection by the unified
-test runner. FlagFFT C API convenience wrappers (`Plan1d`, `ExecC2C`, etc.)
-assert `FLAGFFT_SUCCESS` via Google Test macros. The C++ tests additionally
-provide per-batch normwise `rel_l2`/`rel_linf` acceptance checks and stable
-deterministic inputs.
-
-### Backends
-
-| Backend | Reference | Behaviour |
+| Option | Default | Description |
 |---|---|---|
-| `BACKEND=CUDA` | cuFFT | Plan lifecycle + same-precision normwise comparison against cuFFT for all transform types |
+| `--combination` | `ct` | Test combination preset (see below) |
+| `--ops` | all | Comma-separated operator IDs to test (e.g. `c2c_1d,z2z_1d`) |
+| `--stages` | `stable` | Comma-separated stage filter |
+| `--gpus` | `0` | Comma-separated GPU IDs or `all` for multi-GPU parallel execution |
+| `--accuracy-only` | — | Run only accuracy tests (skip benchmarks) |
+| `--performance-only` | — | Run only benchmarks (skip accuracy tests) |
+| `--build-dir` | `build` | Path to CMake build directory |
+| `--output` | `summary.json` | Output file for results |
+| `--timeout` | `600` | Per-test timeout in seconds |
+| `--warmup` | `10` | Benchmark warmup iterations |
+| `--iters` | `100` | Benchmark measurement iterations |
+| `-v, --verbose` | — | Verbose output |
 
-Adding a new GPU platform requires implementing the functions declared in
-`src/adaptor/test_adaptor.h` under `src/adaptor/backend/<name>/test_adaptor.cpp`;
-no test source changes are needed.
+#### Combination Presets
 
-### Test files
+| Preset | Description |
+|---|---|
+| `ct` | Quick smoke test — Cooley-Tukey sizes, batch 1, scale 1.0 |
+| `bs` | Quick smoke test — Bluestein/Rader sizes, batch 1, scale 1.0 |
+| `full` | Full 1D — all CT sizes × all batches × all scales |
+| `2d` | Quick 2D — selected 2D sizes, batch {1,4}, scale 1.0 |
+| `2d_full` | Full 2D — selected 2D sizes × all batches × all scales |
 
-| File pattern | Coverage |
-|------|----------|
-| `test_plan.cpp` | 1D plan lifecycle/error codes and current unsupported 2D/3D contract |
-| `test_exec_c2c_{fwd,inv}_{ct,bs}_{s,b}.cpp` | `FLAGFFT_C2C` forward/inverse, Cooley-Tukey/Bluestein routes, single/multi-batch |
-| `test_exec_z2z_{fwd,inv}_{ct,bs}_{s,b}.cpp` | `FLAGFFT_Z2Z` double-precision complex coverage |
-| `test_exec_r2c_{ct,bs}_{s,b}.cpp`, `test_exec_c2r_{ct,bs}_{s,b}.cpp` | Float real forward/inverse reference comparison |
-| `test_exec_d2z_{ct,bs}_{s,b}.cpp`, `test_exec_z2d_{ct,bs}_{s,b}.cpp` | Double real forward/inverse reference comparison |
-| `test_exec_r2c_c2r_{ct,bs}_{s,b}.cpp`, `test_exec_d2z_z2d_{ct,bs}_{s,b}.cpp` | Real-transform roundtrip validation |
+#### Examples
 
-### Numerical Acceptance
+```bash
+# Quick smoke test (default)
+python tools/run_tests.py
 
-The reference gate is output alignment with cuFFT at the same precision.
-Each batch is evaluated independently and the maximum batch statistic is
-checked:
+# Full test suite on GPU 0
+python tools/run_tests.py --combination full --gpus 0
 
-```text
-rel_l2   = ||flagfft - cufft||_2   / ||cufft||_2
-rel_linf = ||flagfft - cufft||_inf / ||cufft||_inf
+# Full suite across 4 GPUs
+python tools/run_tests.py --combination full --gpus 0,1,2,3
+
+# Accuracy only, specific operators
+python tools/run_tests.py --combination full --ops c2c_1d,r2c_1d --accuracy-only
+
+# Performance benchmarks only
+python tools/run_tests.py --combination full --performance-only
 ```
 
-Float and double use the same formulas and transform-class constants, scaled
-by unit roundoff and a documented length-based work factor. Set
-`FLAGFFT_TEST_REPORT_ACCURACY=1` when executing a test binary to print the
-normalized statistics used to re-characterize those constants. Reference
-cases use deterministic inputs at scales `2^-20`, `1`, and `2^20` (C++ defaults;
-`tools/run_tests.py` may pass different scales via `--scale` depending on the
-selected combination in `conf/test_matrix.yaml`).
-Pointwise relative error with a denominator floor is diagnostic output only;
-it is not the pass/fail metric.
+#### Output
 
-CTest registers one process per test executable so the process can reuse its
-JIT initialization across parameter cases. The unified test runner
-(`tools/run_tests.py`) handles test selection, multi-GPU distribution, and
-result collection.
+The runner writes `summary.json` with:
 
-## Code Style
+- Per-operator accuracy results (pass/fail, error metrics)
+- Per-operator performance results (median latency, speedup vs cuFFT)
+- Aggregate geometric mean speedup across all operators
 
-This project uses [pre-commit](https://pre-commit.com/) to enforce consistent
-formatting and linting. The configuration covers:
+Exit code is `0` if all accuracy tests passed, `1` if any failed.
 
-- **clang-format** (v13, Google style with custom overrides in `.clang-format`)
-- **isort** and **black** for Python
-- **flake8** for Python linting
-- Generic checks: YAML syntax, trailing whitespace, end-of-file newlines
+### C++ Tests (ctest/)
 
-### Installing clang-format
+Built with `-DFLAGFFT_BUILD_TESTS=ON`. Each test binary compares FlagFFT
+output against cuFFT using normwise relative error metrics (`rel_l2`,
+`rel_linf`).
 
-The pre-commit hook pulls `clang-format` v13 automatically, but if you need it
-locally (e.g. for editor integration):
+#### Structure
 
-```sh
-# Ubuntu / Debian
-apt install clang-format-13
+| Test Pattern | Coverage |
+|---|---|
+| `test_plan` | Plan lifecycle, error codes, unsupported API contracts |
+| `test_2d_correctness` | Rank-2 C2C/Z2Z correctness |
+| `test_exec_c2c_{fwd,inv}_{ct,bs}_{s,b}` | C2C forward/inverse, Cooley-Tukey/Bluestein, single/multi-batch |
+| `test_exec_z2z_{fwd,inv}_{ct,bs}_{s,b}` | Double-precision complex |
+| `test_exec_r2c_{ct,bs}_{s,b}` | Float real → complex |
+| `test_exec_d2z_{ct,bs}_{s,b}` | Double real → complex |
+| `test_exec_c2r_{ct,bs}_{s,b}` | Complex → float real |
+| `test_exec_z2d_{ct,bs}_{s,b}` | Double complex → double real |
+| `test_exec_r2c_c2r_{ct,bs}_{s,b}` | Real roundtrip validation |
+| `test_exec_d2z_z2d_{ct,bs}_{s,b}` | Double real roundtrip |
 
-# Or via pip (requires a working Python environment)
-pip install clang-format==13.0.0
+Suffix key: `s` = single-batch, `b` = multi-batch; `ct` = Cooley-Tukey, `bs`
+= Bluestein/Rader.
+
+#### Running Individual Tests
+
+```bash
+# Run a specific test
+./build/ctest/test_exec_c2c_fwd_ct_s
+
+# With custom parameters
+./build/ctest/test_exec_c2c_fwd_ct_s --nx 4096 --batch 64 --direction forward
+
+# Run all ctest tests
+cd build && ctest --output-on-failure
 ```
 
-### Installing and using pre-commit
+Each test binary accepts: `--nx`, `--batch`, `--direction`, `--scale`,
+`--json-file`.
 
-```sh
-# Install pre-commit itself
-pip install pre-commit
+### Python Tests
 
-# Install the git hook scripts (runs checks on every commit)
-pre-commit install
+Tests for the `flagfft_codegen` Python package. Requires the package installed
+(`pip install .`).
 
-# Run all hooks manually against all files (useful for first setup)
-pre-commit run --all-files
+```bash
+# Run all Python tests
+pytest tests/python/ -v
+
+# Run only codegen-marked tests
+pytest tests/python/ -v -m codegen
 ```
 
-The GitHub Actions linter workflow runs the same `pre-commit run --all-files`
-checks for pushes and pull requests targeting `main`. It can also be launched
-manually from `.github/workflows/linter.yml`.
+Tests cover codelet structure, kernel source generation, JIT CSV parsing, and
+Bluestein/reshape/R2C metadata. Tests that require Triton/TLE are
+automatically skipped when dependencies are unavailable.
 
-After `pre-commit install`, every `git commit` will automatically run the
-configured hooks. Rejected commits must be re-staged and re-committed after the
-hooks fix the files in-place.
+### Test Configuration
+
+The test parameter space is defined in `conf/`:
+
+- `conf/operators.yaml` — 14 operator definitions (1D/2D × C2C/Z2Z/R2C/D2Z/C2R/Z2D, plus roundtrip)
+- `conf/test_matrix.yaml` — Parameter space: 11 smooth sizes (CT), 4 prime/composite sizes (Bluestein), 3 batch sizes, 3 scale factors, 6 combination rules
+
+---
 
 ## License
 
-FlagFFT is licensed under the [Apache 2.0 license](./LICENSE).
+Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
