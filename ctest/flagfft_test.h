@@ -631,6 +631,31 @@ inline std::vector<Test1DParam> Generate1DParamsBSExtendedLargeBatch() {
   return {};
 }
 
+// ---------------------------------------------------------------------------
+// Combined Single (batch=1) generators – Smoke + all Extended tiers
+// Used by the _s test binaries so they carry full parameter coverage.
+// ---------------------------------------------------------------------------
+
+inline std::vector<Test1DParam> Generate1DParamsCTAllSingle() {
+  auto params = Generate1DParamsCTSmokeSingle();
+  auto ext = Generate1DParamsCTExtendedSmallSingle();
+  params.insert(params.end(), ext.begin(), ext.end());
+  ext = Generate1DParamsCTExtendedMediumSingle();
+  params.insert(params.end(), ext.begin(), ext.end());
+  ext = Generate1DParamsCTExtendedLargeSingle();
+  params.insert(params.end(), ext.begin(), ext.end());
+  return params;
+}
+
+inline std::vector<Test1DParam> Generate1DParamsBSAllSingle() {
+  auto params = Generate1DParamsBSSmokeSingle();
+  auto ext = Generate1DParamsBSExtendedSmallSingle();
+  params.insert(params.end(), ext.begin(), ext.end());
+  ext = Generate1DParamsBSExtendedMediumSingle();
+  params.insert(params.end(), ext.begin(), ext.end());
+  return params;
+}
+
 // =========================================================================
 // Runtime parameterization support (for tools/run_tests.py)
 // =========================================================================
@@ -653,6 +678,7 @@ inline std::vector<Test1DParam> filter_1d_params(const int* sizes,
                                                  int numSizes,
                                                  const int* batches,
                                                  int numBatches) {
+  if (numSizes == 0 || numBatches == 0) return {};
   if (g_test_params.nx > 0 || g_test_params.batch > 0) {
     // Command-line override: return single param
     int nx = g_test_params.nx > 0 ? g_test_params.nx : sizes[0];
@@ -673,6 +699,7 @@ inline std::vector<double> filter_scales() {
 }
 
 inline std::vector<Test1DParam> override_params(std::vector<Test1DParam> defaults) {
+  if (defaults.empty()) return defaults;
   if (g_test_params.nx > 0 || g_test_params.batch > 0) {
     int nx = g_test_params.nx > 0 ? g_test_params.nx : defaults[0].N;
     int batch = g_test_params.batch > 0 ? g_test_params.batch : defaults[0].batch;

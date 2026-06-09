@@ -71,7 +71,7 @@ TEST_P(R2C_C2RCTSingle_Test, Roundtrip1D) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          R2C_C2RCTSingle_Test,
-                         ::testing::ValuesIn(override_params(Generate1DParamsCTSmokeSingle())),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTAllSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

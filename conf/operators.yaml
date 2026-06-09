@@ -77,6 +77,30 @@ ops:
     stages:
       - stable: '1.0'
 
+  # ── 1D Roundtrip (R2C + C2R) ──────────────────────────────────
+  - id: r2c_c2r_1d
+    description: "R2C + C2R roundtrip 1D FFT"
+    labels: [r2c, c2r, 1d, roundtrip]
+    ctest: test_exec_r2c_c2r
+    cli_type: r2c
+    rank: 1
+    directions: [forward]
+    algorithms: [ct, bs]
+    stages:
+      - stable: '1.0'
+
+  # ── 1D Roundtrip (D2Z + Z2D) ──────────────────────────────────
+  - id: d2z_z2d_1d
+    description: "D2Z + Z2D roundtrip 1D FFT"
+    labels: [d2z, z2d, 1d, roundtrip, double]
+    ctest: test_exec_d2z_z2d
+    cli_type: d2z
+    rank: 1
+    directions: [forward]
+    algorithms: [ct, bs]
+    stages:
+      - stable: '1.0'
+
   # ── 2D Complex-to-Complex ─────────────────────────────────────
   - id: c2c_2d
     description: "Complex-to-Complex 2D FFT"

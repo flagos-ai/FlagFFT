@@ -71,7 +71,7 @@ TEST_P(D2Z_Z2DBSSingle_Test, Roundtrip1D) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          D2Z_Z2DBSSingle_Test,
-                         ::testing::ValuesIn(override_params(Generate1DParamsBSSmokeSingle())),
+                         ::testing::ValuesIn(override_params(Generate1DParamsBSAllSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

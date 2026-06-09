@@ -52,7 +52,7 @@ TEST_P(R2CCTSingle_Test, ForwardVsReference) {
   ref_plan_1d(ref, N, FLAGFFT_R2C, batch);
   std::vector<flagfftComplex> h_out(total_out);
   std::vector<flagfftComplex> h_ref_out(total_out);
-  for (double scale : kAccuracyInputScales) {
+  for (double scale : filter_scales()) {
     auto input = h_in;
     scale_input(input, scale);
     in_memory.copy_from_host(input.data(), total_in * sizeof(flagfftReal));
@@ -70,7 +70,7 @@ TEST_P(R2CCTSingle_Test, ForwardVsReference) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          R2CCTSingle_Test,
-                         ::testing::ValuesIn(override_params(Generate1DParamsCTSmokeSingle())),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTAllSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

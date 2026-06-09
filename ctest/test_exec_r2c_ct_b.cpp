@@ -52,7 +52,7 @@ TEST_P(R2CCTBatch_Test, ForwardVsReference) {
   ref_plan_1d(ref, N, FLAGFFT_R2C, batch);
   std::vector<flagfftComplex> h_out(total_out);
   std::vector<flagfftComplex> h_ref_out(total_out);
-  for (double scale : kAccuracyInputScales) {
+  for (double scale : filter_scales()) {
     auto input = h_in;
     scale_input(input, scale);
     in_memory.copy_from_host(input.data(), total_in * sizeof(flagfftReal));

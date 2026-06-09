@@ -59,6 +59,37 @@ std::vector<Test2DParam> Generate2DParams(const Test2DSize* sizes,
   return params;
 }
 
+std::vector<Test2DParam> All2DParams() {
+  auto params = Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1);
+  auto ext = Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1);
+  params.insert(params.end(), ext.begin(), ext.end());
+  ext = Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1);
+  params.insert(params.end(), ext.begin(), ext.end());
+  ext = Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1);
+  params.insert(params.end(), ext.begin(), ext.end());
+  return params;
+}
+
+std::vector<Test2DParam> Filter2DParams(std::vector<Test2DParam> defaults) {
+  if (defaults.empty()) return defaults;
+  if (flagfft_test::g_test_params.nx > 0 && flagfft_test::g_test_params.ny > 0) {
+    int batch = flagfft_test::g_test_params.batch > 0 ? flagfft_test::g_test_params.batch : 1;
+    return {
+        {flagfft_test::g_test_params.nx, flagfft_test::g_test_params.ny, batch}
+    };
+  }
+  if (flagfft_test::g_test_params.batch > 0) {
+    std::vector<Test2DParam> filtered;
+    for (const auto& p : defaults) {
+      if (p.batch == flagfft_test::g_test_params.batch) {
+        filtered.push_back(p);
+      }
+    }
+    return filtered.empty() ? defaults : filtered;
+  }
+  return defaults;
+}
+
 // =========================================================================
 // C2C 2D tests
 // =========================================================================
@@ -129,6 +160,7 @@ TEST_P(C2C2D, ForwardInverse) {
 
 TEST_P(C2C2D, ForwardReference) {
   if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+  if (flagfft_test::should_skip_direction(FLAGFFT_FORWARD)) GTEST_SKIP();
 
   flagfft_test::RefPlanHandle ref_plan;
   flagfft_test::ref_plan_2d(ref_plan, n0, n1, FLAGFFT_C2C);
@@ -138,7 +170,7 @@ TEST_P(C2C2D, ForwardReference) {
   auto* d_ref_in = static_cast<flagfftComplex*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftComplex*>(ref_out_mem.data());
 
-  for (double scale : flagfft_test::kAccuracyInputScales) {
+  for (double scale : flagfft_test::filter_scales()) {
     auto input = h_in;
     flagfft_test::scale_input(input, scale);
     in_mem.copy_from_host(input.data(), bytes);
@@ -166,6 +198,7 @@ TEST_P(C2C2D, ForwardReference) {
 
 TEST_P(C2C2D, InverseReference) {
   if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+  if (flagfft_test::should_skip_direction(FLAGFFT_INVERSE)) GTEST_SKIP();
 
   flagfft_test::RefPlanHandle ref_plan;
   flagfft_test::ref_plan_2d(ref_plan, n0, n1, FLAGFFT_C2C);
@@ -175,7 +208,7 @@ TEST_P(C2C2D, InverseReference) {
   auto* d_ref_in = static_cast<flagfftComplex*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftComplex*>(ref_out_mem.data());
 
-  for (double scale : flagfft_test::kAccuracyInputScales) {
+  for (double scale : flagfft_test::filter_scales()) {
     auto input = h_in;
     flagfft_test::scale_input(input, scale);
     in_mem.copy_from_host(input.data(), bytes);
@@ -201,21 +234,7 @@ TEST_P(C2C2D, InverseReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, C2C2D, ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         C2C2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Batch,
-                         C2C2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
-
-INSTANTIATE_TEST_SUITE_P(
-    Bluestein,
-    C2C2D,
-    ::testing::ValuesIn(Generate2DParams(
-        k2DBluesteinSizes, sizeof(k2DBluesteinSizes) / sizeof(k2DBluesteinSizes[0]), k2DBatchSingle, 1)));
+INSTANTIATE_TEST_SUITE_P(All, C2C2D, ::testing::ValuesIn(Filter2DParams(All2DParams())));
 
 // =========================================================================
 // Z2Z 2D tests
@@ -282,6 +301,7 @@ TEST_P(Z2Z2D, ForwardInverse) {
 
 TEST_P(Z2Z2D, ForwardReference) {
   if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+  if (flagfft_test::should_skip_direction(FLAGFFT_FORWARD)) GTEST_SKIP();
 
   flagfft_test::RefPlanHandle ref_plan;
   flagfft_test::ref_plan_2d(ref_plan, n0, n1, FLAGFFT_Z2Z);
@@ -291,7 +311,7 @@ TEST_P(Z2Z2D, ForwardReference) {
   auto* d_ref_in = static_cast<flagfftDoubleComplex*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftDoubleComplex*>(ref_out_mem.data());
 
-  for (double scale : flagfft_test::kAccuracyInputScales) {
+  for (double scale : flagfft_test::filter_scales()) {
     auto input = h_in;
     flagfft_test::scale_input(input, scale);
     in_mem.copy_from_host(input.data(), bytes);
@@ -317,6 +337,7 @@ TEST_P(Z2Z2D, ForwardReference) {
 
 TEST_P(Z2Z2D, InverseReference) {
   if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+  if (flagfft_test::should_skip_direction(FLAGFFT_INVERSE)) GTEST_SKIP();
 
   flagfft_test::RefPlanHandle ref_plan;
   flagfft_test::ref_plan_2d(ref_plan, n0, n1, FLAGFFT_Z2Z);
@@ -326,7 +347,7 @@ TEST_P(Z2Z2D, InverseReference) {
   auto* d_ref_in = static_cast<flagfftDoubleComplex*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftDoubleComplex*>(ref_out_mem.data());
 
-  for (double scale : flagfft_test::kAccuracyInputScales) {
+  for (double scale : flagfft_test::filter_scales()) {
     auto input = h_in;
     flagfft_test::scale_input(input, scale);
     in_mem.copy_from_host(input.data(), bytes);
@@ -350,21 +371,7 @@ TEST_P(Z2Z2D, InverseReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, Z2Z2D, ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         Z2Z2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Batch,
-                         Z2Z2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
-
-INSTANTIATE_TEST_SUITE_P(
-    Bluestein,
-    Z2Z2D,
-    ::testing::ValuesIn(Generate2DParams(
-        k2DBluesteinSizes, sizeof(k2DBluesteinSizes) / sizeof(k2DBluesteinSizes[0]), k2DBatchSingle, 1)));
+INSTANTIATE_TEST_SUITE_P(All, Z2Z2D, ::testing::ValuesIn(Filter2DParams(All2DParams())));
 
 // =========================================================================
 // R2C 2D tests
@@ -426,7 +433,7 @@ TEST_P(R2C2D, ForwardReference) {
   auto* d_ref_in = static_cast<flagfftReal*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftComplex*>(ref_out_mem.data());
 
-  for (double scale : flagfft_test::kAccuracyInputScales) {
+  for (double scale : flagfft_test::filter_scales()) {
     auto input = h_in;
     flagfft_test::scale_input(input, scale);
     in_mem.copy_from_host(input.data(), total_in * batch * sizeof(flagfftReal));
@@ -452,20 +459,7 @@ TEST_P(R2C2D, ForwardReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, R2C2D, ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         R2C2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Batch,
-                         R2C2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
-
-INSTANTIATE_TEST_SUITE_P(
-    Bluestein,
-    R2C2D,
-    ::testing::ValuesIn(Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1)));
+INSTANTIATE_TEST_SUITE_P(All, R2C2D, ::testing::ValuesIn(Filter2DParams(All2DParams())));
 
 // =========================================================================
 // C2R 2D tests
@@ -527,7 +521,7 @@ TEST_P(C2R2D, InverseReference) {
   auto* d_ref_in = static_cast<flagfftComplex*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftReal*>(ref_out_mem.data());
 
-  for (double scale : flagfft_test::kAccuracyInputScales) {
+  for (double scale : flagfft_test::filter_scales()) {
     auto input = h_in;
     flagfft_test::scale_input(input, scale);
     in_mem.copy_from_host(input.data(), total_in * batch * sizeof(flagfftComplex));
@@ -553,20 +547,7 @@ TEST_P(C2R2D, InverseReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, C2R2D, ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         C2R2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Batch,
-                         C2R2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
-
-INSTANTIATE_TEST_SUITE_P(
-    Bluestein,
-    C2R2D,
-    ::testing::ValuesIn(Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1)));
+INSTANTIATE_TEST_SUITE_P(All, C2R2D, ::testing::ValuesIn(Filter2DParams(All2DParams())));
 
 // =========================================================================
 // D2Z 2D tests
@@ -628,7 +609,7 @@ TEST_P(D2Z2D, ForwardReference) {
   auto* d_ref_in = static_cast<flagfftDoubleReal*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftDoubleComplex*>(ref_out_mem.data());
 
-  for (double scale : flagfft_test::kAccuracyInputScales) {
+  for (double scale : flagfft_test::filter_scales()) {
     auto input = h_in;
     flagfft_test::scale_input(input, scale);
     in_mem.copy_from_host(input.data(), total_in * batch * sizeof(flagfftDoubleReal));
@@ -652,20 +633,7 @@ TEST_P(D2Z2D, ForwardReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, D2Z2D, ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         D2Z2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Batch,
-                         D2Z2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
-
-INSTANTIATE_TEST_SUITE_P(
-    Bluestein,
-    D2Z2D,
-    ::testing::ValuesIn(Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1)));
+INSTANTIATE_TEST_SUITE_P(All, D2Z2D, ::testing::ValuesIn(Filter2DParams(All2DParams())));
 
 // =========================================================================
 // Z2D 2D tests
@@ -727,7 +695,7 @@ TEST_P(Z2D2D, InverseReference) {
   auto* d_ref_in = static_cast<flagfftDoubleComplex*>(ref_in_mem.data());
   auto* d_ref_out = static_cast<flagfftDoubleReal*>(ref_out_mem.data());
 
-  for (double scale : flagfft_test::kAccuracyInputScales) {
+  for (double scale : flagfft_test::filter_scales()) {
     auto input = h_in;
     flagfft_test::scale_input(input, scale);
     in_mem.copy_from_host(input.data(), total_in * batch * sizeof(flagfftDoubleComplex));
@@ -751,20 +719,7 @@ TEST_P(Z2D2D, InverseReference) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke, Z2D2D, ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         Z2D2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Batch,
-                         Z2D2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
-
-INSTANTIATE_TEST_SUITE_P(
-    Bluestein,
-    Z2D2D,
-    ::testing::ValuesIn(Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1)));
+INSTANTIATE_TEST_SUITE_P(All, Z2D2D, ::testing::ValuesIn(Filter2DParams(All2DParams())));
 
 // =========================================================================
 // R2C + C2R roundtrip 2D tests
@@ -852,17 +807,7 @@ TEST_P(R2CC2RRoundtrip2D, ForwardInverse) {
   flagfft_test::expect_roundtrip_accuracy(stats, FLAGFFT_R2C, FLAGFFT_C2R, total_real, batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
-                         R2CC2RRoundtrip2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         R2CC2RRoundtrip2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Batch,
-                         R2CC2RRoundtrip2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
+INSTANTIATE_TEST_SUITE_P(All, R2CC2RRoundtrip2D, ::testing::ValuesIn(Filter2DParams(All2DParams())));
 
 // =========================================================================
 // D2Z + Z2D roundtrip 2D tests
@@ -950,16 +895,6 @@ TEST_P(D2ZZ2DRoundtrip2D, ForwardInverse) {
   flagfft_test::expect_roundtrip_accuracy(stats, FLAGFFT_D2Z, FLAGFFT_Z2D, total_real, batch);
 }
 
-INSTANTIATE_TEST_SUITE_P(Smoke,
-                         D2ZZ2DRoundtrip2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Extended,
-                         D2ZZ2DRoundtrip2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1)));
-
-INSTANTIATE_TEST_SUITE_P(Batch,
-                         D2ZZ2DRoundtrip2D,
-                         ::testing::ValuesIn(Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1)));
+INSTANTIATE_TEST_SUITE_P(All, D2ZZ2DRoundtrip2D, ::testing::ValuesIn(Filter2DParams(All2DParams())));
 
 }  // namespace

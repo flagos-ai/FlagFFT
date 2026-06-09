@@ -52,7 +52,7 @@ TEST_P(D2ZBSBatch_Test, ForwardVsReference) {
   ref_plan_1d(ref, N, FLAGFFT_D2Z, batch);
   std::vector<flagfftDoubleComplex> h_out(total_out);
   std::vector<flagfftDoubleComplex> h_ref_out(total_out);
-  for (double scale : kAccuracyInputScales) {
+  for (double scale : filter_scales()) {
     auto input = h_in;
     scale_input(input, scale);
     in_memory.copy_from_host(input.data(), total_in * sizeof(flagfftDoubleReal));

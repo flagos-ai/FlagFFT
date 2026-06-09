@@ -54,7 +54,7 @@ TEST_P(C2CInvCTSingle_Test, InverseVsReference) {
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
   std::vector<flagfftComplex> h_out(total);
   std::vector<flagfftComplex> h_ref(total);
-  for (double scale : kAccuracyInputScales) {
+  for (double scale : filter_scales()) {
     auto input = h_in;
     scale_input(input, scale);
     in_memory.copy_from_host(input.data(), total * sizeof(flagfftComplex));
@@ -92,7 +92,7 @@ TEST_P(C2CInvCTSingle_Test, Roundtrip) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          C2CInvCTSingle_Test,
-                         ::testing::ValuesIn(override_params(Generate1DParamsCTSmokeSingle())),
+                         ::testing::ValuesIn(override_params(Generate1DParamsCTAllSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

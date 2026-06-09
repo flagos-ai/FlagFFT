@@ -54,7 +54,7 @@ TEST_P(Z2ZFwdBSSingle_Test, ForwardVsReference) {
   ref_plan_1d(ref, N, FLAGFFT_Z2Z, batch);
   std::vector<flagfftDoubleComplex> h_out(total);
   std::vector<flagfftDoubleComplex> h_ref(total);
-  for (double scale : kAccuracyInputScales) {
+  for (double scale : filter_scales()) {
     auto input = h_in;
     scale_input(input, scale);
     in_memory.copy_from_host(input.data(), total * sizeof(flagfftDoubleComplex));
@@ -72,7 +72,7 @@ TEST_P(Z2ZFwdBSSingle_Test, ForwardVsReference) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          Z2ZFwdBSSingle_Test,
-                         ::testing::ValuesIn(override_params(Generate1DParamsBSSmokeSingle())),
+                         ::testing::ValuesIn(override_params(Generate1DParamsBSAllSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

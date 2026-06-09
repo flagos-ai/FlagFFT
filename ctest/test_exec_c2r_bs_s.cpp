@@ -57,7 +57,7 @@ TEST_P(C2RBSSingle_Test, InverseVsReference) {
   ref_plan_1d(ref, N, FLAGFFT_C2R, batch);
   std::vector<flagfftReal> h_out(total_out);
   std::vector<flagfftReal> h_ref_out(total_out);
-  for (double scale : kAccuracyInputScales) {
+  for (double scale : filter_scales()) {
     auto input = h_in;
     scale_input(input, scale);
     in_memory.copy_from_host(input.data(), total_in * sizeof(flagfftComplex));
@@ -75,7 +75,7 @@ TEST_P(C2RBSSingle_Test, InverseVsReference) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          C2RBSSingle_Test,
-                         ::testing::ValuesIn(override_params(Generate1DParamsBSSmokeSingle())),
+                         ::testing::ValuesIn(override_params(Generate1DParamsBSAllSingle())),
                          [](const auto& info) {
                            return std::to_string(info.param.N) + "x" + std::to_string(info.param.batch);
                          });

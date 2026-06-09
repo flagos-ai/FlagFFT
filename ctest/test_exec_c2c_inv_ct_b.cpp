@@ -54,7 +54,7 @@ TEST_P(C2CInvCTBatch_Test, InverseVsReference) {
   ref_plan_1d(ref, N, FLAGFFT_C2C, batch);
   std::vector<flagfftComplex> h_out(total);
   std::vector<flagfftComplex> h_ref(total);
-  for (double scale : kAccuracyInputScales) {
+  for (double scale : filter_scales()) {
     auto input = h_in;
     scale_input(input, scale);
     in_memory.copy_from_host(input.data(), total * sizeof(flagfftComplex));
