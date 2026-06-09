@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import math
 import multiprocessing
 import os
+import platform
 import queue
+import signal
 import subprocess
 import sys
 import time
@@ -19,6 +22,118 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Global state for environment info, worker tracking, and signal handling
+ENV_INFO: dict[str, Any] = {}
+WORKER_PROCESSES: list[multiprocessing.Process] = []
+INTERRUPTED = False
+
+# ANSI color variables -- overridden by init_colors()
+RED = ""
+GREEN = ""
+YELLOW = ""
+CYAN = ""
+DIM = ""
+NC = ""
+
+
+def init_colors(mode: str) -> None:
+    """Set ANSI color codes based on --color mode."""
+    global RED, GREEN, YELLOW, CYAN, DIM, NC
+    if mode == "never":
+        RED = GREEN = YELLOW = CYAN = DIM = NC = ""
+    elif mode == "always" or (mode == "auto" and sys.stderr.isatty()):
+        RED = "\033[31m"
+        GREEN = "\033[32m"
+        YELLOW = "\033[33m"
+        CYAN = "\033[36m"
+        DIM = "\033[2m"
+        NC = "\033[0m"
+
+
+def pinfo(msg: str) -> None:
+    print(f"{GREEN}[INFO]{NC} {msg}")
+
+
+def pwarn(msg: str) -> None:
+    print(f"{YELLOW}[WARN]{NC} {msg}", file=sys.stderr)
+
+
+def perror(msg: str) -> None:
+    print(f"{RED}[ERROR]{NC} {msg}", file=sys.stderr)
+
+
+def probe_env() -> None:
+    """Probe runtime environment and store results in ENV_INFO."""
+    ENV_INFO["architecture"] = platform.machine()
+    ENV_INFO["python"] = platform.python_version()
+
+    # PyTorch
+    try:
+        import torch
+
+        ENV_INFO["torch"] = {
+            "version": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "device_name": (
+                torch.cuda.get_device_name() if torch.cuda.is_available() else "N/A"
+            ),
+            "device_count": (
+                torch.cuda.device_count() if torch.cuda.is_available() else 0
+            ),
+        }
+    except ImportError:
+        ENV_INFO["torch"] = {
+            "version": "N/A",
+            "cuda_available": False,
+            "device_name": "N/A",
+            "device_count": 0,
+        }
+
+    # Triton
+    try:
+        import triton
+
+        ENV_INFO["triton"] = {"version": triton.__version__}
+    except ImportError:
+        ENV_INFO["triton"] = {"version": "N/A"}
+
+
+def terminate_workers() -> None:
+    """Send SIGTERM to all tracked worker processes, then force-kill survivors."""
+    for p in WORKER_PROCESSES:
+        if p.is_alive():
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+    for p in WORKER_PROCESSES:
+        p.join(timeout=5)
+        if p.is_alive():
+            p.kill()
+
+
+def cleanup_intermediate_files() -> None:
+    """Remove temporary accuracy JSON files left behind by workers."""
+    for pattern in ["/tmp/flagfft_acc_*.json"]:
+        for f in glob.glob(pattern):
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+
+
+def handle_interrupt(signum, frame) -> None:
+    """Handle SIGINT/SIGTERM: terminate workers, clean up, and exit."""
+    global INTERRUPTED
+    if INTERRUPTED:
+        return
+    INTERRUPTED = True
+    pwarn("Interrupted. Cleaning up ...")
+    terminate_workers()
+    cleanup_intermediate_files()
+    pwarn("Cleanup done.")
+    sys.exit(1)
 
 
 def load_operators(path: Path) -> list[dict[str, Any]]:
@@ -94,6 +209,14 @@ def expand_test_cases(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FlagFFT unified test runner")
     parser.add_argument("--ops", default=None, help="Comma-separated operator IDs")
+    parser.add_argument(
+        "--op-list-file",
+        default=None,
+        help="Path to operator list file (one ID per line, # for comments)",
+    )
+    parser.add_argument(
+        "--start", default=None, help="ID of the first operator to test"
+    )
     parser.add_argument("--stages", default="stable", help="Comma-separated stages")
     parser.add_argument(
         "--combination",
@@ -105,13 +228,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--accuracy-only", action="store_true")
     parser.add_argument("--performance-only", action="store_true")
     parser.add_argument("--build-dir", default=str(ROOT / "build"))
-    parser.add_argument("--output", default="summary.json")
+    parser.add_argument(
+        "--output-dir", default="results", help="Relative path to root for test data"
+    )
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument(
         "--warmup", type=int, default=10, help="Benchmark warmup iterations"
     )
     parser.add_argument("--iters", type=int, default=100, help="Benchmark iterations")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "--dump-output",
+        action="store_true",
+        help="Dump stdout/stderr of each test to log files",
+    )
+    parser.add_argument(
+        "--color",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="Color mode for terminal output",
+    )
     return parser.parse_args()
 
 
@@ -189,6 +325,8 @@ def run_subprocess(
     cmd: list[str], timeout: int, gpu_id: int
 ) -> tuple[int, str, str, float]:
     env = os.environ.copy()
+    # Vendor-aware GPU selection: FlagFFT targets CUDA only.
+    # For multi-vendor support (ROCm, etc.), extend this based on ENV_INFO.
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     start = time.monotonic()
     try:
@@ -199,13 +337,14 @@ def run_subprocess(
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
+            start_new_session=True,
         )
         return result.returncode, result.stdout, result.stderr, time.monotonic() - start
     except subprocess.TimeoutExpired:
         return -100, "", "TIMEOUT", time.monotonic() - start
 
 
-def parse_accuracy_result(json_file: str) -> dict[str, Any]:
+def parse_accuracy_result(json_file: str, data_file: str = "") -> dict[str, Any]:
     try:
         with open(json_file) as f:
             data = json.load(f)
@@ -214,39 +353,67 @@ def parse_accuracy_result(json_file: str) -> dict[str, Any]:
         failed = data.get("failed", 0)
         skipped = data.get("skipped", 0)
         status = "Failed" if failed > 0 else ("Passed" if passed > 0 else "Skipped")
-        return {
+        result: dict[str, Any] = {
             "status": status,
             "total": total,
             "passed": passed,
             "failed": failed,
             "skipped": skipped,
             "duration_ms": data.get("duration_ms", 0),
-            "failures": data.get("failures", []),
+            "details": data.get("failures", []),
         }
+        if data_file:
+            result["data_file"] = data_file
+        return result
     except (FileNotFoundError, json.JSONDecodeError) as e:
         return {"status": "Error", "error": str(e)}
 
 
-def parse_perf_result(output: str) -> dict[str, Any]:
+def parse_perf_result(output: str, case: dict | None = None) -> dict[str, Any]:
     try:
         data = json.loads(output)
         cases = data.get("cases", [])
         if not cases:
             return {"status": "Error", "error": "no cases in output"}
-        case = cases[0]
-        timing = case.get("timing", {})
+        raw_case = cases[0]
+        timing = raw_case.get("timing", {})
+        speedup = timing.get("speedup", 0)
+        passed = (
+            speedup > 0
+            and timing.get("flagfft_median_ms", 0) > 0
+            and timing.get("ref_median_ms", 0) > 0
+        )
+
+        # Build shape key from the test case (e.g., "[1024]" or "[1024]batch=2")
+        if case is not None:
+            nx = case.get("nx", 0)
+            batch = case.get("batch", 1)
+            ny = case.get("ny", 0)
+            if ny > 0:
+                shape_key = f"[{nx},{ny}]"
+            else:
+                shape_key = f"[{nx}]"
+            if batch > 1:
+                shape_key += f"batch={batch}"
+        else:
+            shape_key = "[unknown]"
+
+        details_entry = {
+            "base": timing.get("ref_median_ms", 0),
+            "gems": timing.get("flagfft_median_ms", 0),
+            "speedup": speedup,
+        }
+
         return {
-            "status": "Passed"
-            if (
-                timing.get("speedup", 0) > 0
-                and timing.get("flagfft_median_ms", 0) > 0
-                and timing.get("ref_median_ms", 0) > 0
-            )
-            else "Failed",
-            "latency_flagfft_ms": timing.get("flagfft_median_ms", 0),
-            "latency_ref_ms": timing.get("ref_median_ms", 0),
-            "speedup": timing.get("speedup", 0),
-            "plan_description": case.get("plan_description", ""),
+            "status": "Passed" if passed else "Failed",
+            "speedup": speedup,
+            "data": {
+                "default": {
+                    "result": "OK" if passed else "FAIL",
+                    "details": {shape_key: details_entry},
+                    "speedup": speedup,
+                }
+            },
         }
     except (json.JSONDecodeError, IndexError, KeyError) as e:
         return {"status": "Error", "error": str(e)}
@@ -265,6 +432,7 @@ def worker_proc(
     performance_only,
     warmup,
     iters,
+    output_dir,
 ):
     while True:
         try:
@@ -273,6 +441,8 @@ def worker_proc(
             break
 
         case_id = f"{case['op_id']} nx={case['nx']} batch={case['batch']}"
+        op_dir = output_dir / case["op_id"]
+        op_dir.mkdir(parents=True, exist_ok=True)
 
         if not performance_only:
             display_queue.put(
@@ -285,13 +455,20 @@ def worker_proc(
             )
             cmd, jf = build_accuracy_cmd(case, build_dir)
             rc, stdout, stderr, elapsed = run_subprocess(cmd, timeout, gpu_id)
+            data_file = f"{case['op_id']}/accuracy_result.json"
             if rc == -100:
-                acc_result = {"status": "Timeout", "duration_s": elapsed}
+                acc_result = {"status": "Timeout", "duration": elapsed}
             elif rc in (0, 77):
-                acc_result = parse_accuracy_result(jf)
-                acc_result["duration_s"] = elapsed
+                acc_result = parse_accuracy_result(jf, data_file=data_file)
+                acc_result["duration"] = elapsed
             else:
                 acc_result = {"status": "Error", "rc": rc, "stderr": stderr[:500]}
+            # Save per-op accuracy result file
+            try:
+                with open(op_dir / "accuracy_result.json", "w") as f:
+                    json.dump(acc_result, f, indent=2)
+            except OSError:
+                pass
             display_queue.put(
                 {
                     "gpu": gpu_id,
@@ -321,13 +498,21 @@ def worker_proc(
             )
             cmd = build_perf_cmd(case, build_dir, warmup, iters)
             rc, stdout, stderr, elapsed = run_subprocess(cmd, timeout, gpu_id)
+            data_file = f"{case['op_id']}/performance_result.json"
             if rc == -100:
-                perf_result = {"status": "Timeout", "duration_s": elapsed}
+                perf_result = {"status": "Timeout", "duration": elapsed}
             elif rc in (0, 77):
-                perf_result = parse_perf_result(stdout)
-                perf_result["duration_s"] = elapsed
+                perf_result = parse_perf_result(stdout, case=case)
+                perf_result["duration"] = elapsed
+                perf_result["data_file"] = data_file
             else:
                 perf_result = {"status": "Error", "rc": rc, "stderr": stderr[:500]}
+            # Save per-op performance result file
+            try:
+                with open(op_dir / "performance_result.json", "w") as f:
+                    json.dump(perf_result, f, indent=2)
+            except OSError:
+                pass
             display_queue.put(
                 {
                     "gpu": gpu_id,
@@ -412,9 +597,16 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
                 "passed": 0,
                 "failed": 0,
                 "skipped": 0,
-                "duration_s": 0,
+                "duration": 0,
+                "data_file": "",
+                "details": [],
             },
-            "performance": {"status": "NotFound", "cases": [], "duration_s": 0},
+            "performance": {
+                "status": "NotFound",
+                "duration": 0,
+                "data_file": "",
+                "data": {},
+            },
         }
 
     for result in raw_results:
@@ -430,7 +622,13 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
             acc["passed"] += r.get("passed", 0)
             acc["failed"] += r.get("failed", 0)
             acc["skipped"] += r.get("skipped", 0)
-            acc["duration_s"] += result.get("duration", 0)
+            acc["duration"] += result.get("duration", 0)
+            if r.get("data_file"):
+                acc["data_file"] = r["data_file"]
+            # Merge details from each case result
+            case_details = r.get("details", [])
+            if case_details:
+                acc["details"].extend(case_details)
             if acc["failed"] > 0:
                 acc["status"] = "Failed"
             elif acc["passed"] > 0:
@@ -440,16 +638,21 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
 
         elif phase == "performance":
             perf = op_results[op_id]["performance"]
-            perf["cases"].append(
-                {
-                    "nx": result.get("nx", 0),
-                    "batch": result.get("batch", 0),
-                    "speedup": r.get("speedup", 0),
-                    "latency_flagfft_ms": r.get("latency_flagfft_ms", 0),
-                    "latency_ref_ms": r.get("latency_ref_ms", 0),
-                }
-            )
-            perf["duration_s"] += result.get("duration", 0)
+            perf["duration"] += result.get("duration", 0)
+            if r.get("data_file"):
+                perf["data_file"] = r["data_file"]
+            # Merge data (dtype -> details) from each case result
+            perf_data = r.get("data", {})
+            for dtype_key, dtype_info in perf_data.items():
+                if dtype_key not in perf["data"]:
+                    perf["data"][dtype_key] = {
+                        "result": dtype_info.get("result", "OK"),
+                        "details": {},
+                        "speedup": dtype_info.get("speedup", 0),
+                    }
+                perf["data"][dtype_key]["details"].update(dtype_info.get("details", {}))
+                # Update overall speedup to latest
+                perf["data"][dtype_key]["speedup"] = dtype_info.get("speedup", 0)
             if r.get("status") == "Passed":
                 perf["status"] = "Passed"
 
@@ -460,9 +663,10 @@ def compute_speedup_stats(op_results: dict) -> dict:
     """Compute aggregate speedup statistics across all operators."""
     all_speedups = []
     for op_result in op_results.values():
-        for case in op_result.get("performance", {}).get("cases", []):
-            if case.get("speedup", 0) > 0:
-                all_speedups.append(case["speedup"])
+        for dtype_info in op_result.get("performance", {}).get("data", {}).values():
+            for detail in dtype_info.get("details", {}).values():
+                if detail.get("speedup", 0) > 0:
+                    all_speedups.append(detail["speedup"])
 
     if not all_speedups:
         return {"count": 0}
@@ -483,6 +687,7 @@ def write_summary(
 ):
     summary = {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "env": ENV_INFO,
         "config": config,
         "result": op_results,
         "summary": {
@@ -499,7 +704,7 @@ def write_summary(
             "performance_failed": sum(
                 1 for r in op_results.values() if r["performance"]["status"] == "Failed"
             ),
-            "total_duration_s": round(total_duration, 1),
+            "total_duration": round(total_duration, 1),
             "speedup_stats": compute_speedup_stats(op_results),
         },
     }
@@ -508,8 +713,29 @@ def write_summary(
     print(f"\nSummary written to {output_path}")
 
 
+def read_op_list_file(path: str) -> list[str]:
+    """Read operator IDs from a file, one per line. Lines starting with # are comments."""
+    op_ids = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            op_ids.append(line)
+    return op_ids
+
+
 def main() -> int:
     args = parse_args()
+
+    # Probe environment info before anything else
+    probe_env()
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, handle_interrupt)
+    signal.signal(signal.SIGTERM, handle_interrupt)
+
+    init_colors(args.color)
 
     ops = load_operators(ROOT / "conf" / "operators.yaml")
     matrix = load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
@@ -525,8 +751,15 @@ def main() -> int:
         op_ids = set(args.ops.split(","))
         ops = [op for op in ops if op["id"] in op_ids]
 
+    if args.op_list_file:
+        file_op_ids = set(read_op_list_file(args.op_list_file))
+        ops = [op for op in ops if op["id"] in file_op_ids]
+
+    if args.start:
+        ops = [op for op in ops if op["id"] >= args.start]
+
     if not ops:
-        print("ERROR: no operators match the filter criteria")
+        perror("no operators match the filter criteria")
         return 1
 
     cases = expand_test_cases(ops, matrix, args.combination)
@@ -538,6 +771,8 @@ def main() -> int:
         gpu_ids = [int(g) for g in args.gpus.split(",")]
 
     build_dir = Path(args.build_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Using GPUs: {gpu_ids}")
     print(f"Build dir: {build_dir}")
@@ -566,10 +801,12 @@ def main() -> int:
                 args.performance_only,
                 args.warmup,
                 args.iters,
+                output_dir,
             ),
         )
         p.start()
         workers.append(p)
+        WORKER_PROCESSES.append(p)
 
     display = LiveDisplay(len(gpu_ids))
     display.set_total(len(cases))
@@ -610,7 +847,7 @@ def main() -> int:
         "accuracy_only": args.accuracy_only,
         "performance_only": args.performance_only,
     }
-    write_summary(Path(args.output), op_results, config, total_duration)
+    write_summary(output_dir / "summary.json", op_results, config, total_duration)
 
     acc_passed = sum(
         1 for r in op_results.values() if r["accuracy"]["status"] == "Passed"

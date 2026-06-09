@@ -76,7 +76,7 @@ jobs:
             --gpus ${{ inputs.gpus || '0' }} \
             ${{ inputs.accuracy_only == true && '--accuracy-only' || '' }} \
             ${{ inputs.performance_only == true && '--performance-only' || '' }} \
-            --output summary.json \
+            --output-dir results \
             -v
 
       - name: Upload test results
@@ -85,5 +85,5 @@ jobs:
         with:
           name: test-results
           path: |
-            summary.json
+            results/
             build/ctest/Testing/

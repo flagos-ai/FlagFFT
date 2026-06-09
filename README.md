@@ -353,6 +353,27 @@ python tools/run_tests.py --combination ct --performance-only
 python tools/run_tests.py --combination ct --warmup 20 --iters 200
 ```
 
+### CLI Reference
+
+| Flag | Default | Description |
+|---|---|---|
+| `--ops` | — | Comma-separated operator IDs to test |
+| `--op-list-file` | — | Path to file with one operator ID per line (`#` for comments) |
+| `--start` | — | Skip operators whose ID is lexicographically before this value |
+| `--stages` | `stable` | Comma-separated stages to include (`stable`, `alpha`, `beta`) |
+| `--combination` | `ct` | Test combination: `ct`, `bs`, `full`, `2d`, `2d_full` |
+| `--gpus` | `0` | Comma-separated GPU IDs or `all` |
+| `--output-dir` | `results` | Directory for summary and per-operator result files |
+| `--build-dir` | `build` | Path to CMake build directory |
+| `--accuracy-only` | — | Run only accuracy tests |
+| `--performance-only` | — | Run only performance (benchmark) tests |
+| `--timeout` | `600` | Per-test subprocess timeout in seconds |
+| `--warmup` | `10` | Benchmark warmup iterations |
+| `--iters` | `100` | Benchmark measurement iterations |
+| `--dump-output` | — | Save stdout/stderr of each test to log files |
+| `--color` | `auto` | Color mode: `auto`, `always`, `never` |
+| `-v, --verbose` | — | Verbose output |
+
 ### Configuration
 
 - `conf/operators.yaml` — Operator definitions (transform type x dimension)
@@ -361,7 +382,9 @@ python tools/run_tests.py --combination ct --warmup 20 --iters 200
 ### Output
 
 - Console: Real-time progress with per-GPU status
-- JSON: Summary file (`summary.json`) with per-operator results
+- `results/summary.json` — Top-level summary with `timestamp`, `env`, `config`, `result`, and `summary` sections
+- `results/{op_id}/accuracy_result.json` — Per-operator accuracy details
+- `results/{op_id}/performance_result.json` — Per-operator benchmark details
 
 ## C++ Tests
 
