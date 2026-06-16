@@ -137,6 +137,18 @@ if(FLAGFFT_BUILD_CLI)
 endif()
 
 if(FLAGFFT_BUILD_TESTS)
+    # Google Test is auto-fetched via FetchContent (see README dependencies).
+    # This produces the lowercase `gtest` target that ctest/CMakeLists.txt links.
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.15.2
+    )
+    # Prevent overriding the parent project's compiler/linker settings on Windows.
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
     enable_testing()
     add_subdirectory(ctest)
 endif()
