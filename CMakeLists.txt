@@ -14,6 +14,22 @@ endif()
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
 find_package(SQLite3 REQUIRED)
 
+execute_process(
+    COMMAND ${Python_EXECUTABLE} -c
+            "import torch; print(1 if torch._C._GLIBCXX_USE_CXX11_ABI else 0)"
+    OUTPUT_VARIABLE FLAGFFT_TORCH_CXX11_ABI
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE FLAGFFT_TORCH_ABI_QUERY_RESULT
+)
+if(FLAGFFT_TORCH_ABI_QUERY_RESULT EQUAL 0 AND DEFINED FLAGFFT_TORCH_CXX11_ABI)
+    message(STATUS "Matching PyTorch libstdc++ ABI: _GLIBCXX_USE_CXX11_ABI=${FLAGFFT_TORCH_CXX11_ABI}")
+    add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=${FLAGFFT_TORCH_CXX11_ABI})
+else()
+    message(WARNING "Could not determine PyTorch C++ ABI; using toolchain default. "
+                    "If C++ tests fail to link with [abi:cxx11] undefined references, "
+                    "this is the likely cause.")
+endif()
+
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit/CMakeLists.txt")
     message(FATAL_ERROR "deps/libtriton_jit is required")
 endif()
@@ -137,18 +153,6 @@ if(FLAGFFT_BUILD_CLI)
 endif()
 
 if(FLAGFFT_BUILD_TESTS)
-    # Google Test is auto-fetched via FetchContent (see README dependencies).
-    # This produces the lowercase `gtest` target that ctest/CMakeLists.txt links.
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.15.2
-    )
-    # Prevent overriding the parent project's compiler/linker settings on Windows.
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-
     enable_testing()
     add_subdirectory(ctest)
 endif()
