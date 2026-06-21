@@ -1,0 +1,69 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_BUILD_OPTIONS = parallel=$(shell nproc)
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	# Two upstream CMake quirks to patch around at build time:
+	#
+	# 1) Ubuntu 24.04 CMake 3.28's FindSQLite3.cmake sets SQLite3_LIBRARY
+	#    in the cache (Found SQLite3 succeeds) but the SQLite3::SQLite3
+	#    imported target is not visible at generate time. Swap to the
+	#    cache-variable form.
+	sed -i 's/SQLite3::SQLite3/${SQLite3_LIBRARY}/g' CMakeLists.txt
+	#
+	# 2) FlagFFT relies on the nlohmann_json::nlohmann_json imported
+	#    target created by libtriton_jit's add_subdirectory call. But
+	#    find_package IMPORTED targets default to directory scope, so
+	#    the target isn't visible at FlagFFT's top level. Add an
+	#    explicit top-level find_package call.
+	grep -q "find_package(nlohmann_json" CMakeLists.txt || \
+	    sed -i '/find_package(SQLite3 REQUIRED)/a find_package(nlohmann_json 3.11.3 REQUIRED)' CMakeLists.txt
+
+	# Ubuntu 24.04's libfmt-dev is 9.1.0 but libtriton_jit requires
+	# fmt 10.2.1, so fall back to FetchContent for fmt (bundled into
+	# libflagfft.so). nlohmann-json system package (3.11.3) is fine,
+	# and pybind11 comes from pip. dh-cmake defaults
+	# FETCHCONTENT_FULLY_DISCONNECTED=ON which would block the fmt
+	# fetch; explicitly override to OFF.
+	# Note: no -GNinja — dh-cmake defaults to "Unix Makefiles" and
+	# dh_auto_build expects a Makefile. Passing -GNinja makes configure
+	# emit build.ninja but dh_auto_build still looks for Makefile and
+	# fails with "No targets specified and no makefile found".
+	dh_auto_configure --buildsystem=cmake -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DFETCHCONTENT_FULLY_DISCONNECTED=OFF \
+		-DFETCHCONTENT_QUIET=OFF \
+		-DFLAGFFT_LIBTRITON_JIT_BACKEND=CUDA \
+		-DFLAGFFT_BUILD_TESTS=OFF \
+		-DFLAGFFT_BUILD_BENCHMARKS=OFF \
+		-DTRITON_JIT_USE_EXTERNAL_JSON=ON \
+		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
+		-DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
+		-DFMT_INSTALL=OFF
+
+override_dh_auto_build:
+	dh_auto_build --buildsystem=cmake
+
+override_dh_auto_install:
+	dh_auto_install --buildsystem=cmake
+	# Fix RPATH if any; vendor runtime libs are provided by CUDA pkg
+	find debian/tmp/usr/lib -name "*.so*" -type f \
+	    -exec patchelf --remove-rpath {} \; || true
+
+override_dh_auto_test:
+	# Skip tests during package build (require GPU)
+	@echo "Skipping tests"
+
+override_dh_shlibdeps:
+	# Ignore missing CUDA/vendor library dependencies — provided by
+	# the user's CUDA runtime install, not by this package.
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info || true
+
+override_dh_dwz:
+	@echo "Skipping dwz debug info optimization (incompatible with patchelf)"
