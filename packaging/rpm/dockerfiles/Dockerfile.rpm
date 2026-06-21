@@ -35,8 +35,8 @@ RUN test -f deps/libtriton_jit/CMakeLists.txt || { \
     }
 
 # Stage source tarball where rpmbuild expects it.
-RUN VERSION=$(awk -F'"' '/^libflagfft \(/ {gsub(/-.*/, "", $0); print}' packaging/debian/changelog 2>/dev/null | head -1 | sed 's/.*(//;s/).*//' || echo "0.2.2") && \
-    VERSION=${VERSION:-0.2.2} && \
+RUN VERSION=$(awk -F'"' '/^libflagfft \(/ {gsub(/-.*/, "", $0); print}' packaging/debian/changelog 2>/dev/null | head -1 | sed 's/.*(//;s/).*//' || echo "0.1.0") && \
+    VERSION=${VERSION:-0.1.0} && \
     mkdir -p /root/rpmbuild/SOURCES /tmp/src && \
     cp -r /workspace/flagfft /tmp/src/libflagfft-nvidia-${VERSION} && \
     tar czf /root/rpmbuild/SOURCES/libflagfft-nvidia-${VERSION}.tar.gz -C /tmp/src libflagfft-nvidia-${VERSION} && \

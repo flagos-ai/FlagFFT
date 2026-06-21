@@ -1,4 +1,4 @@
-libflagfft (0.2.2-1) unstable; urgency=medium
+libflagfft (0.1.0-1) unstable; urgency=medium
 
   * Initial Debian packaging for the NVIDIA backend.
   * Produces libflagfft-nvidia + libflagfft-nvidia-dev.
