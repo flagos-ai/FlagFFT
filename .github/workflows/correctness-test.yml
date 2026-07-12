@@ -38,7 +38,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: [self-hosted, VM-16-5-ubuntu]
+    runs-on: [flagfft-nvidia]
     timeout-minutes: 120
 
     steps:
