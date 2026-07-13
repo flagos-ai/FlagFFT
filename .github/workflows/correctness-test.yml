@@ -42,6 +42,15 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      - name: check env
+        run: |
+          nvidia-smi
+          lscpu
+          cat /etc/os-release
+          nvcc --version
+          gcc --version
+          python --version
+          pip list
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
