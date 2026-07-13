@@ -38,7 +38,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: [flagfft-nvidia]
+    runs-on: [flagfft-nvidia-0]
     timeout-minutes: 120
 
     steps:
