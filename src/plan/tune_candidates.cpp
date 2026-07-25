@@ -17,7 +17,7 @@
 namespace flagfft {
 
 std::vector<PlanCandidate> PlanBuilder::top_candidates(std::vector<PlanCandidate> candidates, int64_t limit) {
-  std::sort(candidates.begin(), candidates.end(), [](const PlanCandidate &a, const PlanCandidate &b) {
+  std::sort(candidates.begin(), candidates.end(), [](const PlanCandidate& a, const PlanCandidate& b) {
     if (a.cost != b.cost) {
       return a.cost < b.cost;
     }
@@ -28,7 +28,7 @@ std::vector<PlanCandidate> PlanBuilder::top_candidates(std::vector<PlanCandidate
   });
   std::vector<PlanCandidate> unique;
   std::vector<std::string> seen;
-  for (auto &candidate : candidates) {
+  for (auto& candidate : candidates) {
     std::string repr = PlanKey::from_node(candidate.node).repr();
     if (std::find(seen.begin(), seen.end(), repr) != seen.end()) {
       continue;
@@ -71,7 +71,7 @@ std::vector<PlanCandidate> PlanBuilder::build_leaf_tune_candidates(int64_t n) {
     orders.push_back(factors);
 
     int64_t emitted_orders = 0;
-    for (auto &order : orders) {
+    for (auto& order : orders) {
       if (emitted_orders >= kTuneOrdersPerFactorMultiset) {
         break;
       }
@@ -116,7 +116,7 @@ std::vector<PlanCandidate> PlanBuilder::build_tune_candidates(int64_t n, int64_t
     double balance = std::abs(std::log(static_cast<double>(n1)) - std::log(static_cast<double>(n2)));
     divisor_pairs.push_back({n1, n2, balance + static_cast<double>(n1 + n2) / static_cast<double>(n)});
   }
-  std::sort(divisor_pairs.begin(), divisor_pairs.end(), [](const DivisorPair &a, const DivisorPair &b) {
+  std::sort(divisor_pairs.begin(), divisor_pairs.end(), [](const DivisorPair& a, const DivisorPair& b) {
     if (a.score != b.score) {
       return a.score < b.score;
     }
@@ -127,7 +127,7 @@ std::vector<PlanCandidate> PlanBuilder::build_tune_candidates(int64_t n, int64_t
   }
 
   std::vector<PlanCandidate> pair_candidates;
-  for (const auto &pair : divisor_pairs) {
+  for (const auto& pair : divisor_pairs) {
     int64_t n1 = pair.n1;
     int64_t n2 = pair.n2;
     auto rows = build_tune_candidates(n1, depth + 1);
@@ -136,8 +136,8 @@ std::vector<PlanCandidate> PlanBuilder::build_tune_candidates(int64_t n, int64_t
       continue;
     }
     int64_t combos = 0;
-    for (const auto &row : rows) {
-      for (const auto &col : cols) {
+    for (const auto& row : rows) {
+      for (const auto& col : cols) {
         if (combos >= kTuneFourStepCombosPerPair) {
           break;
         }
@@ -160,13 +160,82 @@ std::vector<PlanCandidate> PlanBuilder::build_tune_candidates(int64_t n, int64_t
   return result;
 }
 
-PlanCandidate PlanBuilder::select_candidate(const std::vector<PlanCandidate> &candidates) {
+std::vector<PlanCandidate> PlanBuilder::build_decomposition_tune_candidates(int64_t n,
+                                                                            const FFTRequest& request,
+                                                                            int64_t limit) {
+  if (n <= 0) {
+    throw std::runtime_error("FFT length must be positive");
+  }
+  if (limit <= 0) {
+    throw std::runtime_error("decomposition tune candidate limit must be positive");
+  }
+  set_request_context(request);
+
+  std::vector<PlanCandidate> result;
+  std::vector<std::string> seen;
+  auto append_unique = [&](PlanCandidate candidate) {
+    std::string repr = PlanKey::from_node(candidate.node).repr();
+    if (std::find(seen.begin(), seen.end(), repr) != seen.end()) {
+      return;
+    }
+    seen.push_back(std::move(repr));
+    result.push_back(std::move(candidate));
+  };
+
+  PlanCandidate automatic = select_candidate(build_auto_candidates(n));
+  auto automatic_four_step = std::dynamic_pointer_cast<FourStepPlanNode>(automatic.node);
+  if (automatic_four_step != nullptr) {
+    append_unique(automatic);
+  }
+
+  struct DivisorPair {
+    int64_t n1 = 0;
+    int64_t n2 = 0;
+    double balance = 0.0;
+  };
+  std::vector<DivisorPair> pairs;
+  for (int64_t n1 : enumerate_divisors(n)) {
+    if (n1 <= 1 || n1 >= n) {
+      continue;
+    }
+    int64_t n2 = n / n1;
+    double balance = std::abs(std::log(static_cast<double>(n1)) - std::log(static_cast<double>(n2)));
+    pairs.push_back({n1, n2, balance});
+  }
+  std::sort(pairs.begin(), pairs.end(), [](const DivisorPair& a, const DivisorPair& b) {
+    if (a.balance != b.balance) {
+      return a.balance < b.balance;
+    }
+    return a.n1 < b.n1;
+  });
+
+  for (const DivisorPair& pair : pairs) {
+    if (static_cast<int64_t>(result.size()) >= limit) {
+      break;
+    }
+    if (automatic_four_step != nullptr && automatic_four_step->n1 == pair.n1 &&
+        automatic_four_step->n2 == pair.n2) {
+      continue;
+    }
+
+    PlanNodePtr row = build_auto_node(pair.n1);
+    PlanNodePtr col = build_auto_node(pair.n2);
+    PlanNodePtr node = std::make_shared<FourStepPlanNode>(n, pair.n1, pair.n2, row, col);
+    double cost = static_cast<double>(pair.n2) * cost_for(pair.n1) +
+                  static_cast<double>(pair.n1) * cost_for(pair.n2) + static_cast<double>(n);
+    int node_priority = priority(node);
+    append_unique({std::move(node), cost, node_priority});
+  }
+  return result;
+}
+
+PlanCandidate PlanBuilder::select_candidate(const std::vector<PlanCandidate>& candidates) {
   if (candidates.empty()) {
     throw std::runtime_error("no FFT plan candidates were generated");
   }
   return *std::min_element(candidates.begin(),
                            candidates.end(),
-                           [](const PlanCandidate &a, const PlanCandidate &b) {
+                           [](const PlanCandidate& a, const PlanCandidate& b) {
                              if (a.cost != b.cost) {
                                return a.cost < b.cost;
                              }

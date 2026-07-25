@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "flagfft/core.hpp"
 #include "flagfft_test.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <string>
 
 namespace {
@@ -134,6 +136,30 @@ TEST(Plan1D, Size2P20UsesTleOptimizedSplit) {
   ExpectPlanContains(plan, "LeafPlan(n=1024, factors=[32,32], lanes=32, num_warps=2");
   ExpectPlanContains(plan, "CompiledRawFourStepFused(n=1048576");
   EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+}
+
+TEST(Plan1D, Size2P20DecompositionTuneCandidatesFreezeOnePlanPerSplit) {
+  flagfft::FFTRequest request;
+  request.fft_length = int64_t {1} << 20;
+  request.requested_n = request.fft_length;
+  request.input_dtype = "complex64";
+  request.output_dtype = "complex64";
+  request.device_type = "unit-test";
+  request.device_arch = "sm80";
+  request.direction = "forward";
+  request.batch = 1;
+
+  flagfft::PlanBuilder builder;
+  auto candidates = builder.build_decomposition_tune_candidates(request.fft_length, request, 5);
+  ASSERT_EQ(candidates.size(), 5U);
+
+  std::set<std::pair<int64_t, int64_t>> splits;
+  for (const auto& candidate : candidates) {
+    auto four_step = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(candidate.node);
+    ASSERT_NE(four_step, nullptr);
+    EXPECT_TRUE(splits.insert({four_step->n1, four_step->n2}).second);
+  }
+  EXPECT_EQ(splits.count({1024, 1024}), 1U);
 }
 
 TEST(Plan1D, BatchFour8192UsesMeasuredSplit) {
