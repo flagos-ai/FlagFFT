@@ -125,6 +125,25 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     candidates.push_back({node, four_step_cost(64, 256) * 0.5, priority(node)});
   }
 
+  const RequestContext &context = request_context();
+  if (n == (int64_t {1} << 20) && context.input_dtype == "complex64" && context.output_dtype == "complex64") {
+    auto make_distributed_radix32_leaf = []() -> PlanNodePtr {
+      return std::make_shared<LeafPlanNode>(1024,
+                                            std::vector<int64_t> {32, 32},
+                                            1,
+                                            32,
+                                            2,
+                                            std::vector<int64_t> {32},
+                                            1024);
+    };
+    PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,
+                                                          1024,
+                                                          1024,
+                                                          make_distributed_radix32_leaf(),
+                                                          make_distributed_radix32_leaf());
+    candidates.push_back({node, four_step_cost(1024, 1024) * 0.25, priority(node)});
+  }
+
   for (int64_t n1 : enumerate_divisors(n)) {
     if (n1 <= 1 || n1 >= n) {
       continue;

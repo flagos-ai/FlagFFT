@@ -575,6 +575,29 @@ def _emit_natural_order_codelet_call(
     return lines
 
 
+def _emit_radix16_codelet_call(
+    indent: str, direction: Literal["forward", "inverse"]
+) -> list[str]:
+    lines: list[str] = []
+    if direction == "inverse":
+        for idx in range(16):
+            lines.append(f"{indent}i{idx} = -i{idx}")
+    lines.append(f"{indent}(")
+    for idx in range(16):
+        lines.append(f"{indent}    r{idx},")
+    for idx in range(16):
+        lines.append(f"{indent}    i{idx},")
+    lines.append(
+        f"{indent}) = _fwd_rad16_b1("
+        "r0, r8, r4, r12, r2, r10, r6, r14, r1, r9, r5, r13, r3, r11, r7, r15, "
+        "i0, i8, i4, i12, i2, i10, i6, i14, i1, i9, i5, i13, i3, i11, i7, i15)"
+    )
+    if direction == "inverse":
+        for idx in range(16):
+            lines.append(f"{indent}i{idx} = -i{idx}")
+    return lines
+
+
 def _time_major_stride(radices: tuple[int, ...], axis: int) -> int:
     return math.prod(radices[axis + 1 :])
 
@@ -912,22 +935,7 @@ def _emit_stage_block(
         lines.append(f"{indent}tl.debug_barrier()")
 
     if radix == 16:
-        if direction == "inverse":
-            for idx in range(16):
-                lines.append(f"{indent}i{idx} = -i{idx}")
-        lines.append(f"{indent}(")
-        for idx in range(16):
-            lines.append(f"{indent}    r{idx},")
-        for idx in range(16):
-            lines.append(f"{indent}    i{idx},")
-        lines.append(
-            f"{indent}) = _fwd_rad16_b1("
-            "r0, r8, r4, r12, r2, r10, r6, r14, r1, r9, r5, r13, r3, r11, r7, r15, "
-            "i0, i8, i4, i12, i2, i10, i6, i14, i1, i9, i5, i13, i3, i11, i7, i15)"
-        )
-        if direction == "inverse":
-            for idx in range(16):
-                lines.append(f"{indent}i{idx} = -i{idx}")
+        lines.extend(_emit_radix16_codelet_call(indent, direction))
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
@@ -1095,6 +1103,331 @@ def _leaf_kernel_params_for_io(
     return params
 
 
+def _use_distributed_radix32_leaf(
+    plan: LeafPlan,
+    *,
+    io_mode: LeafIoMode,
+    four_step_n1: int,
+    four_step_n2: int,
+) -> bool:
+    return (
+        io_mode in {"four_step_row", "four_step_col"}
+        and plan.dtype == "complex64"
+        and plan.length == 1024
+        and plan.factors == (32, 32)
+        and four_step_n1 == 1024
+        and four_step_n2 == 1024
+    )
+
+
+def _emit_distributed_radix32_merge(
+    indent: str,
+    direction: Literal["forward", "inverse"],
+    shuffle_xor: int,
+) -> list[str]:
+    sign = 1.0 if direction == "inverse" else -1.0
+    lines: list[str] = []
+    for idx in range(16):
+        lines.append(
+            f"{indent}other_r{idx} = tl.inline_asm_elementwise("
+            f'"shfl.sync.bfly.b32 $0, $1, {shuffle_xor}, 0x1f, 0xffffffff;", '
+            f'"=f,f", [r{idx}], dtype=tl.float32, is_pure=True, pack=1)'
+        )
+        lines.append(
+            f"{indent}other_i{idx} = tl.inline_asm_elementwise("
+            f'"shfl.sync.bfly.b32 $0, $1, {shuffle_xor}, 0x1f, 0xffffffff;", '
+            f'"=f,f", [i{idx}], dtype=tl.float32, is_pure=True, pack=1)'
+        )
+        lines.append(
+            f"{indent}even_r{idx} = tl.where(pair_parity == 0, r{idx}, other_r{idx})"
+        )
+        lines.append(
+            f"{indent}even_i{idx} = tl.where(pair_parity == 0, i{idx}, other_i{idx})"
+        )
+        lines.append(
+            f"{indent}odd_r{idx} = tl.where(pair_parity == 0, other_r{idx}, r{idx})"
+        )
+        lines.append(
+            f"{indent}odd_i{idx} = tl.where(pair_parity == 0, other_i{idx}, i{idx})"
+        )
+        wr = repr(float(math.cos(sign * 2.0 * math.pi * idx / 32.0)))
+        wi = repr(float(math.sin(sign * 2.0 * math.pi * idx / 32.0)))
+        lines.append(
+            f"{indent}merge_r{idx}, merge_i{idx} = "
+            f"_cmul(odd_r{idx}, odd_i{idx}, {wr}, {wi})"
+        )
+        lines.append(f"{indent}r{idx} = even_r{idx} + pair_sign * merge_r{idx}")
+        lines.append(f"{indent}i{idx} = even_i{idx} + pair_sign * merge_i{idx}")
+    return lines
+
+
+def _distributed_join_tree(names: list[str]) -> str:
+    if len(names) == 1:
+        return names[0]
+    if len(names) & (len(names) - 1):
+        raise ValueError("distributed join tree requires a power-of-two input count")
+    return (
+        f"tl.join({_distributed_join_tree(names[0::2])}, "
+        f"{_distributed_join_tree(names[1::2])})"
+    )
+
+
+def _emit_distributed_split_tree(
+    indent: str,
+    source: str,
+    names: list[str],
+    prefix: str,
+) -> list[str]:
+    if len(names) == 1:
+        return [f"{indent}{names[0]} = {source}"]
+
+    even_names = names[0::2]
+    odd_names = names[1::2]
+    even_source = (
+        even_names[0] if len(even_names) == 1 else f"{prefix}_even{len(names)}"
+    )
+    odd_source = odd_names[0] if len(odd_names) == 1 else f"{prefix}_odd{len(names)}"
+    lines = [f"{indent}{even_source}, {odd_source} = tl.split({source})"]
+    if len(even_names) > 1:
+        lines.extend(
+            _emit_distributed_split_tree(indent, even_source, even_names, f"{prefix}_e")
+        )
+    if len(odd_names) > 1:
+        lines.extend(
+            _emit_distributed_split_tree(indent, odd_source, odd_names, f"{prefix}_o")
+        )
+    return lines
+
+
+def _build_distributed_radix32_four_step_kernel_source(
+    plan: LeafPlan,
+    *,
+    io_mode: Literal["four_step_row", "four_step_col"],
+    four_step_n1: int,
+    four_step_n2: int,
+) -> tuple[str, str]:
+    # One radix-32 transform is split across an even/odd thread pair. Four
+    # independent 1024-point FFTs are interleaved so each CTA remains 256
+    # threads while the pair exchange stays inside a warp.
+    inner_pack = 4
+    physical_lanes = 64
+    vector_block = physical_lanes * inner_pack
+    smem_chunk = 8
+    smem_chunk_dims = int(math.log2(smem_chunk))
+    smem_reshape_dims = ", ".join(["1"] * smem_chunk_dims)
+    smem_block_dims = ", ".join(["2"] * smem_chunk_dims)
+    smem_n = plan.smem_size * inner_pack
+    include_outer_twiddle = io_mode == "four_step_row"
+    params = _leaf_kernel_params_for_io(
+        plan,
+        io_mode=io_mode,
+        include_four_step_twiddle=include_outer_twiddle,
+    )
+    kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
+    kernel_name = (
+        f"{io_mode}_{kernel_prefix}_kernel_32_32_distributed"
+        f"_n{four_step_n1}_{four_step_n2}_l{plan.lanes}_b64_t{smem_chunk}_v2g"
+    )
+
+    body: list[str] = ["@triton.jit", f"def {kernel_name}("]
+    for idx, param in enumerate(params):
+        suffix = "," if idx < len(params) - 1 else ""
+        body.append(f"    {param}{suffix}")
+    body.extend(
+        [
+            "):",
+            f"    four_step_inner_base = tl.program_id(0) * {inner_pack}",
+            "    four_step_batch = tl.program_id(1)",
+            "    if four_step_batch >= nbatch:",
+            "        return",
+            f"    lane_vec = tl.arange(0, {vector_block})",
+            f"    inner_slot = lane_vec % {inner_pack}",
+            f"    fft_thread = lane_vec // {inner_pack}",
+            "    pair_id = fft_thread // 2",
+            "    pair_parity = fft_thread % 2",
+            "    pair_sign = 1.0 - 2.0 * pair_parity",
+            "    four_step_inner = four_step_inner_base + inner_slot",
+            f"    lane_mask = four_step_inner < {four_step_n1}",
+            f"    smem_offset = inner_slot * {plan.smem_size}",
+            (
+                f"    four_step_batch_base = "
+                f"four_step_batch * {four_step_n1 * four_step_n2}"
+            ),
+            (
+                f"    smem_r = tle.gpu.alloc([{smem_n}], dtype=tl.float32, "
+                "layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            ),
+            (
+                f"    smem_i = tle.gpu.alloc([{smem_n}], dtype=tl.float32, "
+                "layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            ),
+        ]
+    )
+
+    for idx in range(16):
+        body.append(
+            f"    input_idx{idx} = pair_id + 32 * " f"(pair_parity + {2 * idx})"
+        )
+        body.append(
+            f"    src_idx{idx} = input_idx{idx} * {four_step_n2} + " "four_step_inner"
+        )
+        body.append(
+            f"    input_offset{idx} = " f"(four_step_batch_base + src_idx{idx}) * 2"
+        )
+        body.append(
+            # The selected 1024x1024 split covers all lanes exactly, so the
+            # vector load does not need a tail predicate.
+            f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+            '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+            f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+            "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+        )
+
+    body.extend(_emit_radix16_codelet_call("    ", plan.direction))
+    body.extend(_emit_distributed_radix32_merge("    ", plan.direction, inner_pack))
+
+    body.append(
+        f"    smem_mask = tl.broadcast_to("
+        f"tl.reshape(lane_mask, {vector_block}, {smem_reshape_dims}), "
+        f"{vector_block}, {smem_block_dims})"
+    )
+    for chunk_base in range(0, 16, smem_chunk):
+        chunk_indices = range(chunk_base, chunk_base + smem_chunk)
+        for idx in chunk_indices:
+            body.append(f"    freq{idx} = {idx} + 16 * pair_parity")
+            body.append(f"    tw_idx{idx} = pair_id + 32 * freq{idx}")
+            body.append(
+                f"    tw_r{idx} = tl.load(tw1_r_ptr + tw_idx{idx}, "
+                "mask=lane_mask, other=0.0)"
+            )
+            body.append(
+                f"    tw_i{idx} = tl.load(tw1_i_ptr + tw_idx{idx}, "
+                "mask=lane_mask, other=0.0)"
+            )
+            body.append(
+                f"    r{idx}, i{idx} = " f"_cmul(r{idx}, i{idx}, tw_r{idx}, tw_i{idx})"
+            )
+            body.append(f"    smem_logical{idx} = freq{idx} * 32 + pair_id")
+            body.append(
+                f"    smem_phys{idx} = smem_logical{idx} ^ "
+                f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+            )
+            body.append(f"    smem_phys{idx} += smem_offset")
+        body.extend(
+            [
+                (
+                    f"    smem_store_index_{chunk_base} = "
+                    f"{_distributed_join_tree([f'smem_phys{idx}' for idx in chunk_indices])}"
+                ),
+                (
+                    f"    smem_store_r_{chunk_base} = "
+                    f"{_distributed_join_tree([f'r{idx}' for idx in chunk_indices])}"
+                ),
+                (
+                    f"    smem_store_i_{chunk_base} = "
+                    f"{_distributed_join_tree([f'i{idx}' for idx in chunk_indices])}"
+                ),
+                (
+                    "    tl.store(tle.gpu.local_ptr("
+                    f"smem_r, (smem_store_index_{chunk_base},)), "
+                    f"smem_store_r_{chunk_base}, mask=smem_mask)"
+                ),
+                (
+                    "    tl.store(tle.gpu.local_ptr("
+                    f"smem_i, (smem_store_index_{chunk_base},)), "
+                    f"smem_store_i_{chunk_base}, mask=smem_mask)"
+                ),
+            ]
+        )
+    body.append("    tl.debug_barrier()")
+
+    for chunk_base in range(0, 16, smem_chunk):
+        chunk_indices = range(chunk_base, chunk_base + smem_chunk)
+        for idx in chunk_indices:
+            body.append(f"    second_input{idx} = pair_parity + {2 * idx}")
+            body.append(f"    smem_logical{idx} = pair_id * 32 + second_input{idx}")
+            body.append(
+                f"    smem_phys{idx} = smem_logical{idx} ^ "
+                f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+            )
+            body.append(f"    smem_phys{idx} += smem_offset")
+        body.extend(
+            [
+                (
+                    f"    smem_load_index_{chunk_base} = "
+                    f"{_distributed_join_tree([f'smem_phys{idx}' for idx in chunk_indices])}"
+                ),
+                (
+                    f"    smem_load_r_{chunk_base} = tl.load("
+                    "tle.gpu.local_ptr("
+                    f"smem_r, (smem_load_index_{chunk_base},)), "
+                    "mask=smem_mask, other=0.0)"
+                ),
+                (
+                    f"    smem_load_i_{chunk_base} = tl.load("
+                    "tle.gpu.local_ptr("
+                    f"smem_i, (smem_load_index_{chunk_base},)), "
+                    "mask=smem_mask, other=0.0)"
+                ),
+            ]
+        )
+        body.extend(
+            _emit_distributed_split_tree(
+                "    ",
+                f"smem_load_r_{chunk_base}",
+                [f"r{idx}" for idx in chunk_indices],
+                f"smem_load_r_{chunk_base}",
+            )
+        )
+        body.extend(
+            _emit_distributed_split_tree(
+                "    ",
+                f"smem_load_i_{chunk_base}",
+                [f"i{idx}" for idx in chunk_indices],
+                f"smem_load_i_{chunk_base}",
+            )
+        )
+
+    body.extend(_emit_radix16_codelet_call("    ", plan.direction))
+    body.extend(_emit_distributed_radix32_merge("    ", plan.direction, inner_pack))
+
+    for idx in range(16):
+        body.append(f"    output_k1{idx} = {idx} + 16 * pair_parity")
+        body.append(f"    out_idx{idx} = pair_id + 32 * output_k1{idx}")
+        if include_outer_twiddle:
+            body.append(
+                f"    dst_idx{idx} = "
+                f"four_step_inner * {four_step_n1} + out_idx{idx}"
+            )
+            body.append(
+                f"    outer_tw_r{idx}, outer_tw_i{idx} = "
+                "tl.inline_asm_elementwise("
+                '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+                f"[tl.cast(twiddle_ptr + dst_idx{idx} * 2, tl.uint64)], "
+                "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+            )
+            body.append(
+                f"    r{idx}, i{idx} = _cmul("
+                f"r{idx}, i{idx}, outer_tw_r{idx}, outer_tw_i{idx})"
+            )
+        else:
+            body.append(
+                f"    dst_idx{idx} = "
+                f"out_idx{idx} * {four_step_n1} + four_step_inner"
+            )
+        body.append(
+            f"    output_offset{idx} = " f"(four_step_batch_base + dst_idx{idx}) * 2"
+        )
+        body.append(
+            f"    output_dummy{idx} = tl.inline_asm_elementwise("
+            '"st.global.v2.f32 [$1], {$2, $3}; mov.u32 $0, 0;", '
+            '"=r,l,f,f", '
+            f"[tl.cast(out_ptr + output_offset{idx}, tl.uint64), r{idx}, i{idx}], "
+            "dtype=tl.int32, is_pure=False, pack=1)"
+        )
+    return kernel_name, "\n".join(body)
+
+
 def _build_leaf_kernel_source_for_io(
     plan: LeafPlan,
     *,
@@ -1102,6 +1435,19 @@ def _build_leaf_kernel_source_for_io(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
 ) -> tuple[str, str]:
+    if _use_distributed_radix32_leaf(
+        plan,
+        io_mode=io_mode,
+        four_step_n1=four_step_n1,
+        four_step_n2=four_step_n2,
+    ):
+        return _build_distributed_radix32_four_step_kernel_source(
+            plan,
+            io_mode=io_mode,
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
+        )
+
     factors = plan.factors
     n = plan.length
     smem_n = plan.smem_size

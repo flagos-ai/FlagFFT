@@ -131,6 +131,7 @@ TEST(Plan1D, Size2P20UsesTleOptimizedSplit) {
   flagfftHandle plan = nullptr;
   ASSERT_EQ(flagfftPlan1d(&plan, 1 << 20, FLAGFFT_C2C, 1), FLAGFFT_SUCCESS);
   ExpectPlanContains(plan, "FourStep(n=1048576, n1=1024, n2=1024)");
+  ExpectPlanContains(plan, "LeafPlan(n=1024, factors=[32,32], lanes=32, num_warps=2");
   ExpectPlanContains(plan, "CompiledRawFourStepFused(n=1048576");
   EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }

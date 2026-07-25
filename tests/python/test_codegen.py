@@ -146,6 +146,39 @@ def test_2p20_four_step_moves_twiddle_to_tle_row_pipeline(kernels) -> None:
     assert "smem_a_r = tle.gpu.alloc" not in col_source
 
 
+def test_2p20_distributed_radix32_uses_pair_shuffle_and_one_exchange(
+    kernels,
+) -> None:
+    plan = kernels.LeafPlan(
+        length=1024,
+        factors=(32, 32),
+        remainder=1,
+        lanes=32,
+        num_warps=2,
+        generic_radices=(32,),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    row_name, row_source = kernels._build_four_step_row_kernel_source(plan, 1024, 1024)
+    col_name, col_source = kernels._build_four_step_col_kernel_source(plan, 1024, 1024)
+
+    assert "distributed" in row_name
+    assert "distributed" in col_name
+    assert row_source.count(") = _fwd_rad16_b1(") == 2
+    assert row_source.count("shfl.sync.bfly.b32") == 64
+    assert row_source.count("tl.debug_barrier()") == 1
+    assert row_source.count("tle.gpu.alloc") == 2
+    assert "tw1_r_ptr" in row_source
+    assert "dft32_r_ptr" in row_source
+    assert row_source.count("ld.global.v2.f32") == 32
+    assert col_source.count("ld.global.v2.f32") == 16
+    assert row_source.count("st.global.v2.f32") == 16
+    assert col_source.count("st.global.v2.f32") == 16
+    assert "tle.load(twiddle_ptr" not in row_source
+    assert "twiddle_ptr" not in col_source
+
+
 def test_16384_four_step_keeps_measured_kernel_contract(kernels) -> None:
     row_plan = kernels.LeafPlan(
         length=256,
