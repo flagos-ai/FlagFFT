@@ -146,6 +146,8 @@ def _metadata(
     num_warps = int(plan.num_warps)
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
+    if "_thread_local_" in kernel_name:
+        num_warps = 4
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

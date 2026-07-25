@@ -576,25 +576,58 @@ def _emit_natural_order_codelet_call(
 
 
 def _emit_radix16_codelet_call(
-    indent: str, direction: Literal["forward", "inverse"]
+    indent: str,
+    direction: Literal["forward", "inverse"],
+    offset: int = 0,
 ) -> list[str]:
     lines: list[str] = []
+    indices = [offset + idx for idx in range(16)]
     if direction == "inverse":
-        for idx in range(16):
+        for idx in indices:
             lines.append(f"{indent}i{idx} = -i{idx}")
     lines.append(f"{indent}(")
-    for idx in range(16):
+    for idx in indices:
         lines.append(f"{indent}    r{idx},")
-    for idx in range(16):
+    for idx in indices:
         lines.append(f"{indent}    i{idx},")
-    lines.append(
-        f"{indent}) = _fwd_rad16_b1("
-        "r0, r8, r4, r12, r2, r10, r6, r14, r1, r9, r5, r13, r3, r11, r7, r15, "
-        "i0, i8, i4, i12, i2, i10, i6, i14, i1, i9, i5, i13, i3, i11, i7, i15)"
+    radix16_order = (0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15)
+    args = ", ".join(
+        [
+            *(f"r{offset + idx}" for idx in radix16_order),
+            *(f"i{offset + idx}" for idx in radix16_order),
+        ]
     )
+    lines.append(f"{indent}) = _fwd_rad16_b1({args})")
     if direction == "inverse":
-        for idx in range(16):
+        for idx in indices:
             lines.append(f"{indent}i{idx} = -i{idx}")
+    return lines
+
+
+def _emit_local_radix32_codelet_call(
+    indent: str, direction: Literal["forward", "inverse"]
+) -> list[str]:
+    """Emit a radix-32 FFT whose complete working set is owned by one thread."""
+    lines = _emit_radix16_codelet_call(indent, direction)
+    lines.extend(_emit_radix16_codelet_call(indent, direction, offset=16))
+    sign = _direction_sign(direction)
+    for idx in range(16):
+        wr = _fmt_const(math.cos(sign * 2.0 * math.pi * idx / 32.0))
+        wi = _fmt_const(math.sin(sign * 2.0 * math.pi * idx / 32.0))
+        lines.extend(
+            [
+                (
+                    f"{indent}odd_tw_r{idx}, odd_tw_i{idx} = "
+                    f"_cmul(r{idx + 16}, i{idx + 16}, {wr}, {wi})"
+                ),
+                f"{indent}even_r{idx} = r{idx}",
+                f"{indent}even_i{idx} = i{idx}",
+                f"{indent}r{idx} = even_r{idx} + odd_tw_r{idx}",
+                f"{indent}i{idx} = even_i{idx} + odd_tw_i{idx}",
+                f"{indent}r{idx + 16} = even_r{idx} - odd_tw_r{idx}",
+                f"{indent}i{idx + 16} = even_i{idx} - odd_tw_i{idx}",
+            ]
+        )
     return lines
 
 
@@ -1103,7 +1136,7 @@ def _leaf_kernel_params_for_io(
     return params
 
 
-def _use_distributed_radix32_leaf(
+def _use_thread_local_radix32_leaf(
     plan: LeafPlan,
     *,
     io_mode: LeafIoMode,
@@ -1118,47 +1151,6 @@ def _use_distributed_radix32_leaf(
         and four_step_n1 == 1024
         and four_step_n2 == 1024
     )
-
-
-def _emit_distributed_radix32_merge(
-    indent: str,
-    direction: Literal["forward", "inverse"],
-    shuffle_xor: int,
-) -> list[str]:
-    sign = 1.0 if direction == "inverse" else -1.0
-    lines: list[str] = []
-    for idx in range(16):
-        lines.append(
-            f"{indent}other_r{idx} = tl.inline_asm_elementwise("
-            f'"shfl.sync.bfly.b32 $0, $1, {shuffle_xor}, 0x1f, 0xffffffff;", '
-            f'"=f,f", [r{idx}], dtype=tl.float32, is_pure=True, pack=1)'
-        )
-        lines.append(
-            f"{indent}other_i{idx} = tl.inline_asm_elementwise("
-            f'"shfl.sync.bfly.b32 $0, $1, {shuffle_xor}, 0x1f, 0xffffffff;", '
-            f'"=f,f", [i{idx}], dtype=tl.float32, is_pure=True, pack=1)'
-        )
-        lines.append(
-            f"{indent}even_r{idx} = tl.where(pair_parity == 0, r{idx}, other_r{idx})"
-        )
-        lines.append(
-            f"{indent}even_i{idx} = tl.where(pair_parity == 0, i{idx}, other_i{idx})"
-        )
-        lines.append(
-            f"{indent}odd_r{idx} = tl.where(pair_parity == 0, other_r{idx}, r{idx})"
-        )
-        lines.append(
-            f"{indent}odd_i{idx} = tl.where(pair_parity == 0, other_i{idx}, i{idx})"
-        )
-        wr = repr(float(math.cos(sign * 2.0 * math.pi * idx / 32.0)))
-        wi = repr(float(math.sin(sign * 2.0 * math.pi * idx / 32.0)))
-        lines.append(
-            f"{indent}merge_r{idx}, merge_i{idx} = "
-            f"_cmul(odd_r{idx}, odd_i{idx}, {wr}, {wi})"
-        )
-        lines.append(f"{indent}r{idx} = even_r{idx} + pair_sign * merge_r{idx}")
-        lines.append(f"{indent}i{idx} = even_i{idx} + pair_sign * merge_i{idx}")
-    return lines
 
 
 def _distributed_join_tree(names: list[str]) -> str:
@@ -1199,18 +1191,18 @@ def _emit_distributed_split_tree(
     return lines
 
 
-def _build_distributed_radix32_four_step_kernel_source(
+def _build_thread_local_radix32_four_step_kernel_source(
     plan: LeafPlan,
     *,
     io_mode: Literal["four_step_row", "four_step_col"],
     four_step_n1: int,
     four_step_n2: int,
 ) -> tuple[str, str]:
-    # One radix-32 transform is split across an even/odd thread pair. Four
-    # independent 1024-point FFTs are interleaved so each CTA remains 256
-    # threads while the pair exchange stays inside a warp.
+    # Each thread owns a complete radix-32 working set. Four independent
+    # 1024-point FFTs are interleaved to retain coalesced row I/O while
+    # cutting the leaf from 64 to 32 logical threads.
     inner_pack = 4
-    physical_lanes = 64
+    physical_lanes = 32
     vector_block = physical_lanes * inner_pack
     smem_chunk = 8
     smem_chunk_dims = int(math.log2(smem_chunk))
@@ -1225,8 +1217,9 @@ def _build_distributed_radix32_four_step_kernel_source(
     )
     kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
     kernel_name = (
-        f"{io_mode}_{kernel_prefix}_kernel_32_32_distributed"
-        f"_n{four_step_n1}_{four_step_n2}_l{plan.lanes}_b64_t{smem_chunk}_v2g"
+        f"{io_mode}_{kernel_prefix}_kernel_32_32_thread_local"
+        f"_n{four_step_n1}_{four_step_n2}_l{plan.lanes}_b32_t{smem_chunk}"
+        "_v3g_twrec_nw4"
     )
 
     body: list[str] = ["@triton.jit", f"def {kernel_name}("]
@@ -1243,9 +1236,6 @@ def _build_distributed_radix32_four_step_kernel_source(
             f"    lane_vec = tl.arange(0, {vector_block})",
             f"    inner_slot = lane_vec % {inner_pack}",
             f"    fft_thread = lane_vec // {inner_pack}",
-            "    pair_id = fft_thread // 2",
-            "    pair_parity = fft_thread % 2",
-            "    pair_sign = 1.0 - 2.0 * pair_parity",
             "    four_step_inner = four_step_inner_base + inner_slot",
             f"    lane_mask = four_step_inner < {four_step_n1}",
             f"    smem_offset = inner_slot * {plan.smem_size}",
@@ -1264,9 +1254,12 @@ def _build_distributed_radix32_four_step_kernel_source(
         ]
     )
 
-    for idx in range(16):
+    for idx in range(32):
+        radix16_idx = idx % 16
+        radix32_parity = idx // 16
         body.append(
-            f"    input_idx{idx} = pair_id + 32 * " f"(pair_parity + {2 * idx})"
+            f"    input_idx{idx} = fft_thread + 32 * "
+            f"({2 * radix16_idx + radix32_parity})"
         )
         body.append(
             f"    src_idx{idx} = input_idx{idx} * {four_step_n2} + " "four_step_inner"
@@ -1283,19 +1276,17 @@ def _build_distributed_radix32_four_step_kernel_source(
             "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
         )
 
-    body.extend(_emit_radix16_codelet_call("    ", plan.direction))
-    body.extend(_emit_distributed_radix32_merge("    ", plan.direction, inner_pack))
+    body.extend(_emit_local_radix32_codelet_call("    ", plan.direction))
 
     body.append(
         f"    smem_mask = tl.broadcast_to("
         f"tl.reshape(lane_mask, {vector_block}, {smem_reshape_dims}), "
         f"{vector_block}, {smem_block_dims})"
     )
-    for chunk_base in range(0, 16, smem_chunk):
+    for chunk_base in range(0, 32, smem_chunk):
         chunk_indices = range(chunk_base, chunk_base + smem_chunk)
         for idx in chunk_indices:
-            body.append(f"    freq{idx} = {idx} + 16 * pair_parity")
-            body.append(f"    tw_idx{idx} = pair_id + 32 * freq{idx}")
+            body.append(f"    tw_idx{idx} = fft_thread + {32 * idx}")
             body.append(
                 f"    tw_r{idx} = tl.load(tw1_r_ptr + tw_idx{idx}, "
                 "mask=lane_mask, other=0.0)"
@@ -1307,7 +1298,7 @@ def _build_distributed_radix32_four_step_kernel_source(
             body.append(
                 f"    r{idx}, i{idx} = " f"_cmul(r{idx}, i{idx}, tw_r{idx}, tw_i{idx})"
             )
-            body.append(f"    smem_logical{idx} = freq{idx} * 32 + pair_id")
+            body.append(f"    smem_logical{idx} = {idx * 32} + fft_thread")
             body.append(
                 f"    smem_phys{idx} = smem_logical{idx} ^ "
                 f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
@@ -1341,11 +1332,15 @@ def _build_distributed_radix32_four_step_kernel_source(
         )
     body.append("    tl.debug_barrier()")
 
-    for chunk_base in range(0, 16, smem_chunk):
+    for chunk_base in range(0, 32, smem_chunk):
         chunk_indices = range(chunk_base, chunk_base + smem_chunk)
         for idx in chunk_indices:
-            body.append(f"    second_input{idx} = pair_parity + {2 * idx}")
-            body.append(f"    smem_logical{idx} = pair_id * 32 + second_input{idx}")
+            radix16_idx = idx % 16
+            radix32_parity = idx // 16
+            body.append(
+                f"    smem_logical{idx} = fft_thread * 32 + "
+                f"{2 * radix16_idx + radix32_parity}"
+            )
             body.append(
                 f"    smem_phys{idx} = smem_logical{idx} ^ "
                 f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
@@ -1388,28 +1383,67 @@ def _build_distributed_radix32_four_step_kernel_source(
             )
         )
 
-    body.extend(_emit_radix16_codelet_call("    ", plan.direction))
-    body.extend(_emit_distributed_radix32_merge("    ", plan.direction, inner_pack))
+    body.extend(_emit_local_radix32_codelet_call("    ", plan.direction))
 
-    for idx in range(16):
-        body.append(f"    output_k1{idx} = {idx} + 16 * pair_parity")
-        body.append(f"    out_idx{idx} = pair_id + 32 * output_k1{idx}")
+    if include_outer_twiddle:
+        outer_twiddle_scale = (
+            _direction_sign(plan.direction)
+            * 2.0
+            * math.pi
+            / (four_step_n1 * four_step_n2)
+        )
+        body.extend(
+            [
+                ("    outer_base_idx = fft_thread"),
+                (
+                    "    outer_base_angle = four_step_inner * outer_base_idx * "
+                    f"{outer_twiddle_scale:.17g}"
+                ),
+                (
+                    "    outer_step_angle = four_step_inner * 32 * "
+                    f"{outer_twiddle_scale:.17g}"
+                ),
+                (
+                    "    outer_tw_i, outer_tw_r = tl.inline_asm_elementwise("
+                    '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
+                    '"=f,=f,f", [outer_base_angle], '
+                    "dtype=(tl.float32, tl.float32), is_pure=True, pack=1)"
+                ),
+                (
+                    "    outer_step_i, outer_step_r = tl.inline_asm_elementwise("
+                    '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
+                    '"=f,=f,f", [outer_step_angle], '
+                    "dtype=(tl.float32, tl.float32), is_pure=True, pack=1)"
+                ),
+            ]
+        )
+
+    for idx in range(32):
+        body.append(f"    out_idx{idx} = fft_thread + {32 * idx}")
         if include_outer_twiddle:
             body.append(
                 f"    dst_idx{idx} = "
                 f"four_step_inner * {four_step_n1} + out_idx{idx}"
             )
             body.append(
-                f"    outer_tw_r{idx}, outer_tw_i{idx} = "
-                "tl.inline_asm_elementwise("
-                '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
-                f"[tl.cast(twiddle_ptr + dst_idx{idx} * 2, tl.uint64)], "
-                "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+                f"    r{idx}, i{idx} = "
+                f"_cmul(r{idx}, i{idx}, outer_tw_r, outer_tw_i)"
             )
-            body.append(
-                f"    r{idx}, i{idx} = _cmul("
-                f"r{idx}, i{idx}, outer_tw_r{idx}, outer_tw_i{idx})"
-            )
+            if idx < 31:
+                body.extend(
+                    [
+                        (
+                            "    outer_next_r = "
+                            "outer_tw_r * outer_step_r - outer_tw_i * outer_step_i"
+                        ),
+                        (
+                            "    outer_next_i = "
+                            "outer_tw_i * outer_step_r + outer_tw_r * outer_step_i"
+                        ),
+                        "    outer_tw_r = outer_next_r",
+                        "    outer_tw_i = outer_next_i",
+                    ]
+                )
         else:
             body.append(
                 f"    dst_idx{idx} = "
@@ -1435,13 +1469,13 @@ def _build_leaf_kernel_source_for_io(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
 ) -> tuple[str, str]:
-    if _use_distributed_radix32_leaf(
+    if _use_thread_local_radix32_leaf(
         plan,
         io_mode=io_mode,
         four_step_n1=four_step_n1,
         four_step_n2=four_step_n2,
     ):
-        return _build_distributed_radix32_four_step_kernel_source(
+        return _build_thread_local_radix32_four_step_kernel_source(
             plan,
             io_mode=io_mode,
             four_step_n1=four_step_n1,

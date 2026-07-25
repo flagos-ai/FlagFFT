@@ -146,8 +146,8 @@ def test_2p20_four_step_moves_twiddle_to_tle_row_pipeline(kernels) -> None:
     assert "smem_a_r = tle.gpu.alloc" not in col_source
 
 
-def test_2p20_distributed_radix32_uses_pair_shuffle_and_one_exchange(
-    kernels,
+def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
+    kernels, jit_source, tmp_path
 ) -> None:
     plan = kernels.LeafPlan(
         length=1024,
@@ -163,20 +163,36 @@ def test_2p20_distributed_radix32_uses_pair_shuffle_and_one_exchange(
     row_name, row_source = kernels._build_four_step_row_kernel_source(plan, 1024, 1024)
     col_name, col_source = kernels._build_four_step_col_kernel_source(plan, 1024, 1024)
 
-    assert "distributed" in row_name
-    assert "distributed" in col_name
-    assert row_source.count(") = _fwd_rad16_b1(") == 2
-    assert row_source.count("shfl.sync.bfly.b32") == 64
+    assert "thread_local" in row_name
+    assert "thread_local" in col_name
+    assert row_source.count(") = _fwd_rad16_b1(") == 4
+    assert col_source.count(") = _fwd_rad16_b1(") == 4
+    assert "shfl.sync.bfly.b32" not in row_source
+    assert "tl.arange(0, 128)" in row_source
     assert row_source.count("tl.debug_barrier()") == 1
     assert row_source.count("tle.gpu.alloc") == 2
     assert "tw1_r_ptr" in row_source
     assert "dft32_r_ptr" in row_source
     assert row_source.count("ld.global.v2.f32") == 32
-    assert col_source.count("ld.global.v2.f32") == 16
-    assert row_source.count("st.global.v2.f32") == 16
-    assert col_source.count("st.global.v2.f32") == 16
+    assert col_source.count("ld.global.v2.f32") == 32
+    assert row_source.count("st.global.v2.f32") == 32
+    assert col_source.count("st.global.v2.f32") == 32
+    assert "sin.approx.f32" in row_source
     assert "tle.load(twiddle_ptr" not in row_source
     assert "twiddle_ptr" not in col_source
+
+    metadata = jit_source._metadata(
+        module_path=tmp_path / "unused.py",
+        kernel_name=row_name,
+        arg_names=["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"],
+        plan=plan,
+        kernel_type="four_step_row",
+        n1=1024,
+        n2=1024,
+        dtype="complex64",
+    )
+    assert metadata["inner_pack"] == 4
+    assert metadata["num_warps"] == 4
 
 
 def test_16384_four_step_keeps_measured_kernel_contract(kernels) -> None:
