@@ -5,37 +5,45 @@
 namespace flagfft {
 namespace {
 
-constexpr int64_t kLargeBatchFourStepMinBatch = 65;
-constexpr int64_t kSmallBatchFourStepMaxBatch = 8;
-constexpr double kMeasuredFourStepPenaltyScale = 100.0;
-constexpr std::string_view kMeasuredFourStepDeviceArch = "sm_80";
+  constexpr int64_t kLargeBatchFourStepMinBatch = 65;
+  constexpr int64_t kSmallBatchFourStepMaxBatch = 8;
+  constexpr double kMeasuredFourStepPenaltyScale = 100.0;
+  constexpr std::string_view kMeasuredFourStepDeviceArch = "sm_80";
 
-int64_t measured_small_batch_four_step_n1(int64_t n, int64_t batch, const std::string &device_arch) {
-  if (device_arch != kMeasuredFourStepDeviceArch) {
+  int64_t measured_small_batch_four_step_n1(int64_t n, int64_t batch, const std::string &device_arch) {
+    if (device_arch != kMeasuredFourStepDeviceArch) {
+      return 0;
+    }
+    if (n == 8192 && batch > 1) {
+      return 128;
+    }
+    if (n == 16384) {
+      return 256;
+    }
+    if (n == (int64_t {1} << 20)) {
+      return 1024;
+    }
     return 0;
   }
-  if (n == 8192 && batch > 1) {
-    return 128;
-  }
-  if (n == 16384) {
-    return 256;
-  }
-  return 0;
-}
 
-int64_t measured_large_batch_four_step_n1(int64_t n, const std::string &dtype, const std::string &device_arch) {
-  if (device_arch != kMeasuredFourStepDeviceArch) {
+  int64_t measured_large_batch_four_step_n1(int64_t n,
+                                            const std::string &dtype,
+                                            const std::string &device_arch) {
+    if (device_arch != kMeasuredFourStepDeviceArch) {
+      return 0;
+    }
+    const bool is_double = dtype == "complex128" || dtype == "float64";
+    if (n == 8192) {
+      return is_double ? 256 : 128;
+    }
+    if (n == 16384) {
+      return is_double ? 512 : 256;
+    }
+    if (n == (int64_t {1} << 20)) {
+      return 1024;
+    }
     return 0;
   }
-  const bool is_double = dtype == "complex128" || dtype == "float64";
-  if (n == 8192) {
-    return is_double ? 256 : 128;
-  }
-  if (n == 16384) {
-    return is_double ? 512 : 256;
-  }
-  return 0;
-}
 
 }  // namespace
 

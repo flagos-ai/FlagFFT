@@ -6,6 +6,7 @@ endif()
 
 set(TEST_TARGETS
     test_plan
+    test_exec_c2c_2p20_tle
     test_exec_c2c_fwd_ct_s   test_exec_c2c_fwd_ct_b
     test_exec_c2c_fwd_bs_s   test_exec_c2c_fwd_bs_b
     test_exec_c2c_inv_ct_s   test_exec_c2c_inv_ct_b

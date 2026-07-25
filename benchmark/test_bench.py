@@ -2,7 +2,7 @@
 
 Run serially:  pytest benchmark/test_bench.py --flagfft-cli ./build/flagfft-cli
 If pytest-xdist is installed, add -p no:xdist to force serial execution.
-Suite selection: --bench-suite=smoke|typical|full (default: typical)
+Suite selection: --bench-suite=smoke|typical|full|2p20 (default: typical)
 """
 
 from __future__ import annotations

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from benchmark.utils.defaults import DEFAULTS
+from benchmark.utils.suites import SUITES
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,7 +51,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--bench-suite",
         default=None,
-        choices=["smoke", "typical", "full"],
+        choices=sorted(SUITES),
         help=f"Benchmark suite (default: {_DEFAULTS['suite']})",
     )
 

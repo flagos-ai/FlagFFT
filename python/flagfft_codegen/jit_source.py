@@ -24,7 +24,9 @@ from .kernels import (
     _build_twiddle_reshape_pack_kernel_source,
     contiguous_batch_pack_for,
     four_step_col_inner_pack_for,
+    four_step_row_inner_pack_for,
     lane_block_for,
+    use_tle_fused_twiddle,
 )
 
 _BLUESTEIN_BLOCK = 256
@@ -104,11 +106,31 @@ def _metadata(
         if kernel_type in {"leaf", "leaf_r2c", "leaf_c2r"}
         else 1
     )
+    tle_fused_twiddle = kernel_type.startswith("four_step_") and use_tle_fused_twiddle(
+        n1, n2
+    )
+    if kernel_type in {
+        "four_step_row",
+        "four_step_real_row",
+        "four_step_hermitian_row",
+    }:
+        inner_pack = four_step_row_inner_pack_for(n1, n2, dtype)
+    elif kernel_type in {
+        "four_step_col",
+        "four_step_r2c_col",
+        "four_step_c2r_col",
+    }:
+        inner_pack = four_step_col_inner_pack_for(n1, n2, dtype)
+    else:
+        inner_pack = 1
+    num_warps = int(plan.num_warps)
+    if tle_fused_twiddle:
+        num_warps = min(8, num_warps * inner_pack)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": int(plan.num_warps),
+        "num_warps": num_warps,
         "num_stages": 1,
         "batch_per_block": int(batch_per_block),
         "arg_names": arg_names,
@@ -119,6 +141,8 @@ def _metadata(
         "dtype": dtype,
         "n1": int(n1),
         "n2": int(n2),
+        "inner_pack": inner_pack,
+        "tle_fused_twiddle": tle_fused_twiddle,
     }
 
 
@@ -517,10 +541,6 @@ def emit_jit_kernel(
         n2=n2,
         dtype=dtype,
     )
-    if kernel == "four_step_col":
-        metadata["inner_pack"] = four_step_col_inner_pack_for(
-            four_step_n1, four_step_n2, dtype
-        )
     (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
     return metadata
 

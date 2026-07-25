@@ -7,6 +7,14 @@
 namespace flagfft {
 namespace {
 
+  inline constexpr int64_t kTleFusedTwiddleLength = int64_t {1} << 20;
+  inline constexpr int64_t kTleFusedTwiddleN1 = 1024;
+  inline constexpr int64_t kTleFusedTwiddleN2 = 1024;
+
+  bool use_tle_fused_twiddle(int64_t length, int64_t n1, int64_t n2) {
+    return length == kTleFusedTwiddleLength && n1 == kTleFusedTwiddleN1 && n2 == kTleFusedTwiddleN2;
+  }
+
   std::vector<JitKernelArg> raw_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
                                             const std::vector<DeviceAllocation> &tables,
                                             int64_t batch) {
@@ -102,11 +110,19 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
                                                     adaptor::DevicePtr output,
                                                     const RawExecutionContext &context) const {
   try {
-    std::vector<JitKernelArg> row_args = raw_kernel_args({input, stage1.get()}, row_tables, context.batch);
-    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
+    std::vector<JitKernelArg> row_args =
+        fused_twiddle ? raw_kernel_args({input, twiddle.get(), stage1.get()}, row_tables, context.batch)
+                      : raw_kernel_args({input, stage1.get()}, row_tables, context.batch);
+    row_kernel->launch(context.stream,
+                       row_args,
+                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
 
     std::vector<JitKernelArg> col_args =
-        raw_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, context.batch);
+        fused_twiddle ? raw_kernel_args({stage1.get(), output}, col_tables, context.batch)
+                      : raw_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, context.batch);
     col_kernel->launch(context.stream,
                        col_args,
                        ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
@@ -441,18 +457,17 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
   }
 }
 
-CompiledRawR2CFourStepHalfOutNode::CompiledRawR2CFourStepHalfOutNode(
-    int64_t length,
-    int64_t n1,
-    int64_t n2,
-    std::shared_ptr<JitKernel> expand_kernel,
-    std::shared_ptr<JitKernel> row_kernel,
-    std::vector<DeviceAllocation> row_tables,
-    std::shared_ptr<JitKernel> col_kernel,
-    std::vector<DeviceAllocation> col_tables,
-    DeviceAllocation twiddle,
-    DeviceAllocation complex_input,
-    DeviceAllocation stage1)
+CompiledRawR2CFourStepHalfOutNode::CompiledRawR2CFourStepHalfOutNode(int64_t length,
+                                                                     int64_t n1,
+                                                                     int64_t n2,
+                                                                     std::shared_ptr<JitKernel> expand_kernel,
+                                                                     std::shared_ptr<JitKernel> row_kernel,
+                                                                     std::vector<DeviceAllocation> row_tables,
+                                                                     std::shared_ptr<JitKernel> col_kernel,
+                                                                     std::vector<DeviceAllocation> col_tables,
+                                                                     DeviceAllocation twiddle,
+                                                                     DeviceAllocation complex_input,
+                                                                     DeviceAllocation stage1)
     : length(length),
       n1(n1),
       n2(n2),
@@ -495,11 +510,24 @@ flagfftResult CompiledRawR2CFourStepHalfOutNode::execute(adaptor::DevicePtr inpu
     };
     expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
 
-    std::vector<JitKernelArg> row_args = raw_kernel_args({complex_input.get(), stage1.get()}, row_tables, context.batch);
-    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
+    std::vector<JitKernelArg> row_args =
+        fused_twiddle
+            ? raw_kernel_args({complex_input.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
+            : raw_kernel_args({complex_input.get(), stage1.get()}, row_tables, context.batch);
+    row_kernel->launch(context.stream,
+                       row_args,
+                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
 
     std::vector<JitKernelArg> col_args =
-        raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, output_distance, context.batch);
+        fused_twiddle
+            ? raw_distance_col_kernel_args({stage1.get(), output}, col_tables, output_distance, context.batch)
+            : raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output},
+                                           col_tables,
+                                           output_distance,
+                                           context.batch);
     col_kernel->launch(context.stream,
                        col_args,
                        ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
@@ -553,12 +581,27 @@ flagfftResult CompiledRawR2CFourStepRealInHalfOutNode::execute(adaptor::DevicePt
                                             : (context.input_distance > 0 ? context.input_distance : length);
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
 
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
     std::vector<JitKernelArg> row_args =
-        raw_distance_col_kernel_args({input, stage1.get()}, row_tables, input_distance, context.batch);
-    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+        fused_twiddle
+            ? raw_distance_col_kernel_args({input, twiddle.get(), stage1.get()},
+                                           row_tables,
+                                           input_distance,
+                                           context.batch)
+            : raw_distance_col_kernel_args({input, stage1.get()}, row_tables, input_distance, context.batch);
+    row_kernel->launch(context.stream,
+                       row_args,
+                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
 
     std::vector<JitKernelArg> col_args =
-        raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, output_distance, context.batch);
+        fused_twiddle
+            ? raw_distance_col_kernel_args({stage1.get(), output}, col_tables, output_distance, context.batch)
+            : raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output},
+                                           col_tables,
+                                           output_distance,
+                                           context.batch);
     col_kernel->launch(context.stream,
                        col_args,
                        ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
@@ -680,18 +723,17 @@ flagfftResult CompiledRawC2RLeafNode::execute(adaptor::DevicePtr input,
   }
 }
 
-CompiledRawC2RFourStepRealOutNode::CompiledRawC2RFourStepRealOutNode(
-    int64_t length,
-    int64_t n1,
-    int64_t n2,
-    std::shared_ptr<JitKernel> expand_kernel,
-    std::shared_ptr<JitKernel> row_kernel,
-    std::vector<DeviceAllocation> row_tables,
-    std::shared_ptr<JitKernel> col_kernel,
-    std::vector<DeviceAllocation> col_tables,
-    DeviceAllocation twiddle,
-    DeviceAllocation full_input,
-    DeviceAllocation stage1)
+CompiledRawC2RFourStepRealOutNode::CompiledRawC2RFourStepRealOutNode(int64_t length,
+                                                                     int64_t n1,
+                                                                     int64_t n2,
+                                                                     std::shared_ptr<JitKernel> expand_kernel,
+                                                                     std::shared_ptr<JitKernel> row_kernel,
+                                                                     std::vector<DeviceAllocation> row_tables,
+                                                                     std::shared_ptr<JitKernel> col_kernel,
+                                                                     std::vector<DeviceAllocation> col_tables,
+                                                                     DeviceAllocation twiddle,
+                                                                     DeviceAllocation full_input,
+                                                                     DeviceAllocation stage1)
     : length(length),
       n1(n1),
       n2(n2),
@@ -735,11 +777,24 @@ flagfftResult CompiledRawC2RFourStepRealOutNode::execute(adaptor::DevicePtr inpu
     };
     expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
 
-    std::vector<JitKernelArg> row_args = raw_kernel_args({full_input.get(), stage1.get()}, row_tables, context.batch);
-    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
+    std::vector<JitKernelArg> row_args =
+        fused_twiddle
+            ? raw_kernel_args({full_input.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
+            : raw_kernel_args({full_input.get(), stage1.get()}, row_tables, context.batch);
+    row_kernel->launch(context.stream,
+                       row_args,
+                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
 
     std::vector<JitKernelArg> col_args =
-        raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, output_distance, context.batch);
+        fused_twiddle
+            ? raw_distance_col_kernel_args({stage1.get(), output}, col_tables, output_distance, context.batch)
+            : raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output},
+                                           col_tables,
+                                           output_distance,
+                                           context.batch);
     col_kernel->launch(context.stream,
                        col_args,
                        ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
@@ -794,12 +849,27 @@ flagfftResult CompiledRawC2RFourStepCompactInRealOutNode::execute(adaptor::Devic
                                         ? std::max(context.output_distance, padded_real_distance)
                                         : (context.output_distance > 0 ? context.output_distance : length);
 
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
     std::vector<JitKernelArg> row_args =
-        raw_distance_col_kernel_args({input, stage1.get()}, row_tables, input_distance, context.batch);
-    row_kernel->launch(context.stream, row_args, n2, context.batch, 1);
+        fused_twiddle
+            ? raw_distance_col_kernel_args({input, twiddle.get(), stage1.get()},
+                                           row_tables,
+                                           input_distance,
+                                           context.batch)
+            : raw_distance_col_kernel_args({input, stage1.get()}, row_tables, input_distance, context.batch);
+    row_kernel->launch(context.stream,
+                       row_args,
+                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
+                       context.batch,
+                       1);
 
     std::vector<JitKernelArg> col_args =
-        raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, output_distance, context.batch);
+        fused_twiddle
+            ? raw_distance_col_kernel_args({stage1.get(), output}, col_tables, output_distance, context.batch)
+            : raw_distance_col_kernel_args({stage1.get(), twiddle.get(), output},
+                                           col_tables,
+                                           output_distance,
+                                           context.batch);
     col_kernel->launch(context.stream,
                        col_args,
                        ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),

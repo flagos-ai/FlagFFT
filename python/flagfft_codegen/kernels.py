@@ -16,7 +16,13 @@ _FOUR_STEP_TILE_ROWS = 32
 _FOUR_STEP_TILE_COLS = 32
 _FOUR_STEP_NUM_WARPS = 4
 _FOUR_STEP_COL_INNER_PACK = 2
+_FOUR_STEP_COL_LARGE_INNER_PACK = 4
+_FOUR_STEP_ROW_LARGE_INNER_PACK = 2
 _FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
+_TLE_FUSED_TWIDDLE_LENGTH = 1 << 20
+_TLE_FUSED_TWIDDLE_N1 = 1024
+_TLE_FUSED_TWIDDLE_N2 = 1024
+_TLE_SMEM_SWIZZLE_SHIFT = 5
 _LEAF_PACK_TARGET_THREADS = 32
 _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
@@ -109,9 +115,26 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
 def four_step_col_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
     if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
         return 1
+    if use_tle_fused_twiddle(n1, n2) and not _is_double_dtype(dtype):
+        return _FOUR_STEP_COL_LARGE_INNER_PACK
     if dtype in ("complex128", "float64") and n2 > 1024:
         return 1
     return _FOUR_STEP_COL_INNER_PACK
+
+
+def four_step_row_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
+    if use_tle_fused_twiddle(n1, n2) and not _is_double_dtype(dtype):
+        return _FOUR_STEP_ROW_LARGE_INNER_PACK
+    return 1
+
+
+def use_tle_fused_twiddle(n1: int, n2: int) -> bool:
+    """Use the 2^20-only TLE pipeline that moves twiddle work to the row pass."""
+    return (
+        n1 * n2 == _TLE_FUSED_TWIDDLE_LENGTH
+        and n1 == _TLE_FUSED_TWIDDLE_N1
+        and n2 == _TLE_FUSED_TWIDDLE_N2
+    )
 
 
 @triton.jit
@@ -554,6 +577,7 @@ def _emit_stage_block(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
     smem_pack: int = 1,
+    fuse_twiddle_into_row: bool = False,
     direction: Literal["forward", "inverse"] = "forward",
     dtype: str = "complex64",
 ) -> list[str]:
@@ -575,6 +599,13 @@ def _emit_stage_block(
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
             lines.append(f"{indent}phys{j} = logical_phys{j}")
+        if fuse_twiddle_into_row and stage > 0:
+            lines.append(
+                f"{indent}smem_phys{j} = logical_phys{j} ^ "
+                f"(logical_phys{j} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+            )
+            if smem_pack > 1:
+                lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
         lines.extend(_emit_input_base(indent, factors, lanes, f"group_{stage}"))
     if is_last:
@@ -640,7 +671,9 @@ def _emit_stage_block(
             elif io_mode == "four_step_hermitian_row":
                 full_n = four_step_n1 * four_step_n2
                 half_n = full_n // 2 + 1
-                nyquist_guard = f" | (src_idx{j} == {full_n // 2})" if full_n % 2 == 0 else ""
+                nyquist_guard = (
+                    f" | (src_idx{j} == {full_n // 2})" if full_n % 2 == 0 else ""
+                )
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
                 )
@@ -656,7 +689,9 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
                 )
-                lines.append(f"{indent}i{j} = tl.where(src_idx{j} < {half_n}, i{j}, -i{j})")
+                lines.append(
+                    f"{indent}i{j} = tl.where(src_idx{j} < {half_n}, i{j}, -i{j})"
+                )
                 lines.append(
                     f"{indent}i{j} = tl.where((src_idx{j} == 0){nyquist_guard}, 0.0, i{j})"
                 )
@@ -664,30 +699,41 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
-                lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
-                    f"mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
-                    f"mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
-                )
+                if fuse_twiddle_into_row:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                        f"mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                        f"mask=lane_mask, other={zero})"
+                    )
+                else:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                        f"mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                        f"mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
+                    )
         else:
+            load_index = f"smem_phys{j}" if fuse_twiddle_into_row else f"phys{j}"
             lines.append(
-                f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, (phys{j},)), "
+                f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, ({load_index},)), "
                 f"mask=lane_mask, other={zero})"
             )
             lines.append(
-                f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, (phys{j},)), "
+                f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, ({load_index},)), "
                 f"mask=lane_mask, other={zero})"
             )
             lines.append(
@@ -735,20 +781,42 @@ def _emit_stage_block(
                     f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
                 )
             elif io_mode == "contiguous_r2c":
-                lines.append(f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {n // 2 + 1})")
+                lines.append(
+                    f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {n // 2 + 1})"
+                )
                 lines.append(
                     f"{indent}dst_ptr{j} = out_ptr + (output_batch_base + out_idx{j}) * 2"
                 )
-                lines.append(f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})")
-                lines.append(f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})")
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
+                )
             elif io_mode == "contiguous_c2r":
                 lines.append(
                     f"{indent}tl.store(out_ptr + output_batch_base + out_idx{j}, r{j}, mask=lane_mask)"
                 )
-            elif io_mode in {"four_step_row", "four_step_real_row", "four_step_hermitian_row"}:
+            elif io_mode in {
+                "four_step_row",
+                "four_step_real_row",
+                "four_step_hermitian_row",
+            }:
                 lines.append(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
                 )
+                if fuse_twiddle_into_row:
+                    lines.append(
+                        f"{indent}tw_r{j} = tle.load(twiddle_ptr + dst_idx{j} * 2, "
+                        f"mask=lane_mask, other={zero}, is_async=True)"
+                    )
+                    lines.append(
+                        f"{indent}tw_i{j} = tle.load(twiddle_ptr + dst_idx{j} * 2 + 1, "
+                        f"mask=lane_mask, other={zero}, is_async=True)"
+                    )
+                    lines.append(
+                        f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
+                    )
                 lines.append(
                     f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
                 )
@@ -765,8 +833,12 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * output_distance + dst_idx{j}) * 2"
                 )
-                lines.append(f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})")
-                lines.append(f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})")
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
+                )
             elif io_mode == "four_step_c2r_col":
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
@@ -788,7 +860,15 @@ def _emit_stage_block(
         else:
             lines.extend(_emit_route_index(indent, f"dst{j}", stage, factors, lanes, j))
             store_index = f"dst{j}"
-            if smem_pack > 1:
+            if fuse_twiddle_into_row:
+                lines.append(
+                    f"{indent}smem_dst{j} = dst{j} ^ "
+                    f"(dst{j} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+                )
+                if smem_pack > 1:
+                    lines.append(f"{indent}smem_dst{j} += smem_offset")
+                store_index = f"smem_dst{j}"
+            elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
                 store_index = f"smem_dst{j}"
             lines.append(
@@ -864,11 +944,23 @@ def _build_leaf_kernel_source_for_io(
         if io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"}
         else 1
     )
-    inner_pack = (
-        four_step_col_inner_pack_for(four_step_n1, four_step_n2, plan.dtype)
-        if io_mode in {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"}
-        else 1
-    )
+    row_modes = {
+        "four_step_row",
+        "four_step_real_row",
+        "four_step_hermitian_row",
+    }
+    col_modes = {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"}
+    if io_mode in row_modes:
+        inner_pack = four_step_row_inner_pack_for(
+            four_step_n1, four_step_n2, plan.dtype
+        )
+    elif io_mode in col_modes:
+        inner_pack = four_step_col_inner_pack_for(
+            four_step_n1, four_step_n2, plan.dtype
+        )
+    else:
+        inner_pack = 1
+    fuse_twiddle_into_row = use_tle_fused_twiddle(four_step_n1, four_step_n2)
     smem_pack = max(batch_pack, inner_pack)
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
@@ -876,8 +968,16 @@ def _build_leaf_kernel_source_for_io(
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
-        include_four_step_twiddle=io_mode
-        in {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"},
+        include_four_step_twiddle=(
+            io_mode
+            in {
+                "four_step_row",
+                "four_step_real_row",
+                "four_step_hermitian_row",
+            }
+            if fuse_twiddle_into_row
+            else io_mode in {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"}
+        ),
     )
 
     suffix = "_".join(str(x) for x in factors)
@@ -908,7 +1008,7 @@ def _build_leaf_kernel_source_for_io(
         body.append("    if batch_id >= nbatch:")
         body.append("        return")
     else:
-        if io_mode in {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"} and inner_pack > 1:
+        if io_mode in row_modes | col_modes and inner_pack > 1:
             body.append(f"    four_step_inner_base = tl.program_id(0) * {inner_pack}")
         else:
             body.append("    four_step_inner = tl.program_id(0)")
@@ -936,7 +1036,7 @@ def _build_leaf_kernel_source_for_io(
             body.append("    input_batch_base = current_batch * input_distance")
             body.append("    output_batch_base = current_batch * output_distance")
     else:
-        if io_mode in {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"} and inner_pack > 1:
+        if io_mode in row_modes | col_modes and inner_pack > 1:
             body.append(f"    inner_slot = lane_vec % {inner_pack}")
             body.append(f"    lane = lane_vec // {inner_pack}")
             body.append("    four_step_inner = four_step_inner_base + inner_slot")
@@ -982,6 +1082,7 @@ def _build_leaf_kernel_source_for_io(
                 four_step_n1=four_step_n1,
                 four_step_n2=four_step_n2,
                 smem_pack=smem_pack,
+                fuse_twiddle_into_row=fuse_twiddle_into_row,
                 direction=plan.direction,
                 dtype=plan.dtype,
             )
@@ -1055,7 +1156,11 @@ def _build_direct_dft_kernel_source(
             tl.store(dst + 1, acc_i, mask=mask)
         """
     )
-    return kernel_name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+    return (
+        kernel_name,
+        source,
+        ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"],
+    )
 
 
 def _build_reshape_pack_kernel_source(
@@ -1281,6 +1386,7 @@ __all__ = [
     "_FOUR_STEP_NUM_WARPS",
     "_FOUR_STEP_COL_INNER_PACK",
     "four_step_col_inner_pack_for",
+    "four_step_row_inner_pack_for",
     "_FOUR_STEP_TILE_COLS",
     "_FOUR_STEP_TILE_ROWS",
     "_build_direct_dft_kernel_source",

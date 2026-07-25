@@ -4,6 +4,16 @@ import csv
 import io
 
 from benchmark.utils.report import generate_console_table, generate_csv
+from benchmark.utils.suites import expand_params, get_suite
+
+
+def test_2p20_suite_targets_c2c_forward_and_inverse() -> None:
+    params = list(expand_params(get_suite("2p20")))
+
+    assert params == [
+        (1 << 20, 1, "c2c", "forward"),
+        (1 << 20, 1, "c2c", "inverse"),
+    ]
 
 
 def test_generate_csv_writes_ref_median_ms_from_cli_timing() -> None:

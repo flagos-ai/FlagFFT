@@ -141,6 +141,12 @@ route: real-to-complex, half-spectrum pack, compact Hermitian expansion, and
 complex-to-real pack. Rank>1 and unsupported custom rank-1 layouts keep
 returning `FLAGFFT_NOT_SUPPORTED`.
 
+The `2^20` fused Four-Step route uses a `1024 x 1024` decomposition. Its
+Triton/TLE kernels prefetch and apply the twiddle in the row pass, where the
+twiddle table is contiguous, pack two adjacent row FFTs and four adjacent
+column FFTs per block, and XOR-swizzle the shared-memory indices to reduce bank
+conflicts. The existing measured `8192` and `16384` kernel contracts are unchanged.
+
 ## Build
 
 Configure and build the C++ library. The optional native validation,
@@ -382,6 +388,10 @@ cmake --build build --target flagfft-cli
 # Smoke benchmark suite
 pytest benchmark/test_bench.py -v --bench-suite=smoke \
   --flagfft-cli ./build/flagfft-cli
+
+# Focused 2^20 C2C benchmark against cuFFT
+pytest benchmark/test_bench.py -v --bench-suite=2p20 \
+  --flagfft-cli ./build/flagfft-cli
 # Add -p no:xdist if pytest-xdist is installed
 ```
 
@@ -392,13 +402,16 @@ pytest benchmark/test_bench.py -v --bench-suite=smoke \
 | Smoke | 16, 256, 2048 | 3 |
 | Typical | All sizes at batch 1, plus selected multi-batch cases | 13 sizes |
 | Full | 16, 23, 64, 81, 243, 256, 361, 512, 997, 2048, 4096, 8192, 16384 | 13 sizes |
+| 2p20 | 1048576, batch 1, C2C forward and inverse | 1 size |
 
 The full suite covers powers of two (`16`–`16384`), primes (`23`, `997`),
 composite non-powers-of-two (`81`, `243`, `361`), and mixed factors.
 
-Each suite expands all six APIs with their valid directions: `c2c` and `z2z`
+The smoke, typical, and full suites expand all six APIs with their valid
+directions: `c2c` and `z2z`
 use both `forward` and `inverse`; `r2c` and `d2z` use `forward`; `c2r` and
-`z2d` use `inverse`. Quick CLI verification asserts:
+`z2d` use `inverse`. The focused `2p20` suite runs C2C forward and inverse.
+Quick CLI verification asserts:
 - CLI exit code 0
 - `timing.flagfft_median_ms > 0`
 - `timing.ref_median_ms > 0`
@@ -421,7 +434,7 @@ pytest benchmark/test_bench.py -v \
 | `--flagfft-cli` | `build/flagfft-cli` or `$FLAGFFT_CLI_EXE` | Path to the CLI binary |
 | `--bench-warmup` | 10 | Warmup iterations before timing |
 | `--bench-iters` | 100 | Timed benchmark iterations |
-| `--bench-suite` | `typical` | Suite: `smoke`, `typical`, or `full` |
+| `--bench-suite` | `typical` | Suite: `smoke`, `typical`, `full`, or `2p20` |
 | `--bench-csv` | auto path | CSV output path; empty string disables CSV |
 
 If no CUDA device is available, tests are skipped automatically.

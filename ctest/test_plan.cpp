@@ -126,6 +126,16 @@ TEST(Plan1D, SmallBatch16384UsesMeasuredSplit) {
   EXPECT_EQ(flagfftDestroy(plan16384z), FLAGFFT_SUCCESS);
 }
 
+TEST(Plan1D, Size2P20UsesTleOptimizedSplit) {
+  setenv("FLAGFFT_TUNE_DISABLE", "1", 1);
+
+  flagfftHandle plan = nullptr;
+  ASSERT_EQ(flagfftPlan1d(&plan, 1 << 20, FLAGFFT_C2C, 1), FLAGFFT_SUCCESS);
+  ExpectPlanContains(plan, "FourStep(n=1048576, n1=1024, n2=1024)");
+  ExpectPlanContains(plan, "CompiledRawFourStepFused(n=1048576");
+  EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
+}
+
 TEST(Plan1D, BatchFour8192UsesMeasuredSplit) {
   setenv("FLAGFFT_TUNE_DISABLE", "1", 1);
 

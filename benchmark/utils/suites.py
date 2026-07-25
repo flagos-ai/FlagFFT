@@ -34,7 +34,10 @@ TYPICAL = {
 # Full (312 cases): all sizes x all batches x all API/direction combos
 FULL = {"sizes": ALL_SIZES, "batches": ALL_BATCHES}
 
-SUITES = {"smoke": SMOKE, "typical": TYPICAL, "full": FULL}
+# Focused TLE optimization target: 2^20 C2C, forward and inverse, batch=1.
+TLE_2P20 = {"sizes": [1 << 20], "batches": [1], "apis": ["c2c"]}
+
+SUITES = {"smoke": SMOKE, "typical": TYPICAL, "full": FULL, "2p20": TLE_2P20}
 
 
 def get_suite(name: str) -> dict:
@@ -50,7 +53,7 @@ def expand_params(suite: dict):
     Handles the 'extra' key for TYPICAL suite: additional (size, batch)
     pairs beyond the base sizes x batches cross product.
     """
-    apis = ALL_APIS
+    apis = suite.get("apis", ALL_APIS)
     seen = set()
 
     # Base: sizes x batches x apis
