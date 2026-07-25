@@ -108,7 +108,7 @@ def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex64") == 4
     assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex128") == 2
     assert kernels.four_step_col_inner_pack_for(512, 2048, "complex64") == 2
-    assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex64") == 2
+    assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex64") == 4
     assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex128") == 1
     assert kernels.use_tle_fused_twiddle(1024, 1024)
     assert not kernels.use_tle_fused_twiddle(512, 2048)
@@ -134,12 +134,16 @@ def test_2p20_four_step_moves_twiddle_to_tle_row_pipeline(kernels) -> None:
     assert "is_async=True" in row_source
     assert "tl.range(0," in row_source
     assert "num_stages=2" not in row_source
-    assert "tl.arange(0, 128)" in row_source
+    assert "tl.arange(0, 256)" in row_source
+    assert row_source.count("tl.debug_barrier()") == 3
+    assert "smem_a_r = tle.gpu.alloc" not in row_source
     assert "smem_dst0 = dst0 ^ (dst0 >> 5)" in row_source
     assert "smem_phys0 = logical_phys0 ^ (logical_phys0 >> 5)" in row_source
     assert "twiddle_ptr" not in col_source
     assert "tl.load(in_ptr" in col_source
     assert "tl.arange(0, 256)" in col_source
+    assert col_source.count("tl.debug_barrier()") == 3
+    assert "smem_a_r = tle.gpu.alloc" not in col_source
 
 
 def test_16384_four_step_keeps_measured_kernel_contract(kernels) -> None:
@@ -243,7 +247,7 @@ def test_2p20_col_metadata_uses_tle_pipeline_and_eight_warps(
     assert metadata["tle_fused_twiddle"] is True
 
 
-def test_2p20_row_metadata_packs_two_ffts_into_four_warps(
+def test_2p20_row_metadata_packs_four_ffts_into_eight_warps(
     kernels, jit_source, tmp_path
 ) -> None:
     plan = kernels.LeafPlan(
@@ -268,8 +272,8 @@ def test_2p20_row_metadata_packs_two_ffts_into_four_warps(
         dtype="complex64",
     )
 
-    assert metadata["inner_pack"] == 2
-    assert metadata["num_warps"] == 4
+    assert metadata["inner_pack"] == 4
+    assert metadata["num_warps"] == 8
 
 
 def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:

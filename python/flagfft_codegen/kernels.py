@@ -30,8 +30,7 @@ _FOUR_STEP_TILE_ROWS = 32
 _FOUR_STEP_TILE_COLS = 32
 _FOUR_STEP_NUM_WARPS = 4
 _FOUR_STEP_COL_INNER_PACK = 2
-_FOUR_STEP_COL_LARGE_INNER_PACK = 4
-_FOUR_STEP_ROW_LARGE_INNER_PACK = 2
+_FOUR_STEP_LARGE_INNER_PACK = 4
 _FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
 _TLE_FUSED_TWIDDLE_LENGTH = 1 << 20
 _TLE_FUSED_TWIDDLE_N1 = 1024
@@ -130,7 +129,7 @@ def four_step_col_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> 
     if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
         return 1
     if use_tle_fused_twiddle(n1, n2) and not _is_double_dtype(dtype):
-        return _FOUR_STEP_COL_LARGE_INNER_PACK
+        return _FOUR_STEP_LARGE_INNER_PACK
     if dtype in ("complex128", "float64") and n2 > 1024:
         return 1
     return _FOUR_STEP_COL_INNER_PACK
@@ -138,7 +137,7 @@ def four_step_col_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> 
 
 def four_step_row_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
     if use_tle_fused_twiddle(n1, n2) and not _is_double_dtype(dtype):
-        return _FOUR_STEP_ROW_LARGE_INNER_PACK
+        return _FOUR_STEP_LARGE_INNER_PACK
     return 1
 
 
@@ -148,6 +147,23 @@ def use_tle_fused_twiddle(n1: int, n2: int) -> bool:
         n1 * n2 == _TLE_FUSED_TWIDDLE_LENGTH
         and n1 == _TLE_FUSED_TWIDDLE_N1
         and n2 == _TLE_FUSED_TWIDDLE_N2
+    )
+
+
+def _use_single_smem_buffer(
+    plan: LeafPlan,
+    *,
+    io_mode: LeafIoMode,
+    four_step_n1: int,
+    four_step_n2: int,
+) -> bool:
+    """Reuse one shared buffer between generated mixed-radix stages."""
+    return (
+        io_mode.startswith("four_step_")
+        and use_tle_fused_twiddle(four_step_n1, four_step_n2)
+        and plan.dtype == "complex64"
+        and plan.length == 1024
+        and len(plan.factors) > 2
     )
 
 
@@ -717,14 +733,23 @@ def _emit_stage_block(
     four_step_n2: int = 0,
     smem_pack: int = 1,
     fuse_twiddle_into_row: bool = False,
+    single_smem_buffer: bool = False,
     direction: Literal["forward", "inverse"] = "forward",
     dtype: str = "complex64",
 ) -> list[str]:
     radix = factors[stage]
     groups = n // (lanes * radix)
     is_last = stage == len(factors) - 1
-    source_buffer = None if stage == 0 else ("smem_b" if stage % 2 == 1 else "smem_a")
-    dest_buffer = None if is_last else ("smem_b" if stage % 2 == 0 else "smem_a")
+    source_buffer = (
+        None
+        if stage == 0
+        else ("smem_b" if single_smem_buffer or stage % 2 == 1 else "smem_a")
+    )
+    dest_buffer = (
+        None
+        if is_last
+        else ("smem_b" if single_smem_buffer or stage % 2 == 0 else "smem_a")
+    )
     zero = "0.0"
 
     lines = [f"    for group_{stage} in tl.range(0, {groups}):"]
@@ -882,6 +907,9 @@ def _emit_stage_block(
                 f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
             )
             lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
+
+    if single_smem_buffer and stage > 0 and not is_last:
+        lines.append(f"{indent}tl.debug_barrier()")
 
     if radix == 16:
         if direction == "inverse":
@@ -1100,6 +1128,12 @@ def _build_leaf_kernel_source_for_io(
     else:
         inner_pack = 1
     fuse_twiddle_into_row = use_tle_fused_twiddle(four_step_n1, four_step_n2)
+    single_smem_buffer = _use_single_smem_buffer(
+        plan,
+        io_mode=io_mode,
+        four_step_n1=four_step_n1,
+        four_step_n2=four_step_n2,
+    )
     smem_pack = max(batch_pack, inner_pack)
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
@@ -1192,14 +1226,15 @@ def _build_leaf_kernel_source_for_io(
 
     if len(factors) > 1:
         tl_dtype = _tl_real_dtype(plan.dtype)
-        body.append(
-            f"    smem_a_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
-            f"nv_mma_shared_layout=False)"
-        )
-        body.append(
-            f"    smem_a_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
-            f"nv_mma_shared_layout=False)"
-        )
+        if not single_smem_buffer:
+            body.append(
+                f"    smem_a_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+                f"nv_mma_shared_layout=False)"
+            )
+            body.append(
+                f"    smem_a_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+                f"nv_mma_shared_layout=False)"
+            )
         body.append(
             f"    smem_b_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
             f"nv_mma_shared_layout=False)"
@@ -1222,6 +1257,7 @@ def _build_leaf_kernel_source_for_io(
                 four_step_n2=four_step_n2,
                 smem_pack=smem_pack,
                 fuse_twiddle_into_row=fuse_twiddle_into_row,
+                single_smem_buffer=single_smem_buffer,
                 direction=plan.direction,
                 dtype=plan.dtype,
             )

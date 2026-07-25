@@ -17,8 +17,7 @@
 namespace flagfft {
 
 inline constexpr int64_t kFourStepColInnerPack = 2;
-inline constexpr int64_t kFourStepColLargeInnerPack = 4;
-inline constexpr int64_t kFourStepRowLargeInnerPack = 2;
+inline constexpr int64_t kFourStepLargeInnerPack = 4;
 inline constexpr int64_t kFourStepColInnerPackMinN1 = 128;
 inline constexpr int64_t kFourStepColInnerPackMaxN2F64 = 1024;
 inline constexpr int64_t kTleFusedTwiddleLength = int64_t {1} << 20;
@@ -31,7 +30,7 @@ int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2, const std::string &
   }
   if (n1 * n2 == kTleFusedTwiddleLength && n1 == kTleFusedTwiddleN1 && n2 == kTleFusedTwiddleN2 &&
       dtype != "complex128" && dtype != "float64") {
-    return kFourStepColLargeInnerPack;
+    return kFourStepLargeInnerPack;
   }
   if ((dtype == "complex128" || dtype == "float64") && n2 > kFourStepColInnerPackMaxN2F64) {
     // fp64 doubles per-element smem; pack=2 overflows A100 opt-in (163 KiB)
@@ -44,7 +43,7 @@ int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2, const std::string &
 int64_t four_step_row_inner_pack_for(int64_t n1, int64_t n2, const std::string &dtype) {
   if (n1 * n2 == kTleFusedTwiddleLength && n1 == kTleFusedTwiddleN1 && n2 == kTleFusedTwiddleN2 &&
       dtype != "complex128" && dtype != "float64") {
-    return kFourStepRowLargeInnerPack;
+    return kFourStepLargeInnerPack;
   }
   return 1;
 }
