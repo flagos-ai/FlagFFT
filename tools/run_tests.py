@@ -186,6 +186,8 @@ def expand_test_cases(
             # Skip if algorithm doesn't match combination
             if combination in ("ct", "bs") and algo == "2d":
                 continue
+            if combination == "2p20" and (op["id"] != "c2c_1d" or algo != "ct"):
+                continue
             if combination in ("2d", "2d_full") and algo != "2d":
                 continue
 
@@ -236,8 +238,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--combination",
         default="ct",
-        choices=["ct", "bs", "full", "2d", "2d_full"],
-        help="Test combination (ct/bs for quick, full for all sizes/batches/scales)",
+        choices=["ct", "bs", "full", "2p20", "2d", "2d_full"],
+        help="Test combination (ct/bs for quick, full, 2p20, or 2D presets)",
     )
     parser.add_argument("--gpus", default="0", help="Comma-separated GPU IDs or 'all'")
     parser.add_argument("--accuracy-only", action="store_true")

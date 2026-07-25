@@ -217,6 +217,12 @@ flagfftGetPlanDescription(plan)   // Human-readable plan summary
 | In-place and out-of-place | ✅ |
 | CUDA stream attachment | ✅ |
 
+For `2^20` rank-1 transforms on `sm_80`, the planner selects a `1024 x 1024`
+Four-Step decomposition. The TLE kernels apply contiguous, asynchronously
+loaded twiddles in the row pass, pack two adjacent row FFTs and four adjacent
+column FFTs per block for single precision, and XOR-swizzle shared-memory
+indices to reduce bank conflicts.
+
 ### Planned / Not Yet Supported
 
 | Feature | Status |
@@ -310,7 +316,7 @@ python tools/run_tests.py [OPTIONS]
 | `--op-list-file` | — | Path to file with one operator ID per line (`#` for comments) |
 | `--start` | — | Skip operators whose ID is lexicographically before this value |
 | `--stages` | `stable` | Comma-separated stages to include (`stable`, `alpha`, `beta`) |
-| `--combination` | `ct` | Test combination: `ct`, `bs`, `full`, `2d`, `2d_full` |
+| `--combination` | `ct` | Test combination: `ct`, `bs`, `full`, `2p20`, `2d`, `2d_full` |
 | `--gpus` | `0` | Comma-separated GPU IDs or `all` |
 | `--output-dir` | `results` | Directory for summary and per-operator result files |
 | `--build-dir` | `build` | Path to CMake build directory |
@@ -330,6 +336,7 @@ python tools/run_tests.py [OPTIONS]
 | `ct` | Quick smoke test — Cooley-Tukey sizes, batch 1, scale 1.0 |
 | `bs` | Quick smoke test — Bluestein/Rader sizes, batch 1, scale 1.0 |
 | `full` | Full 1D — all CT sizes × all batches × all scales |
+| `2p20` | Focused C2C `2^20` forward/inverse test, batch 1, scale 1.0 |
 | `2d` | Quick 2D — selected 2D sizes, batch {1,4}, scale 1.0 |
 | `2d_full` | Full 2D — selected 2D sizes × all batches × all scales |
 
@@ -350,6 +357,9 @@ python tools/run_tests.py --combination full --ops c2c_1d,r2c_1d --accuracy-only
 
 # Performance benchmarks only
 python tools/run_tests.py --combination full --performance-only
+
+# Focused 2^20 C2C correctness and performance
+python tools/run_tests.py --combination 2p20 --gpus 0
 ```
 
 #### Output

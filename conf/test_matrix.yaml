@@ -76,6 +76,12 @@ combinations:
     batches: batches
     scales: scales
 
+  # 2^20 TLE 优化专项测试
+  2p20:
+    sizes: [1048576]
+    batches: [1]
+    scales: [1.0]
+
   # 2D 测试
   2d:
     sizes:

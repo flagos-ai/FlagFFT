@@ -111,8 +111,15 @@ struct FFTRequest {
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim };
 enum class KernelKind {
   Leaf,
+  LeafR2C,
+  LeafC2R,
+  DirectDft,
   FourStepRow,
+  FourStepRealRow,
+  FourStepHermitianRow,
   FourStepCol,
+  FourStepR2CCol,
+  FourStepC2RCol,
   Transpose,
   TwiddleTranspose,
   BluesteinPrepare,
