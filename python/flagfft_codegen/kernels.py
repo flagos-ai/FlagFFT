@@ -32,6 +32,8 @@ _FOUR_STEP_NUM_WARPS = 4
 _FOUR_STEP_COL_INNER_PACK = 2
 _FOUR_STEP_LARGE_INNER_PACK = 4
 _FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
+_FOUR_STEP_ROW_INNER_PACK_MAX_N1 = 512
+_FOUR_STEP_PACKED_COL_LEAF_MAX_N2 = 1024
 _TLE_FUSED_TWIDDLE_MIN_LENGTH = 1 << 18
 _TLE_FUSED_TWIDDLE_MAX_LEAF = 1024
 _TLE_SMEM_SWIZZLE_SHIFT = 5
@@ -130,13 +132,19 @@ def four_step_col_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> 
         return 1
     if use_tle_fused_twiddle(n1, n2, dtype):
         return _FOUR_STEP_LARGE_INNER_PACK
-    if dtype in ("complex128", "float64") and n2 > 1024:
+    if n2 > _FOUR_STEP_PACKED_COL_LEAF_MAX_N2:
         return 1
     return _FOUR_STEP_COL_INNER_PACK
 
 
 def four_step_row_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
     if use_tle_fused_twiddle(n1, n2, dtype):
+        return _FOUR_STEP_LARGE_INNER_PACK
+    if (
+        not _is_double_dtype(dtype)
+        and n1 <= _FOUR_STEP_ROW_INNER_PACK_MAX_N1
+        and n2 > _FOUR_STEP_PACKED_COL_LEAF_MAX_N2
+    ):
         return _FOUR_STEP_LARGE_INNER_PACK
     return 1
 

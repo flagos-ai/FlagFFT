@@ -107,15 +107,52 @@ def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(128, 2048, "complex128") == 1
     assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex64") == 4
     assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex128") == 2
-    assert kernels.four_step_col_inner_pack_for(512, 2048, "complex64") == 2
+    assert kernels.four_step_col_inner_pack_for(512, 2048, "complex64") == 1
+    assert kernels.four_step_col_inner_pack_for(495, 2023, "complex64") == 1
     assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex64") == 4
     assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex128") == 1
+    assert kernels.four_step_row_inner_pack_for(495, 2023, "complex64") == 4
+    assert kernels.four_step_row_inner_pack_for(513, 2023, "complex64") == 1
+    assert kernels.four_step_row_inner_pack_for(495, 2023, "complex128") == 1
     assert kernels.use_tle_fused_twiddle(1024, 1024)
     assert kernels.use_tle_fused_twiddle(768, 1024)
     assert kernels.use_tle_fused_twiddle(640, 1024)
     assert kernels.use_tle_fused_twiddle(896, 1024)
     assert not kernels.use_tle_fused_twiddle(768, 1024, "complex128")
     assert not kernels.use_tle_fused_twiddle(512, 2048)
+
+
+def test_large_odd_four_step_packs_rows_but_not_columns(kernels) -> None:
+    row_plan = kernels.LeafPlan(
+        length=495,
+        factors=(15, 11, 3),
+        remainder=1,
+        lanes=3,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=512,
+        direction="forward",
+    )
+    col_plan = kernels.LeafPlan(
+        length=2023,
+        factors=(17, 17, 7),
+        remainder=1,
+        lanes=17,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=2048,
+        direction="forward",
+    )
+
+    _, row_source = kernels._build_four_step_row_kernel_source(row_plan, 495, 2023)
+    _, col_source = kernels._build_four_step_col_kernel_source(col_plan, 495, 2023)
+
+    assert "four_step_inner_base = tl.program_id(0) * 4" in row_source
+    assert "tl.arange(0, 16)" in row_source
+    assert "(four_step_inner < 2023)" in row_source
+    assert "four_step_inner = tl.program_id(0)" in col_source
+    assert "four_step_inner_base" not in col_source
+    assert "tl.arange(0, 32)" in col_source
 
 
 def test_large_four_step_generates_twiddle_in_row_pipeline(kernels) -> None:
