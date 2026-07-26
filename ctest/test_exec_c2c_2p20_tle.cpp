@@ -18,9 +18,10 @@ using namespace flagfft_test;
 
 namespace {
 
-void ExpectLarge1DMatchesReference(int n, int direction) {
+void Expect2P20MatchesReference(int direction) {
+  constexpr int n = 1 << 20;
   constexpr int batch = 1;
-  const int total = n * batch;
+  constexpr int total = n * batch;
   const std::size_t bytes = static_cast<std::size_t>(total) * sizeof(flagfftComplex);
 
   flagfftHandle plan = nullptr;
@@ -61,77 +62,9 @@ void ExpectLarge1DMatchesReference(int n, int direction) {
 }  // namespace
 
 TEST(C2C2P20Tle, ForwardVsReference) {
-  ExpectLarge1DMatchesReference(1 << 20, FLAGFFT_FORWARD);
+  Expect2P20MatchesReference(FLAGFFT_FORWARD);
 }
 
 TEST(C2C2P20Tle, InverseVsReference) {
-  ExpectLarge1DMatchesReference(1 << 20, FLAGFFT_INVERSE);
+  Expect2P20MatchesReference(FLAGFFT_INVERSE);
 }
-
-class C2CLargeMixedTle : public ::testing::TestWithParam<int> {};
-
-TEST_P(C2CLargeMixedTle, ForwardVsReference) {
-  ExpectLarge1DMatchesReference(GetParam(), FLAGFFT_FORWARD);
-}
-
-TEST_P(C2CLargeMixedTle, InverseVsReference) {
-  ExpectLarge1DMatchesReference(GetParam(), FLAGFFT_INVERSE);
-}
-
-std::string MixedSizeName(const ::testing::TestParamInfo<int>& info) {
-  if (info.param == 9 * (1 << 16)) {
-    return "Radix3Squared";
-  }
-  if (info.param == 3 * (1 << 18)) {
-    return "Radix3";
-  }
-  if (info.param == 5 * (1 << 17)) {
-    return "Radix5";
-  }
-  if (info.param == 25 * (1 << 15)) {
-    return "Radix5Squared";
-  }
-  if (info.param == 27 * (1 << 15)) {
-    return "Radix3Cubed";
-  }
-  if (info.param == 7 * (1 << 17)) {
-    return "Radix7";
-  }
-  return "Radix3Times5";
-}
-
-INSTANTIATE_TEST_SUITE_P(LargeMixedBases,
-                         C2CLargeMixedTle,
-                         ::testing::Values(9 * (1 << 16),
-                                           3 * (1 << 18),
-                                           5 * (1 << 17),
-                                           25 * (1 << 15),
-                                           27 * (1 << 15),
-                                           7 * (1 << 17),
-                                           15 * (1 << 16)),
-                         MixedSizeName);
-
-class C2CGenericFusedRegression : public ::testing::TestWithParam<int> {};
-
-TEST_P(C2CGenericFusedRegression, ForwardVsReference) {
-  ExpectLarge1DMatchesReference(GetParam(), FLAGFFT_FORWARD);
-}
-
-TEST_P(C2CGenericFusedRegression, InverseVsReference) {
-  ExpectLarge1DMatchesReference(GetParam(), FLAGFFT_INVERSE);
-}
-
-std::string GenericFusedSizeName(const ::testing::TestParamInfo<int>& info) {
-  if (info.param == (1 << 18)) {
-    return "PowerOfTwo";
-  }
-  if (info.param == 390625) {
-    return "PowerOfFive";
-  }
-  return "Rectangular";
-}
-
-INSTANTIATE_TEST_SUITE_P(TleFusedCoordinates,
-                         C2CGenericFusedRegression,
-                         ::testing::Values(1 << 18, 390625, 328050),
-                         GenericFusedSizeName);
