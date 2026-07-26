@@ -111,10 +111,14 @@ def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex64") == 4
     assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex128") == 1
     assert kernels.use_tle_fused_twiddle(1024, 1024)
+    assert kernels.use_tle_fused_twiddle(768, 1024)
+    assert kernels.use_tle_fused_twiddle(640, 1024)
+    assert kernels.use_tle_fused_twiddle(896, 1024)
+    assert not kernels.use_tle_fused_twiddle(768, 1024, "complex128")
     assert not kernels.use_tle_fused_twiddle(512, 2048)
 
 
-def test_2p20_four_step_moves_twiddle_to_tle_row_pipeline(kernels) -> None:
+def test_large_four_step_generates_twiddle_in_row_pipeline(kernels) -> None:
     plan = kernels.LeafPlan(
         length=1024,
         factors=(16, 16, 4),
@@ -130,8 +134,8 @@ def test_2p20_four_step_moves_twiddle_to_tle_row_pipeline(kernels) -> None:
     _, col_source = kernels._build_four_step_col_kernel_source(plan, 1024, 1024)
 
     assert "twiddle_ptr" in row_source
-    assert "tle.load(twiddle_ptr" in row_source
-    assert "is_async=True" in row_source
+    assert "tle.load(twiddle_ptr" not in row_source
+    assert "sin.approx.f32" in row_source
     assert "tl.range(0," in row_source
     assert "num_stages=2" not in row_source
     assert "tl.arange(0, 256)" in row_source
@@ -193,6 +197,41 @@ def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
     )
     assert metadata["inner_pack"] == 4
     assert metadata["num_warps"] == 4
+
+
+@pytest.mark.parametrize(
+    ("register_radix", "n1", "inner_codelet"),
+    [
+        (20, 640, "_fwd_rad5_b1"),
+        (24, 768, "_fwd_rad3_b1"),
+        (28, 896, "_fwd_rad7_b1"),
+    ],
+)
+def test_large_mixed_thread_local_leaf_is_generated(
+    kernels, register_radix, n1, inner_codelet
+) -> None:
+    plan = kernels.LeafPlan(
+        length=n1,
+        factors=(register_radix, 32),
+        remainder=1,
+        lanes=register_radix,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    row_name, row_source = kernels._build_four_step_row_kernel_source(plan, n1, 1024)
+
+    assert f"kernel_{register_radix}_32_thread_local" in row_name
+    assert inner_codelet in row_source
+    assert row_source.count(") = _fwd_rad16_b1(") == 2
+    assert row_source.count("tl.debug_barrier()") == 1
+    assert row_source.count("tle.gpu.alloc") == 2
+    assert row_source.count("ld.global.v2.f32") == register_radix
+    assert "tw1_r_ptr +" not in row_source
+    assert "sin.approx.f32" in row_source
+    assert "mask=output_lane_mask" in row_source
 
 
 def test_16384_four_step_keeps_measured_kernel_contract(kernels) -> None:

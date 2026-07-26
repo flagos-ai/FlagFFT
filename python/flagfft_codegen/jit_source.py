@@ -127,7 +127,7 @@ def _metadata(
         else 1
     )
     tle_fused_twiddle = kernel_type.startswith("four_step_") and use_tle_fused_twiddle(
-        n1, n2
+        n1, n2, dtype
     )
     if kernel_type in {
         "four_step_row",

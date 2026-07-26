@@ -20,6 +20,9 @@ namespace flagfft {
 namespace {
 
   constexpr int64_t kBluesteinConvolutionSearchWindow = 4096;
+  constexpr int64_t kThreadLocalCrossRadix = 32;
+  constexpr int64_t kThreadLocalColLength = 1024;
+  const std::vector<int64_t> kThreadLocalRegisterRadices = {20, 24, 28, 32};
 
 }  // namespace
 
@@ -126,22 +129,32 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   }
 
   const RequestContext &context = request_context();
-  if (n == (int64_t {1} << 20) && context.input_dtype == "complex64" && context.output_dtype == "complex64") {
-    auto make_distributed_radix32_leaf = []() -> PlanNodePtr {
-      return std::make_shared<LeafPlanNode>(1024,
-                                            std::vector<int64_t> {32, 32},
-                                            1,
-                                            32,
-                                            2,
-                                            std::vector<int64_t> {32},
-                                            1024);
-    };
-    PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,
-                                                          1024,
-                                                          1024,
-                                                          make_distributed_radix32_leaf(),
-                                                          make_distributed_radix32_leaf());
-    candidates.push_back({node, four_step_cost(1024, 1024) * 0.25, priority(node)});
+  if (context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      n % kThreadLocalColLength == 0) {
+    const int64_t n1 = n / kThreadLocalColLength;
+    const int64_t register_radix = n1 / kThreadLocalCrossRadix;
+    if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix)) {
+      auto make_thread_local_leaf = [](int64_t local_register_radix) -> PlanNodePtr {
+        const int64_t length = local_register_radix * kThreadLocalCrossRadix;
+        const int64_t num_warps = local_register_radix == 32 ? 2 : 1;
+        const std::vector<int64_t> generic_radices =
+            local_register_radix == 32 ? std::vector<int64_t> {32} : std::vector<int64_t> {};
+        return std::make_shared<LeafPlanNode>(
+            length,
+            std::vector<int64_t> {local_register_radix, kThreadLocalCrossRadix},
+            1,
+            local_register_radix,
+            num_warps,
+            generic_radices,
+            ceil_power_of_two(length));
+      };
+      PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,
+                                                            n1,
+                                                            kThreadLocalColLength,
+                                                            make_thread_local_leaf(register_radix),
+                                                            make_thread_local_leaf(32));
+      candidates.push_back({node, four_step_cost(n1, kThreadLocalColLength) * 0.25, priority(node)});
+    }
   }
 
   for (int64_t n1 : enumerate_divisors(n)) {

@@ -21,12 +21,13 @@
 namespace flagfft {
 namespace {
 
-  inline constexpr int64_t kTleFusedTwiddleLength = int64_t {1} << 20;
-  inline constexpr int64_t kTleFusedTwiddleN1 = 1024;
-  inline constexpr int64_t kTleFusedTwiddleN2 = 1024;
+  inline constexpr int64_t kTleFusedTwiddleMinLength = int64_t {1} << 18;
+  inline constexpr int64_t kTleFusedTwiddleMaxLeaf = 1024;
 
-  bool use_tle_fused_twiddle(int64_t length, int64_t n1, int64_t n2) {
-    return length == kTleFusedTwiddleLength && n1 == kTleFusedTwiddleN1 && n2 == kTleFusedTwiddleN2;
+  bool use_tle_fused_twiddle(int64_t length, int64_t n1, int64_t n2, const std::string &dtype) {
+    const bool is_double = dtype == "complex128" || dtype == "float64";
+    return !is_double && length >= kTleFusedTwiddleMinLength && n1 <= kTleFusedTwiddleMaxLeaf &&
+           n2 <= kTleFusedTwiddleMaxLeaf;
   }
 
   std::vector<JitKernelArg> raw_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
@@ -124,7 +125,7 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
                                                     adaptor::DevicePtr output,
                                                     const RawExecutionContext &context) const {
   try {
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
     std::vector<JitKernelArg> row_args =
         fused_twiddle ? raw_kernel_args({input, twiddle.get(), stage1.get()}, row_tables, context.batch)
                       : raw_kernel_args({input, stage1.get()}, row_tables, context.batch);
@@ -625,7 +626,7 @@ flagfftResult CompiledRawR2CFourStepHalfOutNode::execute(adaptor::DevicePtr inpu
     };
     expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
 
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
     std::vector<JitKernelArg> row_args =
         fused_twiddle
             ? raw_kernel_args({complex_input.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
@@ -696,7 +697,7 @@ flagfftResult CompiledRawR2CFourStepRealInHalfOutNode::execute(adaptor::DevicePt
                                             : (context.input_distance > 0 ? context.input_distance : length);
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
 
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
     std::vector<JitKernelArg> row_args =
         fused_twiddle
             ? raw_distance_col_kernel_args({input, twiddle.get(), stage1.get()},
@@ -1105,7 +1106,7 @@ flagfftResult CompiledRawC2RFourStepRealOutNode::execute(adaptor::DevicePtr inpu
     };
     expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
 
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
     std::vector<JitKernelArg> row_args =
         fused_twiddle
             ? raw_kernel_args({full_input.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
@@ -1297,7 +1298,7 @@ flagfftResult CompiledRawC2RFourStepCompactInRealOutNode::execute(adaptor::Devic
                                         ? std::max(context.output_distance, padded_real_distance)
                                         : (context.output_distance > 0 ? context.output_distance : length);
 
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2);
+    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
     std::vector<JitKernelArg> row_args =
         fused_twiddle
             ? raw_distance_col_kernel_args({input, twiddle.get(), stage1.get()},

@@ -18,10 +18,9 @@ using namespace flagfft_test;
 
 namespace {
 
-void Expect2P20MatchesReference(int direction) {
-  constexpr int n = 1 << 20;
+void ExpectLarge1DMatchesReference(int n, int direction) {
   constexpr int batch = 1;
-  constexpr int total = n * batch;
+  const int total = n * batch;
   const std::size_t bytes = static_cast<std::size_t>(total) * sizeof(flagfftComplex);
 
   flagfftHandle plan = nullptr;
@@ -62,9 +61,34 @@ void Expect2P20MatchesReference(int direction) {
 }  // namespace
 
 TEST(C2C2P20Tle, ForwardVsReference) {
-  Expect2P20MatchesReference(FLAGFFT_FORWARD);
+  ExpectLarge1DMatchesReference(1 << 20, FLAGFFT_FORWARD);
 }
 
 TEST(C2C2P20Tle, InverseVsReference) {
-  Expect2P20MatchesReference(FLAGFFT_INVERSE);
+  ExpectLarge1DMatchesReference(1 << 20, FLAGFFT_INVERSE);
 }
+
+class C2CLargeMixedTle : public ::testing::TestWithParam<int> {};
+
+TEST_P(C2CLargeMixedTle, ForwardVsReference) {
+  ExpectLarge1DMatchesReference(GetParam(), FLAGFFT_FORWARD);
+}
+
+TEST_P(C2CLargeMixedTle, InverseVsReference) {
+  ExpectLarge1DMatchesReference(GetParam(), FLAGFFT_INVERSE);
+}
+
+std::string MixedSizeName(const ::testing::TestParamInfo<int>& info) {
+  if (info.param == 3 * (1 << 18)) {
+    return "Radix3";
+  }
+  if (info.param == 5 * (1 << 17)) {
+    return "Radix5";
+  }
+  return "Radix7";
+}
+
+INSTANTIATE_TEST_SUITE_P(LargeMixedBases,
+                         C2CLargeMixedTle,
+                         ::testing::Values(3 * (1 << 18), 5 * (1 << 17), 7 * (1 << 17)),
+                         MixedSizeName);
