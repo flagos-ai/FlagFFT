@@ -307,7 +307,10 @@ def build_accuracy_cmd(case: dict, build_dir: Path) -> tuple[list[str], str]:
     cmd.append(f"--batch={case['batch']}")
     cmd.append(f"--direction={case['direction']}")
     cmd.append(f"--scale={case['scale']}")
-    json_file = f"/tmp/flagfft_acc_{os.getpid()}_{case['op_id']}_{case['nx']}_{case['batch']}.json"
+    json_file = (
+        f"/tmp/flagfft_acc_{os.getpid()}_{case['op_id']}_{case['algo']}_"
+        f"{case['direction']}_{case['nx']}_{case['batch']}.json"
+    )
     cmd.append(f"--json-file={json_file}")
     return cmd, json_file
 
@@ -401,7 +404,8 @@ def parse_perf_result(output: str, case: dict | None = None) -> dict[str, Any]:
             and timing.get("ref_median_ms", 0) > 0
         )
 
-        # Build shape key from the test case (e.g., "[1024]" or "[1024]batch=2")
+        # Include direction in the key so forward/inverse results cannot overwrite
+        # each other when aggregating the same API and shape.
         if case is not None:
             nx = case.get("nx", 0)
             batch = case.get("batch", 1)
@@ -412,6 +416,7 @@ def parse_perf_result(output: str, case: dict | None = None) -> dict[str, Any]:
                 shape_key = f"[{nx}]"
             if batch > 1:
                 shape_key += f"batch={batch}"
+            shape_key += f"direction={case.get('direction', 'unknown')}"
         else:
             shape_key = "[unknown]"
 
@@ -424,6 +429,8 @@ def parse_perf_result(output: str, case: dict | None = None) -> dict[str, Any]:
         return {
             "status": "Passed" if passed else "Failed",
             "speedup": speedup,
+            "flagfft_median_ms": timing.get("flagfft_median_ms", 0),
+            "ref_median_ms": timing.get("ref_median_ms", 0),
             "data": {
                 "default": {
                     "result": "OK" if passed else "FAIL",
@@ -457,7 +464,11 @@ def worker_proc(
         except queue.Empty:
             break
 
-        case_id = f"{case['op_id']} nx={case['nx']} batch={case['batch']}"
+        case_id = (
+            f"{case['op_id']} algo={case['algo']} direction={case['direction']} "
+            f"nx={case['nx']} ny={case['ny']} batch={case['batch']} "
+            f"scale={case['scale']}"
+        )
         op_dir = output_dir / case["op_id"]
         op_dir.mkdir(parents=True, exist_ok=True)
 
@@ -495,8 +506,12 @@ def worker_proc(
                     "duration": elapsed,
                     "result": acc_result,
                     "op_id": case["op_id"],
+                    "algo": case["algo"],
+                    "direction": case["direction"],
                     "nx": case["nx"],
+                    "ny": case["ny"],
                     "batch": case["batch"],
+                    "scale": case["scale"],
                 }
             )
             try:
@@ -539,8 +554,12 @@ def worker_proc(
                     "duration": elapsed,
                     "result": perf_result,
                     "op_id": case["op_id"],
+                    "algo": case["algo"],
+                    "direction": case["direction"],
                     "nx": case["nx"],
+                    "ny": case["ny"],
                     "batch": case["batch"],
+                    "scale": case["scale"],
                 }
             )
 
@@ -617,12 +636,14 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
                 "duration": 0,
                 "data_file": "",
                 "details": [],
+                "cases": {},
             },
             "performance": {
                 "status": "NotFound",
                 "duration": 0,
                 "data_file": "",
                 "data": {},
+                "cases": {},
             },
         }
 
@@ -635,6 +656,20 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
 
         if phase == "accuracy":
             acc = op_results[op_id]["accuracy"]
+            acc["cases"][result.get("case", "unknown")] = {
+                "status": r.get("status", "Error"),
+                "algo": result.get("algo"),
+                "direction": result.get("direction"),
+                "nx": result.get("nx"),
+                "ny": result.get("ny"),
+                "batch": result.get("batch"),
+                "scale": result.get("scale"),
+                "total": r.get("total", 0),
+                "passed": r.get("passed", 0),
+                "failed": r.get("failed", 0),
+                "skipped": r.get("skipped", 0),
+                "details": r.get("details", []),
+            }
             acc["total"] += r.get("total", 0)
             acc["passed"] += r.get("passed", 0)
             acc["failed"] += r.get("failed", 0)
@@ -655,6 +690,19 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
 
         elif phase == "performance":
             perf = op_results[op_id]["performance"]
+            perf["cases"][result.get("case", "unknown")] = {
+                "status": r.get("status", "Error"),
+                "algo": result.get("algo"),
+                "direction": result.get("direction"),
+                "nx": result.get("nx"),
+                "ny": result.get("ny"),
+                "batch": result.get("batch"),
+                "scale": result.get("scale"),
+                "flagfft_median_ms": r.get("flagfft_median_ms", 0),
+                "cufft_median_ms": r.get("ref_median_ms", 0),
+                "speedup": r.get("speedup", 0),
+                "error": r.get("error", r.get("stderr", "")),
+            }
             perf["duration"] += result.get("duration", 0)
             if r.get("data_file"):
                 perf["data_file"] = r["data_file"]
