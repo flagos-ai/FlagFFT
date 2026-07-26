@@ -122,6 +122,45 @@ def test_four_step_inner_pack_threshold(kernels) -> None:
     assert not kernels.use_tle_fused_twiddle(512, 2048)
 
 
+def test_low_lane_three_stage_leaf_uses_cooperative_stage_lanes(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=780,
+        factors=(13, 10, 6),
+        remainder=1,
+        lanes=2,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    assert kernels.cooperative_stage_lanes_for(plan) == (60, 78, 65)
+    _, source = kernels._build_four_step_row_kernel_source(plan, 780, 850)
+
+    assert "tl.arange(0, 512)" in source
+    assert "lane_mask = base_lane_mask & (lane < 60)" in source
+    assert "lane_mask = base_lane_mask & (lane < 78)" in source
+    assert "lane_mask = base_lane_mask & (lane < 65)" in source
+    assert "for group_0 in tl.range(0, 1)" in source
+    assert "for group_1 in tl.range(0, 1)" in source
+    assert "for group_2 in tl.range(0, 2)" in source
+
+
+def test_low_lane_four_stage_leaf_uses_cooperative_stage_lanes(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=1071,
+        factors=(17, 7, 3, 3),
+        remainder=1,
+        lanes=3,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=2048,
+        direction="forward",
+    )
+
+    assert kernels.cooperative_stage_lanes_for(plan) == (63, 51, 119, 119)
+
+
 def test_large_odd_four_step_packs_rows_but_not_columns(kernels) -> None:
     row_plan = kernels.LeafPlan(
         length=495,

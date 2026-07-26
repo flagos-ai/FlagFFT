@@ -50,6 +50,22 @@ int64_t mixed_radix_value(const std::vector<int64_t> &digits,
 
 namespace {
 
+  bool use_cooperative_stage_lanes(const LeafPlanNode &leaf, const FFTRequest &request) {
+    return request.input_dtype == "complex64" && leaf.length >= 512 && leaf.length <= 2048 &&
+           leaf.factors.size() >= 3 && leaf.lanes < 8;
+  }
+
+  int64_t cooperative_stage_lanes(int64_t n, int64_t radix) {
+    const int64_t codelets = n / radix;
+    const int64_t upper = std::min(codelets, kMaxLanes);
+    for (int64_t candidate = upper; candidate > 0; --candidate) {
+      if (codelets % candidate == 0) {
+        return candidate;
+      }
+    }
+    return 1;
+  }
+
   template <typename Real>
   std::pair<std::vector<Real>, std::vector<Real>> build_stage_twiddles_t(const std::vector<int64_t> &radices,
                                                                          int64_t stage,
@@ -275,14 +291,17 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   const bool is_double = dtype_is_double(request.input_dtype);
   std::vector<DeviceAllocation> tables;
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
+    const int64_t lanes = use_cooperative_stage_lanes(leaf, request)
+                              ? cooperative_stage_lanes(leaf.length, leaf.factors[stage])
+                              : leaf.lanes;
     if (is_double) {
       auto twiddles =
-          build_stage_twiddles_d(leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
+          build_stage_twiddles_d(leaf.factors, static_cast<int64_t>(stage), lanes, request.direction);
       tables.push_back(adaptor::Memory::from_doubles(twiddles.first));
       tables.push_back(adaptor::Memory::from_doubles(twiddles.second));
     } else {
       auto twiddles =
-          build_stage_twiddles(leaf.factors, static_cast<int64_t>(stage), leaf.lanes, request.direction);
+          build_stage_twiddles(leaf.factors, static_cast<int64_t>(stage), lanes, request.direction);
       tables.push_back(adaptor::Memory::from_floats(twiddles.first));
       tables.push_back(adaptor::Memory::from_floats(twiddles.second));
     }

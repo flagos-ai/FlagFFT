@@ -38,6 +38,7 @@ from .kernels import (
     _build_tiled_transpose_kernel_source,
     _build_twiddle_reshape_pack_kernel_source,
     contiguous_batch_pack_for,
+    cooperative_stage_lanes_for,
     four_step_col_inner_pack_for,
     four_step_row_inner_pack_for,
     lane_block_for,
@@ -126,6 +127,7 @@ def _metadata(
         if kernel_type in {"leaf", "leaf_r2c", "leaf_c2r"}
         else 1
     )
+    stage_lanes = cooperative_stage_lanes_for(plan)
     tle_fused_twiddle = kernel_type.startswith("four_step_") and use_tle_fused_twiddle(
         n1, n2, dtype
     )
@@ -146,6 +148,13 @@ def _metadata(
     num_warps = int(plan.num_warps)
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
+    if any(lanes != plan.lanes for lanes in stage_lanes):
+        cooperative_warps = 1
+        work_pack = max(batch_per_block, inner_pack)
+        required_warps = (lane_block_for(max(stage_lanes)) * work_pack + 31) // 32
+        while cooperative_warps < required_warps and cooperative_warps < 8:
+            cooperative_warps *= 2
+        num_warps = max(num_warps, cooperative_warps)
     if "_thread_local_" in kernel_name:
         num_warps = 4
     return {
