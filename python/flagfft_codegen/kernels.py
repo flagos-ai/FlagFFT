@@ -1092,7 +1092,7 @@ def _emit_stage_block(
                         / (four_step_n1 * four_step_n2)
                     )
                     lines.append(
-                        f"{indent}outer_angle{j} = dst_idx{j} * "
+                        f"{indent}outer_angle{j} = four_step_inner * out_idx{j} * "
                         f"{outer_twiddle_scale:.17g}"
                     )
                     lines.append(
@@ -1700,11 +1700,15 @@ def _build_leaf_kernel_source_for_io(
             body.append("    output_batch_base = current_batch * output_distance")
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:
+            four_step_inner_count = (
+                four_step_n2 if io_mode in row_modes else four_step_n1
+            )
             body.append(f"    inner_slot = lane_vec % {inner_pack}")
             body.append(f"    lane = lane_vec // {inner_pack}")
             body.append("    four_step_inner = four_step_inner_base + inner_slot")
             body.append(
-                f"    lane_mask = (lane < {plan.lanes}) & (four_step_inner < {four_step_n1})"
+                f"    lane_mask = (lane < {plan.lanes}) & "
+                f"(four_step_inner < {four_step_inner_count})"
             )
             body.append(f"    smem_offset = inner_slot * {smem_slot_stride}")
         else:

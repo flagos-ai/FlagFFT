@@ -150,6 +150,37 @@ def test_large_four_step_generates_twiddle_in_row_pipeline(kernels) -> None:
     assert "smem_a_r = tle.gpu.alloc" not in col_source
 
 
+def test_rectangular_four_step_fused_twiddle_uses_fft_coordinates(kernels) -> None:
+    row_plan = kernels.LeafPlan(
+        length=486,
+        factors=(9, 9, 6),
+        remainder=1,
+        lanes=27,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=512,
+        direction="forward",
+    )
+    col_plan = kernels.LeafPlan(
+        length=675,
+        factors=(15, 15, 3),
+        remainder=1,
+        lanes=45,
+        num_warps=2,
+        generic_radices=(),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    _, row_source = kernels._build_four_step_row_kernel_source(row_plan, 486, 675)
+    _, col_source = kernels._build_four_step_col_kernel_source(col_plan, 486, 675)
+
+    assert "outer_angle0 = four_step_inner * out_idx0 *" in row_source
+    assert "outer_angle0 = dst_idx0 *" not in row_source
+    assert "(four_step_inner < 675)" in row_source
+    assert "(four_step_inner < 486)" in col_source
+
+
 def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
     kernels, jit_source, tmp_path
 ) -> None:

@@ -110,3 +110,28 @@ INSTANTIATE_TEST_SUITE_P(LargeMixedBases,
                                            7 * (1 << 17),
                                            15 * (1 << 16)),
                          MixedSizeName);
+
+class C2CGenericFusedRegression : public ::testing::TestWithParam<int> {};
+
+TEST_P(C2CGenericFusedRegression, ForwardVsReference) {
+  ExpectLarge1DMatchesReference(GetParam(), FLAGFFT_FORWARD);
+}
+
+TEST_P(C2CGenericFusedRegression, InverseVsReference) {
+  ExpectLarge1DMatchesReference(GetParam(), FLAGFFT_INVERSE);
+}
+
+std::string GenericFusedSizeName(const ::testing::TestParamInfo<int>& info) {
+  if (info.param == (1 << 18)) {
+    return "PowerOfTwo";
+  }
+  if (info.param == 390625) {
+    return "PowerOfFive";
+  }
+  return "Rectangular";
+}
+
+INSTANTIATE_TEST_SUITE_P(TleFusedCoordinates,
+                         C2CGenericFusedRegression,
+                         ::testing::Values(1 << 18, 390625, 328050),
+                         GenericFusedSizeName);
