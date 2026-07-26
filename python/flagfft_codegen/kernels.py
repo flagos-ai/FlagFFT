@@ -30,13 +30,12 @@ _FOUR_STEP_TILE_ROWS = 32
 _FOUR_STEP_TILE_COLS = 32
 _FOUR_STEP_NUM_WARPS = 4
 _FOUR_STEP_COL_INNER_PACK = 2
-_FOUR_STEP_COL_LARGE_INNER_PACK = 4
-_FOUR_STEP_ROW_LARGE_INNER_PACK = 2
+_FOUR_STEP_LARGE_INNER_PACK = 4
 _FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
-_TLE_FUSED_TWIDDLE_LENGTH = 1 << 20
-_TLE_FUSED_TWIDDLE_N1 = 1024
-_TLE_FUSED_TWIDDLE_N2 = 1024
+_TLE_FUSED_TWIDDLE_MIN_LENGTH = 1 << 18
+_TLE_FUSED_TWIDDLE_MAX_LEAF = 1024
 _TLE_SMEM_SWIZZLE_SHIFT = 5
+_THREAD_LOCAL_MIXED_RADICES = frozenset({18, 20, 24, 25, 27, 28, 30, 32})
 _LEAF_PACK_TARGET_THREADS = 32
 _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
@@ -129,25 +128,47 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
 def four_step_col_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
     if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
         return 1
-    if use_tle_fused_twiddle(n1, n2) and not _is_double_dtype(dtype):
-        return _FOUR_STEP_COL_LARGE_INNER_PACK
+    if use_tle_fused_twiddle(n1, n2, dtype):
+        return _FOUR_STEP_LARGE_INNER_PACK
     if dtype in ("complex128", "float64") and n2 > 1024:
         return 1
     return _FOUR_STEP_COL_INNER_PACK
 
 
 def four_step_row_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
-    if use_tle_fused_twiddle(n1, n2) and not _is_double_dtype(dtype):
-        return _FOUR_STEP_ROW_LARGE_INNER_PACK
+    if use_tle_fused_twiddle(n1, n2, dtype):
+        return _FOUR_STEP_LARGE_INNER_PACK
     return 1
 
 
-def use_tle_fused_twiddle(n1: int, n2: int) -> bool:
-    """Use the 2^20-only TLE pipeline that moves twiddle work to the row pass."""
+def use_tle_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") -> bool:
+    """Move large FP32 Four-Step twiddles into the row pass.
+
+    Both leaves are capped at 1024 so pack=4 stays within the A100 dynamic
+    shared-memory budget for the generated mixed-radix kernels.
+    """
     return (
-        n1 * n2 == _TLE_FUSED_TWIDDLE_LENGTH
-        and n1 == _TLE_FUSED_TWIDDLE_N1
-        and n2 == _TLE_FUSED_TWIDDLE_N2
+        not _is_double_dtype(dtype)
+        and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
+        and n1 <= _TLE_FUSED_TWIDDLE_MAX_LEAF
+        and n2 <= _TLE_FUSED_TWIDDLE_MAX_LEAF
+    )
+
+
+def _use_single_smem_buffer(
+    plan: LeafPlan,
+    *,
+    io_mode: LeafIoMode,
+    four_step_n1: int,
+    four_step_n2: int,
+) -> bool:
+    """Reuse one shared buffer between generated mixed-radix stages."""
+    return (
+        io_mode.startswith("four_step_")
+        and use_tle_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
+        and plan.dtype == "complex64"
+        and plan.length == 1024
+        and len(plan.factors) > 2
     )
 
 
@@ -538,24 +559,146 @@ def _emit_table_codelet(
 
 
 def _emit_natural_order_codelet_call(
-    indent: str, radix: int, direction: Literal["forward", "inverse"]
+    indent: str,
+    radix: int,
+    direction: Literal["forward", "inverse"],
+    indices: list[int] | None = None,
 ) -> list[str]:
+    if indices is None:
+        indices = list(range(radix))
+    if len(indices) != radix:
+        raise ValueError(f"radix-{radix} codelet requires {radix} register indices")
     lines: list[str] = []
     if direction == "inverse":
-        for idx in range(radix):
+        for idx in indices:
             lines.append(f"{indent}i{idx} = -i{idx}")
     lines.append(f"{indent}(")
-    for idx in range(radix):
+    for idx in indices:
         lines.append(f"{indent}    r{idx},")
-    for idx in range(radix):
+    for idx in indices:
         lines.append(f"{indent}    i{idx},")
-    args = ", ".join(
-        [*(f"r{idx}" for idx in range(radix)), *(f"i{idx}" for idx in range(radix))]
-    )
+    args = ", ".join([*(f"r{idx}" for idx in indices), *(f"i{idx}" for idx in indices)])
     lines.append(f"{indent}) = _fwd_rad{radix}_b1({args})")
     if direction == "inverse":
-        for idx in range(radix):
+        for idx in indices:
             lines.append(f"{indent}i{idx} = -i{idx}")
+    return lines
+
+
+def _emit_radix16_codelet_call(
+    indent: str,
+    direction: Literal["forward", "inverse"],
+    offset: int = 0,
+) -> list[str]:
+    lines: list[str] = []
+    indices = [offset + idx for idx in range(16)]
+    if direction == "inverse":
+        for idx in indices:
+            lines.append(f"{indent}i{idx} = -i{idx}")
+    lines.append(f"{indent}(")
+    for idx in indices:
+        lines.append(f"{indent}    r{idx},")
+    for idx in indices:
+        lines.append(f"{indent}    i{idx},")
+    radix16_order = (0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15)
+    args = ", ".join(
+        [
+            *(f"r{offset + idx}" for idx in radix16_order),
+            *(f"i{offset + idx}" for idx in radix16_order),
+        ]
+    )
+    lines.append(f"{indent}) = _fwd_rad16_b1({args})")
+    if direction == "inverse":
+        for idx in indices:
+            lines.append(f"{indent}i{idx} = -i{idx}")
+    return lines
+
+
+def _emit_local_radix32_codelet_call(
+    indent: str, direction: Literal["forward", "inverse"]
+) -> list[str]:
+    """Emit a radix-32 FFT whose complete working set is owned by one thread."""
+    lines = _emit_radix16_codelet_call(indent, direction)
+    lines.extend(_emit_radix16_codelet_call(indent, direction, offset=16))
+    sign = _direction_sign(direction)
+    for idx in range(16):
+        wr = _fmt_const(math.cos(sign * 2.0 * math.pi * idx / 32.0))
+        wi = _fmt_const(math.sin(sign * 2.0 * math.pi * idx / 32.0))
+        lines.extend(
+            [
+                (
+                    f"{indent}odd_tw_r{idx}, odd_tw_i{idx} = "
+                    f"_cmul(r{idx + 16}, i{idx + 16}, {wr}, {wi})"
+                ),
+                f"{indent}even_r{idx} = r{idx}",
+                f"{indent}even_i{idx} = i{idx}",
+                f"{indent}r{idx} = even_r{idx} + odd_tw_r{idx}",
+                f"{indent}i{idx} = even_i{idx} + odd_tw_i{idx}",
+                f"{indent}r{idx + 16} = even_r{idx} - odd_tw_r{idx}",
+                f"{indent}i{idx + 16} = even_i{idx} - odd_tw_i{idx}",
+            ]
+        )
+    return lines
+
+
+def _emit_local_mixed_codelet_call(
+    indent: str,
+    radix: int,
+    direction: Literal["forward", "inverse"],
+) -> list[str]:
+    """Emit a register-only FFT for supported composite large-1D leaf radices."""
+    if radix == 32:
+        return _emit_local_radix32_codelet_call(indent, direction)
+
+    split = {
+        18: (3, 6),
+        20: (5, 4),
+        24: (3, 8),
+        25: (5, 5),
+        27: (3, 9),
+        28: (7, 4),
+        30: (3, 10),
+    }.get(radix)
+    if split is None:
+        raise ValueError(f"unsupported thread-local mixed radix {radix}")
+
+    outer_radix, inner_radix = split
+    lines: list[str] = []
+    for outer_digit in range(outer_radix):
+        indices = [
+            outer_digit + outer_radix * inner_digit
+            for inner_digit in range(inner_radix)
+        ]
+        lines.extend(
+            _emit_natural_order_codelet_call(indent, inner_radix, direction, indices)
+        )
+
+    sign = _direction_sign(direction)
+    for inner_freq in range(inner_radix):
+        indices = [
+            outer_digit + outer_radix * inner_freq for outer_digit in range(outer_radix)
+        ]
+        for outer_digit, register_idx in enumerate(indices[1:], start=1):
+            angle = sign * 2.0 * math.pi * outer_digit * inner_freq / float(radix)
+            wr = _fmt_const(math.cos(angle))
+            wi = _fmt_const(math.sin(angle))
+            lines.append(
+                f"{indent}r{register_idx}, i{register_idx} = "
+                f"_cmul(r{register_idx}, i{register_idx}, {wr}, {wi})"
+            )
+        lines.extend(
+            _emit_natural_order_codelet_call(indent, outer_radix, direction, indices)
+        )
+
+    for outer_freq in range(outer_radix):
+        for inner_freq in range(inner_radix):
+            output_idx = inner_freq + inner_radix * outer_freq
+            register_idx = outer_freq + outer_radix * inner_freq
+            lines.append(f"{indent}mixed_out_r{output_idx} = r{register_idx}")
+            lines.append(f"{indent}mixed_out_i{output_idx} = i{register_idx}")
+    for output_idx in range(radix):
+        lines.append(f"{indent}r{output_idx} = mixed_out_r{output_idx}")
+        lines.append(f"{indent}i{output_idx} = mixed_out_i{output_idx}")
     return lines
 
 
@@ -717,14 +860,23 @@ def _emit_stage_block(
     four_step_n2: int = 0,
     smem_pack: int = 1,
     fuse_twiddle_into_row: bool = False,
+    single_smem_buffer: bool = False,
     direction: Literal["forward", "inverse"] = "forward",
     dtype: str = "complex64",
 ) -> list[str]:
     radix = factors[stage]
     groups = n // (lanes * radix)
     is_last = stage == len(factors) - 1
-    source_buffer = None if stage == 0 else ("smem_b" if stage % 2 == 1 else "smem_a")
-    dest_buffer = None if is_last else ("smem_b" if stage % 2 == 0 else "smem_a")
+    source_buffer = (
+        None
+        if stage == 0
+        else ("smem_b" if single_smem_buffer or stage % 2 == 1 else "smem_a")
+    )
+    dest_buffer = (
+        None
+        if is_last
+        else ("smem_b" if single_smem_buffer or stage % 2 == 0 else "smem_a")
+    )
     zero = "0.0"
 
     lines = [f"    for group_{stage} in tl.range(0, {groups}):"]
@@ -883,23 +1035,11 @@ def _emit_stage_block(
             )
             lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
+    if single_smem_buffer and stage > 0 and not is_last:
+        lines.append(f"{indent}tl.debug_barrier()")
+
     if radix == 16:
-        if direction == "inverse":
-            for idx in range(16):
-                lines.append(f"{indent}i{idx} = -i{idx}")
-        lines.append(f"{indent}(")
-        for idx in range(16):
-            lines.append(f"{indent}    r{idx},")
-        for idx in range(16):
-            lines.append(f"{indent}    i{idx},")
-        lines.append(
-            f"{indent}) = _fwd_rad16_b1("
-            "r0, r8, r4, r12, r2, r10, r6, r14, r1, r9, r5, r13, r3, r11, r7, r15, "
-            "i0, i8, i4, i12, i2, i10, i6, i14, i1, i9, i5, i13, i3, i11, i7, i15)"
-        )
-        if direction == "inverse":
-            for idx in range(16):
-                lines.append(f"{indent}i{idx} = -i{idx}")
+        lines.extend(_emit_radix16_codelet_call(indent, direction))
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
@@ -945,13 +1085,23 @@ def _emit_stage_block(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
                 )
                 if fuse_twiddle_into_row:
-                    lines.append(
-                        f"{indent}tw_r{j} = tle.load(twiddle_ptr + dst_idx{j} * 2, "
-                        f"mask=lane_mask, other={zero}, is_async=True)"
+                    outer_twiddle_scale = (
+                        _direction_sign(direction)
+                        * 2.0
+                        * math.pi
+                        / (four_step_n1 * four_step_n2)
                     )
                     lines.append(
-                        f"{indent}tw_i{j} = tle.load(twiddle_ptr + dst_idx{j} * 2 + 1, "
-                        f"mask=lane_mask, other={zero}, is_async=True)"
+                        f"{indent}outer_angle{j} = four_step_inner * out_idx{j} * "
+                        f"{outer_twiddle_scale:.17g}"
+                    )
+                    lines.append(
+                        f"{indent}tw_i{j}, tw_r{j} = "
+                        "tl.inline_asm_elementwise("
+                        '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
+                        f'"=f,=f,f", [outer_angle{j}], '
+                        "dtype=(tl.float32, tl.float32), "
+                        "is_pure=True, pack=1)"
                     )
                     lines.append(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
@@ -1067,6 +1217,359 @@ def _leaf_kernel_params_for_io(
     return params
 
 
+def _use_thread_local_mixed_leaf(
+    plan: LeafPlan,
+    *,
+    io_mode: LeafIoMode,
+    four_step_n1: int,
+    four_step_n2: int,
+) -> bool:
+    if len(plan.factors) != 2:
+        return False
+    register_radix, cross_radix = plan.factors
+    expected_length = four_step_n1 if io_mode == "four_step_row" else four_step_n2
+    return (
+        io_mode in {"four_step_row", "four_step_col"}
+        and plan.dtype == "complex64"
+        and register_radix in _THREAD_LOCAL_MIXED_RADICES
+        and cross_radix == 32
+        and plan.length == register_radix * cross_radix
+        and plan.length == expected_length
+        and use_tle_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
+    )
+
+
+def _distributed_join_tree(names: list[str]) -> str:
+    if len(names) == 1:
+        return names[0]
+    if len(names) & (len(names) - 1):
+        raise ValueError("distributed join tree requires a power-of-two input count")
+    return (
+        f"tl.join({_distributed_join_tree(names[0::2])}, "
+        f"{_distributed_join_tree(names[1::2])})"
+    )
+
+
+def _emit_distributed_split_tree(
+    indent: str,
+    source: str,
+    names: list[str],
+    prefix: str,
+) -> list[str]:
+    if len(names) == 1:
+        return [f"{indent}{names[0]} = {source}"]
+
+    even_names = names[0::2]
+    odd_names = names[1::2]
+    even_source = (
+        even_names[0] if len(even_names) == 1 else f"{prefix}_even{len(names)}"
+    )
+    odd_source = odd_names[0] if len(odd_names) == 1 else f"{prefix}_odd{len(names)}"
+    lines = [f"{indent}{even_source}, {odd_source} = tl.split({source})"]
+    if len(even_names) > 1:
+        lines.extend(
+            _emit_distributed_split_tree(indent, even_source, even_names, f"{prefix}_e")
+        )
+    if len(odd_names) > 1:
+        lines.extend(
+            _emit_distributed_split_tree(indent, odd_source, odd_names, f"{prefix}_o")
+        )
+    return lines
+
+
+def _build_thread_local_mixed_four_step_kernel_source(
+    plan: LeafPlan,
+    *,
+    io_mode: Literal["four_step_row", "four_step_col"],
+    four_step_n1: int,
+    four_step_n2: int,
+) -> tuple[str, str]:
+    # Each thread owns the first composite register FFT, followed by one
+    # shared exchange and a full register-only radix-32 FFT.
+    register_radix = plan.factors[0]
+    inner_pack = 4
+    physical_lanes = 32
+    vector_block = physical_lanes * inner_pack
+    smem_chunk = next(chunk for chunk in (8, 4, 2, 1) if register_radix % chunk == 0)
+    smem_chunk_dims = int(math.log2(smem_chunk))
+    smem_reshape_dims = ", ".join(["1"] * smem_chunk_dims)
+    smem_block_dims = ", ".join(["2"] * smem_chunk_dims)
+    smem_n = plan.smem_size * inner_pack
+    include_outer_twiddle = io_mode == "four_step_row"
+    inner_count = four_step_n2 if io_mode == "four_step_row" else four_step_n1
+    source_stride = four_step_n2 if io_mode == "four_step_row" else four_step_n1
+    params = _leaf_kernel_params_for_io(
+        plan,
+        io_mode=io_mode,
+        include_four_step_twiddle=include_outer_twiddle,
+    )
+    kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
+    kernel_name = (
+        f"{io_mode}_{kernel_prefix}_kernel_{register_radix}_32_thread_local"
+        f"_n{four_step_n1}_{four_step_n2}_l{plan.lanes}_b32_t{smem_chunk}"
+        "_v5g_itwsincos_otwrec_nw4"
+    )
+
+    body: list[str] = ["@triton.jit", f"def {kernel_name}("]
+    for idx, param in enumerate(params):
+        suffix = "," if idx < len(params) - 1 else ""
+        body.append(f"    {param}{suffix}")
+    body.extend(
+        [
+            "):",
+            f"    four_step_inner_base = tl.program_id(0) * {inner_pack}",
+            "    four_step_batch = tl.program_id(1)",
+            "    if four_step_batch >= nbatch:",
+            "        return",
+            f"    lane_vec = tl.arange(0, {vector_block})",
+            f"    inner_slot = lane_vec % {inner_pack}",
+            f"    fft_thread = lane_vec // {inner_pack}",
+            "    four_step_inner = four_step_inner_base + inner_slot",
+            f"    lane_mask = four_step_inner < {inner_count}",
+            f"    output_lane_mask = lane_mask & (fft_thread < {register_radix})",
+            f"    smem_offset = inner_slot * {plan.smem_size}",
+            (
+                f"    four_step_batch_base = "
+                f"four_step_batch * {four_step_n1 * four_step_n2}"
+            ),
+            (
+                f"    smem_r = tle.gpu.alloc([{smem_n}], dtype=tl.float32, "
+                "layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            ),
+            (
+                f"    smem_i = tle.gpu.alloc([{smem_n}], dtype=tl.float32, "
+                "layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
+            ),
+        ]
+    )
+
+    for idx in range(register_radix):
+        input_digit = 2 * (idx % 16) + idx // 16 if register_radix == 32 else idx
+        body.append(f"    input_idx{idx} = fft_thread + {32 * input_digit}")
+        body.append(
+            f"    src_idx{idx} = input_idx{idx} * {source_stride} + " "four_step_inner"
+        )
+        body.append(
+            f"    input_offset{idx} = " f"(four_step_batch_base + src_idx{idx}) * 2"
+        )
+        body.append(
+            # The selected leaves and pack=4 cover every input lane exactly.
+            f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+            '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+            f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+            "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+        )
+
+    body.extend(_emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
+
+    body.append(
+        f"    smem_store_mask = tl.broadcast_to("
+        f"tl.reshape(lane_mask, {vector_block}, {smem_reshape_dims}), "
+        f"{vector_block}, {smem_block_dims})"
+    )
+    body.append(
+        f"    smem_load_mask = tl.broadcast_to("
+        f"tl.reshape(output_lane_mask, {vector_block}, {smem_reshape_dims}), "
+        f"{vector_block}, {smem_block_dims})"
+    )
+    inner_twiddle_scale = _direction_sign(plan.direction) * 2.0 * math.pi / plan.length
+    for chunk_base in range(0, register_radix, smem_chunk):
+        chunk_indices = range(chunk_base, chunk_base + smem_chunk)
+        for idx in chunk_indices:
+            if idx > 0:
+                body.extend(
+                    [
+                        (
+                            f"    inner_angle{idx} = fft_thread * {idx} * "
+                            f"{inner_twiddle_scale:.17g}"
+                        ),
+                        (
+                            f"    inner_tw_i{idx}, inner_tw_r{idx} = "
+                            "tl.inline_asm_elementwise("
+                            '"sin.approx.f32 $0, $2; '
+                            'cos.approx.f32 $1, $2;", '
+                            f'"=f,=f,f", [inner_angle{idx}], '
+                            "dtype=(tl.float32, tl.float32), "
+                            "is_pure=True, pack=1)"
+                        ),
+                        (
+                            f"    r{idx}, i{idx} = "
+                            f"_cmul(r{idx}, i{idx}, "
+                            f"inner_tw_r{idx}, inner_tw_i{idx})"
+                        ),
+                    ]
+                )
+            body.append(f"    smem_logical{idx} = {idx * 32} + fft_thread")
+            body.append(
+                f"    smem_phys{idx} = smem_logical{idx} ^ "
+                f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+            )
+            body.append(f"    smem_phys{idx} += smem_offset")
+        body.extend(
+            [
+                (
+                    f"    smem_store_index_{chunk_base} = "
+                    f"{_distributed_join_tree([f'smem_phys{idx}' for idx in chunk_indices])}"
+                ),
+                (
+                    f"    smem_store_r_{chunk_base} = "
+                    f"{_distributed_join_tree([f'r{idx}' for idx in chunk_indices])}"
+                ),
+                (
+                    f"    smem_store_i_{chunk_base} = "
+                    f"{_distributed_join_tree([f'i{idx}' for idx in chunk_indices])}"
+                ),
+                (
+                    "    tl.store(tle.gpu.local_ptr("
+                    f"smem_r, (smem_store_index_{chunk_base},)), "
+                    f"smem_store_r_{chunk_base}, mask=smem_store_mask)"
+                ),
+                (
+                    "    tl.store(tle.gpu.local_ptr("
+                    f"smem_i, (smem_store_index_{chunk_base},)), "
+                    f"smem_store_i_{chunk_base}, mask=smem_store_mask)"
+                ),
+            ]
+        )
+    body.append("    tl.debug_barrier()")
+
+    for chunk_base in range(0, 32, smem_chunk):
+        chunk_indices = range(chunk_base, chunk_base + smem_chunk)
+        for idx in chunk_indices:
+            second_input = 2 * (idx % 16) + idx // 16
+            body.append(f"    smem_logical{idx} = fft_thread * 32 + " f"{second_input}")
+            body.append(
+                f"    smem_phys{idx} = smem_logical{idx} ^ "
+                f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+            )
+            body.append(f"    smem_phys{idx} += smem_offset")
+        body.extend(
+            [
+                (
+                    f"    smem_load_index_{chunk_base} = "
+                    f"{_distributed_join_tree([f'smem_phys{idx}' for idx in chunk_indices])}"
+                ),
+                (
+                    f"    smem_load_r_{chunk_base} = tl.load("
+                    "tle.gpu.local_ptr("
+                    f"smem_r, (smem_load_index_{chunk_base},)), "
+                    "mask=smem_load_mask, other=0.0)"
+                ),
+                (
+                    f"    smem_load_i_{chunk_base} = tl.load("
+                    "tle.gpu.local_ptr("
+                    f"smem_i, (smem_load_index_{chunk_base},)), "
+                    "mask=smem_load_mask, other=0.0)"
+                ),
+            ]
+        )
+        body.extend(
+            _emit_distributed_split_tree(
+                "    ",
+                f"smem_load_r_{chunk_base}",
+                [f"r{idx}" for idx in chunk_indices],
+                f"smem_load_r_{chunk_base}",
+            )
+        )
+        body.extend(
+            _emit_distributed_split_tree(
+                "    ",
+                f"smem_load_i_{chunk_base}",
+                [f"i{idx}" for idx in chunk_indices],
+                f"smem_load_i_{chunk_base}",
+            )
+        )
+
+    body.extend(_emit_local_radix32_codelet_call("    ", plan.direction))
+
+    if include_outer_twiddle:
+        outer_twiddle_scale = (
+            _direction_sign(plan.direction)
+            * 2.0
+            * math.pi
+            / (four_step_n1 * four_step_n2)
+        )
+        body.extend(
+            [
+                ("    outer_base_idx = fft_thread"),
+                (
+                    "    outer_base_angle = four_step_inner * outer_base_idx * "
+                    f"{outer_twiddle_scale:.17g}"
+                ),
+                (
+                    f"    outer_step_angle = four_step_inner * {register_radix} * "
+                    f"{outer_twiddle_scale:.17g}"
+                ),
+                (
+                    "    outer_tw_i, outer_tw_r = tl.inline_asm_elementwise("
+                    '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
+                    '"=f,=f,f", [outer_base_angle], '
+                    "dtype=(tl.float32, tl.float32), is_pure=True, pack=1)"
+                ),
+                (
+                    "    outer_step_i, outer_step_r = tl.inline_asm_elementwise("
+                    '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
+                    '"=f,=f,f", [outer_step_angle], '
+                    "dtype=(tl.float32, tl.float32), is_pure=True, pack=1)"
+                ),
+            ]
+        )
+
+    for idx in range(32):
+        body.append(f"    out_idx{idx} = fft_thread + {register_radix * idx}")
+        if include_outer_twiddle:
+            body.append(
+                f"    dst_idx{idx} = "
+                f"four_step_inner * {four_step_n1} + out_idx{idx}"
+            )
+            body.append(
+                f"    r{idx}, i{idx} = "
+                f"_cmul(r{idx}, i{idx}, outer_tw_r, outer_tw_i)"
+            )
+            if idx < 31:
+                body.extend(
+                    [
+                        (
+                            "    outer_next_r = "
+                            "outer_tw_r * outer_step_r - outer_tw_i * outer_step_i"
+                        ),
+                        (
+                            "    outer_next_i = "
+                            "outer_tw_i * outer_step_r + outer_tw_r * outer_step_i"
+                        ),
+                        "    outer_tw_r = outer_next_r",
+                        "    outer_tw_i = outer_next_i",
+                    ]
+                )
+        else:
+            body.append(
+                f"    dst_idx{idx} = "
+                f"out_idx{idx} * {four_step_n1} + four_step_inner"
+            )
+        body.append(
+            f"    output_offset{idx} = " f"(four_step_batch_base + dst_idx{idx}) * 2"
+        )
+        if register_radix == 32:
+            body.append(
+                f"    output_dummy{idx} = tl.inline_asm_elementwise("
+                '"st.global.v2.f32 [$1], {$2, $3}; mov.u32 $0, 0;", '
+                '"=r,l,f,f", '
+                f"[tl.cast(out_ptr + output_offset{idx}, tl.uint64), "
+                f"r{idx}, i{idx}], "
+                "dtype=tl.int32, is_pure=False, pack=1)"
+            )
+        else:
+            body.append(
+                f"    tl.store(out_ptr + output_offset{idx}, r{idx}, "
+                "mask=output_lane_mask)"
+            )
+            body.append(
+                f"    tl.store(out_ptr + output_offset{idx} + 1, i{idx}, "
+                "mask=output_lane_mask)"
+            )
+    return kernel_name, "\n".join(body)
+
+
 def _build_leaf_kernel_source_for_io(
     plan: LeafPlan,
     *,
@@ -1074,6 +1577,19 @@ def _build_leaf_kernel_source_for_io(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
 ) -> tuple[str, str]:
+    if _use_thread_local_mixed_leaf(
+        plan,
+        io_mode=io_mode,
+        four_step_n1=four_step_n1,
+        four_step_n2=four_step_n2,
+    ):
+        return _build_thread_local_mixed_four_step_kernel_source(
+            plan,
+            io_mode=io_mode,
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
+        )
+
     factors = plan.factors
     n = plan.length
     smem_n = plan.smem_size
@@ -1099,7 +1615,15 @@ def _build_leaf_kernel_source_for_io(
         )
     else:
         inner_pack = 1
-    fuse_twiddle_into_row = use_tle_fused_twiddle(four_step_n1, four_step_n2)
+    fuse_twiddle_into_row = use_tle_fused_twiddle(
+        four_step_n1, four_step_n2, plan.dtype
+    )
+    single_smem_buffer = _use_single_smem_buffer(
+        plan,
+        io_mode=io_mode,
+        four_step_n1=four_step_n1,
+        four_step_n2=four_step_n2,
+    )
     smem_pack = max(batch_pack, inner_pack)
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
@@ -1176,11 +1700,15 @@ def _build_leaf_kernel_source_for_io(
             body.append("    output_batch_base = current_batch * output_distance")
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:
+            four_step_inner_count = (
+                four_step_n2 if io_mode in row_modes else four_step_n1
+            )
             body.append(f"    inner_slot = lane_vec % {inner_pack}")
             body.append(f"    lane = lane_vec // {inner_pack}")
             body.append("    four_step_inner = four_step_inner_base + inner_slot")
             body.append(
-                f"    lane_mask = (lane < {plan.lanes}) & (four_step_inner < {four_step_n1})"
+                f"    lane_mask = (lane < {plan.lanes}) & "
+                f"(four_step_inner < {four_step_inner_count})"
             )
             body.append(f"    smem_offset = inner_slot * {smem_slot_stride}")
         else:
@@ -1192,14 +1720,15 @@ def _build_leaf_kernel_source_for_io(
 
     if len(factors) > 1:
         tl_dtype = _tl_real_dtype(plan.dtype)
-        body.append(
-            f"    smem_a_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
-            f"nv_mma_shared_layout=False)"
-        )
-        body.append(
-            f"    smem_a_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
-            f"nv_mma_shared_layout=False)"
-        )
+        if not single_smem_buffer:
+            body.append(
+                f"    smem_a_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+                f"nv_mma_shared_layout=False)"
+            )
+            body.append(
+                f"    smem_a_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+                f"nv_mma_shared_layout=False)"
+            )
         body.append(
             f"    smem_b_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
             f"nv_mma_shared_layout=False)"
@@ -1222,6 +1751,7 @@ def _build_leaf_kernel_source_for_io(
                 four_step_n2=four_step_n2,
                 smem_pack=smem_pack,
                 fuse_twiddle_into_row=fuse_twiddle_into_row,
+                single_smem_buffer=single_smem_buffer,
                 direction=plan.direction,
                 dtype=plan.dtype,
             )

@@ -108,13 +108,17 @@ def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex64") == 4
     assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex128") == 2
     assert kernels.four_step_col_inner_pack_for(512, 2048, "complex64") == 2
-    assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex64") == 2
+    assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex64") == 4
     assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex128") == 1
     assert kernels.use_tle_fused_twiddle(1024, 1024)
+    assert kernels.use_tle_fused_twiddle(768, 1024)
+    assert kernels.use_tle_fused_twiddle(640, 1024)
+    assert kernels.use_tle_fused_twiddle(896, 1024)
+    assert not kernels.use_tle_fused_twiddle(768, 1024, "complex128")
     assert not kernels.use_tle_fused_twiddle(512, 2048)
 
 
-def test_2p20_four_step_moves_twiddle_to_tle_row_pipeline(kernels) -> None:
+def test_large_four_step_generates_twiddle_in_row_pipeline(kernels) -> None:
     plan = kernels.LeafPlan(
         length=1024,
         factors=(16, 16, 4),
@@ -130,16 +134,139 @@ def test_2p20_four_step_moves_twiddle_to_tle_row_pipeline(kernels) -> None:
     _, col_source = kernels._build_four_step_col_kernel_source(plan, 1024, 1024)
 
     assert "twiddle_ptr" in row_source
-    assert "tle.load(twiddle_ptr" in row_source
-    assert "is_async=True" in row_source
+    assert "tle.load(twiddle_ptr" not in row_source
+    assert "sin.approx.f32" in row_source
     assert "tl.range(0," in row_source
     assert "num_stages=2" not in row_source
-    assert "tl.arange(0, 128)" in row_source
+    assert "tl.arange(0, 256)" in row_source
+    assert row_source.count("tl.debug_barrier()") == 3
+    assert "smem_a_r = tle.gpu.alloc" not in row_source
     assert "smem_dst0 = dst0 ^ (dst0 >> 5)" in row_source
     assert "smem_phys0 = logical_phys0 ^ (logical_phys0 >> 5)" in row_source
     assert "twiddle_ptr" not in col_source
     assert "tl.load(in_ptr" in col_source
     assert "tl.arange(0, 256)" in col_source
+    assert col_source.count("tl.debug_barrier()") == 3
+    assert "smem_a_r = tle.gpu.alloc" not in col_source
+
+
+def test_rectangular_four_step_fused_twiddle_uses_fft_coordinates(kernels) -> None:
+    row_plan = kernels.LeafPlan(
+        length=486,
+        factors=(9, 9, 6),
+        remainder=1,
+        lanes=27,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=512,
+        direction="forward",
+    )
+    col_plan = kernels.LeafPlan(
+        length=675,
+        factors=(15, 15, 3),
+        remainder=1,
+        lanes=45,
+        num_warps=2,
+        generic_radices=(),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    _, row_source = kernels._build_four_step_row_kernel_source(row_plan, 486, 675)
+    _, col_source = kernels._build_four_step_col_kernel_source(col_plan, 486, 675)
+
+    assert "outer_angle0 = four_step_inner * out_idx0 *" in row_source
+    assert "outer_angle0 = dst_idx0 *" not in row_source
+    assert "(four_step_inner < 675)" in row_source
+    assert "(four_step_inner < 486)" in col_source
+
+
+def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
+    kernels, jit_source, tmp_path
+) -> None:
+    plan = kernels.LeafPlan(
+        length=1024,
+        factors=(32, 32),
+        remainder=1,
+        lanes=32,
+        num_warps=2,
+        generic_radices=(32,),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    row_name, row_source = kernels._build_four_step_row_kernel_source(plan, 1024, 1024)
+    col_name, col_source = kernels._build_four_step_col_kernel_source(plan, 1024, 1024)
+
+    assert "thread_local" in row_name
+    assert "thread_local" in col_name
+    assert row_source.count(") = _fwd_rad16_b1(") == 4
+    assert col_source.count(") = _fwd_rad16_b1(") == 4
+    assert "shfl.sync.bfly.b32" not in row_source
+    assert "tl.arange(0, 128)" in row_source
+    assert row_source.count("tl.debug_barrier()") == 1
+    assert row_source.count("tle.gpu.alloc") == 2
+    assert "tw1_r_ptr" in row_source
+    assert "dft32_r_ptr" in row_source
+    assert row_source.count("ld.global.v2.f32") == 32
+    assert col_source.count("ld.global.v2.f32") == 32
+    assert row_source.count("st.global.v2.f32") == 32
+    assert col_source.count("st.global.v2.f32") == 32
+    assert "sin.approx.f32" in row_source
+    assert "tle.load(twiddle_ptr" not in row_source
+    assert "twiddle_ptr" not in col_source
+
+    metadata = jit_source._metadata(
+        module_path=tmp_path / "unused.py",
+        kernel_name=row_name,
+        arg_names=["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"],
+        plan=plan,
+        kernel_type="four_step_row",
+        n1=1024,
+        n2=1024,
+        dtype="complex64",
+    )
+    assert metadata["inner_pack"] == 4
+    assert metadata["num_warps"] == 4
+
+
+@pytest.mark.parametrize(
+    ("register_radix", "n1", "inner_codelet"),
+    [
+        (18, 576, "_fwd_rad6_b1"),
+        (20, 640, "_fwd_rad5_b1"),
+        (24, 768, "_fwd_rad3_b1"),
+        (25, 800, "_fwd_rad5_b1"),
+        (27, 864, "_fwd_rad9_b1"),
+        (28, 896, "_fwd_rad7_b1"),
+        (30, 960, "_fwd_rad10_b1"),
+    ],
+)
+def test_large_mixed_thread_local_leaf_is_generated(
+    kernels, register_radix, n1, inner_codelet
+) -> None:
+    plan = kernels.LeafPlan(
+        length=n1,
+        factors=(register_radix, 32),
+        remainder=1,
+        lanes=register_radix,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    row_name, row_source = kernels._build_four_step_row_kernel_source(plan, n1, 1024)
+
+    assert f"kernel_{register_radix}_32_thread_local" in row_name
+    assert inner_codelet in row_source
+    assert row_source.count(") = _fwd_rad16_b1(") == 2
+    assert row_source.count("tl.debug_barrier()") == 1
+    assert row_source.count("tle.gpu.alloc") == 2
+    assert row_source.count("ld.global.v2.f32") == register_radix
+    assert "tw1_r_ptr +" not in row_source
+    assert "sin.approx.f32" in row_source
+    assert "mask=output_lane_mask" in row_source
 
 
 def test_16384_four_step_keeps_measured_kernel_contract(kernels) -> None:
@@ -243,7 +370,7 @@ def test_2p20_col_metadata_uses_tle_pipeline_and_eight_warps(
     assert metadata["tle_fused_twiddle"] is True
 
 
-def test_2p20_row_metadata_packs_two_ffts_into_four_warps(
+def test_2p20_row_metadata_packs_four_ffts_into_eight_warps(
     kernels, jit_source, tmp_path
 ) -> None:
     plan = kernels.LeafPlan(
@@ -268,8 +395,8 @@ def test_2p20_row_metadata_packs_two_ffts_into_four_warps(
         dtype="complex64",
     )
 
-    assert metadata["inner_pack"] == 2
-    assert metadata["num_warps"] == 4
+    assert metadata["inner_pack"] == 4
+    assert metadata["num_warps"] == 8
 
 
 def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:

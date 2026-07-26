@@ -20,6 +20,9 @@ namespace flagfft {
 namespace {
 
   constexpr int64_t kBluesteinConvolutionSearchWindow = 4096;
+  constexpr int64_t kThreadLocalCrossRadix = 32;
+  constexpr int64_t kThreadLocalColLength = 1024;
+  const std::vector<int64_t> kThreadLocalRegisterRadices = {18, 20, 24, 25, 27, 28, 30, 32};
 
 }  // namespace
 
@@ -123,6 +126,35 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     PlanNodePtr col = make_leaf_plan(256, std::vector<int64_t> {4, 8, 8});
     PlanNodePtr node = std::make_shared<FourStepPlanNode>(n, 64, 256, row, col);
     candidates.push_back({node, four_step_cost(64, 256) * 0.5, priority(node)});
+  }
+
+  const RequestContext &context = request_context();
+  if (context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      n % kThreadLocalColLength == 0) {
+    const int64_t n1 = n / kThreadLocalColLength;
+    const int64_t register_radix = n1 / kThreadLocalCrossRadix;
+    if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix)) {
+      auto make_thread_local_leaf = [](int64_t local_register_radix) -> PlanNodePtr {
+        const int64_t length = local_register_radix * kThreadLocalCrossRadix;
+        const int64_t num_warps = local_register_radix == 32 ? 2 : 1;
+        const std::vector<int64_t> generic_radices =
+            local_register_radix == 32 ? std::vector<int64_t> {32} : std::vector<int64_t> {};
+        return std::make_shared<LeafPlanNode>(
+            length,
+            std::vector<int64_t> {local_register_radix, kThreadLocalCrossRadix},
+            1,
+            local_register_radix,
+            num_warps,
+            generic_radices,
+            ceil_power_of_two(length));
+      };
+      PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,
+                                                            n1,
+                                                            kThreadLocalColLength,
+                                                            make_thread_local_leaf(register_radix),
+                                                            make_thread_local_leaf(32));
+      candidates.push_back({node, four_step_cost(n1, kThreadLocalColLength) * 0.25, priority(node)});
+    }
   }
 
   for (int64_t n1 : enumerate_divisors(n)) {

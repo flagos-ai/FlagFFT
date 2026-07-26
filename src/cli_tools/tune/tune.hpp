@@ -14,8 +14,25 @@
 
 #pragma once
 
+#include <string>
+
+#include <nlohmann/json.hpp>
+
 namespace flagfft::cli::tune {
 
-[[noreturn]] void tune_placeholder();
+struct TuneOptions {
+  int length = 1 << 20;
+  int batch = 1;
+  int max_candidates = 5;
+  int finalists = 2;
+  int screen_warmup = 10;
+  int screen_iters = 50;
+  int final_warmup = 50;
+  int final_iters = 1000;
+  std::string db_path;
+  bool save = true;
+};
+
+nlohmann::json run_decomposition_tune(const TuneOptions& options);
 
 }  // namespace flagfft::cli::tune
