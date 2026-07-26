@@ -32,10 +32,16 @@ _FOUR_STEP_NUM_WARPS = 4
 _FOUR_STEP_COL_INNER_PACK = 2
 _FOUR_STEP_LARGE_INNER_PACK = 4
 _FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
+_FOUR_STEP_ROW_INNER_PACK_MAX_N1 = 512
+_FOUR_STEP_PACKED_COL_LEAF_MAX_N2 = 1024
 _TLE_FUSED_TWIDDLE_MIN_LENGTH = 1 << 18
 _TLE_FUSED_TWIDDLE_MAX_LEAF = 1024
 _TLE_SMEM_SWIZZLE_SHIFT = 5
 _THREAD_LOCAL_MIXED_RADICES = frozenset({18, 20, 24, 25, 27, 28, 30, 32})
+_COOPERATIVE_STAGE_MIN_LENGTH = 512
+_COOPERATIVE_STAGE_MAX_LENGTH = 2048
+_COOPERATIVE_STAGE_MAX_BASE_LANES = 8
+_COOPERATIVE_STAGE_MAX_LANES = 128
 _LEAF_PACK_TARGET_THREADS = 32
 _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
@@ -102,6 +108,31 @@ def lane_block_for(lanes: int) -> int:
     return value
 
 
+def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
+    if not (
+        plan.dtype == "complex64"
+        and _COOPERATIVE_STAGE_MIN_LENGTH
+        <= plan.length
+        <= _COOPERATIVE_STAGE_MAX_LENGTH
+        and len(plan.factors) >= 3
+        and plan.lanes < _COOPERATIVE_STAGE_MAX_BASE_LANES
+    ):
+        return (plan.lanes,) * len(plan.factors)
+
+    stage_lanes: list[int] = []
+    for radix in plan.factors:
+        codelets = plan.length // radix
+        upper = min(codelets, _COOPERATIVE_STAGE_MAX_LANES)
+        stage_lanes.append(
+            next(
+                candidate
+                for candidate in range(upper, 0, -1)
+                if codelets % candidate == 0
+            )
+        )
+    return tuple(stage_lanes)
+
+
 def _floor_power_of_two(value: int) -> int:
     power = 1
     while power * 2 <= value:
@@ -130,13 +161,19 @@ def four_step_col_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> 
         return 1
     if use_tle_fused_twiddle(n1, n2, dtype):
         return _FOUR_STEP_LARGE_INNER_PACK
-    if dtype in ("complex128", "float64") and n2 > 1024:
+    if n2 > _FOUR_STEP_PACKED_COL_LEAF_MAX_N2:
         return 1
     return _FOUR_STEP_COL_INNER_PACK
 
 
 def four_step_row_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
     if use_tle_fused_twiddle(n1, n2, dtype):
+        return _FOUR_STEP_LARGE_INNER_PACK
+    if (
+        not _is_double_dtype(dtype)
+        and n1 <= _FOUR_STEP_ROW_INNER_PACK_MAX_N1
+        and n2 > _FOUR_STEP_PACKED_COL_LEAF_MAX_N2
+    ):
         return _FOUR_STEP_LARGE_INNER_PACK
     return 1
 
@@ -863,9 +900,16 @@ def _emit_stage_block(
     single_smem_buffer: bool = False,
     direction: Literal["forward", "inverse"] = "forward",
     dtype: str = "complex64",
+    stage_lanes: tuple[int, ...] | None = None,
 ) -> list[str]:
     radix = factors[stage]
-    groups = n // (lanes * radix)
+    current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
+    next_lanes = (
+        stage_lanes[stage + 1]
+        if stage_lanes is not None and stage + 1 < len(stage_lanes)
+        else current_lanes
+    )
+    groups = n // (current_lanes * radix)
     is_last = stage == len(factors) - 1
     source_buffer = (
         None
@@ -879,12 +923,16 @@ def _emit_stage_block(
     )
     zero = "0.0"
 
-    lines = [f"    for group_{stage} in tl.range(0, {groups}):"]
+    lines: list[str] = []
+    if stage_lanes is not None:
+        lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
+    lines.append(f"    for group_{stage} in tl.range(0, {groups}):")
     indent = "        "
 
     for j in range(radix):
         lines.append(
-            f"{indent}logical_phys{j} = tl.where(lane_mask, lane + {lanes} * (group_{stage} * {radix} + {j}), 0)"
+            f"{indent}logical_phys{j} = tl.where(lane_mask, lane + "
+            f"{current_lanes} * (group_{stage} * {radix} + {j}), 0)"
         )
         if smem_pack > 1:
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
@@ -898,11 +946,15 @@ def _emit_stage_block(
             if smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
-        lines.extend(_emit_input_base(indent, factors, lanes, f"group_{stage}"))
+        lines.extend(_emit_input_base(indent, factors, current_lanes, f"group_{stage}"))
     if is_last:
-        lines.extend(_emit_output_base(indent, factors, lanes, f"group_{stage}"))
+        lines.extend(
+            _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
+        )
     else:
-        lines.extend(_emit_route_base(indent, stage, factors, lanes, f"group_{stage}"))
+        lines.extend(
+            _emit_route_base(indent, stage, factors, current_lanes, f"group_{stage}")
+        )
 
     for j in range(radix):
         if stage == 0:
@@ -1147,7 +1199,9 @@ def _emit_stage_block(
                     f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
                 )
         else:
-            lines.extend(_emit_route_index(indent, f"dst{j}", stage, factors, lanes, j))
+            lines.extend(
+                _emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j)
+            )
             store_index = f"dst{j}"
             if fuse_twiddle_into_row:
                 lines.append(
@@ -1593,7 +1647,10 @@ def _build_leaf_kernel_source_for_io(
     factors = plan.factors
     n = plan.length
     smem_n = plan.smem_size
-    lane_block = lane_block_for(plan.lanes)
+    stage_lanes = cooperative_stage_lanes_for(plan)
+    uses_cooperative_stage_lanes = any(lanes != plan.lanes for lanes in stage_lanes)
+    active_lanes = max(stage_lanes, default=plan.lanes)
+    lane_block = lane_block_for(active_lanes)
     batch_pack = (
         contiguous_batch_pack_for(plan)
         if io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"}
@@ -1683,13 +1740,13 @@ def _build_leaf_kernel_source_for_io(
         if batch_pack == 1:
             body.append("    current_batch = batch_id")
             body.append("    lane = lane_vec")
-            body.append(f"    lane_mask = lane < {plan.lanes}")
+            body.append(f"    lane_mask = lane < {active_lanes}")
         else:
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
             body.append("    current_batch = batch_id + batch_slot")
             body.append(
-                f"    lane_mask = (lane < {plan.lanes}) & (current_batch < nbatch)"
+                f"    lane_mask = (lane < {active_lanes}) & (current_batch < nbatch)"
             )
             body.append(f"    batch_base = current_batch * {n}")
             body.append(f"    smem_offset = batch_slot * {smem_slot_stride}")
@@ -1707,16 +1764,19 @@ def _build_leaf_kernel_source_for_io(
             body.append(f"    lane = lane_vec // {inner_pack}")
             body.append("    four_step_inner = four_step_inner_base + inner_slot")
             body.append(
-                f"    lane_mask = (lane < {plan.lanes}) & "
+                f"    lane_mask = (lane < {active_lanes}) & "
                 f"(four_step_inner < {four_step_inner_count})"
             )
             body.append(f"    smem_offset = inner_slot * {smem_slot_stride}")
         else:
             body.append("    lane = lane_vec")
-            body.append(f"    lane_mask = lane < {plan.lanes}")
+            body.append(f"    lane_mask = lane < {active_lanes}")
         body.append(
             f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}"
         )
+
+    if uses_cooperative_stage_lanes:
+        body.append("    base_lane_mask = lane_mask")
 
     if len(factors) > 1:
         tl_dtype = _tl_real_dtype(plan.dtype)
@@ -1754,6 +1814,7 @@ def _build_leaf_kernel_source_for_io(
                 single_smem_buffer=single_smem_buffer,
                 direction=plan.direction,
                 dtype=plan.dtype,
+                stage_lanes=stage_lanes if uses_cooperative_stage_lanes else None,
             )
         )
 

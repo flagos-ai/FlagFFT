@@ -19,7 +19,8 @@ namespace flagfft {
 inline constexpr int64_t kFourStepColInnerPack = 2;
 inline constexpr int64_t kFourStepLargeInnerPack = 4;
 inline constexpr int64_t kFourStepColInnerPackMinN1 = 128;
-inline constexpr int64_t kFourStepColInnerPackMaxN2F64 = 1024;
+inline constexpr int64_t kFourStepRowInnerPackMaxN1 = 512;
+inline constexpr int64_t kFourStepPackedColLeafMaxN2 = 1024;
 inline constexpr int64_t kTleFusedTwiddleMinLength = int64_t {1} << 18;
 inline constexpr int64_t kTleFusedTwiddleMaxLeaf = 1024;
 
@@ -36,9 +37,9 @@ int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2, const std::string &
   if (use_tle_fused_twiddle(n1, n2, dtype)) {
     return kFourStepLargeInnerPack;
   }
-  if ((dtype == "complex128" || dtype == "float64") && n2 > kFourStepColInnerPackMaxN2F64) {
-    // fp64 doubles per-element smem; pack=2 overflows A100 opt-in (163 KiB)
-    // once the col leaf is bigger than ~1024 lanes. Fall back to pack=1.
+  if (n2 > kFourStepPackedColLeafMaxN2) {
+    // Large mixed-radix col leaves already consume enough registers and smem
+    // to limit residency. Keep one FFT per CTA to avoid doubling that pressure.
     return 1;
   }
   return kFourStepColInnerPack;
@@ -46,6 +47,12 @@ int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2, const std::string &
 
 int64_t four_step_row_inner_pack_for(int64_t n1, int64_t n2, const std::string &dtype) {
   if (use_tle_fused_twiddle(n1, n2, dtype)) {
+    return kFourStepLargeInnerPack;
+  }
+  const bool is_double = dtype == "complex128" || dtype == "float64";
+  if (!is_double && n1 <= kFourStepRowInnerPackMaxN1 && n2 > kFourStepPackedColLeafMaxN2) {
+    // Small low-lane row leaves otherwise leave most of a warp idle. Pack four
+    // independent rows while keeping their total smem below the A100 budget.
     return kFourStepLargeInnerPack;
   }
   return 1;
