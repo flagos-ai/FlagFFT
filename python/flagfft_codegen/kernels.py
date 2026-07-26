@@ -35,7 +35,7 @@ _FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
 _TLE_FUSED_TWIDDLE_MIN_LENGTH = 1 << 18
 _TLE_FUSED_TWIDDLE_MAX_LEAF = 1024
 _TLE_SMEM_SWIZZLE_SHIFT = 5
-_THREAD_LOCAL_MIXED_RADICES = frozenset({20, 24, 28, 32})
+_THREAD_LOCAL_MIXED_RADICES = frozenset({18, 20, 24, 25, 27, 28, 30, 32})
 _LEAF_PACK_TARGET_THREADS = 32
 _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
@@ -646,14 +646,18 @@ def _emit_local_mixed_codelet_call(
     radix: int,
     direction: Literal["forward", "inverse"],
 ) -> list[str]:
-    """Emit a register-only FFT for the mixed radices used by large 1D leaves."""
+    """Emit a register-only FFT for supported composite large-1D leaf radices."""
     if radix == 32:
         return _emit_local_radix32_codelet_call(indent, direction)
 
     split = {
+        18: (3, 6),
         20: (5, 4),
         24: (3, 8),
+        25: (5, 5),
+        27: (3, 9),
         28: (7, 4),
+        30: (3, 10),
     }.get(radix)
     if split is None:
         raise ValueError(f"unsupported thread-local mixed radix {radix}")
@@ -1280,13 +1284,13 @@ def _build_thread_local_mixed_four_step_kernel_source(
     four_step_n1: int,
     four_step_n2: int,
 ) -> tuple[str, str]:
-    # Each thread owns the first register FFT (20/24/28/32 values), followed
-    # by one shared exchange and a full register-only radix-32 FFT.
+    # Each thread owns the first composite register FFT, followed by one
+    # shared exchange and a full register-only radix-32 FFT.
     register_radix = plan.factors[0]
     inner_pack = 4
     physical_lanes = 32
     vector_block = physical_lanes * inner_pack
-    smem_chunk = 8 if register_radix == 32 else 4
+    smem_chunk = next(chunk for chunk in (8, 4, 2, 1) if register_radix % chunk == 0)
     smem_chunk_dims = int(math.log2(smem_chunk))
     smem_reshape_dims = ", ".join(["1"] * smem_chunk_dims)
     smem_block_dims = ", ".join(["2"] * smem_chunk_dims)

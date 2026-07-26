@@ -79,16 +79,34 @@ TEST_P(C2CLargeMixedTle, InverseVsReference) {
 }
 
 std::string MixedSizeName(const ::testing::TestParamInfo<int>& info) {
+  if (info.param == 9 * (1 << 16)) {
+    return "Radix3Squared";
+  }
   if (info.param == 3 * (1 << 18)) {
     return "Radix3";
   }
   if (info.param == 5 * (1 << 17)) {
     return "Radix5";
   }
-  return "Radix7";
+  if (info.param == 25 * (1 << 15)) {
+    return "Radix5Squared";
+  }
+  if (info.param == 27 * (1 << 15)) {
+    return "Radix3Cubed";
+  }
+  if (info.param == 7 * (1 << 17)) {
+    return "Radix7";
+  }
+  return "Radix3Times5";
 }
 
 INSTANTIATE_TEST_SUITE_P(LargeMixedBases,
                          C2CLargeMixedTle,
-                         ::testing::Values(3 * (1 << 18), 5 * (1 << 17), 7 * (1 << 17)),
+                         ::testing::Values(9 * (1 << 16),
+                                           3 * (1 << 18),
+                                           5 * (1 << 17),
+                                           25 * (1 << 15),
+                                           27 * (1 << 15),
+                                           7 * (1 << 17),
+                                           15 * (1 << 16)),
                          MixedSizeName);

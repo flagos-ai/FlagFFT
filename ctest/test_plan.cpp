@@ -147,9 +147,13 @@ TEST(Plan1D, LargeMixedRadicesUseThreadLocalRectangularLeaves) {
     int64_t register_radix;
   };
   const MixedCase cases[] = {
-      {3 * (int64_t {1} << 18), 768, 24},
-      {5 * (int64_t {1} << 17), 640, 20},
-      {7 * (int64_t {1} << 17), 896, 28},
+      { 9 * (int64_t {1} << 16), 576, 18},
+      { 3 * (int64_t {1} << 18), 768, 24},
+      { 5 * (int64_t {1} << 17), 640, 20},
+      {25 * (int64_t {1} << 15), 800, 25},
+      {27 * (int64_t {1} << 15), 864, 27},
+      { 7 * (int64_t {1} << 17), 896, 28},
+      {15 * (int64_t {1} << 16), 960, 30},
   };
 
   for (const MixedCase& test_case : cases) {

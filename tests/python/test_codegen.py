@@ -202,9 +202,13 @@ def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
 @pytest.mark.parametrize(
     ("register_radix", "n1", "inner_codelet"),
     [
+        (18, 576, "_fwd_rad6_b1"),
         (20, 640, "_fwd_rad5_b1"),
         (24, 768, "_fwd_rad3_b1"),
+        (25, 800, "_fwd_rad5_b1"),
+        (27, 864, "_fwd_rad9_b1"),
         (28, 896, "_fwd_rad7_b1"),
+        (30, 960, "_fwd_rad10_b1"),
     ],
 )
 def test_large_mixed_thread_local_leaf_is_generated(

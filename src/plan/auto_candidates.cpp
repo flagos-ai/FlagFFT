@@ -22,7 +22,7 @@ namespace {
   constexpr int64_t kBluesteinConvolutionSearchWindow = 4096;
   constexpr int64_t kThreadLocalCrossRadix = 32;
   constexpr int64_t kThreadLocalColLength = 1024;
-  const std::vector<int64_t> kThreadLocalRegisterRadices = {20, 24, 28, 32};
+  const std::vector<int64_t> kThreadLocalRegisterRadices = {18, 20, 24, 25, 27, 28, 30, 32};
 
 }  // namespace
 
