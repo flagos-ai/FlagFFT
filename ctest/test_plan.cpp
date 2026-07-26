@@ -195,6 +195,31 @@ TEST(Plan1D, Size2P20DecompositionTuneCandidatesFreezeOnePlanPerSplit) {
   EXPECT_EQ(splits.count({1024, 1024}), 1U);
 }
 
+TEST(Plan1D, LargeMixedDecompositionTuneCandidatesIncludeBalancedSplit) {
+  flagfft::FFTRequest request;
+  request.fft_length = 663000;
+  request.requested_n = request.fft_length;
+  request.input_dtype = "complex64";
+  request.output_dtype = "complex64";
+  request.device_type = "unit-test";
+  request.device_arch = "sm80";
+  request.direction = "forward";
+  request.batch = 1;
+
+  flagfft::PlanBuilder builder;
+  auto candidates = builder.build_decomposition_tune_candidates(request.fft_length, request, 2);
+  ASSERT_EQ(candidates.size(), 2U);
+
+  std::set<std::pair<int64_t, int64_t>> splits;
+  for (const auto& candidate : candidates) {
+    auto four_step = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(candidate.node);
+    ASSERT_NE(four_step, nullptr);
+    splits.insert({four_step->n1, four_step->n2});
+  }
+  EXPECT_EQ(splits.count({408, 1625}), 1U);
+  EXPECT_EQ(splits.count({780, 850}), 1U);
+}
+
 TEST(Plan1D, BatchFour8192UsesMeasuredSplit) {
   setenv("FLAGFFT_TUNE_DISABLE", "1", 1);
 

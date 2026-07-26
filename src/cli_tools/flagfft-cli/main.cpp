@@ -58,7 +58,7 @@ void print_usage() {
                "  --print-path              Include plan description in output\n"
                "\n"
                "Tune options (decomposition-only v1):\n"
-               "  --shape N                 FFT length (currently 1048576)\n"
+               "  --shape N                 1D FFT length\n"
                "  --batch N                 Batch size (currently 1)\n"
                "  --max-candidates N        Number of FourStep splits to screen (default: 5)\n"
                "  --finalists N             Candidates receiving the long benchmark (default: 2)\n"

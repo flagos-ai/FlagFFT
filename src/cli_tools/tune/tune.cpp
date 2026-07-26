@@ -481,9 +481,6 @@ namespace {
 }  // namespace
 
 nlohmann::json run_decomposition_tune(const TuneOptions& options) {
-  if (options.length != (1 << 20)) {
-    throw AssertionFailure("decomposition tuner v1 currently supports only --shape 1048576");
-  }
   if (options.batch != 1) {
     throw AssertionFailure("decomposition tuner v1 currently supports only --batch 1");
   }
