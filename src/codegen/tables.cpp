@@ -106,10 +106,18 @@ namespace {
     double sign = direction == "inverse" ? 1.0 : -1.0;
     for (int64_t k = 0; k < radix; ++k) {
       for (int64_t n = 0; n < radix; ++n) {
-        double angle = sign * 2.0 * kPi * static_cast<double>(k * n) / static_cast<double>(radix);
         std::size_t index = static_cast<std::size_t>(k * radix + n);
-        dft_r[index] = static_cast<Real>(std::cos(angle));
-        dft_i[index] = static_cast<Real>(std::sin(angle));
+        if constexpr (std::is_same_v<Real, double>) {
+          constexpr long double kPiLong = 3.141592653589793238462643383279502884L;
+          long double angle = static_cast<long double>(sign) * 2.0L * kPiLong *
+                              static_cast<long double>(k * n) / static_cast<long double>(radix);
+          dft_r[index] = static_cast<Real>(std::cos(angle));
+          dft_i[index] = static_cast<Real>(std::sin(angle));
+        } else {
+          double angle = sign * 2.0 * kPi * static_cast<double>(k * n) / static_cast<double>(radix);
+          dft_r[index] = static_cast<Real>(std::cos(angle));
+          dft_i[index] = static_cast<Real>(std::sin(angle));
+        }
       }
     }
     return {dft_r, dft_i};

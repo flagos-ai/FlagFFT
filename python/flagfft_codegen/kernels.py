@@ -109,13 +109,19 @@ def lane_block_for(lanes: int) -> int:
 
 
 def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
+    fixed_lanes_are_compatible = all(
+        (plan.length // radix) % plan.lanes == 0 for radix in plan.factors
+    )
     if not (
         plan.dtype == "complex64"
         and _COOPERATIVE_STAGE_MIN_LENGTH
         <= plan.length
         <= _COOPERATIVE_STAGE_MAX_LENGTH
-        and len(plan.factors) >= 3
-        and plan.lanes < _COOPERATIVE_STAGE_MAX_BASE_LANES
+        and len(plan.factors) >= 2
+        and (
+            plan.lanes < _COOPERATIVE_STAGE_MAX_BASE_LANES
+            or not fixed_lanes_are_compatible
+        )
     ):
         return (plan.lanes,) * len(plan.factors)
 
@@ -540,14 +546,9 @@ def _emit_inline_constant_codelet(
 ) -> list[str]:
     lines: list[str] = []
     sign = _direction_sign(direction)
-    tl_dtype = _tl_real_dtype(dtype)
     for kout in range(radix):
-        lines.append(
-            f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})"
-        )
-        lines.append(
-            f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})"
-        )
+        lines.append(f"{indent}acc_r_{kout} = tl.zeros_like(r0)")
+        lines.append(f"{indent}acc_i_{kout} = tl.zeros_like(i0)")
 
     for kout in range(radix):
         for nin in range(radix):
@@ -568,14 +569,9 @@ def _emit_table_codelet(
     indent: str, radix: int, lane_block: int, dtype: str = "complex64"
 ) -> list[str]:
     lines: list[str] = []
-    tl_dtype = _tl_real_dtype(dtype)
     for kout in range(radix):
-        lines.append(
-            f"{indent}acc_r_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})"
-        )
-        lines.append(
-            f"{indent}acc_i_{kout} = tl.zeros(({lane_block},), dtype={tl_dtype})"
-        )
+        lines.append(f"{indent}acc_r_{kout} = tl.zeros_like(r0)")
+        lines.append(f"{indent}acc_i_{kout} = tl.zeros_like(i0)")
 
     for kout in range(radix):
         for nin in range(radix):
@@ -675,6 +671,22 @@ def _emit_local_radix32_codelet_call(
                 f"{indent}i{idx + 16} = even_i{idx} - odd_tw_i{idx}",
             ]
         )
+    return lines
+
+
+def _emit_natural_order_radix32_codelet_call(
+    indent: str, direction: Literal["forward", "inverse"]
+) -> list[str]:
+    """Emit radix-32 for naturally ordered inputs using the factorized codelet."""
+    lines: list[str] = []
+    for idx in range(32):
+        lines.append(f"{indent}rad32_in_r{idx} = r{idx}")
+        lines.append(f"{indent}rad32_in_i{idx} = i{idx}")
+    for idx in range(32):
+        source_idx = 2 * (idx % 16) + idx // 16
+        lines.append(f"{indent}r{idx} = rad32_in_r{source_idx}")
+        lines.append(f"{indent}i{idx} = rad32_in_i{source_idx}")
+    lines.extend(_emit_local_radix32_codelet_call(indent, direction))
     return lines
 
 
@@ -1092,6 +1104,10 @@ def _emit_stage_block(
 
     if radix == 16:
         lines.extend(_emit_radix16_codelet_call(indent, direction))
+    elif radix == 32:
+        lines.extend(_emit_natural_order_radix32_codelet_call(indent, direction))
+    elif radix in _THREAD_LOCAL_MIXED_RADICES:
+        lines.extend(_emit_local_mixed_codelet_call(indent, radix, direction))
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
@@ -1857,6 +1873,28 @@ def _build_direct_dft_kernel_source(
     suffix = _dtype_suffix(dtype)
     prefix = "direct_idft" if direction == "inverse" else "direct_dft"
     kernel_name = f"{prefix}_kernel_n{n}_{suffix}_b{block}"
+    compensation_init = ""
+    accumulation = """
+                acc_r += xr * wr - xi * wi
+                acc_i += xr * wi + xi * wr
+    """
+    if dtype == "complex128":
+        compensation_init = f"""
+            comp_r = tl.zeros(({block},), dtype={acc_dtype})
+            comp_i = tl.zeros(({block},), dtype={acc_dtype})
+        """
+        accumulation = """
+                term_r = xr * wr - xi * wi
+                term_i = xr * wi + xi * wr
+                corrected_r = term_r - comp_r
+                corrected_i = term_i - comp_i
+                next_r = acc_r + corrected_r
+                next_i = acc_i + corrected_i
+                comp_r = (next_r - acc_r) - corrected_r
+                comp_i = (next_i - acc_i) - corrected_i
+                acc_r = next_r
+                acc_i = next_i
+        """
     source = dedent(
         f"""
         @triton.jit
@@ -1874,13 +1912,13 @@ def _build_direct_dft_kernel_source(
             mask = k < {n}
             acc_r = tl.zeros(({block},), dtype={acc_dtype})
             acc_i = tl.zeros(({block},), dtype={acc_dtype})
+            {compensation_init}
             for j in tl.range(0, {n}):
                 xr = tl.load(in_ptr + (pid_batch * {n} + j) * 2)
                 xi = tl.load(in_ptr + (pid_batch * {n} + j) * 2 + 1)
                 wr = tl.load(dft_r_ptr + k * {n} + j, mask=mask, other=0.0)
                 wi = tl.load(dft_i_ptr + k * {n} + j, mask=mask, other=0.0)
-                acc_r += xr * wr - xi * wi
-                acc_i += xr * wi + xi * wr
+                {accumulation}
             dst = out_ptr + (pid_batch * {n} + k) * 2
             tl.store(dst, acc_r, mask=mask)
             tl.store(dst + 1, acc_i, mask=mask)

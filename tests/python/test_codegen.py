@@ -306,6 +306,106 @@ def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
     assert metadata["num_warps"] == 4
 
 
+def test_packed_real_radix32_uses_factorized_codelet(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=1024,
+        factors=(32, 32),
+        remainder=1,
+        lanes=32,
+        num_warps=2,
+        generic_radices=(32,),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    _, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_r2c_col",
+        four_step_n1=576,
+        four_step_n2=1024,
+    )
+
+    assert "lane_vec = tl.arange(0, 128)" in source
+    assert "rad32_in_r0 = r0" in source
+    assert "r0 = rad32_in_r0" in source
+    assert "r16 = rad32_in_r1" in source
+    assert source.count(") = _fwd_rad16_b1(") == 4
+    assert "tl.load(dft32_r_ptr" not in source
+
+
+def test_cooperative_mixed_radix_uses_factorized_codelets(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=576,
+        factors=(18, 32),
+        remainder=1,
+        lanes=18,
+        num_warps=4,
+        generic_radices=(),
+        smem_size=576,
+        direction="forward",
+    )
+
+    _, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_real_row",
+        four_step_n1=576,
+        four_step_n2=1024,
+    )
+
+    assert ") = _fwd_rad6_b1(" in source
+    assert ") = _fwd_rad3_b1(" in source
+    assert ") = _fwd_rad16_b1(" in source
+    assert "tl.load(dft18_r_ptr" not in source
+    assert "tl.load(dft32_r_ptr" not in source
+
+
+def test_two_factor_cooperative_leaf_uses_per_stage_lane_counts(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=576,
+        factors=(18, 32),
+        remainder=1,
+        lanes=18,
+        num_warps=4,
+        generic_radices=(),
+        smem_size=576,
+        direction="forward",
+    )
+
+    assert kernels.cooperative_stage_lanes_for(plan) == (32, 18)
+
+    _, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_real_row",
+        four_step_n1=576,
+        four_step_n2=1024,
+    )
+    assert "base_lane_mask = lane_mask" in source
+    assert "lane_mask = base_lane_mask & (lane < 32)" in source
+    assert "lane_mask = base_lane_mask & (lane < 18)" in source
+
+
+def test_table_codelet_accumulators_follow_register_shape(kernels) -> None:
+    source = "\n".join(kernels._emit_table_codelet("    ", 31, 32))
+
+    assert "acc_r_0 = tl.zeros_like(r0)" in source
+    assert "acc_i_0 = tl.zeros_like(i0)" in source
+    assert "acc_r_0 = tl.zeros((32,)" not in source
+
+
+def test_double_direct_dft_uses_compensated_accumulation(kernels) -> None:
+    _, double_source, _ = kernels._build_direct_dft_kernel_source(
+        23, "forward", "complex128"
+    )
+    _, float_source, _ = kernels._build_direct_dft_kernel_source(
+        23, "forward", "complex64"
+    )
+
+    assert "comp_r = tl.zeros((32,), dtype=tl.float64)" in double_source
+    assert "corrected_r = term_r - comp_r" in double_source
+    assert "comp_r = (next_r - acc_r) - corrected_r" in double_source
+    assert "comp_r =" not in float_source
+
+
 @pytest.mark.parametrize(
     ("register_radix", "n1", "inner_codelet"),
     [
