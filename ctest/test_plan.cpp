@@ -195,6 +195,32 @@ TEST(Plan1D, Size2P20DecompositionTuneCandidatesFreezeOnePlanPerSplit) {
   EXPECT_EQ(splits.count({1024, 1024}), 1U);
 }
 
+TEST(Plan1D, DoublePlanAvoidsHighSharedMemoryLeaf) {
+  flagfft::FFTRequest request;
+  request.fft_length = 655360;
+  request.requested_n = request.fft_length;
+  request.input_dtype = "complex128";
+  request.output_dtype = "complex128";
+  request.device_type = "unit-test";
+  request.device_arch = "sm_80";
+  request.direction = "forward";
+  request.batch = 1;
+
+  flagfft::PlanBuilder builder;
+  auto node = builder.build(request.fft_length, request);
+  auto four_step = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(node);
+  ASSERT_NE(four_step, nullptr);
+  EXPECT_EQ(four_step->n1, 640);
+  EXPECT_EQ(four_step->n2, 1024);
+
+  auto row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(four_step->row_plan);
+  auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(four_step->col_plan);
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(row->smem_size, 1024);
+  EXPECT_EQ(col->smem_size, 1024);
+}
+
 TEST(Plan1D, LargeMixedDecompositionTuneCandidatesIncludeBalancedSplit) {
   flagfft::FFTRequest request;
   request.fft_length = 663000;

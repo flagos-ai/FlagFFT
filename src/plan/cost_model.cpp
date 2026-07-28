@@ -78,7 +78,14 @@ double PlanBuilder::estimate_leaf_warm_cost(int64_t n, const std::vector<int64_t
   }
   double base =
       static_cast<double>(n * static_cast<int64_t>(factors.size()) * warps) / static_cast<double>(lanes);
-  return base + static_cast<double>(generic_stage_count * n);
+  const RequestContext &context = request_context();
+  const bool is_double = context.input_dtype == "complex128" || context.input_dtype == "float64";
+  const int64_t real_bytes = is_double ? 8 : 4;
+  const int64_t shared_bytes = 4 * ceil_power_of_two(n) * real_bytes;
+  constexpr int64_t kFullResidencySharedBytes = 64 * 1024;
+  const double shared_pressure =
+      std::max(1.0, static_cast<double>(shared_bytes) / static_cast<double>(kFullResidencySharedBytes));
+  return (base + static_cast<double>(generic_stage_count * n)) * shared_pressure;
 }
 
 double PlanBuilder::estimate_direct_dft_cost(int64_t n) {
