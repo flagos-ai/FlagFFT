@@ -50,9 +50,41 @@ int64_t mixed_radix_value(const std::vector<int64_t> &digits,
 
 namespace {
 
+  inline constexpr int64_t kCooperativeStageMinLength = 128;
+  inline constexpr int64_t kCooperativeStageMaxLength = 4096;
+  inline constexpr int64_t kCooperativeStageMaxBaseLanes = 32;
+
   bool use_cooperative_stage_lanes(const LeafPlanNode &leaf, const FFTRequest &request) {
-    return request.input_dtype == "complex64" && leaf.length >= 512 && leaf.length <= 2048 &&
-           leaf.factors.size() >= 3 && leaf.lanes < 8;
+    const bool fixed_lanes_are_compatible =
+        std::all_of(leaf.factors.begin(), leaf.factors.end(), [&](int64_t radix) {
+          return (leaf.length / radix) % leaf.lanes == 0;
+        });
+    if (leaf.length < kCooperativeStageMinLength || leaf.length > kCooperativeStageMaxLength ||
+        leaf.factors.size() < 2 ||
+        (leaf.lanes > kCooperativeStageMaxBaseLanes && fixed_lanes_are_compatible)) {
+      return false;
+    }
+    const bool is_double = request.input_dtype == "complex128" || request.input_dtype == "float64";
+    if (is_double || !fixed_lanes_are_compatible) {
+      return true;
+    }
+
+    int64_t min_stage_lanes = kMaxLanes;
+    int64_t max_stage_lanes = 1;
+    for (int64_t radix : leaf.factors) {
+      const int64_t codelets = leaf.length / radix;
+      const int64_t upper = std::min(codelets, kMaxLanes);
+      int64_t stage_lanes = 1;
+      for (int64_t candidate = upper; candidate > 0; --candidate) {
+        if (codelets % candidate == 0) {
+          stage_lanes = candidate;
+          break;
+        }
+      }
+      min_stage_lanes = std::min(min_stage_lanes, stage_lanes);
+      max_stage_lanes = std::max(max_stage_lanes, stage_lanes);
+    }
+    return min_stage_lanes * 4 >= max_stage_lanes;
   }
 
   int64_t cooperative_stage_lanes(int64_t n, int64_t radix) {

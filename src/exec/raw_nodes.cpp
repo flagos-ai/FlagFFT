@@ -21,15 +21,6 @@
 namespace flagfft {
 namespace {
 
-  inline constexpr int64_t kTleFusedTwiddleMinLength = int64_t {1} << 18;
-  inline constexpr int64_t kTleFusedTwiddleMaxLeaf = 1024;
-
-  bool use_tle_fused_twiddle(int64_t length, int64_t n1, int64_t n2, const std::string &dtype) {
-    const bool is_double = dtype == "complex128" || dtype == "float64";
-    return !is_double && length >= kTleFusedTwiddleMinLength && n1 <= kTleFusedTwiddleMaxLeaf &&
-           n2 <= kTleFusedTwiddleMaxLeaf;
-  }
-
   std::vector<JitKernelArg> raw_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
                                             const std::vector<DeviceAllocation> &tables,
                                             int64_t batch) {
@@ -125,24 +116,16 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
                                                     adaptor::DevicePtr output,
                                                     const RawExecutionContext &context) const {
   try {
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
+    const bool fused_twiddle = row_kernel->tle_fused_twiddle;
     std::vector<JitKernelArg> row_args =
         fused_twiddle ? raw_kernel_args({input, twiddle.get(), stage1.get()}, row_tables, context.batch)
                       : raw_kernel_args({input, stage1.get()}, row_tables, context.batch);
-    row_kernel->launch(context.stream,
-                       row_args,
-                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), context.batch, 1);
 
     std::vector<JitKernelArg> col_args =
         fused_twiddle ? raw_kernel_args({stage1.get(), output}, col_tables, context.batch)
                       : raw_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, context.batch);
-    col_kernel->launch(context.stream,
-                       col_args,
-                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] FourStepFused execute failed: %s\n", e.what());
@@ -626,16 +609,12 @@ flagfftResult CompiledRawR2CFourStepHalfOutNode::execute(adaptor::DevicePtr inpu
     };
     expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
 
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
+    const bool fused_twiddle = row_kernel->tle_fused_twiddle;
     std::vector<JitKernelArg> row_args =
         fused_twiddle
             ? raw_kernel_args({complex_input.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
             : raw_kernel_args({complex_input.get(), stage1.get()}, row_tables, context.batch);
-    row_kernel->launch(context.stream,
-                       row_args,
-                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), context.batch, 1);
 
     std::vector<JitKernelArg> col_args =
         fused_twiddle
@@ -644,11 +623,7 @@ flagfftResult CompiledRawR2CFourStepHalfOutNode::execute(adaptor::DevicePtr inpu
                                            col_tables,
                                            output_distance,
                                            context.batch);
-    col_kernel->launch(context.stream,
-                       col_args,
-                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] R2CFourStepHalfOut execute failed: %s\n", e.what());
@@ -697,7 +672,7 @@ flagfftResult CompiledRawR2CFourStepRealInHalfOutNode::execute(adaptor::DevicePt
                                             : (context.input_distance > 0 ? context.input_distance : length);
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
 
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
+    const bool fused_twiddle = row_kernel->tle_fused_twiddle;
     std::vector<JitKernelArg> row_args =
         fused_twiddle
             ? raw_distance_col_kernel_args({input, twiddle.get(), stage1.get()},
@@ -705,11 +680,7 @@ flagfftResult CompiledRawR2CFourStepRealInHalfOutNode::execute(adaptor::DevicePt
                                            input_distance,
                                            context.batch)
             : raw_distance_col_kernel_args({input, stage1.get()}, row_tables, input_distance, context.batch);
-    row_kernel->launch(context.stream,
-                       row_args,
-                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), context.batch, 1);
 
     std::vector<JitKernelArg> col_args =
         fused_twiddle
@@ -718,11 +689,7 @@ flagfftResult CompiledRawR2CFourStepRealInHalfOutNode::execute(adaptor::DevicePt
                                            col_tables,
                                            output_distance,
                                            context.batch);
-    col_kernel->launch(context.stream,
-                       col_args,
-                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] R2CFourStepRealInHalfOut execute failed: %s\n", e.what());
@@ -1106,16 +1073,12 @@ flagfftResult CompiledRawC2RFourStepRealOutNode::execute(adaptor::DevicePtr inpu
     };
     expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
 
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
+    const bool fused_twiddle = row_kernel->tle_fused_twiddle;
     std::vector<JitKernelArg> row_args =
         fused_twiddle
             ? raw_kernel_args({full_input.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
             : raw_kernel_args({full_input.get(), stage1.get()}, row_tables, context.batch);
-    row_kernel->launch(context.stream,
-                       row_args,
-                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), context.batch, 1);
 
     std::vector<JitKernelArg> col_args =
         fused_twiddle
@@ -1124,11 +1087,7 @@ flagfftResult CompiledRawC2RFourStepRealOutNode::execute(adaptor::DevicePtr inpu
                                            col_tables,
                                            output_distance,
                                            context.batch);
-    col_kernel->launch(context.stream,
-                       col_args,
-                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] C2RFourStepRealOut execute failed: %s\n", e.what());
@@ -1298,7 +1257,7 @@ flagfftResult CompiledRawC2RFourStepCompactInRealOutNode::execute(adaptor::Devic
                                         ? std::max(context.output_distance, padded_real_distance)
                                         : (context.output_distance > 0 ? context.output_distance : length);
 
-    const bool fused_twiddle = use_tle_fused_twiddle(length, n1, n2, context.request.input_dtype);
+    const bool fused_twiddle = row_kernel->tle_fused_twiddle;
     std::vector<JitKernelArg> row_args =
         fused_twiddle
             ? raw_distance_col_kernel_args({input, twiddle.get(), stage1.get()},
@@ -1306,11 +1265,7 @@ flagfftResult CompiledRawC2RFourStepCompactInRealOutNode::execute(adaptor::Devic
                                            input_distance,
                                            context.batch)
             : raw_distance_col_kernel_args({input, stage1.get()}, row_tables, input_distance, context.batch);
-    row_kernel->launch(context.stream,
-                       row_args,
-                       ceil_div(n2, four_step_row_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), context.batch, 1);
 
     std::vector<JitKernelArg> col_args =
         fused_twiddle
@@ -1319,11 +1274,7 @@ flagfftResult CompiledRawC2RFourStepCompactInRealOutNode::execute(adaptor::Devic
                                            col_tables,
                                            output_distance,
                                            context.batch);
-    col_kernel->launch(context.stream,
-                       col_args,
-                       ceil_div(n1, four_step_col_inner_pack_for(n1, n2, context.request.input_dtype)),
-                       context.batch,
-                       1);
+    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] C2RFourStepCompactInRealOut execute failed: %s\n", e.what());

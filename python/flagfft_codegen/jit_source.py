@@ -42,7 +42,7 @@ from .kernels import (
     four_step_col_inner_pack_for,
     four_step_row_inner_pack_for,
     lane_block_for,
-    use_tle_fused_twiddle,
+    use_four_step_row_fused_twiddle,
 )
 
 _BLUESTEIN_BLOCK = 256
@@ -128,29 +128,29 @@ def _metadata(
         else 1
     )
     stage_lanes = cooperative_stage_lanes_for(plan)
-    tle_fused_twiddle = kernel_type.startswith("four_step_") and use_tle_fused_twiddle(
-        n1, n2, dtype
-    )
+    tle_fused_twiddle = kernel_type.startswith(
+        "four_step_"
+    ) and use_four_step_row_fused_twiddle(n1, n2, dtype)
     if kernel_type in {
         "four_step_row",
         "four_step_real_row",
         "four_step_hermitian_row",
     }:
-        inner_pack = four_step_row_inner_pack_for(n1, n2, dtype)
+        inner_pack = four_step_row_inner_pack_for(n1, n2, dtype, plan)
     elif kernel_type in {
         "four_step_col",
         "four_step_r2c_col",
         "four_step_c2r_col",
     }:
-        inner_pack = four_step_col_inner_pack_for(n1, n2, dtype)
+        inner_pack = four_step_col_inner_pack_for(n1, n2, dtype, plan)
     else:
         inner_pack = 1
     num_warps = int(plan.num_warps)
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
-    if any(lanes != plan.lanes for lanes in stage_lanes):
+    work_pack = max(batch_per_block, inner_pack)
+    if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):
         cooperative_warps = 1
-        work_pack = max(batch_per_block, inner_pack)
         required_warps = (lane_block_for(max(stage_lanes)) * work_pack + 31) // 32
         while cooperative_warps < required_warps and cooperative_warps < 8:
             cooperative_warps *= 2

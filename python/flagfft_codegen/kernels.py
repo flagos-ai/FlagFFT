@@ -34,13 +34,15 @@ _FOUR_STEP_LARGE_INNER_PACK = 4
 _FOUR_STEP_COL_INNER_PACK_MIN_N1 = 128
 _FOUR_STEP_ROW_INNER_PACK_MAX_N1 = 512
 _FOUR_STEP_PACKED_COL_LEAF_MAX_N2 = 1024
+_FOUR_STEP_PACK_TARGET_THREADS = 256
+_FOUR_STEP_PACK_SMEM_BUDGET_BYTES = 128 * 1024
 _TLE_FUSED_TWIDDLE_MIN_LENGTH = 1 << 18
 _TLE_FUSED_TWIDDLE_MAX_LEAF = 1024
 _TLE_SMEM_SWIZZLE_SHIFT = 5
 _THREAD_LOCAL_MIXED_RADICES = frozenset({18, 20, 24, 25, 27, 28, 30, 32})
-_COOPERATIVE_STAGE_MIN_LENGTH = 512
-_COOPERATIVE_STAGE_MAX_LENGTH = 2048
-_COOPERATIVE_STAGE_MAX_BASE_LANES = 8
+_COOPERATIVE_STAGE_MIN_LENGTH = 128
+_COOPERATIVE_STAGE_MAX_LENGTH = 4096
+_COOPERATIVE_STAGE_MAX_BASE_LANES = 32
 _COOPERATIVE_STAGE_MAX_LANES = 128
 _LEAF_PACK_TARGET_THREADS = 32
 _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
@@ -113,13 +115,10 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
         (plan.length // radix) % plan.lanes == 0 for radix in plan.factors
     )
     if not (
-        plan.dtype == "complex64"
-        and _COOPERATIVE_STAGE_MIN_LENGTH
-        <= plan.length
-        <= _COOPERATIVE_STAGE_MAX_LENGTH
+        _COOPERATIVE_STAGE_MIN_LENGTH <= plan.length <= _COOPERATIVE_STAGE_MAX_LENGTH
         and len(plan.factors) >= 2
         and (
-            plan.lanes < _COOPERATIVE_STAGE_MAX_BASE_LANES
+            plan.lanes <= _COOPERATIVE_STAGE_MAX_BASE_LANES
             or not fixed_lanes_are_compatible
         )
     ):
@@ -136,6 +135,12 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
                 if codelets % candidate == 0
             )
         )
+    if (
+        not _is_double_dtype(plan.dtype)
+        and fixed_lanes_are_compatible
+        and min(stage_lanes) * 4 < max(stage_lanes)
+    ):
+        return (plan.lanes,) * len(plan.factors)
     return tuple(stage_lanes)
 
 
@@ -162,19 +167,60 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     return _floor_power_of_two(max(1, min(thread_pack, smem_pack)))
 
 
-def four_step_col_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
+def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
+    if len(plan.factors) <= 1:
+        return 1
+
+    stage_lanes = cooperative_stage_lanes_for(plan)
+    if not _is_double_dtype(plan.dtype) and all(
+        lanes == plan.lanes for lanes in stage_lanes
+    ):
+        return 1
+    active_lanes = max(stage_lanes, default=plan.lanes)
+    lane_block = lane_block_for(active_lanes)
+    thread_pack = max(1, _FOUR_STEP_PACK_TARGET_THREADS // lane_block)
+    bytes_per_fft = 4 * plan.smem_size * _real_element_bytes(plan.dtype)
+    smem_pack = max(1, _FOUR_STEP_PACK_SMEM_BUDGET_BYTES // bytes_per_fft)
+    return _floor_power_of_two(
+        max(1, min(_FOUR_STEP_LARGE_INNER_PACK, thread_pack, smem_pack))
+    )
+
+
+def four_step_col_inner_pack_for(
+    n1: int,
+    n2: int,
+    dtype: str = "complex64",
+    plan: LeafPlan | None = None,
+) -> int:
     if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
         return 1
     if use_tle_fused_twiddle(n1, n2, dtype):
         return _FOUR_STEP_LARGE_INNER_PACK
+    if plan is not None and (
+        _is_double_dtype(dtype) or n2 > _FOUR_STEP_PACKED_COL_LEAF_MAX_N2
+    ):
+        return _four_step_resource_inner_pack_for(plan)
     if n2 > _FOUR_STEP_PACKED_COL_LEAF_MAX_N2:
         return 1
     return _FOUR_STEP_COL_INNER_PACK
 
 
-def four_step_row_inner_pack_for(n1: int, n2: int, dtype: str = "complex64") -> int:
+def four_step_row_inner_pack_for(
+    n1: int,
+    n2: int,
+    dtype: str = "complex64",
+    plan: LeafPlan | None = None,
+) -> int:
     if use_tle_fused_twiddle(n1, n2, dtype):
         return _FOUR_STEP_LARGE_INNER_PACK
+    if plan is not None and (
+        _is_double_dtype(dtype)
+        or (
+            n1 <= _FOUR_STEP_ROW_INNER_PACK_MAX_N1
+            and n2 > _FOUR_STEP_PACKED_COL_LEAF_MAX_N2
+        )
+    ):
+        return _four_step_resource_inner_pack_for(plan)
     if (
         not _is_double_dtype(dtype)
         and n1 <= _FOUR_STEP_ROW_INNER_PACK_MAX_N1
@@ -195,6 +241,18 @@ def use_tle_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") -> bool:
         and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
         and n1 <= _TLE_FUSED_TWIDDLE_MAX_LEAF
         and n2 <= _TLE_FUSED_TWIDDLE_MAX_LEAF
+    )
+
+
+def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") -> bool:
+    """Apply the outer twiddle while the row output is still contiguous.
+
+    FP32 uses the existing approximate-TLE path. FP64 keeps full precision by
+    loading the precomputed twiddle table in the row pass instead of issuing
+    the same reads with the strided column access pattern.
+    """
+    return use_tle_fused_twiddle(n1, n2, dtype) or (
+        _is_double_dtype(dtype) and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
     )
 
 
@@ -1153,24 +1211,34 @@ def _emit_stage_block(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
                 )
                 if fuse_twiddle_into_row:
-                    outer_twiddle_scale = (
-                        _direction_sign(direction)
-                        * 2.0
-                        * math.pi
-                        / (four_step_n1 * four_step_n2)
-                    )
-                    lines.append(
-                        f"{indent}outer_angle{j} = four_step_inner * out_idx{j} * "
-                        f"{outer_twiddle_scale:.17g}"
-                    )
-                    lines.append(
-                        f"{indent}tw_i{j}, tw_r{j} = "
-                        "tl.inline_asm_elementwise("
-                        '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
-                        f'"=f,=f,f", [outer_angle{j}], '
-                        "dtype=(tl.float32, tl.float32), "
-                        "is_pure=True, pack=1)"
-                    )
+                    if _is_double_dtype(dtype):
+                        lines.append(
+                            f"{indent}tw_r{j} = tl.load(twiddle_ptr + dst_idx{j} * 2, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                        lines.append(
+                            f"{indent}tw_i{j} = tl.load(twiddle_ptr + dst_idx{j} * 2 + 1, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                    else:
+                        outer_twiddle_scale = (
+                            _direction_sign(direction)
+                            * 2.0
+                            * math.pi
+                            / (four_step_n1 * four_step_n2)
+                        )
+                        lines.append(
+                            f"{indent}outer_angle{j} = four_step_inner * out_idx{j} * "
+                            f"{outer_twiddle_scale:.17g}"
+                        )
+                        lines.append(
+                            f"{indent}tw_i{j}, tw_r{j} = "
+                            "tl.inline_asm_elementwise("
+                            '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
+                            f'"=f,=f,f", [outer_angle{j}], '
+                            "dtype=(tl.float32, tl.float32), "
+                            "is_pure=True, pack=1)"
+                        )
                     lines.append(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
@@ -1680,15 +1748,15 @@ def _build_leaf_kernel_source_for_io(
     col_modes = {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"}
     if io_mode in row_modes:
         inner_pack = four_step_row_inner_pack_for(
-            four_step_n1, four_step_n2, plan.dtype
+            four_step_n1, four_step_n2, plan.dtype, plan
         )
     elif io_mode in col_modes:
         inner_pack = four_step_col_inner_pack_for(
-            four_step_n1, four_step_n2, plan.dtype
+            four_step_n1, four_step_n2, plan.dtype, plan
         )
     else:
         inner_pack = 1
-    fuse_twiddle_into_row = use_tle_fused_twiddle(
+    fuse_twiddle_into_row = use_four_step_row_fused_twiddle(
         four_step_n1, four_step_n2, plan.dtype
     )
     single_smem_buffer = _use_single_smem_buffer(
@@ -2219,6 +2287,7 @@ __all__ = [
     "_FOUR_STEP_COL_INNER_PACK",
     "four_step_col_inner_pack_for",
     "four_step_row_inner_pack_for",
+    "use_four_step_row_fused_twiddle",
     "_FOUR_STEP_TILE_COLS",
     "_FOUR_STEP_TILE_ROWS",
     "_build_direct_dft_kernel_source",
