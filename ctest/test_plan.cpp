@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "adaptor/adaptor.h"
 #include "flagfft/core.hpp"
 #include "flagfft_test.h"
 
@@ -217,8 +218,53 @@ TEST(Plan1D, DoublePlanAvoidsHighSharedMemoryLeaf) {
   auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(four_step->col_plan);
   ASSERT_NE(row, nullptr);
   ASSERT_NE(col, nullptr);
+  EXPECT_EQ(row->factors, (std::vector<int64_t> {32, 20}));
+  EXPECT_EQ(col->factors, (std::vector<int64_t> {32, 32}));
   EXPECT_EQ(row->smem_size, 1024);
   EXPECT_EQ(col->smem_size, 1024);
+}
+
+TEST(Plan1D, DoubleMixedPlansModelCooperativeStagesAndRowPacking) {
+  struct MixedCase {
+    int64_t length;
+    int64_t n1;
+    int64_t n2;
+    std::vector<int64_t> row_factors;
+    std::vector<int64_t> col_factors;
+  };
+  const MixedCase cases[] = {
+      { 477360, 510,  936,    {30, 17},   {13, 9, 8}},
+      { 855712, 442, 1936, {17, 13, 2}, {16, 11, 11}},
+      { 961875, 475, 2025,    {25, 19},  {15, 15, 9}},
+      {1001385, 495, 2023, {15, 11, 3},  {17, 17, 7}},
+  };
+
+  for (const MixedCase& test_case : cases) {
+    flagfft::FFTRequest request;
+    request.fft_length = test_case.length;
+    request.requested_n = request.fft_length;
+    request.input_dtype = "complex128";
+    request.output_dtype = "complex128";
+    request.device_type = flagfft::adaptor::backend_name();
+    request.device_index = 0;
+    request.device_arch = "sm_80";
+    request.direction = "forward";
+    request.batch = 1;
+
+    flagfft::PlanBuilder builder;
+    auto node = builder.build(request.fft_length, request);
+    auto four_step = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(node);
+    ASSERT_NE(four_step, nullptr);
+    EXPECT_EQ(four_step->n1, test_case.n1);
+    EXPECT_EQ(four_step->n2, test_case.n2);
+
+    auto row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(four_step->row_plan);
+    auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(four_step->col_plan);
+    ASSERT_NE(row, nullptr);
+    ASSERT_NE(col, nullptr);
+    EXPECT_EQ(row->factors, test_case.row_factors);
+    EXPECT_EQ(col->factors, test_case.col_factors);
+  }
 }
 
 TEST(Plan1D, LargeMixedDecompositionTuneCandidatesIncludeBalancedSplit) {
@@ -242,7 +288,7 @@ TEST(Plan1D, LargeMixedDecompositionTuneCandidatesIncludeBalancedSplit) {
     ASSERT_NE(four_step, nullptr);
     splits.insert({four_step->n1, four_step->n2});
   }
-  EXPECT_EQ(splits.count({408, 1625}), 1U);
+  EXPECT_EQ(splits.count({425, 1560}), 1U);
   EXPECT_EQ(splits.count({780, 850}), 1U);
 }
 

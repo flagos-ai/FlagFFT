@@ -58,11 +58,11 @@ inline constexpr int64_t kTuneFourStepCombosPerPair = 4;
 inline constexpr int64_t kTuneFourStepTopK = 16;
 inline constexpr int64_t kTuneStaticPlanTopK = 32;
 
-inline const std::vector<int64_t> kSupportedRadices = {
-    19, 17, 16, 15, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2};
+inline const std::vector<int64_t> kSupportedRadices = {32, 30, 28, 27, 25, 24, 20, 19, 18, 17, 16, 15,
+                                                       13, 12, 11, 10, 9,  8,  7,  6,  5,  4,  3,  2};
 inline const std::vector<int64_t> kSpecializedButterflyRadices = {2, 4, 8, 16};
-inline const std::vector<int64_t> kSpecializedDirectCodeletRadices = {
-    3, 5, 6, 7, 9, 10, 11, 12, 13, 15, 17, 19};
+inline const std::vector<int64_t> kSpecializedDirectCodeletRadices = {3,  5,  6,  7,  9,  10, 11, 12, 13, 15,
+                                                                      17, 18, 19, 20, 24, 25, 27, 28, 30, 32};
 
 bool contains(const std::vector<int64_t> &values, int64_t value);
 int64_t product(const std::vector<int64_t> &values);
