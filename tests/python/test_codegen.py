@@ -411,22 +411,23 @@ def test_packed_real_radix32_uses_factorized_codelet(kernels) -> None:
         direction="forward",
     )
 
-    _, source = kernels._build_leaf_kernel_source_for_io(
+    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
         plan,
         io_mode="four_step_r2c_col",
         four_step_n1=576,
         four_step_n2=1024,
     )
 
+    assert "thread_local" in kernel_name
     assert "lane_vec = tl.arange(0, 128)" in source
-    assert "rad32_in_r0 = r0" in source
-    assert "r0 = rad32_in_r0" in source
-    assert "r16 = rad32_in_r1" in source
     assert source.count(") = _fwd_rad16_b1(") == 4
     assert "tl.load(dft32_r_ptr" not in source
+    assert source.count("tl.debug_barrier()") == 1
+    assert "compact_mask0 = output_lane_mask &" in source
+    assert "four_step_batch * output_distance + dst_idx0" in source
 
 
-def test_cooperative_mixed_radix_uses_factorized_codelets(kernels) -> None:
+def test_real_row_thread_local_mixed_radix_uses_factorized_codelets(kernels) -> None:
     plan = kernels.LeafPlan(
         length=576,
         factors=(18, 32),
@@ -438,18 +439,68 @@ def test_cooperative_mixed_radix_uses_factorized_codelets(kernels) -> None:
         direction="forward",
     )
 
-    _, source = kernels._build_leaf_kernel_source_for_io(
+    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
         plan,
         io_mode="four_step_real_row",
         four_step_n1=576,
         four_step_n2=1024,
     )
 
+    assert "thread_local" in kernel_name
     assert ") = _fwd_rad6_b1(" in source
     assert ") = _fwd_rad3_b1(" in source
     assert ") = _fwd_rad16_b1(" in source
     assert "tl.load(dft18_r_ptr" not in source
     assert "tl.load(dft32_r_ptr" not in source
+    assert "four_step_batch * input_distance + src_idx0" in source
+    assert "i0 = r0 * 0.0" in source
+    assert "outer_base_angle" in source
+
+
+def test_thread_local_inverse_real_modes_preserve_compact_io(kernels) -> None:
+    row_plan = kernels.LeafPlan(
+        length=640,
+        factors=(20, 32),
+        remainder=1,
+        lanes=20,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=1024,
+        direction="inverse",
+    )
+    col_plan = kernels.LeafPlan(
+        length=1024,
+        factors=(32, 32),
+        remainder=1,
+        lanes=32,
+        num_warps=2,
+        generic_radices=(32,),
+        smem_size=1024,
+        direction="inverse",
+    )
+
+    row_name, row_source = kernels._build_leaf_kernel_source_for_io(
+        row_plan,
+        io_mode="four_step_hermitian_row",
+        four_step_n1=640,
+        four_step_n2=1024,
+    )
+    col_name, col_source = kernels._build_leaf_kernel_source_for_io(
+        col_plan,
+        io_mode="four_step_c2r_col",
+        four_step_n1=640,
+        four_step_n2=1024,
+    )
+
+    assert "thread_local" in row_name
+    assert "thread_local" in col_name
+    assert "compact_idx0 = tl.where(src_idx0 < 327681" in row_source
+    assert "four_step_batch * input_distance + compact_idx0" in row_source
+    assert "i0 = tl.where(src_idx0 < 327681, i0, -i0)" in row_source
+    assert "outer_base_angle" in row_source
+    assert "four_step_batch * output_distance + dst_idx0" in col_source
+    assert "tl.store(out_ptr + output_offset0, r0" in col_source
+    assert "output_offset0) * 2" not in col_source
 
 
 def test_two_factor_cooperative_leaf_uses_per_stage_lane_counts(kernels) -> None:
@@ -470,7 +521,7 @@ def test_two_factor_cooperative_leaf_uses_per_stage_lane_counts(kernels) -> None
         plan,
         io_mode="four_step_real_row",
         four_step_n1=576,
-        four_step_n2=1024,
+        four_step_n2=2048,
     )
     assert "base_lane_mask = lane_mask" in source
     assert "lane_mask = base_lane_mask & (lane < 32)" in source

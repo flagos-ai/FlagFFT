@@ -1365,9 +1365,19 @@ def _use_thread_local_mixed_leaf(
     if len(plan.factors) != 2:
         return False
     register_radix, cross_radix = plan.factors
-    expected_length = four_step_n1 if io_mode == "four_step_row" else four_step_n2
+    row_modes = {
+        "four_step_row",
+        "four_step_real_row",
+        "four_step_hermitian_row",
+    }
+    col_modes = {
+        "four_step_col",
+        "four_step_r2c_col",
+        "four_step_c2r_col",
+    }
+    expected_length = four_step_n1 if io_mode in row_modes else four_step_n2
     return (
-        io_mode in {"four_step_row", "four_step_col"}
+        io_mode in row_modes | col_modes
         and plan.dtype == "complex64"
         and register_radix in _THREAD_LOCAL_MIXED_RADICES
         and cross_radix == 32
@@ -1418,7 +1428,7 @@ def _emit_distributed_split_tree(
 def _build_thread_local_mixed_four_step_kernel_source(
     plan: LeafPlan,
     *,
-    io_mode: Literal["four_step_row", "four_step_col"],
+    io_mode: LeafIoMode,
     four_step_n1: int,
     four_step_n2: int,
 ) -> tuple[str, str]:
@@ -1433,9 +1443,21 @@ def _build_thread_local_mixed_four_step_kernel_source(
     smem_reshape_dims = ", ".join(["1"] * smem_chunk_dims)
     smem_block_dims = ", ".join(["2"] * smem_chunk_dims)
     smem_n = plan.smem_size * inner_pack
-    include_outer_twiddle = io_mode == "four_step_row"
-    inner_count = four_step_n2 if io_mode == "four_step_row" else four_step_n1
-    source_stride = four_step_n2 if io_mode == "four_step_row" else four_step_n1
+    row_modes = {
+        "four_step_row",
+        "four_step_real_row",
+        "four_step_hermitian_row",
+    }
+    col_modes = {
+        "four_step_col",
+        "four_step_r2c_col",
+        "four_step_c2r_col",
+    }
+    if io_mode not in row_modes | col_modes:
+        raise ValueError(f"unsupported thread-local four-step I/O mode {io_mode}")
+    include_outer_twiddle = io_mode in row_modes
+    inner_count = four_step_n2 if io_mode in row_modes else four_step_n1
+    source_stride = four_step_n2 if io_mode in row_modes else four_step_n1
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
@@ -1487,16 +1509,51 @@ def _build_thread_local_mixed_four_step_kernel_source(
         body.append(
             f"    src_idx{idx} = input_idx{idx} * {source_stride} + " "four_step_inner"
         )
-        body.append(
-            f"    input_offset{idx} = " f"(four_step_batch_base + src_idx{idx}) * 2"
-        )
-        body.append(
-            # The selected leaves and pack=4 cover every input lane exactly.
-            f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-            '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
-            f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-            "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
-        )
+        if io_mode == "four_step_real_row":
+            body.append(
+                f"    input_offset{idx} = "
+                f"four_step_batch * input_distance + src_idx{idx}"
+            )
+            body.append(f"    r{idx} = tl.load(in_ptr + input_offset{idx})")
+            body.append(f"    i{idx} = r{idx} * 0.0")
+        elif io_mode == "four_step_hermitian_row":
+            full_n = four_step_n1 * four_step_n2
+            half_n = full_n // 2 + 1
+            nyquist_guard = (
+                f" | (src_idx{idx} == {full_n // 2})" if full_n % 2 == 0 else ""
+            )
+            body.append(
+                f"    compact_idx{idx} = "
+                f"tl.where(src_idx{idx} < {half_n}, src_idx{idx}, {full_n} - src_idx{idx})"
+            )
+            body.append(
+                f"    input_offset{idx} = "
+                f"(four_step_batch * input_distance + compact_idx{idx}) * 2"
+            )
+            body.append(
+                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+                '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+                "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+            )
+            body.append(
+                f"    i{idx} = tl.where(src_idx{idx} < {half_n}, i{idx}, -i{idx})"
+            )
+            body.append(
+                f"    i{idx} = "
+                f"tl.where((src_idx{idx} == 0){nyquist_guard}, 0.0, i{idx})"
+            )
+        else:
+            body.append(
+                f"    input_offset{idx} = " f"(four_step_batch_base + src_idx{idx}) * 2"
+            )
+            body.append(
+                # The selected leaves and pack=4 cover every input lane exactly.
+                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+                '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+                "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+            )
 
     body.extend(_emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
 
@@ -1684,10 +1741,38 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    dst_idx{idx} = "
                 f"out_idx{idx} * {four_step_n1} + four_step_inner"
             )
-        body.append(
-            f"    output_offset{idx} = " f"(four_step_batch_base + dst_idx{idx}) * 2"
-        )
-        if register_radix == 32:
+        if io_mode == "four_step_r2c_col":
+            half_n = four_step_n1 * four_step_n2 // 2 + 1
+            body.append(
+                f"    compact_mask{idx} = "
+                f"output_lane_mask & (dst_idx{idx} < {half_n})"
+            )
+            body.append(
+                f"    output_offset{idx} = "
+                f"(four_step_batch * output_distance + dst_idx{idx}) * 2"
+            )
+            body.append(
+                f"    tl.store(out_ptr + output_offset{idx}, r{idx}, "
+                f"mask=compact_mask{idx})"
+            )
+            body.append(
+                f"    tl.store(out_ptr + output_offset{idx} + 1, i{idx}, "
+                f"mask=compact_mask{idx})"
+            )
+        elif io_mode == "four_step_c2r_col":
+            body.append(
+                f"    output_offset{idx} = "
+                f"four_step_batch * output_distance + dst_idx{idx}"
+            )
+            body.append(
+                f"    tl.store(out_ptr + output_offset{idx}, r{idx}, "
+                "mask=output_lane_mask)"
+            )
+        elif register_radix == 32:
+            body.append(
+                f"    output_offset{idx} = "
+                f"(four_step_batch_base + dst_idx{idx}) * 2"
+            )
             body.append(
                 f"    output_dummy{idx} = tl.inline_asm_elementwise("
                 '"st.global.v2.f32 [$1], {$2, $3}; mov.u32 $0, 0;", '
@@ -1697,6 +1782,10 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 "dtype=tl.int32, is_pure=False, pack=1)"
             )
         else:
+            body.append(
+                f"    output_offset{idx} = "
+                f"(four_step_batch_base + dst_idx{idx}) * 2"
+            )
             body.append(
                 f"    tl.store(out_ptr + output_offset{idx}, r{idx}, "
                 "mask=output_lane_mask)"
