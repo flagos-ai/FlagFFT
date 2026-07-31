@@ -133,6 +133,37 @@ bool is_supported_2d_desc(const FlagFFTPlanDesc &desc) {
   return true;
 }
 
+bool is_supported_3d_desc(const FlagFFTPlanDesc &desc) {
+  if (desc.rank != 3 || desc.batch <= 0) {
+    return false;
+  }
+  if (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_Z2Z && desc.type != FLAGFFT_R2C &&
+      desc.type != FLAGFFT_D2Z && desc.type != FLAGFFT_C2R && desc.type != FLAGFFT_Z2D) {
+    return false;
+  }
+  if (desc.n.size() != 3 || desc.n[0] <= 0 || desc.n[1] <= 0 || desc.n[2] <= 0) {
+    return false;
+  }
+  if (desc.istride != 1 || desc.ostride != 1) {
+    return false;
+  }
+  const int64_t n0 = desc.n[0];
+  const int64_t n1 = desc.n[1];
+  const int64_t n2 = desc.n[2];
+  const bool real_forward = desc.type == FLAGFFT_R2C || desc.type == FLAGFFT_D2Z;
+  const bool real_inverse = desc.type == FLAGFFT_C2R || desc.type == FLAGFFT_Z2D;
+  const int64_t half_n2 = n2 / 2 + 1;
+  const int64_t input_logical = real_inverse ? n0 * n1 * half_n2 : n0 * n1 * n2;
+  const int64_t output_logical = real_forward ? n0 * n1 * half_n2 : n0 * n1 * n2;
+  // The 3D execution path treats the entire (batch, n0, n1, n2) block as
+  // tightly packed and ignores idist/odist.  Reject padded layouts until
+  // the 3D execution path plumbs strides through.
+  if (desc.idist != input_logical || desc.odist != output_logical) {
+    return false;
+  }
+  return true;
+}
+
 bool raw_supported_node(const PlanNodePtr &node) {
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) != nullptr) {
     return true;
@@ -152,6 +183,10 @@ bool raw_supported_node(const PlanNodePtr &node) {
   if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     return raw_supported_node(two_dim->row_plan) && raw_supported_node(two_dim->col_plan);
   }
+  if (auto three_dim = std::dynamic_pointer_cast<ThreeDimPlanNode>(node)) {
+    return raw_supported_node(three_dim->n2_plan) && raw_supported_node(three_dim->n1_plan) &&
+           raw_supported_node(three_dim->n0_plan);
+  }
   return false;
 }
 
@@ -164,11 +199,17 @@ FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction)
     request.input_strides = {desc.idist, desc.istride};
     request.raw_dim = 1;
     request.normalized_dim = 1;
-  } else {
+  } else if (desc.rank == 2) {
     request.input_shape = {desc.batch, desc.n[0], desc.n[1]};
     request.input_strides = {desc.idist, desc.n[1] * desc.istride, desc.istride};
     request.raw_dim = 2;
     request.normalized_dim = 2;
+  } else {
+    request.input_shape = {desc.batch, desc.n[0], desc.n[1], desc.n[2]};
+    request.input_strides = {desc.idist, desc.n[1] * desc.n[2] * desc.istride,
+                             desc.n[2] * desc.istride, desc.istride};
+    request.raw_dim = 3;
+    request.normalized_dim = 3;
   }
   request.n = std::nullopt;
   request.requested_n = request.fft_length;

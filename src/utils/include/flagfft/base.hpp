@@ -108,7 +108,7 @@ struct FFTRequest {
   int64_t batch = 0;
 };
 
-enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim };
+enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim, ThreeDim };
 enum class KernelKind {
   Leaf,
   LeafR2C,
@@ -134,7 +134,8 @@ enum class KernelKind {
   R2CHalfPack,
   CompactToHermitianFull,
   ComplexToReal,
-  TiledTranspose
+  TiledTranspose,
+  Transpose3D
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

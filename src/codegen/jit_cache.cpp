@@ -210,6 +210,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::TiledTranspose:
       kernel_kind = "tiled_transpose";
       break;
+    case KernelKind::Transpose3D:
+      kernel_kind = "transpose3d";
+      break;
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
@@ -245,6 +248,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::ReshapePack || key.kind == KernelKind::TwiddleReshapePack ||
       key.kind == KernelKind::TiledTranspose) {
     jit_command << " --reshape-n1 " << key.reshape_n1 << " --reshape-n2 " << key.reshape_n2;
+  }
+  if (key.kind == KernelKind::Transpose3D) {
+    jit_command << " --transpose3d-n0 " << key.transpose3d_n0 << " --transpose3d-n1 " << key.transpose3d_n1
+                << " --transpose3d-n2 " << key.transpose3d_n2 << " --transpose3d-order "
+                << shell_quote(key.transpose3d_order);
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {

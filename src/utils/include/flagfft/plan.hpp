@@ -109,6 +109,32 @@ struct TwoDimPlanNode final : PlanNode {
 
 std::string two_dim_strategy_name(TwoDimStrategy strategy);
 
+enum class ThreeDimStrategy { RTRT };
+
+struct ThreeDimPlanNode final : PlanNode {
+  // n0 is the slowest (outermost) axis, n2 the fastest (innermost) axis.
+  // Execution order is n2 -> n1 -> n0: n2_plan runs first on the innermost
+  // contiguous rows, then n1_plan, then n0_plan on the outermost axis.
+  ThreeDimPlanNode(int64_t n0,
+                   int64_t n1,
+                   int64_t n2,
+                   ThreeDimStrategy strategy,
+                   PlanNodePtr n2_plan,
+                   PlanNodePtr n1_plan,
+                   PlanNodePtr n0_plan);
+  std::string describe(int indent = 0) const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  ThreeDimStrategy strategy;
+  PlanNodePtr n2_plan;
+  PlanNodePtr n1_plan;
+  PlanNodePtr n0_plan;
+};
+
+std::string three_dim_strategy_name(ThreeDimStrategy strategy);
+
 struct PlanCandidate {
   PlanNodePtr node;
   double cost = 0.0;

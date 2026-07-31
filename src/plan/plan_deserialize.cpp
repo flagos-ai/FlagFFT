@@ -87,6 +87,18 @@ PlanNodePtr plan_node_from_json(PlanBuilder &builder, const nlohmann::json &node
                                             plan_node_from_json(builder, node.at("row")),
                                             plan_node_from_json(builder, node.at("col")));
   }
+  if (kind == "three_dim") {
+    int64_t n0 = node.at("n0").get<int64_t>();
+    int64_t n1 = node.at("n1").get<int64_t>();
+    int64_t n2 = node.at("n2").get<int64_t>();
+    return std::make_shared<ThreeDimPlanNode>(n0,
+                                              n1,
+                                              n2,
+                                              ThreeDimStrategy::RTRT,
+                                              plan_node_from_json(builder, node.at("n2_plan")),
+                                              plan_node_from_json(builder, node.at("n1_plan")),
+                                              plan_node_from_json(builder, node.at("n0_plan")));
+  }
   throw std::runtime_error("unsupported plan node kind in forced plan: " + kind);
 }
 

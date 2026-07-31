@@ -2369,6 +2369,79 @@ def _build_tiled_transpose_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
 
 
+def _build_tiled_transpose3d_kernel_source(
+    s0: int, s1: int, s2: int, order: str, dtype: str, block: int = 1024
+) -> tuple[str, list[str], list[str]]:
+    """Emit a generic 3D axis-permutation kernel.
+
+    The source cube has dimensions (s0, s1, s2); the destination cube dims are
+    derived from the axis order:
+      "021": dst (s0, s2, s1)   dst[x0][x1][x2] = src[x0][x2][x1]
+      "210": dst (s2, s1, s0)   dst[x0][x1][x2] = src[x2][x1][x0]
+      "201": dst (s2, s0, s1)   dst[x0][x1][x2] = src[x1][x2][x0]
+      "120": dst (s1, s2, s0)   dst[x0][x1][x2] = src[x2][x0][x1]
+
+    Each program copies a contiguous block of destination elements, computing
+    the source offset with baked-in div/mod arithmetic.  Correctness-first:
+    no shared memory, the tiling is purely for grid parallelism.
+    """
+    if order not in {"021", "210", "201", "120"}:
+        raise ValueError(f"unsupported 3D transpose order: {order}")
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    dims = {
+        "021": (s0, s2, s1),
+        "210": (s2, s1, s0),
+        "201": (s2, s0, s1),
+        "120": (s1, s2, s0),
+    }
+    d0, d1, d2 = dims[order]
+    total_complex = s0 * s1 * s2
+    total_float = total_complex * 2
+    # src coords (y0, y1, y2) for a given dst coord (x0, x1, x2).
+    src_coords = {
+        "021": "y0 = x0; y1 = x2; y2 = x1;",
+        "210": "y0 = x2; y1 = x1; y2 = x0;",
+        "201": "y0 = x1; y1 = x2; y2 = x0;",
+        "120": "y0 = x2; y1 = x0; y2 = x1;",
+    }
+    kernel_name = f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(2)
+
+            offsets = pid_block * {block} + tl.arange(0, {block})
+            mask = offsets < {total_complex}
+            safe = tl.minimum(offsets, {total_complex - 1})
+
+            # Decompose destination linear index into (x0, x1, x2).
+            x0 = safe // {d1 * d2}
+            rem = safe % {d1 * d2}
+            x1 = rem // {d2}
+            x2 = rem % {d2}
+
+            # Map to source coordinates.
+            {src_coords[order]}
+
+            src_elem_offsets = pid_batch * {total_float} + (y0 * {s1 * s2} + y1 * {s2} + y2) * 2
+            src_real = tl.load(in_ptr + src_elem_offsets, mask=mask, other={zero})
+            src_imag = tl.load(in_ptr + src_elem_offsets + 1, mask=mask, other={zero})
+
+            dst_elem_offsets = pid_batch * {total_float} + offsets * 2
+            tl.store(out_ptr + dst_elem_offsets, src_real, mask=mask)
+            tl.store(out_ptr + dst_elem_offsets + 1, src_imag, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
 __all__ = [
     "LeafPlan",
     "_CODELET_DIR",
@@ -2390,6 +2463,7 @@ __all__ = [
     "_build_reshape_pack_kernel_source",
     "_build_twiddle_reshape_pack_kernel_source",
     "_build_tiled_transpose_kernel_source",
+    "_build_tiled_transpose3d_kernel_source",
     "_transpose_complex_kernel",
     "_twiddle_transpose_complex_kernel",
     "contiguous_batch_pack_for",

@@ -153,6 +153,41 @@ std::string TwoDimPlanNode::describe(int indent) const {
   return oss.str();
 }
 
+ThreeDimPlanNode::ThreeDimPlanNode(int64_t n0,
+                                   int64_t n1,
+                                   int64_t n2,
+                                   ThreeDimStrategy strategy,
+                                   PlanNodePtr n2_plan,
+                                   PlanNodePtr n1_plan,
+                                   PlanNodePtr n0_plan)
+    : PlanNode(n0 * n1 * n2, PlanNodeKind::ThreeDim),
+      n0(n0),
+      n1(n1),
+      n2(n2),
+      strategy(strategy),
+      n2_plan(std::move(n2_plan)),
+      n1_plan(std::move(n1_plan)),
+      n0_plan(std::move(n0_plan)) {
+}
+
+std::string three_dim_strategy_name(ThreeDimStrategy strategy) {
+  switch (strategy) {
+    case ThreeDimStrategy::RTRT:
+      return "RTRT";
+  }
+  return "unknown";
+}
+
+std::string ThreeDimPlanNode::describe(int indent) const {
+  std::ostringstream oss;
+  oss << indent_str(indent) << "ThreeDim(strategy=" << three_dim_strategy_name(strategy) << ", n0=" << n0
+      << ", n1=" << n1 << ", n2=" << n2 << ")\n";
+  oss << n2_plan->describe(indent + 2) << "\n";
+  oss << n1_plan->describe(indent + 2) << "\n";
+  oss << n0_plan->describe(indent + 2);
+  return oss.str();
+}
+
 PlanKey PlanKey::from_node(const PlanNodePtr &node) {
   if (node == nullptr) {
     throw std::runtime_error("cannot build a plan key from a null plan node");
@@ -206,6 +241,18 @@ PlanKey PlanKey::from_node(const PlanNodePtr &node) {
     key.n2 = two_dim->n1;
     key.child_keys.push_back(PlanKey::from_node(two_dim->row_plan).repr());
     key.child_keys.push_back(PlanKey::from_node(two_dim->col_plan).repr());
+    return key;
+  }
+  // PlanKey reuses the generic n1/n2 fields plus the node length: for
+  // ThreeDim nodes, n1 stores n0, n2 stores n1, and the third dimension n2
+  // is recovered from length / (n0 * n1).  Children are in execution order
+  // (innermost axis first): n2_plan, n1_plan, n0_plan.
+  if (auto three_dim = std::dynamic_pointer_cast<ThreeDimPlanNode>(node)) {
+    key.n1 = three_dim->n0;
+    key.n2 = three_dim->n1;
+    key.child_keys.push_back(PlanKey::from_node(three_dim->n2_plan).repr());
+    key.child_keys.push_back(PlanKey::from_node(three_dim->n1_plan).repr());
+    key.child_keys.push_back(PlanKey::from_node(three_dim->n0_plan).repr());
     return key;
   }
 

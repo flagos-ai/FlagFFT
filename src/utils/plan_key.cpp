@@ -41,6 +41,13 @@ std::string PlanKey::repr() const {
   if (root_kind == PlanNodeKind::TwoDim) {
     out << ";n0=" << n1 << ";n1=" << n2;
   }
+  if (root_kind == PlanNodeKind::ThreeDim) {
+    out << ";n0=" << n1 << ";n1=" << n2;
+    const int64_t n0 = n1;
+    const int64_t n1_dim = n2;
+    const int64_t n2_dim = n1_dim > 0 ? length / (n0 * n1_dim) : 0;
+    out << ";n2=" << n2_dim;
+  }
   if (root_kind == PlanNodeKind::Bluestein) {
     out << ";conv_length=" << conv_length;
   }

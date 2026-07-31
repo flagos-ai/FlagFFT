@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import json
 import math
@@ -184,11 +185,13 @@ def expand_test_cases(
     for op in ops:
         for algo in op["algorithms"]:
             # Skip if algorithm doesn't match combination
-            if combination in ("ct", "bs") and algo == "2d":
+            if combination in ("ct", "bs") and algo in ("2d", "3d"):
                 continue
             if combination == "2p20" and (op["id"] != "c2c_1d" or algo != "ct"):
                 continue
             if combination in ("2d", "2d_full") and algo != "2d":
+                continue
+            if combination in ("3d", "3d_full") and algo != "3d":
                 continue
 
             # For bs algorithm, use bs sizes when combination is ct or full
@@ -206,12 +209,14 @@ def expand_test_cases(
                         for direction in op["directions"]:
                             nx = size[0] if isinstance(size, list) else size
                             ny = size[1] if isinstance(size, list) else 0
+                            nz = size[2] if isinstance(size, list) and len(size) > 2 else 0
                             cases.append(
                                 {
                                     "op_id": op["id"],
                                     "algo": algo,
                                     "nx": nx,
                                     "ny": ny,
+                                    "nz": nz,
                                     "batch": batch,
                                     "scale": scale,
                                     "direction": direction,
@@ -253,6 +258,11 @@ def parse_args() -> argparse.Namespace:
         "--warmup", type=int, default=10, help="Benchmark warmup iterations"
     )
     parser.add_argument("--iters", type=int, default=100, help="Benchmark iterations")
+    parser.add_argument(
+        "--incremental-csv",
+        default=None,
+        help="Append one CSV row per finished case (live progress)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument(
         "--dump-output",
@@ -304,6 +314,9 @@ def build_accuracy_cmd(case: dict, build_dir: Path) -> tuple[list[str], str]:
     cmd = [str(binary), f"--nx={case['nx']}"]
     if case["rank"] == 2:
         cmd.append(f"--ny={case['ny']}")
+    elif case["rank"] == 3:
+        cmd.append(f"--ny={case['ny']}")
+        cmd.append(f"--nz={case['nz']}")
     cmd.append(f"--batch={case['batch']}")
     cmd.append(f"--direction={case['direction']}")
     cmd.append(f"--scale={case['scale']}")
@@ -328,8 +341,10 @@ def build_perf_cmd(case: dict, build_dir: Path, warmup: int, iters: int) -> list
     ]
     if case["rank"] == 1:
         cmd += ["--shape", str(case["nx"])]
-    else:
+    elif case["rank"] == 2:
         cmd += ["--rank", "2", "--shape", f"{case['nx']}x{case['ny']}"]
+    else:
+        cmd += ["--rank", "3", "--shape", f"{case['nx']}x{case['ny']}x{case['nz']}"]
     cmd += [
         "--batch",
         str(case["batch"]),
@@ -410,7 +425,10 @@ def parse_perf_result(output: str, case: dict | None = None) -> dict[str, Any]:
             nx = case.get("nx", 0)
             batch = case.get("batch", 1)
             ny = case.get("ny", 0)
-            if ny > 0:
+            nz = case.get("nz", 0)
+            if ny > 0 and nz > 0:
+                shape_key = f"[{nx},{ny},{nz}]"
+            elif ny > 0:
                 shape_key = f"[{nx},{ny}]"
             else:
                 shape_key = f"[{nx}]"
@@ -466,7 +484,7 @@ def worker_proc(
 
         case_id = (
             f"{case['op_id']} algo={case['algo']} direction={case['direction']} "
-            f"nx={case['nx']} ny={case['ny']} batch={case['batch']} "
+            f"nx={case['nx']} ny={case['ny']} nz={case.get('nz', 0)} batch={case['batch']} "
             f"scale={case['scale']}"
         )
         op_dir = output_dir / case["op_id"]
@@ -510,6 +528,7 @@ def worker_proc(
                     "direction": case["direction"],
                     "nx": case["nx"],
                     "ny": case["ny"],
+                    "nz": case.get("nz", 0),
                     "batch": case["batch"],
                     "scale": case["scale"],
                 }
@@ -558,6 +577,7 @@ def worker_proc(
                     "direction": case["direction"],
                     "nx": case["nx"],
                     "ny": case["ny"],
+                    "nz": case.get("nz", 0),
                     "batch": case["batch"],
                     "scale": case["scale"],
                 }
@@ -662,6 +682,7 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
                 "direction": result.get("direction"),
                 "nx": result.get("nx"),
                 "ny": result.get("ny"),
+                "nz": result.get("nz", 0),
                 "batch": result.get("batch"),
                 "scale": result.get("scale"),
                 "total": r.get("total", 0),
@@ -696,6 +717,7 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
                 "direction": result.get("direction"),
                 "nx": result.get("nx"),
                 "ny": result.get("ny"),
+                "nz": result.get("nz", 0),
                 "batch": result.get("batch"),
                 "scale": result.get("scale"),
                 "flagfft_median_ms": r.get("flagfft_median_ms", 0),
@@ -879,12 +901,56 @@ def main() -> int:
     raw_results = []
     start_time = time.monotonic()
 
+    inc_csv_file = None
+    inc_csv_writer = None
+    _INC_COLS = [
+        "phase", "op_id", "algo", "direction", "nx", "ny", "nz",
+        "batch", "scale", "status", "duration_s",
+        "acc_total", "acc_passed", "acc_failed", "acc_skipped",
+        "flagfft_median_ms", "cufft_median_ms", "speedup",
+    ]
+
+    def _inc_row(msg):
+        r = msg.get("result", {})
+        return {
+            "phase": msg.get("phase"),
+            "op_id": msg.get("op_id"),
+            "algo": msg.get("algo"),
+            "direction": msg.get("direction"),
+            "nx": msg.get("nx"),
+            "ny": msg.get("ny"),
+            "nz": msg.get("nz"),
+            "batch": msg.get("batch"),
+            "scale": msg.get("scale"),
+            "status": msg.get("status"),
+            "duration_s": round(msg.get("duration", 0) or 0, 3),
+            "acc_total": r.get("total", ""),
+            "acc_passed": r.get("passed", ""),
+            "acc_failed": r.get("failed", ""),
+            "acc_skipped": r.get("skipped", ""),
+            "flagfft_median_ms": r.get("flagfft_median_ms", ""),
+            "cufft_median_ms": r.get("ref_median_ms", ""),
+            "speedup": r.get("speedup", ""),
+        }
+
+    if args.incremental_csv:
+        inc_csv_file = open(args.incremental_csv, "w", newline="")
+        inc_csv_writer = csv.DictWriter(inc_csv_file, fieldnames=_INC_COLS)
+        inc_csv_writer.writeheader()
+        inc_csv_file.flush()
+
+    def _record(msg):
+        if "result" in msg:
+            raw_results.append(msg)
+            if inc_csv_writer is not None:
+                inc_csv_writer.writerow(_inc_row(msg))
+                inc_csv_file.flush()
+
     while any(w.is_alive() for w in workers):
         try:
             msg = display_queue.get(timeout=0.5)
             display.update(msg)
-            if "result" in msg:
-                raw_results.append(msg)
+            _record(msg)
         except queue.Empty:
             pass
 
@@ -893,10 +959,12 @@ def main() -> int:
         try:
             msg = display_queue.get_nowait()
             display.update(msg)
-            if "result" in msg:
-                raw_results.append(msg)
+            _record(msg)
         except queue.Empty:
             break
+
+    if inc_csv_file is not None:
+        inc_csv_file.close()
 
     for p in workers:
         p.join(timeout=30)
