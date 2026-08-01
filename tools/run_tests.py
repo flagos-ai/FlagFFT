@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import json
 import math
@@ -253,6 +254,11 @@ def parse_args() -> argparse.Namespace:
         "--warmup", type=int, default=10, help="Benchmark warmup iterations"
     )
     parser.add_argument("--iters", type=int, default=100, help="Benchmark iterations")
+    parser.add_argument(
+        "--incremental-csv",
+        default=None,
+        help="Append one CSV row per finished case (live progress)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument(
         "--dump-output",
@@ -879,12 +885,55 @@ def main() -> int:
     raw_results = []
     start_time = time.monotonic()
 
+    inc_csv_file = None
+    inc_csv_writer = None
+    _INC_COLS = [
+        "phase", "op_id", "algo", "direction", "nx", "ny",
+        "batch", "scale", "status", "duration_s",
+        "acc_total", "acc_passed", "acc_failed", "acc_skipped",
+        "flagfft_median_ms", "cufft_median_ms", "speedup",
+    ]
+
+    def _inc_row(msg):
+        r = msg.get("result", {})
+        return {
+            "phase": msg.get("phase"),
+            "op_id": msg.get("op_id"),
+            "algo": msg.get("algo"),
+            "direction": msg.get("direction"),
+            "nx": msg.get("nx"),
+            "ny": msg.get("ny"),
+            "batch": msg.get("batch"),
+            "scale": msg.get("scale"),
+            "status": msg.get("status"),
+            "duration_s": round(msg.get("duration", 0) or 0, 3),
+            "acc_total": r.get("total", ""),
+            "acc_passed": r.get("passed", ""),
+            "acc_failed": r.get("failed", ""),
+            "acc_skipped": r.get("skipped", ""),
+            "flagfft_median_ms": r.get("flagfft_median_ms", ""),
+            "cufft_median_ms": r.get("ref_median_ms", ""),
+            "speedup": r.get("speedup", ""),
+        }
+
+    if args.incremental_csv:
+        inc_csv_file = open(args.incremental_csv, "w", newline="")
+        inc_csv_writer = csv.DictWriter(inc_csv_file, fieldnames=_INC_COLS)
+        inc_csv_writer.writeheader()
+        inc_csv_file.flush()
+
+    def _record(msg):
+        if "result" in msg:
+            raw_results.append(msg)
+            if inc_csv_writer is not None:
+                inc_csv_writer.writerow(_inc_row(msg))
+                inc_csv_file.flush()
+
     while any(w.is_alive() for w in workers):
         try:
             msg = display_queue.get(timeout=0.5)
             display.update(msg)
-            if "result" in msg:
-                raw_results.append(msg)
+            _record(msg)
         except queue.Empty:
             pass
 
@@ -893,10 +942,12 @@ def main() -> int:
         try:
             msg = display_queue.get_nowait()
             display.update(msg)
-            if "result" in msg:
-                raw_results.append(msg)
+            _record(msg)
         except queue.Empty:
             break
+
+    if inc_csv_file is not None:
+        inc_csv_file.close()
 
     for p in workers:
         p.join(timeout=30)
