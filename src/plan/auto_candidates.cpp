@@ -180,7 +180,9 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
     const double bluestein_candidate_cost = bluestein_cost(n, bluestein->conv_length);
     candidates.push_back({node, bluestein_candidate_cost, priority(node)});
-    if (is_prime_length(n) && n <= kMaxRaderPrime) {
+    const bool has_fused_bluestein =
+        context.input_dtype == "complex64" && context.output_dtype == "complex64";
+    if (!has_fused_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);
       const Factorization rader_factorization = factorize_supported_radices(n - 1);

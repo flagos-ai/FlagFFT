@@ -150,6 +150,24 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::LeafC2R:
       kernel_kind = "leaf_c2r";
       break;
+    case KernelKind::LeafBluestein:
+      kernel_kind = "leaf_bluestein";
+      break;
+    case KernelKind::LeafBluesteinPrepare:
+      kernel_kind = "leaf_bluestein_prepare";
+      break;
+    case KernelKind::LeafBluesteinFinish:
+      kernel_kind = "leaf_bluestein_finish";
+      break;
+    case KernelKind::BluesteinFourStepPrepareRow:
+      kernel_kind = "bluestein_four_step_prepare_row";
+      break;
+    case KernelKind::BluesteinFourStepPointwiseRow:
+      kernel_kind = "bluestein_four_step_pointwise_row";
+      break;
+    case KernelKind::BluesteinFourStepFinishCol:
+      kernel_kind = "bluestein_four_step_finish_col";
+      break;
     case KernelKind::DirectDft:
       kernel_kind = "direct_dft";
       break;
@@ -221,6 +239,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
               << kernel_kind << " --out-dir " << shell_quote(out_dir().string()) << " --dtype "
               << shell_quote(key.dtype);
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
+      key.kind == KernelKind::LeafBluestein ||
+      key.kind == KernelKind::LeafBluesteinPrepare || key.kind == KernelKind::LeafBluesteinFinish ||
+      key.kind == KernelKind::BluesteinFourStepPrepareRow ||
+      key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
+      key.kind == KernelKind::BluesteinFourStepFinishCol ||
       key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRealRow ||
       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
       key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
@@ -234,10 +257,18 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRealRow ||
       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
-      key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
+      key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol ||
+      key.kind == KernelKind::BluesteinFourStepPrepareRow ||
+      key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
+      key.kind == KernelKind::BluesteinFourStepFinishCol) {
     jit_command << " --four-step-n1 " << key.four_step_n1 << " --four-step-n2 " << key.four_step_n2;
   }
-  if (key.kind == KernelKind::BluesteinPrepare || key.kind == KernelKind::BluesteinPointwise ||
+  if (key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafBluesteinPrepare ||
+      key.kind == KernelKind::LeafBluesteinFinish ||
+      key.kind == KernelKind::BluesteinFourStepPrepareRow ||
+      key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
+      key.kind == KernelKind::BluesteinFourStepFinishCol ||
+      key.kind == KernelKind::BluesteinPrepare || key.kind == KernelKind::BluesteinPointwise ||
       key.kind == KernelKind::BluesteinFinalize) {
     jit_command << " --bluestein-n " << key.bluestein_n << " --bluestein-m " << key.bluestein_m;
   }

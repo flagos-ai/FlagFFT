@@ -83,6 +83,80 @@ KernelKey KernelKey::leaf_c2r(std::string target,
   return key;
 }
 
+KernelKey KernelKey::leaf_bluestein(std::string target,
+                                    std::string direction,
+                                    std::string dtype,
+                                    int64_t prime_n,
+                                    int64_t length,
+                                    std::vector<int64_t> factors,
+                                    int64_t lanes,
+                                    int64_t num_warps,
+                                    std::vector<int64_t> generic_radices,
+                                    int64_t smem_size) {
+  KernelKey key = KernelKey::leaf(std::move(target),
+                                  std::move(direction),
+                                  std::move(dtype),
+                                  length,
+                                  std::move(factors),
+                                  lanes,
+                                  num_warps,
+                                  std::move(generic_radices),
+                                  smem_size);
+  key.kind = KernelKind::LeafBluestein;
+  key.bluestein_n = prime_n;
+  key.bluestein_m = length;
+  return key;
+}
+
+KernelKey KernelKey::leaf_bluestein_prepare(std::string target,
+                                            std::string direction,
+                                            std::string dtype,
+                                            int64_t prime_n,
+                                            int64_t length,
+                                            std::vector<int64_t> factors,
+                                            int64_t lanes,
+                                            int64_t num_warps,
+                                            std::vector<int64_t> generic_radices,
+                                            int64_t smem_size) {
+  KernelKey key = KernelKey::leaf(std::move(target),
+                                  std::move(direction),
+                                  std::move(dtype),
+                                  length,
+                                  std::move(factors),
+                                  lanes,
+                                  num_warps,
+                                  std::move(generic_radices),
+                                  smem_size);
+  key.kind = KernelKind::LeafBluesteinPrepare;
+  key.bluestein_n = prime_n;
+  key.bluestein_m = length;
+  return key;
+}
+
+KernelKey KernelKey::leaf_bluestein_finish(std::string target,
+                                           std::string direction,
+                                           std::string dtype,
+                                           int64_t prime_n,
+                                           int64_t length,
+                                           std::vector<int64_t> factors,
+                                           int64_t lanes,
+                                           int64_t num_warps,
+                                           std::vector<int64_t> generic_radices,
+                                           int64_t smem_size) {
+  KernelKey key = KernelKey::leaf_bluestein_prepare(std::move(target),
+                                                    std::move(direction),
+                                                    std::move(dtype),
+                                                    prime_n,
+                                                    length,
+                                                    std::move(factors),
+                                                    lanes,
+                                                    num_warps,
+                                                    std::move(generic_radices),
+                                                    smem_size);
+  key.kind = KernelKind::LeafBluesteinFinish;
+  return key;
+}
+
 KernelKey KernelKey::direct_dft(std::string target,
                                 std::string direction,
                                 std::string dtype,
@@ -428,6 +502,11 @@ std::string KernelKey::repr() const {
     out << ";direction=" << direction << ";length=" << length;
   }
   if (kind == KernelKind::Leaf || kind == KernelKind::LeafR2C || kind == KernelKind::LeafC2R ||
+      kind == KernelKind::LeafBluestein ||
+      kind == KernelKind::LeafBluesteinPrepare || kind == KernelKind::LeafBluesteinFinish ||
+      kind == KernelKind::BluesteinFourStepPrepareRow ||
+      kind == KernelKind::BluesteinFourStepPointwiseRow ||
+      kind == KernelKind::BluesteinFourStepFinishCol ||
       kind == KernelKind::FourStepRow || kind == KernelKind::FourStepRealRow ||
       kind == KernelKind::FourStepHermitianRow || kind == KernelKind::FourStepCol ||
       kind == KernelKind::FourStepR2CCol || kind == KernelKind::FourStepC2RCol) {
@@ -436,11 +515,19 @@ std::string KernelKey::repr() const {
         << join_ints(generic_radices) << "];smem_size=" << smem_size;
     if (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepRealRow ||
         kind == KernelKind::FourStepHermitianRow || kind == KernelKind::FourStepCol ||
-        kind == KernelKind::FourStepR2CCol || kind == KernelKind::FourStepC2RCol) {
+        kind == KernelKind::FourStepR2CCol || kind == KernelKind::FourStepC2RCol ||
+        kind == KernelKind::BluesteinFourStepPrepareRow ||
+        kind == KernelKind::BluesteinFourStepPointwiseRow ||
+        kind == KernelKind::BluesteinFourStepFinishCol) {
       out << ";four_step_n1=" << four_step_n1 << ";four_step_n2=" << four_step_n2;
     }
   }
-  if (kind == KernelKind::BluesteinPrepare || kind == KernelKind::BluesteinPointwise ||
+  if (kind == KernelKind::LeafBluestein || kind == KernelKind::LeafBluesteinPrepare ||
+      kind == KernelKind::LeafBluesteinFinish ||
+      kind == KernelKind::BluesteinFourStepPrepareRow ||
+      kind == KernelKind::BluesteinFourStepPointwiseRow ||
+      kind == KernelKind::BluesteinFourStepFinishCol ||
+      kind == KernelKind::BluesteinPrepare || kind == KernelKind::BluesteinPointwise ||
       kind == KernelKind::BluesteinFinalize) {
     out << ";bluestein_n=" << bluestein_n << ";bluestein_m=" << bluestein_m;
   }

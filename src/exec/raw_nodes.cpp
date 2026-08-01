@@ -162,8 +162,12 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
 
 CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
                                                    std::shared_ptr<JitKernel> kernel,
-                                                   std::vector<DeviceAllocation> tables)
-    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+                                                   std::vector<DeviceAllocation> tables,
+                                                   DeviceAllocation input_copy)
+    : length(length),
+      kernel(std::move(kernel)),
+      tables(std::move(tables)),
+      input_copy(std::move(input_copy)) {
 }
 
 std::string CompiledRawDirectDftNode::describe() const {
@@ -176,7 +180,13 @@ flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
-    std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
+    adaptor::DevicePtr effective_input = input;
+    if (input == output) {
+      adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);
+      effective_input = input_copy.get();
+    }
+
+    std::vector<JitKernelArg> args = raw_kernel_args({effective_input, output}, tables, context.batch);
     kernel->launch(context.stream, args, context.batch, 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
@@ -281,6 +291,239 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] Bluestein execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawBluesteinLeafNode::CompiledRawBluesteinLeafNode(
+    int64_t length,
+    int64_t conv_length,
+    std::shared_ptr<CompiledRawNode> fft,
+    std::shared_ptr<JitKernel> prepare_kernel,
+    std::shared_ptr<JitKernel> finish_kernel,
+    std::vector<DeviceAllocation> tables,
+    DeviceAllocation chirp,
+    DeviceAllocation b_time,
+    DeviceAllocation work_buf,
+    DeviceAllocation b_fft_buf)
+    : length(length),
+      conv_length(conv_length),
+      fft(std::move(fft)),
+      prepare_kernel(std::move(prepare_kernel)),
+      finish_kernel(std::move(finish_kernel)),
+      tables(std::move(tables)),
+      chirp(std::move(chirp)),
+      b_time(std::move(b_time)),
+      work_buf(std::move(work_buf)),
+      b_fft_buf(std::move(b_fft_buf)) {
+}
+
+std::string CompiledRawBluesteinLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawBluesteinLeaf(n=" << length << ", conv_length=" << conv_length
+      << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->kernel_name : "null")
+      << ", finish_kernel=" << (finish_kernel ? finish_kernel->kernel_name : "null")
+      << ", fft=" << (fft ? fft->describe() : "null") << ")";
+  return oss.str();
+}
+
+void CompiledRawBluesteinLeafNode::ensure_b_fft(const RawExecutionContext &context) const {
+  std::lock_guard<std::mutex> lock(b_fft_mutex);
+  if (b_fft_ready) {
+    return;
+  }
+  RawExecutionContext child_context {context.request, context.stream, 1};
+  flagfftResult result = fft->execute(b_time.get(), b_fft_buf.get(), child_context);
+  if (result != FLAGFFT_SUCCESS) {
+    throw std::runtime_error("failed to precompute fused Bluestein convolution FFT");
+  }
+  b_fft_ready = true;
+}
+
+flagfftResult CompiledRawBluesteinLeafNode::execute(adaptor::DevicePtr input,
+                                                    adaptor::DevicePtr output,
+                                                    const RawExecutionContext &context) const {
+  try {
+    ensure_b_fft(context);
+
+    std::vector<JitKernelArg> prepare_args =
+        raw_kernel_args({input, chirp.get(), work_buf.get()}, tables, context.batch);
+    prepare_kernel->launch(
+        context.stream, prepare_args, ceil_div(context.batch, prepare_kernel->batch_per_block), 1, 1);
+
+    std::vector<JitKernelArg> finish_args =
+        raw_kernel_args({work_buf.get(), b_fft_buf.get(), chirp.get(), output}, tables, context.batch);
+    finish_kernel->launch(
+        context.stream, finish_args, ceil_div(context.batch, finish_kernel->batch_per_block), 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] BluesteinLeaf execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawBluesteinFullLeafNode::CompiledRawBluesteinFullLeafNode(
+    int64_t length,
+    int64_t conv_length,
+    std::shared_ptr<CompiledRawNode> fft,
+    std::shared_ptr<JitKernel> kernel,
+    std::vector<DeviceAllocation> tables,
+    DeviceAllocation chirp,
+    DeviceAllocation b_time,
+    DeviceAllocation b_fft_buf)
+    : length(length),
+      conv_length(conv_length),
+      fft(std::move(fft)),
+      kernel(std::move(kernel)),
+      tables(std::move(tables)),
+      chirp(std::move(chirp)),
+      b_time(std::move(b_time)),
+      b_fft_buf(std::move(b_fft_buf)) {
+}
+
+std::string CompiledRawBluesteinFullLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawBluesteinFullLeaf(n=" << length << ", conv_length=" << conv_length
+      << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+      << ", fft=" << (fft ? fft->describe() : "null") << ")";
+  return oss.str();
+}
+
+void CompiledRawBluesteinFullLeafNode::ensure_b_fft(const RawExecutionContext &context) const {
+  std::lock_guard<std::mutex> lock(b_fft_mutex);
+  if (b_fft_ready) {
+    return;
+  }
+  RawExecutionContext child_context {context.request, context.stream, 1};
+  flagfftResult result = fft->execute(b_time.get(), b_fft_buf.get(), child_context);
+  if (result != FLAGFFT_SUCCESS) {
+    throw std::runtime_error("failed to precompute fully fused Bluestein convolution FFT");
+  }
+  b_fft_ready = true;
+}
+
+flagfftResult CompiledRawBluesteinFullLeafNode::execute(adaptor::DevicePtr input,
+                                                        adaptor::DevicePtr output,
+                                                        const RawExecutionContext &context) const {
+  try {
+    ensure_b_fft(context);
+    std::vector<JitKernelArg> args =
+        raw_kernel_args({input, b_fft_buf.get(), chirp.get(), output}, tables, context.batch);
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] BluesteinFullLeaf execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
+    int64_t length,
+    int64_t conv_length,
+    int64_t n1,
+    int64_t n2,
+    std::shared_ptr<CompiledRawNode> fft,
+    std::shared_ptr<JitKernel> prepare_row_kernel,
+    std::shared_ptr<JitKernel> first_col_kernel,
+    std::shared_ptr<JitKernel> pointwise_row_kernel,
+    std::shared_ptr<JitKernel> finish_col_kernel,
+    std::vector<DeviceAllocation> row_tables,
+    std::vector<DeviceAllocation> col_tables,
+    DeviceAllocation twiddle,
+    DeviceAllocation chirp,
+    DeviceAllocation b_time,
+    DeviceAllocation stage1,
+    DeviceAllocation work_buf,
+    DeviceAllocation b_fft_buf)
+    : length(length),
+      conv_length(conv_length),
+      n1(n1),
+      n2(n2),
+      fft(std::move(fft)),
+      prepare_row_kernel(std::move(prepare_row_kernel)),
+      first_col_kernel(std::move(first_col_kernel)),
+      pointwise_row_kernel(std::move(pointwise_row_kernel)),
+      finish_col_kernel(std::move(finish_col_kernel)),
+      row_tables(std::move(row_tables)),
+      col_tables(std::move(col_tables)),
+      twiddle(std::move(twiddle)),
+      chirp(std::move(chirp)),
+      b_time(std::move(b_time)),
+      stage1(std::move(stage1)),
+      work_buf(std::move(work_buf)),
+      b_fft_buf(std::move(b_fft_buf)) {
+}
+
+std::string CompiledRawBluesteinFourStepNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawBluesteinFourStep(n=" << length << ", conv_length=" << conv_length
+      << ", n1=" << n1 << ", n2=" << n2
+      << ", prepare_row=" << (prepare_row_kernel ? prepare_row_kernel->kernel_name : "null")
+      << ", first_col=" << (first_col_kernel ? first_col_kernel->kernel_name : "null")
+      << ", pointwise_row=" << (pointwise_row_kernel ? pointwise_row_kernel->kernel_name : "null")
+      << ", finish_col=" << (finish_col_kernel ? finish_col_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+void CompiledRawBluesteinFourStepNode::ensure_b_fft(const RawExecutionContext &context) const {
+  std::lock_guard<std::mutex> lock(b_fft_mutex);
+  if (b_fft_ready) {
+    return;
+  }
+  RawExecutionContext child_context {context.request, context.stream, 1};
+  flagfftResult result = fft->execute(b_time.get(), b_fft_buf.get(), child_context);
+  if (result != FLAGFFT_SUCCESS) {
+    throw std::runtime_error("failed to precompute four-step Bluestein convolution FFT");
+  }
+  b_fft_ready = true;
+}
+
+flagfftResult CompiledRawBluesteinFourStepNode::execute(adaptor::DevicePtr input,
+                                                        adaptor::DevicePtr output,
+                                                        const RawExecutionContext &context) const {
+  const char *stage = "precompute";
+  try {
+    ensure_b_fft(context);
+    const bool fused_twiddle = prepare_row_kernel->tle_fused_twiddle;
+
+    stage = "prepare-row";
+    std::vector<JitKernelArg> prepare_args =
+        fused_twiddle
+            ? raw_kernel_args({input, chirp.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
+            : raw_kernel_args({input, chirp.get(), stage1.get()}, row_tables, context.batch);
+    prepare_row_kernel->launch(
+        context.stream, prepare_args, ceil_div(n2, prepare_row_kernel->inner_pack), context.batch, 1);
+
+    stage = "first-col";
+    std::vector<JitKernelArg> first_col_args =
+        fused_twiddle ? raw_kernel_args({stage1.get(), work_buf.get()}, col_tables, context.batch)
+                      : raw_kernel_args({stage1.get(), twiddle.get(), work_buf.get()}, col_tables, context.batch);
+    first_col_kernel->launch(
+        context.stream, first_col_args, ceil_div(n1, first_col_kernel->inner_pack), context.batch, 1);
+
+    stage = "pointwise-row";
+    std::vector<JitKernelArg> pointwise_args =
+        fused_twiddle
+            ? raw_kernel_args({work_buf.get(), b_fft_buf.get(), twiddle.get(), stage1.get()},
+                              row_tables,
+                              context.batch)
+            : raw_kernel_args({work_buf.get(), b_fft_buf.get(), stage1.get()}, row_tables, context.batch);
+    pointwise_row_kernel->launch(
+        context.stream, pointwise_args, ceil_div(n2, pointwise_row_kernel->inner_pack), context.batch, 1);
+
+    stage = "finish-col";
+    std::vector<JitKernelArg> finish_args =
+        fused_twiddle
+            ? raw_kernel_args({stage1.get(), chirp.get(), output}, col_tables, context.batch)
+            : raw_kernel_args({stage1.get(), chirp.get(), twiddle.get(), output}, col_tables, context.batch);
+    finish_col_kernel->launch(
+        context.stream, finish_args, ceil_div(n1, finish_col_kernel->inner_pack), context.batch, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] BluesteinFourStep %s failed: %s\n", stage, e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }

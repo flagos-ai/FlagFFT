@@ -124,6 +124,18 @@ std::string kernel_kind_name(KernelKind kind) {
       return "leaf_r2c";
     case KernelKind::LeafC2R:
       return "leaf_c2r";
+    case KernelKind::LeafBluestein:
+      return "leaf_bluestein";
+    case KernelKind::LeafBluesteinPrepare:
+      return "leaf_bluestein_prepare";
+    case KernelKind::LeafBluesteinFinish:
+      return "leaf_bluestein_finish";
+    case KernelKind::BluesteinFourStepPrepareRow:
+      return "bluestein_four_step_prepare_row";
+    case KernelKind::BluesteinFourStepPointwiseRow:
+      return "bluestein_four_step_pointwise_row";
+    case KernelKind::BluesteinFourStepFinishCol:
+      return "bluestein_four_step_finish_col";
     case KernelKind::DirectDft:
       return "direct_dft";
     case KernelKind::FourStepRow:

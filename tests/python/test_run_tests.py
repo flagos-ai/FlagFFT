@@ -40,6 +40,18 @@ def test_multidimensional_full_case_counts_and_batch() -> None:
     assert {case["batch"] for case in cases_2d + cases_3d} == {1}
 
 
+def test_bs_combination_only_expands_prime_cases() -> None:
+    operators = RUN_TESTS.load_operators(ROOT / "conf" / "operators.yaml")
+    matrix = RUN_TESTS.load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
+
+    cases = RUN_TESTS.expand_test_cases(operators, matrix, "bs")
+
+    assert len(cases) == len(matrix["sizes_bs"]) * 10
+    assert {case["algo"] for case in cases} == {"bs"}
+    assert {case["nx"] for case in cases} == set(matrix["sizes_bs"])
+    assert {case["rank"] for case in cases} == {1}
+
+
 def test_3d_accuracy_command_uses_rank_binary_and_api_filter(tmp_path: Path) -> None:
     case = {
         "op_id": "c2c_3d",

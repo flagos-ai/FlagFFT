@@ -23,7 +23,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return compile_raw_leaf(*leaf, request);
   }
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
-    return compile_raw_direct_dft(*direct, request);
+    return compile_raw_direct_dft(*direct, request, batch);
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
@@ -48,17 +48,120 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     FFTRequest child_request = forward_child_request(request);
+    auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan);
+    auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(bluestein->fft_plan);
+    auto row_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) : nullptr;
+    auto col_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) : nullptr;
     std::shared_ptr<CompiledRawNode> fft = compile_raw_node(bluestein->fft_plan, child_request, batch);
     DeviceAllocation chirp =
         build_raw_bluestein_chirp(request, bluestein->length, request.direction == "inverse");
     DeviceAllocation b_time = build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
+    const bool use_full_leaf = request.input_dtype == "complex64" && leaf != nullptr;
+    const bool use_four_step =
+        request.input_dtype == "complex64" && four_step != nullptr && row_leaf != nullptr &&
+        col_leaf != nullptr && row_leaf->length < 512 && col_leaf->length < 512;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
-    DeviceAllocation a_buf =
-        adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
-    DeviceAllocation work_buf =
-        adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
+    if (use_full_leaf) {
+      std::vector<int64_t> fused_factors = leaf->factors;
+      if (fused_factors.size() >= 3) {
+        std::reverse(fused_factors.begin() + 1, fused_factors.end());
+      }
+      LeafPlanNode fused_leaf(leaf->length,
+                              std::move(fused_factors),
+                              leaf->remainder,
+                              leaf->lanes,
+                              leaf->num_warps,
+                              leaf->generic_radices,
+                              leaf->smem_size);
+      return std::make_shared<CompiledRawBluesteinFullLeafNode>(
+          bluestein->length,
+          bluestein->conv_length,
+          std::move(fft),
+          compile_leaf_bluestein_kernel(fused_leaf, child_request, bluestein->length),
+          build_raw_leaf_tables(fused_leaf, child_request),
+          std::move(chirp),
+          std::move(b_time),
+          std::move(b_fft_buf));
+    }
+    if (use_four_step) {
+      auto make_boundary_leaf = [](const LeafPlanNode &source) {
+        std::vector<int64_t> factors = source.factors;
+        if (factors.size() == 2 && factors.front() > factors.back()) {
+          std::reverse(factors.begin(), factors.end());
+        }
+        return LeafPlanNode(source.length,
+                            std::move(factors),
+                            source.remainder,
+                            source.lanes,
+                            source.num_warps,
+                            source.generic_radices,
+                            source.smem_size);
+      };
+      LeafPlanNode boundary_row = make_boundary_leaf(*row_leaf);
+      LeafPlanNode boundary_col = make_boundary_leaf(*col_leaf);
+      auto compile_boundary_kernel = [&](const LeafPlanNode &boundary_leaf,
+                                         KernelKind kind,
+                                         bool is_row) {
+        KernelKey key =
+            is_row ? KernelKey::four_step_row(triton_target_for_request(child_request),
+                                              child_request.direction,
+                                              child_request.input_dtype,
+                                              four_step->n1,
+                                              four_step->n2,
+                                              boundary_leaf.length,
+                                              boundary_leaf.factors,
+                                              boundary_leaf.lanes,
+                                              boundary_leaf.num_warps,
+                                              boundary_leaf.generic_radices,
+                                              boundary_leaf.smem_size)
+                   : KernelKey::four_step_col(triton_target_for_request(child_request),
+                                              child_request.direction,
+                                              child_request.input_dtype,
+                                              four_step->n1,
+                                              four_step->n2,
+                                              boundary_leaf.length,
+                                              boundary_leaf.factors,
+                                              boundary_leaf.lanes,
+                                              boundary_leaf.num_warps,
+                                              boundary_leaf.generic_radices,
+                                              boundary_leaf.smem_size);
+        key.kind = kind;
+        key.bluestein_n = bluestein->length;
+        key.bluestein_m = bluestein->conv_length;
+        return compile_kernel(key);
+      };
+
+      DeviceAllocation twiddle =
+          build_raw_four_step_twiddle(child_request, four_step->n1, four_step->n2);
+      DeviceAllocation stage1 =
+          adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
+      DeviceAllocation work_buf =
+          adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
+      return std::make_shared<CompiledRawBluesteinFourStepNode>(
+          bluestein->length,
+          bluestein->conv_length,
+          four_step->n1,
+          four_step->n2,
+          std::move(fft),
+          compile_boundary_kernel(boundary_row, KernelKind::BluesteinFourStepPrepareRow, true),
+          compile_four_step_col_kernel(boundary_col, child_request, four_step->n1, four_step->n2),
+          compile_boundary_kernel(boundary_row, KernelKind::BluesteinFourStepPointwiseRow, true),
+          compile_boundary_kernel(boundary_col, KernelKind::BluesteinFourStepFinishCol, false),
+          build_raw_leaf_tables(boundary_row, child_request),
+          build_raw_leaf_tables(boundary_col, child_request),
+          std::move(twiddle),
+          std::move(chirp),
+          std::move(b_time),
+          std::move(stage1),
+          std::move(work_buf),
+          std::move(b_fft_buf));
+    }
+    DeviceAllocation work_buf =
+        adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
+    DeviceAllocation a_buf =
+        adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
     return std::make_shared<CompiledRawBluesteinNode>(
         bluestein->length,
         bluestein->conv_length,
@@ -205,10 +308,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const DirectDFTPlanNode &node,
-                                                                        const FFTRequest &request) {
+                                                                        const FFTRequest &request,
+                                                                        int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  DeviceAllocation input_copy =
+      adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
   return std::make_shared<CompiledRawDirectDftNode>(node.length,
                                                     compile_direct_dft_kernel(request, node.length),
-                                                    build_raw_direct_dft_tables(node.length, request));
+                                                    build_raw_direct_dft_tables(node.length, request),
+                                                    std::move(input_copy));
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPlanNode &leaf,
@@ -382,6 +490,59 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_finalize_kernel(con
                                                                              int64_t m) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::bluestein_finalize(target, request.input_dtype, n, m);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_kernel(const LeafPlanNode &leaf,
+                                                                         const FFTRequest &request,
+                                                                         int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::leaf_bluestein(target,
+                                            request.direction,
+                                            request.input_dtype,
+                                            n,
+                                            leaf.length,
+                                            leaf.factors,
+                                            leaf.lanes,
+                                            leaf.num_warps,
+                                            leaf.generic_radices,
+                                            leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel(
+    const LeafPlanNode &leaf,
+    const FFTRequest &request,
+    int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::leaf_bluestein_prepare(target,
+                                                    request.direction,
+                                                    request.input_dtype,
+                                                    n,
+                                                    leaf.length,
+                                                    leaf.factors,
+                                                    leaf.lanes,
+                                                    leaf.num_warps,
+                                                    leaf.generic_radices,
+                                                    leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(
+    const LeafPlanNode &leaf,
+    const FFTRequest &request,
+    int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::leaf_bluestein_finish(target,
+                                                   request.direction,
+                                                   request.input_dtype,
+                                                   n,
+                                                   leaf.length,
+                                                   leaf.factors,
+                                                   leaf.lanes,
+                                                   leaf.num_warps,
+                                                   leaf.generic_radices,
+                                                   leaf.smem_size);
   return compile_kernel(key);
 }
 

@@ -42,7 +42,7 @@
 namespace flagfft {
 
 inline constexpr int64_t kPlanSchemaVersion = 3;
-inline constexpr int64_t kDirectDftMaxN = 64;
+inline constexpr int64_t kDirectDftMaxN = 128;
 inline constexpr int64_t kLeafMaxN = 4096;
 inline constexpr int64_t kDynamicSmemFallbackBytes = 48 * 1024;
 inline constexpr int64_t kMaxLanes = 128;
@@ -113,6 +113,12 @@ enum class KernelKind {
   Leaf,
   LeafR2C,
   LeafC2R,
+  LeafBluestein,
+  LeafBluesteinPrepare,
+  LeafBluesteinFinish,
+  BluesteinFourStepPrepareRow,
+  BluesteinFourStepPointwiseRow,
+  BluesteinFourStepFinishCol,
   DirectDft,
   FourStepRow,
   FourStepRealRow,
