@@ -209,7 +209,11 @@ def expand_test_cases(
                         for direction in op["directions"]:
                             nx = size[0] if isinstance(size, list) else size
                             ny = size[1] if isinstance(size, list) else 0
-                            nz = size[2] if isinstance(size, list) and len(size) > 2 else 0
+                            nz = (
+                                size[2]
+                                if isinstance(size, list) and len(size) > 2
+                                else 0
+                            )
                             cases.append(
                                 {
                                     "op_id": op["id"],
@@ -243,8 +247,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--combination",
         default="ct",
-        choices=["ct", "bs", "full", "2p20", "2d", "2d_full"],
-        help="Test combination (ct/bs for quick, full, 2p20, or 2D presets)",
+        choices=[
+            "ct",
+            "bs",
+            "full",
+            "2p20",
+            "2d",
+            "2d_full",
+            "3d",
+            "3d_full",
+        ],
+        help="Test combination (1D, 2D, or 3D quick/full presets)",
     )
     parser.add_argument("--gpus", default="0", help="Comma-separated GPU IDs or 'all'")
     parser.add_argument("--accuracy-only", action="store_true")
@@ -286,7 +299,7 @@ _OPS_WITH_DIRECTION = {"c2c", "z2z"}
 
 def build_accuracy_cmd(case: dict, build_dir: Path) -> tuple[list[str], str]:
     # Build binary name based on algorithm:
-    # - 2D tests use a single binary: test_2d_correctness
+    # - 2D/3D tests use one correctness binary per rank
     # - 1D tests: test_exec_{type}_{direction}_{algo}_{batch_mode}
     #   For types with direction (c2c, z2z): include fwd/inv
     #   For types without direction (r2c, c2r, d2z, z2d, r2c_c2r, d2z_z2d): no direction
@@ -294,8 +307,8 @@ def build_accuracy_cmd(case: dict, build_dir: Path) -> tuple[list[str], str]:
     ctest_base = case["ctest"]
     algo = case["algo"]
 
-    if algo == "2d":
-        # 2D tests use a single binary for all types
+    if algo in ("2d", "3d"):
+        # Multi-dimensional tests use a single binary for all API types.
         binary_name = ctest_base
     else:
         batch_mode = "s" if case["batch"] == 1 else "b"
@@ -318,6 +331,7 @@ def build_accuracy_cmd(case: dict, build_dir: Path) -> tuple[list[str], str]:
         cmd.append(f"--ny={case['ny']}")
         cmd.append(f"--nz={case['nz']}")
     cmd.append(f"--batch={case['batch']}")
+    cmd.append(f"--api={case['cli_type']}")
     cmd.append(f"--direction={case['direction']}")
     cmd.append(f"--scale={case['scale']}")
     json_file = (
@@ -504,7 +518,7 @@ def worker_proc(
             data_file = f"{case['op_id']}/accuracy_result.json"
             if rc == -100:
                 acc_result = {"status": "Timeout", "duration": elapsed}
-            elif rc in (0, 77):
+            elif rc in (0, 77) or os.path.exists(jf):
                 acc_result = parse_accuracy_result(jf, data_file=data_file)
                 acc_result["duration"] = elapsed
             else:
@@ -702,11 +716,15 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
             case_details = r.get("details", [])
             if case_details:
                 acc["details"].extend(case_details)
-            if acc["failed"] > 0:
+            case_status = r.get("status", "Error")
+            if case_status in ("Failed", "Error", "Timeout"):
+                if r.get("failed", 0) == 0:
+                    acc["total"] += 1
+                    acc["failed"] += 1
                 acc["status"] = "Failed"
-            elif acc["passed"] > 0:
+            elif acc["status"] != "Failed" and acc["passed"] > 0:
                 acc["status"] = "Passed"
-            elif acc["skipped"] > 0:
+            elif acc["status"] != "Failed" and acc["skipped"] > 0:
                 acc["status"] = "Skipped"
 
         elif phase == "performance":
@@ -741,7 +759,10 @@ def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any
                 # Update overall speedup to latest
                 perf["data"][dtype_key]["speedup"] = dtype_info.get("speedup", 0)
             if r.get("status") == "Passed":
-                perf["status"] = "Passed"
+                if perf["status"] != "Failed":
+                    perf["status"] = "Passed"
+            elif r.get("status") in ("Failed", "Error", "Timeout"):
+                perf["status"] = "Failed"
 
     return op_results
 
@@ -904,10 +925,24 @@ def main() -> int:
     inc_csv_file = None
     inc_csv_writer = None
     _INC_COLS = [
-        "phase", "op_id", "algo", "direction", "nx", "ny", "nz",
-        "batch", "scale", "status", "duration_s",
-        "acc_total", "acc_passed", "acc_failed", "acc_skipped",
-        "flagfft_median_ms", "cufft_median_ms", "speedup",
+        "phase",
+        "op_id",
+        "algo",
+        "direction",
+        "nx",
+        "ny",
+        "nz",
+        "batch",
+        "scale",
+        "status",
+        "duration_s",
+        "acc_total",
+        "acc_passed",
+        "acc_failed",
+        "acc_skipped",
+        "flagfft_median_ms",
+        "cufft_median_ms",
+        "speedup",
     ]
 
     def _inc_row(msg):
@@ -1001,7 +1036,7 @@ def main() -> int:
     print(f"Duration:    {total_duration:.1f}s")
     print(f"{'=' * 60}")
 
-    return 1 if acc_failed > 0 else 0
+    return 1 if acc_failed > 0 or perf_failed > 0 else 0
 
 
 if __name__ == "__main__":

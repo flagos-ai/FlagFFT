@@ -695,6 +695,7 @@ struct TestParams {
   int batch = 0;        // 0 = use default batch arrays
   int direction = 0;    // 0 = all directions (no filter), -1 = forward, 1 = inverse
   double scale = -1.0;  // -1 = use default scales
+  std::string api;      // empty = all APIs; otherwise c2c/z2z/r2c/d2z/c2r/z2d
   bool json_output = false;
   const char* json_file = nullptr;
 };
@@ -743,6 +744,16 @@ inline bool should_skip_direction(int direction_flag) {
   // direction_flag: FLAGFFT_FORWARD=-1, FLAGFFT_INVERSE=1
   if (g_test_params.direction == 0) return false;  // 0 = no filter (unset)
   return g_test_params.direction != direction_flag;
+}
+
+inline bool should_skip_api(const char* api) {
+  return !g_test_params.api.empty() && g_test_params.api != api;
+}
+
+inline bool should_skip_duplicate_roundtrip() {
+  // The runner emits separate complex forward/inverse cases.  Run the
+  // bidirectional roundtrip only with the forward case.
+  return g_test_params.direction == FLAGFFT_INVERSE;
 }
 
 inline void write_json_escaped(std::ostream& out, const std::string& s) {

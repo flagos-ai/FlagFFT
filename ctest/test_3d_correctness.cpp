@@ -26,28 +26,23 @@ struct Test3DSize {
   int n2;
 };
 
-constexpr Test3DSize k3DSmoke[] = {
-    {16, 16, 16},
-};
-
 constexpr Test3DSize k3DSizes[] = {
-    { 16,  16,  16},
-    { 32,  16,   8},
-    {  8,  32,  16},
-    { 16,  32,  64},
-    { 64,  32,  16},
-    {128,  64,  32},
+    {    1,    16,    32},
+    {   16,     1,    32},
+    {   16,    32,     1},
+    {   23,    30,    67},
+    {   30,    67,    23},
+    {   67,    23,    30},
+    {  997,    16,    64},
+    {   16,   997,    64},
+    {   16,    64,   997},
+    {    4,    32, 16384},
+    {   32, 16384,     4},
+    {16384,     4,    32},
+    {   31,    33,    35},
+    {   64,    64,    64},
 };
-
-// Non-smooth sizes to exercise Rader/Bluestein on one or more axes.
-constexpr Test3DSize k3DBluesteinSizes[] = {
-    { 23,  16,  16},
-    { 16, 997,   8},
-    { 16,  16, 997},
-};
-
 constexpr int k3DNumSizes = sizeof(k3DSizes) / sizeof(k3DSizes[0]);
-constexpr int k3DNumBluesteinSizes = sizeof(k3DBluesteinSizes) / sizeof(k3DBluesteinSizes[0]);
 constexpr int k3DBatchSingle[] = {1};
 
 bool HasUsableDevice() {
@@ -71,17 +66,13 @@ std::vector<Test3DParam> Generate3DParams(const Test3DSize* sizes,
                                           int numBatches) {
   std::vector<Test3DParam> params;
   for (int i = 0; i < numSizes; ++i)
-    for (int b = 0; b < numBatches; ++b) params.push_back({sizes[i].n0, sizes[i].n1, sizes[i].n2, batches[b]});
+    for (int b = 0; b < numBatches; ++b)
+      params.push_back({sizes[i].n0, sizes[i].n1, sizes[i].n2, batches[b]});
   return params;
 }
 
 std::vector<Test3DParam> All3DParams() {
-  auto params = Generate3DParams(k3DSmoke, 1, k3DBatchSingle, 1);
-  auto ext = Generate3DParams(k3DSizes, k3DNumSizes, k3DBatchSingle, 1);
-  params.insert(params.end(), ext.begin(), ext.end());
-  ext = Generate3DParams(k3DBluesteinSizes, k3DNumBluesteinSizes, k3DBatchSingle, 1);
-  params.insert(params.end(), ext.begin(), ext.end());
-  return params;
+  return Generate3DParams(k3DSizes, k3DNumSizes, k3DBatchSingle, 1);
 }
 
 std::vector<Test3DParam> Filter3DParams(std::vector<Test3DParam> defaults) {
@@ -90,7 +81,9 @@ std::vector<Test3DParam> Filter3DParams(std::vector<Test3DParam> defaults) {
       flagfft_test::g_test_params.nz > 0) {
     int batch = flagfft_test::g_test_params.batch > 0 ? flagfft_test::g_test_params.batch : 1;
     return {
-        {flagfft_test::g_test_params.nx, flagfft_test::g_test_params.ny, flagfft_test::g_test_params.nz,
+        {flagfft_test::g_test_params.nx,
+         flagfft_test::g_test_params.ny,
+         flagfft_test::g_test_params.nz,
          batch}
     };
   }
@@ -104,6 +97,7 @@ std::vector<Test3DParam> Filter3DParams(std::vector<Test3DParam> defaults) {
 class C2C3D : public ::testing::TestWithParam<Test3DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("c2c")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -141,6 +135,7 @@ class C2C3D : public ::testing::TestWithParam<Test3DParam> {
 
 TEST_P(C2C3D, ForwardInverse) {
   if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+  if (flagfft_test::should_skip_duplicate_roundtrip()) GTEST_SKIP() << "roundtrip runs with forward case";
 
   // Forward
   flagfft_test::ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
@@ -251,6 +246,7 @@ INSTANTIATE_TEST_SUITE_P(All, C2C3D, ::testing::ValuesIn(Filter3DParams(All3DPar
 class Z2Z3D : public ::testing::TestWithParam<Test3DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("z2z")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -288,6 +284,7 @@ class Z2Z3D : public ::testing::TestWithParam<Test3DParam> {
 
 TEST_P(Z2Z3D, ForwardInverse) {
   if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+  if (flagfft_test::should_skip_duplicate_roundtrip()) GTEST_SKIP() << "roundtrip runs with forward case";
 
   // Forward
   flagfft_test::ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
@@ -398,6 +395,7 @@ INSTANTIATE_TEST_SUITE_P(All, Z2Z3D, ::testing::ValuesIn(Filter3DParams(All3DPar
 class R2C3D : public ::testing::TestWithParam<Test3DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("r2c")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -479,6 +477,7 @@ INSTANTIATE_TEST_SUITE_P(All, R2C3D, ::testing::ValuesIn(Filter3DParams(All3DPar
 class D2Z3D : public ::testing::TestWithParam<Test3DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("d2z")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -560,6 +559,7 @@ INSTANTIATE_TEST_SUITE_P(All, D2Z3D, ::testing::ValuesIn(Filter3DParams(All3DPar
 class C2R3D : public ::testing::TestWithParam<Test3DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("c2r")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -641,6 +641,7 @@ INSTANTIATE_TEST_SUITE_P(All, C2R3D, ::testing::ValuesIn(Filter3DParams(All3DPar
 class Z2D3D : public ::testing::TestWithParam<Test3DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("z2d")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -714,5 +715,151 @@ TEST_P(Z2D3D, InverseReference) {
 }
 
 INSTANTIATE_TEST_SUITE_P(All, Z2D3D, ::testing::ValuesIn(Filter3DParams(All3DParams())));
+
+// =========================================================================
+// R2C + C2R roundtrip 3D tests
+// =========================================================================
+
+class R2CC2RRoundtrip3D : public ::testing::TestWithParam<Test3DParam> {
+ protected:
+  void SetUp() override {
+    if (flagfft_test::should_skip_api("r2c")) GTEST_SKIP() << "filtered by --api";
+    if (!HasUsableDevice()) return;
+    n0 = GetParam().n0;
+    n1 = GetParam().n1;
+    n2 = GetParam().n2;
+    batch = GetParam().batch;
+    total_real = n0 * n1 * n2;
+    total_half = n0 * n1 * (n2 / 2 + 1);
+
+    flagfft_test::PlanMany3d(&fwd_plan, n0, n1, n2, FLAGFFT_R2C, batch);
+    flagfft_test::PlanMany3d(&inv_plan, n0, n1, n2, FLAGFFT_C2R, batch);
+
+    std::uint64_t seed = flagfft_test::accuracy_seed(FLAGFFT_R2C, total_real, batch);
+    h_in = flagfft_test::random_real(total_real * batch, seed);
+    h_freq.resize(total_half * batch);
+    h_roundtrip.resize(total_real * batch);
+
+    in_mem.allocate(total_real * batch * sizeof(flagfftReal));
+    freq_mem.allocate(total_half * batch * sizeof(flagfftComplex));
+    out_mem.allocate(total_real * batch * sizeof(flagfftReal));
+    d_in = static_cast<flagfftReal*>(in_mem.data());
+    d_freq = static_cast<flagfftComplex*>(freq_mem.data());
+    d_out = static_cast<flagfftReal*>(out_mem.data());
+    in_mem.copy_from_host(h_in.data(), total_real * batch * sizeof(flagfftReal));
+  }
+
+  void TearDown() override {
+    if (fwd_plan) flagfftDestroy(fwd_plan);
+    if (inv_plan) flagfftDestroy(inv_plan);
+  }
+
+  int n0 = 0, n1 = 0, n2 = 0, batch = 0;
+  int total_real = 0, total_half = 0;
+  flagfftHandle fwd_plan = nullptr;
+  flagfftHandle inv_plan = nullptr;
+  std::vector<flagfftReal> h_in, h_roundtrip;
+  std::vector<flagfftComplex> h_freq;
+  flagfft::adaptor::Memory in_mem, freq_mem, out_mem;
+  flagfftReal* d_in = nullptr;
+  flagfftComplex* d_freq = nullptr;
+  flagfftReal* d_out = nullptr;
+};
+
+TEST_P(R2CC2RRoundtrip3D, ForwardInverse) {
+  if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+
+  flagfft_test::ExecR2C(fwd_plan, d_in, d_freq);
+  freq_mem.copy_to_host(h_freq.data(), total_half * batch * sizeof(flagfftComplex));
+
+  freq_mem.copy_from_host(h_freq.data(), total_half * batch * sizeof(flagfftComplex));
+  flagfft_test::ExecC2R(inv_plan, d_freq, d_out);
+  out_mem.copy_to_host(h_roundtrip.data(), total_real * batch * sizeof(flagfftReal));
+
+  const int transform_size = total_real;
+  std::vector<flagfftReal> h_expected(total_real * batch);
+  for (int i = 0; i < total_real * batch; ++i) {
+    h_expected[i] = h_in[i] * transform_size;
+  }
+
+  flagfft_test::ErrorStats stats =
+      flagfft_test::error_stats(h_roundtrip.data(), h_expected.data(), total_real, batch);
+  flagfft_test::expect_roundtrip_accuracy(stats, FLAGFFT_R2C, FLAGFFT_C2R, total_real, batch);
+}
+
+INSTANTIATE_TEST_SUITE_P(All, R2CC2RRoundtrip3D, ::testing::ValuesIn(Filter3DParams(All3DParams())));
+
+// =========================================================================
+// D2Z + Z2D roundtrip 3D tests
+// =========================================================================
+
+class D2ZZ2DRoundtrip3D : public ::testing::TestWithParam<Test3DParam> {
+ protected:
+  void SetUp() override {
+    if (flagfft_test::should_skip_api("d2z")) GTEST_SKIP() << "filtered by --api";
+    if (!HasUsableDevice()) return;
+    n0 = GetParam().n0;
+    n1 = GetParam().n1;
+    n2 = GetParam().n2;
+    batch = GetParam().batch;
+    total_real = n0 * n1 * n2;
+    total_half = n0 * n1 * (n2 / 2 + 1);
+
+    flagfft_test::PlanMany3d(&fwd_plan, n0, n1, n2, FLAGFFT_D2Z, batch);
+    flagfft_test::PlanMany3d(&inv_plan, n0, n1, n2, FLAGFFT_Z2D, batch);
+
+    std::uint64_t seed = flagfft_test::accuracy_seed(FLAGFFT_D2Z, total_real, batch);
+    h_in = flagfft_test::random_double_real(total_real * batch, seed);
+    h_freq.resize(total_half * batch);
+    h_roundtrip.resize(total_real * batch);
+
+    in_mem.allocate(total_real * batch * sizeof(flagfftDoubleReal));
+    freq_mem.allocate(total_half * batch * sizeof(flagfftDoubleComplex));
+    out_mem.allocate(total_real * batch * sizeof(flagfftDoubleReal));
+    d_in = static_cast<flagfftDoubleReal*>(in_mem.data());
+    d_freq = static_cast<flagfftDoubleComplex*>(freq_mem.data());
+    d_out = static_cast<flagfftDoubleReal*>(out_mem.data());
+    in_mem.copy_from_host(h_in.data(), total_real * batch * sizeof(flagfftDoubleReal));
+  }
+
+  void TearDown() override {
+    if (fwd_plan) flagfftDestroy(fwd_plan);
+    if (inv_plan) flagfftDestroy(inv_plan);
+  }
+
+  int n0 = 0, n1 = 0, n2 = 0, batch = 0;
+  int total_real = 0, total_half = 0;
+  flagfftHandle fwd_plan = nullptr;
+  flagfftHandle inv_plan = nullptr;
+  std::vector<flagfftDoubleReal> h_in, h_roundtrip;
+  std::vector<flagfftDoubleComplex> h_freq;
+  flagfft::adaptor::Memory in_mem, freq_mem, out_mem;
+  flagfftDoubleReal* d_in = nullptr;
+  flagfftDoubleComplex* d_freq = nullptr;
+  flagfftDoubleReal* d_out = nullptr;
+};
+
+TEST_P(D2ZZ2DRoundtrip3D, ForwardInverse) {
+  if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+
+  flagfft_test::ExecD2Z(fwd_plan, d_in, d_freq);
+  freq_mem.copy_to_host(h_freq.data(), total_half * batch * sizeof(flagfftDoubleComplex));
+
+  freq_mem.copy_from_host(h_freq.data(), total_half * batch * sizeof(flagfftDoubleComplex));
+  flagfft_test::ExecZ2D(inv_plan, d_freq, d_out);
+  out_mem.copy_to_host(h_roundtrip.data(), total_real * batch * sizeof(flagfftDoubleReal));
+
+  const int transform_size = total_real;
+  std::vector<flagfftDoubleReal> h_expected(total_real * batch);
+  for (int i = 0; i < total_real * batch; ++i) {
+    h_expected[i] = h_in[i] * transform_size;
+  }
+
+  flagfft_test::ErrorStats stats =
+      flagfft_test::error_stats(h_roundtrip.data(), h_expected.data(), total_real, batch);
+  flagfft_test::expect_roundtrip_accuracy(stats, FLAGFFT_D2Z, FLAGFFT_Z2D, total_real, batch);
+}
+
+INSTANTIATE_TEST_SUITE_P(All, D2ZZ2DRoundtrip3D, ::testing::ValuesIn(Filter3DParams(All3DParams())));
 
 }  // namespace
