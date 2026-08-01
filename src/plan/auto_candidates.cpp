@@ -20,6 +20,11 @@ namespace flagfft {
 namespace {
 
   constexpr int64_t kBluesteinConvolutionSearchWindow = 4096;
+  // vkFFT fixMaxRaderPrimeFFT: primes beyond this use Bluestein, not Rader.
+  constexpr int64_t kMaxRaderPrime = 16384;
+  // vkFFT fixMaxRadixBluestein=2 (CUDA default): pad Bluestein convolution to a
+  // power of two for fp32 while the padded length stays at or below 1M.
+  constexpr int64_t kBluesteinPow2ConvMaxLength = 1048576;
   constexpr int64_t kThreadLocalCrossRadix = 32;
   constexpr int64_t kThreadLocalColLength = 1024;
   const std::vector<int64_t> kThreadLocalRegisterRadices = {18, 20, 24, 25, 27, 28, 30, 32};
@@ -53,6 +58,13 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
     return 1;
   }
   int64_t power = ceil_power_of_two(minimum);
+  const RequestContext &context = request_context();
+  const bool is_fp32 = context.input_dtype == "complex64" || context.input_dtype == "float32";
+  if (is_fp32 && power <= kBluesteinPow2ConvMaxLength) {
+    // fp32 four-step kernels are measurably faster for power-of-two convolution
+    // lengths; this mirrors vkFFT's CUDA default padding to a 2-smooth sequence.
+    return power;
+  }
   std::vector<int64_t> candidates;
   auto add_supported_candidate = [&](int64_t candidate) {
     if (std::find(candidates.begin(), candidates.end(), candidate) != candidates.end()) {
@@ -176,7 +188,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
     const double bluestein_candidate_cost = bluestein_cost(n, bluestein->conv_length);
     candidates.push_back({node, bluestein_candidate_cost, priority(node)});
-    if (is_prime_length(n)) {
+    if (is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);
       const Factorization rader_factorization = factorize_supported_radices(n - 1);
