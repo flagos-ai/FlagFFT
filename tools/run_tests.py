@@ -184,6 +184,8 @@ def expand_test_cases(
     cases = []
     for op in ops:
         for algo in op["algorithms"]:
+            if combination in ("ct", "bs") and algo != combination:
+                continue
             # Skip if algorithm doesn't match combination
             if combination in ("ct", "bs") and algo in ("2d", "3d"):
                 continue

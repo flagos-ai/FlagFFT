@@ -59,15 +59,15 @@ sizes_ct:
   - 1001385    # 3^2 * 5 * 7 * 11 * 17^2
   - 1048576    # 2^20
 
-# Bluestein/Rader 素数和复合数
-# 小素数走 Rader（n-1 可分解），>16384 的素数走 Bluestein
+# 1D 素数路径：小规模 DirectDFT、中规模融合 Bluestein、大规模 Four-Step Bluestein
+# 规模覆盖算法边界、卷积分解边界以及接近百万点的超大素数
 sizes_bs:
   - 23        # DirectDFT
-  - 67        # Rader
-  - 997       # Bluestein（996 不可分解）
-  - 1009      # Rader
-  - 8191      # Rader（Mersenne，8190=2*3^2*5*7*13）
-  - 16381     # Rader 上限边界（16380=2^2*3^2*5*7*13）
+  - 67        # DirectDFT 上界附近
+  - 997       # 单 kernel Bluestein
+  - 1009      # 单 kernel Bluestein 跨界
+  - 8191      # Four-Step Bluestein
+  - 16381     # Four-Step Bluestein 中规模边界
   - 65537     # 大规模素数（Fermat），Bluestein conv=2^18
   - 104729    # 大规模素数，Bluestein conv=2^18
   - 524287    # 大规模素数（Mersenne），Bluestein conv=2^20
