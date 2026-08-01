@@ -132,14 +132,6 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     candidates.push_back({node, estimate_direct_dft_cost(n), priority(node)});
   }
 
-  if (n == 16384 && should_use_leaf(64, std::vector<int64_t> {4, 4, 4}) &&
-      should_use_leaf(256, std::vector<int64_t> {4, 8, 8})) {
-    PlanNodePtr row = make_leaf_plan(64, std::vector<int64_t> {4, 4, 4});
-    PlanNodePtr col = make_leaf_plan(256, std::vector<int64_t> {4, 8, 8});
-    PlanNodePtr node = std::make_shared<FourStepPlanNode>(n, 64, 256, row, col);
-    candidates.push_back({node, four_step_cost(64, 256) * 0.5, priority(node)});
-  }
-
   const RequestContext &context = request_context();
   if (context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
       n % kThreadLocalColLength == 0) {
