@@ -166,6 +166,15 @@ Memory Memory::from_doubles(const std::vector<double> &values) {
   return allocation;
 }
 
+void copy_device_to_device(DevicePtr destination, DevicePtr source, std::size_t bytes, StreamHandle stream) {
+  if (bytes == 0) {
+    return;
+  }
+  ensure_current_context();
+  check(cuMemcpyDtoDAsync(as_device_ptr(destination), as_device_ptr(source), bytes, as_stream(stream)),
+        "cuMemcpyDtoDAsync");
+}
+
 Stream::Stream() {
   ensure_current_context();
   CUstream stream = nullptr;

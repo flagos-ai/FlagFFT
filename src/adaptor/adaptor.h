@@ -86,6 +86,7 @@ class EventTimer {
   void *start_ = nullptr;
   void *stop_ = nullptr;
 };
+void copy_device_to_device(DevicePtr destination, DevicePtr source, std::size_t bytes, StreamHandle stream);
 
 flagfftResult ensure_device(int &device_index, std::string &device_arch);
 int device_count();

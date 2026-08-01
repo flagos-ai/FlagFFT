@@ -83,6 +83,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     DeviceAllocation work_buf =
         adaptor::Memory(static_cast<std::size_t>(batch * conv_length * element_bytes));
     DeviceAllocation b_fft_buf = adaptor::Memory(static_cast<std::size_t>(conv_length * element_bytes));
+    DeviceAllocation input_copy =
+        adaptor::Memory(static_cast<std::size_t>(batch * rader->prime * element_bytes));
     return std::make_shared<CompiledRawRaderNode>(
         rader->prime,
         conv_length,
@@ -94,7 +96,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::move(b_time),
         std::move(a_buf),
         std::move(work_buf),
-        std::move(b_fft_buf));
+        std::move(b_fft_buf),
+        std::move(input_copy));
   }
   if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     return compile_raw_2d_node(two_dim, request, batch);
@@ -458,11 +461,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_tiled_transpose_kernel(const 
   return compile_kernel(key);
 }
 
-std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(const FFTRequest &request,
-                                                                      int64_t n0,
-                                                                      int64_t n1,
-                                                                      int64_t n2,
-                                                                      const std::string &order) {
+std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
+    const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::transpose3d(target, request.input_dtype, n0, n1, n2, order);
   return compile_kernel(key);
@@ -637,8 +637,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
 
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));
   DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));
-  DeviceAllocation full_buf =
-      adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+  DeviceAllocation full_buf = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
 
   return std::make_shared<CompiledRaw3DC2RNode>(n0,
                                                 n1,

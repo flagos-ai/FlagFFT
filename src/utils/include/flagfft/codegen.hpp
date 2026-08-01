@@ -187,7 +187,8 @@ struct CompiledRawRaderNode final : CompiledRawNode {
                        DeviceAllocation b_time,
                        DeviceAllocation a_buf,
                        DeviceAllocation work_buf,
-                       DeviceAllocation b_fft_buf);
+                       DeviceAllocation b_fft_buf,
+                       DeviceAllocation input_copy);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -205,6 +206,7 @@ struct CompiledRawRaderNode final : CompiledRawNode {
   DeviceAllocation a_buf;
   DeviceAllocation work_buf;
   mutable DeviceAllocation b_fft_buf;
+  DeviceAllocation input_copy;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
 };
@@ -699,11 +701,8 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_tiled_transpose_kernel(const FFTRequest &request,
                                                             int64_t n0,
                                                             int64_t n1);
-  std::shared_ptr<JitKernel> compile_transpose3d_kernel(const FFTRequest &request,
-                                                        int64_t n0,
-                                                        int64_t n1,
-                                                        int64_t n2,
-                                                        const std::string &order);
+  std::shared_ptr<JitKernel> compile_transpose3d_kernel(
+      const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order);
   std::shared_ptr<JitKernel> compile_kernel(const KernelKey &key) const;
   std::filesystem::path out_dir() const;
   std::string python_executable() const;
