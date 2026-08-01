@@ -945,11 +945,13 @@ def main() -> int:
         "flagfft_median_ms",
         "cufft_median_ms",
         "speedup",
+        "written_at",
     ]
 
     def _inc_row(msg):
         r = msg.get("result", {})
         return {
+            "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             "phase": msg.get("phase"),
             "op_id": msg.get("op_id"),
             "algo": msg.get("algo"),
