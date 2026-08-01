@@ -36,13 +36,14 @@ from .kernels import (
     _build_real_to_complex_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose_kernel_source,
+    _build_tiled_transpose3d_kernel_source,
     _build_twiddle_reshape_pack_kernel_source,
     contiguous_batch_pack_for,
     cooperative_stage_lanes_for,
     four_step_col_inner_pack_for,
     four_step_row_inner_pack_for,
     lane_block_for,
-    use_tle_fused_twiddle,
+    use_four_step_row_fused_twiddle,
 )
 
 _BLUESTEIN_BLOCK = 256
@@ -128,29 +129,29 @@ def _metadata(
         else 1
     )
     stage_lanes = cooperative_stage_lanes_for(plan)
-    tle_fused_twiddle = kernel_type.startswith("four_step_") and use_tle_fused_twiddle(
-        n1, n2, dtype
-    )
+    tle_fused_twiddle = kernel_type.startswith(
+        "four_step_"
+    ) and use_four_step_row_fused_twiddle(n1, n2, dtype)
     if kernel_type in {
         "four_step_row",
         "four_step_real_row",
         "four_step_hermitian_row",
     }:
-        inner_pack = four_step_row_inner_pack_for(n1, n2, dtype)
+        inner_pack = four_step_row_inner_pack_for(n1, n2, dtype, plan)
     elif kernel_type in {
         "four_step_col",
         "four_step_r2c_col",
         "four_step_c2r_col",
     }:
-        inner_pack = four_step_col_inner_pack_for(n1, n2, dtype)
+        inner_pack = four_step_col_inner_pack_for(n1, n2, dtype, plan)
     else:
         inner_pack = 1
     num_warps = int(plan.num_warps)
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
-    if any(lanes != plan.lanes for lanes in stage_lanes):
+    work_pack = max(batch_per_block, inner_pack)
+    if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):
         cooperative_warps = 1
-        work_pack = max(batch_per_block, inner_pack)
         required_warps = (lane_block_for(max(stage_lanes)) * work_pack + 31) // 32
         while cooperative_warps < required_warps and cooperative_warps < 8:
             cooperative_warps *= 2
@@ -771,6 +772,42 @@ def _emit_tiled_transpose_jit_kernel(
     return metadata
 
 
+def _emit_tiled_transpose3d_jit_kernel(
+    *,
+    n0: int,
+    n1: int,
+    n2: int,
+    order: str,
+    dtype: str = "complex64",
+    out_dir: Path,
+) -> dict[str, Any]:
+    kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
+        n0, n1, n2, order, dtype
+    )
+    suffix = _dtype_suffix(dtype)
+    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{module_name}.py"
+    module_path.write_text(_module_source(kernel_source))
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": kernel_name,
+        "signature": _signature(arg_names, dtype),
+        "num_warps": 4,
+        "num_stages": 1,
+        "batch_per_block": 1,
+        "arg_names": arg_names,
+        "kernel_type": "transpose3d",
+        "dtype": dtype,
+        "transpose3d_n0": int(n0),
+        "transpose3d_n1": int(n1),
+        "transpose3d_n2": int(n2),
+        "transpose3d_order": order,
+    }
+    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate FlagFFT libtriton_jit kernel sources"
@@ -797,6 +834,7 @@ def main() -> None:
             "reshape_pack",
             "twiddle_reshape_pack",
             "tiled_transpose",
+            "transpose3d",
             "real_to_complex",
             "r2c_half_pack",
             "compact_to_hermitian_full",
@@ -824,6 +862,12 @@ def main() -> None:
     parser.add_argument("--rader-m", type=int)
     parser.add_argument("--reshape-n1", type=int, default=0)
     parser.add_argument("--reshape-n2", type=int, default=0)
+    parser.add_argument("--transpose3d-n0", type=int, default=0)
+    parser.add_argument("--transpose3d-n1", type=int, default=0)
+    parser.add_argument("--transpose3d-n2", type=int, default=0)
+    parser.add_argument(
+        "--transpose3d-order", choices=("021", "210", "201", "120")
+    )
     parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -881,6 +925,28 @@ def main() -> None:
             n1=args.reshape_n2,
             dtype=args.dtype,
             tile_size=args.tile_size,
+            out_dir=args.out_dir,
+        )
+        print(json.dumps(metadata, sort_keys=True))
+        return
+
+    if args.kernel == "transpose3d":
+        if (
+            args.transpose3d_n0 <= 0
+            or args.transpose3d_n1 <= 0
+            or args.transpose3d_n2 <= 0
+            or args.transpose3d_order is None
+        ):
+            parser.error(
+                "--kernel transpose3d requires --transpose3d-n0, --transpose3d-n1, "
+                "--transpose3d-n2 and --transpose3d-order"
+            )
+        metadata = _emit_tiled_transpose3d_jit_kernel(
+            n0=args.transpose3d_n0,
+            n1=args.transpose3d_n1,
+            n2=args.transpose3d_n2,
+            order=args.transpose3d_order,
+            dtype=args.dtype,
             out_dir=args.out_dir,
         )
         print(json.dumps(metadata, sort_keys=True))

@@ -110,6 +110,8 @@ std::string plan_node_kind_name(PlanNodeKind kind) {
       return "rader";
     case PlanNodeKind::TwoDim:
       return "two_dim";
+    case PlanNodeKind::ThreeDim:
+      return "three_dim";
   }
   return "unknown";
 }
@@ -166,6 +168,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "complex_to_real";
     case KernelKind::TiledTranspose:
       return "tiled_transpose";
+    case KernelKind::Transpose3D:
+      return "transpose3d";
   }
   return "unknown";
 }

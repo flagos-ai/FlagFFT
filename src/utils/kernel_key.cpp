@@ -356,6 +356,23 @@ KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int6
   return key;
 }
 
+KernelKey KernelKey::transpose3d(std::string target,
+                                 std::string dtype,
+                                 int64_t n0,
+                                 int64_t n1,
+                                 int64_t n2,
+                                 std::string order) {
+  KernelKey key;
+  key.kind = KernelKind::Transpose3D;
+  key.target = std::move(target);
+  key.dtype = std::move(dtype);
+  key.transpose3d_n0 = n0;
+  key.transpose3d_n1 = n1;
+  key.transpose3d_n2 = n2;
+  key.transpose3d_order = std::move(order);
+  return key;
+}
+
 KernelKey KernelKey::real_to_complex(std::string target, std::string dtype, int64_t length) {
   KernelKey key;
   key.kind = KernelKind::RealToComplex;
@@ -399,7 +416,9 @@ bool KernelKey::operator==(const KernelKey &other) const {
          smem_size == other.smem_size && four_step_n1 == other.four_step_n1 &&
          four_step_n2 == other.four_step_n2 && bluestein_n == other.bluestein_n &&
          bluestein_m == other.bluestein_m && rader_n == other.rader_n && rader_m == other.rader_m &&
-         reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2;
+         reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2 &&
+         transpose3d_n0 == other.transpose3d_n0 && transpose3d_n1 == other.transpose3d_n1 &&
+         transpose3d_n2 == other.transpose3d_n2 && transpose3d_order == other.transpose3d_order;
 }
 
 std::string KernelKey::repr() const {
@@ -432,6 +451,10 @@ std::string KernelKey::repr() const {
   if (kind == KernelKind::ReshapePack || kind == KernelKind::TwiddleReshapePack) {
     out << ";reshape_n1=" << reshape_n1 << ";reshape_n2=" << reshape_n2;
   }
+  if (kind == KernelKind::Transpose3D) {
+    out << ";transpose3d_n0=" << transpose3d_n0 << ";transpose3d_n1=" << transpose3d_n1
+        << ";transpose3d_n2=" << transpose3d_n2 << ";order=" << transpose3d_order;
+  }
   if (kind == KernelKind::RealToComplex || kind == KernelKind::R2CHalfPack ||
       kind == KernelKind::CompactToHermitianFull || kind == KernelKind::ComplexToReal) {
     out << ";length=" << length;
@@ -459,6 +482,10 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.rader_m);
   hash_value(seed, key.reshape_n1);
   hash_value(seed, key.reshape_n2);
+  hash_value(seed, key.transpose3d_n0);
+  hash_value(seed, key.transpose3d_n1);
+  hash_value(seed, key.transpose3d_n2);
+  hash_value(seed, key.transpose3d_order);
   return seed;
 }
 

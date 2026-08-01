@@ -65,6 +65,8 @@ struct JitKernel {
   int64_t num_warps = 1;
   int64_t num_stages = 1;
   int64_t batch_per_block = 1;
+  int64_t inner_pack = 1;
+  bool tle_fused_twiddle = false;
   void *jit_function = nullptr;
   std::mutex mutex;
 };
@@ -501,6 +503,114 @@ struct CompiledRaw2DC2RNode final : CompiledRawNode {
   DeviceAllocation temp3;
 };
 
+struct CompiledRaw3DNode final : CompiledRawNode {
+  CompiledRaw3DNode(int64_t n0,
+                    int64_t n1,
+                    int64_t n2,
+                    std::shared_ptr<CompiledRawNode> n2_fft,
+                    std::shared_ptr<CompiledRawNode> n1_fft,
+                    std::shared_ptr<CompiledRawNode> n0_fft,
+                    std::shared_ptr<JitKernel> perm_021_fwd,
+                    std::shared_ptr<JitKernel> perm_210_fwd,
+                    std::shared_ptr<JitKernel> perm_201_fwd,
+                    std::shared_ptr<JitKernel> perm_120_inv,
+                    std::shared_ptr<JitKernel> perm_210_inv,
+                    std::shared_ptr<JitKernel> perm_021_inv,
+                    DeviceAllocation temp1,
+                    DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<CompiledRawNode> n2_fft;
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<JitKernel> perm_021_fwd;
+  std::shared_ptr<JitKernel> perm_210_fwd;
+  std::shared_ptr<JitKernel> perm_201_fwd;
+  std::shared_ptr<JitKernel> perm_120_inv;
+  std::shared_ptr<JitKernel> perm_210_inv;
+  std::shared_ptr<JitKernel> perm_021_inv;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
+struct CompiledRaw3DR2CNode final : CompiledRawNode {
+  CompiledRaw3DR2CNode(int64_t n0,
+                       int64_t n1,
+                       int64_t n2,
+                       std::shared_ptr<JitKernel> expand_kernel,
+                       std::shared_ptr<CompiledRawNode> n2_fft,
+                       std::shared_ptr<JitKernel> pack_kernel,
+                       std::shared_ptr<CompiledRawNode> n1_fft,
+                       std::shared_ptr<CompiledRawNode> n0_fft,
+                       std::shared_ptr<JitKernel> perm_021,
+                       std::shared_ptr<JitKernel> perm_210,
+                       std::shared_ptr<JitKernel> perm_201,
+                       DeviceAllocation row_fft_buf,
+                       DeviceAllocation temp1,
+                       DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<JitKernel> expand_kernel;
+  std::shared_ptr<CompiledRawNode> n2_fft;
+  std::shared_ptr<JitKernel> pack_kernel;
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_201;
+  DeviceAllocation row_fft_buf;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
+struct CompiledRaw3DC2RNode final : CompiledRawNode {
+  CompiledRaw3DC2RNode(int64_t n0,
+                       int64_t n1,
+                       int64_t n2,
+                       std::shared_ptr<JitKernel> perm_120,
+                       std::shared_ptr<JitKernel> perm_210,
+                       std::shared_ptr<JitKernel> perm_021,
+                       std::shared_ptr<CompiledRawNode> n0_fft,
+                       std::shared_ptr<CompiledRawNode> n1_fft,
+                       std::shared_ptr<JitKernel> expand_kernel,
+                       std::shared_ptr<CompiledRawNode> n2_fft,
+                       std::shared_ptr<JitKernel> pack_kernel,
+                       DeviceAllocation temp1,
+                       DeviceAllocation temp2,
+                       DeviceAllocation full_buf);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<JitKernel> perm_120;
+  std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<JitKernel> expand_kernel;
+  std::shared_ptr<CompiledRawNode> n2_fft;
+  std::shared_ptr<JitKernel> pack_kernel;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+  DeviceAllocation full_buf;
+};
+
 class TritonCompiler {
  public:
   std::shared_ptr<CompiledRawNode> compile_raw_node(const PlanNodePtr &node,
@@ -519,6 +629,15 @@ class TritonCompiler {
                                                            const FFTRequest &request,
                                                            int64_t batch);
   std::shared_ptr<CompiledRawNode> compile_raw_2d_c2r_node(const std::shared_ptr<TwoDimPlanNode> &node,
+                                                           const FFTRequest &request,
+                                                           int64_t batch);
+  std::shared_ptr<CompiledRaw3DNode> compile_raw_3d_node(const std::shared_ptr<ThreeDimPlanNode> &node,
+                                                         const FFTRequest &request,
+                                                         int64_t batch);
+  std::shared_ptr<CompiledRawNode> compile_raw_3d_r2c_node(const std::shared_ptr<ThreeDimPlanNode> &node,
+                                                           const FFTRequest &request,
+                                                           int64_t batch);
+  std::shared_ptr<CompiledRawNode> compile_raw_3d_c2r_node(const std::shared_ptr<ThreeDimPlanNode> &node,
                                                            const FFTRequest &request,
                                                            int64_t batch);
   static void clear_kernel_cache();
@@ -580,6 +699,11 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_tiled_transpose_kernel(const FFTRequest &request,
                                                             int64_t n0,
                                                             int64_t n1);
+  std::shared_ptr<JitKernel> compile_transpose3d_kernel(const FFTRequest &request,
+                                                        int64_t n0,
+                                                        int64_t n1,
+                                                        int64_t n2,
+                                                        const std::string &order);
   std::shared_ptr<JitKernel> compile_kernel(const KernelKey &key) const;
   std::filesystem::path out_dir() const;
   std::string python_executable() const;

@@ -89,6 +89,29 @@ namespace {
     return std::stoll(json.substr(pos, end - pos));
   }
 
+  bool json_bool_field(const std::string &json, const std::string &field) {
+    const std::string key = "\"" + field + "\"";
+    std::size_t pos = json.find(key);
+    if (pos == std::string::npos) {
+      throw std::runtime_error("missing JSON field: " + field);
+    }
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) {
+      throw std::runtime_error("invalid JSON boolean field: " + field);
+    }
+    ++pos;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) {
+      ++pos;
+    }
+    if (json.compare(pos, 4, "true") == 0) {
+      return true;
+    }
+    if (json.compare(pos, 5, "false") == 0) {
+      return false;
+    }
+    throw std::runtime_error("invalid JSON boolean field: " + field);
+  }
+
   struct KernelCacheState {
     std::mutex mutex;
     std::unordered_map<KernelKey, std::shared_ptr<JitKernel>, KernelKeyHash> cache;
@@ -187,6 +210,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::TiledTranspose:
       kernel_kind = "tiled_transpose";
       break;
+    case KernelKind::Transpose3D:
+      kernel_kind = "transpose3d";
+      break;
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
@@ -223,6 +249,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::TiledTranspose) {
     jit_command << " --reshape-n1 " << key.reshape_n1 << " --reshape-n2 " << key.reshape_n2;
   }
+  if (key.kind == KernelKind::Transpose3D) {
+    jit_command << " --transpose3d-n0 " << key.transpose3d_n0 << " --transpose3d-n1 " << key.transpose3d_n1
+                << " --transpose3d-n2 " << key.transpose3d_n2 << " --transpose3d-order "
+                << shell_quote(key.transpose3d_order);
+  }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     jit_command << " --length " << key.length;
@@ -236,6 +267,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
+  if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRealRow ||
+      key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
+      key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
+    kernel->inner_pack = json_int_field(artifact_json, "inner_pack");
+    kernel->tle_fused_twiddle = json_bool_field(artifact_json, "tle_fused_twiddle");
+  }
   kernel->compile();
 
   std::lock_guard<std::mutex> lock(state.mutex);

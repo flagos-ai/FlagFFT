@@ -50,9 +50,41 @@ int64_t mixed_radix_value(const std::vector<int64_t> &digits,
 
 namespace {
 
+  inline constexpr int64_t kCooperativeStageMinLength = 128;
+  inline constexpr int64_t kCooperativeStageMaxLength = 4096;
+  inline constexpr int64_t kCooperativeStageMaxBaseLanes = 32;
+
   bool use_cooperative_stage_lanes(const LeafPlanNode &leaf, const FFTRequest &request) {
-    return request.input_dtype == "complex64" && leaf.length >= 512 && leaf.length <= 2048 &&
-           leaf.factors.size() >= 3 && leaf.lanes < 8;
+    const bool fixed_lanes_are_compatible =
+        std::all_of(leaf.factors.begin(), leaf.factors.end(), [&](int64_t radix) {
+          return (leaf.length / radix) % leaf.lanes == 0;
+        });
+    if (leaf.length < kCooperativeStageMinLength || leaf.length > kCooperativeStageMaxLength ||
+        leaf.factors.size() < 2 ||
+        (leaf.lanes > kCooperativeStageMaxBaseLanes && fixed_lanes_are_compatible)) {
+      return false;
+    }
+    const bool is_double = request.input_dtype == "complex128" || request.input_dtype == "float64";
+    if (is_double || !fixed_lanes_are_compatible) {
+      return true;
+    }
+
+    int64_t min_stage_lanes = kMaxLanes;
+    int64_t max_stage_lanes = 1;
+    for (int64_t radix : leaf.factors) {
+      const int64_t codelets = leaf.length / radix;
+      const int64_t upper = std::min(codelets, kMaxLanes);
+      int64_t stage_lanes = 1;
+      for (int64_t candidate = upper; candidate > 0; --candidate) {
+        if (codelets % candidate == 0) {
+          stage_lanes = candidate;
+          break;
+        }
+      }
+      min_stage_lanes = std::min(min_stage_lanes, stage_lanes);
+      max_stage_lanes = std::max(max_stage_lanes, stage_lanes);
+    }
+    return min_stage_lanes * 4 >= max_stage_lanes;
   }
 
   int64_t cooperative_stage_lanes(int64_t n, int64_t radix) {
@@ -106,10 +138,18 @@ namespace {
     double sign = direction == "inverse" ? 1.0 : -1.0;
     for (int64_t k = 0; k < radix; ++k) {
       for (int64_t n = 0; n < radix; ++n) {
-        double angle = sign * 2.0 * kPi * static_cast<double>(k * n) / static_cast<double>(radix);
         std::size_t index = static_cast<std::size_t>(k * radix + n);
-        dft_r[index] = static_cast<Real>(std::cos(angle));
-        dft_i[index] = static_cast<Real>(std::sin(angle));
+        if constexpr (std::is_same_v<Real, double>) {
+          constexpr long double kPiLong = 3.141592653589793238462643383279502884L;
+          long double angle = static_cast<long double>(sign) * 2.0L * kPiLong *
+                              static_cast<long double>(k * n) / static_cast<long double>(radix);
+          dft_r[index] = static_cast<Real>(std::cos(angle));
+          dft_i[index] = static_cast<Real>(std::sin(angle));
+        } else {
+          double angle = sign * 2.0 * kPi * static_cast<double>(k * n) / static_cast<double>(radix);
+          dft_r[index] = static_cast<Real>(std::cos(angle));
+          dft_i[index] = static_cast<Real>(std::sin(angle));
+        }
       }
     }
     return {dft_r, dft_i};

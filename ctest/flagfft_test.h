@@ -85,6 +85,20 @@ inline void Plan3d(flagfftHandle* plan, int nx, int ny, int nz, flagfftType type
   }
 }
 
+inline void PlanMany3d(flagfftHandle* plan, int nx, int ny, int nz, flagfftType type, int batch = 1) {
+  int n[3] = {nx, ny, nz};
+  const bool real_forward = type == FLAGFFT_R2C || type == FLAGFFT_D2Z;
+  const bool real_inverse = type == FLAGFFT_C2R || type == FLAGFFT_Z2D;
+  const int half_nz = nz / 2 + 1;
+  const int idist = real_inverse ? nx * ny * half_nz : nx * ny * nz;
+  const int odist = real_forward ? nx * ny * half_nz : nx * ny * nz;
+  flagfftResult r = flagfftPlanMany(plan, 3, n, nullptr, 1, idist, nullptr, 1, odist, type, batch);
+  if (r != FLAGFFT_SUCCESS) {
+    FAIL() << "flagfftPlanMany(rank=3, nx=" << nx << ", ny=" << ny << ", nz=" << nz << ", type=" << type
+           << ", batch=" << batch << ") failed with code " << r;
+  }
+}
+
 // =========================================================================
 // Convenience Exec wrappers (assert success, otherwise GTEST_FAIL)
 // =========================================================================
@@ -677,6 +691,7 @@ inline std::vector<Test1DParam> Generate1DParamsBSAllSingle() {
 struct TestParams {
   int nx = 0;           // 0 = use default size arrays
   int ny = 0;           // 0 = use default size arrays
+  int nz = 0;           // 0 = use default size arrays (rank 3)
   int batch = 0;        // 0 = use default batch arrays
   int direction = 0;    // 0 = all directions (no filter), -1 = forward, 1 = inverse
   double scale = -1.0;  // -1 = use default scales

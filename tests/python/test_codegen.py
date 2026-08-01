@@ -122,6 +122,45 @@ def test_four_step_inner_pack_threshold(kernels) -> None:
     assert not kernels.use_tle_fused_twiddle(512, 2048)
 
 
+def test_four_step_resource_pack_uses_leaf_occupancy(kernels) -> None:
+    row_plan = kernels.LeafPlan(
+        length=459,
+        factors=(17, 3, 3, 3),
+        remainder=1,
+        lanes=9,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=512,
+        dtype="complex128",
+    )
+    col_plan = kernels.LeafPlan(
+        length=1040,
+        factors=(13, 10, 2, 2, 2),
+        remainder=1,
+        lanes=8,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=2048,
+        dtype="complex128",
+    )
+    large_plan = kernels.LeafPlan(
+        length=2375,
+        factors=(19, 5, 5, 5),
+        remainder=1,
+        lanes=25,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=4096,
+        dtype="complex128",
+    )
+
+    assert kernels.four_step_row_inner_pack_for(459, 1040, "complex128", row_plan) == 4
+    assert kernels.four_step_col_inner_pack_for(459, 1040, "complex128", col_plan) == 2
+    assert (
+        kernels.four_step_col_inner_pack_for(405, 2375, "complex128", large_plan) == 1
+    )
+
+
 def test_low_lane_three_stage_leaf_uses_cooperative_stage_lanes(kernels) -> None:
     plan = kernels.LeafPlan(
         length=780,
@@ -161,6 +200,39 @@ def test_low_lane_four_stage_leaf_uses_cooperative_stage_lanes(kernels) -> None:
     assert kernels.cooperative_stage_lanes_for(plan) == (63, 51, 119, 119)
 
 
+def test_imbalanced_stage_lanes_keep_fixed_layout(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=1573,
+        factors=(13, 11, 11),
+        remainder=1,
+        lanes=11,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=2048,
+        direction="forward",
+    )
+
+    assert kernels.cooperative_stage_lanes_for(plan) == (11, 11, 11)
+    assert kernels.four_step_col_inner_pack_for(544, 1573, "complex64", plan) == 1
+
+
+def test_double_imbalanced_stage_lanes_prefer_parallel_stages(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=1573,
+        factors=(13, 11, 11),
+        remainder=1,
+        lanes=11,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=2048,
+        direction="forward",
+        dtype="complex128",
+    )
+
+    assert kernels.cooperative_stage_lanes_for(plan) == (121, 13, 13)
+    assert kernels.four_step_col_inner_pack_for(544, 1573, "complex128", plan) == 2
+
+
 def test_large_odd_four_step_packs_rows_but_not_columns(kernels) -> None:
     row_plan = kernels.LeafPlan(
         length=495,
@@ -187,7 +259,7 @@ def test_large_odd_four_step_packs_rows_but_not_columns(kernels) -> None:
     _, col_source = kernels._build_four_step_col_kernel_source(col_plan, 495, 2023)
 
     assert "four_step_inner_base = tl.program_id(0) * 4" in row_source
-    assert "tl.arange(0, 16)" in row_source
+    assert "tl.arange(0, 256)" in row_source
     assert "(four_step_inner < 2023)" in row_source
     assert "four_step_inner = tl.program_id(0)" in col_source
     assert "four_step_inner_base" not in col_source
@@ -224,6 +296,27 @@ def test_large_four_step_generates_twiddle_in_row_pipeline(kernels) -> None:
     assert "tl.arange(0, 256)" in col_source
     assert col_source.count("tl.debug_barrier()") == 3
     assert "smem_a_r = tle.gpu.alloc" not in col_source
+
+
+def test_double_four_step_loads_twiddle_contiguously_in_row(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=459,
+        factors=(17, 3, 3, 3),
+        remainder=1,
+        lanes=9,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=512,
+        direction="forward",
+        dtype="complex128",
+    )
+
+    _, row_source = kernels._build_four_step_row_kernel_source(plan, 459, 1040)
+
+    assert kernels.use_four_step_row_fused_twiddle(459, 1040, "complex128")
+    assert "tw_r0 = tl.load(twiddle_ptr + dst_idx0 * 2" in row_source
+    assert "tw_i0 = tl.load(twiddle_ptr + dst_idx0 * 2 + 1" in row_source
+    assert "sin.approx.f32" not in row_source
 
 
 def test_rectangular_four_step_fused_twiddle_uses_fft_coordinates(kernels) -> None:
@@ -304,6 +397,200 @@ def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
     )
     assert metadata["inner_pack"] == 4
     assert metadata["num_warps"] == 4
+
+
+def test_packed_real_radix32_uses_factorized_codelet(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=1024,
+        factors=(32, 32),
+        remainder=1,
+        lanes=32,
+        num_warps=2,
+        generic_radices=(32,),
+        smem_size=1024,
+        direction="forward",
+    )
+
+    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_r2c_col",
+        four_step_n1=576,
+        four_step_n2=1024,
+    )
+
+    assert "thread_local" in kernel_name
+    assert "lane_vec = tl.arange(0, 128)" in source
+    assert source.count(") = _fwd_rad16_b1(") == 4
+    assert "tl.load(dft32_r_ptr" not in source
+    assert source.count("tl.debug_barrier()") == 1
+    assert "compact_mask0 = output_lane_mask &" in source
+    assert "four_step_batch * output_distance + dst_idx0" in source
+
+
+def test_real_row_thread_local_mixed_radix_uses_factorized_codelets(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=576,
+        factors=(18, 32),
+        remainder=1,
+        lanes=18,
+        num_warps=4,
+        generic_radices=(),
+        smem_size=576,
+        direction="forward",
+    )
+
+    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_real_row",
+        four_step_n1=576,
+        four_step_n2=1024,
+    )
+
+    assert "thread_local" in kernel_name
+    assert ") = _fwd_rad6_b1(" in source
+    assert ") = _fwd_rad3_b1(" in source
+    assert ") = _fwd_rad16_b1(" in source
+    assert "tl.load(dft18_r_ptr" not in source
+    assert "tl.load(dft32_r_ptr" not in source
+    assert "four_step_batch * input_distance + src_idx0" in source
+    assert "i0 = r0 * 0.0" in source
+    assert "outer_base_angle" in source
+
+
+def test_thread_local_inverse_real_modes_preserve_compact_io(kernels) -> None:
+    row_plan = kernels.LeafPlan(
+        length=640,
+        factors=(20, 32),
+        remainder=1,
+        lanes=20,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=1024,
+        direction="inverse",
+    )
+    col_plan = kernels.LeafPlan(
+        length=1024,
+        factors=(32, 32),
+        remainder=1,
+        lanes=32,
+        num_warps=2,
+        generic_radices=(32,),
+        smem_size=1024,
+        direction="inverse",
+    )
+
+    row_name, row_source = kernels._build_leaf_kernel_source_for_io(
+        row_plan,
+        io_mode="four_step_hermitian_row",
+        four_step_n1=640,
+        four_step_n2=1024,
+    )
+    col_name, col_source = kernels._build_leaf_kernel_source_for_io(
+        col_plan,
+        io_mode="four_step_c2r_col",
+        four_step_n1=640,
+        four_step_n2=1024,
+    )
+
+    assert "thread_local" in row_name
+    assert "thread_local" in col_name
+    assert "compact_idx0 = tl.where(src_idx0 < 327681" in row_source
+    assert "four_step_batch * input_distance + compact_idx0" in row_source
+    assert "i0 = tl.where(src_idx0 < 327681, i0, -i0)" in row_source
+    assert "outer_base_angle" in row_source
+    assert "four_step_batch * output_distance + dst_idx0" in col_source
+    assert "tl.store(out_ptr + output_offset0, r0" in col_source
+    assert "output_offset0) * 2" not in col_source
+
+
+def test_two_factor_cooperative_leaf_uses_per_stage_lane_counts(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=576,
+        factors=(18, 32),
+        remainder=1,
+        lanes=18,
+        num_warps=4,
+        generic_radices=(),
+        smem_size=576,
+        direction="forward",
+    )
+
+    assert kernels.cooperative_stage_lanes_for(plan) == (32, 18)
+
+    _, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_real_row",
+        four_step_n1=576,
+        four_step_n2=2048,
+    )
+    assert "base_lane_mask = lane_mask" in source
+    assert "lane_mask = base_lane_mask & (lane < 32)" in source
+    assert "lane_mask = base_lane_mask & (lane < 18)" in source
+
+
+def test_small_double_mixed_leaf_uses_cooperative_stage_lanes(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=323,
+        factors=(19, 17),
+        remainder=1,
+        lanes=1,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=512,
+        direction="forward",
+        dtype="complex128",
+    )
+
+    assert kernels.cooperative_stage_lanes_for(plan) == (17, 19)
+
+    _, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_row",
+        four_step_n1=323,
+        four_step_n2=330,
+    )
+    assert "four_step_inner_base = tl.program_id(0) * 4" in source
+    assert "lane_vec = tl.arange(0, 128)" in source
+    assert "lane_mask = base_lane_mask & (lane < 17)" in source
+    assert "lane_mask = base_lane_mask & (lane < 19)" in source
+
+
+def test_large_double_mixed_leaf_uses_cooperative_stage_lanes(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=2375,
+        factors=(19, 5, 5, 5),
+        remainder=1,
+        lanes=25,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=4096,
+        direction="forward",
+        dtype="complex128",
+    )
+
+    assert kernels.cooperative_stage_lanes_for(plan) == (125, 95, 95, 95)
+
+
+def test_table_codelet_accumulators_follow_register_shape(kernels) -> None:
+    source = "\n".join(kernels._emit_table_codelet("    ", 31, 32))
+
+    assert "acc_r_0 = tl.zeros_like(r0)" in source
+    assert "acc_i_0 = tl.zeros_like(i0)" in source
+    assert "acc_r_0 = tl.zeros((32,)" not in source
+
+
+def test_double_direct_dft_uses_compensated_accumulation(kernels) -> None:
+    _, double_source, _ = kernels._build_direct_dft_kernel_source(
+        23, "forward", "complex128"
+    )
+    _, float_source, _ = kernels._build_direct_dft_kernel_source(
+        23, "forward", "complex64"
+    )
+
+    assert "comp_r = tl.zeros((32,), dtype=tl.float64)" in double_source
+    assert "corrected_r = term_r - comp_r" in double_source
+    assert "comp_r = (next_r - acc_r) - corrected_r" in double_source
+    assert "comp_r =" not in float_source
 
 
 @pytest.mark.parametrize(

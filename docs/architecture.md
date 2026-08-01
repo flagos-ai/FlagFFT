@@ -44,8 +44,14 @@ Z2Z, R2C, D2Z, C2R, and Z2D plans. Real in-place operation uses padded rows;
 that verified padded rank-1 form is also supported through `PlanMany`.
 Contiguous row-major rank-2 C2C/Z2Z plans are supported through `Plan2d` and
 batched `PlanMany`; the current execution strategy is row FFT, tiled
-transpose, row FFT, tiled transpose back. Rank-2 real transforms, rank 3, and
-other custom layouts remain unsupported.
+transpose, row FFT, tiled transpose back. Rank-2 real transforms are also
+supported. Contiguous row-major rank-3 plans (all six types) are supported
+through `Plan3d` and batched `PlanMany` with an RTRT route: FFT along the
+innermost axis n2, 3D axis permutation, FFT along n1, permutation, FFT along
+n0, and a final permutation back to the natural (n0, n1, n2) layout. Real
+rank-3 forward transforms half-pack only the innermost axis and keep the
+remaining two axes complex. Custom strided/layouts beyond the supported forms
+remain unsupported.
 
 ## Raw Execution Nodes
 
@@ -61,6 +67,15 @@ Raw nodes mirror the existing plan tree:
 - `CompiledRaw2DNode` handles contiguous complex 2D plans with an RTRT route.
   This is the correctness baseline for future rocFFT-style `2D_SINGLE` and
   row-plus-block-column strategies.
+- `CompiledRaw3DNode` executes contiguous complex 3D plans: per-axis C2C leaf
+  chains (with Rader/Bluestein fallback per axis) interleaved with generic
+  tiled 3D axis-permutation kernels (`_tiled_transpose3d_kernel_{order}`,
+  orders 021/210/201/120). Forward and inverse directions each get a compiled
+  node with the permutation order baked in.
+- `CompiledRaw3DR2CNode` / `CompiledRaw3DC2RNode` handle 3D real transforms:
+  the innermost axis runs expand → C2C → half-pack (or the reverse on the way
+  back) while the two outer axes run plain C2C after the axis permutations,
+  producing or consuming the (n0, n1, n2/2+1) half-packed layout.
 
 ## CLI Tools
 

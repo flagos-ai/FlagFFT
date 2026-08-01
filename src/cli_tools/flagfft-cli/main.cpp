@@ -174,11 +174,8 @@ Args parse_args(int argc, char** argv) {
   }
 
   for (const auto& c : args.cases) {
-    if (c.rank == 2 && !is_complex_api(c.api)) {
-      throw AssertionFailure("rank 2 currently supports only c2c and z2z");
-    }
     if (c.rank > 2 && c.batch != 1) {
-      throw AssertionFailure("--batch is only supported with --rank 1 or complex --rank 2");
+      throw AssertionFailure("--batch is only supported with --rank 1 or --rank 2");
     }
     if (static_cast<int>(c.shape.size()) != c.rank) {
       throw AssertionFailure("--shape dimension count does not match --rank");
