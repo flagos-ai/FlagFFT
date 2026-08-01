@@ -89,6 +89,43 @@ std::vector<Test2DParam> Filter2DParams(std::vector<Test2DParam> defaults) {
   }
   return defaults;
 }
+std::vector<flagfftComplex> ValidC2RInput2D(int n0, int n1, int batch, std::uint64_t seed) {
+  const int total_real = n0 * n1;
+  const int total_half = n0 * (n1 / 2 + 1);
+  auto real_input = flagfft_test::random_real(total_real * batch, seed);
+  std::vector<flagfftComplex> spectrum(total_half * batch);
+  flagfft_test::RefPlanHandle plan;
+  flagfft_test::ref_plan_2d(plan, n0, n1, FLAGFFT_R2C);
+  flagfft::adaptor::Memory real_mem(total_real * sizeof(flagfftReal));
+  flagfft::adaptor::Memory spectrum_mem(total_half * sizeof(flagfftComplex));
+  for (int b = 0; b < batch; ++b) {
+    real_mem.copy_from_host(real_input.data() + b * total_real, total_real * sizeof(flagfftReal));
+    flagfft_test::ref_exec_r2c(plan,
+                               static_cast<flagfftReal*>(real_mem.data()),
+                               static_cast<flagfftComplex*>(spectrum_mem.data()));
+    spectrum_mem.copy_to_host(spectrum.data() + b * total_half, total_half * sizeof(flagfftComplex));
+  }
+  return spectrum;
+}
+
+std::vector<flagfftDoubleComplex> ValidZ2DInput2D(int n0, int n1, int batch, std::uint64_t seed) {
+  const int total_real = n0 * n1;
+  const int total_half = n0 * (n1 / 2 + 1);
+  auto real_input = flagfft_test::random_double_real(total_real * batch, seed);
+  std::vector<flagfftDoubleComplex> spectrum(total_half * batch);
+  flagfft_test::RefPlanHandle plan;
+  flagfft_test::ref_plan_2d(plan, n0, n1, FLAGFFT_D2Z);
+  flagfft::adaptor::Memory real_mem(total_real * sizeof(flagfftDoubleReal));
+  flagfft::adaptor::Memory spectrum_mem(total_half * sizeof(flagfftDoubleComplex));
+  for (int b = 0; b < batch; ++b) {
+    real_mem.copy_from_host(real_input.data() + b * total_real, total_real * sizeof(flagfftDoubleReal));
+    flagfft_test::ref_exec_d2z(plan,
+                               static_cast<flagfftDoubleReal*>(real_mem.data()),
+                               static_cast<flagfftDoubleComplex*>(spectrum_mem.data()));
+    spectrum_mem.copy_to_host(spectrum.data() + b * total_half, total_half * sizeof(flagfftDoubleComplex));
+  }
+  return spectrum;
+}
 
 // =========================================================================
 // C2C 2D tests
@@ -492,7 +529,7 @@ class C2R2D : public ::testing::TestWithParam<Test2DParam> {
     }
 
     std::uint64_t seed = flagfft_test::accuracy_seed(FLAGFFT_C2R, total_out, batch);
-    h_in = flagfft_test::random_complex(total_in * batch, seed);
+    h_in = ValidC2RInput2D(n0, n1, batch, seed);
     h_out.resize(total_out * batch);
 
     in_mem.allocate(total_in * batch * sizeof(flagfftComplex));
@@ -668,7 +705,7 @@ class Z2D2D : public ::testing::TestWithParam<Test2DParam> {
     }
 
     std::uint64_t seed = flagfft_test::accuracy_seed(FLAGFFT_Z2D, total_out, batch);
-    h_in = flagfft_test::random_double_complex(total_in * batch, seed);
+    h_in = ValidZ2DInput2D(n0, n1, batch, seed);
     h_out.resize(total_out * batch);
 
     in_mem.allocate(total_in * batch * sizeof(flagfftDoubleComplex));

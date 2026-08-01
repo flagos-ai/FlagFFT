@@ -55,6 +55,15 @@ namespace {
 
   // Must match the BLOCK baked into kernels.py:_build_tiled_transpose3d_kernel_source.
   constexpr int64_t kPerm3dBlock = 1024;
+  constexpr int64_t kMaxGridY = 65535;
+
+  template <typename Launch>
+  void launch_grid_y_chunks(int64_t rows, Launch &&launch) {
+    for (int64_t offset = 0; offset < rows; offset += kMaxGridY) {
+      const int64_t chunk = std::min(kMaxGridY, rows - offset);
+      launch(offset, chunk);
+    }
+  }
 
   void launch_perm3d(const std::shared_ptr<JitKernel> &kernel,
                      adaptor::StreamHandle stream,
@@ -520,7 +529,8 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
                                            DeviceAllocation b_time,
                                            DeviceAllocation a_buf,
                                            DeviceAllocation work_buf,
-                                           DeviceAllocation b_fft_buf)
+                                           DeviceAllocation b_fft_buf,
+                                           DeviceAllocation input_copy)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
@@ -531,7 +541,8 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
       b_time(std::move(b_time)),
       a_buf(std::move(a_buf)),
       work_buf(std::move(work_buf)),
-      b_fft_buf(std::move(b_fft_buf)) {
+      b_fft_buf(std::move(b_fft_buf)),
+      input_copy(std::move(input_copy)) {
 }
 
 std::string CompiledRawRaderNode::describe() const {
@@ -562,9 +573,14 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
                                             const RawExecutionContext &context) const {
   try {
     ensure_b_fft(context);
+    adaptor::DevicePtr effective_input = input;
+    if (input == output) {
+      adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);
+      effective_input = input_copy.get();
+    }
 
     std::vector<JitKernelArg> prepare_args = {
-        JitKernelArg::device(input),
+        JitKernelArg::device(effective_input),
         JitKernelArg::device(idx.get()),
         JitKernelArg::device(a_buf.get()),
         JitKernelArg::i64(length),
@@ -594,7 +610,7 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
     }
 
     std::vector<JitKernelArg> finalize_args = {
-        JitKernelArg::device(input),
+        JitKernelArg::device(effective_input),
         JitKernelArg::device(work_buf.get()),
         JitKernelArg::device(idx.get()),
         JitKernelArg::device(output),
@@ -1684,17 +1700,21 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     constexpr int64_t block = 256;
     const int64_t half = n2 / 2 + 1;
     const int64_t total_rows = batch * n0 * n1;
+    const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
+    const int64_t real_bytes = complex_bytes / 2;
 
     // Step 1: Expand real -> complex rows of length n2.
-    std::vector<JitKernelArg> expand_args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(row_fft_buf.get()),
-        JitKernelArg::i64(n2),
-        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
-    };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(n2, block), total_rows, 1);
+    launch_grid_y_chunks(total_rows, [&](int64_t row_offset, int64_t chunk_rows) {
+      std::vector<JitKernelArg> expand_args = {
+          JitKernelArg::device(input + row_offset * n2 * real_bytes),
+          JitKernelArg::device(row_fft_buf.get() + row_offset * n2 * complex_bytes),
+          JitKernelArg::i64(n2),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
+      };
+      expand_kernel->launch(context.stream, expand_args, ceil_div(n2, block), chunk_rows, 1);
+    });
 
-    // Step 2: FFT along n2 (in-place on the full complex rows).
+    // Step 2: FFT along n2 in-place.
     RawExecutionContext n2_context {context.request, context.stream, total_rows};
     flagfftResult result = n2_fft->execute(row_fft_buf.get(), row_fft_buf.get(), n2_context);
     if (result != FLAGFFT_SUCCESS) {
@@ -1702,13 +1722,15 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     }
 
     // Step 3: Half-pack rows into the output (n0, n1, half) layout.
-    std::vector<JitKernelArg> pack_args = {
-        JitKernelArg::device(row_fft_buf.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i64(half),
-        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
-    };
-    pack_kernel->launch(context.stream, pack_args, ceil_div(half, block), total_rows, 1);
+    launch_grid_y_chunks(total_rows, [&](int64_t row_offset, int64_t chunk_rows) {
+      std::vector<JitKernelArg> pack_args = {
+          JitKernelArg::device(row_fft_buf.get() + row_offset * n2 * complex_bytes),
+          JitKernelArg::device(output + row_offset * half * complex_bytes),
+          JitKernelArg::i64(half),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
+      };
+      pack_kernel->launch(context.stream, pack_args, ceil_div(half, block), chunk_rows, 1);
+    });
 
     // Step 4: (n0,n1,half) -> (n0,half,n1), FFT along n1.
     const int64_t packed = n0 * n1 * half;
@@ -1784,6 +1806,8 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
   try {
     const int64_t batch = context.batch;
     constexpr int64_t block = 256;
+    const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
+    const int64_t real_bytes = complex_bytes / 2;
     const int64_t half = n2 / 2 + 1;
     const int64_t total_rows = batch * n0 * n1;
     const int64_t packed = n0 * n1 * half;
@@ -1806,13 +1830,15 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
 
     // Step 3: (n0,half,n1) -> (n0,n1,half), expand half -> full Hermitian.
     launch_perm3d(perm_021, context.stream, temp2.get(), temp1.get(), packed, batch);
-    std::vector<JitKernelArg> expand_args = {
-        JitKernelArg::device(temp1.get()),
-        JitKernelArg::device(full_buf.get()),
-        JitKernelArg::i64(half),
-        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
-    };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(n2, block), total_rows, 1);
+    launch_grid_y_chunks(total_rows, [&](int64_t row_offset, int64_t chunk_rows) {
+      std::vector<JitKernelArg> expand_args = {
+          JitKernelArg::device(temp1.get() + row_offset * half * complex_bytes),
+          JitKernelArg::device(full_buf.get() + row_offset * n2 * complex_bytes),
+          JitKernelArg::i64(half),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
+      };
+      expand_kernel->launch(context.stream, expand_args, ceil_div(n2, block), chunk_rows, 1);
+    });
 
     // Step 4: IFFT along n2 (in-place on full complex rows), pack complex -> real.
     RawExecutionContext n2_context {context.request, context.stream, total_rows};
@@ -1820,13 +1846,15 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
-    std::vector<JitKernelArg> pack_args = {
-        JitKernelArg::device(full_buf.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i64(n2),
-        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
-    };
-    pack_kernel->launch(context.stream, pack_args, ceil_div(n2, block), total_rows, 1);
+    launch_grid_y_chunks(total_rows, [&](int64_t row_offset, int64_t chunk_rows) {
+      std::vector<JitKernelArg> pack_args = {
+          JitKernelArg::device(full_buf.get() + row_offset * n2 * complex_bytes),
+          JitKernelArg::device(output + row_offset * n2 * real_bytes),
+          JitKernelArg::i64(n2),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
+      };
+      pack_kernel->launch(context.stream, pack_args, ceil_div(n2, block), chunk_rows, 1);
+    });
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D C2R execute failed: %s\n", e.what());
@@ -1834,6 +1862,5 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_EXEC_FAILED;
   }
 }
-
 
 }  // namespace flagfft
