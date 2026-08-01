@@ -44,6 +44,8 @@ int main(int argc, char** argv) {
         g_test_params.direction = 1;  // FLAGFFT_INVERSE
     } else if (strncmp(argv[i], "--scale=", 8) == 0) {
       g_test_params.scale = atof(argv[i] + 8);
+    } else if (strncmp(argv[i], "--api=", 6) == 0) {
+      g_test_params.api = argv[i] + 6;
     } else if (strncmp(argv[i], "--json-file=", 12) == 0) {
       g_test_params.json_file = argv[i] + 12;
       g_test_params.json_output = true;

@@ -320,7 +320,7 @@ python tools/run_tests.py [OPTIONS]
 | `--op-list-file` | — | Path to file with one operator ID per line (`#` for comments) |
 | `--start` | — | Skip operators whose ID is lexicographically before this value |
 | `--stages` | `stable` | Comma-separated stages to include (`stable`, `alpha`, `beta`) |
-| `--combination` | `ct` | Test combination: `ct`, `bs`, `full`, `2p20`, `2d`, `2d_full` |
+| `--combination` | `ct` | Test combination: `ct`, `bs`, `full`, `2p20`, `2d`, `2d_full`, `3d`, `3d_full` |
 | `--gpus` | `0` | Comma-separated GPU IDs or `all` |
 | `--output-dir` | `results` | Directory for summary and per-operator result files |
 | `--build-dir` | `build` | Path to CMake build directory |
@@ -341,10 +341,10 @@ python tools/run_tests.py [OPTIONS]
 | `bs` | Quick smoke test — Bluestein/Rader sizes, batch 1, scale 1.0 |
 | `full` | Full 1D — all CT sizes × all batches × all scales |
 | `2p20` | Focused C2C `2^20` forward/inverse test, batch 1, scale 1.0 |
-| `2d` | Quick 2D — selected 2D sizes, batch {1,4}, scale 1.0 |
-| `2d_full` | Full 2D — selected 2D sizes × all batches × all scales |
-| `3d` | Quick 3D — selected 3D sizes (incl. prime axes), batch 1, scale 1.0 |
-| `3d_full` | Full 3D — selected 3D sizes × all batches × all scales |
+| `2d` | Quick 2D — 4 representative shapes, batch 1, scale 1.0 |
+| `2d_full` | Full 2D — 12 covering-array shapes × 8 API/directions, batch 1 |
+| `3d` | Quick 3D — 4 representative shapes, batch 1, scale 1.0 |
+| `3d_full` | Full 3D — 14 covering-array shapes × 8 API/directions, batch 1 |
 
 #### Examples
 
@@ -388,8 +388,8 @@ output against cuFFT using normwise relative error metrics (`rel_l2`,
 | Test Pattern | Coverage |
 |---|---|
 | `test_plan` | Plan lifecycle, error codes, unsupported API contracts |
-| `test_2d_correctness` | Rank-2 C2C/Z2Z correctness |
-| `test_3d_correctness` | Rank-3 C2C/Z2Z/R2C/D2Z/C2R/Z2D correctness vs cuFFT reference |
+| `test_2d_correctness` | Rank-2 all-API correctness and complex/real roundtrips |
+| `test_3d_correctness` | Rank-3 all-API correctness and complex/real roundtrips |
 | `test_exec_c2c_{fwd,inv}_{ct,bs}_{s,b}` | C2C forward/inverse, Cooley-Tukey/Bluestein, single/multi-batch |
 | `test_exec_z2z_{fwd,inv}_{ct,bs}_{s,b}` | Double-precision complex |
 | `test_exec_r2c_{ct,bs}_{s,b}` | Float real → complex |
@@ -415,8 +415,8 @@ Suffix key: `s` = single-batch, `b` = multi-batch; `ct` = Cooley-Tukey, `bs`
 cd build && ctest --output-on-failure
 ```
 
-Each test binary accepts: `--nx`, `--batch`, `--direction`, `--scale`,
-`--json-file`.
+Test binaries accept the applicable subset of: `--nx`, `--ny`, `--nz`,
+`--batch`, `--direction`, `--api`, `--scale`, `--json-file`.
 
 ### Python Tests
 
@@ -440,7 +440,7 @@ automatically skipped when dependencies are unavailable.
 The test parameter space is defined in `conf/`:
 
 - `conf/operators.yaml` — 20 operator definitions (1D/2D/3D × C2C/Z2Z/R2C/D2Z/C2R/Z2D, plus roundtrip)
-- `conf/test_matrix.yaml` — Parameter space: 11 smooth sizes (CT), 4 prime/composite sizes (Bluestein), 3 batch sizes, 3 scale factors, 6 combination rules
+- `conf/test_matrix.yaml` — Parameter space including 12 rank-2 and 14 rank-3 covering-array shapes, with 8 combination rules
 
 ---
 

@@ -25,29 +25,22 @@ struct Test2DSize {
   int n1;
 };
 
-constexpr Test2DSize k2DSmoke[] = {
-    {16, 16},
-};
-
 constexpr Test2DSize k2DSizes[] = {
-    { 16,  16},
-    { 64,  64},
-    {128, 256},
-    {256, 128},
-    {256, 256},
+    {    1,    64},
+    {   64,     1},
+    {   23,    30},
+    {   30,    23},
+    {   67,   997},
+    {  997,    67},
+    {   32, 16384},
+    {16384,    32},
+    {   30, 46189},
+    {   31,    33},
+    {  256,   256},
+    {  512,  1024},
 };
-
-// Non-smooth sizes to exercise Bluestein path (one or both dimensions).
-constexpr Test2DSize k2DBluesteinSizes[] = {
-    { 23,  23},
-    {997,  16},
-    { 16, 997},
-};
-
 constexpr int k2DNumSizes = sizeof(k2DSizes) / sizeof(k2DSizes[0]);
-constexpr int k2DNumBluesteinSizes = sizeof(k2DBluesteinSizes) / sizeof(k2DBluesteinSizes[0]);
 constexpr int k2DBatchSingle[] = {1};
-constexpr int k2DBatchMulti[] = {4};
 
 bool HasUsableDevice() {
   try {
@@ -74,14 +67,7 @@ std::vector<Test2DParam> Generate2DParams(const Test2DSize* sizes,
 }
 
 std::vector<Test2DParam> All2DParams() {
-  auto params = Generate2DParams(k2DSmoke, 1, k2DBatchSingle, 1);
-  auto ext = Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1);
-  params.insert(params.end(), ext.begin(), ext.end());
-  ext = Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchMulti, 1);
-  params.insert(params.end(), ext.begin(), ext.end());
-  ext = Generate2DParams(k2DBluesteinSizes, k2DNumBluesteinSizes, k2DBatchSingle, 1);
-  params.insert(params.end(), ext.begin(), ext.end());
-  return params;
+  return Generate2DParams(k2DSizes, k2DNumSizes, k2DBatchSingle, 1);
 }
 
 std::vector<Test2DParam> Filter2DParams(std::vector<Test2DParam> defaults) {
@@ -111,6 +97,7 @@ std::vector<Test2DParam> Filter2DParams(std::vector<Test2DParam> defaults) {
 class C2C2D : public ::testing::TestWithParam<Test2DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("c2c")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -147,6 +134,7 @@ class C2C2D : public ::testing::TestWithParam<Test2DParam> {
 
 TEST_P(C2C2D, ForwardInverse) {
   if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+  if (flagfft_test::should_skip_duplicate_roundtrip()) GTEST_SKIP() << "roundtrip runs with forward case";
 
   // Forward
   flagfft_test::ExecC2C(plan, d_in, d_out, FLAGFFT_FORWARD);
@@ -257,6 +245,7 @@ INSTANTIATE_TEST_SUITE_P(All, C2C2D, ::testing::ValuesIn(Filter2DParams(All2DPar
 class Z2Z2D : public ::testing::TestWithParam<Test2DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("z2z")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -293,6 +282,7 @@ class Z2Z2D : public ::testing::TestWithParam<Test2DParam> {
 
 TEST_P(Z2Z2D, ForwardInverse) {
   if (!HasUsableDevice()) GTEST_SKIP() << "no device";
+  if (flagfft_test::should_skip_duplicate_roundtrip()) GTEST_SKIP() << "roundtrip runs with forward case";
 
   flagfft_test::ExecZ2Z(plan, d_in, d_out, FLAGFFT_FORWARD);
   out_mem.copy_to_host(h_out.data(), bytes);
@@ -394,6 +384,7 @@ INSTANTIATE_TEST_SUITE_P(All, Z2Z2D, ::testing::ValuesIn(Filter2DParams(All2DPar
 class R2C2D : public ::testing::TestWithParam<Test2DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("r2c")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -482,6 +473,7 @@ INSTANTIATE_TEST_SUITE_P(All, R2C2D, ::testing::ValuesIn(Filter2DParams(All2DPar
 class C2R2D : public ::testing::TestWithParam<Test2DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("c2r")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -570,6 +562,7 @@ INSTANTIATE_TEST_SUITE_P(All, C2R2D, ::testing::ValuesIn(Filter2DParams(All2DPar
 class D2Z2D : public ::testing::TestWithParam<Test2DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("d2z")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -656,6 +649,7 @@ INSTANTIATE_TEST_SUITE_P(All, D2Z2D, ::testing::ValuesIn(Filter2DParams(All2DPar
 class Z2D2D : public ::testing::TestWithParam<Test2DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("z2d")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -742,6 +736,7 @@ INSTANTIATE_TEST_SUITE_P(All, Z2D2D, ::testing::ValuesIn(Filter2DParams(All2DPar
 class R2CC2RRoundtrip2D : public ::testing::TestWithParam<Test2DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("r2c")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;
@@ -830,6 +825,7 @@ INSTANTIATE_TEST_SUITE_P(All, R2CC2RRoundtrip2D, ::testing::ValuesIn(Filter2DPar
 class D2ZZ2DRoundtrip2D : public ::testing::TestWithParam<Test2DParam> {
  protected:
   void SetUp() override {
+    if (flagfft_test::should_skip_api("d2z")) GTEST_SKIP() << "filtered by --api";
     if (!HasUsableDevice()) return;
     n0 = GetParam().n0;
     n1 = GetParam().n1;

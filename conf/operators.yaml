@@ -17,9 +17,10 @@
 # id: 算子唯一标识，格式 {type}_{rank}d
 # ctest: ctest 可执行文件名前缀
 # cli_type: flagfft-cli --api 参数值
-# rank: FFT 维度 (1, 2)
+# rank: FFT 维度 (1, 2, 3)
 # directions: 支持的方向 (forward, inverse)
-# algorithms: 支持的算法 (ct=Cooley-Tukey, bs=Bluestein/Rader, 2d=2D FFT)
+# algorithms: 支持的算法
+#   ct=Cooley-Tukey, bs=Bluestein/Rader, 2d=2D FFT, 3d=3D FFT
 
 ops:
   # ── 1D Complex-to-Complex ──────────────────────────────────────

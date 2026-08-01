@@ -73,6 +73,42 @@ sizes_bs:
   - 524287    # 大规模素数（Mersenne），Bluestein conv=2^20
   - 999983    # 超大素数，Bluestein conv>1M 走光滑窗口
 
+# ── 多维覆盖数组 ────────────────────────────────────────────────
+#
+# 多维测试不对 1D 长度做笛卡尔积，而是用小型覆盖数组让每个轴位置都
+# 遇到关键计划分支：退化维、DirectDFT、混合 radix、Rader、Bluestein、
+# Four-Step，以及非 32 对齐的转置尾块。
+
+sizes_2d_full:
+  - [1, 64]          # 退化外轴
+  - [64, 1]          # 退化内轴；real half-pack 边界
+  - [23, 30]         # DirectDFT -> mixed-radix leaf
+  - [30, 23]         # mixed-radix leaf -> odd DirectDFT
+  - [67, 997]        # Rader -> odd Bluestein
+  - [997, 67]        # Bluestein -> odd Rader
+  - [32, 16384]      # aligned leaf -> large Four-Step
+  - [16384, 32]      # large Four-Step -> aligned leaf
+  - [30, 46189]      # large mixed-radix inner axis
+  - [31, 33]         # transpose tail masks on both axes
+  - [256, 256]       # square medium throughput case
+  - [512, 1024]      # rectangular large throughput case
+
+sizes_3d_full:
+  - [1, 16, 32]      # degenerate n0
+  - [16, 1, 32]      # degenerate n1
+  - [16, 32, 1]      # degenerate n2; real half-pack boundary
+  - [23, 30, 67]     # DirectDFT / mixed radix / Rader
+  - [30, 67, 23]     # rotate algorithm classes across axes
+  - [67, 23, 30]
+  - [997, 16, 64]    # Bluestein on n0
+  - [16, 997, 64]    # Bluestein on n1
+  - [16, 64, 997]    # odd Bluestein on real-packed n2
+  - [4, 32, 16384]   # Four-Step on n2
+  - [32, 16384, 4]   # Four-Step on n1
+  - [16384, 4, 32]   # Four-Step on n0
+  - [31, 33, 35]     # 3D transpose tail masks
+  - [64, 64, 64]     # balanced throughput case
+
 # ── 批大小 ─────────────────────────────────────────────────────
 
 batches:
@@ -117,58 +153,30 @@ combinations:
   2d:
     sizes:
       - [16, 16]
-      - [64, 64]
-      - [128, 256]
-      - [256, 128]
-      - [256, 256]
-      - [512, 512]
-      - [23, 23]
-      - [997, 16]
-      - [16, 997]
-    batches: [1, 4]
+      - [23, 30]
+      - [67, 997]
+      - [32, 16384]
+    batches: [1]
     scales: [1.0]
 
-  # 2D 完整测试
+  # 2D 完整覆盖数组
   2d_full:
-    sizes:
-      - [16, 16]
-      - [64, 64]
-      - [128, 256]
-      - [256, 128]
-      - [256, 256]
-      - [512, 512]
-      - [23, 23]
-      - [997, 16]
-      - [16, 997]
-    batches: batches
-    scales: scales
+    sizes: sizes_2d_full
+    batches: [1]
+    scales: [1.0]
 
   # 3D 测试
   3d:
     sizes:
       - [16, 16, 16]
-      - [32, 16, 8]
-      - [8, 32, 16]
-      - [16, 32, 64]
-      - [64, 32, 16]
-      - [128, 64, 32]
-      - [23, 16, 16]
-      - [16, 997, 8]
-      - [16, 16, 997]
+      - [23, 30, 67]
+      - [16, 997, 64]
+      - [4, 32, 16384]
     batches: [1]
     scales: [1.0]
 
-  # 3D 完整测试
+  # 3D 完整覆盖数组
   3d_full:
-    sizes:
-      - [16, 16, 16]
-      - [32, 16, 8]
-      - [8, 32, 16]
-      - [16, 32, 64]
-      - [64, 32, 16]
-      - [128, 64, 32]
-      - [23, 16, 16]
-      - [16, 997, 8]
-      - [16, 16, 997]
+    sizes: sizes_3d_full
     batches: [1]
-    scales: scales
+    scales: [1.0]

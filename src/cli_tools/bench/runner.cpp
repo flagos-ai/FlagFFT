@@ -106,9 +106,21 @@ namespace {
       result = flagfftPlan1d(&raw, layout.innermost, flagfft_type(spec.api), spec.batch);
     } else if (spec.rank == 2) {
       int n[2] = {spec.shape[0], spec.shape[1]};
-      const int dist = n[0] * n[1];
-      result =
-          flagfftPlanMany(&raw, 2, n, nullptr, 1, dist, nullptr, 1, dist, flagfft_type(spec.api), spec.batch);
+      const int total = n[0] * n[1];
+      const int half_total = n[0] * (n[1] / 2 + 1);
+      const int input_dist = is_real_inverse_api(spec.api) ? half_total : total;
+      const int output_dist = is_real_forward_api(spec.api) ? half_total : total;
+      result = flagfftPlanMany(&raw,
+                               2,
+                               n,
+                               nullptr,
+                               1,
+                               input_dist,
+                               nullptr,
+                               1,
+                               output_dist,
+                               flagfft_type(spec.api),
+                               spec.batch);
     } else if (spec.rank == 3) {
       result = flagfftPlan3d(&raw, spec.shape[0], spec.shape[1], spec.shape[2], flagfft_type(spec.api));
     }
