@@ -125,28 +125,34 @@ def _metadata(
 ) -> dict[str, Any]:
     batch_per_block = (
         contiguous_batch_pack_for(plan)
-        if kernel_type in {"leaf", "leaf_r2c", "leaf_c2r"}
+        if kernel_type in {"leaf", "leaf_r2c", "leaf_c2r", "leaf_bluestein"}
         else 1
     )
     stage_lanes = cooperative_stage_lanes_for(plan)
-    tle_fused_twiddle = kernel_type.startswith(
-        "four_step_"
+    tle_fused_twiddle = (
+        kernel_type.startswith("four_step_")
+        or kernel_type.startswith("bluestein_four_step_")
     ) and use_four_step_row_fused_twiddle(n1, n2, dtype)
     if kernel_type in {
         "four_step_row",
         "four_step_real_row",
         "four_step_hermitian_row",
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_pointwise_row",
     }:
         inner_pack = four_step_row_inner_pack_for(n1, n2, dtype, plan)
     elif kernel_type in {
         "four_step_col",
         "four_step_r2c_col",
         "four_step_c2r_col",
+        "bluestein_four_step_finish_col",
     }:
         inner_pack = four_step_col_inner_pack_for(n1, n2, dtype, plan)
     else:
         inner_pack = 1
     num_warps = int(plan.num_warps)
+    if kernel_type == "direct_dft" and dtype == "complex64":
+        num_warps = 4
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)
@@ -589,6 +595,7 @@ def emit_jit_kernel(
     smem_size: int,
     direction: str,
     dtype: str,
+    prime_n: int,
     four_step_n1: int,
     four_step_n2: int,
     out_dir: Path,
@@ -620,6 +627,38 @@ def emit_jit_kernel(
         )
         n1 = 0
         n2 = 0
+    elif kernel == "leaf_bluestein":
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="bluestein_full_leaf", prime_n=prime_n
+        )
+        n1 = 0
+        n2 = 0
+    elif kernel == "leaf_bluestein_prepare":
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="bluestein_prepare_leaf", prime_n=prime_n
+        )
+        n1 = 0
+        n2 = 0
+    elif kernel == "leaf_bluestein_finish":
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="bluestein_finish_leaf", prime_n=prime_n
+        )
+        n1 = 0
+        n2 = 0
+    elif kernel in {
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_pointwise_row",
+        "bluestein_four_step_finish_col",
+    }:
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan,
+            io_mode=kernel,
+            prime_n=prime_n,
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
+        )
+        n1 = four_step_n1
+        n2 = four_step_n2
     elif kernel == "direct_dft":
         kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
             length, direction, dtype
@@ -699,6 +738,16 @@ def emit_jit_kernel(
     dtype_tag = _dtype_suffix(dtype)
     if kernel == "leaf":
         module_name = f"flagfft_jit_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
+    elif kernel in {"leaf_bluestein", "leaf_bluestein_prepare", "leaf_bluestein_finish"}:
+        module_name = (
+            f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
+            f"_n{prime_n}_m{length}_l{lanes}_b{lane_block}_{dtype_tag}"
+        )
+    elif kernel.startswith("bluestein_four_step_"):
+        module_name = (
+            f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}_p{prime_n}"
+            f"_n{four_step_n1}_{four_step_n2}_l{lanes}_b{lane_block}_{dtype_tag}"
+        )
     elif kernel == "direct_dft":
         module_name = f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
     elif kernel in {"leaf_r2c", "leaf_c2r"}:
@@ -819,6 +868,12 @@ def main() -> None:
             "direct_dft",
             "leaf_r2c",
             "leaf_c2r",
+            "leaf_bluestein",
+            "leaf_bluestein_prepare",
+            "leaf_bluestein_finish",
+            "bluestein_four_step_prepare_row",
+            "bluestein_four_step_pointwise_row",
+            "bluestein_four_step_finish_col",
             "four_step_row",
             "four_step_real_row",
             "four_step_hermitian_row",
@@ -872,7 +927,7 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
 
-    if args.kernel.startswith("bluestein_"):
+    if args.kernel in {"bluestein_prepare", "bluestein_pointwise", "bluestein_finalize"}:
         if args.bluestein_n is None or args.bluestein_m is None:
             parser.error(
                 f"--kernel {args.kernel} requires --bluestein-n and --bluestein-m"
@@ -982,6 +1037,7 @@ def main() -> None:
             smem_size=0,
             direction=args.direction,
             dtype=args.dtype,
+            prime_n=0,
             four_step_n1=0,
             four_step_n2=0,
             out_dir=args.out_dir,
@@ -1000,12 +1056,27 @@ def main() -> None:
             + ", ".join(f"--{name.replace('_', '-')}" for name in missing)
         )
     if args.kernel in {
+        "leaf_bluestein",
+        "leaf_bluestein_prepare",
+        "leaf_bluestein_finish",
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_pointwise_row",
+        "bluestein_four_step_finish_col",
+    }:
+        if args.bluestein_n is None or args.bluestein_n <= 0:
+            parser.error(
+                f"--kernel {args.kernel} requires --bluestein-n"
+            )
+    if args.kernel in {
         "four_step_row",
         "four_step_real_row",
         "four_step_hermitian_row",
         "four_step_col",
         "four_step_r2c_col",
         "four_step_c2r_col",
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_pointwise_row",
+        "bluestein_four_step_finish_col",
     }:
         if args.four_step_n1 <= 0 or args.four_step_n2 <= 0:
             parser.error(
@@ -1022,6 +1093,7 @@ def main() -> None:
         smem_size=args.smem_size,
         direction=args.direction,
         dtype=args.dtype,
+        prime_n=args.bluestein_n or 0,
         four_step_n1=args.four_step_n1,
         four_step_n2=args.four_step_n2,
         out_dir=args.out_dir,
