@@ -162,8 +162,12 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
 
 CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
                                                    std::shared_ptr<JitKernel> kernel,
-                                                   std::vector<DeviceAllocation> tables)
-    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+                                                   std::vector<DeviceAllocation> tables,
+                                                   DeviceAllocation input_copy)
+    : length(length),
+      kernel(std::move(kernel)),
+      tables(std::move(tables)),
+      input_copy(std::move(input_copy)) {
 }
 
 std::string CompiledRawDirectDftNode::describe() const {
@@ -176,7 +180,13 @@ flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
-    std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
+    adaptor::DevicePtr effective_input = input;
+    if (input == output) {
+      adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);
+      effective_input = input_copy.get();
+    }
+
+    std::vector<JitKernelArg> args = raw_kernel_args({effective_input, output}, tables, context.batch);
     kernel->launch(context.stream, args, context.batch, 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {

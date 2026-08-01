@@ -106,7 +106,8 @@ struct CompiledRawLeafNode final : CompiledRawNode {
 struct CompiledRawDirectDftNode final : CompiledRawNode {
   CompiledRawDirectDftNode(int64_t length,
                            std::shared_ptr<JitKernel> kernel,
-                           std::vector<DeviceAllocation> tables);
+                           std::vector<DeviceAllocation> tables,
+                           DeviceAllocation input_copy);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -115,6 +116,7 @@ struct CompiledRawDirectDftNode final : CompiledRawNode {
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
+  DeviceAllocation input_copy;
 };
 
 struct CompiledRawFourStepFusedNode final : CompiledRawNode {
@@ -750,7 +752,8 @@ class TritonCompiler {
  private:
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_direct_dft(const DirectDFTPlanNode &node,
-                                                          const FFTRequest &request);
+                                                          const FFTRequest &request,
+                                                          int64_t batch);
   std::shared_ptr<JitKernel> compile_direct_dft_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<CompiledRawNode> compile_raw_four_step_generic(const FourStepPlanNode &node,
                                                                  const FFTRequest &request,

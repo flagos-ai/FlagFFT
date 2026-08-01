@@ -23,7 +23,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return compile_raw_leaf(*leaf, request);
   }
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
-    return compile_raw_direct_dft(*direct, request);
+    return compile_raw_direct_dft(*direct, request, batch);
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
@@ -308,10 +308,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const DirectDFTPlanNode &node,
-                                                                        const FFTRequest &request) {
+                                                                        const FFTRequest &request,
+                                                                        int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  DeviceAllocation input_copy =
+      adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
   return std::make_shared<CompiledRawDirectDftNode>(node.length,
                                                     compile_direct_dft_kernel(request, node.length),
-                                                    build_raw_direct_dft_tables(node.length, request));
+                                                    build_raw_direct_dft_tables(node.length, request),
+                                                    std::move(input_copy));
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPlanNode &leaf,
