@@ -67,6 +67,14 @@ nlohmann::json plan_node_to_json(const PlanNodePtr &node) {
     out["strategy"] = two_dim_strategy_name(two_dim->strategy);
     out["row"] = plan_node_to_json(two_dim->row_plan);
     out["col"] = plan_node_to_json(two_dim->col_plan);
+  } else if (auto three_dim = std::dynamic_pointer_cast<ThreeDimPlanNode>(node)) {
+    out["n0"] = three_dim->n0;
+    out["n1"] = three_dim->n1;
+    out["n2"] = three_dim->n2;
+    out["strategy"] = three_dim_strategy_name(three_dim->strategy);
+    out["n2_plan"] = plan_node_to_json(three_dim->n2_plan);
+    out["n1_plan"] = plan_node_to_json(three_dim->n1_plan);
+    out["n0_plan"] = plan_node_to_json(three_dim->n0_plan);
   }
   return out;
 }

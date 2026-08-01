@@ -473,9 +473,23 @@ TEST(Plan3D, CreateDestroyAllTypes) {
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {
     flagfftHandle plan = nullptr;
-    EXPECT_EQ(flagfftPlan3d(&plan, 32, 16, 8, type), FLAGFFT_NOT_SUPPORTED);
-    EXPECT_EQ(plan, nullptr);
+    ASSERT_EQ(flagfftPlan3d(&plan, 32, 16, 8, type), FLAGFFT_SUCCESS);
+    ASSERT_NE(plan, nullptr);
+    const char* desc = flagfftGetPlanDescription(plan);
+    ASSERT_NE(desc, nullptr);
+    EXPECT_GT(std::strlen(desc), 0u);
+    EXPECT_NE(std::strstr(desc, "ThreeDim"), nullptr) << desc;
+    EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
   }
+}
+
+TEST(Plan3D, PrimeAxisUsesRader) {
+  flagfftHandle plan = nullptr;
+  ASSERT_EQ(flagfftPlan3d(&plan, 32, 67, 8, FLAGFFT_C2C), FLAGFFT_SUCCESS);
+  const char* desc = flagfftGetPlanDescription(plan);
+  ASSERT_NE(desc, nullptr);
+  EXPECT_NE(std::strstr(desc, "Rader"), nullptr) << desc;
+  EXPECT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 }
 
 TEST(Plan3D, InvalidParameters) {

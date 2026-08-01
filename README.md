@@ -213,6 +213,8 @@ flagfftGetPlanDescription(plan)   // Human-readable plan summary
 | Rank-1 roundtrip (R2C→C2R, D2Z→Z2D) | ✅ |
 | Rank-2 contiguous row-major C2C, Z2Z | ✅ RTRT decomposition |
 | Rank-2 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ |
+| Rank-3 contiguous row-major C2C, Z2Z | ✅ RTRT decomposition (n2 → n1 → n0 + 3D axis permutations) |
+| Rank-3 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ half-packed on the innermost axis |
 | Batched transforms | ✅ |
 | In-place and out-of-place | ✅ |
 | CUDA stream attachment | ✅ |
@@ -227,7 +229,6 @@ indices to reduce bank conflicts.
 
 | Feature | Status |
 |---|---|
-| Rank-3 transforms (`flagfftPlan3d`) | ❌ Returns `FLAGFFT_NOT_SUPPORTED` |
 | Rank-2 more exec algos | RTRT only now |
 
 ---
@@ -247,9 +248,9 @@ flagfft-cli bench [OPTIONS]
 
 | Option | Default | Description |
 |---|---|---|
-| `--rank` | `1` | Transform rank: `1` or `2` |
+| `--rank` | `1` | Transform rank: `1`, `2`, or `3` |
 | `--api` | `c2c` | Transform type: `c2c`, `z2z`, `r2c`, `d2z`, `c2r`, `z2d` |
-| `--shape` | required | Transform size(s), comma-separated: `1024`, `256x256`, `1024,2048,4096` |
+| `--shape` | required | Transform size(s), comma-separated: `1024`, `256x256`, `16x16x16`, `1024,2048,4096` |
 | `--batch` | `1` | Batch size |
 | `--direction` | `forward` | `forward` or `inverse` |
 | `--placement` | `out-of-place` | `out-of-place` or `in-place` |
@@ -266,6 +267,9 @@ flagfft-cli bench --api c2c --shape 4096 --batch 256
 
 # Benchmark 2D Z2Z FFT
 flagfft-cli bench --rank 2 --api z2z --shape 256x256
+
+# Benchmark 3D C2C FFT
+flagfft-cli bench --rank 3 --api c2c --shape 16x16x16
 
 # Compare multiple sizes with JSON output
 flagfft-cli bench --api r2c --shape 1024,2048,4096,8192 --json
@@ -339,6 +343,8 @@ python tools/run_tests.py [OPTIONS]
 | `2p20` | Focused C2C `2^20` forward/inverse test, batch 1, scale 1.0 |
 | `2d` | Quick 2D — selected 2D sizes, batch {1,4}, scale 1.0 |
 | `2d_full` | Full 2D — selected 2D sizes × all batches × all scales |
+| `3d` | Quick 3D — selected 3D sizes (incl. prime axes), batch 1, scale 1.0 |
+| `3d_full` | Full 3D — selected 3D sizes × all batches × all scales |
 
 #### Examples
 
@@ -383,6 +389,7 @@ output against cuFFT using normwise relative error metrics (`rel_l2`,
 |---|---|
 | `test_plan` | Plan lifecycle, error codes, unsupported API contracts |
 | `test_2d_correctness` | Rank-2 C2C/Z2Z correctness |
+| `test_3d_correctness` | Rank-3 C2C/Z2Z/R2C/D2Z/C2R/Z2D correctness vs cuFFT reference |
 | `test_exec_c2c_{fwd,inv}_{ct,bs}_{s,b}` | C2C forward/inverse, Cooley-Tukey/Bluestein, single/multi-batch |
 | `test_exec_z2z_{fwd,inv}_{ct,bs}_{s,b}` | Double-precision complex |
 | `test_exec_r2c_{ct,bs}_{s,b}` | Float real → complex |
@@ -432,7 +439,7 @@ automatically skipped when dependencies are unavailable.
 
 The test parameter space is defined in `conf/`:
 
-- `conf/operators.yaml` — 14 operator definitions (1D/2D × C2C/Z2Z/R2C/D2Z/C2R/Z2D, plus roundtrip)
+- `conf/operators.yaml` — 20 operator definitions (1D/2D/3D × C2C/Z2Z/R2C/D2Z/C2R/Z2D, plus roundtrip)
 - `conf/test_matrix.yaml` — Parameter space: 11 smooth sizes (CT), 4 prime/composite sizes (Bluestein), 3 batch sizes, 3 scale factors, 6 combination rules
 
 ---

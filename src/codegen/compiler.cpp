@@ -99,6 +99,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     return compile_raw_2d_node(two_dim, request, batch);
   }
+  if (auto three_dim = std::dynamic_pointer_cast<ThreeDimPlanNode>(node)) {
+    return compile_raw_3d_node(three_dim, request, batch);
+  }
   throw std::runtime_error("raw C API does not support plan node kind: " + plan_node_kind_name(node->kind));
 }
 
@@ -453,6 +456,204 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_tiled_transpose_kernel(const 
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::tiled_transpose(target, request.input_dtype, n0, n1);
   return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(const FFTRequest &request,
+                                                                      int64_t n0,
+                                                                      int64_t n1,
+                                                                      int64_t n2,
+                                                                      const std::string &order) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::transpose3d(target, request.input_dtype, n0, n1, n2, order);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<CompiledRaw3DNode> TritonCompiler::compile_raw_3d_node(
+    const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+  const int64_t n2 = node->n2;
+
+  // Build per-axis C2C requests.  Each axis is processed as a batch of
+  // contiguous rows after the corresponding axis permutation.
+  FFTRequest n2_request = request;
+  n2_request.fft_length = n2;
+  n2_request.input_shape = {batch * n0 * n1, n2};
+  n2_request.input_strides = {n2, 1};
+  n2_request.requested_n = n2;
+  n2_request.batch = batch * n0 * n1;
+
+  FFTRequest n1_request = request;
+  n1_request.fft_length = n1;
+  n1_request.input_shape = {batch * n0 * n2, n1};
+  n1_request.input_strides = {n1, 1};
+  n1_request.requested_n = n1;
+  n1_request.batch = batch * n0 * n2;
+
+  FFTRequest n0_request = request;
+  n0_request.fft_length = n0;
+  n0_request.input_shape = {batch * n1 * n2, n0};
+  n0_request.input_strides = {n0, 1};
+  n0_request.requested_n = n0;
+  n0_request.batch = batch * n1 * n2;
+
+  std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
+  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+  std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
+
+  // Forward: (n0,n1,n2) -021-> (n0,n2,n1) -210-> (n1,n2,n0) -201-> (n0,n1,n2).
+  // Inverse: (n0,n1,n2) -120-> (n1,n2,n0) -210-> (n0,n2,n1) -021-> (n0,n1,n2).
+  auto perm_021_fwd = compile_transpose3d_kernel(request, n0, n1, n2, "021");
+  auto perm_210_fwd = compile_transpose3d_kernel(request, n0, n2, n1, "210");
+  auto perm_201_fwd = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+  auto perm_120_inv = compile_transpose3d_kernel(request, n0, n1, n2, "120");
+  auto perm_210_inv = compile_transpose3d_kernel(request, n1, n2, n0, "210");
+  auto perm_021_inv = compile_transpose3d_kernel(request, n0, n2, n1, "021");
+
+  DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+  DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+
+  return std::make_shared<CompiledRaw3DNode>(n0,
+                                             n1,
+                                             n2,
+                                             std::move(n2_fft),
+                                             std::move(n1_fft),
+                                             std::move(n0_fft),
+                                             std::move(perm_021_fwd),
+                                             std::move(perm_210_fwd),
+                                             std::move(perm_201_fwd),
+                                             std::move(perm_120_inv),
+                                             std::move(perm_210_inv),
+                                             std::move(perm_021_inv),
+                                             std::move(temp1),
+                                             std::move(temp2));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
+    const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+  const int64_t n2 = node->n2;
+  const int64_t half = n2 / 2 + 1;
+
+  // The innermost axis n2 runs expand + C2C FFT + half-pack; the remaining
+  // two axes are plain C2C after the axis permutations.
+  FFTRequest n2_request = request;
+  n2_request.fft_length = n2;
+  n2_request.input_shape = {batch * n0 * n1, n2};
+  n2_request.input_strides = {n2, 1};
+  n2_request.requested_n = n2;
+  n2_request.batch = batch * n0 * n1;
+
+  FFTRequest n1_request = request;
+  n1_request.fft_length = n1;
+  n1_request.input_shape = {batch * n0 * half, n1};
+  n1_request.input_strides = {n1, 1};
+  n1_request.requested_n = n1;
+  n1_request.batch = batch * n0 * half;
+
+  FFTRequest n0_request = request;
+  n0_request.fft_length = n0;
+  n0_request.input_shape = {batch * n1 * half, n0};
+  n0_request.input_strides = {n0, 1};
+  n0_request.requested_n = n0;
+  n0_request.batch = batch * n1 * half;
+
+  auto expand_kernel = compile_real_to_complex_kernel(request, n2);
+  std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
+  auto pack_kernel = compile_r2c_half_pack_kernel(request, n2);
+  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+  std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
+
+  // (n0,n1,half) -021-> (n0,half,n1) -210-> (n1,half,n0) -201-> (n0,n1,half).
+  auto perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+  auto perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
+  auto perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
+
+  DeviceAllocation row_fft_buf =
+      adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+  DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));
+  DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));
+
+  return std::make_shared<CompiledRaw3DR2CNode>(n0,
+                                                n1,
+                                                n2,
+                                                std::move(expand_kernel),
+                                                std::move(n2_fft),
+                                                std::move(pack_kernel),
+                                                std::move(n1_fft),
+                                                std::move(n0_fft),
+                                                std::move(perm_021),
+                                                std::move(perm_210),
+                                                std::move(perm_201),
+                                                std::move(row_fft_buf),
+                                                std::move(temp1),
+                                                std::move(temp2));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
+    const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+  const int64_t n2 = node->n2;
+  const int64_t half = n2 / 2 + 1;
+
+  // C2R is the reverse of R2C: permute the half-packed cube, IFFT along n0
+  // and n1, expand half -> full Hermitian, IFFT along n2, pack complex -> real.
+  FFTRequest n0_request = request;
+  n0_request.fft_length = n0;
+  n0_request.input_shape = {batch * n1 * half, n0};
+  n0_request.input_strides = {n0, 1};
+  n0_request.requested_n = n0;
+  n0_request.batch = batch * n1 * half;
+
+  FFTRequest n1_request = request;
+  n1_request.fft_length = n1;
+  n1_request.input_shape = {batch * n0 * half, n1};
+  n1_request.input_strides = {n1, 1};
+  n1_request.requested_n = n1;
+  n1_request.batch = batch * n0 * half;
+
+  FFTRequest n2_request = request;
+  n2_request.fft_length = n2;
+  n2_request.input_shape = {batch * n0 * n1, n2};
+  n2_request.input_strides = {n2, 1};
+  n2_request.requested_n = n2;
+  n2_request.batch = batch * n0 * n1;
+
+  std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
+  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+  auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n2);
+  std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
+  auto pack_kernel = compile_complex_to_real_kernel(request, n2);
+
+  // (n0,n1,half) -120-> (n1,half,n0) -210-> (n0,half,n1) -021-> (n0,n1,half).
+  auto perm_120 = compile_transpose3d_kernel(request, n0, n1, half, "120");
+  auto perm_210 = compile_transpose3d_kernel(request, n1, half, n0, "210");
+  auto perm_021 = compile_transpose3d_kernel(request, n0, half, n1, "021");
+
+  DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));
+  DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));
+  DeviceAllocation full_buf =
+      adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+
+  return std::make_shared<CompiledRaw3DC2RNode>(n0,
+                                                n1,
+                                                n2,
+                                                std::move(perm_120),
+                                                std::move(perm_210),
+                                                std::move(perm_021),
+                                                std::move(n0_fft),
+                                                std::move(n1_fft),
+                                                std::move(expand_kernel),
+                                                std::move(n2_fft),
+                                                std::move(pack_kernel),
+                                                std::move(temp1),
+                                                std::move(temp2),
+                                                std::move(full_buf));
 }
 
 std::shared_ptr<CompiledRaw2DNode> TritonCompiler::compile_raw_2d_node(

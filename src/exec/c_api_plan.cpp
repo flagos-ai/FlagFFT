@@ -62,7 +62,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
 
   // Check if this is a supported 2D descriptor
   const bool is_2d = is_supported_2d_desc(desc);
-  if (!is_supported_minimal_desc(desc) && !is_2d) {
+  const bool is_3d = is_supported_3d_desc(desc);
+  if (!is_supported_minimal_desc(desc) && !is_2d && !is_3d) {
     return FLAGFFT_NOT_SUPPORTED;
   }
 
@@ -179,6 +180,73 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
 
       plan->executable.forward_request = request_from_desc(plan->desc, "forward");
       plan->executable.inverse_request = request_from_desc(plan->desc, "inverse");
+    } else if (is_3d) {
+      const int64_t n0 = plan->desc.n[0];
+      const int64_t n1 = plan->desc.n[1];
+      const int64_t n2 = plan->desc.n[2];
+      const int64_t batch = plan->desc.batch;
+      const int64_t half_n2 = n2 / 2 + 1;
+      const bool real_forward = plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z;
+      const bool real_inverse = plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D;
+      const flagfftType c2c_type =
+          (plan->desc.type == FLAGFFT_Z2D || plan->desc.type == FLAGFFT_D2Z || plan->desc.type == FLAGFFT_Z2Z)
+              ? FLAGFFT_Z2Z
+              : FLAGFFT_C2C;
+
+      // RTRT decomposition: FFT along the innermost axis n2, then the middle
+      // axis n1, then the outermost axis n0, with a 3D axis permutation
+      // between each pass.  For R2C/D2Z the innermost axis runs
+      // expand + C2C + half-pack at execution time, so its sub-plan is a
+      // plain C2C plan; C2R/Z2D mirrors that on the way back.
+      auto build_axis_plan = [&](int64_t length,
+                                 int64_t axis_batch,
+                                 const std::string &direction) -> PlanNodePtr {
+        FlagFFTPlanDesc axis_desc = plan->desc;
+        axis_desc.rank = 1;
+        axis_desc.type = c2c_type;
+        axis_desc.n = {length};
+        axis_desc.inembed = {length};
+        axis_desc.onembed = {length};
+        axis_desc.istride = 1;
+        axis_desc.ostride = 1;
+        axis_desc.idist = length;
+        axis_desc.odist = length;
+        axis_desc.batch = axis_batch;
+        FFTRequest axis_request = request_from_desc(axis_desc, direction);
+        PlanNodePtr axis_plan = lookup_or_build_root(builder, axis_request);
+        if (!raw_supported_node(axis_plan)) {
+          axis_plan =
+              lookup_or_build_root(builder, request_from_desc(axis_desc, direction == "forward" ? "inverse"
+                                                                                                : "forward"));
+        }
+        if (!raw_supported_node(axis_plan)) {
+          axis_plan = raw_compatible_rader_plan(length, builder, axis_request);
+        }
+        if (!raw_supported_node(axis_plan)) {
+          axis_plan = raw_compatible_bluestein_plan(length, builder, axis_request);
+        }
+        if (!raw_supported_node(axis_plan)) {
+          return nullptr;
+        }
+        return axis_plan;
+      };
+
+      const int64_t n2_batch = batch * n0 * n1;
+      const int64_t n1_batch = batch * n0 * (real_forward || real_inverse ? half_n2 : n2);
+      const int64_t n0_batch = batch * n1 * (real_forward || real_inverse ? half_n2 : n2);
+      const std::string axis_direction = real_inverse ? "inverse" : "forward";
+
+      PlanNodePtr n2_plan = build_axis_plan(n2, n2_batch, axis_direction);
+      PlanNodePtr n1_plan = build_axis_plan(n1, n1_batch, axis_direction);
+      PlanNodePtr n0_plan = build_axis_plan(n0, n0_batch, axis_direction);
+      if (n2_plan == nullptr || n1_plan == nullptr || n0_plan == nullptr) {
+        return FLAGFFT_NOT_SUPPORTED;
+      }
+
+      plan->executable.root =
+          std::make_shared<ThreeDimPlanNode>(n0, n1, n2, ThreeDimStrategy::RTRT, n2_plan, n1_plan, n0_plan);
+      plan->executable.forward_request = request_from_desc(plan->desc, "forward");
+      plan->executable.inverse_request = request_from_desc(plan->desc, "inverse");
     } else {
       // 1D FFT: original path
       plan->executable.forward_request = request_from_desc(plan->desc, "forward");
@@ -225,6 +293,20 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
             compiler.compile_raw_2d_node(two_dim, plan->executable.forward_request, plan->desc.batch);
         plan->executable.inverse =
             compiler.compile_raw_2d_node(two_dim, plan->executable.inverse_request, plan->desc.batch);
+      }
+    } else if (is_3d) {
+      auto three_dim = std::dynamic_pointer_cast<ThreeDimPlanNode>(plan->executable.root);
+      if (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z) {
+        plan->executable.forward =
+            compiler.compile_raw_3d_r2c_node(three_dim, plan->executable.forward_request, plan->desc.batch);
+      } else if (plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D) {
+        plan->executable.inverse =
+            compiler.compile_raw_3d_c2r_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
+      } else {
+        plan->executable.forward =
+            compiler.compile_raw_3d_node(three_dim, plan->executable.forward_request, plan->desc.batch);
+        plan->executable.inverse =
+            compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
       }
     } else {
       // 1D FFT: original compilation
@@ -282,7 +364,12 @@ extern "C" flagfftResult flagfftPlan2d(flagfftHandle *plan, int nx, int ny, flag
 
 extern "C" flagfftResult flagfftPlan3d(flagfftHandle *plan, int nx, int ny, int nz, flagfftType type) {
   int n[3] = {nx, ny, nz};
-  return flagfftPlanMany(plan, 3, n, nullptr, 1, nx * ny * nz, nullptr, 1, nx * ny * nz, type, 1);
+  const bool real_forward = type == FLAGFFT_R2C || type == FLAGFFT_D2Z;
+  const bool real_inverse = type == FLAGFFT_C2R || type == FLAGFFT_Z2D;
+  const int half_nz = nz / 2 + 1;
+  const int idist = real_inverse ? nx * ny * half_nz : nx * ny * nz;
+  const int odist = real_forward ? nx * ny * half_nz : nx * ny * nz;
+  return flagfftPlanMany(plan, 3, n, nullptr, 1, idist, nullptr, 1, odist, type, 1);
 }
 
 extern "C" flagfftResult flagfftPlanMany(flagfftHandle *plan,
@@ -332,6 +419,9 @@ extern "C" flagfftResult flagfftPlanMany(flagfftHandle *plan,
   } else if ((type == FLAGFFT_C2R || type == FLAGFFT_Z2D) && rank == 2) {
     // 2D C2R/Z2D: input embed is (n0, n1/2+1)
     desc.inembed = {desc.n[0], desc.n[1] / 2 + 1};
+  } else if ((type == FLAGFFT_C2R || type == FLAGFFT_Z2D) && rank == 3) {
+    // 3D C2R/Z2D: input embed is (n0, n1, n2/2+1)
+    desc.inembed = {desc.n[0], desc.n[1], desc.n[2] / 2 + 1};
   } else {
     desc.inembed = desc.n;
   }
@@ -342,6 +432,9 @@ extern "C" flagfftResult flagfftPlanMany(flagfftHandle *plan,
   } else if ((type == FLAGFFT_R2C || type == FLAGFFT_D2Z) && rank == 2) {
     // 2D R2C/D2Z: output embed is (n0, n1/2+1)
     desc.onembed = {desc.n[0], desc.n[1] / 2 + 1};
+  } else if ((type == FLAGFFT_R2C || type == FLAGFFT_D2Z) && rank == 3) {
+    // 3D R2C/D2Z: output embed is (n0, n1, n2/2+1)
+    desc.onembed = {desc.n[0], desc.n[1], desc.n[2] / 2 + 1};
   } else {
     desc.onembed = desc.n;
   }

@@ -32,6 +32,8 @@ int main(int argc, char** argv) {
       g_test_params.nx = atoi(argv[i] + 5);
     } else if (strncmp(argv[i], "--ny=", 5) == 0) {
       g_test_params.ny = atoi(argv[i] + 5);
+    } else if (strncmp(argv[i], "--nz=", 5) == 0) {
+      g_test_params.nz = atoi(argv[i] + 5);
     } else if (strncmp(argv[i], "--batch=", 8) == 0) {
       g_test_params.batch = atoi(argv[i] + 8);
     } else if (strncmp(argv[i], "--direction=", 12) == 0) {
