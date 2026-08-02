@@ -156,7 +156,8 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
                            DeviceAllocation b_time,
                            DeviceAllocation a_buf,
                            DeviceAllocation work_buf,
-                           DeviceAllocation b_fft_buf);
+                           DeviceAllocation b_fft_buf,
+                           int64_t batch_chunk);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -165,6 +166,7 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
 
   int64_t length;
   int64_t conv_length;
+  int64_t batch_chunk;
   std::shared_ptr<CompiledRawNode> fft;
   std::shared_ptr<JitKernel> prepare_kernel;
   std::shared_ptr<JitKernel> pointwise_kernel;
