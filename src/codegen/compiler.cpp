@@ -48,11 +48,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     FFTRequest child_request = forward_child_request(request);
+    // The generic Bluestein pipeline uses per-batch convolution buffers
+    // (a_buf/work_buf plus the child FFT workspace).  For large primes and
+    // large batch these can exceed device memory, so the batch is compiled at
+    // chunk granularity and executed as a sequence of chunks.
+    const int64_t chunk_batch = std::min<int64_t>(batch, kBluesteinMaxBatchChunk);
     auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan);
     auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(bluestein->fft_plan);
     auto row_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) : nullptr;
     auto col_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) : nullptr;
-    std::shared_ptr<CompiledRawNode> fft = compile_raw_node(bluestein->fft_plan, child_request, batch);
+    std::shared_ptr<CompiledRawNode> fft =
+        compile_raw_node(bluestein->fft_plan, child_request, chunk_batch);
     DeviceAllocation chirp =
         build_raw_bluestein_chirp(request, bluestein->length, request.direction == "inverse");
     DeviceAllocation b_time = build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
@@ -159,9 +165,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           std::move(b_fft_buf));
     }
     DeviceAllocation work_buf =
-        adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
+        adaptor::Memory(static_cast<std::size_t>(chunk_batch * bluestein->conv_length * element_bytes));
     DeviceAllocation a_buf =
-        adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
+        adaptor::Memory(static_cast<std::size_t>(chunk_batch * bluestein->conv_length * element_bytes));
     return std::make_shared<CompiledRawBluesteinNode>(
         bluestein->length,
         bluestein->conv_length,
@@ -173,7 +179,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::move(b_time),
         std::move(a_buf),
         std::move(work_buf),
-        std::move(b_fft_buf));
+        std::move(b_fft_buf),
+        chunk_batch);
   }
   if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
     FFTRequest child_request = forward_child_request(request);

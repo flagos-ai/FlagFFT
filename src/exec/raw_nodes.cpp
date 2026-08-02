@@ -206,9 +206,11 @@ CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
                                                    DeviceAllocation b_time,
                                                    DeviceAllocation a_buf,
                                                    DeviceAllocation work_buf,
-                                                   DeviceAllocation b_fft_buf)
+                                                   DeviceAllocation b_fft_buf,
+                                                   int64_t batch_chunk)
     : length(length),
       conv_length(conv_length),
+      batch_chunk(batch_chunk),
       fft(std::move(fft)),
       prepare_kernel(std::move(prepare_kernel)),
       pointwise_kernel(std::move(pointwise_kernel)),
@@ -248,46 +250,53 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
                                                 const RawExecutionContext &context) const {
   try {
     ensure_b_fft(context);
+    const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+    const int64_t stride_bytes = length * element_bytes;
+    for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+      const int64_t chunk = std::min(batch_chunk, context.batch - batch_offset);
+      const int64_t input_offset = batch_offset * stride_bytes;
+      const int64_t output_offset = batch_offset * stride_bytes;
 
-    std::vector<JitKernelArg> prepare_args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(chirp.get()),
-        JitKernelArg::device(a_buf.get()),
-        JitKernelArg::i64(length),
-        JitKernelArg::i64(conv_length),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), context.batch, 1);
+      std::vector<JitKernelArg> prepare_args = {
+          JitKernelArg::device(input + input_offset),
+          JitKernelArg::device(chirp.get()),
+          JitKernelArg::device(a_buf.get()),
+          JitKernelArg::i64(length),
+          JitKernelArg::i64(conv_length),
+          JitKernelArg::i32(static_cast<int32_t>(chunk)),
+      };
+      prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), chunk, 1);
 
-    RawExecutionContext child_context {context.request, context.stream, context.batch};
-    flagfftResult result = fft->execute(a_buf.get(), work_buf.get(), child_context);
-    if (result != FLAGFFT_SUCCESS) {
-      return result;
+      RawExecutionContext child_context {context.request, context.stream, chunk};
+      flagfftResult result = fft->execute(a_buf.get(), work_buf.get(), child_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      std::vector<JitKernelArg> pointwise_args = {
+          JitKernelArg::device(work_buf.get()),
+          JitKernelArg::device(b_fft_buf.get()),
+          JitKernelArg::device(a_buf.get()),
+          JitKernelArg::i64(conv_length),
+          JitKernelArg::i32(static_cast<int32_t>(chunk)),
+      };
+      pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 256), chunk, 1);
+
+      result = fft->execute(a_buf.get(), work_buf.get(), child_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      std::vector<JitKernelArg> finalize_args = {
+          JitKernelArg::device(work_buf.get()),
+          JitKernelArg::device(chirp.get()),
+          JitKernelArg::device(output + output_offset),
+          JitKernelArg::i64(length),
+          JitKernelArg::i64(conv_length),
+          JitKernelArg::i32(static_cast<int32_t>(chunk)),
+      };
+      finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, 256), chunk, 1);
     }
-
-    std::vector<JitKernelArg> pointwise_args = {
-        JitKernelArg::device(work_buf.get()),
-        JitKernelArg::device(b_fft_buf.get()),
-        JitKernelArg::device(a_buf.get()),
-        JitKernelArg::i64(conv_length),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 256), context.batch, 1);
-
-    result = fft->execute(a_buf.get(), work_buf.get(), child_context);
-    if (result != FLAGFFT_SUCCESS) {
-      return result;
-    }
-
-    std::vector<JitKernelArg> finalize_args = {
-        JitKernelArg::device(work_buf.get()),
-        JitKernelArg::device(chirp.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i64(length),
-        JitKernelArg::i64(conv_length),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, 256), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] Bluestein execute failed: %s\n", e.what());
