@@ -2788,6 +2788,21 @@ def _build_tiled_transpose_kernel_source(
     total_complex = n0 * n1
     total_float = total_complex * 2  # interleaved complex: 2 floats per element
     kernel_name = f"_tiled_transpose_kernel_n{n0}_{n1}_{suffix}"
+    use_register_transpose = total_complex <= 128 * 1024
+    if use_register_transpose:
+        transpose_lines = (
+            "\n            # Transpose the register tile so the flattened store axis is the\n"
+            "            # contiguous destination row.\n"
+            "            src_real = tl.trans(src_real)\n"
+            "            src_imag = tl.trans(src_imag)\n"
+            f"            row_mask_t = row_offsets[None, :] < {n0}\n"
+            f"            col_mask_t = col_offsets[:, None] < {n1}\n"
+            "            mask = col_mask_t & row_mask_t\n"
+        )
+        dst_offsets_expr = f"(safe_col[:, None] * {n0} + safe_row[None, :]) * 2"
+    else:
+        transpose_lines = ""
+        dst_offsets_expr = f"(safe_col[None, :] * {n0} + safe_row[:, None]) * 2"
     source = dedent(
         f"""
         @triton.jit
@@ -2825,17 +2840,10 @@ def _build_tiled_transpose_kernel_source(
             src_real = tl.load(in_ptr + src_elem_offsets, mask=mask, other={zero})
             src_imag = tl.load(in_ptr + src_elem_offsets + 1, mask=mask, other={zero})
 
-            # Transpose the register tile so the flattened store axis is the
-            # contiguous destination row.
-            src_real = tl.trans(src_real)
-            src_imag = tl.trans(src_imag)
-            # Transposed mask: destination rows come from source columns.
-            row_mask_t = row_offsets[None, :] < {n0}
-            col_mask_t = col_offsets[:, None] < {n1}
-            mask = col_mask_t & row_mask_t
+            {transpose_lines}
 
             # Destination element offsets in floats (transposed: batch * n0 * n1 * 2 + (col * n0 + row) * 2)
-            dst_elem_offsets = pid_batch * {total_float} + (safe_col[:, None] * {n0} + safe_row[None, :]) * 2
+            dst_elem_offsets = pid_batch * {total_float} + {dst_offsets_expr}
 
             # Store to destination (transposed)
             tl.store(out_ptr + dst_elem_offsets, src_real, mask=mask)

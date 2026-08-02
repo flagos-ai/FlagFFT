@@ -888,6 +888,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
+  const bool rc_eligible = n0 <= 256;
 
   // Build row FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -922,7 +923,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
   // RC fast path: when the column FFT is a plain leaf transform, run it
   // directly on the strided matrix columns and skip both transposes.
-  if (auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan)) {
+  if (auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+      rc_eligible && col_leaf) {
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft =
         compile_raw_strided_leaf(*col_leaf, request, n1);
@@ -935,7 +937,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   }
 
   // Small odd column lengths use DirectDFT; keep the same RC structure.
-  if (auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan)) {
+  if (auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
+      rc_eligible && col_direct) {
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft =
         compile_raw_strided_direct_dft(*col_direct, request, n1);
@@ -949,7 +952,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
   // Large column lengths that decompose into a four-step leaf pair can also
   // run without transposes through the strided four-step kernels.
-  if (auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan)) {
+  if (auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan);
+      rc_eligible && col_four) {
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft =
         compile_raw_four_step_strided_node(*col_four, request, batch * n1, n1);
@@ -991,6 +995,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const int64_t half_n1 = n1 / 2 + 1;
+  const bool rc_eligible = n0 <= 256;
 
   // Build row C2C FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -1013,11 +1018,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
   auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan);
   std::shared_ptr<CompiledRawNode> rc_col_fft;
-  if (col_leaf != nullptr) {
+  if (rc_eligible && col_leaf != nullptr) {
     rc_col_fft = compile_raw_strided_leaf(*col_leaf, request, half_n1);
-  } else if (col_direct != nullptr) {
+  } else if (rc_eligible && col_direct != nullptr) {
     rc_col_fft = compile_raw_strided_direct_dft(*col_direct, request, half_n1);
-  } else if (col_four != nullptr) {
+  } else if (rc_eligible && col_four != nullptr) {
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
@@ -1081,6 +1086,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const int64_t half_n1 = n1 / 2 + 1;
+  const bool rc_eligible = n0 <= 256;
 
   // C2R is the reverse of R2C:
   // 1. Transpose (n0, half_n1) -> (half_n1, n0)
@@ -1119,11 +1125,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
   auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan);
   std::shared_ptr<CompiledRawNode> rc_col_fft;
-  if (col_leaf != nullptr) {
+  if (rc_eligible && col_leaf != nullptr) {
     rc_col_fft = compile_raw_strided_leaf(*col_leaf, request, half_n1);
-  } else if (col_direct != nullptr) {
+  } else if (rc_eligible && col_direct != nullptr) {
     rc_col_fft = compile_raw_strided_direct_dft(*col_direct, request, half_n1);
-  } else if (col_four != nullptr) {
+  } else if (rc_eligible && col_four != nullptr) {
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
