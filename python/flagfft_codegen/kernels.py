@@ -1780,7 +1780,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
             if idx > 0:
                 body.extend(
                     [
-                        f"    inner_tw_idx{idx} = fft_thread + {32 * idx}",
+                        f"    inner_tw_idx{idx} = {idx} + {register_radix} * fft_thread",
                         (
                             f"    inner_tw_r{idx} = "
                             f"tl.load(tw1_r_ptr + inner_tw_idx{idx})"
