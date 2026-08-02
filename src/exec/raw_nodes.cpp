@@ -57,10 +57,15 @@ namespace {
   constexpr int64_t kPerm3dBlock = 1024;
   constexpr int64_t kMaxGridY = 65535;
 
+  int64_t grid_rows(const std::shared_ptr<JitKernel> &kernel, int64_t rows) {
+    return ceil_div(rows, kernel->rows_per_block);
+  }
+
   template <typename Launch>
-  void launch_grid_y_chunks(int64_t rows, Launch &&launch) {
-    for (int64_t offset = 0; offset < rows; offset += kMaxGridY) {
-      const int64_t chunk = std::min(kMaxGridY, rows - offset);
+  void launch_grid_y_chunks(int64_t rows, int64_t rows_per_block, Launch &&launch) {
+    const int64_t chunk_span = kMaxGridY * rows_per_block;
+    for (int64_t offset = 0; offset < rows; offset += chunk_span) {
+      const int64_t chunk = std::min(kMaxGridY * rows_per_block, rows - offset);
       launch(offset, chunk);
     }
   }
@@ -775,7 +780,8 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(input_distance),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
+    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block),
+                          grid_rows(expand_kernel, context.batch), 1);
 
     flagfftResult result = fft->execute(complex_input.get(), full_output.get(), context);
     if (result != FLAGFFT_SUCCESS) {
@@ -788,7 +794,8 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(output_distance),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    pack_kernel->launch(context.stream, pack_args, ceil_div(length / 2 + 1, block), context.batch, 1);
+    pack_kernel->launch(context.stream, pack_args, ceil_div(length / 2 + 1, block),
+                        grid_rows(pack_kernel, context.batch), 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] R2C execute failed: %s\n", e.what());
@@ -892,7 +899,8 @@ flagfftResult CompiledRawR2CFourStepHalfOutNode::execute(adaptor::DevicePtr inpu
         JitKernelArg::i64(input_distance),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
+    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block),
+                          grid_rows(expand_kernel, context.batch), 1);
 
     const bool fused_twiddle = row_kernel->tle_fused_twiddle;
     std::vector<JitKernelArg> row_args =
@@ -1024,7 +1032,8 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(input_distance),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
+    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block),
+                          grid_rows(expand_kernel, context.batch), 1);
 
     flagfftResult result = fft->execute(full_input.get(), full_output.get(), context);
     if (result != FLAGFFT_SUCCESS) {
@@ -1037,7 +1046,8 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(output_distance),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    pack_kernel->launch(context.stream, pack_args, ceil_div(length, block), context.batch, 1);
+    pack_kernel->launch(context.stream, pack_args, ceil_div(length, block),
+                        grid_rows(pack_kernel, context.batch), 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] C2R execute failed: %s\n", e.what());
@@ -1239,7 +1249,8 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(input_distance),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
+    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block),
+                          grid_rows(expand_kernel, total_rows), 1);
 
     // Step 2: Row C2C FFT
     // row_fft_buf: (batch*n0, n1) complex -> row_fft_buf: (batch*n0, n1) complex (in-place)
@@ -1260,7 +1271,8 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(output_distance),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
-    pack_kernel->launch(context.stream, pack_args, ceil_div(half_n1, block), total_rows, 1);
+    pack_kernel->launch(context.stream, pack_args, ceil_div(half_n1, block),
+                        grid_rows(pack_kernel, total_rows), 1);
 
     // Step 4: Transpose (n0, n1/2+1) -> (n1/2+1, n0)
     // transpose_fwd kernel is compiled for (n0, half_n1) -> (half_n1, n0)
@@ -1356,7 +1368,8 @@ flagfftResult CompiledRawC2RFourStepRealOutNode::execute(adaptor::DevicePtr inpu
         JitKernelArg::i64(input_distance),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block), context.batch, 1);
+    expand_kernel->launch(context.stream, expand_args, ceil_div(length, block),
+                          grid_rows(expand_kernel, context.batch), 1);
 
     const bool fused_twiddle = row_kernel->tle_fused_twiddle;
     std::vector<JitKernelArg> row_args =
@@ -1474,7 +1487,8 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(half_n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
+    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block),
+                          grid_rows(expand_kernel, total_rows), 1);
 
     // Step 5: Row C2C IFFT along n1 (batch = batch * n0, in-place)
     RawExecutionContext row_context {context.request, context.stream, total_rows};
@@ -1491,7 +1505,8 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
-    pack_kernel->launch(context.stream, pack_args, ceil_div(n1, block), total_rows, 1);
+    pack_kernel->launch(context.stream, pack_args, ceil_div(n1, block),
+                        grid_rows(pack_kernel, total_rows), 1);
 
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
@@ -1723,14 +1738,16 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     const int64_t real_bytes = complex_bytes / 2;
 
     // Step 1: Expand real -> complex rows of length n2.
-    launch_grid_y_chunks(total_rows, [&](int64_t row_offset, int64_t chunk_rows) {
+    launch_grid_y_chunks(total_rows, expand_kernel->rows_per_block,
+                         [&](int64_t row_offset, int64_t chunk_rows) {
       std::vector<JitKernelArg> expand_args = {
           JitKernelArg::device(input + row_offset * n2 * real_bytes),
           JitKernelArg::device(row_fft_buf.get() + row_offset * n2 * complex_bytes),
           JitKernelArg::i64(n2),
           JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
       };
-      expand_kernel->launch(context.stream, expand_args, ceil_div(n2, block), chunk_rows, 1);
+      expand_kernel->launch(context.stream, expand_args, ceil_div(n2, block),
+                            grid_rows(expand_kernel, chunk_rows), 1);
     });
 
     // Step 2: FFT along n2 in-place.
@@ -1741,14 +1758,16 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     }
 
     // Step 3: Half-pack rows into the output (n0, n1, half) layout.
-    launch_grid_y_chunks(total_rows, [&](int64_t row_offset, int64_t chunk_rows) {
+    launch_grid_y_chunks(total_rows, pack_kernel->rows_per_block,
+                         [&](int64_t row_offset, int64_t chunk_rows) {
       std::vector<JitKernelArg> pack_args = {
           JitKernelArg::device(row_fft_buf.get() + row_offset * n2 * complex_bytes),
           JitKernelArg::device(output + row_offset * half * complex_bytes),
           JitKernelArg::i64(half),
           JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
       };
-      pack_kernel->launch(context.stream, pack_args, ceil_div(half, block), chunk_rows, 1);
+      pack_kernel->launch(context.stream, pack_args, ceil_div(half, block),
+                          grid_rows(pack_kernel, chunk_rows), 1);
     });
 
     // Step 4: (n0,n1,half) -> (n0,half,n1), FFT along n1.
@@ -1849,14 +1868,16 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
 
     // Step 3: (n0,half,n1) -> (n0,n1,half), expand half -> full Hermitian.
     launch_perm3d(perm_021, context.stream, temp2.get(), temp1.get(), packed, batch);
-    launch_grid_y_chunks(total_rows, [&](int64_t row_offset, int64_t chunk_rows) {
+    launch_grid_y_chunks(total_rows, expand_kernel->rows_per_block,
+                         [&](int64_t row_offset, int64_t chunk_rows) {
       std::vector<JitKernelArg> expand_args = {
           JitKernelArg::device(temp1.get() + row_offset * half * complex_bytes),
           JitKernelArg::device(full_buf.get() + row_offset * n2 * complex_bytes),
           JitKernelArg::i64(half),
           JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
       };
-      expand_kernel->launch(context.stream, expand_args, ceil_div(n2, block), chunk_rows, 1);
+      expand_kernel->launch(context.stream, expand_args, ceil_div(n2, block),
+                            grid_rows(expand_kernel, chunk_rows), 1);
     });
 
     // Step 4: IFFT along n2 (in-place on full complex rows), pack complex -> real.
@@ -1865,14 +1886,16 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
-    launch_grid_y_chunks(total_rows, [&](int64_t row_offset, int64_t chunk_rows) {
+    launch_grid_y_chunks(total_rows, pack_kernel->rows_per_block,
+                         [&](int64_t row_offset, int64_t chunk_rows) {
       std::vector<JitKernelArg> pack_args = {
           JitKernelArg::device(full_buf.get() + row_offset * n2 * complex_bytes),
           JitKernelArg::device(output + row_offset * n2 * real_bytes),
           JitKernelArg::i64(n2),
           JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
       };
-      pack_kernel->launch(context.stream, pack_args, ceil_div(n2, block), chunk_rows, 1);
+      pack_kernel->launch(context.stream, pack_args, ceil_div(n2, block),
+                          grid_rows(pack_kernel, chunk_rows), 1);
     });
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {

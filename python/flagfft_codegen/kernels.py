@@ -163,7 +163,8 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
         return 1
 
     thread_pack = max(1, _LEAF_PACK_TARGET_THREADS // lane_block)
-    if plan.length <= 128:
+    tiny_single_stage = plan.length <= 8 and len(plan.factors) == 1
+    if not tiny_single_stage and plan.length <= 128:
         thread_pack = min(thread_pack, 4)
     if len(plan.factors) <= 1:
         return thread_pack
@@ -219,6 +220,14 @@ def four_step_row_inner_pack_for(
 ) -> int:
     if use_tle_fused_twiddle(n1, n2, dtype):
         return _FOUR_STEP_LARGE_INNER_PACK
+    if (
+        not _is_double_dtype(dtype)
+        and n1 <= _FOUR_STEP_ROW_INNER_PACK_MAX_N1
+        and n2 <= _FOUR_STEP_PACKED_COL_LEAF_MAX_N2
+    ):
+        # Mirror the column kernel: pack two inner columns per program so a
+        # 16-lane row leaf occupies a full warp instead of half of one.
+        return _FOUR_STEP_COL_INNER_PACK
     if plan is not None and (
         _is_double_dtype(dtype)
         or (
@@ -2478,10 +2487,30 @@ def _build_twiddle_reshape_pack_kernel_source(
     return kernel_name, source, ["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"]
 
 
+def _packed_layout(n_cols: int, block: int = 256) -> tuple[int, int]:
+    """Choose a (columns, rows-per-block) tile for tiny row-wise kernels.
+
+    Rows shorter than one block are packed so a full 256-lane tile stays
+    busy; rows longer than the block keep one row per block with the column
+    axis spread across grid.x (the historical behavior).
+    """
+    block_cols = min(block, _next_pow2(n_cols))
+    rows_per_block = max(1, block // block_cols)
+    return block_cols, rows_per_block
+
+
+def _next_pow2(value: int) -> int:
+    power = 1
+    while power < value:
+        power *= 2
+    return power
+
+
 def _build_real_to_complex_kernel_source(
     n: int, dtype: str
 ) -> tuple[str, list[str], list[str]]:
     block = 256
+    block_cols, rows_per_block = _packed_layout(n, block)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_real_to_complex_kernel_n{n}_{suffix}"
@@ -2496,15 +2525,25 @@ def _build_real_to_complex_kernel_source(
         ):
             pid_block = tl.program_id(0)
             pid_batch = tl.program_id(1)
-            offsets = pid_block * {block} + tl.arange(0, {block})
-            mask = offsets < {n}
-            xr = tl.load(in_ptr + pid_batch * input_distance + offsets, mask=mask, other={zero})
-            dst = out_ptr + (pid_batch * {n} + offsets) * 2
+            row_offsets = pid_batch * {rows_per_block} + tl.arange(0, {rows_per_block})[:, None]
+            col_offsets = pid_block * {block_cols} + tl.arange(0, {block_cols})[None, :]
+            mask = (row_offsets < nbatch) & (col_offsets < {n})
+            safe_rows = tl.minimum(row_offsets, nbatch - 1)
+            safe_cols = tl.minimum(col_offsets, {n - 1})
+            xr = tl.load(
+                in_ptr + safe_rows * input_distance + safe_cols, mask=mask, other={zero}
+            )
+            dst = out_ptr + (safe_rows * {n} + safe_cols) * 2
             tl.store(dst, xr, mask=mask)
             tl.store(dst + 1, 0.0, mask=mask)
         """
     )
-    return kernel_name, source, ["in_ptr", "out_ptr", "input_distance", "nbatch"]
+    return (
+        kernel_name,
+        source,
+        ["in_ptr", "out_ptr", "input_distance", "nbatch"],
+        rows_per_block,
+    )
 
 
 def _build_r2c_half_pack_kernel_source(
@@ -2512,6 +2551,7 @@ def _build_r2c_half_pack_kernel_source(
 ) -> tuple[str, list[str], list[str]]:
     half = n // 2 + 1
     block = 256
+    block_cols, rows_per_block = _packed_layout(half, block)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_r2c_half_pack_kernel_n{n}_{suffix}"
@@ -2526,25 +2566,34 @@ def _build_r2c_half_pack_kernel_source(
         ):
             pid_block = tl.program_id(0)
             pid_batch = tl.program_id(1)
-            offsets = pid_block * {block} + tl.arange(0, {block})
-            mask = offsets < {half}
-            src = in_ptr + (pid_batch * {n} + offsets) * 2
+            row_offsets = pid_batch * {rows_per_block} + tl.arange(0, {rows_per_block})[:, None]
+            col_offsets = pid_block * {block_cols} + tl.arange(0, {block_cols})[None, :]
+            mask = (row_offsets < nbatch) & (col_offsets < {half})
+            safe_rows = tl.minimum(row_offsets, nbatch - 1)
+            safe_cols = tl.minimum(col_offsets, {half - 1})
+            src = in_ptr + (safe_rows * {n} + safe_cols) * 2
             xr = tl.load(src, mask=mask, other={zero})
             xi = tl.load(src + 1, mask=mask, other={zero})
-            dst = out_ptr + (pid_batch * output_distance + offsets) * 2
+            dst = out_ptr + (safe_rows * output_distance + safe_cols) * 2
             tl.store(dst, xr, mask=mask)
             tl.store(dst + 1, xi, mask=mask)
         """
     )
-    return kernel_name, source, ["in_ptr", "out_ptr", "output_distance", "nbatch"]
+    return (
+        kernel_name,
+        source,
+        ["in_ptr", "out_ptr", "output_distance", "nbatch"],
+        rows_per_block,
+    )
 
 
 def _build_compact_to_hermitian_full_kernel_source(
     n: int, dtype: str
 ) -> tuple[str, list[str], list[str]]:
     half = n // 2 + 1
-    nyquist_guard = f" | (offsets == {n // 2})" if n % 2 == 0 else ""
     block = 256
+    block_cols, rows_per_block = _packed_layout(n, block)
+    nyquist_guard = f" | (safe_cols == {n // 2})" if n % 2 == 0 else ""
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_compact_to_hermitian_full_kernel_n{n}_{suffix}"
@@ -2559,26 +2608,35 @@ def _build_compact_to_hermitian_full_kernel_source(
         ):
             pid_block = tl.program_id(0)
             pid_batch = tl.program_id(1)
-            offsets = pid_block * {block} + tl.arange(0, {block})
-            mask = offsets < {n}
-            src_k = tl.where(offsets < {half}, offsets, {n} - offsets)
-            src = in_ptr + (pid_batch * input_distance + src_k) * 2
+            row_offsets = pid_batch * {rows_per_block} + tl.arange(0, {rows_per_block})[:, None]
+            col_offsets = pid_block * {block_cols} + tl.arange(0, {block_cols})[None, :]
+            mask = (row_offsets < nbatch) & (col_offsets < {n})
+            safe_rows = tl.minimum(row_offsets, nbatch - 1)
+            safe_cols = tl.minimum(col_offsets, {n - 1})
+            src_k = tl.where(safe_cols < {half}, safe_cols, {n} - safe_cols)
+            src = in_ptr + (safe_rows * input_distance + src_k) * 2
             xr = tl.load(src, mask=mask, other={zero})
             xi = tl.load(src + 1, mask=mask, other={zero})
-            xi = tl.where(offsets < {half}, xi, -xi)
-            xi = tl.where((offsets == 0){nyquist_guard}, 0.0, xi)
-            dst = out_ptr + (pid_batch * {n} + offsets) * 2
+            xi = tl.where(safe_cols < {half}, xi, -xi)
+            xi = tl.where((safe_cols == 0){nyquist_guard}, 0.0, xi)
+            dst = out_ptr + (safe_rows * {n} + safe_cols) * 2
             tl.store(dst, xr, mask=mask)
             tl.store(dst + 1, xi, mask=mask)
         """
     )
-    return kernel_name, source, ["in_ptr", "out_ptr", "input_distance", "nbatch"]
+    return (
+        kernel_name,
+        source,
+        ["in_ptr", "out_ptr", "input_distance", "nbatch"],
+        rows_per_block,
+    )
 
 
 def _build_complex_to_real_kernel_source(
     n: int, dtype: str
 ) -> tuple[str, list[str], list[str]]:
     block = 256
+    block_cols, rows_per_block = _packed_layout(n, block)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_complex_to_real_kernel_n{n}_{suffix}"
@@ -2593,15 +2651,23 @@ def _build_complex_to_real_kernel_source(
         ):
             pid_block = tl.program_id(0)
             pid_batch = tl.program_id(1)
-            offsets = pid_block * {block} + tl.arange(0, {block})
-            mask = offsets < {n}
-            src = in_ptr + (pid_batch * {n} + offsets) * 2
+            row_offsets = pid_batch * {rows_per_block} + tl.arange(0, {rows_per_block})[:, None]
+            col_offsets = pid_block * {block_cols} + tl.arange(0, {block_cols})[None, :]
+            mask = (row_offsets < nbatch) & (col_offsets < {n})
+            safe_rows = tl.minimum(row_offsets, nbatch - 1)
+            safe_cols = tl.minimum(col_offsets, {n - 1})
+            src = in_ptr + (safe_rows * {n} + safe_cols) * 2
             xr = tl.load(src, mask=mask, other={zero})
-            dst = out_ptr + pid_batch * output_distance + offsets
+            dst = out_ptr + safe_rows * output_distance + safe_cols
             tl.store(dst, xr, mask=mask)
         """
     )
-    return kernel_name, source, ["in_ptr", "out_ptr", "output_distance", "nbatch"]
+    return (
+        kernel_name,
+        source,
+        ["in_ptr", "out_ptr", "output_distance", "nbatch"],
+        rows_per_block,
+    )
 
 
 # NOTE: tile_size default (32) must match the constexpr tile_size in

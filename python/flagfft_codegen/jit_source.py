@@ -534,23 +534,33 @@ def _emit_r2c_pointwise_jit_kernel(
     out_dir: Path,
 ) -> dict[str, Any]:
     if kernel == "real_to_complex":
-        kernel_name, kernel_source, arg_names = _build_real_to_complex_kernel_source(
-            n, dtype
-        )
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            rows_per_block,
+        ) = _build_real_to_complex_kernel_source(n, dtype)
     elif kernel == "r2c_half_pack":
-        kernel_name, kernel_source, arg_names = _build_r2c_half_pack_kernel_source(
-            n, dtype
-        )
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            rows_per_block,
+        ) = _build_r2c_half_pack_kernel_source(n, dtype)
     elif kernel == "compact_to_hermitian_full":
         (
             kernel_name,
             kernel_source,
             arg_names,
+            rows_per_block,
         ) = _build_compact_to_hermitian_full_kernel_source(n, dtype)
     elif kernel == "complex_to_real":
-        kernel_name, kernel_source, arg_names = _build_complex_to_real_kernel_source(
-            n, dtype
-        )
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            rows_per_block,
+        ) = _build_complex_to_real_kernel_source(n, dtype)
     else:
         raise ValueError(f"unsupported R2C pointwise kernel kind: {kernel}")
 
@@ -579,6 +589,7 @@ def _emit_r2c_pointwise_jit_kernel(
         "dtype": dtype,
         "length": int(n),
         "block": 256,
+        "rows_per_block": int(rows_per_block),
     }
     (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
     return metadata
