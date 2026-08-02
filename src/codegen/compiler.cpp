@@ -51,8 +51,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // The generic Bluestein pipeline uses per-batch convolution buffers
     // (a_buf/work_buf plus the child FFT workspace).  For large primes and
     // large batch these can exceed device memory, so the batch is compiled at
-    // chunk granularity and executed as a sequence of chunks.
-    const int64_t chunk_batch = std::min<int64_t>(batch, kBluesteinMaxBatchChunk);
+    // chunk granularity and executed as a sequence of chunks.  The chunk is
+    // sized by a byte budget instead of a fixed count: small convolutions
+    // (e.g. 997 -> conv 2048) run in one launch, while 2^20 convolutions keep
+    // the previous 32-transform chunks.
+    const int64_t bluestein_element_bytes = complex_element_bytes(request.input_dtype);
+    const int64_t conv_bytes = bluestein->conv_length * bluestein_element_bytes;
+    constexpr int64_t kBluesteinChunkByteBudget = 256 * 1024 * 1024;
+    const int64_t chunk_batch = std::min<int64_t>(
+        batch,
+        std::max<int64_t>(1, kBluesteinChunkByteBudget / std::max<int64_t>(1, conv_bytes)));
     auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan);
     auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(bluestein->fft_plan);
     auto row_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) : nullptr;
