@@ -45,6 +45,10 @@ inline constexpr int64_t kPlanSchemaVersion = 3;
 inline constexpr int64_t kDirectDftMaxN = 128;
 inline constexpr int64_t kLeafMaxN = 4096;
 inline constexpr int64_t kDynamicSmemFallbackBytes = 48 * 1024;
+// Bluestein convolution workspace is allocated per batch.  Large prime sizes
+// combined with large batch can exceed device memory during plan setup, so the
+// batch is processed in chunks of at most this many transforms.
+inline constexpr int64_t kBluesteinMaxBatchChunk = 32;
 inline constexpr int64_t kMaxLanes = 128;
 inline constexpr double kPi = 3.14159265358979323846264338327950288;
 inline constexpr int64_t kFourStepTileRows = 32;
