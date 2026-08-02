@@ -71,12 +71,15 @@ namespace {
                      adaptor::DevicePtr output,
                      int64_t elements_per_batch,
                      int64_t batch) {
+    const int64_t grid_x =
+        kernel->grid_x_override > 0 ? kernel->grid_x_override
+                                    : ceil_div(elements_per_batch, kPerm3dBlock);
     std::vector<JitKernelArg> args = {
         JitKernelArg::device(input),
         JitKernelArg::device(output),
         JitKernelArg::i32(static_cast<int32_t>(batch)),
     };
-    kernel->launch(stream, args, ceil_div(elements_per_batch, kPerm3dBlock), 1, batch);
+    kernel->launch(stream, args, grid_x, 1, batch);
   }
 
 }  // namespace
