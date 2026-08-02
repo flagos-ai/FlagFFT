@@ -90,6 +90,7 @@ class LeafPlan:
 
 LeafIoMode = Literal[
     "contiguous",
+    "strided",
     "contiguous_r2c",
     "contiguous_c2r",
     "bluestein_prepare_leaf",
@@ -102,6 +103,8 @@ LeafIoMode = Literal[
     "four_step_real_row",
     "four_step_hermitian_row",
     "four_step_col",
+    "four_step_row_strided",
+    "four_step_col_strided",
     "four_step_r2c_col",
     "four_step_c2r_col",
 ]
@@ -272,6 +275,7 @@ def _use_single_smem_buffer(
     """Reuse one shared buffer between generated mixed-radix stages."""
     return (
         io_mode.startswith("four_step_")
+        and not io_mode.endswith("_strided")
         and use_tle_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
         and plan.dtype == "complex64"
         and plan.length == 1024
@@ -1045,6 +1049,15 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other={zero})"
                 )
+            elif io_mode == "strided":
+                lines.append(
+                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2, "
+                    f"mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2 + 1, "
+                    f"mask=lane_mask, other={zero})"
+                )
             elif io_mode == "contiguous_r2c":
                 lines.append(
                     f"{indent}r{j} = tl.load(in_ptr + input_batch_base + in{j}, mask=lane_mask, other={zero})"
@@ -1181,6 +1194,20 @@ def _emit_stage_block(
                     f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
                     f"mask=lane_mask, other={zero})"
                 )
+            elif io_mode == "four_step_row_strided":
+                lines.append(
+                    f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
+                )
+                lines.append(
+                    f"{indent}r{j} = tl.load(in_ptr + "
+                    f"(four_step_batch_base + src_idx{j} * outer_stride) * 2, "
+                    f"mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + "
+                    f"(four_step_batch_base + src_idx{j} * outer_stride) * 2 + 1, "
+                    f"mask=lane_mask, other={zero})"
+                )
             elif io_mode == "four_step_real_row":
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
@@ -1216,6 +1243,31 @@ def _emit_stage_block(
                 )
                 lines.append(
                     f"{indent}i{j} = tl.where((src_idx{j} == 0){nyquist_guard}, 0.0, i{j})"
+                )
+            elif io_mode == "four_step_col_strided":
+                lines.append(
+                    f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
+                )
+                lines.append(
+                    f"{indent}r{j} = tl.load(in_ptr + "
+                    f"(four_step_batch_base + src_idx{j} * outer_stride) * 2, "
+                    f"mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + "
+                    f"(four_step_batch_base + src_idx{j} * outer_stride) * 2 + 1, "
+                    f"mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, "
+                    f"mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, "
+                    f"mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                 )
             else:
                 lines.append(
@@ -1287,13 +1339,23 @@ def _emit_stage_block(
     for j in range(radix):
         if is_last:
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
-            if io_mode in {"contiguous", "bluestein_prepare_leaf"}:
-                lines.append(
-                    f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j}, mask=lane_mask)"
-                )
-                lines.append(
-                    f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
-                )
+            if io_mode in {"contiguous", "strided", "bluestein_prepare_leaf"}:
+                if io_mode == "strided":
+                    lines.append(
+                        f"{indent}tl.store(out_ptr + (batch_base + out_idx{j} * outer_stride) * 2, "
+                        f"r{j}, mask=lane_mask)"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(out_ptr + (batch_base + out_idx{j} * outer_stride) * 2 + 1, "
+                        f"i{j}, mask=lane_mask)"
+                    )
+                else:
+                    lines.append(
+                        f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j}, mask=lane_mask)"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+                    )
             elif io_mode == "contiguous_r2c":
                 lines.append(
                     f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {n // 2 + 1})"
@@ -1395,6 +1457,20 @@ def _emit_stage_block(
                 lines.append(f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * {prime_n} + dst_idx{j}) * 2")
                 lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
                 lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
+            elif io_mode == "four_step_row_strided":
+                lines.append(
+                    f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + "
+                    f"(four_step_batch_base + dst_idx{j} * outer_stride) * 2, "
+                    f"r{j}, mask=lane_mask)"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + "
+                    f"(four_step_batch_base + dst_idx{j} * outer_stride) * 2 + 1, "
+                    f"i{j}, mask=lane_mask)"
+                )
             elif io_mode in {
                 "four_step_row",
                 "four_step_real_row",
@@ -1467,6 +1543,20 @@ def _emit_stage_block(
                     f"{indent}dst_ptr{j} = out_ptr + four_step_batch * output_distance + dst_idx{j}"
                 )
                 lines.append(f"{indent}tl.store(dst_ptr{j}, r{j}, mask=lane_mask)")
+            elif io_mode == "four_step_col_strided":
+                lines.append(
+                    f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + "
+                    f"(four_step_batch_base + dst_idx{j} * outer_stride) * 2, "
+                    f"r{j}, mask=lane_mask)"
+                )
+                lines.append(
+                    f"{indent}tl.store(out_ptr + "
+                    f"(four_step_batch_base + dst_idx{j} * outer_stride) * 2 + 1, "
+                    f"i{j}, mask=lane_mask)"
+                )
             else:
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
@@ -1532,6 +1622,8 @@ def _leaf_kernel_params_for_io(
     params = _leaf_kernel_params(
         plan, include_four_step_twiddle=include_four_step_twiddle
     )
+    if io_mode == "strided":
+        params.append("outer_stride")
     if io_mode == "bluestein_prepare_leaf":
         params.insert(1, "chirp_ptr")
     elif io_mode == "bluestein_finish_leaf":
@@ -1556,6 +1648,8 @@ def _leaf_kernel_params_for_io(
         "four_step_c2r_col",
     }:
         params.append("output_distance")
+    if io_mode in {"four_step_row_strided", "four_step_col_strided"}:
+        params.append("outer_stride")
     params.append("nbatch")
     return params
 
@@ -1567,6 +1661,8 @@ def _use_thread_local_mixed_leaf(
     four_step_n1: int,
     four_step_n2: int,
 ) -> bool:
+    if io_mode.endswith("_strided"):
+        return False
     if io_mode.startswith("bluestein_four_step_"):
         return False
     if len(plan.factors) != 2:
@@ -2027,6 +2123,7 @@ def _build_leaf_kernel_source_for_io(
     lane_block = lane_block_for(active_lanes)
     contiguous_modes = {
         "contiguous",
+        "strided",
         "contiguous_r2c",
         "contiguous_c2r",
         "bluestein_prepare_leaf",
@@ -2040,6 +2137,7 @@ def _build_leaf_kernel_source_for_io(
     )
     row_modes = {
         "four_step_row",
+        "four_step_row_strided",
         "four_step_real_row",
         "four_step_hermitian_row",
         "bluestein_four_step_prepare_row",
@@ -2047,22 +2145,36 @@ def _build_leaf_kernel_source_for_io(
     }
     col_modes = {
         "four_step_col",
+        "four_step_col_strided",
         "four_step_r2c_col",
         "four_step_c2r_col",
         "bluestein_four_step_finish_col",
     }
+    is_strided_four_step = io_mode in {"four_step_row_strided", "four_step_col_strided"}
     if io_mode in row_modes:
-        inner_pack = four_step_row_inner_pack_for(
-            four_step_n1, four_step_n2, plan.dtype, plan
+        inner_pack = (
+            1
+            if is_strided_four_step
+            else four_step_row_inner_pack_for(
+                four_step_n1, four_step_n2, plan.dtype, plan
+            )
         )
     elif io_mode in col_modes:
-        inner_pack = four_step_col_inner_pack_for(
-            four_step_n1, four_step_n2, plan.dtype, plan
+        inner_pack = (
+            1
+            if is_strided_four_step
+            else four_step_col_inner_pack_for(
+                four_step_n1, four_step_n2, plan.dtype, plan
+            )
         )
     else:
         inner_pack = 1
-    fuse_twiddle_into_row = use_four_step_row_fused_twiddle(
-        four_step_n1, four_step_n2, plan.dtype
+    fuse_twiddle_into_row = (
+        False
+        if is_strided_four_step
+        else use_four_step_row_fused_twiddle(
+            four_step_n1, four_step_n2, plan.dtype
+        )
     )
     single_smem_buffer = _use_single_smem_buffer(
         plan,
@@ -2090,6 +2202,7 @@ def _build_leaf_kernel_source_for_io(
             else io_mode
             in {
                 "four_step_col",
+                "four_step_col_strided",
                 "four_step_r2c_col",
                 "four_step_c2r_col",
                 "bluestein_four_step_finish_col",
@@ -2101,6 +2214,9 @@ def _build_leaf_kernel_source_for_io(
     if io_mode == "contiguous":
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = f"{kernel_prefix}_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "strided":
+        kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
+        kernel_name = f"{kernel_prefix}_strided_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_r2c":
         kernel_name = f"r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
@@ -2155,6 +2271,12 @@ def _build_leaf_kernel_source_for_io(
             body.append("    current_batch = batch_id")
             body.append("    lane = lane_vec")
             body.append(f"    lane_mask = lane < {active_lanes}")
+            if io_mode == "strided":
+                body.append("    batch_index = current_batch // outer_stride")
+                body.append(
+                    f"    batch_base = batch_index * ({n} * outer_stride) + "
+                    "(current_batch - batch_index * outer_stride)"
+                )
         else:
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
@@ -2162,10 +2284,18 @@ def _build_leaf_kernel_source_for_io(
             body.append(
                 f"    lane_mask = (lane < {active_lanes}) & (current_batch < nbatch)"
             )
-            body.append(f"    batch_base = current_batch * {n}")
+            if io_mode == "strided":
+                body.append("    batch_index = current_batch // outer_stride")
+                body.append(
+                    f"    batch_base = batch_index * ({n} * outer_stride) + "
+                    "(current_batch - batch_index * outer_stride)"
+                )
+            else:
+                body.append(f"    batch_base = current_batch * {n}")
             body.append(f"    smem_offset = batch_slot * {smem_slot_stride}")
         if batch_pack == 1:
-            body.append(f"    batch_base = current_batch * {n}")
+            if io_mode != "strided":
+                body.append(f"    batch_base = current_batch * {n}")
         if io_mode in {"contiguous_r2c", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
             body.append("    output_batch_base = current_batch * output_distance")
@@ -2185,9 +2315,17 @@ def _build_leaf_kernel_source_for_io(
         else:
             body.append("    lane = lane_vec")
             body.append(f"    lane_mask = lane < {active_lanes}")
-        body.append(
-            f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}"
-        )
+        if is_strided_four_step:
+            body.append("    four_step_batch_index = four_step_batch // outer_stride")
+            body.append(
+                f"    four_step_batch_base = "
+                f"four_step_batch_index * ({four_step_n1 * four_step_n2} * outer_stride) + "
+                "(four_step_batch - four_step_batch_index * outer_stride)"
+            )
+        else:
+            body.append(
+                f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}"
+            )
 
     if uses_cooperative_stage_lanes:
         body.append("    base_lane_mask = lane_mask")
@@ -2298,13 +2436,39 @@ def _build_four_step_col_kernel_source(
 
 
 def _build_direct_dft_kernel_source(
-    n: int, direction: Literal["forward", "inverse"], dtype: str
+    n: int,
+    direction: Literal["forward", "inverse"],
+    dtype: str,
+    *,
+    strided: bool = False,
 ) -> tuple[str, str, list[str]]:
     block = lane_block_for(n)
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     suffix = _dtype_suffix(dtype)
     prefix = "direct_idft" if direction == "inverse" else "direct_dft"
-    kernel_name = f"{prefix}_kernel_n{n}_{suffix}_b{block}"
+    kernel_name = (
+        f"{prefix}_strided_kernel_n{n}_{suffix}_b{block}"
+        if strided
+        else f"{prefix}_kernel_n{n}_{suffix}_b{block}"
+    )
+    in_placeholder = (
+        "base + j * outer_stride"
+        if strided
+        else f"pid_batch * {n} + j"
+    )
+    out_placeholder = (
+        "base + k * outer_stride"
+        if strided
+        else f"pid_batch * {n} + k"
+    )
+    param_extra = "            outer_stride,\n" if strided else ""
+    base_init = (
+        "            batch_index = pid_batch // outer_stride\n"
+        f"            base = batch_index * ({n} * outer_stride) + "
+        "(pid_batch - batch_index * outer_stride)\n"
+        if strided
+        else ""
+    )
     compensation_init = ""
     accumulation = """
                 acc_r += xr * wr - xi * wi
@@ -2315,12 +2479,12 @@ def _build_direct_dft_kernel_source(
                 j = j_base + tl.arange(0, 32)[:, None]
                 j_mask = j < {n}
                 xr = tl.load(
-                    in_ptr + (pid_batch * {n} + j) * 2,
+                    in_ptr + ({in_placeholder}) * 2,
                     mask=j_mask,
                     other=0.0,
                 )
                 xi = tl.load(
-                    in_ptr + (pid_batch * {n} + j) * 2 + 1,
+                    in_ptr + ({in_placeholder}) * 2 + 1,
                     mask=j_mask,
                     other=0.0,
                 )
@@ -2350,8 +2514,8 @@ def _build_direct_dft_kernel_source(
         """
         loop = f"""
             for j in tl.range(0, {n}):
-                xr = tl.load(in_ptr + (pid_batch * {n} + j) * 2)
-                xi = tl.load(in_ptr + (pid_batch * {n} + j) * 2 + 1)
+                xr = tl.load(in_ptr + ({in_placeholder}) * 2)
+                xi = tl.load(in_ptr + ({in_placeholder}) * 2 + 1)
                 wr = tl.load(dft_r_ptr + k * {n} + j, mask=mask, other=0.0)
                 wi = tl.load(dft_i_ptr + k * {n} + j, mask=mask, other=0.0)
                 {accumulation}
@@ -2364,18 +2528,18 @@ def _build_direct_dft_kernel_source(
             out_ptr,
             dft_r_ptr,
             dft_i_ptr,
-            nbatch,
+{param_extra}            nbatch,
         ):
             pid_batch = tl.program_id(0)
             if pid_batch >= nbatch:
                 return
-            k = tl.arange(0, {block})
+{base_init}            k = tl.arange(0, {block})
             mask = k < {n}
             acc_r = tl.zeros(({block},), dtype={acc_dtype})
             acc_i = tl.zeros(({block},), dtype={acc_dtype})
             {compensation_init}
             {loop}
-            dst = out_ptr + (pid_batch * {n} + k) * 2
+            dst = out_ptr + ({out_placeholder}) * 2
             tl.store(dst, acc_r, mask=mask)
             tl.store(dst + 1, acc_i, mask=mask)
         """
@@ -2383,7 +2547,11 @@ def _build_direct_dft_kernel_source(
     return (
         kernel_name,
         source,
-        ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"],
+        (
+            ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "outer_stride", "nbatch"]
+            if strided
+            else ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+        ),
     )
 
 
@@ -2612,8 +2780,8 @@ def _build_tiled_transpose_kernel_source(
     """Emit a tiled (batch, M=n0, N=n1) -> (batch, N, M) transpose kernel.
 
     Decomposes the matrix into tile_size x tile_size blocks across the grid — each
-    program loads one block from global memory and writes it transposed.  No shared
-    memory is used; the tiling is purely for grid parallelism.
+    program loads one coalesced tile from global memory, transposes it in registers
+    with tl.trans, and writes it back with coalesced stores.
     """
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
@@ -2657,8 +2825,17 @@ def _build_tiled_transpose_kernel_source(
             src_real = tl.load(in_ptr + src_elem_offsets, mask=mask, other={zero})
             src_imag = tl.load(in_ptr + src_elem_offsets + 1, mask=mask, other={zero})
 
+            # Transpose the register tile so the flattened store axis is the
+            # contiguous destination row.
+            src_real = tl.trans(src_real)
+            src_imag = tl.trans(src_imag)
+            # Transposed mask: destination rows come from source columns.
+            row_mask_t = row_offsets[None, :] < {n0}
+            col_mask_t = col_offsets[:, None] < {n1}
+            mask = col_mask_t & row_mask_t
+
             # Destination element offsets in floats (transposed: batch * n0 * n1 * 2 + (col * n0 + row) * 2)
-            dst_elem_offsets = pid_batch * {total_float} + (safe_col[None, :] * {n0} + safe_row[:, None]) * 2
+            dst_elem_offsets = pid_batch * {total_float} + (safe_col[:, None] * {n0} + safe_row[None, :]) * 2
 
             # Store to destination (transposed)
             tl.store(out_ptr + dst_elem_offsets, src_real, mask=mask)

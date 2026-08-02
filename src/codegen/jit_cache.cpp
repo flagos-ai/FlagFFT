@@ -144,6 +144,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Leaf:
       kernel_kind = "leaf";
       break;
+    case KernelKind::LeafStrided:
+      kernel_kind = "leaf_strided";
+      break;
     case KernelKind::LeafR2C:
       kernel_kind = "leaf_r2c";
       break;
@@ -171,8 +174,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::DirectDft:
       kernel_kind = "direct_dft";
       break;
+    case KernelKind::DirectDftStrided:
+      kernel_kind = "direct_dft_strided";
+      break;
     case KernelKind::FourStepRow:
       kernel_kind = "four_step_row";
+      break;
+    case KernelKind::FourStepRowStrided:
+      kernel_kind = "four_step_row_strided";
       break;
     case KernelKind::FourStepRealRow:
       kernel_kind = "four_step_real_row";
@@ -182,6 +191,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       break;
     case KernelKind::FourStepCol:
       kernel_kind = "four_step_col";
+      break;
+    case KernelKind::FourStepColStrided:
+      kernel_kind = "four_step_col_strided";
       break;
     case KernelKind::FourStepR2CCol:
       kernel_kind = "four_step_r2c_col";
@@ -238,25 +250,30 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(out_dir().string()) << " --dtype "
               << shell_quote(key.dtype);
-  if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
+  if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
+      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
       key.kind == KernelKind::LeafBluestein ||
       key.kind == KernelKind::LeafBluesteinPrepare || key.kind == KernelKind::LeafBluesteinFinish ||
       key.kind == KernelKind::BluesteinFourStepPrepareRow ||
       key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
       key.kind == KernelKind::BluesteinFourStepFinishCol ||
-      key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRealRow ||
+      key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
+      key.kind == KernelKind::FourStepRealRow ||
       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
+      key.kind == KernelKind::FourStepColStrided ||
       key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
     jit_command << " --length " << key.length << " --factors " << shell_quote(join_ints(key.factors))
                 << " --lanes " << key.lanes << " --num-warps " << key.num_warps << " --generic-radices "
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
                 << " --direction " << shell_quote(key.direction);
   }
-  if (key.kind == KernelKind::DirectDft) {
+  if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
   }
-  if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRealRow ||
+  if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
+      key.kind == KernelKind::FourStepRealRow ||
       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
+      key.kind == KernelKind::FourStepColStrided ||
       key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol ||
       key.kind == KernelKind::BluesteinFourStepPrepareRow ||
       key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
@@ -298,8 +315,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
-  if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRealRow ||
+  if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
+      key.kind == KernelKind::FourStepRealRow ||
       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
+      key.kind == KernelKind::FourStepColStrided ||
       key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
     kernel->inner_pack = json_int_field(artifact_json, "inner_pack");
     kernel->tle_fused_twiddle = json_bool_field(artifact_json, "tle_fused_twiddle");

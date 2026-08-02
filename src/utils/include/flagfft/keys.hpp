@@ -102,6 +102,15 @@ struct KernelKey {
                         int64_t num_warps,
                         std::vector<int64_t> generic_radices,
                         int64_t smem_size);
+  static KernelKey leaf_strided(std::string target,
+                                std::string direction,
+                                std::string dtype,
+                                int64_t length,
+                                std::vector<int64_t> factors,
+                                int64_t lanes,
+                                int64_t num_warps,
+                                std::vector<int64_t> generic_radices,
+                                int64_t smem_size);
   static KernelKey leaf_r2c(std::string target,
                             std::string direction,
                             std::string dtype,
@@ -151,6 +160,10 @@ struct KernelKey {
                                          std::vector<int64_t> generic_radices,
                                          int64_t smem_size);
   static KernelKey direct_dft(std::string target, std::string direction, std::string dtype, int64_t length);
+  static KernelKey direct_dft_strided(std::string target,
+                                      std::string direction,
+                                      std::string dtype,
+                                      int64_t length);
   static KernelKey four_step_row(std::string target,
                                  std::string direction,
                                  std::string dtype,
@@ -162,6 +175,17 @@ struct KernelKey {
                                  int64_t num_warps,
                                  std::vector<int64_t> generic_radices,
                                  int64_t smem_size);
+  static KernelKey four_step_row_strided(std::string target,
+                                         std::string direction,
+                                         std::string dtype,
+                                         int64_t n1,
+                                         int64_t n2,
+                                         int64_t length,
+                                         std::vector<int64_t> factors,
+                                         int64_t lanes,
+                                         int64_t num_warps,
+                                         std::vector<int64_t> generic_radices,
+                                         int64_t smem_size);
   static KernelKey four_step_real_row(std::string target,
                                       std::string direction,
                                       std::string dtype,
@@ -195,6 +219,17 @@ struct KernelKey {
                                  int64_t num_warps,
                                  std::vector<int64_t> generic_radices,
                                  int64_t smem_size);
+  static KernelKey four_step_col_strided(std::string target,
+                                         std::string direction,
+                                         std::string dtype,
+                                         int64_t n1,
+                                         int64_t n2,
+                                         int64_t length,
+                                         std::vector<int64_t> factors,
+                                         int64_t lanes,
+                                         int64_t num_warps,
+                                         std::vector<int64_t> generic_radices,
+                                         int64_t smem_size);
   static KernelKey four_step_r2c_col(std::string target,
                                      std::string direction,
                                      std::string dtype,

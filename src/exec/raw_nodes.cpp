@@ -160,6 +160,158 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawFourStepStridedNode::CompiledRawFourStepStridedNode(
+    int64_t length,
+    int64_t n1,
+    int64_t n2,
+    int64_t outer_stride,
+    std::shared_ptr<JitKernel> row_kernel,
+    std::vector<DeviceAllocation> row_tables,
+    std::shared_ptr<JitKernel> col_kernel,
+    std::vector<DeviceAllocation> col_tables,
+    DeviceAllocation twiddle,
+    DeviceAllocation stage1)
+    : length(length),
+      n1(n1),
+      n2(n2),
+      outer_stride(outer_stride),
+      row_kernel(std::move(row_kernel)),
+      row_tables(std::move(row_tables)),
+      col_kernel(std::move(col_kernel)),
+      col_tables(std::move(col_tables)),
+      twiddle(std::move(twiddle)),
+      stage1(std::move(stage1)) {
+}
+
+std::string CompiledRawFourStepStridedNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawFourStepStrided(n=" << length << ", n1=" << n1 << ", n2=" << n2
+      << ", outer_stride=" << outer_stride
+      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawFourStepStridedNode::execute(adaptor::DevicePtr input,
+                                                      adaptor::DevicePtr output,
+                                                      const RawExecutionContext &context) const {
+  try {
+    auto append_strided = [&](std::vector<JitKernelArg> &args,
+                              const std::vector<DeviceAllocation> &tables) {
+      for (const DeviceAllocation &table : tables) {
+        args.push_back(JitKernelArg::device(table.get()));
+      }
+      args.push_back(JitKernelArg::i64(outer_stride));
+      args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
+    };
+
+    std::vector<JitKernelArg> row_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(stage1.get()),
+    };
+    append_strided(row_args, row_tables);
+    row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), context.batch, 1);
+
+    std::vector<JitKernelArg> col_args = {
+        JitKernelArg::device(stage1.get()),
+        JitKernelArg::device(twiddle.get()),
+        JitKernelArg::device(output),
+    };
+    append_strided(col_args, col_tables);
+    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] FourStepStrided execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawStridedLeafNode::CompiledRawStridedLeafNode(int64_t length,
+                                                       int64_t outer_stride,
+                                                       std::shared_ptr<JitKernel> kernel,
+                                                       std::vector<DeviceAllocation> tables)
+    : length(length),
+      outer_stride(outer_stride),
+      kernel(std::move(kernel)),
+      tables(std::move(tables)) {
+}
+
+std::string CompiledRawStridedLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawStridedLeaf(n=" << length << ", outer_stride=" << outer_stride
+      << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+      << ", num_warps=" << (kernel ? kernel->num_warps : 0)
+      << ", module=" << (kernel ? kernel->module_path : "null")
+      << ", tables=" << tables.size() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
+                                                  adaptor::DevicePtr output,
+                                                  const RawExecutionContext &context) const {
+  try {
+    std::vector<JitKernelArg> args;
+    args.reserve(tables.size() + 3);
+    args.push_back(JitKernelArg::device(input));
+    args.push_back(JitKernelArg::device(output));
+    for (const DeviceAllocation &table : tables) {
+      args.push_back(JitKernelArg::device(table.get()));
+    }
+    args.push_back(JitKernelArg::i64(outer_stride));
+    args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] StridedLeaf execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawStridedDirectDftNode::CompiledRawStridedDirectDftNode(
+    int64_t length,
+    int64_t outer_stride,
+    std::shared_ptr<JitKernel> kernel,
+    std::vector<DeviceAllocation> tables)
+    : length(length),
+      outer_stride(outer_stride),
+      kernel(std::move(kernel)),
+      tables(std::move(tables)) {
+}
+
+std::string CompiledRawStridedDirectDftNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawStridedDirectDft(n=" << length << ", outer_stride=" << outer_stride
+      << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+      << ", num_warps=" << (kernel ? kernel->num_warps : 0)
+      << ", module=" << (kernel ? kernel->module_path : "null")
+      << ", tables=" << tables.size() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawStridedDirectDftNode::execute(adaptor::DevicePtr input,
+                                                       adaptor::DevicePtr output,
+                                                       const RawExecutionContext &context) const {
+  try {
+    std::vector<JitKernelArg> args;
+    args.reserve(tables.size() + 3);
+    args.push_back(JitKernelArg::device(input));
+    args.push_back(JitKernelArg::device(output));
+    for (const DeviceAllocation &table : tables) {
+      args.push_back(JitKernelArg::device(table.get()));
+    }
+    args.push_back(JitKernelArg::i64(outer_stride));
+    args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
+    kernel->launch(context.stream, args, context.batch, 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] StridedDirectDft execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
                                                    std::shared_ptr<JitKernel> kernel,
                                                    std::vector<DeviceAllocation> tables,
@@ -1128,6 +1280,69 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw2DRCNode::CompiledRaw2DRCNode(int64_t n0,
+                                         int64_t n1,
+                                         std::shared_ptr<CompiledRawNode> row_fft,
+                                         std::shared_ptr<CompiledRawNode> col_fft,
+                                         DeviceAllocation temp1)
+    : n0(n0),
+      n1(n1),
+      row_fft(std::move(row_fft)),
+      col_fft(std::move(col_fft)),
+      temp1(std::move(temp1)) {
+}
+
+std::string CompiledRaw2DRCNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DRC(n0=" << n0 << ", n1=" << n1
+      << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
+      << ", col_fft=" << (col_fft ? col_fft->describe() : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
+                                           adaptor::DevicePtr output,
+                                           const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+
+    // Step 1: Row FFT (input -> temp1), contiguous along n1.
+    RawExecutionContext row_context {context.request, context.stream, batch * n0};
+    flagfftResult result = row_fft->execute(input, temp1.get(), row_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 2: Column FFT in-place on the row-major matrix.  Each column of
+    // length n0 is a strided 1D FFT with outer stride n1, so no transpose is
+    // needed and the result is already in natural (batch, n0, n1) order.
+    RawExecutionContext col_context {context.request, context.stream, batch * n1};
+    result = col_fft->execute(temp1.get(), output, col_context);
+    return result;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 2D RC execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw1DAs2DNode::CompiledRaw1DAs2DNode(std::shared_ptr<CompiledRawNode> fft, int64_t batch)
+    : fft(std::move(fft)), batch(batch) {
+}
+
+std::string CompiledRaw1DAs2DNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw1DAs2D(batch=" << batch << ", fft=" << (fft ? fft->describe() : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw1DAs2DNode::execute(adaptor::DevicePtr input,
+                                             adaptor::DevicePtr output,
+                                             const RawExecutionContext &context) const {
+  RawExecutionContext child_context {context.request, context.stream, batch};
+  return fft->execute(input, output, child_context);
+}
+
 CompiledRawC2RLeafNode::CompiledRawC2RLeafNode(int64_t length,
                                                std::shared_ptr<JitKernel> kernel,
                                                std::vector<DeviceAllocation> tables)
@@ -1290,6 +1505,76 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 2D R2C execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw2DR2CRCNode::CompiledRaw2DR2CRCNode(int64_t n0,
+                                               int64_t n1,
+                                               std::shared_ptr<JitKernel> expand_kernel,
+                                               std::shared_ptr<CompiledRawNode> row_fft,
+                                               std::shared_ptr<JitKernel> pack_kernel,
+                                               std::shared_ptr<CompiledRawNode> col_fft,
+                                               DeviceAllocation row_fft_buf)
+    : n0(n0),
+      n1(n1),
+      expand_kernel(std::move(expand_kernel)),
+      row_fft(std::move(row_fft)),
+      pack_kernel(std::move(pack_kernel)),
+      col_fft(std::move(col_fft)),
+      row_fft_buf(std::move(row_fft_buf)) {
+}
+
+std::string CompiledRaw2DR2CRCNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DR2CRC(n0=" << n0 << ", n1=" << n1
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null")
+      << ", col_fft=" << (col_fft ? col_fft->describe() : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DR2CRCNode::execute(adaptor::DevicePtr input,
+                                              adaptor::DevicePtr output,
+                                              const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    constexpr int64_t block = 256;
+    const int64_t half_n1 = n1 / 2 + 1;
+    const int64_t total_rows = batch * n0;
+
+    // Step 1: Expand real input to complex.
+    std::vector<JitKernelArg> expand_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(row_fft_buf.get()),
+        JitKernelArg::i64(n1),
+        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
+    };
+    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
+
+    // Step 2: Row C2C FFT (in-place on the expanded buffer).
+    RawExecutionContext row_context {context.request, context.stream, total_rows};
+    flagfftResult result = row_fft->execute(row_fft_buf.get(), row_fft_buf.get(), row_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 3: Pack the half spectrum into the user output buffer.
+    std::vector<JitKernelArg> pack_args = {
+        JitKernelArg::device(row_fft_buf.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(half_n1),
+        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
+    };
+    pack_kernel->launch(context.stream, pack_args, ceil_div(half_n1, block), total_rows, 1);
+
+    // Step 4: Column C2C FFT directly on the half-packed rows (no transposes).
+    RawExecutionContext col_context {context.request, context.stream, batch * half_n1};
+    return col_fft->execute(output, output, col_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 2D R2C RC execute failed: %s\n", e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }
@@ -1487,6 +1772,82 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 2D C2R execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw2DC2RRCNode::CompiledRaw2DC2RRCNode(int64_t n0,
+                                               int64_t n1,
+                                               std::shared_ptr<CompiledRawNode> col_fft,
+                                               std::shared_ptr<JitKernel> expand_kernel,
+                                               std::shared_ptr<CompiledRawNode> row_fft,
+                                               std::shared_ptr<JitKernel> pack_kernel,
+                                               DeviceAllocation temp_half,
+                                               DeviceAllocation temp_full)
+    : n0(n0),
+      n1(n1),
+      col_fft(std::move(col_fft)),
+      expand_kernel(std::move(expand_kernel)),
+      row_fft(std::move(row_fft)),
+      pack_kernel(std::move(pack_kernel)),
+      temp_half(std::move(temp_half)),
+      temp_full(std::move(temp_full)) {
+}
+
+std::string CompiledRaw2DC2RRCNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DC2RRC(n0=" << n0 << ", n1=" << n1
+      << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DC2RRCNode::execute(adaptor::DevicePtr input,
+                                              adaptor::DevicePtr output,
+                                              const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    constexpr int64_t block = 256;
+    const int64_t half_n1 = n1 / 2 + 1;
+    const int64_t total_rows = batch * n0;
+
+    // Step 1: Column C2C IFFT directly on the half-packed input (no transposes).
+    RawExecutionContext col_context {context.request, context.stream, batch * half_n1};
+    flagfftResult result = col_fft->execute(input, temp_half.get(), col_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 2: Expand half-packed -> full Hermitian.
+    std::vector<JitKernelArg> expand_args = {
+        JitKernelArg::device(temp_half.get()),
+        JitKernelArg::device(temp_full.get()),
+        JitKernelArg::i64(half_n1),
+        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
+    };
+    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
+
+    // Step 3: Row C2C IFFT (in-place on the full Hermitian buffer).
+    RawExecutionContext row_context {context.request, context.stream, total_rows};
+    result = row_fft->execute(temp_full.get(), temp_full.get(), row_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    // Step 4: Pack complex -> real.
+    std::vector<JitKernelArg> pack_args = {
+        JitKernelArg::device(temp_full.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(n1),
+        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
+    };
+    pack_kernel->launch(context.stream, pack_args, ceil_div(n1, block), total_rows, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 2D C2R RC execute failed: %s\n", e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }

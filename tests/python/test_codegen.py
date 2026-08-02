@@ -593,6 +593,106 @@ def test_double_direct_dft_uses_compensated_accumulation(kernels) -> None:
     assert "comp_r =" not in float_source
 
 
+def test_strided_leaf_kernel_source_generation(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=32,
+        factors=(2, 16),
+        remainder=1,
+        lanes=16,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=32,
+        direction="forward",
+    )
+
+    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
+        plan, io_mode="strided"
+    )
+
+    assert kernel_name.startswith("fft_strided_kernel_")
+    assert "outer_stride" in source
+    assert "batch_index = current_batch // outer_stride" in source
+    assert "in0 * outer_stride" in source
+    assert "out_idx0 * outer_stride" in source
+
+
+def test_strided_direct_dft_kernel_source_generation(kernels) -> None:
+    kernel_name, source, arg_names = kernels._build_direct_dft_kernel_source(
+        23, "forward", "complex64", strided=True
+    )
+
+    assert "strided" in kernel_name
+    assert arg_names == [
+        "in_ptr",
+        "out_ptr",
+        "dft_r_ptr",
+        "dft_i_ptr",
+        "outer_stride",
+        "nbatch",
+    ]
+    assert "base + j * outer_stride" in source
+    assert "batch_index = pid_batch // outer_stride" in source
+    assert "base + k * outer_stride" in source
+
+
+def test_tiled_transpose_uses_register_transpose(kernels) -> None:
+    _, source, _ = kernels._build_tiled_transpose_kernel_source(64, 32, "complex64")
+
+    assert "tl.trans(src_real)" in source
+    assert "tl.trans(src_imag)" in source
+    assert "safe_col[:, None] * 64 + safe_row[None, :]" in source
+
+
+def test_strided_four_step_row_kernel_source_generation(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=128,
+        factors=(8, 4, 4),
+        remainder=1,
+        lanes=32,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=128,
+        direction="forward",
+    )
+
+    _, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_row_strided",
+        four_step_n1=128,
+        four_step_n2=128,
+    )
+
+    assert "four_step_batch_index = four_step_batch // outer_stride" in source
+    assert "src_idx0 * outer_stride" in source
+    assert "dst_idx0 * outer_stride" in source
+    assert "twiddle_ptr" not in source
+
+
+def test_strided_four_step_col_kernel_source_generation(kernels) -> None:
+    plan = kernels.LeafPlan(
+        length=128,
+        factors=(8, 4, 4),
+        remainder=1,
+        lanes=32,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=128,
+        direction="forward",
+    )
+
+    _, source = kernels._build_leaf_kernel_source_for_io(
+        plan,
+        io_mode="four_step_col_strided",
+        four_step_n1=128,
+        four_step_n2=128,
+    )
+
+    assert "four_step_batch_index = four_step_batch // outer_stride" in source
+    assert "src_idx0 * outer_stride" in source
+    assert "dst_idx0 * outer_stride" in source
+    assert "twiddle_ptr + src_idx0 * 2" in source
+
+
 @pytest.mark.parametrize(
     ("register_radix", "n1", "inner_codelet"),
     [
