@@ -298,9 +298,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
-  if (key.kind == KernelKind::Transpose3D) {
-    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
-  }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRealRow ||
       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
       key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {

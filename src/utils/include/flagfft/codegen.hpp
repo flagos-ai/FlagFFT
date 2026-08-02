@@ -66,7 +66,6 @@ struct JitKernel {
   int64_t num_stages = 1;
   int64_t batch_per_block = 1;
   int64_t inner_pack = 1;
-  int64_t grid_x_override = 0;
   bool tle_fused_twiddle = false;
   void *jit_function = nullptr;
   std::mutex mutex;

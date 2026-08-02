@@ -830,12 +830,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
-    (
-        kernel_name,
-        kernel_source,
-        arg_names,
-        grid_x,
-    ) = _build_tiled_transpose3d_kernel_source(
+    kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
         n0, n1, n2, order, dtype
     )
     suffix = _dtype_suffix(dtype)
@@ -857,7 +852,6 @@ def _emit_tiled_transpose3d_jit_kernel(
         "transpose3d_n1": int(n1),
         "transpose3d_n2": int(n2),
         "transpose3d_order": order,
-        "grid_x_override": int(grid_x),
     }
     (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
     return metadata

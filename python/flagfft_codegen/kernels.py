@@ -2669,14 +2669,9 @@ def _build_tiled_transpose_kernel_source(
 
 
 def _build_tiled_transpose3d_kernel_source(
-    s0: int,
-    s1: int,
-    s2: int,
-    order: str,
-    dtype: str,
-    tile: int = 32,
+    s0: int, s1: int, s2: int, order: str, dtype: str, block: int = 1024
 ) -> tuple[str, list[str], list[str]]:
-    """Emit a tiled 3D axis-permutation kernel with coalesced load/store.
+    """Emit a generic 3D axis-permutation kernel.
 
     The source cube has dimensions (s0, s1, s2); the destination cube dims are
     derived from the axis order:
@@ -2685,79 +2680,31 @@ def _build_tiled_transpose3d_kernel_source(
       "201": dst (s2, s0, s1)   dst[x0][x1][x2] = src[x1][x2][x0]
       "120": dst (s1, s2, s0)   dst[x0][x1][x2] = src[x2][x0][x1]
 
-    Every permutation decomposes into independent 2D transposes of the (s0,
-    s1, s2) planes sliced along one axis.  Each program copies one
-    tile x tile block: it loads the tile transposed (so the source-contiguous
-    axis runs along the block's innermost dimension), applies tl.trans, and
-    stores it with the destination-contiguous axis innermost.  Both global
-    loads and stores are therefore coalesced.
+    Each program copies a contiguous block of destination elements, computing
+    the source offset with baked-in div/mod arithmetic.  Correctness-first:
+    no shared memory, the tiling is purely for grid parallelism.
     """
     if order not in {"021", "210", "201", "120"}:
         raise ValueError(f"unsupported 3D transpose order: {order}")
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
+    dims = {
+        "021": (s0, s2, s1),
+        "210": (s2, s1, s0),
+        "201": (s2, s0, s1),
+        "120": (s1, s2, s0),
+    }
+    d0, d1, d2 = dims[order]
     total_complex = s0 * s1 * s2
     total_float = total_complex * 2
-    # Per-order 2D-transpose decomposition.  A slice (fixed dst axis) leaves a
-    # matrix of (rows, cols); the source matrix is (cols, rows) with the
-    # source-contiguous axis (src axis 2) on the rows.
-    #   rows: tile row index, source stride 1 (contiguous load)
-    #   cols: tile column index, destination stride 1 (contiguous store)
-    #   src_slice_stride / dst_slice_stride: offset increment between slices
-    #   src_col_stride / dst_row_stride: cross-axis strides for the matrix
-    transpose_descs = {
-        "021": dict(
-            num_slices=s0,
-            rows=s2,
-            cols=s1,
-            src_slice_stride=s1 * s2,
-            src_col_stride=s2,
-            dst_slice_stride=s2 * s1,
-            dst_row_stride=s1,
-        ),
-        "210": dict(
-            num_slices=s1,
-            rows=s2,
-            cols=s0,
-            src_slice_stride=s2,
-            src_col_stride=s1 * s2,
-            dst_slice_stride=s0,
-            dst_row_stride=s1 * s0,
-        ),
-        "201": dict(
-            num_slices=s0,
-            rows=s2,
-            cols=s1,
-            src_slice_stride=s1 * s2,
-            src_col_stride=s2,
-            dst_slice_stride=s1,
-            dst_row_stride=s0 * s1,
-        ),
-        "120": dict(
-            num_slices=s1,
-            rows=s2,
-            cols=s0,
-            src_slice_stride=s2,
-            src_col_stride=s1 * s2,
-            dst_slice_stride=s2 * s0,
-            dst_row_stride=s0,
-        ),
+    # src coords (y0, y1, y2) for a given dst coord (x0, x1, x2).
+    src_coords = {
+        "021": "y0 = x0; y1 = x2; y2 = x1;",
+        "210": "y0 = x2; y1 = x1; y2 = x0;",
+        "201": "y0 = x1; y1 = x2; y2 = x0;",
+        "120": "y0 = x2; y1 = x0; y2 = x1;",
     }
-    desc = transpose_descs[order]
-    num_slices = desc["num_slices"]
-    rows = desc["rows"]
-    cols = desc["cols"]
-    src_slice_stride = desc["src_slice_stride"]
-    src_col_stride = desc["src_col_stride"]
-    dst_slice_stride = desc["dst_slice_stride"]
-    dst_row_stride = desc["dst_row_stride"]
-    tile_cols = (cols + tile - 1) // tile
-    tile_rows = (rows + tile - 1) // tile
-    tiles_per_slice = tile_cols * tile_rows
-    grid_x = num_slices * tiles_per_slice
-    kernel_name = (
-        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}"
-    )
+    kernel_name = f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}"
     source = dedent(
         f"""
         @triton.jit
@@ -2769,52 +2716,29 @@ def _build_tiled_transpose3d_kernel_source(
             pid_block = tl.program_id(0)
             pid_batch = tl.program_id(2)
 
-            # Decode the linear block id into (slice, row tile, col tile).
-            slice_idx = pid_block // {tiles_per_slice}
-            tile_in_slice = pid_block % {tiles_per_slice}
-            tile_row = tile_in_slice // {tile_cols}
-            tile_col = tile_in_slice % {tile_cols}
+            offsets = pid_block * {block} + tl.arange(0, {block})
+            mask = offsets < {total_complex}
+            safe = tl.minimum(offsets, {total_complex - 1})
 
-            row_offsets = tile_row * {tile} + tl.arange(0, {tile})
-            col_offsets = tile_col * {tile} + tl.arange(0, {tile})
-            row_mask = row_offsets < {rows}
-            col_mask = col_offsets < {cols}
-            mask = col_mask[:, None] & row_mask[None, :]
-            safe_rows = tl.minimum(row_offsets, {rows - 1})
-            safe_cols = tl.minimum(col_offsets, {cols - 1})
+            # Decompose destination linear index into (x0, x1, x2).
+            x0 = safe // {d1 * d2}
+            rem = safe % {d1 * d2}
+            x1 = rem // {d2}
+            x2 = rem % {d2}
 
-            # Load transposed: innermost dimension is the source-contiguous
-            # axis (rows, src stride 1), so global loads coalesce.
-            src_base = (
-                pid_batch * {total_float}
-                + slice_idx * {src_slice_stride} * 2
-                + safe_cols[:, None] * {src_col_stride} * 2
-                + safe_rows[None, :] * 2
-            )
-            src_real = tl.load(in_ptr + src_base, mask=mask, other={zero})
-            src_imag = tl.load(in_ptr + src_base + 1, mask=mask, other={zero})
+            # Map to source coordinates.
+            {src_coords[order]}
 
-            # Transpose the tile so the destination-contiguous axis (cols)
-            # becomes the innermost dimension of the store.
-            dst_real = tl.trans(src_real)
-            dst_imag = tl.trans(src_imag)
-            store_mask = tl.trans(mask)
-            dst_base = (
-                pid_batch * {total_float}
-                + slice_idx * {dst_slice_stride} * 2
-                + safe_rows[:, None] * {dst_row_stride} * 2
-                + safe_cols[None, :] * 2
-            )
-            tl.store(out_ptr + dst_base, dst_real, mask=store_mask)
-            tl.store(out_ptr + dst_base + 1, dst_imag, mask=store_mask)
+            src_elem_offsets = pid_batch * {total_float} + (y0 * {s1 * s2} + y1 * {s2} + y2) * 2
+            src_real = tl.load(in_ptr + src_elem_offsets, mask=mask, other={zero})
+            src_imag = tl.load(in_ptr + src_elem_offsets + 1, mask=mask, other={zero})
+
+            dst_elem_offsets = pid_batch * {total_float} + offsets * 2
+            tl.store(out_ptr + dst_elem_offsets, src_real, mask=mask)
+            tl.store(out_ptr + dst_elem_offsets + 1, src_imag, mask=mask)
         """
     )
-    return (
-        kernel_name,
-        source,
-        ["in_ptr", "out_ptr", "nbatch"],
-        grid_x,
-    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
 
 
 __all__ = [
