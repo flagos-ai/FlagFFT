@@ -19,6 +19,17 @@
 当前 2D FFT 使用 RTRT（Row-Transform, Transpose, Row-Transform, Transpose-back）分解策略，
 是正确性基线。本文档记录可选的优化方向，按 transform 类型和优先级组织。
 
+## 当前实现状态（2026-08-03）
+
+- RC 路径已实现：列长 `n0 <= 256` 时，leaf / DirectDFT / Four-Step 列 FFT
+  直接以 strided 模式运行，跳过两次全局转置；`1xN` / `Nx1` 直接走 1D FFT。
+- 大矩形（`n0 > 256`，如 512x1024、16384x32）保留 RTRT：实测 strided 列 FFT
+  在这些形态上会回退。
+- 转置 kernel 采用混合策略：矩阵不超过 128K 复元素时用寄存器 `tl.trans`
+  获得合并写；更大矩阵保留原直接 tile 读写。
+- 对应代码：`kernels.py` 新增 `strided` / `four_step_*_strided` io modes，
+  `raw_nodes.cpp` 新增 `CompiledRaw2DRCNode` 与 `CompiledRawFourStepStridedNode`。
+
 ## 2D
 
 ### C2C（单精度复数 complex64）

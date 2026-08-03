@@ -102,7 +102,7 @@ def _module_source(kernel_source: str) -> str:
 def _arg_signature(name: str, dtype: str) -> str:
     if name == "nbatch":
         return "i32"
-    if name in {"n", "m", "input_distance", "output_distance"}:
+    if name in {"n", "m", "input_distance", "output_distance", "outer_stride"}:
         return "i64"
     if name == "idx_ptr":
         return "*i32:16"
@@ -126,20 +126,29 @@ def _metadata(
 ) -> dict[str, Any]:
     batch_per_block = (
         contiguous_batch_pack_for(plan)
-        if kernel_type in {"leaf", "leaf_r2c", "leaf_c2r", "leaf_bluestein"}
+        if kernel_type in {
+            "leaf",
+            "leaf_strided",
+            "leaf_r2c",
+            "leaf_c2r",
+            "leaf_bluestein",
+        }
         else 1
     )
     stage_lanes = cooperative_stage_lanes_for(plan)
     tle_fused_twiddle = (
         kernel_type.startswith("four_step_")
         or kernel_type.startswith("bluestein_four_step_")
-    ) and use_four_step_row_fused_twiddle(n1, n2, dtype)
-    if kernel_type in {
+    ) and use_four_step_row_fused_twiddle(n1, n2, dtype) and not kernel_type.endswith("_strided")
+    if kernel_type in {"four_step_row_strided", "four_step_col_strided"}:
+        inner_pack = 1
+    elif kernel_type in {
         "four_step_row",
         "four_step_real_row",
         "four_step_hermitian_row",
         "bluestein_four_step_prepare_row",
         "bluestein_four_step_pointwise_row",
+        "four_step_row_strided",
     }:
         inner_pack = four_step_row_inner_pack_for(n1, n2, dtype, plan)
     elif kernel_type in {
@@ -147,6 +156,7 @@ def _metadata(
         "four_step_r2c_col",
         "four_step_c2r_col",
         "bluestein_four_step_finish_col",
+        "four_step_col_strided",
     }:
         inner_pack = four_step_col_inner_pack_for(n1, n2, dtype, plan)
     else:
@@ -627,6 +637,12 @@ def emit_jit_kernel(
         kernel_name, kernel_source = _build_leaf_kernel_source(plan)
         n1 = 0
         n2 = 0
+    elif kernel == "leaf_strided":
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="strided"
+        )
+        n1 = 0
+        n2 = 0
     elif kernel == "leaf_r2c":
         kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
             plan, io_mode="contiguous_r2c"
@@ -677,9 +693,29 @@ def emit_jit_kernel(
         )
         n1 = 0
         n2 = 0
+    elif kernel == "direct_dft_strided":
+        kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
+            length, direction, dtype, strided=True
+        )
+        n1 = 0
+        n2 = 0
     elif kernel == "four_step_row":
         kernel_name, kernel_source = _build_four_step_row_kernel_source(
             plan, four_step_n1, four_step_n2
+        )
+        n1 = four_step_n1
+        n2 = four_step_n2
+    elif kernel == "four_step_row_strided":
+        if plan.length != four_step_n1:
+            raise ValueError(
+                f"four-step strided row kernel length must equal n1: "
+                f"length={plan.length}, n1={four_step_n1}"
+            )
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan,
+            io_mode="four_step_row_strided",
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
         )
         n1 = four_step_n1
         n2 = four_step_n2
@@ -712,6 +748,20 @@ def emit_jit_kernel(
     elif kernel == "four_step_col":
         kernel_name, kernel_source = _build_four_step_col_kernel_source(
             plan, four_step_n1, four_step_n2
+        )
+        n1 = four_step_n1
+        n2 = four_step_n2
+    elif kernel == "four_step_col_strided":
+        if plan.length != four_step_n2:
+            raise ValueError(
+                f"four-step strided col kernel length must equal n2: "
+                f"length={plan.length}, n2={four_step_n2}"
+            )
+        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
+            plan,
+            io_mode="four_step_col_strided",
+            four_step_n1=four_step_n1,
+            four_step_n2=four_step_n2,
         )
         n1 = four_step_n1
         n2 = four_step_n2
@@ -762,6 +812,8 @@ def emit_jit_kernel(
         )
     elif kernel == "direct_dft":
         module_name = f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
+    elif kernel == "direct_dft_strided":
+        module_name = f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
     elif kernel in {"leaf_r2c", "leaf_c2r"}:
         module_name = (
             f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
@@ -887,7 +939,9 @@ def main() -> None:
         "--kernel",
         choices=(
             "leaf",
+            "leaf_strided",
             "direct_dft",
+            "direct_dft_strided",
             "leaf_r2c",
             "leaf_c2r",
             "leaf_bluestein",
@@ -897,9 +951,11 @@ def main() -> None:
             "bluestein_four_step_pointwise_row",
             "bluestein_four_step_finish_col",
             "four_step_row",
+            "four_step_row_strided",
             "four_step_real_row",
             "four_step_hermitian_row",
             "four_step_col",
+            "four_step_col_strided",
             "four_step_r2c_col",
             "four_step_c2r_col",
             "bluestein_prepare",
@@ -1046,7 +1102,7 @@ def main() -> None:
         print(json.dumps(metadata, sort_keys=True))
         return
 
-    if args.kernel == "direct_dft":
+    if args.kernel in {"direct_dft", "direct_dft_strided"}:
         if args.length is None or args.length <= 0:
             parser.error("--kernel direct_dft requires --length")
         metadata = emit_jit_kernel(
@@ -1091,9 +1147,11 @@ def main() -> None:
             )
     if args.kernel in {
         "four_step_row",
+        "four_step_row_strided",
         "four_step_real_row",
         "four_step_hermitian_row",
         "four_step_col",
+        "four_step_col_strided",
         "four_step_r2c_col",
         "four_step_c2r_col",
         "bluestein_four_step_prepare_row",
