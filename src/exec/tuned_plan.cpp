@@ -16,7 +16,7 @@
 
 namespace flagfft {
 
-inline constexpr int64_t kFourStepColInnerPack = 2;
+inline constexpr int64_t kFourStepColInnerPack = 4;
 inline constexpr int64_t kFourStepLargeInnerPack = 4;
 inline constexpr int64_t kFourStepColInnerPackMinN1 = 128;
 inline constexpr int64_t kFourStepRowInnerPackMaxN1 = 512;
