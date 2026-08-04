@@ -54,6 +54,14 @@ namespace {
     return reinterpret_cast<CUevent>(event);
   }
 
+  CUgraph as_graph(void *graph) {
+    return reinterpret_cast<CUgraph>(graph);
+  }
+
+  CUgraphExec as_graph_exec(void *exec) {
+    return reinterpret_cast<CUgraphExec>(exec);
+  }
+
   CUdevice ensure_current_context() {
     check(cuInit(0), "cuInit");
     CUcontext context = nullptr;
@@ -194,6 +202,44 @@ StreamHandle Stream::get() const noexcept {
 
 void Stream::sync() {
   check(cuStreamSynchronize(as_stream(stream_)), "cuStreamSynchronize");
+}
+
+CudaGraph::~CudaGraph() {
+  if (exec_ != nullptr) {
+    cuGraphExecDestroy(as_graph_exec(exec_));
+  }
+  if (graph_ != nullptr) {
+    cuGraphDestroy(as_graph(graph_));
+  }
+}
+
+void CudaGraph::begin_capture(StreamHandle stream) {
+  ensure_current_context();
+  check(cuStreamBeginCapture(as_stream(stream), CU_STREAM_CAPTURE_MODE_RELAXED),
+        "cuStreamBeginCapture");
+}
+
+void CudaGraph::end_capture(StreamHandle stream) {
+  ensure_current_context();
+  CUgraph graph = nullptr;
+  check(cuStreamEndCapture(as_stream(stream), &graph), "cuStreamEndCapture");
+  CUgraphExec exec = nullptr;
+  check(cuGraphInstantiate(&exec, graph, 0), "cuGraphInstantiate");
+  check(cuGraphDestroy(graph), "cuGraphDestroy");
+  graph_ = nullptr;
+  exec_ = reinterpret_cast<void *>(exec);
+}
+
+void CudaGraph::launch(StreamHandle stream) {
+  ensure_current_context();
+  if (exec_ == nullptr) {
+    throw std::runtime_error("CudaGraph::launch called before end_capture");
+  }
+  check(cuGraphLaunch(as_graph_exec(exec_), as_stream(stream)), "cuGraphLaunch");
+}
+
+bool CudaGraph::valid() const noexcept {
+  return exec_ != nullptr;
 }
 
 EventTimer::EventTimer() {

@@ -612,6 +612,13 @@ struct CompiledRaw2DNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> transpose_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
+
+  // Optional CUDA-graph replay cache for repeated executions with the same
+  // input/output pointers (falls back to direct launches on failure).
+  mutable std::unique_ptr<adaptor::CudaGraph> graph_;
+  mutable adaptor::DevicePtr graph_in_ = 0;
+  mutable adaptor::DevicePtr graph_out_ = 0;
+  mutable bool graph_failed_ = false;
 };
 
 struct CompiledRaw2DRCNode final : CompiledRawNode {
@@ -630,6 +637,11 @@ struct CompiledRaw2DRCNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> row_fft;
   std::shared_ptr<CompiledRawNode> col_fft;
   DeviceAllocation temp1;
+
+  mutable std::unique_ptr<adaptor::CudaGraph> graph_;
+  mutable adaptor::DevicePtr graph_in_ = 0;
+  mutable adaptor::DevicePtr graph_out_ = 0;
+  mutable bool graph_failed_ = false;
 };
 
 struct CompiledRaw1DAs2DNode final : CompiledRawNode {
