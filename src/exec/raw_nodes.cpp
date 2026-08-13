@@ -1250,49 +1250,75 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
     // (default tile_size=32) and jit_source.py:_emit_tiled_transpose_jit_kernel (ditto).
     constexpr int64_t tile_size = 32;
 
-    // Step 1: Row FFT (input -> temp1)
-    // Shape: (batch, n0, n1) -> row FFT along last dimension
-    // batch for row FFT = batch * n0
-    RawExecutionContext row_context {context.request, context.stream, batch * n0};
-    flagfftResult result = row_fft->execute(input, temp1.get(), row_context);
+    if (graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
+      graph_->launch(context.stream);
+      return FLAGFFT_SUCCESS;
+    }
+
+    auto run_sequence = [&]() -> flagfftResult {
+      // Step 1: Row FFT (input -> temp1)
+      RawExecutionContext row_context {context.request, context.stream, batch * n0};
+      flagfftResult result = row_fft->execute(input, temp1.get(), row_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      // Step 2: Transpose (temp1 -> temp2)
+      std::vector<JitKernelArg> transpose_fwd_args = {
+          JitKernelArg::device(temp1.get()),
+          JitKernelArg::device(temp2.get()),
+          JitKernelArg::i32(static_cast<int32_t>(batch)),
+      };
+      transpose_fwd->launch(context.stream,
+                            transpose_fwd_args,
+                            ceil_div(n1, tile_size),
+                            ceil_div(n0, tile_size),
+                            batch);
+
+      // Step 3: Col FFT (temp2 -> temp1)
+      RawExecutionContext col_context {context.request, context.stream, batch * n1};
+      result = col_fft->execute(temp2.get(), temp1.get(), col_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      // Step 4: Transpose back (temp1 -> output)
+      std::vector<JitKernelArg> transpose_inv_args = {
+          JitKernelArg::device(temp1.get()),
+          JitKernelArg::device(output),
+          JitKernelArg::i32(static_cast<int32_t>(batch)),
+      };
+      transpose_inv->launch(context.stream,
+                            transpose_inv_args,
+                            ceil_div(n0, tile_size),
+                            ceil_div(n1, tile_size),
+                            batch);
+      return FLAGFFT_SUCCESS;
+    };
+
+    flagfftResult result = run_sequence();
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
 
-    // Step 2: Transpose (temp1 -> temp2)
-    // Shape: (batch, n0, n1) -> (batch, n1, n0)
-    std::vector<JitKernelArg> transpose_fwd_args = {
-        JitKernelArg::device(temp1.get()),
-        JitKernelArg::device(temp2.get()),
-        JitKernelArg::i32(static_cast<int32_t>(batch)),
-    };
-    transpose_fwd->launch(context.stream,
-                          transpose_fwd_args,
-                          ceil_div(n1, tile_size),
-                          ceil_div(n0, tile_size),
-                          batch);
-
-    // Step 3: Col FFT (temp2 -> temp1)
-    // After transpose, shape is (batch, n1, n0)
-    // Col FFT along last dimension (n0), batch = batch * n1
-    RawExecutionContext col_context {context.request, context.stream, batch * n1};
-    result = col_fft->execute(temp2.get(), temp1.get(), col_context);
-    if (result != FLAGFFT_SUCCESS) {
-      return result;
+    // Build a replay graph for stable input/output pointers.  Kernels are
+    // already compiled by the direct run above, so capture only records
+    // launches.  Any capture/instantiation failure falls back to direct
+    // launches for the lifetime of the plan.
+    if (graph_ == nullptr && !graph_failed_) {
+      try {
+        auto graph = std::make_unique<adaptor::CudaGraph>();
+        graph->begin_capture(context.stream);
+        run_sequence();
+        graph->end_capture(context.stream);
+        graph->launch(context.stream);
+        graph_ = std::move(graph);
+        graph_in_ = input;
+        graph_out_ = output;
+      } catch (const std::exception &) {
+        graph_failed_ = true;
+      }
     }
-
-    // Step 4: Transpose back (temp1 -> output)
-    // Shape: (batch, n1, n0) -> (batch, n0, n1)
-    std::vector<JitKernelArg> transpose_inv_args = {
-        JitKernelArg::device(temp1.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i32(static_cast<int32_t>(batch)),
-    };
-    transpose_inv->launch(context.stream,
-                          transpose_inv_args,
-                          ceil_div(n0, tile_size),
-                          ceil_div(n1, tile_size),
-                          batch);
 
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
@@ -1328,19 +1354,48 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
   try {
     const int64_t batch = context.batch;
 
-    // Step 1: Row FFT (input -> temp1), contiguous along n1.
-    RawExecutionContext row_context {context.request, context.stream, batch * n0};
-    flagfftResult result = row_fft->execute(input, temp1.get(), row_context);
+    if (graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
+      graph_->launch(context.stream);
+      return FLAGFFT_SUCCESS;
+    }
+
+    auto run_sequence = [&]() -> flagfftResult {
+      // Step 1: Row FFT (input -> temp1), contiguous along n1.
+      RawExecutionContext row_context {context.request, context.stream, batch * n0};
+      flagfftResult result = row_fft->execute(input, temp1.get(), row_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      // Step 2: Column FFT in-place on the row-major matrix.  Each column of
+      // length n0 is a strided 1D FFT with outer stride n1, so no transpose is
+      // needed and the result is already in natural (batch, n0, n1) order.
+      RawExecutionContext col_context {context.request, context.stream, batch * n1};
+      result = col_fft->execute(temp1.get(), output, col_context);
+      return result;
+    };
+
+    flagfftResult result = run_sequence();
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
 
-    // Step 2: Column FFT in-place on the row-major matrix.  Each column of
-    // length n0 is a strided 1D FFT with outer stride n1, so no transpose is
-    // needed and the result is already in natural (batch, n0, n1) order.
-    RawExecutionContext col_context {context.request, context.stream, batch * n1};
-    result = col_fft->execute(temp1.get(), output, col_context);
-    return result;
+    if (graph_ == nullptr && !graph_failed_) {
+      try {
+        auto graph = std::make_unique<adaptor::CudaGraph>();
+        graph->begin_capture(context.stream);
+        run_sequence();
+        graph->end_capture(context.stream);
+        graph->launch(context.stream);
+        graph_ = std::move(graph);
+        graph_in_ = input;
+        graph_out_ = output;
+      } catch (const std::exception &) {
+        graph_failed_ = true;
+      }
+    }
+
+    return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 2D RC execute failed: %s\n", e.what());
     std::fflush(stderr);

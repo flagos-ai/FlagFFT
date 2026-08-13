@@ -86,6 +86,29 @@ class EventTimer {
   void *start_ = nullptr;
   void *stop_ = nullptr;
 };
+
+class CudaGraph {
+ public:
+  CudaGraph() = default;
+  ~CudaGraph();
+
+  CudaGraph(const CudaGraph &) = delete;
+  CudaGraph &operator=(const CudaGraph &) = delete;
+
+  // Capture subsequent kernel launches on `stream` into a graph and
+  // instantiate it.  No host-side work or allocation may happen between
+  // begin_capture and end_capture.
+  void begin_capture(StreamHandle stream);
+  void end_capture(StreamHandle stream);
+
+  void launch(StreamHandle stream);
+  bool valid() const noexcept;
+
+ private:
+  void *graph_ = nullptr;
+  void *exec_ = nullptr;
+};
+
 void copy_device_to_device(DevicePtr destination, DevicePtr source, std::size_t bytes, StreamHandle stream);
 
 flagfftResult ensure_device(int &device_index, std::string &device_arch);
