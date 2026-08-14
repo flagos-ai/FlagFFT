@@ -200,5 +200,14 @@ endif()
 
 if(FLAGFFT_BUILD_TESTS)
     enable_testing()
+    if(NOT TARGET gtest)
+        include(FetchContent)
+        FetchContent_Declare(googletest
+            URL https://github.com/google/googletest/archive/refs/tags/v1.16.0.tar.gz
+            DOWNLOAD_EXTRACT_TIMESTAMP ON
+        )
+        set(INSTALL_GTEST OFF)
+        FetchContent_MakeAvailable(googletest)
+    endif()
     add_subdirectory(ctest)
 endif()
