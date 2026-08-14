@@ -17,6 +17,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
     "flagfft_run_tests", ROOT / "tools" / "run_tests.py"
@@ -87,6 +89,17 @@ def test_full_expands_every_combination_once() -> None:
     assert RUN_TESTS.resolve_combination_names("all", matrix) == list(
         matrix["combinations"]
     )
+
+
+def test_full_and_all_must_be_used_alone() -> None:
+    matrix = RUN_TESTS.load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
+
+    with pytest.raises(SystemExit):
+        RUN_TESTS.resolve_combination_names("full,1d_ct_single", matrix)
+    with pytest.raises(SystemExit):
+        RUN_TESTS.resolve_combination_names("1d_ct_single,all", matrix)
+    with pytest.raises(SystemExit):
+        RUN_TESTS.resolve_combination_names("full,all", matrix)
 
 
 def test_3d_accuracy_command_uses_rank_binary_and_api_filter(tmp_path: Path) -> None:

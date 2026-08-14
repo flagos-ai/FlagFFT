@@ -22,7 +22,7 @@ on:
         required: false
         default: "main"
       combination:
-        description: "Combination(s) from conf/test_matrix.yaml, or full for all"
+        description: "Combination from conf/test_matrix.yaml (single choice in workflow; CLI accepts comma-separated names), or full for all"
         required: false
         default: "full"
         type: choice

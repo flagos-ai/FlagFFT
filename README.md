@@ -320,7 +320,7 @@ python tools/run_tests.py [OPTIONS]
 | `--op-list-file` | — | Path to file with one operator ID per line (`#` for comments) |
 | `--start` | — | Skip operators whose ID is lexicographically before this value |
 | `--stages` | `stable` | Comma-separated stages to include (`stable`, `alpha`, `beta`) |
-| `--combination` | `full` | Comma-separated combination names from `conf/test_matrix.yaml`, or `full`/`all` to run all of them |
+| `--combination` | `full` | Comma-separated combination names from `conf/test_matrix.yaml`; `full`/`all` runs every combination and must be used alone |
 | `--gpus` | `0` | Comma-separated GPU IDs or `all` |
 | `--output-dir` | `results` | Directory for summary and per-operator result files |
 | `--build-dir` | `build` | Path to CMake build directory |
@@ -345,6 +345,11 @@ python tools/run_tests.py [OPTIONS]
 | `2d_ct` | 2D Cooley-Tukey sizes, batch 1, scale 1.0 |
 | `2d_bs` | 2D Bluestein/Rader/DirectDFT sizes, batch 1, scale 1.0 |
 | `3d` | 3D sizes, batch 1, scale 1.0 |
+
+Note: `full`/`all` cannot be mixed with other combination names (e.g.
+`full,1d_ct_single` is rejected). The CLI accepts comma-separated concrete
+combination names; the GitHub Actions `combination` input is a single-choice
+dropdown, so it can only select one combination or `full` at a time.
 
 #### Examples
 

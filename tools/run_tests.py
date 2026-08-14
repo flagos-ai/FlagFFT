@@ -170,12 +170,19 @@ def resolve_sizes(matrix: dict, ref) -> list:
 
 
 def resolve_combination_names(value: str, matrix: dict) -> list[str]:
-    """Resolve --combination input into concrete matrix combination names."""
+    """Resolve --combination input into concrete matrix combination names.
+
+    ``full``/``all`` must be used alone; otherwise the input is treated as a
+    comma-separated list of concrete combination names.
+    """
     names = [name.strip() for name in value.split(",") if name.strip()]
     if not names:
         perror("no combination specified")
         sys.exit(1)
     if any(name in ("full", "all") for name in names):
+        if len(names) != 1:
+            perror("'full'/'all' cannot be mixed with other combinations")
+            sys.exit(1)
         return list(matrix.get("combinations", {}).keys())
     for name in names:
         if name not in matrix.get("combinations", {}):
