@@ -252,16 +252,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
               << shell_quote(key.dtype);
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
-      key.kind == KernelKind::LeafBluestein ||
-      key.kind == KernelKind::LeafBluesteinPrepare || key.kind == KernelKind::LeafBluesteinFinish ||
-      key.kind == KernelKind::BluesteinFourStepPrepareRow ||
+      key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafBluesteinPrepare ||
+      key.kind == KernelKind::LeafBluesteinFinish || key.kind == KernelKind::BluesteinFourStepPrepareRow ||
       key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
-      key.kind == KernelKind::BluesteinFourStepFinishCol ||
-      key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
-      key.kind == KernelKind::FourStepRealRow ||
+      key.kind == KernelKind::BluesteinFourStepFinishCol || key.kind == KernelKind::FourStepRow ||
+      key.kind == KernelKind::FourStepRowStrided || key.kind == KernelKind::FourStepRealRow ||
       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
-      key.kind == KernelKind::FourStepColStrided ||
-      key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
+      key.kind == KernelKind::FourStepColStrided || key.kind == KernelKind::FourStepR2CCol ||
+      key.kind == KernelKind::FourStepC2RCol) {
     jit_command << " --length " << key.length << " --factors " << shell_quote(join_ints(key.factors))
                 << " --lanes " << key.lanes << " --num-warps " << key.num_warps << " --generic-radices "
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
@@ -271,9 +269,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
-      key.kind == KernelKind::FourStepRealRow ||
-      key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
-      key.kind == KernelKind::FourStepColStrided ||
+      key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||
+      key.kind == KernelKind::FourStepCol || key.kind == KernelKind::FourStepColStrided ||
       key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol ||
       key.kind == KernelKind::BluesteinFourStepPrepareRow ||
       key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
@@ -281,12 +278,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --four-step-n1 " << key.four_step_n1 << " --four-step-n2 " << key.four_step_n2;
   }
   if (key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafBluesteinPrepare ||
-      key.kind == KernelKind::LeafBluesteinFinish ||
-      key.kind == KernelKind::BluesteinFourStepPrepareRow ||
+      key.kind == KernelKind::LeafBluesteinFinish || key.kind == KernelKind::BluesteinFourStepPrepareRow ||
       key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
-      key.kind == KernelKind::BluesteinFourStepFinishCol ||
-      key.kind == KernelKind::BluesteinPrepare || key.kind == KernelKind::BluesteinPointwise ||
-      key.kind == KernelKind::BluesteinFinalize) {
+      key.kind == KernelKind::BluesteinFourStepFinishCol || key.kind == KernelKind::BluesteinPrepare ||
+      key.kind == KernelKind::BluesteinPointwise || key.kind == KernelKind::BluesteinFinalize) {
     jit_command << " --bluestein-n " << key.bluestein_n << " --bluestein-m " << key.bluestein_m;
   }
   if (key.kind == KernelKind::RaderPrepare || key.kind == KernelKind::RaderPointwise ||
@@ -323,9 +318,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     kernel->rows_per_block = json_int_field(artifact_json, "rows_per_block");
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
-      key.kind == KernelKind::FourStepRealRow ||
-      key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepCol ||
-      key.kind == KernelKind::FourStepColStrided ||
+      key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||
+      key.kind == KernelKind::FourStepCol || key.kind == KernelKind::FourStepColStrided ||
       key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
     kernel->inner_pack = json_int_field(artifact_json, "inner_pack");
     kernel->tle_fused_twiddle = json_bool_field(artifact_json, "tle_fused_twiddle");

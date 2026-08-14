@@ -905,10 +905,9 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t outer_stride);
-  std::shared_ptr<CompiledRawNode> compile_raw_strided_direct_dft(
-      const DirectDFTPlanNode &node,
-      const FFTRequest &request,
-      int64_t outer_stride);
+  std::shared_ptr<CompiledRawNode> compile_raw_strided_direct_dft(const DirectDFTPlanNode &node,
+                                                                  const FFTRequest &request,
+                                                                  int64_t outer_stride);
   std::shared_ptr<CompiledRawNode> compile_raw_direct_dft(const DirectDFTPlanNode &node,
                                                           const FFTRequest &request,
                                                           int64_t batch);
@@ -942,11 +941,10 @@ class TritonCompiler {
                                                                   const FFTRequest &request,
                                                                   int64_t n1,
                                                                   int64_t n2);
-  std::shared_ptr<CompiledRawNode> compile_raw_four_step_strided_node(
-      const FourStepPlanNode &node,
-      const FFTRequest &request,
-      int64_t batch,
-      int64_t outer_stride);
+  std::shared_ptr<CompiledRawNode> compile_raw_four_step_strided_node(const FourStepPlanNode &node,
+                                                                      const FFTRequest &request,
+                                                                      int64_t batch,
+                                                                      int64_t outer_stride);
   std::shared_ptr<JitKernel> compile_four_step_r2c_col_kernel(const LeafPlanNode &leaf,
                                                               const FFTRequest &request,
                                                               int64_t n1,

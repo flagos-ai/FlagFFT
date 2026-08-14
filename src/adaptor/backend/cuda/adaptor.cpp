@@ -215,8 +215,7 @@ CudaGraph::~CudaGraph() {
 
 void CudaGraph::begin_capture(StreamHandle stream) {
   ensure_current_context();
-  check(cuStreamBeginCapture(as_stream(stream), CU_STREAM_CAPTURE_MODE_RELAXED),
-        "cuStreamBeginCapture");
+  check(cuStreamBeginCapture(as_stream(stream), CU_STREAM_CAPTURE_MODE_RELAXED), "cuStreamBeginCapture");
 }
 
 void CudaGraph::end_capture(StreamHandle stream) {

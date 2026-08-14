@@ -14,8 +14,8 @@
 
 #include "adaptor/test_adaptor.h"
 
-#include <musa_runtime_api.h>
 #include <mufft.h>
+#include <musa_runtime_api.h>
 
 #include <cmath>
 #include <cstdio>

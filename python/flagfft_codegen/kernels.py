@@ -1130,11 +1130,15 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}bi{j} = tl.load(b_fft_ptr + in{j} * 2 + 1, mask=lane_mask, other={zero})"
                 )
-                lines.append(f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})")
+                lines.append(
+                    f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})"
+                )
                 lines.append(f"{indent}i{j} = -point_i{j}")
             elif io_mode == "bluestein_full_leaf":
                 if bluestein_pass == 0:
-                    lines.append(f"{indent}prime_mask{j} = lane_mask & (in{j} < {prime_n})")
+                    lines.append(
+                        f"{indent}prime_mask{j} = lane_mask & (in{j} < {prime_n})"
+                    )
                     lines.append(
                         f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + in{j}) * 2"
                     )
@@ -1156,7 +1160,9 @@ def _emit_stage_block(
                 else:
                     intermediate_index = f"in{j}"
                     if smem_pack > 1:
-                        lines.append(f"{indent}intermediate_in{j} = in{j} + smem_offset")
+                        lines.append(
+                            f"{indent}intermediate_in{j} = in{j} + smem_offset"
+                        )
                         intermediate_index = f"intermediate_in{j}"
                     lines.append(
                         f"{indent}r{j} = tl.load(tle.gpu.local_ptr({bluestein_intermediate_buffer}_r, "
@@ -1167,22 +1173,34 @@ def _emit_stage_block(
                         f"({intermediate_index},)), mask=lane_mask, other={zero})"
                     )
             elif io_mode == "bluestein_four_step_prepare_row":
-                lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner")
-                lines.append(f"{indent}prime_mask{j} = lane_mask & (src_idx{j} < {prime_n})")
+                lines.append(
+                    f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
+                )
+                lines.append(
+                    f"{indent}prime_mask{j} = lane_mask & (src_idx{j} < {prime_n})"
+                )
                 lines.append(
                     f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n} + src_idx{j}) * 2"
                 )
-                lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
-                lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
+                lines.append(
+                    f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})"
+                )
                 lines.append(
                     f"{indent}chirp_r{j} = tl.load(chirp_ptr + src_idx{j} * 2, mask=prime_mask{j}, other={zero})"
                 )
                 lines.append(
                     f"{indent}chirp_i{j} = tl.load(chirp_ptr + src_idx{j} * 2 + 1, mask=prime_mask{j}, other={zero})"
                 )
-                lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, chirp_r{j}, chirp_i{j})")
+                lines.append(
+                    f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, chirp_r{j}, chirp_i{j})"
+                )
             elif io_mode == "bluestein_four_step_pointwise_row":
-                lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner")
+                lines.append(
+                    f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
+                )
                 lines.append(
                     f"{indent}ar{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
                     f"mask=lane_mask, other={zero})"
@@ -1191,11 +1209,15 @@ def _emit_stage_block(
                     f"{indent}ai{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
                     f"mask=lane_mask, other={zero})"
                 )
-                lines.append(f"{indent}br{j} = tl.load(b_fft_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})")
+                lines.append(
+                    f"{indent}br{j} = tl.load(b_fft_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
+                )
                 lines.append(
                     f"{indent}bi{j} = tl.load(b_fft_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
                 )
-                lines.append(f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})")
+                lines.append(
+                    f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})"
+                )
                 lines.append(f"{indent}i{j} = -point_i{j}")
             elif io_mode == "four_step_row":
                 lines.append(
@@ -1425,7 +1447,9 @@ def _emit_stage_block(
                     )
                     intermediate_index = f"out_idx{j}"
                     if smem_pack > 1:
-                        lines.append(f"{indent}intermediate_out{j} = out_idx{j} + smem_offset")
+                        lines.append(
+                            f"{indent}intermediate_out{j} = out_idx{j} + smem_offset"
+                        )
                         intermediate_index = f"intermediate_out{j}"
                     lines.append(
                         f"{indent}tl.store(tle.gpu.local_ptr({bluestein_intermediate_buffer}_r, "
@@ -1445,7 +1469,7 @@ def _emit_stage_block(
                         f"{indent}chirp_r{j} = tl.load(chirp_ptr + out_idx{j} * 2, mask=prime_mask{j}, other={zero})"
                     )
                     lines.append(
-                        f"{indent}chirp_i{j} = tl.load(chirp_ptr + out_idx{j} * 2 + 1, mask=prime_mask{j}, other={zero})"
+                        f"{indent}chirp_i{j} = tl.load(chirp_ptr + out_idx{j} * 2 +1, mask=prime_mask{j}, other={zero})"
                     )
                     lines.append(
                         f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
@@ -1453,13 +1477,25 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + out_idx{j}) * 2"
                     )
-                    lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
-                    lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
+                    lines.append(
+                        f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})"
+                    )
             elif io_mode == "bluestein_four_step_finish_col":
-                lines.append(f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner")
-                lines.append(f"{indent}prime_mask{j} = lane_mask & (dst_idx{j} < {prime_n})")
-                lines.append(f"{indent}scaled_r{j} = r{j} / {four_step_n1 * four_step_n2}")
-                lines.append(f"{indent}scaled_i{j} = -i{j} / {four_step_n1 * four_step_n2}")
+                lines.append(
+                    f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
+                )
+                lines.append(
+                    f"{indent}prime_mask{j} = lane_mask & (dst_idx{j} < {prime_n})"
+                )
+                lines.append(
+                    f"{indent}scaled_r{j} = r{j} / {four_step_n1 * four_step_n2}"
+                )
+                lines.append(
+                    f"{indent}scaled_i{j} = -i{j} / {four_step_n1 * four_step_n2}"
+                )
                 lines.append(
                     f"{indent}chirp_r{j} = tl.load(chirp_ptr + dst_idx{j} * 2, mask=prime_mask{j}, other={zero})"
                 )
@@ -1469,9 +1505,15 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
                 )
-                lines.append(f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * {prime_n} + dst_idx{j}) * 2")
-                lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
-                lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
+                lines.append(
+                    f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * {prime_n} + dst_idx{j}) * 2"
+                )
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})"
+                )
             elif io_mode == "four_step_row_strided":
                 lines.append(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
@@ -1645,7 +1687,10 @@ def _leaf_kernel_params_for_io(
         params[1:1] = ["b_fft_ptr", "chirp_ptr"]
     elif io_mode == "bluestein_full_leaf":
         params[1:1] = ["b_fft_ptr", "chirp_ptr"]
-    elif io_mode in {"bluestein_four_step_prepare_row", "bluestein_four_step_finish_col"}:
+    elif io_mode in {
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_finish_col",
+    }:
         params.insert(1, "chirp_ptr")
     elif io_mode == "bluestein_four_step_pointwise_row":
         params.insert(1, "b_fft_ptr")
@@ -2163,11 +2208,7 @@ def _build_leaf_kernel_source_for_io(
         "bluestein_finish_leaf",
         "bluestein_full_leaf",
     }
-    batch_pack = (
-        contiguous_batch_pack_for(plan)
-        if io_mode in contiguous_modes
-        else 1
-    )
+    batch_pack = contiguous_batch_pack_for(plan) if io_mode in contiguous_modes else 1
     row_modes = {
         "four_step_row",
         "four_step_row_strided",
@@ -2205,9 +2246,7 @@ def _build_leaf_kernel_source_for_io(
     fuse_twiddle_into_row = (
         False
         if is_strided_four_step
-        else use_four_step_row_fused_twiddle(
-            four_step_n1, four_step_n2, plan.dtype
-        )
+        else use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
     )
     single_smem_buffer = _use_single_smem_buffer(
         plan,
@@ -2249,23 +2288,19 @@ def _build_leaf_kernel_source_for_io(
         kernel_name = f"{kernel_prefix}_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "strided":
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
-        kernel_name = f"{kernel_prefix}_strided_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+        kernel_name = (
+            f"{kernel_prefix}_strided_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+        )
     elif io_mode == "contiguous_r2c":
         kernel_name = f"r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
         kernel_name = f"c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_prepare_leaf":
-        kernel_name = (
-            f"bluestein_prepare_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
-        )
+        kernel_name = f"bluestein_prepare_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_finish_leaf":
-        kernel_name = (
-            f"bluestein_finish_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
-        )
+        kernel_name = f"bluestein_finish_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_full_leaf":
-        kernel_name = (
-            f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
-        )
+        kernel_name = f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode.startswith("bluestein_four_step_"):
         kernel_name = (
             f"{io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
@@ -2399,7 +2434,9 @@ def _build_leaf_kernel_source_for_io(
                 lane_block,
                 io_mode=io_mode,
                 bluestein_pass=0,
-                bluestein_intermediate_buffer=intermediate_buffer if io_mode == "bluestein_full_leaf" else "smem_a",
+                bluestein_intermediate_buffer=intermediate_buffer
+                if io_mode == "bluestein_full_leaf"
+                else "smem_a",
                 prime_n=prime_n,
                 four_step_n1=four_step_n1,
                 four_step_n2=four_step_n2,
@@ -2484,16 +2521,8 @@ def _build_direct_dft_kernel_source(
         if strided
         else f"{prefix}_kernel_n{n}_{suffix}_b{block}"
     )
-    in_placeholder = (
-        "base + j * outer_stride"
-        if strided
-        else f"pid_batch * {n} + j"
-    )
-    out_placeholder = (
-        "base + k * outer_stride"
-        if strided
-        else f"pid_batch * {n} + k"
-    )
+    in_placeholder = "base + j * outer_stride" if strided else f"pid_batch * {n} + j"
+    out_placeholder = "base + k * outer_stride" if strided else f"pid_batch * {n} + k"
     param_extra = "            outer_stride,\n" if strided else ""
     base_init = (
         "            batch_index = pid_batch // outer_stride\n"

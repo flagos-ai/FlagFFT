@@ -206,8 +206,10 @@ FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction)
     request.normalized_dim = 2;
   } else {
     request.input_shape = {desc.batch, desc.n[0], desc.n[1], desc.n[2]};
-    request.input_strides = {desc.idist, desc.n[1] * desc.n[2] * desc.istride,
-                             desc.n[2] * desc.istride, desc.istride};
+    request.input_strides = {desc.idist,
+                             desc.n[1] * desc.n[2] * desc.istride,
+                             desc.n[2] * desc.istride,
+                             desc.istride};
     request.raw_dim = 3;
     request.normalized_dim = 3;
   }
