@@ -22,16 +22,19 @@ on:
         required: false
         default: "main"
       combination:
-        description: "Test combination (ct/bs for quick, full for all sizes/batches/scales)"
+        description: "Combination(s) from conf/test_matrix.yaml, or full for all"
         required: false
-        default: "ct"
+        default: "full"
         type: choice
         options:
-          - ct
-          - bs
           - full
-          - 2d
-          - 2d_full
+          - 1d_ct_single
+          - 1d_ct_batch
+          - 1d_bs_single
+          - 1d_bs_batch
+          - 2d_ct
+          - 2d_bs
+          - 3d
       gpus:
         description: "Comma-separated GPU IDs or 'all'"
         required: false
@@ -95,7 +98,7 @@ jobs:
       - name: Run unified tests
         run: |
           python tools/run_tests.py \
-            --combination ${{ inputs.combination || 'ct' }} \
+            --combination ${{ inputs.combination || 'full' }} \
             --gpus ${{ inputs.gpus || '0' }} \
             ${{ inputs.accuracy_only == true && '--accuracy-only' || '' }} \
             ${{ inputs.performance_only == true && '--performance-only' || '' }} \

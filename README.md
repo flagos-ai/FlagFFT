@@ -320,7 +320,7 @@ python tools/run_tests.py [OPTIONS]
 | `--op-list-file` | — | Path to file with one operator ID per line (`#` for comments) |
 | `--start` | — | Skip operators whose ID is lexicographically before this value |
 | `--stages` | `stable` | Comma-separated stages to include (`stable`, `alpha`, `beta`) |
-| `--combination` | `ct` | Test combination: `ct`, `bs`, `full`, `2p20`, `2d`, `2d_full`, `3d`, `3d_full` |
+| `--combination` | `full` | Comma-separated combination names from `conf/test_matrix.yaml`, or `full`/`all` to run all of them |
 | `--gpus` | `0` | Comma-separated GPU IDs or `all` |
 | `--output-dir` | `results` | Directory for summary and per-operator result files |
 | `--build-dir` | `build` | Path to CMake build directory |
@@ -337,23 +337,23 @@ python tools/run_tests.py [OPTIONS]
 
 | Preset | Description |
 |---|---|
-| `ct` | Quick smoke test — Cooley-Tukey sizes, batch 1, scale 1.0 |
-| `bs` | Quick smoke test — Bluestein/Rader sizes, batch 1, scale 1.0 |
-| `full` | Full 1D — all CT sizes × all batches × all scales |
-| `2p20` | Focused C2C `2^20` forward/inverse test, batch 1, scale 1.0 |
-| `2d` | Quick 2D — 4 representative shapes, batch 1, scale 1.0 |
-| `2d_full` | Full 2D — 12 covering-array shapes × 8 API/directions, batch 1 |
-| `3d` | Quick 3D — 4 representative shapes, batch 1, scale 1.0 |
-| `3d_full` | Full 3D — 14 covering-array shapes × 8 API/directions, batch 1 |
+| `full` / `all` | All combinations defined in `conf/test_matrix.yaml` (default) |
+| `1d_ct_single` | 1D Cooley-Tukey sizes, batch 1, scale 1.0 |
+| `1d_ct_batch` | 1D Cooley-Tukey sizes, batch 256, scale 1.0 |
+| `1d_bs_single` | 1D Bluestein/Rader/DirectDFT sizes, batch 1, scale 1.0 |
+| `1d_bs_batch` | 1D Bluestein/Rader/DirectDFT sizes, batch 256, scale 1.0 |
+| `2d_ct` | 2D Cooley-Tukey sizes, batch 1, scale 1.0 |
+| `2d_bs` | 2D Bluestein/Rader/DirectDFT sizes, batch 1, scale 1.0 |
+| `3d` | 3D sizes, batch 1, scale 1.0 |
 
 #### Examples
 
 ```bash
-# Quick smoke test (default)
+# Full test suite (default)
 python tools/run_tests.py
 
 # Full test suite on GPU 0
-python tools/run_tests.py --combination full --gpus 0
+python tools/run_tests.py --gpus 0
 
 # Full suite across 4 GPUs
 python tools/run_tests.py --combination full --gpus 0,1,2,3
@@ -364,8 +364,8 @@ python tools/run_tests.py --combination full --ops c2c_1d,r2c_1d --accuracy-only
 # Performance benchmarks only
 python tools/run_tests.py --combination full --performance-only
 
-# Focused 2^20 C2C correctness and performance
-python tools/run_tests.py --combination 2p20 --gpus 0
+# A single combination, e.g. 1D Bluestein batch tests
+python tools/run_tests.py --combination 1d_bs_batch --gpus 0
 ```
 
 #### Output
@@ -439,8 +439,8 @@ automatically skipped when dependencies are unavailable.
 
 The test parameter space is defined in `conf/`:
 
-- `conf/operators.yaml` — 20 operator definitions (1D/2D/3D × C2C/Z2Z/R2C/D2Z/C2R/Z2D, plus roundtrip)
-- `conf/test_matrix.yaml` — Parameter space including 12 rank-2 and 14 rank-3 covering-array shapes, with 8 combination rules
+- `conf/operators.yaml` — 18 operator definitions (1D/2D/3D × C2C/Z2Z/R2C/D2Z/C2R/Z2D)
+- `conf/test_matrix.yaml` — Parameter space for 1D CT/BS and 2D/3D sizes, with 7 combination rules
 
 ---
 

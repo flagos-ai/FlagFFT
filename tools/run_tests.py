@@ -169,43 +169,78 @@ def resolve_sizes(matrix: dict, ref) -> list:
     return ref if isinstance(ref, list) else []
 
 
+def resolve_combination_names(value: str, matrix: dict) -> list[str]:
+    """Resolve --combination input into concrete matrix combination names."""
+    names = [name.strip() for name in value.split(",") if name.strip()]
+    if not names:
+        perror("no combination specified")
+        sys.exit(1)
+    if any(name in ("full", "all") for name in names):
+        return list(matrix.get("combinations", {}).keys())
+    for name in names:
+        if name not in matrix.get("combinations", {}):
+            perror(f"unknown combination '{name}'")
+            sys.exit(1)
+    return names
+
+
+def resolve_combo_scope(
+    matrix: dict, combination: str, combo: dict
+) -> tuple[int, list[str], list, list, list]:
+    """Resolve rank, algorithms and parameter lists for one combination rule.
+
+    A combination rule may declare ``rank`` and ``algorithms`` explicitly.
+    Otherwise the rank is inferred from the shape arity, and the 1D algorithm
+    scope is inferred from the combination name (``1d_ct_*`` -> ct,
+    ``1d_bs_*`` -> bs).
+    """
+    sizes = resolve_sizes(matrix, combo["sizes"])
+    batches = resolve_sizes(matrix, combo.get("batches", [1]))
+    scales = resolve_sizes(matrix, combo.get("scales", [1.0]))
+
+    if not sizes:
+        perror(f"combination '{combination}' has no sizes")
+        sys.exit(1)
+
+    rank = combo.get("rank")
+    if rank is None:
+        first = sizes[0]
+        rank = len(first) if isinstance(first, list) else 1
+
+    algorithms = combo.get("algorithms")
+    if algorithms is None:
+        if rank == 1:
+            name_parts = set(combination.split("_"))
+            algorithms = [a for a in ("ct", "bs") if a in name_parts]
+            if not algorithms:
+                algorithms = ["ct", "bs"]
+        else:
+            algorithms = [f"{rank}d"]
+
+    return rank, algorithms, sizes, batches, scales
+
+
 def expand_test_cases(
     ops: list[dict], matrix: dict, combination: str
 ) -> list[dict[str, Any]]:
     combo = matrix.get("combinations", {}).get(combination)
     if combo is None:
-        print(f"ERROR: unknown combination '{combination}'")
+        perror(f"unknown combination '{combination}'")
         sys.exit(1)
 
-    sizes = resolve_sizes(matrix, combo["sizes"])
-    batches = resolve_sizes(matrix, combo.get("batches", [1]))
-    scales = resolve_sizes(matrix, combo.get("scales", [1.0]))
+    rank, algorithms, sizes, batches, scales = resolve_combo_scope(
+        matrix, combination, combo
+    )
 
     cases = []
     for op in ops:
+        if op.get("rank") != rank:
+            continue
         for algo in op["algorithms"]:
-            if combination in ("ct", "bs") and algo != combination:
-                continue
-            # Skip if algorithm doesn't match combination
-            if combination in ("ct", "bs") and algo in ("2d", "3d"):
-                continue
-            if combination == "2p20" and (op["id"] != "c2c_1d" or algo != "ct"):
-                continue
-            if combination in ("2d", "2d_full") and algo != "2d":
-                continue
-            if combination in ("3d", "3d_full") and algo != "3d":
+            if algo not in algorithms:
                 continue
 
-            # For bs algorithm, use bs sizes when combination is ct or full
-            op_sizes = sizes
-            if algo == "bs":
-                if combination in ("ct", "full"):
-                    op_sizes = resolve_sizes(matrix, "sizes_bs")
-            elif algo == "ct":
-                if combination == "bs":
-                    op_sizes = resolve_sizes(matrix, "sizes_ct")
-
-            for size in op_sizes:
+            for size in sizes:
                 for batch in batches:
                     for scale in scales:
                         for direction in op["directions"]:
@@ -234,6 +269,14 @@ def expand_test_cases(
     return cases
 
 
+def expand_all_test_cases(ops: list[dict], matrix: dict) -> list[dict[str, Any]]:
+    """Expand every combination rule in the matrix into test cases."""
+    cases = []
+    for combination in matrix.get("combinations", {}):
+        cases.extend(expand_test_cases(ops, matrix, combination))
+    return cases
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FlagFFT unified test runner")
     parser.add_argument("--ops", default=None, help="Comma-separated operator IDs")
@@ -248,18 +291,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stages", default="stable", help="Comma-separated stages")
     parser.add_argument(
         "--combination",
-        default="ct",
-        choices=[
-            "ct",
-            "bs",
-            "full",
-            "2p20",
-            "2d",
-            "2d_full",
-            "3d",
-            "3d_full",
-        ],
-        help="Test combination (1D, 2D, or 3D quick/full presets)",
+        default="full",
+        help=(
+            "Comma-separated combination names from conf/test_matrix.yaml, "
+            "or 'full'/'all' to run every combination (default: full)"
+        ),
     )
     parser.add_argument("--gpus", default="0", help="Comma-separated GPU IDs or 'all'")
     parser.add_argument("--accuracy-only", action="store_true")
@@ -872,7 +908,10 @@ def main() -> int:
         perror("no operators match the filter criteria")
         return 1
 
-    cases = expand_test_cases(ops, matrix, args.combination)
+    combination_names = resolve_combination_names(args.combination, matrix)
+    cases = []
+    for combination in combination_names:
+        cases.extend(expand_test_cases(ops, matrix, combination))
     print(f"Expanded {len(cases)} test cases from {len(ops)} operators")
 
     if args.gpus == "all":
@@ -886,7 +925,7 @@ def main() -> int:
 
     print(f"Using GPUs: {gpu_ids}")
     print(f"Build dir: {build_dir}")
-    print(f"Combination: {args.combination}")
+    print(f"Combinations: {', '.join(combination_names)}")
     print(f"Accuracy: {not args.performance_only}")
     print(f"Performance: {not args.accuracy_only}")
     print()
@@ -1014,6 +1053,7 @@ def main() -> int:
     op_results = aggregate_results(raw_results, ops)
     config = {
         "combination": args.combination,
+        "combinations": combination_names,
         "stages": list(stages),
         "gpus": gpu_ids,
         "accuracy_only": args.accuracy_only,

@@ -26,30 +26,67 @@ RUN_TESTS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUN_TESTS)
 
 
-def test_multidimensional_full_case_counts_and_batch() -> None:
+def test_combinations_expand_to_expected_scope_and_count() -> None:
     operators = RUN_TESTS.load_operators(ROOT / "conf" / "operators.yaml")
     matrix = RUN_TESTS.load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
 
-    cases_2d = RUN_TESTS.expand_test_cases(operators, matrix, "2d_full")
-    cases_3d = RUN_TESTS.expand_test_cases(operators, matrix, "3d_full")
+    expected_scope = {
+        "1d_ct_single": (1, {"ct"}),
+        "1d_ct_batch": (1, {"ct"}),
+        "1d_bs_single": (1, {"bs"}),
+        "1d_bs_batch": (1, {"bs"}),
+        "2d_ct": (2, {"2d"}),
+        "2d_bs": (2, {"2d"}),
+        "3d": (3, {"3d"}),
+    }
 
-    assert len(cases_2d) == len(matrix["sizes_2d_full"]) * 8
-    assert len(cases_3d) == len(matrix["sizes_3d_full"]) * 8
-    assert {case["rank"] for case in cases_2d} == {2}
-    assert {case["rank"] for case in cases_3d} == {3}
-    assert {case["batch"] for case in cases_2d + cases_3d} == {1}
+    for name, (rank, algorithms) in expected_scope.items():
+        combo = matrix["combinations"][name]
+        sizes = matrix[combo["sizes"]]
+        batches = combo.get("batches", [1])
+        scales = combo.get("scales", [1.0])
+        cases = RUN_TESTS.expand_test_cases(operators, matrix, name)
+
+        assert cases
+        assert {case["rank"] for case in cases} == {rank}
+        assert {case["algo"] for case in cases} == algorithms
+        # 18 operators (6 per rank) expose 8 direction entries in total.
+        assert len(cases) == len(sizes) * len(batches) * len(scales) * 8
 
 
-def test_bs_combination_only_expands_prime_cases() -> None:
+def test_full_expands_every_combination_once() -> None:
     operators = RUN_TESTS.load_operators(ROOT / "conf" / "operators.yaml")
     matrix = RUN_TESTS.load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
 
-    cases = RUN_TESTS.expand_test_cases(operators, matrix, "bs")
+    full_cases = RUN_TESTS.expand_all_test_cases(operators, matrix)
+    manual_cases = []
+    for name in matrix["combinations"]:
+        manual_cases.extend(RUN_TESTS.expand_test_cases(operators, matrix, name))
 
-    assert len(cases) == len(matrix["sizes_bs"]) * 10
-    assert {case["algo"] for case in cases} == {"bs"}
-    assert {case["nx"] for case in cases} == set(matrix["sizes_bs"])
-    assert {case["rank"] for case in cases} == {1}
+    assert full_cases == manual_cases
+    assert len(full_cases) == len(manual_cases)
+
+    case_keys = [
+        (
+            case["op_id"],
+            case["algo"],
+            case["nx"],
+            case["ny"],
+            case["nz"],
+            case["batch"],
+            case["direction"],
+            case["scale"],
+        )
+        for case in full_cases
+    ]
+    assert len(set(case_keys)) == len(full_cases)
+
+    assert RUN_TESTS.resolve_combination_names("full", matrix) == list(
+        matrix["combinations"]
+    )
+    assert RUN_TESTS.resolve_combination_names("all", matrix) == list(
+        matrix["combinations"]
+    )
 
 
 def test_3d_accuracy_command_uses_rank_binary_and_api_filter(tmp_path: Path) -> None:

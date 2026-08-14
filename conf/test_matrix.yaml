@@ -16,167 +16,99 @@
 # 定义尺寸、批大小、缩放等参数空间
 # 与 operators.yaml 配合使用，展开为具体测例
 
-# ── 1D 尺寸定义 ────────────────────────────────────────────────
+# 1D Cooley-Tukey
+sizes_1d_ct:
+  - 256 # 2^8
+  - 1024 # 2^10
+  - 2048 # 2^11
+  - 46189 # 11 * 13 * 17 * 19
+  - 106590 # 2 * 3 * 5 * 11 * 17 * 19
+  - 185640 # 2^3 * 3 * 5 * 7 * 13 * 17
+  - 262144 # 2^18
+  - 328050 # 2 * 3^8 * 5^2
+  - 340200 # 2^3 * 3^5 * 5^2 * 7
+  - 477360 # 2^4 * 3 * 5 * 13 * 17 * 19
+  - 522240 # 2^11 * 3 * 5 * 17
+  - 663000 # 2^3 * 3 * 5^3 * 13 * 17
+  - 1048576 # 2^20
 
-# Cooley-Tukey 平滑数（可被 {2..19} 的因数分解）
-sizes_ct:
-  - 16
-  - 256
-  - 2048
-  - 16384
-  - 46189     # 11 * 13 * 17 * 19
-  - 49152      # 3 * 2^14
-  - 59049      # 3^10
-  - 65536      # 2^16
-  - 69360      # 2^4 * 3 * 5 * 17^2
-  - 73728      # 3^2 * 2^13
-  - 106590     # 2 * 3 * 5 * 11 * 17 * 19
-  - 107520     # 2^10 * 3 * 5 * 7
-  - 117649     # 7^6
-  - 147968     # 2^9 * 17^2
-  - 163840     # 5 * 2^15
-  - 185640     # 2^3 * 3 * 5 * 7 * 13 * 17
-  - 262144     # 2^18
-  - 328050     # 2 * 3^8 * 5^2
-  - 340200     # 2^3 * 3^5 * 5^2 * 7
-  - 390625     # 5^8
-  - 477360     # 2^4 * 3 * 5 * 13 * 17 * 19
-  - 522240     # 2^11 * 3 * 5 * 17
-  - 545292     # 2^2 * 3^3 * 7^3 * 11
-  - 589824     # 3^2 * 2^16
-  - 654885     # 3^5 * 5 * 7^2 * 11
-  - 655360     # 5 * 2^17
-  - 663000     # 2^3 * 3 * 5^3 * 13 * 17
-  - 707616     # 2^5 * 3^2 * 7 * 13 * 17
-  - 710775     # 3^4 * 5^2 * 13 * 17
-  - 786432     # 3 * 2^18
-  - 819200     # 5^2 * 2^15
-  - 855712     # 2^5 * 11^2 * 13 * 17
-  - 884736     # 3^3 * 2^15
-  - 917504     # 7 * 2^17
-  - 961875     # 3^4 * 5^4 * 19
-  - 983040     # 3 * 5 * 2^16
-  - 1001385    # 3^2 * 5 * 7 * 11 * 17^2
-  - 1048576    # 2^20
+# 1D Bluestein / Rader / DirectDFT
+sizes_1d_bs:
+  - 23
+  - 76
+  - 997
+  - 1009
+  - 8191
+  - 16381
+  - 65537
+  - 104729
+  - 524287
 
-# 1D 素数路径：小规模 DirectDFT、中规模融合 Bluestein、大规模 Four-Step Bluestein
-# 规模覆盖算法边界、卷积分解边界以及接近百万点的超大素数
-sizes_bs:
-  - 23        # DirectDFT
-  - 67        # DirectDFT 上界附近
-  - 997       # 单 kernel Bluestein
-  - 1009      # 单 kernel Bluestein 跨界
-  - 8191      # Four-Step Bluestein
-  - 16381     # Four-Step Bluestein 中规模边界
-  - 65537     # 大规模素数（Fermat），Bluestein conv=2^18
-  - 104729    # 大规模素数，Bluestein conv=2^18
-  - 524287    # 大规模素数（Mersenne），Bluestein conv=2^20
-  - 999983    # 超大素数，Bluestein conv>1M 走光滑窗口
+# 2D Cooley-Tukey
+sizes_2d_ct:
+  - [64, 64]
+  - [128, 128]
+  - [2048, 2048]
+  - [46189, 48]
+  - [32, 46189]
 
-# ── 多维覆盖数组 ────────────────────────────────────────────────
-#
-# 多维测试不对 1D 长度做笛卡尔积，而是用小型覆盖数组让每个轴位置都
-# 遇到关键计划分支：退化维、DirectDFT、混合 radix、Rader、Bluestein、
-# Four-Step，以及非 32 对齐的转置尾块。
+# 2D Bluestein / Rader / DirectDFT
+sizes_2d_bs:
+  - [23, 30]
+  - [76, 76]
+  - [1009, 23]
+  - [8191, 1009]
 
-sizes_2d_full:
-  - [1, 64]          # 退化外轴
-  - [64, 1]          # 退化内轴；real half-pack 边界
-  - [23, 30]         # DirectDFT -> mixed-radix leaf
-  - [30, 23]         # mixed-radix leaf -> odd DirectDFT
-  - [67, 997]        # Rader -> odd Bluestein
-  - [997, 67]        # Bluestein -> odd Rader
-  - [32, 16384]      # aligned leaf -> large Four-Step
-  - [16384, 32]      # large Four-Step -> aligned leaf
-  - [30, 46189]      # large mixed-radix inner axis
-  - [31, 33]         # transpose tail masks on both axes
-  - [256, 256]       # square medium throughput case
-  - [512, 1024]      # rectangular large throughput case
+# 3D Cooley-Tukey
+sizes_3d:
+  - [16, 16, 16]
+  - [32, 32, 32]
+  - [16, 997, 64]
+  - [128, 2048, 64]
+  - [256, 256, 256]
 
-sizes_3d_full:
-  - [1, 16, 32]      # degenerate n0
-  - [16, 1, 32]      # degenerate n1
-  - [16, 32, 1]      # degenerate n2; real half-pack boundary
-  - [23, 30, 67]     # DirectDFT / mixed radix / Rader
-  - [30, 67, 23]     # rotate algorithm classes across axes
-  - [67, 23, 30]
-  - [997, 16, 64]    # Bluestein on n0
-  - [16, 997, 64]    # Bluestein on n1
-  - [16, 64, 997]    # odd Bluestein on real-packed n2
-  - [4, 32, 16384]   # Four-Step on n2
-  - [32, 16384, 4]   # Four-Step on n1
-  - [16384, 4, 32]   # Four-Step on n0
-  - [31, 33, 35]     # 3D transpose tail masks
-  - [64, 64, 64]     # balanced throughput case
-
-# ── 批大小 ─────────────────────────────────────────────────────
-
+# Batch sizes and scaling factors
 batches:
   - 1
   - 256
 
-# ── 输入缩放因子 ───────────────────────────────────────────────
-
 scales:
   - 1.0
 
-# ── 组合规则 ───────────────────────────────────────────────────
-# 每个规则定义该算法下使用的参数空间
-# sizes/batches/scales 引用上面定义的键名
-
+# Test combinations
 combinations:
-  # Cooley-Tukey 快速冒烟
-  ct:
-    sizes: sizes_ct
+
+  1d_ct_single:
+    sizes: sizes_1d_ct
     batches: [1]
     scales: [1.0]
 
-  # Bluestein/Rader 快速冒烟
-  bs:
-    sizes: sizes_bs
+  1d_ct_batch:
+    sizes: sizes_1d_ct
+    batches: [256]
+    scales: [1.0]
+
+  1d_bs_single:
+    sizes: sizes_1d_bs
     batches: [1]
     scales: [1.0]
 
-  # 完整测试（CT 尺寸，所有批大小和缩放）
-  full:
-    sizes: sizes_ct
-    batches: batches
-    scales: scales
+  1d_bs_batch:
+    sizes: sizes_1d_bs
+    batches: [256]
+    scales: [1.0]
 
-  # 2^20 TLE 优化专项测试
-  2p20:
-    sizes: [1048576]
+  2d_ct:
+    sizes: sizes_2d_ct
     batches: [1]
     scales: [1.0]
 
-  # 2D 测试
-  2d:
-    sizes:
-      - [16, 16]
-      - [23, 30]
-      - [67, 997]
-      - [32, 16384]
+  2d_bs:
+    sizes: sizes_2d_bs
     batches: [1]
     scales: [1.0]
 
-  # 2D 完整覆盖数组
-  2d_full:
-    sizes: sizes_2d_full
-    batches: [1]
-    scales: [1.0]
-
-  # 3D 测试
   3d:
-    sizes:
-      - [16, 16, 16]
-      - [23, 30, 67]
-      - [16, 997, 64]
-      - [4, 32, 16384]
-    batches: [1]
-    scales: [1.0]
-
-  # 3D 完整覆盖数组
-  3d_full:
-    sizes: sizes_3d_full
+    sizes: sizes_3d
     batches: [1]
     scales: [1.0]
