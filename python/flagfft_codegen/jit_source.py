@@ -885,6 +885,21 @@ def _emit_tiled_transpose_jit_kernel(
     return metadata
 
 
+def _transpose3d_v2_supported() -> bool:
+    """Whether the vectorized (inline-asm) 3D transpose variant can be used.
+
+    The v2 kernel relies on ld/st.global.v2 inline asm; the MThreads MTGPU
+    LLVM backend (FlagTree mthreads) cannot allocate registers for it, so
+    fall back to the plain tiled transpose there.
+    """
+    try:
+        from triton._C import libtriton
+
+        return not hasattr(libtriton, "mthreads")
+    except ImportError:
+        return True
+
+
 def _emit_tiled_transpose3d_jit_kernel(
     *,
     n0: int,
@@ -894,7 +909,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
-    if dtype == "complex64":
+    if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
             kernel_source,

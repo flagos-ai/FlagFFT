@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if(NOT BACKEND STREQUAL "CUDA")
-    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA")
+if(BACKEND STREQUAL "CUDA")
+    find_package(CUDAToolkit REQUIRED)
+    target_sources(flagfft PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/backend/cuda/adaptor.cpp
+    )
+    target_link_libraries(flagfft PRIVATE CUDA::cuda_driver)
+elseif(BACKEND STREQUAL "MUSA")
+    target_sources(flagfft PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/backend/musa/adaptor.cpp
+    )
+    target_link_libraries(flagfft PRIVATE MUSA::musa_runtime)
+else()
+    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA or BACKEND=MUSA")
 endif()
-
-find_package(CUDAToolkit REQUIRED)
-
-target_sources(flagfft PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/backend/cuda/adaptor.cpp
-)
-target_link_libraries(flagfft PRIVATE CUDA::cuda_driver)

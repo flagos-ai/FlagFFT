@@ -253,7 +253,13 @@ def use_tle_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") -> bool:
 
     Both leaves are capped at 1024 so pack=4 stays within the A100 dynamic
     shared-memory budget for the generated mixed-radix kernels.
+
+    On the MThreads backend the fused-twiddle row kernel exceeds the MTGPU
+    LLVM register allocator, so it is disabled there (falls back to the
+    precomputed twiddle table path).
     """
+    if _mthreads_backend_active():
+        return False
     return (
         not _is_double_dtype(dtype)
         and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
@@ -1663,6 +1669,22 @@ def _leaf_kernel_params_for_io(
     return params
 
 
+def _mthreads_backend_active() -> bool:
+    """Whether the installed Triton targets Moore Threads (MUSA/mtgpu).
+
+    The thread-local mixed-radix four-step kernels and the vectorized 3D
+    transpose variants rely on register/asm patterns that the MThreads
+    MTGPU LLVM backend cannot compile (llc register allocation failure),
+    so they are disabled on this backend.
+    """
+    try:
+        from triton._C import libtriton
+
+        return hasattr(libtriton, "mthreads")
+    except ImportError:
+        return False
+
+
 def _use_thread_local_mixed_leaf(
     plan: LeafPlan,
     *,
@@ -1670,6 +1692,8 @@ def _use_thread_local_mixed_leaf(
     four_step_n1: int,
     four_step_n2: int,
 ) -> bool:
+    if _mthreads_backend_active():
+        return False
     if io_mode.endswith("_strided"):
         return False
     if io_mode.startswith("bluestein_four_step_"):

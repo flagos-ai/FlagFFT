@@ -19,14 +19,19 @@ project(flagfft LANGUAGES CXX)
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA")
 
-if(NOT BACKEND STREQUAL "CUDA")
-    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA")
+if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA"))
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA or BACKEND=MUSA")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
 find_package(SQLite3 REQUIRED)
+
+# CMake >= 3.31 FindSQLite3 creates SQLite::SQLite3 instead of SQLite3::SQLite3
+if(TARGET SQLite::SQLite3 AND NOT TARGET SQLite3::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
 
 execute_process(
     COMMAND ${Python_EXECUTABLE} -c
@@ -100,30 +105,55 @@ install(DIRECTORY include/ DESTINATION "include")
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.
 # Reused by flagfft-cli (bench/verify) and ctest (correctness tests).
-# Only built when CLI or tests are enabled (both need cuFFT).
+# Only built when CLI or tests are enabled (both need a reference FFT library).
 if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
-    find_package(CUDAToolkit REQUIRED)
-    add_library(flagfft_test_adaptor OBJECT
-        src/adaptor/backend/cuda/test_adaptor.cpp
-    )
+    if(BACKEND STREQUAL "CUDA")
+        find_package(CUDAToolkit REQUIRED)
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/cuda/test_adaptor.cpp
+        )
+        target_link_libraries(flagfft_test_adaptor PUBLIC
+            CUDA::cufft
+            CUDA::cudart
+            CUDA::cuda_driver
+        )
+    else()
+        if(NOT DEFINED MUSA_HOME)
+            set(MUSA_HOME "/usr/local/musa")
+        endif()
+        find_library(MUSA_FFT_LIB mufft
+            PATHS "${MUSA_HOME}/lib64" "${MUSA_HOME}/lib"
+            NO_DEFAULT_PATH
+        )
+        if(NOT MUSA_FFT_LIB)
+            find_library(MUSA_FFT_LIB mufft)
+        endif()
+        if(NOT MUSA_FFT_LIB)
+            message(FATAL_ERROR "muFFT library not found; FLAGFFT_BUILD_CLI/TESTS requires mufft on MUSA")
+        endif()
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/musa/test_adaptor.cpp
+        )
+        target_link_libraries(flagfft_test_adaptor PUBLIC
+            MUSA::musa_runtime
+            ${MUSA_FFT_LIB}
+        )
+    endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
     target_include_directories(flagfft_test_adaptor PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         src/utils/include
         src
     )
-    target_link_libraries(flagfft_test_adaptor PUBLIC
-        CUDA::cufft
-        CUDA::cudart
-        CUDA::cuda_driver
-    )
 endif()
 
 if(FLAGFFT_BUILD_CLI)
-    # cuFFT is only needed by test_adaptor (not by CLI directly).
-    find_package(CUDAToolkit REQUIRED)
-    if(NOT TARGET CUDA::cufft)
-        message(FATAL_ERROR "FLAGFFT_BUILD_CLI requires the CUDA::cufft target")
+    if(BACKEND STREQUAL "CUDA")
+        # cuFFT is only needed by test_adaptor (not by CLI directly).
+        find_package(CUDAToolkit REQUIRED)
+        if(NOT TARGET CUDA::cufft)
+            message(FATAL_ERROR "FLAGFFT_BUILD_CLI requires the CUDA::cufft target")
+        endif()
     endif()
     add_library(flagfft_cli_common OBJECT
         src/cli_tools/common/plan_handles.cpp
@@ -160,9 +190,11 @@ if(FLAGFFT_BUILD_CLI)
             flagfft
             flagfft_cli_common
             flagfft_test_adaptor
-            CUDA::cufft
             nlohmann_json::nlohmann_json
     )
+    if(BACKEND STREQUAL "CUDA")
+        target_link_libraries(flagfft-cli PRIVATE CUDA::cufft)
+    endif()
     install(TARGETS flagfft-cli RUNTIME DESTINATION "bin")
 endif()
 
