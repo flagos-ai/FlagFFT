@@ -196,10 +196,7 @@ KernelKey KernelKey::direct_dft_strided(std::string target,
                                         std::string direction,
                                         std::string dtype,
                                         int64_t length) {
-  KernelKey key = KernelKey::direct_dft(std::move(target),
-                                        std::move(direction),
-                                        std::move(dtype),
-                                        length);
+  KernelKey key = KernelKey::direct_dft(std::move(target), std::move(direction), std::move(dtype), length);
   key.kind = KernelKind::DirectDftStrided;
   return key;
 }
@@ -516,12 +513,8 @@ KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int6
   return key;
 }
 
-KernelKey KernelKey::transpose3d(std::string target,
-                                 std::string dtype,
-                                 int64_t n0,
-                                 int64_t n1,
-                                 int64_t n2,
-                                 std::string order) {
+KernelKey KernelKey::transpose3d(
+    std::string target, std::string dtype, int64_t n0, int64_t n1, int64_t n2, std::string order) {
   KernelKey key;
   key.kind = KernelKind::Transpose3D;
   key.target = std::move(target);
@@ -587,37 +580,30 @@ std::string KernelKey::repr() const {
   if (kind == KernelKind::DirectDft || kind == KernelKind::DirectDftStrided) {
     out << ";direction=" << direction << ";length=" << length;
   }
-  if (kind == KernelKind::Leaf || kind == KernelKind::LeafStrided ||
-      kind == KernelKind::LeafR2C || kind == KernelKind::LeafC2R ||
-      kind == KernelKind::LeafBluestein ||
+  if (kind == KernelKind::Leaf || kind == KernelKind::LeafStrided || kind == KernelKind::LeafR2C ||
+      kind == KernelKind::LeafC2R || kind == KernelKind::LeafBluestein ||
       kind == KernelKind::LeafBluesteinPrepare || kind == KernelKind::LeafBluesteinFinish ||
-      kind == KernelKind::BluesteinFourStepPrepareRow ||
-      kind == KernelKind::BluesteinFourStepPointwiseRow ||
-      kind == KernelKind::BluesteinFourStepFinishCol ||
-      kind == KernelKind::FourStepRow || kind == KernelKind::FourStepRowStrided ||
-      kind == KernelKind::FourStepRealRow ||
+      kind == KernelKind::BluesteinFourStepPrepareRow || kind == KernelKind::BluesteinFourStepPointwiseRow ||
+      kind == KernelKind::BluesteinFourStepFinishCol || kind == KernelKind::FourStepRow ||
+      kind == KernelKind::FourStepRowStrided || kind == KernelKind::FourStepRealRow ||
       kind == KernelKind::FourStepHermitianRow || kind == KernelKind::FourStepCol ||
-      kind == KernelKind::FourStepColStrided ||
-      kind == KernelKind::FourStepR2CCol || kind == KernelKind::FourStepC2RCol) {
+      kind == KernelKind::FourStepColStrided || kind == KernelKind::FourStepR2CCol ||
+      kind == KernelKind::FourStepC2RCol) {
     out << ";direction=" << direction << ";length=" << length << ";factors=[" << join_ints(factors) << "]"
         << ";lanes=" << lanes << ";num_warps=" << num_warps << ";generic_radices=["
         << join_ints(generic_radices) << "];smem_size=" << smem_size;
     if (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepRowStrided ||
-        kind == KernelKind::FourStepRealRow ||
-        kind == KernelKind::FourStepHermitianRow || kind == KernelKind::FourStepCol ||
-        kind == KernelKind::FourStepColStrided ||
+        kind == KernelKind::FourStepRealRow || kind == KernelKind::FourStepHermitianRow ||
+        kind == KernelKind::FourStepCol || kind == KernelKind::FourStepColStrided ||
         kind == KernelKind::FourStepR2CCol || kind == KernelKind::FourStepC2RCol ||
         kind == KernelKind::BluesteinFourStepPrepareRow ||
-        kind == KernelKind::BluesteinFourStepPointwiseRow ||
-        kind == KernelKind::BluesteinFourStepFinishCol) {
+        kind == KernelKind::BluesteinFourStepPointwiseRow || kind == KernelKind::BluesteinFourStepFinishCol) {
       out << ";four_step_n1=" << four_step_n1 << ";four_step_n2=" << four_step_n2;
     }
   }
   if (kind == KernelKind::LeafBluestein || kind == KernelKind::LeafBluesteinPrepare ||
-      kind == KernelKind::LeafBluesteinFinish ||
-      kind == KernelKind::BluesteinFourStepPrepareRow ||
-      kind == KernelKind::BluesteinFourStepPointwiseRow ||
-      kind == KernelKind::BluesteinFourStepFinishCol ||
+      kind == KernelKind::LeafBluesteinFinish || kind == KernelKind::BluesteinFourStepPrepareRow ||
+      kind == KernelKind::BluesteinFourStepPointwiseRow || kind == KernelKind::BluesteinFourStepFinishCol ||
       kind == KernelKind::BluesteinPrepare || kind == KernelKind::BluesteinPointwise ||
       kind == KernelKind::BluesteinFinalize) {
     out << ";bluestein_n=" << bluestein_n << ";bluestein_m=" << bluestein_m;

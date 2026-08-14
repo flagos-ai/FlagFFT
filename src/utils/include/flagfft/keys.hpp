@@ -263,12 +263,8 @@ struct KernelKey {
   static KernelKey reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
   static KernelKey twiddle_reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
   static KernelKey tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1);
-  static KernelKey transpose3d(std::string target,
-                               std::string dtype,
-                               int64_t n0,
-                               int64_t n1,
-                               int64_t n2,
-                               std::string order);
+  static KernelKey transpose3d(
+      std::string target, std::string dtype, int64_t n0, int64_t n1, int64_t n2, std::string order);
   static KernelKey real_to_complex(std::string target, std::string dtype, int64_t length);
   static KernelKey r2c_half_pack(std::string target, std::string dtype, int64_t length);
   static KernelKey compact_to_hermitian_full(std::string target, std::string dtype, int64_t length);

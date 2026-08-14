@@ -58,22 +58,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t bluestein_element_bytes = complex_element_bytes(request.input_dtype);
     const int64_t conv_bytes = bluestein->conv_length * bluestein_element_bytes;
     constexpr int64_t kBluesteinChunkByteBudget = 256 * 1024 * 1024;
-    const int64_t chunk_batch = std::min<int64_t>(
-        batch,
-        std::max<int64_t>(1, kBluesteinChunkByteBudget / std::max<int64_t>(1, conv_bytes)));
+    const int64_t chunk_batch =
+        std::min<int64_t>(batch,
+                          std::max<int64_t>(1, kBluesteinChunkByteBudget / std::max<int64_t>(1, conv_bytes)));
     auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan);
     auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(bluestein->fft_plan);
     auto row_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) : nullptr;
     auto col_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) : nullptr;
-    std::shared_ptr<CompiledRawNode> fft =
-        compile_raw_node(bluestein->fft_plan, child_request, chunk_batch);
+    std::shared_ptr<CompiledRawNode> fft = compile_raw_node(bluestein->fft_plan, child_request, chunk_batch);
     DeviceAllocation chirp =
         build_raw_bluestein_chirp(request, bluestein->length, request.direction == "inverse");
     DeviceAllocation b_time = build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
     const bool use_full_leaf = request.input_dtype == "complex64" && leaf != nullptr;
-    const bool use_four_step =
-        request.input_dtype == "complex64" && four_step != nullptr && row_leaf != nullptr &&
-        col_leaf != nullptr && row_leaf->length < 512 && col_leaf->length < 512;
+    const bool use_four_step = request.input_dtype == "complex64" && four_step != nullptr &&
+                               row_leaf != nullptr && col_leaf != nullptr && row_leaf->length < 512 &&
+                               col_leaf->length < 512;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
@@ -115,40 +114,36 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       };
       LeafPlanNode boundary_row = make_boundary_leaf(*row_leaf);
       LeafPlanNode boundary_col = make_boundary_leaf(*col_leaf);
-      auto compile_boundary_kernel = [&](const LeafPlanNode &boundary_leaf,
-                                         KernelKind kind,
-                                         bool is_row) {
-        KernelKey key =
-            is_row ? KernelKey::four_step_row(triton_target_for_request(child_request),
-                                              child_request.direction,
-                                              child_request.input_dtype,
-                                              four_step->n1,
-                                              four_step->n2,
-                                              boundary_leaf.length,
-                                              boundary_leaf.factors,
-                                              boundary_leaf.lanes,
-                                              boundary_leaf.num_warps,
-                                              boundary_leaf.generic_radices,
-                                              boundary_leaf.smem_size)
-                   : KernelKey::four_step_col(triton_target_for_request(child_request),
-                                              child_request.direction,
-                                              child_request.input_dtype,
-                                              four_step->n1,
-                                              four_step->n2,
-                                              boundary_leaf.length,
-                                              boundary_leaf.factors,
-                                              boundary_leaf.lanes,
-                                              boundary_leaf.num_warps,
-                                              boundary_leaf.generic_radices,
-                                              boundary_leaf.smem_size);
+      auto compile_boundary_kernel = [&](const LeafPlanNode &boundary_leaf, KernelKind kind, bool is_row) {
+        KernelKey key = is_row ? KernelKey::four_step_row(triton_target_for_request(child_request),
+                                                          child_request.direction,
+                                                          child_request.input_dtype,
+                                                          four_step->n1,
+                                                          four_step->n2,
+                                                          boundary_leaf.length,
+                                                          boundary_leaf.factors,
+                                                          boundary_leaf.lanes,
+                                                          boundary_leaf.num_warps,
+                                                          boundary_leaf.generic_radices,
+                                                          boundary_leaf.smem_size)
+                               : KernelKey::four_step_col(triton_target_for_request(child_request),
+                                                          child_request.direction,
+                                                          child_request.input_dtype,
+                                                          four_step->n1,
+                                                          four_step->n2,
+                                                          boundary_leaf.length,
+                                                          boundary_leaf.factors,
+                                                          boundary_leaf.lanes,
+                                                          boundary_leaf.num_warps,
+                                                          boundary_leaf.generic_radices,
+                                                          boundary_leaf.smem_size);
         key.kind = kind;
         key.bluestein_n = bluestein->length;
         key.bluestein_m = bluestein->conv_length;
         return compile_kernel(key);
       };
 
-      DeviceAllocation twiddle =
-          build_raw_four_step_twiddle(child_request, four_step->n1, four_step->n2);
+      DeviceAllocation twiddle = build_raw_four_step_twiddle(child_request, four_step->n1, four_step->n2);
       DeviceAllocation stage1 =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
       DeviceAllocation work_buf =
@@ -322,8 +317,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                                build_raw_leaf_tables(leaf, request));
 }
 
-std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(
-    const LeafPlanNode &leaf, const FFTRequest &request, int64_t outer_stride) {
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const LeafPlanNode &leaf,
+                                                                          const FFTRequest &request,
+                                                                          int64_t outer_stride) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_strided(target,
                                           request.direction,
@@ -341,13 +337,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(
                                                       build_raw_leaf_tables(leaf, request));
 }
 
-std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_direct_dft(
-    const DirectDFTPlanNode &node, const FFTRequest &request, int64_t outer_stride) {
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_direct_dft(const DirectDFTPlanNode &node,
+                                                                                const FFTRequest &request,
+                                                                                int64_t outer_stride) {
   std::string target = triton_target_for_request(request);
-  KernelKey key = KernelKey::direct_dft_strided(target,
-                                                request.direction,
-                                                request.input_dtype,
-                                                node.length);
+  KernelKey key = KernelKey::direct_dft_strided(target, request.direction, request.input_dtype, node.length);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   return std::make_shared<CompiledRawStridedDirectDftNode>(node.length,
                                                            outer_stride,
@@ -422,8 +416,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const Le
   return compile_kernel(key);
 }
 
-std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_strided_kernel(
-    const LeafPlanNode &leaf, const FFTRequest &request, int64_t n1, int64_t n2) {
+std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_strided_kernel(const LeafPlanNode &leaf,
+                                                                                const FFTRequest &request,
+                                                                                int64_t n1,
+                                                                                int64_t n2) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_row_strided(target,
                                                    request.direction,
@@ -496,8 +492,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const Le
   return compile_kernel(key);
 }
 
-std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_strided_kernel(
-    const LeafPlanNode &leaf, const FFTRequest &request, int64_t n1, int64_t n2) {
+std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_strided_kernel(const LeafPlanNode &leaf,
+                                                                                const FFTRequest &request,
+                                                                                int64_t n1,
+                                                                                int64_t n2) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_col_strided(target,
                                                    request.direction,
@@ -592,10 +590,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_kernel(const L
   return compile_kernel(key);
 }
 
-std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel(
-    const LeafPlanNode &leaf,
-    const FFTRequest &request,
-    int64_t n) {
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
+                                                                                 const FFTRequest &request,
+                                                                                 int64_t n) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein_prepare(target,
                                                     request.direction,
@@ -610,10 +607,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel
   return compile_kernel(key);
 }
 
-std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(
-    const LeafPlanNode &leaf,
-    const FFTRequest &request,
-    int64_t n) {
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(const LeafPlanNode &leaf,
+                                                                                const FFTRequest &request,
+                                                                                int64_t n) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein_finish(target,
                                                    request.direction,
@@ -917,8 +913,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   if (n0 == 1) {
     row_request.batch = batch;
     row_request.input_shape = {batch, n1};
-    return std::make_shared<CompiledRaw1DAs2DNode>(
-        compile_raw_node(node->row_plan, row_request, batch), batch);
+    return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_node(node->row_plan, row_request, batch),
+                                                   batch);
   }
 
   // Build col FFT request (axis-0, length=n0, batch=batch*n1)
@@ -932,17 +928,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   if (n1 == 1) {
     col_request.batch = batch;
     col_request.input_shape = {batch, n0};
-    return std::make_shared<CompiledRaw1DAs2DNode>(
-        compile_raw_node(node->col_plan, col_request, batch), batch);
+    return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_node(node->col_plan, col_request, batch),
+                                                   batch);
   }
 
   // RC fast path: when the column FFT is a plain leaf transform, run it
   // directly on the strided matrix columns and skip both transposes.
-  if (auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-      rc_eligible && col_leaf) {
+  if (auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan); rc_eligible && col_leaf) {
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
-    std::shared_ptr<CompiledRawNode> col_fft =
-        compile_raw_strided_leaf(*col_leaf, request, n1);
+    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_strided_leaf(*col_leaf, request, n1);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                  n1,
@@ -955,8 +949,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   if (auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
       rc_eligible && col_direct) {
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
-    std::shared_ptr<CompiledRawNode> col_fft =
-        compile_raw_strided_direct_dft(*col_direct, request, n1);
+    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_strided_direct_dft(*col_direct, request, n1);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                  n1,
@@ -967,8 +960,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
   // Large column lengths that decompose into a four-step leaf pair can also
   // run without transposes through the strided four-step kernels.
-  if (auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan);
-      rc_eligible && col_four) {
+  if (auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan); rc_eligible && col_four) {
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft =
         compile_raw_four_step_strided_node(*col_four, request, batch * n1, n1);
@@ -1024,8 +1016,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   if (n0 == 1) {
     row_request.batch = batch;
     row_request.input_shape = {batch, n1};
-    return std::make_shared<CompiledRaw1DAs2DNode>(
-        compile_raw_r2c_node(node->row_plan, row_request, batch), batch);
+    return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_r2c_node(node->row_plan, row_request, batch),
+                                                   batch);
   }
   // RC fast path for real transforms: pack the half spectrum, then run the
   // column FFT directly on the strided half-packed matrix.
@@ -1042,11 +1034,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   }
   if (rc_col_fft != nullptr) {
     auto expand_kernel = compile_real_to_complex_kernel(request, n1);
-    std::shared_ptr<CompiledRawNode> row_fft =
-        compile_raw_node(node->row_plan, row_request, batch * n0);
+    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
     auto pack_kernel = compile_r2c_half_pack_kernel(request, n1);
-    DeviceAllocation row_fft_buf =
-        adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    DeviceAllocation row_fft_buf = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DR2CRCNode>(n0,
                                                     n1,
                                                     std::move(expand_kernel),
@@ -1131,8 +1121,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   if (n0 == 1) {
     row_request.batch = batch;
     row_request.input_shape = {batch, n1};
-    return std::make_shared<CompiledRaw1DAs2DNode>(
-        compile_raw_c2r_node(node->row_plan, row_request, batch), batch);
+    return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_c2r_node(node->row_plan, row_request, batch),
+                                                   batch);
   }
   // RC fast path for inverse real transforms: column IFFT first, then expand,
   // row IFFT, and real pack -- no transposes.
@@ -1149,13 +1139,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   }
   if (rc_col_fft != nullptr) {
     auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n1);
-    std::shared_ptr<CompiledRawNode> row_fft =
-        compile_raw_node(node->row_plan, row_request, batch * n0);
+    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
     auto pack_kernel = compile_complex_to_real_kernel(request, n1);
     DeviceAllocation temp_half =
         adaptor::Memory(static_cast<std::size_t>(batch * half_n1 * n0 * element_bytes));
-    DeviceAllocation temp_full =
-        adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    DeviceAllocation temp_full = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DC2RRCNode>(n0,
                                                     n1,
                                                     std::move(rc_col_fft),
@@ -1198,10 +1186,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_strided_node(
-    const FourStepPlanNode &node,
-    const FFTRequest &request,
-    int64_t batch,
-    int64_t outer_stride) {
+    const FourStepPlanNode &node, const FFTRequest &request, int64_t batch, int64_t outer_stride) {
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node.row_plan);
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node.col_plan);
@@ -1210,8 +1195,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_strided_n
   }
 
   DeviceAllocation twiddle = build_raw_four_step_twiddle(request, node.n1, node.n2);
-  DeviceAllocation stage1 =
-      adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
+  DeviceAllocation stage1 = adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
   return std::make_shared<CompiledRawFourStepStridedNode>(
       node.length,
       node.n1,

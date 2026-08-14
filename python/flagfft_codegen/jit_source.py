@@ -35,9 +35,9 @@ from .kernels import (
     _build_r2c_half_pack_kernel_source,
     _build_real_to_complex_kernel_source,
     _build_reshape_pack_kernel_source,
-    _build_tiled_transpose_kernel_source,
     _build_tiled_transpose3d_kernel_source,
     _build_tiled_transpose3d_v2_kernel_source,
+    _build_tiled_transpose_kernel_source,
     _build_twiddle_reshape_pack_kernel_source,
     contiguous_batch_pack_for,
     cooperative_stage_lanes_for,
@@ -126,7 +126,8 @@ def _metadata(
 ) -> dict[str, Any]:
     batch_per_block = (
         contiguous_batch_pack_for(plan)
-        if kernel_type in {
+        if kernel_type
+        in {
             "leaf",
             "leaf_strided",
             "leaf_r2c",
@@ -137,9 +138,13 @@ def _metadata(
     )
     stage_lanes = cooperative_stage_lanes_for(plan)
     tle_fused_twiddle = (
-        kernel_type.startswith("four_step_")
-        or kernel_type.startswith("bluestein_four_step_")
-    ) and use_four_step_row_fused_twiddle(n1, n2, dtype) and not kernel_type.endswith("_strided")
+        (
+            kernel_type.startswith("four_step_")
+            or kernel_type.startswith("bluestein_four_step_")
+        )
+        and use_four_step_row_fused_twiddle(n1, n2, dtype)
+        and not kernel_type.endswith("_strided")
+    )
     if kernel_type in {"four_step_row_strided", "four_step_col_strided"}:
         inner_pack = 1
     elif kernel_type in {
@@ -800,7 +805,11 @@ def emit_jit_kernel(
     dtype_tag = _dtype_suffix(dtype)
     if kernel == "leaf":
         module_name = f"flagfft_jit_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
-    elif kernel in {"leaf_bluestein", "leaf_bluestein_prepare", "leaf_bluestein_finish"}:
+    elif kernel in {
+        "leaf_bluestein",
+        "leaf_bluestein_prepare",
+        "leaf_bluestein_finish",
+    }:
         module_name = (
             f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
             f"_n{prime_n}_m{length}_l{lanes}_b{lane_block}_{dtype_tag}"
@@ -813,7 +822,9 @@ def emit_jit_kernel(
     elif kernel == "direct_dft":
         module_name = f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
     elif kernel == "direct_dft_strided":
-        module_name = f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
+        module_name = (
+            f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
+        )
     elif kernel in {"leaf_r2c", "leaf_c2r"}:
         module_name = (
             f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
@@ -885,6 +896,21 @@ def _emit_tiled_transpose_jit_kernel(
     return metadata
 
 
+def _transpose3d_v2_supported() -> bool:
+    """Whether the vectorized (inline-asm) 3D transpose variant can be used.
+
+    The v2 kernel relies on ld/st.global.v2 inline asm; the MThreads MTGPU
+    LLVM backend (FlagTree mthreads) cannot allocate registers for it, so
+    fall back to the plain tiled transpose there.
+    """
+    try:
+        from triton._C import libtriton
+
+        return not hasattr(libtriton, "mthreads")
+    except ImportError:
+        return True
+
+
 def _emit_tiled_transpose3d_jit_kernel(
     *,
     n0: int,
@@ -894,7 +920,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
-    if dtype == "complex64":
+    if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
             kernel_source,
@@ -998,14 +1024,16 @@ def main() -> None:
     parser.add_argument("--transpose3d-n0", type=int, default=0)
     parser.add_argument("--transpose3d-n1", type=int, default=0)
     parser.add_argument("--transpose3d-n2", type=int, default=0)
-    parser.add_argument(
-        "--transpose3d-order", choices=("021", "210", "201", "120")
-    )
+    parser.add_argument("--transpose3d-order", choices=("021", "210", "201", "120"))
     parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
 
-    if args.kernel in {"bluestein_prepare", "bluestein_pointwise", "bluestein_finalize"}:
+    if args.kernel in {
+        "bluestein_prepare",
+        "bluestein_pointwise",
+        "bluestein_finalize",
+    }:
         if args.bluestein_n is None or args.bluestein_m is None:
             parser.error(
                 f"--kernel {args.kernel} requires --bluestein-n and --bluestein-m"
@@ -1142,9 +1170,7 @@ def main() -> None:
         "bluestein_four_step_finish_col",
     }:
         if args.bluestein_n is None or args.bluestein_n <= 0:
-            parser.error(
-                f"--kernel {args.kernel} requires --bluestein-n"
-            )
+            parser.error(f"--kernel {args.kernel} requires --bluestein-n")
     if args.kernel in {
         "four_step_row",
         "four_step_row_strided",

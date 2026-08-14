@@ -198,9 +198,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       // between each pass.  For R2C/D2Z the innermost axis runs
       // expand + C2C + half-pack at execution time, so its sub-plan is a
       // plain C2C plan; C2R/Z2D mirrors that on the way back.
-      auto build_axis_plan = [&](int64_t length,
-                                 int64_t axis_batch,
-                                 const std::string &direction) -> PlanNodePtr {
+      auto build_axis_plan =
+          [&](int64_t length, int64_t axis_batch, const std::string &direction) -> PlanNodePtr {
         FlagFFTPlanDesc axis_desc = plan->desc;
         axis_desc.rank = 1;
         axis_desc.type = c2c_type;
@@ -215,9 +214,9 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         FFTRequest axis_request = request_from_desc(axis_desc, direction);
         PlanNodePtr axis_plan = lookup_or_build_root(builder, axis_request);
         if (!raw_supported_node(axis_plan)) {
-          axis_plan =
-              lookup_or_build_root(builder, request_from_desc(axis_desc, direction == "forward" ? "inverse"
-                                                                                                : "forward"));
+          axis_plan = lookup_or_build_root(
+              builder,
+              request_from_desc(axis_desc, direction == "forward" ? "inverse" : "forward"));
         }
         if (!raw_supported_node(axis_plan)) {
           axis_plan = raw_compatible_rader_plan(length, builder, axis_request);

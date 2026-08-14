@@ -14,7 +14,7 @@
 
 #include "adaptor/adaptor.h"
 
-#include <cuda.h>
+#include <musa.h>
 
 #include <algorithm>
 #include <sstream>
@@ -23,14 +23,14 @@
 namespace flagfft::adaptor {
 namespace {
 
-  void check(CUresult result, const std::string &context) {
-    if (result == CUDA_SUCCESS) {
+  void check(MUresult result, const std::string &context) {
+    if (result == MUSA_SUCCESS) {
       return;
     }
     const char *name = nullptr;
     const char *message = nullptr;
-    cuGetErrorName(result, &name);
-    cuGetErrorString(result, &message);
+    muGetErrorName(result, &name);
+    muGetErrorString(result, &message);
     std::ostringstream out;
     out << context << " failed";
     if (name != nullptr) {
@@ -42,37 +42,37 @@ namespace {
     throw std::runtime_error(out.str());
   }
 
-  CUdeviceptr as_device_ptr(DevicePtr ptr) {
-    return static_cast<CUdeviceptr>(ptr);
+  MUdeviceptr as_device_ptr(DevicePtr ptr) {
+    return static_cast<MUdeviceptr>(ptr);
   }
 
-  CUstream as_stream(StreamHandle stream) {
-    return reinterpret_cast<CUstream>(stream);
+  MUstream as_stream(StreamHandle stream) {
+    return reinterpret_cast<MUstream>(stream);
   }
 
-  CUevent as_event(void *event) {
-    return reinterpret_cast<CUevent>(event);
+  MUevent as_event(void *event) {
+    return reinterpret_cast<MUevent>(event);
   }
 
-  CUgraph as_graph(void *graph) {
-    return reinterpret_cast<CUgraph>(graph);
+  MUgraph as_graph(void *graph) {
+    return reinterpret_cast<MUgraph>(graph);
   }
 
-  CUgraphExec as_graph_exec(void *exec) {
-    return reinterpret_cast<CUgraphExec>(exec);
+  MUgraphExec as_graph_exec(void *exec) {
+    return reinterpret_cast<MUgraphExec>(exec);
   }
 
-  CUdevice ensure_current_context() {
-    check(cuInit(0), "cuInit");
-    CUcontext context = nullptr;
-    check(cuCtxGetCurrent(&context), "cuCtxGetCurrent");
-    CUdevice device = 0;
+  MUdevice ensure_current_context() {
+    check(muInit(0), "muInit");
+    MUcontext context = nullptr;
+    check(muCtxGetCurrent(&context), "muCtxGetCurrent");
+    MUdevice device = 0;
     if (context == nullptr) {
-      check(cuDeviceGet(&device, 0), "cuDeviceGet");
-      check(cuDevicePrimaryCtxRetain(&context, device), "cuDevicePrimaryCtxRetain");
-      check(cuCtxSetCurrent(context), "cuCtxSetCurrent");
+      check(muDeviceGet(&device, 0), "muDeviceGet");
+      check(muDevicePrimaryCtxRetain(&context, device), "muDevicePrimaryCtxRetain");
+      check(muCtxSetCurrent(context), "muCtxSetCurrent");
     } else {
-      check(cuCtxGetDevice(&device), "cuCtxGetDevice");
+      check(muCtxGetDevice(&device), "muCtxGetDevice");
     }
     return device;
   }
@@ -109,15 +109,15 @@ void Memory::allocate(std::size_t bytes) {
     return;
   }
   ensure_current_context();
-  CUdeviceptr ptr = 0;
-  check(cuMemAlloc(&ptr, bytes), "cuMemAlloc");
+  MUdeviceptr ptr = 0;
+  check(muMemAlloc(&ptr, bytes), "muMemAlloc");
   ptr_ = static_cast<DevicePtr>(ptr);
   bytes_ = bytes;
 }
 
 void Memory::reset() {
   if (ptr_ != 0) {
-    cuMemFree(as_device_ptr(ptr_));
+    muMemFree(as_device_ptr(ptr_));
     ptr_ = 0;
     bytes_ = 0;
   }
@@ -140,7 +140,7 @@ void Memory::copy_from_host(const void *source, std::size_t bytes) {
     throw std::runtime_error("host-to-device copy exceeds allocation");
   }
   if (bytes > 0) {
-    check(cuMemcpyHtoD(as_device_ptr(ptr_), source, bytes), "cuMemcpyHtoD");
+    check(muMemcpyHtoD(as_device_ptr(ptr_), source, bytes), "muMemcpyHtoD");
   }
 }
 
@@ -149,7 +149,7 @@ void Memory::copy_to_host(void *destination, std::size_t bytes) const {
     throw std::runtime_error("device-to-host copy exceeds allocation");
   }
   if (bytes > 0) {
-    check(cuMemcpyDtoH(destination, as_device_ptr(ptr_), bytes), "cuMemcpyDtoH");
+    check(muMemcpyDtoH(destination, as_device_ptr(ptr_), bytes), "muMemcpyDtoH");
   }
 }
 
@@ -158,7 +158,7 @@ void Memory::copy_from_device(const Memory &source, std::size_t bytes) {
     throw std::runtime_error("device-to-device copy exceeds allocation");
   }
   if (bytes > 0) {
-    check(cuMemcpyDtoD(as_device_ptr(ptr_), as_device_ptr(source.ptr_), bytes), "cuMemcpyDtoD");
+    check(muMemcpyDtoD(as_device_ptr(ptr_), as_device_ptr(source.ptr_), bytes), "muMemcpyDtoD");
   }
 }
 
@@ -179,20 +179,20 @@ void copy_device_to_device(DevicePtr destination, DevicePtr source, std::size_t 
     return;
   }
   ensure_current_context();
-  check(cuMemcpyDtoDAsync(as_device_ptr(destination), as_device_ptr(source), bytes, as_stream(stream)),
-        "cuMemcpyDtoDAsync");
+  check(muMemcpyDtoDAsync(as_device_ptr(destination), as_device_ptr(source), bytes, as_stream(stream)),
+        "muMemcpyDtoDAsync");
 }
 
 Stream::Stream() {
   ensure_current_context();
-  CUstream stream = nullptr;
-  check(cuStreamCreate(&stream, CU_STREAM_DEFAULT), "cuStreamCreate");
+  MUstream stream = nullptr;
+  check(muStreamCreate(&stream, MU_STREAM_DEFAULT), "muStreamCreate");
   stream_ = reinterpret_cast<StreamHandle>(stream);
 }
 
 Stream::~Stream() {
   if (stream_ != nullptr) {
-    cuStreamDestroy(as_stream(stream_));
+    muStreamDestroy(as_stream(stream_));
   }
 }
 
@@ -201,30 +201,30 @@ StreamHandle Stream::get() const noexcept {
 }
 
 void Stream::sync() {
-  check(cuStreamSynchronize(as_stream(stream_)), "cuStreamSynchronize");
+  check(muStreamSynchronize(as_stream(stream_)), "muStreamSynchronize");
 }
 
 CudaGraph::~CudaGraph() {
   if (exec_ != nullptr) {
-    cuGraphExecDestroy(as_graph_exec(exec_));
+    muGraphExecDestroy(as_graph_exec(exec_));
   }
   if (graph_ != nullptr) {
-    cuGraphDestroy(as_graph(graph_));
+    muGraphDestroy(as_graph(graph_));
   }
 }
 
 void CudaGraph::begin_capture(StreamHandle stream) {
   ensure_current_context();
-  check(cuStreamBeginCapture(as_stream(stream), CU_STREAM_CAPTURE_MODE_RELAXED), "cuStreamBeginCapture");
+  check(muStreamBeginCapture(as_stream(stream), MU_STREAM_CAPTURE_MODE_RELAXED), "muStreamBeginCapture");
 }
 
 void CudaGraph::end_capture(StreamHandle stream) {
   ensure_current_context();
-  CUgraph graph = nullptr;
-  check(cuStreamEndCapture(as_stream(stream), &graph), "cuStreamEndCapture");
-  CUgraphExec exec = nullptr;
-  check(cuGraphInstantiate(&exec, graph, 0), "cuGraphInstantiate");
-  check(cuGraphDestroy(graph), "cuGraphDestroy");
+  MUgraph graph = nullptr;
+  check(muStreamEndCapture(as_stream(stream), &graph), "muStreamEndCapture");
+  MUgraphExec exec = nullptr;
+  check(muGraphInstantiate(&exec, graph, 0), "muGraphInstantiate");
+  check(muGraphDestroy(graph), "muGraphDestroy");
   graph_ = nullptr;
   exec_ = reinterpret_cast<void *>(exec);
 }
@@ -234,7 +234,7 @@ void CudaGraph::launch(StreamHandle stream) {
   if (exec_ == nullptr) {
     throw std::runtime_error("CudaGraph::launch called before end_capture");
   }
-  check(cuGraphLaunch(as_graph_exec(exec_), as_stream(stream)), "cuGraphLaunch");
+  check(muGraphLaunch(as_graph_exec(exec_), as_stream(stream)), "muGraphLaunch");
 }
 
 bool CudaGraph::valid() const noexcept {
@@ -243,13 +243,13 @@ bool CudaGraph::valid() const noexcept {
 
 EventTimer::EventTimer() {
   ensure_current_context();
-  CUevent start = nullptr;
-  CUevent stop = nullptr;
-  check(cuEventCreate(&start, CU_EVENT_DEFAULT), "cuEventCreate(start)");
+  MUevent start = nullptr;
+  MUevent stop = nullptr;
+  check(muEventCreate(&start, MU_EVENT_DEFAULT), "muEventCreate(start)");
   try {
-    check(cuEventCreate(&stop, CU_EVENT_DEFAULT), "cuEventCreate(stop)");
+    check(muEventCreate(&stop, MU_EVENT_DEFAULT), "muEventCreate(stop)");
   } catch (...) {
-    cuEventDestroy(start);
+    muEventDestroy(start);
     throw;
   }
   start_ = reinterpret_cast<void *>(start);
@@ -258,31 +258,31 @@ EventTimer::EventTimer() {
 
 EventTimer::~EventTimer() {
   if (start_ != nullptr) {
-    cuEventDestroy(as_event(start_));
+    muEventDestroy(as_event(start_));
   }
   if (stop_ != nullptr) {
-    cuEventDestroy(as_event(stop_));
+    muEventDestroy(as_event(stop_));
   }
 }
 
 void EventTimer::start(StreamHandle stream) {
-  check(cuEventRecord(as_event(start_), as_stream(stream)), "cuEventRecord(start)");
+  check(muEventRecord(as_event(start_), as_stream(stream)), "muEventRecord(start)");
 }
 
 void EventTimer::stop(StreamHandle stream) {
-  check(cuEventRecord(as_event(stop_), as_stream(stream)), "cuEventRecord(stop)");
+  check(muEventRecord(as_event(stop_), as_stream(stream)), "muEventRecord(stop)");
 }
 
 float EventTimer::elapsed_ms() {
-  check(cuEventSynchronize(as_event(stop_)), "cuEventSynchronize(stop)");
+  check(muEventSynchronize(as_event(stop_)), "muEventSynchronize(stop)");
   float milliseconds = 0.0F;
-  check(cuEventElapsedTime(&milliseconds, as_event(start_), as_event(stop_)), "cuEventElapsedTime");
+  check(muEventElapsedTime(&milliseconds, as_event(start_), as_event(stop_)), "muEventElapsedTime");
   return milliseconds;
 }
 
 flagfftResult ensure_device(int &device_index, std::string &device_arch) {
   try {
-    CUdevice device = ensure_current_context();
+    MUdevice device = ensure_current_context();
     device_index = static_cast<int>(device);
     device_arch = device_architecture(device_index);
     return FLAGFFT_SUCCESS;
@@ -292,39 +292,40 @@ flagfftResult ensure_device(int &device_index, std::string &device_arch) {
 }
 
 int device_count() {
-  check(cuInit(0), "cuInit");
+  check(muInit(0), "muInit");
   int count = 0;
-  check(cuDeviceGetCount(&count), "cuDeviceGetCount");
+  check(muDeviceGetCount(&count), "muDeviceGetCount");
   return count;
 }
 
 std::string device_architecture(int device_index) {
-  check(cuInit(0), "cuInit");
-  CUdevice device = 0;
-  check(cuDeviceGet(&device, device_index), "cuDeviceGet");
+  check(muInit(0), "muInit");
+  MUdevice device = 0;
+  check(muDeviceGet(&device, device_index), "muDeviceGet");
   int major = 0;
   int minor = 0;
-  check(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device),
-        "cuDeviceGetAttribute(major)");
-  check(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device),
-        "cuDeviceGetAttribute(minor)");
-  return "sm_" + std::to_string(major) + std::to_string(minor);
+  check(muDeviceGetAttribute(&major, MU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device),
+        "muDeviceGetAttribute(major)");
+  check(muDeviceGetAttribute(&minor, MU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device),
+        "muDeviceGetAttribute(minor)");
+  // MUSA capability, e.g. (3, 1) -> "31" (matches the FlagTree mtgpu target arch)
+  return std::to_string(major) + std::to_string(minor);
 }
 
 int64_t max_dynamic_smem_bytes(int device_index) {
   constexpr int64_t fallback = 48 * 1024;
   try {
-    check(cuInit(0), "cuInit");
-    CUdevice device = 0;
-    check(cuDeviceGet(&device, device_index), "cuDeviceGet");
+    check(muInit(0), "muInit");
+    MUdevice device = 0;
+    check(muDeviceGet(&device, device_index), "muDeviceGet");
     int value = 0;
-    if (cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN, device) ==
-            CUDA_SUCCESS &&
+    if (muDeviceGetAttribute(&value, MU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN, device) ==
+            MUSA_SUCCESS &&
         value > 0) {
       return value;
     }
-    check(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, device),
-          "cuDeviceGetAttribute(shared)");
+    check(muDeviceGetAttribute(&value, MU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, device),
+          "muDeviceGetAttribute(shared)");
     return value > 0 ? value : fallback;
   } catch (const std::exception &) {
     return fallback;
@@ -333,17 +334,15 @@ int64_t max_dynamic_smem_bytes(int device_index) {
 
 void synchronize() {
   ensure_current_context();
-  check(cuCtxSynchronize(), "cuCtxSynchronize");
+  check(muCtxSynchronize(), "muCtxSynchronize");
 }
 
 std::string backend_name() {
-  return "cuda";
+  return "musa";
 }
 
 std::string triton_target(const std::string &device_arch) {
-  const std::string prefix = "sm_";
-  const std::string arch = device_arch.starts_with(prefix) ? device_arch.substr(prefix.size()) : device_arch;
-  return backend_name() + ":" + arch + ":32";
+  return backend_name() + ":" + device_arch + ":32";
 }
 
 }  // namespace flagfft::adaptor
