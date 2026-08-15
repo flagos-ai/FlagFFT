@@ -17,7 +17,9 @@ from __future__ import annotations
 """Shared plan model, dtype helpers and occupancy/heuristic policy for kernel generation."""
 
 import math
+import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -58,12 +60,33 @@ _THREAD_LOCAL_MIXED_SPLITS = {
 }
 
 
+@lru_cache(maxsize=None)
+def _codelet_dependencies() -> dict[int, frozenset[int]]:
+    """Map each bundled radix codelet to the other codelets it calls."""
+    deps: dict[int, frozenset[int]] = {}
+    for codelet_path in _CODELET_DIR.glob("radix*.py"):
+        text = codelet_path.read_text()
+        match = re.search(r"def _fwd_rad(\d+)_b1", text)
+        if match is None:
+            continue
+        radix = int(match.group(1))
+        called = {
+            int(dep)
+            for dep in re.findall(r"_fwd_rad(\d+)_b1", text)
+            if int(dep) != radix
+        }
+        deps[radix] = frozenset(called)
+    return deps
+
+
 def codelet_radices_for(factors: tuple[int, ...]) -> set[int]:
     """Return the bundled ``codelet/radixN.py`` files a leaf needs.
 
     Radix-16 is emitted through the special factorized call; radix-32 is
     built from two radix-16 codelets; thread-local mixed radices expand to
-    their factorized codelets. Generic/table radices have no bundled file.
+    their factorized codelets. Composite codelets may call further codelets
+    (e.g. radix-10 calls radix-5/radix-2), so the result is transitively
+    closed over the bundled codelet dependency graph.
     """
     needed: set[int] = set()
     for radix in factors:
@@ -73,6 +96,14 @@ def codelet_radices_for(factors: tuple[int, ...]) -> set[int]:
             needed.add(16)
         elif radix in _THREAD_LOCAL_MIXED_RADICES:
             needed.update(_THREAD_LOCAL_MIXED_SPLITS[radix])
+    dependencies = _codelet_dependencies()
+    stack = list(needed)
+    while stack:
+        radix = stack.pop()
+        for dependency in dependencies.get(radix, ()):
+            if dependency not in needed:
+                needed.add(dependency)
+                stack.append(dependency)
     return needed
 
 

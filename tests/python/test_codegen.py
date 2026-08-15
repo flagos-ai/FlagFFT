@@ -906,6 +906,9 @@ def test_codelet_radices_are_selected_per_leaf(kernels) -> None:
     assert kernels.codelet_radices_for((4, 4)) == {4}
     assert kernels.codelet_radices_for((32, 32)) == {16}
     assert kernels.codelet_radices_for((18, 32)) == {3, 6, 16}
+    assert kernels.codelet_radices_for((30, 11)) == {2, 3, 5, 10, 11}
+    assert kernels.codelet_radices_for((12, 4)) == {3, 4, 12}
+    assert kernels.codelet_radices_for((15, 7)) == {3, 5, 7, 15}
     assert kernels.codelet_radices_for((14,)) == set()
 
 
