@@ -115,6 +115,33 @@ def probe_env() -> None:
         ENV_INFO["triton"] = {"version": "N/A"}
 
 
+def detect_backend(build_dir: Path) -> str:
+    """Detect the FlagFFT backend used to build the binaries in ``build_dir``.
+
+    The CMake cache is the authoritative source (``BACKEND=CUDA`` or
+    ``BACKEND=MUSA``). If it is unavailable, fall back to inspecting the
+    installed Triton: MUSA builds expose ``libtriton.mthreads``, and CUDA
+    builds do not.
+    """
+    cache = build_dir / "CMakeCache.txt"
+    if cache.is_file():
+        try:
+            for line in cache.read_text(errors="replace").splitlines():
+                if line.startswith("BACKEND:"):
+                    value = line.split("=", 1)[1].strip().strip('"')
+                    if value:
+                        return value.lower()
+        except OSError:
+            pass
+
+    try:
+        from triton._C import libtriton
+
+        return "musa" if hasattr(libtriton, "mthreads") else "cuda"
+    except ImportError:
+        return "unknown"
+
+
 def terminate_workers() -> None:
     """Send SIGTERM to all tracked worker processes, then force-kill survivors."""
     for p in WORKER_PROCESSES:
@@ -936,6 +963,7 @@ def main() -> int:
         gpu_ids = [int(g) for g in args.gpus.split(",")]
 
     build_dir = Path(args.build_dir)
+    ENV_INFO["backend"] = detect_backend(build_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1000,12 +1028,14 @@ def main() -> int:
         "flagfft_median_ms",
         "cufft_median_ms",
         "speedup",
+        "backend",
         "written_at",
     ]
 
     def _inc_row(msg):
         r = msg.get("result", {})
         return {
+            "backend": ENV_INFO.get("backend", ""),
             "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             "phase": msg.get("phase"),
             "op_id": msg.get("op_id"),
