@@ -46,6 +46,27 @@ from .kernels import (
     lane_block_for,
     use_four_step_row_fused_twiddle,
 )
+from .registry import (
+    BLUESTEIN,
+    BLUESTEIN_FOUR_STEP,
+    BLUESTEIN_LEAF,
+    CONTIGUOUS_BATCH_PACK_KERNELS,
+    DIRECT_DFT,
+    FOUR_STEP_COL_NAMES,
+    FOUR_STEP_ROW_NAMES,
+    INNER_PACK_COL_KERNELS,
+    INNER_PACK_ROW_KERNELS,
+    KERNEL_NAMES,
+    RADER,
+    REAL_POINTWISE,
+    RESHAPE,
+    STRIDED_FOUR_STEP_KERNELS,
+    TRANSPOSE,
+    TRANSPOSE3D,
+    is_four_step_twiddle_eligible,
+    kernel_spec,
+    module_name_for,
+)
 
 _BLUESTEIN_BLOCK = 256
 _BLUESTEIN_NUM_WARPS = 4
@@ -126,43 +147,19 @@ def _metadata(
 ) -> dict[str, Any]:
     batch_per_block = (
         contiguous_batch_pack_for(plan)
-        if kernel_type
-        in {
-            "leaf",
-            "leaf_strided",
-            "leaf_r2c",
-            "leaf_c2r",
-            "leaf_bluestein",
-        }
+        if kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS
         else 1
     )
     stage_lanes = cooperative_stage_lanes_for(plan)
     tle_fused_twiddle = (
-        (
-            kernel_type.startswith("four_step_")
-            or kernel_type.startswith("bluestein_four_step_")
-        )
+        is_four_step_twiddle_eligible(kernel_type)
         and use_four_step_row_fused_twiddle(n1, n2, dtype)
-        and not kernel_type.endswith("_strided")
     )
-    if kernel_type in {"four_step_row_strided", "four_step_col_strided"}:
+    if kernel_type in STRIDED_FOUR_STEP_KERNELS:
         inner_pack = 1
-    elif kernel_type in {
-        "four_step_row",
-        "four_step_real_row",
-        "four_step_hermitian_row",
-        "bluestein_four_step_prepare_row",
-        "bluestein_four_step_pointwise_row",
-        "four_step_row_strided",
-    }:
+    elif kernel_type in INNER_PACK_ROW_KERNELS:
         inner_pack = four_step_row_inner_pack_for(n1, n2, dtype, plan)
-    elif kernel_type in {
-        "four_step_col",
-        "four_step_r2c_col",
-        "four_step_c2r_col",
-        "bluestein_four_step_finish_col",
-        "four_step_col_strided",
-    }:
+    elif kernel_type in INNER_PACK_COL_KERNELS:
         inner_pack = four_step_col_inner_pack_for(n1, n2, dtype, plan)
     else:
         inner_pack = 1
@@ -638,164 +635,36 @@ def emit_jit_kernel(
         direction=direction,
         dtype=dtype,
     )
-    if kernel == "leaf":
-        kernel_name, kernel_source = _build_leaf_kernel_source(plan)
-        n1 = 0
-        n2 = 0
-    elif kernel == "leaf_strided":
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan, io_mode="strided"
-        )
-        n1 = 0
-        n2 = 0
-    elif kernel == "leaf_r2c":
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan, io_mode="contiguous_r2c"
-        )
-        n1 = 0
-        n2 = 0
-    elif kernel == "leaf_c2r":
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan, io_mode="contiguous_c2r"
-        )
-        n1 = 0
-        n2 = 0
-    elif kernel == "leaf_bluestein":
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan, io_mode="bluestein_full_leaf", prime_n=prime_n
-        )
-        n1 = 0
-        n2 = 0
-    elif kernel == "leaf_bluestein_prepare":
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan, io_mode="bluestein_prepare_leaf", prime_n=prime_n
-        )
-        n1 = 0
-        n2 = 0
-    elif kernel == "leaf_bluestein_finish":
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan, io_mode="bluestein_finish_leaf", prime_n=prime_n
-        )
-        n1 = 0
-        n2 = 0
-    elif kernel in {
-        "bluestein_four_step_prepare_row",
-        "bluestein_four_step_pointwise_row",
-        "bluestein_four_step_finish_col",
-    }:
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan,
-            io_mode=kernel,
-            prime_n=prime_n,
-            four_step_n1=four_step_n1,
-            four_step_n2=four_step_n2,
-        )
-        n1 = four_step_n1
-        n2 = four_step_n2
-    elif kernel == "direct_dft":
-        kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
-            length, direction, dtype
-        )
-        n1 = 0
-        n2 = 0
-    elif kernel == "direct_dft_strided":
-        kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
-            length, direction, dtype, strided=True
-        )
-        n1 = 0
-        n2 = 0
-    elif kernel == "four_step_row":
-        kernel_name, kernel_source = _build_four_step_row_kernel_source(
-            plan, four_step_n1, four_step_n2
-        )
-        n1 = four_step_n1
-        n2 = four_step_n2
-    elif kernel == "four_step_row_strided":
-        if plan.length != four_step_n1:
+    spec = kernel_spec(kernel)
+    if spec.is_leaf_like:
+        if kernel in FOUR_STEP_ROW_NAMES and plan.length != four_step_n1:
             raise ValueError(
-                f"four-step strided row kernel length must equal n1: "
+                f"four-step {kernel} kernel length must equal n1: "
                 f"length={plan.length}, n1={four_step_n1}"
             )
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan,
-            io_mode="four_step_row_strided",
-            four_step_n1=four_step_n1,
-            four_step_n2=four_step_n2,
-        )
-        n1 = four_step_n1
-        n2 = four_step_n2
-    elif kernel == "four_step_real_row":
-        if plan.length != four_step_n1:
+        if kernel in FOUR_STEP_COL_NAMES and plan.length != four_step_n2:
             raise ValueError(
-                f"four-step real row kernel length must equal n1: length={plan.length}, n1={four_step_n1}"
-            )
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan,
-            io_mode="four_step_real_row",
-            four_step_n1=four_step_n1,
-            four_step_n2=four_step_n2,
-        )
-        n1 = four_step_n1
-        n2 = four_step_n2
-    elif kernel == "four_step_hermitian_row":
-        if plan.length != four_step_n1:
-            raise ValueError(
-                f"four-step Hermitian row kernel length must equal n1: length={plan.length}, n1={four_step_n1}"
-            )
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan,
-            io_mode="four_step_hermitian_row",
-            four_step_n1=four_step_n1,
-            four_step_n2=four_step_n2,
-        )
-        n1 = four_step_n1
-        n2 = four_step_n2
-    elif kernel == "four_step_col":
-        kernel_name, kernel_source = _build_four_step_col_kernel_source(
-            plan, four_step_n1, four_step_n2
-        )
-        n1 = four_step_n1
-        n2 = four_step_n2
-    elif kernel == "four_step_col_strided":
-        if plan.length != four_step_n2:
-            raise ValueError(
-                f"four-step strided col kernel length must equal n2: "
+                f"four-step {kernel} kernel length must equal n2: "
                 f"length={plan.length}, n2={four_step_n2}"
             )
         kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
             plan,
-            io_mode="four_step_col_strided",
+            io_mode=spec.io_mode,
+            prime_n=prime_n,
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
         )
-        n1 = four_step_n1
-        n2 = four_step_n2
-    elif kernel == "four_step_r2c_col":
-        if plan.length != four_step_n2:
-            raise ValueError(
-                f"four-step R2C col kernel length must equal n2: length={plan.length}, n2={four_step_n2}"
-            )
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan,
-            io_mode="four_step_r2c_col",
-            four_step_n1=four_step_n1,
-            four_step_n2=four_step_n2,
+        n1 = four_step_n1 if spec.is_four_step else 0
+        n2 = four_step_n2 if spec.is_four_step else 0
+    elif spec.family == DIRECT_DFT:
+        kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
+            length,
+            direction,
+            dtype,
+            strided=(kernel == "direct_dft_strided"),
         )
-        n1 = four_step_n1
-        n2 = four_step_n2
-    elif kernel == "four_step_c2r_col":
-        if plan.length != four_step_n2:
-            raise ValueError(
-                f"four-step C2R col kernel length must equal n2: length={plan.length}, n2={four_step_n2}"
-            )
-        kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
-            plan,
-            io_mode="four_step_c2r_col",
-            four_step_n1=four_step_n1,
-            four_step_n2=four_step_n2,
-        )
-        n1 = four_step_n1
-        n2 = four_step_n2
+        n1 = 0
+        n2 = 0
     else:
         raise ValueError(f"unsupported JIT kernel kind: {kernel}")
 
@@ -803,38 +672,18 @@ def emit_jit_kernel(
     direction_tag = "inv" if direction == "inverse" else "fwd"
     factor_tag = "_".join(str(x) for x in factors)
     dtype_tag = _dtype_suffix(dtype)
-    if kernel == "leaf":
-        module_name = f"flagfft_jit_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
-    elif kernel in {
-        "leaf_bluestein",
-        "leaf_bluestein_prepare",
-        "leaf_bluestein_finish",
-    }:
-        module_name = (
-            f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
-            f"_n{prime_n}_m{length}_l{lanes}_b{lane_block}_{dtype_tag}"
-        )
-    elif kernel.startswith("bluestein_four_step_"):
-        module_name = (
-            f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}_p{prime_n}"
-            f"_n{four_step_n1}_{four_step_n2}_l{lanes}_b{lane_block}_{dtype_tag}"
-        )
-    elif kernel == "direct_dft":
-        module_name = f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
-    elif kernel == "direct_dft_strided":
-        module_name = (
-            f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
-        )
-    elif kernel in {"leaf_r2c", "leaf_c2r"}:
-        module_name = (
-            f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
-            f"_l{lanes}_b{lane_block}_{dtype_tag}"
-        )
-    else:
-        module_name = (
-            f"flagfft_jit_{kernel}_{direction_tag}_{factor_tag}"
-            f"_n{four_step_n1}_{four_step_n2}_l{lanes}_b{lane_block}_{dtype_tag}"
-        )
+    module_name = module_name_for(
+        spec,
+        direction_tag=direction_tag,
+        factor_tag=factor_tag,
+        lanes=lanes,
+        lane_block=lane_block,
+        dtype_tag=dtype_tag,
+        length=length,
+        prime_n=prime_n,
+        four_step_n1=n1,
+        four_step_n2=n2,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
@@ -964,42 +813,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--kernel",
-        choices=(
-            "leaf",
-            "leaf_strided",
-            "direct_dft",
-            "direct_dft_strided",
-            "leaf_r2c",
-            "leaf_c2r",
-            "leaf_bluestein",
-            "leaf_bluestein_prepare",
-            "leaf_bluestein_finish",
-            "bluestein_four_step_prepare_row",
-            "bluestein_four_step_pointwise_row",
-            "bluestein_four_step_finish_col",
-            "four_step_row",
-            "four_step_row_strided",
-            "four_step_real_row",
-            "four_step_hermitian_row",
-            "four_step_col",
-            "four_step_col_strided",
-            "four_step_r2c_col",
-            "four_step_c2r_col",
-            "bluestein_prepare",
-            "bluestein_pointwise",
-            "bluestein_finalize",
-            "rader_prepare",
-            "rader_pointwise",
-            "rader_finalize",
-            "reshape_pack",
-            "twiddle_reshape_pack",
-            "tiled_transpose",
-            "transpose3d",
-            "real_to_complex",
-            "r2c_half_pack",
-            "compact_to_hermitian_full",
-            "complex_to_real",
-        ),
+        choices=KERNEL_NAMES,
         required=True,
     )
     parser.add_argument("--length", type=int)
@@ -1030,15 +844,19 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
 
-    if args.kernel in {
-        "bluestein_prepare",
-        "bluestein_pointwise",
-        "bluestein_finalize",
-    }:
-        if args.bluestein_n is None or args.bluestein_m is None:
-            parser.error(
-                f"--kernel {args.kernel} requires --bluestein-n and --bluestein-m"
-            )
+    spec = kernel_spec(args.kernel)
+    missing = [
+        flag
+        for flag in spec.requires
+        if getattr(args, flag) is None
+    ]
+    if missing:
+        parser.error(
+            f"--kernel {args.kernel} requires "
+            + ", ".join(f"--{flag.replace('_', '-')}" for flag in missing)
+        )
+
+    if spec.family == BLUESTEIN:
         metadata = _emit_bluestein_jit_kernel(
             kernel=args.kernel,
             n=args.bluestein_n,
@@ -1046,12 +864,7 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
-        print(json.dumps(metadata, sort_keys=True))
-        return
-
-    if args.kernel.startswith("rader_"):
-        if args.rader_n is None or args.rader_m is None:
-            parser.error(f"--kernel {args.kernel} requires --rader-n and --rader-m")
+    elif spec.family == RADER:
         metadata = _emit_rader_jit_kernel(
             kernel=args.kernel,
             n=args.rader_n,
@@ -1059,10 +872,7 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
-        print(json.dumps(metadata, sort_keys=True))
-        return
-
-    if args.kernel in {"reshape_pack", "twiddle_reshape_pack"}:
+    elif spec.family == RESHAPE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
             parser.error(
                 f"--kernel {args.kernel} requires --reshape-n1 and --reshape-n2"
@@ -1074,10 +884,7 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
-        print(json.dumps(metadata, sort_keys=True))
-        return
-
-    if args.kernel == "tiled_transpose":
+    elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
             parser.error(
                 "--kernel tiled_transpose requires --reshape-n1 and --reshape-n2"
@@ -1089,10 +896,7 @@ def main() -> None:
             tile_size=args.tile_size,
             out_dir=args.out_dir,
         )
-        print(json.dumps(metadata, sort_keys=True))
-        return
-
-    if args.kernel == "transpose3d":
+    elif spec.family == TRANSPOSE3D:
         if (
             args.transpose3d_n0 <= 0
             or args.transpose3d_n1 <= 0
@@ -1111,15 +915,7 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
-        print(json.dumps(metadata, sort_keys=True))
-        return
-
-    if args.kernel in {
-        "real_to_complex",
-        "r2c_half_pack",
-        "compact_to_hermitian_full",
-        "complex_to_real",
-    }:
+    elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:
             parser.error(f"--kernel {args.kernel} requires --length")
         metadata = _emit_r2c_pointwise_jit_kernel(
@@ -1128,10 +924,7 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
-        print(json.dumps(metadata, sort_keys=True))
-        return
-
-    if args.kernel in {"direct_dft", "direct_dft_strided"}:
+    elif spec.family == DIRECT_DFT:
         if args.length is None or args.length <= 0:
             parser.error("--kernel direct_dft requires --length")
         metadata = emit_jit_kernel(
@@ -1149,62 +942,35 @@ def main() -> None:
             four_step_n2=0,
             out_dir=args.out_dir,
         )
-        print(json.dumps(metadata, sort_keys=True))
-        return
-
-    missing = [
-        name
-        for name in ("length", "factors", "lanes", "num_warps", "smem_size")
-        if getattr(args, name) is None
-    ]
-    if missing:
-        parser.error(
-            f"--kernel {args.kernel} requires "
-            + ", ".join(f"--{name.replace('_', '-')}" for name in missing)
-        )
-    if args.kernel in {
-        "leaf_bluestein",
-        "leaf_bluestein_prepare",
-        "leaf_bluestein_finish",
-        "bluestein_four_step_prepare_row",
-        "bluestein_four_step_pointwise_row",
-        "bluestein_four_step_finish_col",
-    }:
-        if args.bluestein_n is None or args.bluestein_n <= 0:
+    elif spec.is_leaf_like:
+        if spec.family in {BLUESTEIN_LEAF, BLUESTEIN_FOUR_STEP} and (
+            args.bluestein_n is None or args.bluestein_n <= 0
+        ):
             parser.error(f"--kernel {args.kernel} requires --bluestein-n")
-    if args.kernel in {
-        "four_step_row",
-        "four_step_row_strided",
-        "four_step_real_row",
-        "four_step_hermitian_row",
-        "four_step_col",
-        "four_step_col_strided",
-        "four_step_r2c_col",
-        "four_step_c2r_col",
-        "bluestein_four_step_prepare_row",
-        "bluestein_four_step_pointwise_row",
-        "bluestein_four_step_finish_col",
-    }:
-        if args.four_step_n1 <= 0 or args.four_step_n2 <= 0:
+        if spec.is_four_step and (
+            args.four_step_n1 <= 0 or args.four_step_n2 <= 0
+        ):
             parser.error(
                 f"--kernel {args.kernel} requires --four-step-n1 and --four-step-n2"
             )
+        metadata = emit_jit_kernel(
+            kernel=args.kernel,
+            length=args.length,
+            factors=args.factors,
+            lanes=args.lanes,
+            num_warps=args.num_warps,
+            generic_radices=args.generic_radices,
+            smem_size=args.smem_size,
+            direction=args.direction,
+            dtype=args.dtype,
+            prime_n=args.bluestein_n or 0,
+            four_step_n1=args.four_step_n1,
+            four_step_n2=args.four_step_n2,
+            out_dir=args.out_dir,
+        )
+    else:
+        raise AssertionError(f"unreachable kernel spec: {args.kernel}")
 
-    metadata = emit_jit_kernel(
-        kernel=args.kernel,
-        length=args.length,
-        factors=args.factors,
-        lanes=args.lanes,
-        num_warps=args.num_warps,
-        generic_radices=args.generic_radices,
-        smem_size=args.smem_size,
-        direction=args.direction,
-        dtype=args.dtype,
-        prime_n=args.bluestein_n or 0,
-        four_step_n1=args.four_step_n1,
-        four_step_n2=args.four_step_n2,
-        out_dir=args.out_dir,
-    )
     print(json.dumps(metadata, sort_keys=True))
 
 

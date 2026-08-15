@@ -872,6 +872,24 @@ def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:
     assert jit_source._csv_ints("16,8,4") == (16, 8, 4)
 
 
+def test_kernel_registry_is_complete_and_consistent() -> None:
+    import flagfft_codegen.registry as registry
+
+    assert len(registry.KERNEL_NAMES) == 34
+    assert len(set(registry.KERNEL_NAMES)) == 34
+    assert set(registry.KERNEL_SPECS) == set(registry.KERNEL_NAMES)
+
+    for name, spec in registry.KERNEL_SPECS.items():
+        assert spec.name == name
+        if spec.is_leaf_like:
+            assert spec.io_mode is not None
+            assert {"length", "factors", "lanes", "num_warps", "smem_size"} <= set(
+                spec.requires
+            )
+        if spec.is_four_step:
+            assert {"four_step_n1", "four_step_n2"} <= set(spec.requires)
+
+
 def test_jit_bluestein_source_metadata(jit_source, tmp_path) -> None:
     metadata = jit_source._emit_bluestein_jit_kernel(
         kernel="bluestein_prepare",
