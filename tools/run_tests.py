@@ -118,10 +118,11 @@ def probe_env() -> None:
 def detect_backend(build_dir: Path) -> str:
     """Detect the FlagFFT backend used to build the binaries in ``build_dir``.
 
-    The CMake cache is the authoritative source (``BACKEND=CUDA`` or
-    ``BACKEND=MUSA``). If it is unavailable, fall back to inspecting the
-    installed Triton: MUSA builds expose ``libtriton.mthreads``, and CUDA
-    builds do not.
+    The CMake cache is the authoritative source (``BACKEND=CUDA``,
+    ``BACKEND=MUSA``, or ``BACKEND=PPU``). If it is unavailable, fall back
+    to inspecting the installed Triton: PPU builds expose ``libtriton.ppu``,
+    MUSA builds expose ``libtriton.mthreads``, and CUDA builds expose
+    neither.
     """
     cache = build_dir / "CMakeCache.txt"
     if cache.is_file():
@@ -137,6 +138,8 @@ def detect_backend(build_dir: Path) -> str:
     try:
         from triton._C import libtriton
 
+        if hasattr(libtriton, "ppu"):
+            return "ppu"
         return "musa" if hasattr(libtriton, "mthreads") else "cuda"
     except ImportError:
         return "unknown"
