@@ -124,8 +124,22 @@ Retained Python package:
 - `python/flagfft_codegen/`
 - `python/flagfft_codegen/codelet/`
 
-The native runtime invokes `python -m flagfft_codegen.jit_source`; the chosen
-Python environment must already supply compatible Triton/TLE dependencies.
+The generator is split by responsibility and algorithm family:
+
+- `registry.py` is the single source of truth for the 34 `--kernel` kinds:
+  family, leaf I/O mode, required CLI flags, and module-name pattern.
+- `cli.py`, `emit.py`, and `metadata.py` own the CLI entry point, per-family
+  kernel emission, and generated-module assembly/signatures respectively.
+- `kernels_common.py`, `kernels_leaf.py`, `kernels_special.py`,
+  `kernels_real.py`, and `kernels_layout.py` contain the shared plan model,
+  mixed-radix leaf generation, direct DFT, real-transform pointwise kernels,
+  and layout/transpose kernels.
+- `codelet/` remains the bundled radix codelet data; generated modules now
+  include only the codelet files actually referenced by a kernel.
+
+The native runtime invokes `python -m flagfft_codegen.jit_source` (a thin
+facade over `cli.py`); the chosen Python environment must already supply
+compatible Triton/TLE dependencies.
 Generated JIT source/metadata live in `.flagfft` beside the executable.
 `flagfft-cli tune --db PATH` writes measurements and one validated rank-zero
 winner with the detected CUDA architecture. Runtime plan lookup consumes that
