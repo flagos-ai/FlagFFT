@@ -140,7 +140,13 @@ def detect_backend(build_dir: Path) -> str:
 
         if hasattr(libtriton, "ppu"):
             return "ppu"
-        return "musa" if hasattr(libtriton, "mthreads") else "cuda"
+        elif hasattr(libtriton, "mthreads"):
+            return "musa"
+        elif hasattr(libtriton, "cuda"):
+            return "cuda"
+        else:
+            raise ImportError("unknown Triton backend")
+
     except ImportError:
         return "unknown"
 
