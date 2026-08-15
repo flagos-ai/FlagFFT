@@ -103,10 +103,10 @@ def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
 
 def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(64, 128) == 1
-    assert kernels.four_step_col_inner_pack_for(128, 64) == 2
+    assert kernels.four_step_col_inner_pack_for(128, 64) == 4
     assert kernels.four_step_col_inner_pack_for(128, 2048, "complex128") == 1
     assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex64") == 4
-    assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex128") == 2
+    assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex128") == 4
     assert kernels.four_step_col_inner_pack_for(512, 2048, "complex64") == 1
     assert kernels.four_step_col_inner_pack_for(495, 2023, "complex64") == 1
     assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex64") == 4
@@ -381,7 +381,8 @@ def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
     assert col_source.count("ld.global.v2.f32") == 32
     assert row_source.count("st.global.v2.f32") == 32
     assert col_source.count("st.global.v2.f32") == 32
-    assert "sin.approx.f32" in row_source
+    assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in row_source
+    assert "sin.approx.f32" not in row_source
     assert "tle.load(twiddle_ptr" not in row_source
     assert "twiddle_ptr" not in col_source
 
@@ -454,7 +455,8 @@ def test_real_row_thread_local_mixed_radix_uses_factorized_codelets(kernels) -> 
     assert "tl.load(dft32_r_ptr" not in source
     assert "four_step_batch * input_distance + src_idx0" in source
     assert "i0 = r0 * 0.0" in source
-    assert "outer_base_angle" in source
+    assert "outer_base_idx = fft_thread" in source
+    assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in source
 
 
 def test_thread_local_inverse_real_modes_preserve_compact_io(kernels) -> None:
@@ -497,7 +499,8 @@ def test_thread_local_inverse_real_modes_preserve_compact_io(kernels) -> None:
     assert "compact_idx0 = tl.where(src_idx0 < 327681" in row_source
     assert "four_step_batch * input_distance + compact_idx0" in row_source
     assert "i0 = tl.where(src_idx0 < 327681, i0, -i0)" in row_source
-    assert "outer_base_angle" in row_source
+    assert "outer_base_idx = fft_thread" in row_source
+    assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in row_source
     assert "four_step_batch * output_distance + dst_idx0" in col_source
     assert "tl.store(out_ptr + output_offset0, r0" in col_source
     assert "output_offset0) * 2" not in col_source
@@ -727,8 +730,10 @@ def test_large_mixed_thread_local_leaf_is_generated(
     assert row_source.count("tl.debug_barrier()") == 1
     assert row_source.count("tle.gpu.alloc") == 2
     assert row_source.count("ld.global.v2.f32") == register_radix
-    assert "tw1_r_ptr +" not in row_source
-    assert "sin.approx.f32" in row_source
+    assert f"inner_tw_idx1 = 1 + {register_radix} * fft_thread" in row_source
+    assert "tl.load(tw1_r_ptr + inner_tw_idx1)" in row_source
+    assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in row_source
+    assert "sin.approx.f32" not in row_source
     assert "mask=output_lane_mask" in row_source
 
 
