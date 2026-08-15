@@ -21,6 +21,8 @@ from typing import Any
 
 from .kernels_common import (
     _CODELET_DIR,
+    _dtype_suffix,
+    _zero_other,
     LeafPlan,
     contiguous_batch_pack_for,
     cooperative_stage_lanes_for,
@@ -43,26 +45,13 @@ def _pointer_signature(dtype: str) -> str:
     return "*fp32:16"
 
 
-def _dtype_suffix(dtype: str) -> str:
-    return "f64" if dtype == "complex128" else "f32"
-
-
-def _zero_literal(dtype: str) -> str:
-    # `tl.load(..., other=0.0)` is auto-promoted to the pointer's dtype by
-    # Triton's masked-load lowering, so a single literal works for fp32 and
-    # fp64. Indexing a constexpr (e.g. ``tl.zeros((1,), tl.float64)[0]``) is
-    # rejected at IR-build time.
-    del dtype
-    return "0.0"
-
-
 def _csv_ints(raw: str) -> tuple[int, ...]:
     if raw == "":
         return ()
     return tuple(int(part) for part in raw.split(",") if part)
 
 
-def _module_source(kernel_source: str) -> str:
+def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
     helpers = (
         "import triton\n"
         "import triton.language as tl\n"
@@ -72,9 +61,10 @@ def _module_source(kernel_source: str) -> str:
     if utils_path.exists():
         helpers += utils_path.read_text() + "\n\n"
 
-    for codelet_file in sorted(_CODELET_DIR.glob("*.py")):
-        if codelet_file.name not in {utils_path.name, Path(__file__).name}:
-            helpers += codelet_file.read_text() + "\n\n"
+    for radix in radices:
+        codelet_path = _CODELET_DIR / f"radix{radix}.py"
+        if codelet_path.exists():
+            helpers += codelet_path.read_text() + "\n\n"
 
     return helpers + "\n\n" + kernel_source + "\n"
 
@@ -164,5 +154,5 @@ __all__ = [
     "_module_source",
     "_pointer_signature",
     "_signature",
-    "_zero_literal",
+    "_zero_other",
 ]

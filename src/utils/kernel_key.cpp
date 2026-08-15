@@ -409,20 +409,6 @@ KernelKey KernelKey::four_step_c2r_col(std::string target,
   return key;
 }
 
-KernelKey KernelKey::transpose(std::string target) {
-  KernelKey key;
-  key.kind = KernelKind::Transpose;
-  key.target = std::move(target);
-  return key;
-}
-
-KernelKey KernelKey::twiddle_transpose(std::string target) {
-  KernelKey key;
-  key.kind = KernelKind::TwiddleTranspose;
-  key.target = std::move(target);
-  return key;
-}
-
 KernelKey KernelKey::bluestein_prepare(std::string target, std::string dtype, int64_t n, int64_t m) {
   KernelKey key;
   key.kind = KernelKind::BluesteinPrepare;

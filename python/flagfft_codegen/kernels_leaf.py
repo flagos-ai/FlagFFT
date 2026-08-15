@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import math
 from textwrap import dedent
+from typing import Literal
 
 from .kernels_common import (
-    SPECIALIZED_INLINE_CODELET_RADICES,
     LeafIoMode,
     LeafPlan,
     _NATURAL_ORDER_CODELET_RADICES,
@@ -52,34 +52,6 @@ def _fmt_const(value: float) -> str:
 
 def _direction_sign(direction: Literal["forward", "inverse"]) -> float:
     return 1.0 if direction == "inverse" else -1.0
-
-
-def _emit_inline_constant_codelet(
-    indent: str,
-    radix: int,
-    lane_block: int,
-    direction: Literal["forward", "inverse"],
-    dtype: str = "complex64",
-) -> list[str]:
-    lines: list[str] = []
-    sign = _direction_sign(direction)
-    for kout in range(radix):
-        lines.append(f"{indent}acc_r_{kout} = tl.zeros_like(r0)")
-        lines.append(f"{indent}acc_i_{kout} = tl.zeros_like(i0)")
-
-    for kout in range(radix):
-        for nin in range(radix):
-            angle = sign * 2.0 * math.pi * kout * nin / float(radix)
-            wr = _fmt_const(math.cos(angle))
-            wi = _fmt_const(math.sin(angle))
-            lines.append(f"{indent}pr, pi = _cmul(r{nin}, i{nin}, {wr}, {wi})")
-            lines.append(f"{indent}acc_r_{kout} += pr")
-            lines.append(f"{indent}acc_i_{kout} += pi")
-
-    for kout in range(radix):
-        lines.append(f"{indent}r{kout} = acc_r_{kout}")
-        lines.append(f"{indent}i{kout} = acc_i_{kout}")
-    return lines
 
 
 def _emit_table_codelet(
@@ -800,10 +772,6 @@ def _emit_stage_block(
         lines.extend(_emit_local_mixed_codelet_call(indent, radix, direction))
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
-    elif radix in SPECIALIZED_INLINE_CODELET_RADICES:
-        lines.extend(
-            _emit_inline_constant_codelet(indent, radix, lane_block, direction, dtype)
-        )
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
 
@@ -1931,7 +1899,6 @@ __all__ = [
     "_direction_sign",
     "_distributed_join_tree",
     "_emit_distributed_split_tree",
-    "_emit_inline_constant_codelet",
     "_emit_input_base",
     "_emit_input_index",
     "_emit_local_mixed_codelet_call",

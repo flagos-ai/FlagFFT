@@ -46,12 +46,11 @@ __all__ = [
     "_emit_tiled_transpose_jit_kernel",
     "_metadata",
     "_module_source",
-    "_next_power_of_two",
     "_pointer_signature",
     "_rader_kernel_source",
     "_signature",
     "_transpose3d_v2_supported",
-    "_zero_literal",
+    "_zero_other",
     "emit_jit_kernel",
     "main",
 ]

@@ -47,7 +47,33 @@ _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
     {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}
 )
-SPECIALIZED_INLINE_CODELET_RADICES: set[int] = set()
+_THREAD_LOCAL_MIXED_SPLITS = {
+    18: (3, 6),
+    20: (5, 4),
+    24: (3, 8),
+    25: (5, 5),
+    27: (3, 9),
+    28: (7, 4),
+    30: (3, 10),
+}
+
+
+def codelet_radices_for(factors: tuple[int, ...]) -> set[int]:
+    """Return the bundled ``codelet/radixN.py`` files a leaf needs.
+
+    Radix-16 is emitted through the special factorized call; radix-32 is
+    built from two radix-16 codelets; thread-local mixed radices expand to
+    their factorized codelets. Generic/table radices have no bundled file.
+    """
+    needed: set[int] = set()
+    for radix in factors:
+        if radix in _NATURAL_ORDER_CODELET_RADICES:
+            needed.add(radix)
+        elif radix in (16, 32):
+            needed.add(16)
+        elif radix in _THREAD_LOCAL_MIXED_RADICES:
+            needed.update(_THREAD_LOCAL_MIXED_SPLITS[radix])
+    return needed
 
 
 def _is_double_dtype(dtype: str) -> bool:
@@ -156,6 +182,13 @@ def _floor_power_of_two(value: int) -> int:
     while power * 2 <= value:
         power *= 2
     return power
+
+
+def _next_power_of_two(value: int) -> int:
+    result = 1
+    while result < value:
+        result <<= 1
+    return result
 
 
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
@@ -335,7 +368,6 @@ def _non_nvidia_backend_active() -> bool:
 __all__ = [
     "LeafIoMode",
     "LeafPlan",
-    "SPECIALIZED_INLINE_CODELET_RADICES",
     "_CODELET_DIR",
     "_COOPERATIVE_STAGE_MAX_BASE_LANES",
     "_COOPERATIVE_STAGE_MAX_LANES",
@@ -365,6 +397,7 @@ __all__ = [
     "_four_step_resource_inner_pack_for",
     "_is_double_dtype",
     "_mthreads_backend_active",
+    "_next_power_of_two",
     "_non_nvidia_backend_active",
     "_ppu_backend_active",
     "_real_element_bytes",
@@ -372,6 +405,7 @@ __all__ = [
     "_triton_plugin_present",
     "_use_single_smem_buffer",
     "_zero_other",
+    "codelet_radices_for",
     "contiguous_batch_pack_for",
     "cooperative_stage_lanes_for",
     "four_step_col_inner_pack_for",

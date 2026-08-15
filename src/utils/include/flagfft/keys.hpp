@@ -252,8 +252,6 @@ struct KernelKey {
                                      int64_t num_warps,
                                      std::vector<int64_t> generic_radices,
                                      int64_t smem_size);
-  static KernelKey transpose(std::string target);
-  static KernelKey twiddle_transpose(std::string target);
   static KernelKey bluestein_prepare(std::string target, std::string dtype, int64_t n, int64_t m);
   static KernelKey bluestein_pointwise(std::string target, std::string dtype, int64_t n, int64_t m);
   static KernelKey bluestein_finalize(std::string target, std::string dtype, int64_t n, int64_t m);

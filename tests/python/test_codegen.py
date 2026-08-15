@@ -28,7 +28,19 @@ sys.path.insert(0, str(ROOT / "python"))
 def kernels():
     pytest.importorskip("triton")
     try:
-        return importlib.import_module("flagfft_codegen.kernels")
+        import types
+
+        from flagfft_codegen import kernels_common as common
+        from flagfft_codegen import kernels_layout as layout
+        from flagfft_codegen import kernels_leaf as leaf
+        from flagfft_codegen import kernels_real as real
+        from flagfft_codegen import kernels_special as special
+
+        module = types.ModuleType("flagfft_codegen.kernels")
+        for submodule in (common, leaf, layout, real, special):
+            for name in submodule.__all__:
+                setattr(module, name, getattr(submodule, name))
+        return module
     except (ImportError, ModuleNotFoundError) as exc:
         pytest.skip(f"Triton/TLE codegen dependencies are unavailable: {exc}")
 
@@ -888,6 +900,33 @@ def test_kernel_registry_is_complete_and_consistent() -> None:
             )
         if spec.is_four_step:
             assert {"four_step_n1", "four_step_n2"} <= set(spec.requires)
+
+
+def test_codelet_radices_are_selected_per_leaf(kernels) -> None:
+    assert kernels.codelet_radices_for((4, 4)) == {4}
+    assert kernels.codelet_radices_for((32, 32)) == {16}
+    assert kernels.codelet_radices_for((18, 32)) == {3, 6, 16}
+    assert kernels.codelet_radices_for((14,)) == set()
+
+
+def test_module_source_includes_only_needed_codelets(kernels, jit_source) -> None:
+    plan = kernels.LeafPlan(
+        length=16,
+        factors=(4, 4),
+        remainder=1,
+        lanes=4,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=16,
+    )
+    _, source = kernels._build_leaf_kernel_source(plan)
+
+    leaf_module = jit_source._module_source(source, (4,))
+    assert "def _fwd_rad4_b1" in leaf_module
+    assert "def _fwd_rad3_b1" not in leaf_module
+
+    standalone_module = jit_source._module_source("def dummy():\n    pass\n")
+    assert "def _fwd_rad4_b1" not in standalone_module
 
 
 def test_jit_bluestein_source_metadata(jit_source, tmp_path) -> None:

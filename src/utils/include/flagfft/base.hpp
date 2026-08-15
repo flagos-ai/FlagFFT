@@ -135,8 +135,6 @@ enum class KernelKind {
   FourStepColStrided,
   FourStepR2CCol,
   FourStepC2RCol,
-  Transpose,
-  TwiddleTranspose,
   BluesteinPrepare,
   BluesteinPointwise,
   BluesteinFinalize,

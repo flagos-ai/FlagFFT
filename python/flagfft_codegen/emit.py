@@ -23,7 +23,14 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
-from .kernels_common import LeafPlan, lane_block_for
+from .kernels_common import (
+    _dtype_suffix,
+    _next_power_of_two,
+    _zero_other,
+    LeafPlan,
+    codelet_radices_for,
+    lane_block_for,
+)
 from .kernels_layout import (
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
@@ -39,7 +46,7 @@ from .kernels_real import (
     _build_real_to_complex_kernel_source,
 )
 from .kernels_special import _build_direct_dft_kernel_source
-from .metadata import _dtype_suffix, _metadata, _module_source, _signature, _zero_literal
+from .metadata import _metadata, _module_source, _signature
 from .registry import (
     DIRECT_DFT,
     FOUR_STEP_COL_NAMES,
@@ -58,7 +65,7 @@ _RESHAPE_NUM_WARPS = 4
 _RESHAPE_NUM_STAGES = 1
 
 def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]]:
-    zero = _zero_literal(dtype)
+    zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
     if kind == "bluestein_prepare":
         return (
@@ -195,17 +202,10 @@ def _emit_bluestein_jit_kernel(
     return metadata
 
 
-def _next_power_of_two(value: int) -> int:
-    result = 1
-    while result < value:
-        result <<= 1
-    return result
-
-
 def _rader_kernel_source(
     kind: str, n: int, m: int, dtype: str
 ) -> tuple[str, str, list[str]]:
-    zero = _zero_literal(dtype)
+    zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
     sum_block = _next_power_of_two(n)
     if kind == "rader_prepare":
@@ -547,7 +547,8 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    module_path.write_text(_module_source(kernel_source))
+    radices = tuple(sorted(codelet_radices_for(factors))) if spec.is_leaf_like else ()
+    module_path.write_text(_module_source(kernel_source, radices))
 
     sys.path.insert(0, str(module_path.parent))
     spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
@@ -683,7 +684,6 @@ __all__ = [
     "_emit_reshape_jit_kernel",
     "_emit_tiled_transpose3d_jit_kernel",
     "_emit_tiled_transpose_jit_kernel",
-    "_next_power_of_two",
     "_rader_kernel_source",
     "_transpose3d_v2_supported",
     "emit_jit_kernel",

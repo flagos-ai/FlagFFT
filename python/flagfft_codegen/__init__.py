@@ -12,22 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .kernels import (
+from .kernels_common import (
     _CODELET_DIR,
     _FOUR_STEP_NUM_WARPS,
     _FOUR_STEP_TILE_COLS,
     _FOUR_STEP_TILE_ROWS,
     LeafPlan,
-    _build_compact_to_hermitian_full_kernel_source,
-    _build_complex_to_real_kernel_source,
+    lane_block_for,
+)
+from .kernels_leaf import (
     _build_four_step_col_kernel_source,
     _build_four_step_row_kernel_source,
     _build_leaf_kernel_source,
+)
+from .kernels_real import (
+    _build_compact_to_hermitian_full_kernel_source,
+    _build_complex_to_real_kernel_source,
     _build_r2c_half_pack_kernel_source,
     _build_real_to_complex_kernel_source,
-    _transpose_complex_kernel,
-    _twiddle_transpose_complex_kernel,
-    lane_block_for,
 )
 
 __all__ = [
@@ -43,7 +45,5 @@ __all__ = [
     "_build_leaf_kernel_source",
     "_build_r2c_half_pack_kernel_source",
     "_build_real_to_complex_kernel_source",
-    "_transpose_complex_kernel",
-    "_twiddle_transpose_complex_kernel",
     "lane_block_for",
 ]
