@@ -256,9 +256,10 @@ def use_tle_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") -> bool:
 
     On the MThreads backend the fused-twiddle row kernel exceeds the MTGPU
     LLVM register allocator, so it is disabled there (falls back to the
-    precomputed twiddle table path).
+    precomputed twiddle table path). The PPU toolchain also cannot lower
+    the sin/cos.approx PTX inline asm used by the fused-twiddle path.
     """
-    if _mthreads_backend_active():
+    if _non_nvidia_backend_active():
         return False
     return (
         not _is_double_dtype(dtype)
@@ -1714,20 +1715,40 @@ def _leaf_kernel_params_for_io(
     return params
 
 
-def _mthreads_backend_active() -> bool:
-    """Whether the installed Triton targets Moore Threads (MUSA/mtgpu).
-
-    The thread-local mixed-radix four-step kernels and the vectorized 3D
-    transpose variants rely on register/asm patterns that the MThreads
-    MTGPU LLVM backend cannot compile (llc register allocation failure),
-    so they are disabled on this backend.
-    """
+def _triton_plugin_present(plugin: str) -> bool:
     try:
         from triton._C import libtriton
 
-        return hasattr(libtriton, "mthreads")
+        return hasattr(libtriton, plugin)
     except ImportError:
         return False
+
+
+def _mthreads_backend_active() -> bool:
+    """Whether the installed Triton targets Moore Threads (MUSA/mtgpu)."""
+    return _triton_plugin_present("mthreads")
+
+
+def _ppu_backend_active() -> bool:
+    """Whether the installed Triton targets the T-Head PPU (XuanTie GPU).
+
+    The thread-local mixed-radix four-step kernels and the vectorized 3D
+    transpose variants rely on PTX inline-asm register patterns that the
+    PPU compiler toolchain does not support, so they are disabled there.
+    """
+    return _triton_plugin_present("ppu")
+
+
+def _non_nvidia_backend_active() -> bool:
+    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU).
+
+    The thread-local mixed-radix four-step kernels and the vectorized 3D
+    transpose variants rely on register/asm patterns that the MThreads
+    MTGPU LLVM backend cannot compile (llc register allocation failure)
+    and that the PPU toolchain does not support, so they are disabled on
+    these backends.
+    """
+    return _mthreads_backend_active() or _ppu_backend_active()
 
 
 def _use_thread_local_mixed_leaf(
@@ -1737,7 +1758,7 @@ def _use_thread_local_mixed_leaf(
     four_step_n1: int,
     four_step_n2: int,
 ) -> bool:
-    if _mthreads_backend_active():
+    if _non_nvidia_backend_active():
         return False
     if io_mode.endswith("_strided"):
         return False

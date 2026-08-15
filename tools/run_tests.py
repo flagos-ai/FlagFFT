@@ -465,6 +465,15 @@ def parse_accuracy_result(json_file: str, data_file: str = "") -> dict[str, Any]
 
 def parse_perf_result(output: str, case: dict | None = None) -> dict[str, Any]:
     try:
+        # The PPU ACOMPUTE/ALINPU logger prints a device-caps INFO line to
+        # stdout before the CLI's JSON payload; skip any leading non-JSON
+        # noise (and trailing garbage after the closing brace).
+        start = output.find("{")
+        if start > 0:
+            output = output[start:]
+        end = output.rfind("}")
+        if end != -1:
+            output = output[: end + 1]
         data = json.loads(output)
         cases = data.get("cases", [])
         if not cases:

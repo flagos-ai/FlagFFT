@@ -19,10 +19,10 @@ project(flagfft LANGUAGES CXX)
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU")
 
-if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA"))
-    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA or BACKEND=MUSA")
+if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU"))
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, or BACKEND=PPU")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
@@ -117,7 +117,7 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             CUDA::cudart
             CUDA::cuda_driver
         )
-    else()
+    elseif(BACKEND STREQUAL "MUSA")
         if(NOT DEFINED MUSA_HOME)
             set(MUSA_HOME "/usr/local/musa")
         endif()
@@ -137,6 +137,31 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
         target_link_libraries(flagfft_test_adaptor PUBLIC
             MUSA::musa_runtime
             ${MUSA_FFT_LIB}
+        )
+    elseif(BACKEND STREQUAL "PPU")
+        if(NOT DEFINED PPU_HOME)
+            set(PPU_HOME "/usr/local/PPU_SDK")
+        endif()
+        # The PPU SDK ships a CUDA-compatible wrapper (CUDA_SDK) whose libcufft
+        # maps cuFFT calls onto the native acfft library.
+        find_library(PPU_FFT_LIB cufft
+            PATHS "${PPU_HOME}/CUDA_SDK/lib64" "${PPU_HOME}/lib64" "${PPU_HOME}/lib"
+            NO_DEFAULT_PATH
+        )
+        if(NOT PPU_FFT_LIB)
+            find_library(PPU_FFT_LIB cufft)
+        endif()
+        if(NOT PPU_FFT_LIB)
+            message(FATAL_ERROR "cuFFT (CUDA SDK wrapper) not found; FLAGFFT_BUILD_CLI/TESTS requires libcufft under PPU_HOME")
+        endif()
+        set(PPU_FFT_LIB "${PPU_FFT_LIB}" CACHE INTERNAL "PPU cuFFT wrapper library")
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/ppu/test_adaptor.cpp
+        )
+        target_include_directories(flagfft_test_adaptor PUBLIC "${PPU_HOME}/CUDA_SDK/include")
+        target_link_libraries(flagfft_test_adaptor PUBLIC
+            PPU::ppu_runtime
+            ${PPU_FFT_LIB}
         )
     endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
@@ -194,6 +219,8 @@ if(FLAGFFT_BUILD_CLI)
     )
     if(BACKEND STREQUAL "CUDA")
         target_link_libraries(flagfft-cli PRIVATE CUDA::cufft)
+    elseif(BACKEND STREQUAL "PPU")
+        target_link_libraries(flagfft-cli PRIVATE ${PPU_FFT_LIB})
     endif()
     install(TARGETS flagfft-cli RUNTIME DESTINATION "bin")
 endif()
