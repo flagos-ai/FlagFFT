@@ -119,9 +119,10 @@ def detect_backend(build_dir: Path) -> str:
     """Detect the FlagFFT backend used to build the binaries in ``build_dir``.
 
     The CMake cache is the authoritative source (``BACKEND=CUDA``,
-    ``BACKEND=MUSA``, or ``BACKEND=PPU``). If it is unavailable, fall back
-    to inspecting the installed Triton: PPU builds expose ``libtriton.ppu``,
-    MUSA builds expose ``libtriton.mthreads``, and CUDA builds expose
+    ``BACKEND=MUSA``, ``BACKEND=PPU``, or ``BACKEND=IX``). If it is
+    unavailable, fall back to inspecting the installed Triton: PPU builds
+    expose ``libtriton.ppu``, MUSA builds expose ``libtriton.mthreads``,
+    Iluvatar builds expose ``libtriton.iluvatar``, and CUDA builds expose
     neither.
     """
     cache = build_dir / "CMakeCache.txt"
@@ -142,6 +143,8 @@ def detect_backend(build_dir: Path) -> str:
             return "ppu"
         elif hasattr(libtriton, "mthreads"):
             return "musa"
+        elif hasattr(libtriton, "iluvatar"):
+            return "ix"
         elif hasattr(libtriton, "cuda"):
             return "cuda"
         else:
@@ -935,6 +938,9 @@ def main() -> int:
 
     init_colors(args.color)
 
+    build_dir = Path(args.build_dir)
+    ENV_INFO["backend"] = detect_backend(build_dir)
+
     ops = load_operators(ROOT / "conf" / "operators.yaml")
     matrix = load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
 
@@ -971,8 +977,6 @@ def main() -> int:
     else:
         gpu_ids = [int(g) for g in args.gpus.split(",")]
 
-    build_dir = Path(args.build_dir)
-    ENV_INFO["backend"] = detect_backend(build_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -384,16 +384,21 @@ def _ppu_backend_active() -> bool:
     return _triton_plugin_present("ppu")
 
 
+def _ix_backend_active() -> bool:
+    """Whether the installed Triton targets Iluvatar (Tianshu/CoreX)."""
+    return _triton_plugin_present("iluvatar")
+
+
 def _non_nvidia_backend_active() -> bool:
-    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU).
+    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU/IX).
 
     The thread-local mixed-radix four-step kernels and the vectorized 3D
     transpose variants rely on register/asm patterns that the MThreads
     MTGPU LLVM backend cannot compile (llc register allocation failure)
-    and that the PPU toolchain does not support, so they are disabled on
+    and that the PPU/IX toolchains do not support, so they are disabled on
     these backends.
     """
-    return _mthreads_backend_active() or _ppu_backend_active()
+    return _mthreads_backend_active() or _ppu_backend_active() or _ix_backend_active()
 
 
 __all__ = [
@@ -427,6 +432,7 @@ __all__ = [
     "_floor_power_of_two",
     "_four_step_resource_inner_pack_for",
     "_is_double_dtype",
+    "_ix_backend_active",
     "_mthreads_backend_active",
     "_next_power_of_two",
     "_non_nvidia_backend_active",
