@@ -38,6 +38,7 @@ ops:
   - id: z2z_1d
     description: "Double-Complex to Double-Complex 1D FFT"
     labels: [z2z, 1d, complex, double]
+    skip_backends: [ix]
     ctest: test_exec_z2z
     cli_type: z2z
     rank: 1
@@ -61,6 +62,7 @@ ops:
   - id: d2z_1d
     description: "Double-Real to Double-Complex 1D FFT"
     labels: [d2z, 1d, real, double]
+    skip_backends: [ix]
     ctest: test_exec_d2z
     cli_type: d2z
     rank: 1
@@ -84,6 +86,7 @@ ops:
   - id: z2d_1d
     description: "Double-Complex to Double-Real 1D FFT"
     labels: [z2d, 1d, real, double]
+    skip_backends: [ix]
     ctest: test_exec_z2d
     cli_type: z2d
     rank: 1
@@ -107,6 +110,7 @@ ops:
   - id: z2z_2d
     description: "Double-Complex to Double-Complex 2D FFT"
     labels: [z2z, 2d, complex, double]
+    skip_backends: [ix]
     ctest: test_2d_correctness
     cli_type: z2z
     rank: 2
@@ -130,6 +134,7 @@ ops:
   - id: d2z_2d
     description: "Double-Real to Double-Complex 2D FFT"
     labels: [d2z, 2d, real, double]
+    skip_backends: [ix]
     ctest: test_2d_correctness
     cli_type: d2z
     rank: 2
@@ -153,6 +158,7 @@ ops:
   - id: z2d_2d
     description: "Double-Complex to Double-Real 2D FFT"
     labels: [z2d, 2d, real, double]
+    skip_backends: [ix]
     ctest: test_2d_correctness
     cli_type: z2d
     rank: 2
@@ -176,6 +182,7 @@ ops:
   - id: z2z_3d
     description: "Double-Complex to Double-Complex 3D FFT"
     labels: [z2z, 3d, complex, double]
+    skip_backends: [ix]
     ctest: test_3d_correctness
     cli_type: z2z
     rank: 3
@@ -199,6 +206,7 @@ ops:
   - id: d2z_3d
     description: "Double-Real to Double-Complex 3D FFT"
     labels: [d2z, 3d, real, double]
+    skip_backends: [ix]
     ctest: test_3d_correctness
     cli_type: d2z
     rank: 3
@@ -222,6 +230,7 @@ ops:
   - id: z2d_3d
     description: "Double-Complex to Double-Real 3D FFT"
     labels: [z2d, 3d, real, double]
+    skip_backends: [ix]
     ctest: test_3d_correctness
     cli_type: z2d
     rank: 3

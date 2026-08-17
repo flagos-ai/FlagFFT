@@ -938,6 +938,9 @@ def main() -> int:
 
     init_colors(args.color)
 
+    build_dir = Path(args.build_dir)
+    ENV_INFO["backend"] = detect_backend(build_dir)
+
     ops = load_operators(ROOT / "conf" / "operators.yaml")
     matrix = load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
 
@@ -959,6 +962,20 @@ def main() -> int:
     if args.start:
         ops = [op for op in ops if op["id"] >= args.start]
 
+    # Some operators are unsupported on a given backend (e.g. double-precision
+    # FFT on Iluvatar/CoreX: ixfft rejects Double transforms). Drop them from
+    # the run so the suite reports a clean pass/skip instead of reference
+    # failures caused by unsupported hardware paths.
+    backend = ENV_INFO.get("backend", "")
+    if backend:
+        unsupported = [op for op in ops if backend in (op.get("skip_backends") or [])]
+        if unsupported:
+            pwarn(
+                "Skipping operators unsupported on backend "
+                f"{backend}: {', '.join(op['id'] for op in unsupported)}"
+            )
+        ops = [op for op in ops if backend not in (op.get("skip_backends") or [])]
+
     if not ops:
         perror("no operators match the filter criteria")
         return 1
@@ -974,8 +991,6 @@ def main() -> int:
     else:
         gpu_ids = [int(g) for g in args.gpus.split(",")]
 
-    build_dir = Path(args.build_dir)
-    ENV_INFO["backend"] = detect_backend(build_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
