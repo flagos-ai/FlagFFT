@@ -611,13 +611,17 @@ def _transpose3d_v2_supported() -> bool:
 
     The v2 kernel relies on ld/st.global.v2 inline asm; the MThreads MTGPU
     LLVM backend (FlagTree mthreads) cannot allocate registers for it, and
-    the PPU toolchain does not support the PTX inline asm either, so fall
-    back to the plain tiled transpose on both.
+    the PPU/Iluvatar toolchains do not support the PTX inline asm either, so
+    fall back to the plain tiled transpose on all of them.
     """
     try:
         from triton._C import libtriton
 
-        return not (hasattr(libtriton, "mthreads") or hasattr(libtriton, "ppu"))
+        return not (
+            hasattr(libtriton, "mthreads")
+            or hasattr(libtriton, "ppu")
+            or hasattr(libtriton, "iluvatar")
+        )
     except ImportError:
         return True
 

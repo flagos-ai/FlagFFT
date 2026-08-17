@@ -105,9 +105,11 @@ The default CMake build produces only `flagfft`. `FLAGFFT_BUILD_CLI=ON` adds
 Google Test targets under `ctest/`; CLI behavior remains covered by pytest.
 The standalone `bench_vs_cufft` and `flagfft-tuner` targets were removed.
 
-`BACKEND=CUDA` selects both the FlagFFT adaptor implementation and
-`libtriton_jit` backend. CUDA is the only backend delivered in this version;
-other values fail configuration until an adaptor implementation exists.
+`BACKEND=CUDA`, `BACKEND=MUSA`, `BACKEND=PPU`, or `BACKEND=IX` selects both
+the FlagFFT adaptor implementation and the `libtriton_jit` backend. The IX
+backend targets Iluvatar/Tianshu GPUs through the CoreX CUDA-compatible
+driver and uses the CoreX `libcufft` (ixfft) implementation as the reference
+oracle in tests and benchmarks.
 
 CMake is the native build/install entrypoint. The pure Python
 `flagfft-codegen` package is installed separately with `pip install .` into

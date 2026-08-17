@@ -19,10 +19,10 @@ project(flagfft LANGUAGES CXX)
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX")
 
-if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU"))
-    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, or BACKEND=PPU")
+if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX"))
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, or BACKEND=IX")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
@@ -55,6 +55,11 @@ endif()
 set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORCE)
 set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
 add_subdirectory(deps/libtriton_jit)
+
+# The libtriton_jit submodule may resolve nlohmann_json through an external
+# package; its imported target is only visible inside that directory scope, so
+# re-find it here for the FlagFFT targets.
+find_package(nlohmann_json 3.11.3 REQUIRED)
 
 set(FLAGFFT_CORE_SOURCES
     src/utils/base.cpp
@@ -163,6 +168,16 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             PPU::ppu_runtime
             ${PPU_FFT_LIB}
         )
+    elseif(BACKEND STREQUAL "IX")
+        find_package(CUDAToolkit REQUIRED)
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/ix/test_adaptor.cpp
+        )
+        target_link_libraries(flagfft_test_adaptor PUBLIC
+            CUDA::cufft
+            CUDA::cudart
+            CUDA::cuda_driver
+        )
     endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
     target_include_directories(flagfft_test_adaptor PUBLIC
@@ -173,7 +188,7 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
 endif()
 
 if(FLAGFFT_BUILD_CLI)
-    if(BACKEND STREQUAL "CUDA")
+    if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
         # cuFFT is only needed by test_adaptor (not by CLI directly).
         find_package(CUDAToolkit REQUIRED)
         if(NOT TARGET CUDA::cufft)
@@ -217,7 +232,7 @@ if(FLAGFFT_BUILD_CLI)
             flagfft_test_adaptor
             nlohmann_json::nlohmann_json
     )
-    if(BACKEND STREQUAL "CUDA")
+    if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
         target_link_libraries(flagfft-cli PRIVATE CUDA::cufft)
     elseif(BACKEND STREQUAL "PPU")
         target_link_libraries(flagfft-cli PRIVATE ${PPU_FFT_LIB})

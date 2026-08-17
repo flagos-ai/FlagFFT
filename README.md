@@ -72,7 +72,7 @@ docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
 | Python | 3.12 | JIT codegen + test runner |
 | flagtree | 0.5.0 | triton TLE support |
 | SQLite3 | — | Tuning database |
-| CUDA Toolkit | 12.x | cudart, cuFFT (for test adaptor/benchmarks) |
+| CUDA Toolkit | 12.x | cudart, cuFFT (for test adaptor/benchmarks); IX builds use the CoreX CUDA-compatible SDK (`libcuda` + `libcufft`) |
 | libtriton_jit | submodule | Triton JIT compiler (`deps/libtriton_jit`) |
 | PyYAML | — | Test runner (`pip install pyyaml`) |
 
@@ -114,7 +114,7 @@ This produces `build/libflagfft.so`.
 |---|---|---|
 | `FLAGFFT_BUILD_CLI` | `OFF` | Build the `flagfft-cli` benchmark/verification tool |
 | `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test + CUDA) |
-| `BACKEND` | `CUDA` | GPU backend selector (only `CUDA` is currently supported) |
+| `BACKEND` | `CUDA` | GPU backend selector (`CUDA`, `MUSA`, `PPU`, or `IX`) |
 | `CMAKE_BUILD_TYPE` | — | `Release`, `Debug`, `RelWithDebInfo` |
 
 ### Full Build (library + CLI + tests)
@@ -125,6 +125,20 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DFLAGFFT_BUILD_TESTS=ON
 cmake --build build -j$(nproc)
 ```
+
+### Iluvatar/Tianshu (IX) Build
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+      -DBACKEND=IX \
+      -DCUDAToolkit_ROOT=/usr/local/corex-4.4.0 \
+      -DFLAGFFT_BUILD_CLI=ON \
+      -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+```
+
+The IX backend requires the FlagTree Iluvatar Triton runtime (for example
+`flagtree===0.5.1+iluvatar3.1`) and the CoreX CUDA-compatible SDK.
 
 ### Environment Variables
 
