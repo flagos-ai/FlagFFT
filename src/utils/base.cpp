@@ -158,10 +158,6 @@ std::string kernel_kind_name(KernelKind kind) {
       return "four_step_r2c_col";
     case KernelKind::FourStepC2RCol:
       return "four_step_c2r_col";
-    case KernelKind::Transpose:
-      return "transpose";
-    case KernelKind::TwiddleTranspose:
-      return "twiddle_transpose";
     case KernelKind::BluesteinPrepare:
       return "bluestein_prepare";
     case KernelKind::BluesteinPointwise:

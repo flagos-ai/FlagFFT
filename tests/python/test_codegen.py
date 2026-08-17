@@ -28,7 +28,19 @@ sys.path.insert(0, str(ROOT / "python"))
 def kernels():
     pytest.importorskip("triton")
     try:
-        return importlib.import_module("flagfft_codegen.kernels")
+        import types
+
+        from flagfft_codegen import kernels_common as common
+        from flagfft_codegen import kernels_layout as layout
+        from flagfft_codegen import kernels_leaf as leaf
+        from flagfft_codegen import kernels_real as real
+        from flagfft_codegen import kernels_special as special
+
+        module = types.ModuleType("flagfft_codegen.kernels")
+        for submodule in (common, leaf, layout, real, special):
+            for name in submodule.__all__:
+                setattr(module, name, getattr(submodule, name))
+        return module
     except (ImportError, ModuleNotFoundError) as exc:
         pytest.skip(f"Triton/TLE codegen dependencies are unavailable: {exc}")
 
@@ -103,10 +115,10 @@ def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
 
 def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(64, 128) == 1
-    assert kernels.four_step_col_inner_pack_for(128, 64) == 2
+    assert kernels.four_step_col_inner_pack_for(128, 64) == 4
     assert kernels.four_step_col_inner_pack_for(128, 2048, "complex128") == 1
     assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex64") == 4
-    assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex128") == 2
+    assert kernels.four_step_col_inner_pack_for(1024, 1024, "complex128") == 4
     assert kernels.four_step_col_inner_pack_for(512, 2048, "complex64") == 1
     assert kernels.four_step_col_inner_pack_for(495, 2023, "complex64") == 1
     assert kernels.four_step_row_inner_pack_for(1024, 1024, "complex64") == 4
@@ -381,7 +393,8 @@ def test_2p20_thread_local_radix32_uses_high_register_leaf_and_one_exchange(
     assert col_source.count("ld.global.v2.f32") == 32
     assert row_source.count("st.global.v2.f32") == 32
     assert col_source.count("st.global.v2.f32") == 32
-    assert "sin.approx.f32" in row_source
+    assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in row_source
+    assert "sin.approx.f32" not in row_source
     assert "tle.load(twiddle_ptr" not in row_source
     assert "twiddle_ptr" not in col_source
 
@@ -454,7 +467,8 @@ def test_real_row_thread_local_mixed_radix_uses_factorized_codelets(kernels) -> 
     assert "tl.load(dft32_r_ptr" not in source
     assert "four_step_batch * input_distance + src_idx0" in source
     assert "i0 = r0 * 0.0" in source
-    assert "outer_base_angle" in source
+    assert "outer_base_idx = fft_thread" in source
+    assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in source
 
 
 def test_thread_local_inverse_real_modes_preserve_compact_io(kernels) -> None:
@@ -497,7 +511,8 @@ def test_thread_local_inverse_real_modes_preserve_compact_io(kernels) -> None:
     assert "compact_idx0 = tl.where(src_idx0 < 327681" in row_source
     assert "four_step_batch * input_distance + compact_idx0" in row_source
     assert "i0 = tl.where(src_idx0 < 327681, i0, -i0)" in row_source
-    assert "outer_base_angle" in row_source
+    assert "outer_base_idx = fft_thread" in row_source
+    assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in row_source
     assert "four_step_batch * output_distance + dst_idx0" in col_source
     assert "tl.store(out_ptr + output_offset0, r0" in col_source
     assert "output_offset0) * 2" not in col_source
@@ -727,8 +742,10 @@ def test_large_mixed_thread_local_leaf_is_generated(
     assert row_source.count("tl.debug_barrier()") == 1
     assert row_source.count("tle.gpu.alloc") == 2
     assert row_source.count("ld.global.v2.f32") == register_radix
-    assert "tw1_r_ptr +" not in row_source
-    assert "sin.approx.f32" in row_source
+    assert f"inner_tw_idx1 = 1 + {register_radix} * fft_thread" in row_source
+    assert "tl.load(tw1_r_ptr + inner_tw_idx1)" in row_source
+    assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in row_source
+    assert "sin.approx.f32" not in row_source
     assert "mask=output_lane_mask" in row_source
 
 
@@ -865,6 +882,54 @@ def test_2p20_row_metadata_packs_four_ffts_into_eight_warps(
 def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:
     assert jit_source._csv_ints("") == ()
     assert jit_source._csv_ints("16,8,4") == (16, 8, 4)
+
+
+def test_kernel_registry_is_complete_and_consistent() -> None:
+    import flagfft_codegen.registry as registry
+
+    assert len(registry.KERNEL_NAMES) == 34
+    assert len(set(registry.KERNEL_NAMES)) == 34
+    assert set(registry.KERNEL_SPECS) == set(registry.KERNEL_NAMES)
+
+    for name, spec in registry.KERNEL_SPECS.items():
+        assert spec.name == name
+        if spec.is_leaf_like:
+            assert spec.io_mode is not None
+            assert {"length", "factors", "lanes", "num_warps", "smem_size"} <= set(
+                spec.requires
+            )
+        if spec.is_four_step:
+            assert {"four_step_n1", "four_step_n2"} <= set(spec.requires)
+
+
+def test_codelet_radices_are_selected_per_leaf(kernels) -> None:
+    assert kernels.codelet_radices_for((4, 4)) == {4}
+    assert kernels.codelet_radices_for((32, 32)) == {16}
+    assert kernels.codelet_radices_for((18, 32)) == {3, 6, 16}
+    assert kernels.codelet_radices_for((30, 11)) == {2, 3, 5, 10, 11}
+    assert kernels.codelet_radices_for((12, 4)) == {3, 4, 12}
+    assert kernels.codelet_radices_for((15, 7)) == {3, 5, 7, 15}
+    assert kernels.codelet_radices_for((14,)) == set()
+
+
+def test_module_source_includes_only_needed_codelets(kernels, jit_source) -> None:
+    plan = kernels.LeafPlan(
+        length=16,
+        factors=(4, 4),
+        remainder=1,
+        lanes=4,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=16,
+    )
+    _, source = kernels._build_leaf_kernel_source(plan)
+
+    leaf_module = jit_source._module_source(source, (4,))
+    assert "def _fwd_rad4_b1" in leaf_module
+    assert "def _fwd_rad3_b1" not in leaf_module
+
+    standalone_module = jit_source._module_source("def dummy():\n    pass\n")
+    assert "def _fwd_rad4_b1" not in standalone_module
 
 
 def test_jit_bluestein_source_metadata(jit_source, tmp_path) -> None:

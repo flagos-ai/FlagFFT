@@ -118,10 +118,11 @@ def probe_env() -> None:
 def detect_backend(build_dir: Path) -> str:
     """Detect the FlagFFT backend used to build the binaries in ``build_dir``.
 
-    The CMake cache is the authoritative source (``BACKEND=CUDA`` or
-    ``BACKEND=MUSA``). If it is unavailable, fall back to inspecting the
-    installed Triton: MUSA builds expose ``libtriton.mthreads``, and CUDA
-    builds do not.
+    The CMake cache is the authoritative source (``BACKEND=CUDA``,
+    ``BACKEND=MUSA``, or ``BACKEND=PPU``). If it is unavailable, fall back
+    to inspecting the installed Triton: PPU builds expose ``libtriton.ppu``,
+    MUSA builds expose ``libtriton.mthreads``, and CUDA builds expose
+    neither.
     """
     cache = build_dir / "CMakeCache.txt"
     if cache.is_file():
@@ -137,7 +138,15 @@ def detect_backend(build_dir: Path) -> str:
     try:
         from triton._C import libtriton
 
-        return "musa" if hasattr(libtriton, "mthreads") else "cuda"
+        if hasattr(libtriton, "ppu"):
+            return "ppu"
+        elif hasattr(libtriton, "mthreads"):
+            return "musa"
+        elif hasattr(libtriton, "cuda"):
+            return "cuda"
+        else:
+            raise ImportError("unknown Triton backend")
+
     except ImportError:
         return "unknown"
 
@@ -492,6 +501,15 @@ def parse_accuracy_result(json_file: str, data_file: str = "") -> dict[str, Any]
 
 def parse_perf_result(output: str, case: dict | None = None) -> dict[str, Any]:
     try:
+        # The PPU ACOMPUTE/ALINPU logger prints a device-caps INFO line to
+        # stdout before the CLI's JSON payload; skip any leading non-JSON
+        # noise (and trailing garbage after the closing brace).
+        start = output.find("{")
+        if start > 0:
+            output = output[start:]
+        end = output.rfind("}")
+        if end != -1:
+            output = output[: end + 1]
         data = json.loads(output)
         cases = data.get("cases", [])
         if not cases:

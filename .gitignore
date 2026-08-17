@@ -12,3 +12,8 @@ AGENTS.md
 test_fft
 build/
 benchmark/results/*.csv
+
+# Test results and run logs (not source)
+test-results/
+results-*/
+*.log

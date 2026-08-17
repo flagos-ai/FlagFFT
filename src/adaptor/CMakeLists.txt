@@ -23,6 +23,11 @@ elseif(BACKEND STREQUAL "MUSA")
         ${CMAKE_CURRENT_LIST_DIR}/backend/musa/adaptor.cpp
     )
     target_link_libraries(flagfft PRIVATE MUSA::musa_runtime)
+elseif(BACKEND STREQUAL "PPU")
+    target_sources(flagfft PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/backend/ppu/adaptor.cpp
+    )
+    target_link_libraries(flagfft PRIVATE PPU::ppu_runtime)
 else()
-    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA or BACKEND=MUSA")
+    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA, BACKEND=MUSA, or BACKEND=PPU")
 endif()
