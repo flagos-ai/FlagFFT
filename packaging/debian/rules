@@ -8,28 +8,8 @@ export DEB_BUILD_OPTIONS = parallel=$(shell nproc)
 	dh $@
 
 override_dh_auto_configure:
-	# Two upstream CMake quirks to patch around at build time:
-	#
-	# 1) Ubuntu 24.04 CMake 3.28's FindSQLite3.cmake sets SQLite3_LIBRARY
-	#    in the cache (Found SQLite3 succeeds) but the SQLite3::SQLite3
-	#    imported target is not visible at generate time. Swap to the
-	#    cache-variable form.
-	sed -i 's/SQLite3::SQLite3/${SQLite3_LIBRARY}/g' CMakeLists.txt
-	#
-	# 2) FlagFFT relies on the nlohmann_json::nlohmann_json imported
-	#    target created by libtriton_jit's add_subdirectory call. But
-	#    find_package IMPORTED targets default to directory scope, so
-	#    the target isn't visible at FlagFFT's top level. Add an
-	#    explicit top-level find_package call.
-	grep -q "find_package(nlohmann_json" CMakeLists.txt || \
-	    sed -i '/find_package(SQLite3 REQUIRED)/a find_package(nlohmann_json 3.11.3 REQUIRED)' CMakeLists.txt
-
-	# Ubuntu 24.04's libfmt-dev is 9.1.0 but libtriton_jit requires
-	# fmt 10.2.1, so fall back to FetchContent for fmt (bundled into
-	# libflagfft.so). nlohmann-json system package (3.11.3) is fine,
-	# and pybind11 comes from pip. dh-cmake defaults
-	# FETCHCONTENT_FULLY_DISCONNECTED=ON which would block the fmt
-	# fetch; explicitly override to OFF.
+	# fmt, nlohmann-json, and SQLite come from distro development packages;
+	# Torch, Triton, and pybind11 come from the pinned Python build environment.
 	# Note: no -GNinja — dh-cmake defaults to "Unix Makefiles" and
 	# dh_auto_build expects a Makefile. Passing -GNinja makes configure
 	# emit build.ninja but dh_auto_build still looks for Makefile and
@@ -37,14 +17,16 @@ override_dh_auto_configure:
 	dh_auto_configure --buildsystem=cmake -- \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_INSTALL_PREFIX=/usr \
-		-DFETCHCONTENT_FULLY_DISCONNECTED=OFF \
+		-DFETCHCONTENT_FULLY_DISCONNECTED=ON \
 		-DFETCHCONTENT_QUIET=OFF \
 		-DFLAGFFT_LIBTRITON_JIT_BACKEND=CUDA \
 		-DFLAGFFT_BUILD_TESTS=OFF \
 		-DFLAGFFT_BUILD_BENCHMARKS=OFF \
+		-DBUILD_TESTING=OFF \
 		-DTRITON_JIT_USE_EXTERNAL_JSON=ON \
-		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=OFF \
+		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=ON \
 		-DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
+		-DTRITON_JIT_BUILD_OPERATORS=OFF \
 		-DFMT_INSTALL=OFF
 
 override_dh_auto_build:
@@ -52,18 +34,31 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	dh_auto_install --buildsystem=cmake
-	# Fix RPATH if any; vendor runtime libs are provided by CUDA pkg
-	find debian/tmp/usr/lib -name "*.so*" -type f \
-	    -exec patchelf --remove-rpath {} \; || true
+	@flagfft_lib="$$(find debian/tmp/usr/lib -type f -name libflagfft.so -print -quit)"; \
+	helper_lib="$$(find debian/tmp/usr/lib -type f -name libflagfft_triton_jit.so -print -quit)"; \
+	test -n "$$flagfft_lib"; \
+	test -n "$$helper_lib"; \
+	test -f debian/tmp/usr/share/flagfft/python/src/codegen/jit_source.py; \
+	test -f debian/tmp/usr/share/triton_jit/scripts/standalone_compile.py; \
+	test -f packaging/common/flagfft-triton-jit.pth; \
+	readelf -d "$$flagfft_lib" | grep -q '\[libflagfft_triton_jit.so\]'; \
+	! readelf -d "$$flagfft_lib" | grep -q '\[libtriton_jit.so\]'
 
 override_dh_auto_test:
 	# Skip tests during package build (require GPU)
 	@echo "Skipping tests"
 
 override_dh_shlibdeps:
-	# Ignore missing CUDA/vendor library dependencies — provided by
-	# the user's CUDA runtime install, not by this package.
-	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info || true
-
-override_dh_dwz:
-	@echo "Skipping dwz debug info optimization (incompatible with patchelf)"
+	# Resolve pip-provided Torch/NVIDIA libraries while deriving system package
+	# dependencies. --ignore-missing-info suppresses package metadata only; a
+	# genuinely missing shared object still fails the build.
+	@torch_lib="$$(python3 -c 'import pathlib, torch; print(pathlib.Path(torch.__file__).parent / "lib")')"; \
+	stub_dir="$$(pwd)/debian/.shlibdeps-stubs"; \
+	trap 'rm -rf "$$stub_dir"' EXIT; \
+	mkdir -p "$$stub_dir"; \
+	ln -s /usr/local/cuda/lib64/stubs/libcuda.so "$$stub_dir/libcuda.so.1"; \
+	search_path="$$torch_lib:/usr/local/cuda/lib64:$$stub_dir"; \
+	for directory in $$(find /usr/local/lib /usr/local/lib64 -type d -path '*/nvidia/*/lib' 2>/dev/null); do \
+		search_path="$$search_path:$$directory"; \
+	done; \
+	dh_shlibdeps -l"$$search_path" -- --ignore-missing-info
