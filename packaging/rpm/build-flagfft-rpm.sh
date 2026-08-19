@@ -10,7 +10,7 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
-BASE_IMAGE="nvidia/cuda:12.6.0-devel-rockylinux9"
+BASE_IMAGE="openeuler/cuda:13.0.0-oe2403lts"
 OUTPUT_DIR=""
 
 while [[ $# -gt 0 ]]; do
@@ -27,9 +27,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 if [ -z "$OUTPUT_DIR" ]; then
     OUTPUT_DIR="${PROJECT_ROOT}/rpm-packages"
 fi
-
-log_step "Ensure submodule deps/libtriton_jit is checked out"
-( cd "${PROJECT_ROOT}" && git submodule update --init --recursive )
+log_step "Check submodule deps/libtriton_jit"
+if [ ! -f "${PROJECT_ROOT}/deps/libtriton_jit/CMakeLists.txt" ]; then
+    log_error "Submodule deps/libtriton_jit is not initialized"
+    exit 1
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 IMAGE_TAG="flagfft-rpm-builder:$(date +%s)"
@@ -42,7 +44,7 @@ docker build \
     "${PROJECT_ROOT}"
 
 log_step "Extract .rpm files into ${OUTPUT_DIR}"
-CID="$(docker create "${IMAGE_TAG}")"
+CID="$(docker create "${IMAGE_TAG}" /bin/true)"
 docker cp "${CID}:/output/." "${OUTPUT_DIR}/"
 docker rm "${CID}" >/dev/null
 docker rmi "${IMAGE_TAG}" >/dev/null || true

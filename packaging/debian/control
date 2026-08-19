@@ -4,15 +4,12 @@ Priority: optional
 Maintainer: FlagOS Contributors <contact@flagos.io>
 Build-Depends: debhelper-compat (= 13),
                cmake (>= 3.18),
+               binutils,
                ninja-build,
-               patchelf,
                python3-dev,
+               libfmt-dev (>= 8.1.1),
                libsqlite3-dev,
-               nlohmann-json3-dev (>= 3.11.3)
-# fmt is intentionally NOT in Build-Depends. Ubuntu 24.04's
-# libfmt-dev is 9.1.0 but libtriton_jit requires 10.2.1, so the build
-# pulls fmt 10.2.1 via CMake FetchContent and bundles it into
-# libflagfft.so. See debian/rules override_dh_auto_configure.
+               nlohmann-json3-dev (>= 3.10.5)
 Standards-Version: 4.6.2
 Homepage: https://github.com/flagos-ai/FlagFFT
 Vcs-Browser: https://github.com/flagos-ai/FlagFFT
@@ -22,10 +19,9 @@ X-Build-Environment: This package is designed to be built in a CUDA container
  environment that provides the necessary SDK and Python packages:
  .
  - CUDA toolkit (>= 12.0) from nvidia/cuda base image
- - PyTorch (>= 2.5.0) and Triton (>= 3.1.0) via pip (required by the
-   bundled libtriton_jit submodule built statically into libflagfft.so)
- - pybind11 via pip; SQLite3 + nlohmann-json via system packages
- - fmt 10.2.1 downloaded via CMake FetchContent at build time
+ - PyTorch 2.5.1, Triton 3.1.0, and pybind11 2.13.6 via pip (pinned in
+   packaging/common/python-build-requirements.txt)
+ - fmt (>= 8.1.1), SQLite3, and nlohmann-json (>= 3.10.5) via system packages
  .
  The Build-Depends listed above are for the Debian packaging tools only.
  CUDA and Python deps are provided by the container environment.
@@ -38,9 +34,10 @@ Description: FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
  targeting FlagOS multi-vendor accelerators. The NVIDIA backend uses
  CUDA + Triton-JIT for kernel generation.
  .
- This package contains the shared library libflagfft.so built for
- NVIDIA hardware. libtriton_jit is bundled statically into this
- library; no separate libtriton-jit runtime dependency.
+ This package contains libflagfft.so, its private
+ libflagfft_triton_jit.so dependency, and the Python JIT source files needed
+ at plan creation time. It does not require the separately packaged
+ libtriton-jit runtime.
 
 Package: libflagfft-nvidia-dev
 Section: libdevel
@@ -49,5 +46,5 @@ Depends: libflagfft-nvidia (= ${binary:Version}), ${misc:Depends}
 Description: FlagFFT development files (NVIDIA backend)
  FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation.
  .
- This package contains the header files for building applications
- against libflagfft-nvidia.
+ This package contains the header files for building applications against
+ libflagfft-nvidia.

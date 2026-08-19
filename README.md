@@ -141,7 +141,11 @@ cmake --install build --prefix /usr/local
 ```
 
 Installs `libflagfft.so`, the public header (`flagfft.h`), and `flagfft-cli` (if
-built).
+built), plus the private `libflagfft_triton_jit.so` runtime and the Python
+helper scripts it needs, so an installed build does not depend on the source
+checkout or on a separately installed `libtriton_jit`. The `flagfft_codegen`
+Python package (`pip install .`), PyTorch, and the CUDA runtime remain external
+prerequisites.
 
 ---
 

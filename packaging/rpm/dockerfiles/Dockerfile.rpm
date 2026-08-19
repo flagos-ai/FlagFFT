@@ -1,27 +1,28 @@
 # Multi-stage Dockerfile to build RPM packages for FlagFFT (nvidia backend).
 
-ARG BASE_IMAGE=nvidia/cuda:12.6.0-devel-rockylinux9
+ARG BASE_IMAGE=openeuler/cuda:13.0.0-oe2403lts
 FROM ${BASE_IMAGE} AS builder
 
 RUN dnf install -y --allowerasing \
+    binutils \
     cmake \
     ninja-build \
     gcc-c++ \
     git \
     make \
-    patchelf \
+    fmt-devel \
     python3-devel \
     python3-pip \
     sqlite-devel \
-    json-devel \
+    nlohmann-json-devel \
     rpm-build \
     rpmdevtools \
     && dnf clean all
 
-# PyTorch / Triton / pybind11 are required by the bundled libtriton_jit
-# submodule that gets statically linked into libflagfft.so.
+# Keep the Torch ABI used by DEB and RPM builds identical.
+COPY packaging/common/python-build-requirements.txt /tmp/flagfft-requirements.txt
 RUN pip3 install --no-cache-dir \
-    "torch>=2.5.0" "triton>=3.1.0" "pybind11"
+    -r /tmp/flagfft-requirements.txt
 
 RUN rpmdev-setuptree
 
@@ -49,5 +50,5 @@ RUN mkdir -p /output && \
     find /root/rpmbuild/RPMS -name "*.rpm" -exec cp {} /output/ \; && \
     ls -lh /output/
 
-FROM alpine:latest AS output
+FROM scratch AS output
 COPY --from=builder /output/*.rpm /output/

@@ -1,1 +1,5 @@
-usr/lib/libflagfft.so
+usr/lib/${DEB_HOST_MULTIARCH}/libflagfft.so
+usr/lib/${DEB_HOST_MULTIARCH}/libflagfft_triton_jit.so
+usr/share/flagfft/
+usr/share/triton_jit/
+packaging/common/flagfft-triton-jit.pth usr/lib/python3/dist-packages
