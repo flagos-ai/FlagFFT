@@ -17,6 +17,8 @@ BuildRequires:  cmake >= 3.18
 BuildRequires:  python3-ninja
 BuildRequires:  gcc-c++
 BuildRequires:  python3-devel
+BuildRequires:  python3-pip
+BuildRequires:  python3-setuptools >= 68
 BuildRequires:  fmt-devel >= 8.1.1
 BuildRequires:  sqlite-devel
 BuildRequires:  nlohmann-json-devel >= 3.10.5
@@ -25,8 +27,8 @@ BuildRequires:  nlohmann-json-devel >= 3.10.5
 FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation,
 targeting FlagOS multi-vendor accelerators. The NVIDIA backend uses
 CUDA + Triton-JIT for kernel generation. libtriton_jit is bundled
-as the private libflagfft_triton_jit.so runtime. PyTorch 2.5.1 and the
-CUDA driver remain external runtime prerequisites.
+as the private libflagfft_triton_jit.so runtime. PyTorch and the CUDA driver
+remain external runtime prerequisites.
 
 %package devel
 Summary:        Development files for %{name}
@@ -50,9 +52,9 @@ NVIDIA_PY_ROOT=$(python3 -c "import nvidia; print(next(iter(nvidia.__path__)))")
     -DCMAKE_CUDA_FLAGS="-Xcompiler -fPIE" \
     -Dnvtx3_dir="${NVIDIA_PY_ROOT}/nvtx/include" \
     -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
-    -DFLAGFFT_LIBTRITON_JIT_BACKEND=CUDA \
+    -DBACKEND=CUDA \
     -DFLAGFFT_BUILD_TESTS=OFF \
-    -DFLAGFFT_BUILD_BENCHMARKS=OFF \
+    -DFLAGFFT_BUILD_CLI=OFF \
     -DBUILD_TESTING=OFF \
     -DTRITON_JIT_USE_EXTERNAL_JSON=ON \
     -DTRITON_JIT_USE_EXTERNAL_FMTLIB=ON \
@@ -63,13 +65,18 @@ NVIDIA_PY_ROOT=$(python3 -c "import nvidia; print(next(iter(nvidia.__path__)))")
 
 %install
 DESTDIR=%{buildroot} %{__cmake} --install .
+# flagfft_codegen: pure-Python codegen package invoked by libflagfft at
+# plan creation time (python3 -m flagfft_codegen.jit_source).
+python3 -m pip install --no-deps --no-build-isolation --no-compile \
+    --target %{buildroot}%{python3_sitelib} .
+rm -f %{buildroot}%{python3_sitelib}/flagfft_codegen-*.dist-info/RECORD
 install -Dm0644 packaging/common/flagfft-triton-jit.pth \
     %{buildroot}%{python3_sitelib}/flagfft-triton-jit.pth
 
 %check
 test -f %{buildroot}%{_libdir}/libflagfft.so
 test -f %{buildroot}%{_libdir}/libflagfft_triton_jit.so
-test -f %{buildroot}%{_datadir}/flagfft/python/src/codegen/jit_source.py
+test -f %{buildroot}%{python3_sitelib}/flagfft_codegen/jit_source.py
 test -f %{buildroot}%{_datadir}/triton_jit/scripts/standalone_compile.py
 test -f %{buildroot}%{python3_sitelib}/flagfft-triton-jit.pth
 readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libflagfft_triton_jit.so\]'
@@ -80,7 +87,8 @@ readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libflagfft_triton_j
 %doc README.md
 %{_libdir}/libflagfft.so
 %{_libdir}/libflagfft_triton_jit.so
-%{_datadir}/flagfft/python/src/
+%{python3_sitelib}/flagfft_codegen/
+%{python3_sitelib}/flagfft_codegen-*.dist-info/
 %{_datadir}/triton_jit/scripts/
 %{python3_sitelib}/flagfft-triton-jit.pth
 
