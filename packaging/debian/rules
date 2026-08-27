@@ -19,9 +19,9 @@ override_dh_auto_configure:
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DFETCHCONTENT_FULLY_DISCONNECTED=ON \
 		-DFETCHCONTENT_QUIET=OFF \
-		-DFLAGFFT_LIBTRITON_JIT_BACKEND=CUDA \
+		-DBACKEND=CUDA \
 		-DFLAGFFT_BUILD_TESTS=OFF \
-		-DFLAGFFT_BUILD_BENCHMARKS=OFF \
+		-DFLAGFFT_BUILD_CLI=OFF \
 		-DBUILD_TESTING=OFF \
 		-DTRITON_JIT_USE_EXTERNAL_JSON=ON \
 		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=ON \
@@ -34,11 +34,17 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	dh_auto_install --buildsystem=cmake
+	# libflagfft invokes `python3 -m flagfft_codegen.jit_source` at plan
+	# creation time; ship the pure-Python codegen package from pyproject.toml
+	# next to the library so an installed build needs no source checkout.
+	python3 -m pip install --no-deps --no-build-isolation --no-compile \
+		--target debian/tmp/usr/lib/python3/dist-packages .
+	rm -rf debian/tmp/usr/lib/python3/dist-packages/flagfft_codegen-*.dist-info/RECORD
 	@flagfft_lib="$$(find debian/tmp/usr/lib -type f -name libflagfft.so -print -quit)"; \
 	helper_lib="$$(find debian/tmp/usr/lib -type f -name libflagfft_triton_jit.so -print -quit)"; \
 	test -n "$$flagfft_lib"; \
 	test -n "$$helper_lib"; \
-	test -f debian/tmp/usr/share/flagfft/python/src/codegen/jit_source.py; \
+	test -f debian/tmp/usr/lib/python3/dist-packages/flagfft_codegen/jit_source.py; \
 	test -f debian/tmp/usr/share/triton_jit/scripts/standalone_compile.py; \
 	test -f packaging/common/flagfft-triton-jit.pth; \
 	readelf -d "$$flagfft_lib" | grep -q '\[libflagfft_triton_jit.so\]'; \
