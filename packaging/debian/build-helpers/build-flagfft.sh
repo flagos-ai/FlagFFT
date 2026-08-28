@@ -11,14 +11,18 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # Default values — must match Dockerfile.deb's ARG BASE_IMAGE default.
-BASE_IMAGE="nvidia/cuda:12.6.0-devel-ubuntu24.04"
+BASE_IMAGE="nvidia/cuda:12.8.0-devel-ubuntu22.04"   # FlagOS DEB ABI matrix
+PYTHON_VERSION="3.12"
+TORCH_INDEX="https://resource.flagos.net/repository/flagos-pypi-nvidia/simple"
 OUTPUT_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --base-image) BASE_IMAGE="$2"; shift 2 ;;
+        --python-version) PYTHON_VERSION="$2"; shift 2 ;;
+        --torch-index) TORCH_INDEX="$2"; shift 2 ;;
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--base-image IMAGE] [--output-dir DIR]"; exit 1 ;;
+        *) echo "Unknown option: $1"; echo "Usage: $0 [--base-image IMAGE] [--python-version X.Y] [--torch-index URL] [--output-dir DIR]"; exit 1 ;;
     esac
 done
 
@@ -40,6 +44,8 @@ IMAGE_TAG="flagfft-deb-builder:$(date +%s)"
 log_step "docker build (base: ${BASE_IMAGE})"
 docker build \
     --build-arg BASE_IMAGE="${BASE_IMAGE}" \
+    --build-arg PYTHON_VERSION="${PYTHON_VERSION}" \
+    --build-arg TORCH_INDEX="${TORCH_INDEX}" \
     -f "${PROJECT_ROOT}/packaging/debian/build-helpers/Dockerfile.deb" \
     -t "${IMAGE_TAG}" \
     "${PROJECT_ROOT}"
