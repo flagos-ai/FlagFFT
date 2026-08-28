@@ -1,0 +1,6 @@
+# Build-time Python stack for the RPM build (openEuler / Rocky images).
+# The DEB build uses packaging/debian/build-helpers/python-build-requirements.txt
+# (FlagOS DEB ABI matrix); DEB and RPM deliberately keep separate ABI matrices.
+torch==2.5.1
+triton==3.1.0
+pybind11==2.13.6

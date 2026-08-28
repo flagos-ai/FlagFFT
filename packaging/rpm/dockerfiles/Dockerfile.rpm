@@ -1,0 +1,54 @@
+# Multi-stage Dockerfile to build RPM packages for FlagFFT (nvidia backend).
+
+ARG BASE_IMAGE=openeuler/cuda:13.0.0-oe2403lts
+FROM ${BASE_IMAGE} AS builder
+
+RUN dnf install -y --allowerasing \
+    binutils \
+    cmake \
+    ninja-build \
+    gcc-c++ \
+    git \
+    make \
+    fmt-devel \
+    python3-devel \
+    python3-pip \
+    sqlite-devel \
+    nlohmann-json-devel \
+    rpm-build \
+    rpmdevtools \
+    && dnf clean all
+
+# Keep the Torch ABI used by DEB and RPM builds identical.
+COPY packaging/common/python-build-requirements.txt /tmp/flagfft-requirements.txt
+RUN pip3 install --no-cache-dir \
+    -r /tmp/flagfft-requirements.txt
+
+RUN rpmdev-setuptree
+
+# Copy source code (submodule must already be checked out by caller).
+COPY . /workspace/flagfft
+WORKDIR /workspace/flagfft
+
+RUN test -f deps/libtriton_jit/CMakeLists.txt || { \
+        echo "ERROR: deps/libtriton_jit missing; run git submodule update --init --recursive"; \
+        exit 1; \
+    }
+
+# Stage source tarball where rpmbuild expects it.
+RUN VERSION=$(awk -F'"' '/^libflagfft \(/ {gsub(/-.*/, "", $0); print}' packaging/debian/changelog 2>/dev/null | head -1 | sed 's/.*(//;s/).*//' || echo "0.1.0") && \
+    VERSION=${VERSION:-0.1.0} && \
+    mkdir -p /root/rpmbuild/SOURCES /tmp/src && \
+    cp -r /workspace/flagfft /tmp/src/libflagfft-nvidia-${VERSION} && \
+    tar czf /root/rpmbuild/SOURCES/libflagfft-nvidia-${VERSION}.tar.gz -C /tmp/src libflagfft-nvidia-${VERSION} && \
+    cp packaging/rpm/specs/flagfft.spec /root/rpmbuild/SPECS/
+
+RUN rpmbuild -bb /root/rpmbuild/SPECS/flagfft.spec || \
+    { find /root/rpmbuild -name "*.log" -exec cat {} \; ; exit 1; }
+
+RUN mkdir -p /output && \
+    find /root/rpmbuild/RPMS -name "*.rpm" -exec cp {} /output/ \; && \
+    ls -lh /output/
+
+FROM scratch AS output
+COPY --from=builder /output/*.rpm /output/
