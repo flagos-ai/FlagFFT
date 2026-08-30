@@ -431,8 +431,11 @@ def _emit_stage_block(
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
     vectorized_complex_io = (
-        io_mode == "contiguous" and _is_double_dtype(dtype) and not _non_nvidia_backend_active()
+        io_mode in {"contiguous", "contiguous_c2r"} and not _non_nvidia_backend_active()
     )
+    vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
+    vector_reg = "d" if _is_double_dtype(dtype) else "f"
+    vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
     lines.append(f"    for group_{stage} in tl.range(0, {groups}):")
     indent = "        "
 
@@ -473,13 +476,13 @@ def _emit_stage_block(
                         "'{\\n"
                         ".reg .pred p;\\n"
                         "setp.ne.b32 p, $3, 0;\\n"
-                        "@p ld.global.v2.f64 {$0, $1}, [$2];\\n"
-                        "@!p mov.f64 $0, 0.0;\\n"
-                        "@!p mov.f64 $1, 0.0;\\n"
-                        "}', \"=d,=d,l,r\", ["
+                        f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
+                        f"@!p mov.{vector_suffix} $0, 0.0;\\n"
+                        f"@!p mov.{vector_suffix} $1, 0.0;\\n"
+                        "}', \"=" + vector_reg + ",=" + vector_reg + ",l,r\", ["
                         f"tl.cast(in_ptr + (batch_base + in{j}) * 2, tl.uint64), "
                         "tl.cast(lane_mask, tl.int32)], "
-                        "dtype=(tl.float64, tl.float64), is_pure=False, pack=1)"
+                        f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
                     )
                 else:
                     lines.append(
@@ -513,12 +516,27 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_ptr{j} = in_ptr + (input_batch_base + compact_idx{j}) * 2"
                 )
-                lines.append(
-                    f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
-                )
+                if vectorized_complex_io:
+                    lines.append(
+                        f"{indent}r{j}, i{j} = tl.inline_asm_elementwise("
+                        "'{\\n"
+                        ".reg .pred p;\\n"
+                        "setp.ne.b32 p, $3, 0;\\n"
+                        f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
+                        f"@!p mov.{vector_suffix} $0, 0.0;\\n"
+                        f"@!p mov.{vector_suffix} $1, 0.0;\\n"
+                        "}', \"=" + vector_reg + ",=" + vector_reg + ",l,r\", ["
+                        f"tl.cast(src_ptr{j}, tl.uint64), "
+                        "tl.cast(lane_mask, tl.int32)], "
+                        f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                    )
+                else:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
+                    )
                 lines.append(f"{indent}i{j} = tl.where(in{j} < {half_n}, i{j}, -i{j})")
                 lines.append(
                     f"{indent}i{j} = tl.where((in{j} == 0){nyquist_guard}, 0.0, i{j})"
@@ -815,9 +833,9 @@ def _emit_stage_block(
                             "'{\\n"
                             ".reg .pred p;\\n"
                             "setp.ne.b32 p, $4, 0;\\n"
-                            "@p st.global.v2.f64 [$1], {$2, $3};\\n"
+                            f"@p st.global.v2.{vector_suffix} [$1], {{$2, $3}};\\n"
                             "mov.u32 $0, 0;\\n"
-                            "}', \"=r,l,d,d,r\", ["
+                            "}', \"=r,l," + vector_reg + "," + vector_reg + ",r\", ["
                             f"tl.cast(out_ptr + (batch_base + out_idx{j}) * 2, tl.uint64), "
                             f"r{j}, i{j}, tl.cast(lane_mask, tl.int32)], "
                             "dtype=tl.int32, is_pure=False, pack=1)"

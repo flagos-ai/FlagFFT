@@ -122,11 +122,10 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   }
 
   const RequestContext &context = request_context();
-  const bool prefer_parallel_small_double =
-      context.input_dtype == "complex128" && context.output_dtype == "complex128" &&
-      context.device_arch == "sm_80" && context.batch == 1;
-  if (prefer_parallel_small_double) {
-    // On A100 these batch-1 leaves are latency-bound with only 1-2 warps.
+  // Batch-1 small leaves can be latency-bound with only 1-2 warps. Use
+  // extra radix-4/8 stages to raise lane counts while keeping one shared-memory
+  // leaf; apply as a generic heuristic first and validate per API/backend.
+  if (context.batch == 1) {
     // More radix-4/8 stages raise lane counts to 64-128 while keeping the FFT
     // in one shared-memory leaf, which is faster than the fewest-stage choice.
     if (n == 256) {
