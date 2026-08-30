@@ -430,6 +430,9 @@ def _emit_stage_block(
     lines: list[str] = []
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
+    vectorized_complex_io = (
+        io_mode == "contiguous" and _is_double_dtype(dtype) and not _non_nvidia_backend_active()
+    )
     lines.append(f"    for group_{stage} in tl.range(0, {groups}):")
     indent = "        "
 
@@ -464,12 +467,29 @@ def _emit_stage_block(
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             if io_mode == "contiguous":
-                lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other={zero})"
-                )
+                if vectorized_complex_io:
+                    lines.append(
+                        f"{indent}r{j}, i{j} = tl.inline_asm_elementwise("
+                        "'{\\n"
+                        ".reg .pred p;\\n"
+                        "setp.ne.b32 p, $3, 0;\\n"
+                        "@p ld.global.v2.f64 {$0, $1}, [$2];\\n"
+                        "@!p mov.f64 $0, 0.0;\\n"
+                        "@!p mov.f64 $1, 0.0;\\n"
+                        "}', \"=d,=d,l,r\", ["
+                        f"tl.cast(in_ptr + (batch_base + in{j}) * 2, tl.uint64), "
+                        "tl.cast(lane_mask, tl.int32)], "
+                        "dtype=(tl.float64, tl.float64), is_pure=False, pack=1)"
+                    )
+                else:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, "
+                        f"mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, "
+                        f"mask=lane_mask, other={zero})"
+                    )
             elif io_mode == "strided":
                 lines.append(
                     f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2, "
@@ -789,12 +809,28 @@ def _emit_stage_block(
                         f"i{j}, mask=lane_mask)"
                     )
                 else:
-                    lines.append(
-                        f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j}, mask=lane_mask)"
-                    )
-                    lines.append(
-                        f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
-                    )
+                    if vectorized_complex_io:
+                        lines.append(
+                            f"{indent}tl.inline_asm_elementwise("
+                            "'{\\n"
+                            ".reg .pred p;\\n"
+                            "setp.ne.b32 p, $4, 0;\\n"
+                            "@p st.global.v2.f64 [$1], {$2, $3};\\n"
+                            "mov.u32 $0, 0;\\n"
+                            "}', \"=r,l,d,d,r\", ["
+                            f"tl.cast(out_ptr + (batch_base + out_idx{j}) * 2, tl.uint64), "
+                            f"r{j}, i{j}, tl.cast(lane_mask, tl.int32)], "
+                            "dtype=tl.int32, is_pure=False, pack=1)"
+                        )
+                    else:
+                        lines.append(
+                            f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, "
+                            f"r{j}, mask=lane_mask)"
+                        )
+                        lines.append(
+                            f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, "
+                            f"i{j}, mask=lane_mask)"
+                        )
             elif io_mode == "contiguous_r2c":
                 lines.append(
                     f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {n // 2 + 1})"
