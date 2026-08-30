@@ -194,11 +194,12 @@ class PlanBuilder {
   std::vector<PlanCandidate> build_auto_candidates(int64_t n);
   std::vector<PlanCandidate> build_leaf_tune_candidates(int64_t n);
   PlanCandidate select_candidate(const std::vector<PlanCandidate>& candidates);
-  PlanNodePtr build_auto_node(int64_t n);
+  PlanNodePtr build_auto_node(int64_t n, bool allow_parallel_leaf_heuristic);
   double cost_for(int64_t n);
   std::vector<PlanCandidate> top_candidates(std::vector<PlanCandidate> candidates, int64_t limit);
 
   std::optional<RequestContext> request_context_;
+  bool parallel_leaf_heuristic_enabled_ = false;
   std::unordered_map<int64_t, PlanNodePtr> node_cache_;
   std::unordered_map<int64_t, double> cost_cache_;
   std::unordered_map<int64_t, std::vector<int64_t>> divisor_cache_;

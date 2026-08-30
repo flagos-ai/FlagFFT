@@ -1198,12 +1198,15 @@ def _use_thread_local_mixed_leaf(
     expected_length = four_step_n1 if io_mode in row_modes else four_step_n2
     return (
         io_mode in row_modes | col_modes
-        and plan.dtype == "complex64"
+        and plan.dtype in {"complex64", "complex128"}
         and register_radix in _THREAD_LOCAL_MIXED_RADICES
         and cross_radix == 32
         and plan.length == register_radix * cross_radix
         and plan.length == expected_length
-        and use_tle_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
+        and (
+            use_tle_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
+            or use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
+        )
     )
 
 
@@ -1263,6 +1266,11 @@ def _build_thread_local_mixed_four_step_kernel_source(
     smem_reshape_dims = ", ".join(["1"] * smem_chunk_dims)
     smem_block_dims = ", ".join(["2"] * smem_chunk_dims)
     smem_n = plan.smem_size * inner_pack
+    vector_suffix = "f64" if _is_double_dtype(plan.dtype) else "f32"
+    vector_reg = "d" if _is_double_dtype(plan.dtype) else "f"
+    vector_dtype = "tl.float64" if _is_double_dtype(plan.dtype) else "tl.float32"
+    asm_load_constraints = f'"={vector_reg},={vector_reg},l"'
+    asm_store_constraints = f'"=r,l,{vector_reg},{vector_reg}"'
     row_modes = {
         "four_step_row",
         "four_step_real_row",
@@ -1313,11 +1321,11 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"four_step_batch * {four_step_n1 * four_step_n2}"
             ),
             (
-                f"    smem_r = tle.gpu.alloc([{smem_n}], dtype=tl.float32, "
+                f"    smem_r = tle.gpu.alloc([{smem_n}], dtype={vector_dtype}, "
                 "layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
             ),
             (
-                f"    smem_i = tle.gpu.alloc([{smem_n}], dtype=tl.float32, "
+                f"    smem_i = tle.gpu.alloc([{smem_n}], dtype={vector_dtype}, "
                 "layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
             ),
         ]
@@ -1352,9 +1360,10 @@ def _build_thread_local_mixed_four_step_kernel_source(
             )
             body.append(
                 f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                f"{asm_load_constraints}, "
                 f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
             )
             body.append(
                 f"    i{idx} = tl.where(src_idx{idx} < {half_n}, i{idx}, -i{idx})"
@@ -1370,9 +1379,10 @@ def _build_thread_local_mixed_four_step_kernel_source(
             body.append(
                 # The selected leaves and pack=4 cover every input lane exactly.
                 f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                f"{asm_load_constraints}, "
                 f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
             )
 
     body.extend(_emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
@@ -1588,8 +1598,8 @@ def _build_thread_local_mixed_four_step_kernel_source(
             )
             body.append(
                 f"    output_dummy{idx} = tl.inline_asm_elementwise("
-                '"st.global.v2.f32 [$1], {$2, $3}; mov.u32 $0, 0;", '
-                '"=r,l,f,f", '
+                f'"st.global.v2.{vector_suffix} [$1], {{$2, $3}}; mov.u32 $0, 0;", '
+                f"{asm_store_constraints}, "
                 f"[tl.cast(out_ptr + output_offset{idx}, tl.uint64), "
                 f"r{idx}, i{idx}], "
                 "dtype=tl.int32, is_pure=False, pack=1)"

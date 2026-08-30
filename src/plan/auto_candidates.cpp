@@ -103,14 +103,14 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
 
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
-  PlanNodePtr fft_plan = build_auto_node(conv_length);
+  PlanNodePtr fft_plan = build_auto_node(conv_length, false);
   return std::make_shared<BluesteinPlanNode>(n, conv_length, std::move(fft_plan));
 }
 
 PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
   int64_t root = find_primitive_root(n);
   std::vector<int64_t> idx = build_rader_index_table(n, root);
-  PlanNodePtr conv_plan = build_auto_node(n - 1);
+  PlanNodePtr conv_plan = build_auto_node(n - 1, false);
   return std::make_shared<RaderPlanNode>(n, root, std::move(idx), std::move(conv_plan));
 }
 
@@ -133,8 +133,10 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   }
 
   const RequestContext &context = request_context();
-  if (context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
-      n % kThreadLocalColLength == 0) {
+  const bool thread_local_complex =
+      (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
+      (context.input_dtype == "complex128" && context.output_dtype == "complex128");
+  if (thread_local_complex && n % kThreadLocalColLength == 0) {
     const int64_t n1 = n / kThreadLocalColLength;
     const int64_t register_radix = n1 / kThreadLocalCrossRadix;
     if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix)) {
@@ -167,8 +169,8 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
     int64_t n2 = n / n1;
     try {
-      PlanNodePtr row = build_auto_node(n1);
-      PlanNodePtr col = build_auto_node(n2);
+      PlanNodePtr row = build_auto_node(n1, false);
+      PlanNodePtr col = build_auto_node(n2, false);
       PlanNodePtr node = std::make_shared<FourStepPlanNode>(n, n1, n2, row, col);
       double balance = std::abs(std::log(static_cast<double>(n1)) - std::log(static_cast<double>(n2)));
       candidates.push_back({node, four_step_cost(n1, n2) + balance, priority(node)});

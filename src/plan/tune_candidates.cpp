@@ -218,8 +218,8 @@ std::vector<PlanCandidate> PlanBuilder::build_decomposition_tune_candidates(int6
       continue;
     }
 
-    PlanNodePtr row = build_auto_node(pair.n1);
-    PlanNodePtr col = build_auto_node(pair.n2);
+    PlanNodePtr row = build_auto_node(pair.n1, false);
+    PlanNodePtr col = build_auto_node(pair.n2, false);
     PlanNodePtr node = std::make_shared<FourStepPlanNode>(n, pair.n1, pair.n2, row, col);
     double cost = static_cast<double>(pair.n2) * cost_for(pair.n1) +
                   static_cast<double>(pair.n1) * cost_for(pair.n2) + static_cast<double>(n);
@@ -243,12 +243,21 @@ PlanCandidate PlanBuilder::select_candidate(const std::vector<PlanCandidate>& ca
                            });
 }
 
-PlanNodePtr PlanBuilder::build_auto_node(int64_t n) {
+PlanNodePtr PlanBuilder::build_auto_node(int64_t n, bool allow_parallel_leaf_heuristic) {
   auto it = node_cache_.find(n);
   if (it != node_cache_.end()) {
     return it->second;
   }
-  PlanCandidate candidate = select_candidate(build_auto_candidates(n));
+  const bool previous_heuristic = parallel_leaf_heuristic_enabled_;
+  parallel_leaf_heuristic_enabled_ = allow_parallel_leaf_heuristic;
+  PlanCandidate candidate;
+  try {
+    candidate = select_candidate(build_auto_candidates(n));
+  } catch (...) {
+    parallel_leaf_heuristic_enabled_ = previous_heuristic;
+    throw;
+  }
+  parallel_leaf_heuristic_enabled_ = previous_heuristic;
   node_cache_[n] = candidate.node;
   cost_cache_[n] = candidate.cost;
   return candidate.node;
