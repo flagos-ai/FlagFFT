@@ -458,6 +458,9 @@ def run_subprocess(
     # Vendor-aware GPU selection: FlagFFT targets CUDA only.
     # For multi-vendor support (ROCm, etc.), extend this based on ENV_INFO.
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    # MUSA workers use MUSA_VISIBLE_DEVICES; setting only CUDA_VISIBLE_DEVICES
+    # leaves all MUSA workers pinned to GPU 0 when running multiple workers.
+    env["MUSA_VISIBLE_DEVICES"] = str(gpu_id)
     start = time.monotonic()
     try:
         result = subprocess.run(

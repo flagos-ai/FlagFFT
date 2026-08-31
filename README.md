@@ -26,8 +26,8 @@ suite:
 
 ```bash
 # 1. Clone
-git clone https://github.com/Artlesbol/FlagFFT-dev.git
-cd FlagFFT-dev
+git clone https://github.com/flagos-ai/FlagFFT.git
+cd FlagFFT
 
 # 2. Initialize submodule
 git submodule update --init --recursive
