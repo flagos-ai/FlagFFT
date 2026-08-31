@@ -231,6 +231,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::R2CHalfPack:
       kernel_kind = "r2c_half_pack";
       break;
+    case KernelKind::R2CPackedPostprocess:
+      kernel_kind = "r2c_packed_postprocess";
+      break;
+    case KernelKind::C2RPackedPreprocess:
+      kernel_kind = "c2r_packed_preprocess";
+      break;
     case KernelKind::CompactToHermitianFull:
       kernel_kind = "compact_to_hermitian_full";
       break;
@@ -298,6 +304,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << shell_quote(key.transpose3d_order);
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
+      key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     jit_command << " --length " << key.length;
   }
@@ -314,6 +321,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
+      key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     kernel->rows_per_block = json_int_field(artifact_json, "rows_per_block");
   }

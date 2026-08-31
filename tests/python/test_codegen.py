@@ -304,7 +304,8 @@ def test_large_four_step_generates_twiddle_in_row_pipeline(kernels) -> None:
     assert "smem_dst0 = dst0 ^ (dst0 >> 5)" in row_source
     assert "smem_phys0 = logical_phys0 ^ (logical_phys0 >> 5)" in row_source
     assert "twiddle_ptr" not in col_source
-    assert "tl.load(in_ptr" in col_source
+    assert "ld.global.v2.f32" in col_source
+    assert "tl.cast(in_ptr +" in col_source
     assert "tl.arange(0, 256)" in col_source
     assert col_source.count("tl.debug_barrier()") == 3
     assert "smem_a_r = tle.gpu.alloc" not in col_source
@@ -326,8 +327,9 @@ def test_double_four_step_loads_twiddle_contiguously_in_row(kernels) -> None:
     _, row_source = kernels._build_four_step_row_kernel_source(plan, 459, 1040)
 
     assert kernels.use_four_step_row_fused_twiddle(459, 1040, "complex128")
-    assert "tw_r0 = tl.load(twiddle_ptr + dst_idx0 * 2" in row_source
-    assert "tw_i0 = tl.load(twiddle_ptr + dst_idx0 * 2 + 1" in row_source
+    assert "tw_r0, tw_i0 = tl.inline_asm_elementwise(" in row_source
+    assert "ld.global.v2.f64" in row_source
+    assert "tl.cast(twiddle_ptr + dst_idx0 * 2" in row_source
     assert "sin.approx.f32" not in row_source
 
 
@@ -887,8 +889,8 @@ def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:
 def test_kernel_registry_is_complete_and_consistent() -> None:
     import flagfft_codegen.registry as registry
 
-    assert len(registry.KERNEL_NAMES) == 34
-    assert len(set(registry.KERNEL_NAMES)) == 34
+    assert len(registry.KERNEL_NAMES) == 36
+    assert len(set(registry.KERNEL_NAMES)) == 36
     assert set(registry.KERNEL_SPECS) == set(registry.KERNEL_NAMES)
 
     for name, spec in registry.KERNEL_SPECS.items():
@@ -1007,6 +1009,18 @@ def test_jit_r2c_pointwise_source_metadata(jit_source, tmp_path) -> None:
         dtype="complex128",
         out_dir=tmp_path,
     )
+    packed_forward = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel="r2c_packed_postprocess",
+        n=18,
+        dtype="complex128",
+        out_dir=tmp_path,
+    )
+    packed_inverse = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel="c2r_packed_preprocess",
+        n=18,
+        dtype="complex128",
+        out_dir=tmp_path,
+    )
 
     assert expand["kernel_type"] == "real_to_complex"
     assert expand["arg_names"] == ["in_ptr", "out_ptr", "input_distance", "nbatch"]
@@ -1026,3 +1040,65 @@ def test_jit_r2c_pointwise_source_metadata(jit_source, tmp_path) -> None:
     assert pack_inverse["kernel_type"] == "complex_to_real"
     assert pack_inverse["signature"] == "*fp64:16,*fp64:16,i64,i32"
     assert (tmp_path / "flagfft_jit_complex_to_real_n17_f64.py").is_file()
+
+    packed_signature = "*fp64:16,*fp64:16,*fp64:16,i64,i32"
+    assert packed_forward["kernel_type"] == "r2c_packed_postprocess"
+    assert packed_forward["length"] == 18
+    assert packed_forward["signature"] == packed_signature
+    assert packed_forward["arg_names"] == [
+        "in_ptr",
+        "twiddle_ptr",
+        "out_ptr",
+        "output_distance",
+        "nbatch",
+    ]
+    assert (tmp_path / "flagfft_jit_r2c_packed_postprocess_n18_f64.py").is_file()
+
+    assert packed_inverse["kernel_type"] == "c2r_packed_preprocess"
+    assert packed_inverse["length"] == 18
+    assert packed_inverse["signature"] == packed_signature
+    assert packed_inverse["arg_names"] == [
+        "in_ptr",
+        "twiddle_ptr",
+        "out_ptr",
+        "input_distance",
+        "nbatch",
+    ]
+    assert (tmp_path / "flagfft_jit_c2r_packed_preprocess_n18_f64.py").is_file()
+
+
+def test_packed_real_codegen_requires_even_length_and_pairs_bins(kernels) -> None:
+    name, forward, args, _ = kernels._build_r2c_packed_postprocess_kernel_source(
+        18, "complex128"
+    )
+    assert name == "_r2c_packed_postprocess_kernel_n18_f64"
+    assert args == [
+        "in_ptr",
+        "twiddle_ptr",
+        "out_ptr",
+        "output_distance",
+        "nbatch",
+    ]
+    assert "a_k = k % 9" in forward
+    assert "b_k = (9 - k) % 9" in forward
+    assert "out_r = 0.5 * (sum_r + prod_i)" in forward
+
+    name, inverse, args, _ = kernels._build_c2r_packed_preprocess_kernel_source(
+        18, "complex128"
+    )
+    assert name == "_c2r_packed_preprocess_kernel_n18_f64"
+    assert args == [
+        "in_ptr",
+        "twiddle_ptr",
+        "out_ptr",
+        "input_distance",
+        "nbatch",
+    ]
+    assert "q = 9 - k" in inverse
+    assert "packed_r = sum_r - prod_i" in inverse
+    assert "packed_i = sum_i + prod_r" in inverse
+
+    with pytest.raises(ValueError, match="even length"):
+        kernels._build_r2c_packed_postprocess_kernel_source(17, "complex128")
+    with pytest.raises(ValueError, match="even length"):
+        kernels._build_c2r_packed_preprocess_kernel_source(17, "complex128")

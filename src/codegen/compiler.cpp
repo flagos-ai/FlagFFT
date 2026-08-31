@@ -14,7 +14,70 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
+#include <optional>
+
 namespace flagfft {
+namespace {
+
+  struct PackedRealChild {
+    FFTRequest request;
+    PlanNodePtr plan;
+  };
+
+  std::optional<PackedRealChild> select_packed_real_child(const PlanNodePtr &original_plan,
+                                                          const FFTRequest &request,
+                                                          int64_t batch,
+                                                          bool inverse) {
+    const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
+    const bool force = setting != nullptr && std::string(setting) == "1";
+    const bool disable = setting != nullptr && std::string(setting) == "0";
+    const int64_t n = request.requested_n;
+    if (disable || request.input_dtype != "complex128" || batch != 1 || n <= 0 || n % 2 != 0) {
+      return std::nullopt;
+    }
+    if (!force && (request.device_arch != "sm_80" || n < 65536)) {
+      return std::nullopt;
+    }
+
+    FFTRequest child_request = request;
+    child_request.fft_length = n / 2;
+    child_request.requested_n = n / 2;
+    child_request.n = n / 2;
+    child_request.input_dtype = "complex128";
+    child_request.output_dtype = "complex128";
+    child_request.direction = inverse ? "inverse" : "forward";
+    child_request.norm = "backward";
+    child_request.batch = batch;
+
+    PlanBuilder child_builder;
+    PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(child_plan);
+    const bool child_is_leaf_pair = four_step != nullptr &&
+                                    std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
+                                    std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
+    // On A100, a half-length transform wins only while both generated leaf
+    // kernels stay below the high-register large-leaf regime.  Keep the gate
+    // tied to code-generation shape instead of selecting a new factor order.
+    const bool bounded_leaf_pair = child_is_leaf_pair && four_step->n1 <= 768 && four_step->n2 <= 768;
+    auto original_four_step = std::dynamic_pointer_cast<FourStepPlanNode>(original_plan);
+    const bool original_has_large_leaf =
+        inverse && original_four_step != nullptr &&
+        std::dynamic_pointer_cast<LeafPlanNode>(original_four_step->row_plan) != nullptr &&
+        std::dynamic_pointer_cast<LeafPlanNode>(original_four_step->col_plan) != nullptr &&
+        (original_four_step->n1 > 768 || original_four_step->n2 > 768);
+    // Compact C2R input handling is especially expensive in a large generated
+    // leaf.  Its half-length complex route remains profitable a little beyond
+    // the general FP64 leaf bound, provided it replaces such a large leaf.
+    const bool c2r_large_leaf_relief =
+        original_has_large_leaf && child_is_leaf_pair && four_step->n1 <= 1536 && four_step->n2 <= 1536;
+    if (!force && !bounded_leaf_pair && !c2r_large_leaf_relief) {
+      return std::nullopt;
+    }
+    return PackedRealChild {std::move(child_request), std::move(child_plan)};
+  }
+
+}  // namespace
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNodePtr &node,
                                                                   const FFTRequest &request,
@@ -69,7 +132,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     DeviceAllocation chirp =
         build_raw_bluestein_chirp(request, bluestein->length, request.direction == "inverse");
     DeviceAllocation b_time = build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
-    const bool use_full_leaf = request.input_dtype == "complex64" && leaf != nullptr;
+    const bool use_a100_fp64_full_leaf =
+        request.device_arch == "sm_80" && request.input_dtype == "complex128" && batch == 1;
+    const bool use_full_leaf =
+        (request.input_dtype == "complex64" || use_a100_fp64_full_leaf) && leaf != nullptr;
     const bool use_four_step = request.input_dtype == "complex64" && four_step != nullptr &&
                                row_leaf != nullptr && col_leaf != nullptr && row_leaf->length < 512 &&
                                col_leaf->length < 512;
@@ -226,6 +292,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                                                       int64_t batch) {
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (auto packed_child = select_packed_real_child(node, request, batch, false)) {
+    const int64_t packed = n / 2;
+    DeviceAllocation packed_output =
+        adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
+    return std::make_shared<CompiledRawPackedR2CNode>(
+        n,
+        compile_raw_node(packed_child->plan, packed_child->request, batch),
+        compile_r2c_packed_postprocess_kernel(request, n),
+        build_raw_packed_real_twiddle(request, n),
+        std::move(packed_output));
+  }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
@@ -265,6 +342,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                                                       int64_t batch) {
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (auto packed_child = select_packed_real_child(node, request, batch, true)) {
+    const int64_t packed = n / 2;
+    DeviceAllocation packed_input = adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
+    return std::make_shared<CompiledRawPackedC2RNode>(
+        n,
+        compile_c2r_packed_preprocess_kernel(request, n),
+        compile_raw_node(packed_child->plan, packed_child->request, batch),
+        build_raw_packed_real_twiddle(request, n),
+        std::move(packed_input));
+  }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
@@ -675,6 +762,20 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_half_pack_kernel(const FF
                                                                         int64_t n) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::r2c_half_pack(target, request.input_dtype, n);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_packed_postprocess_kernel(const FFTRequest &request,
+                                                                                 int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::r2c_packed_postprocess(target, complex_dtype_for(request.input_dtype), n);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_c2r_packed_preprocess_kernel(const FFTRequest &request,
+                                                                                int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::c2r_packed_preprocess(target, complex_dtype_for(request.input_dtype), n);
   return compile_kernel(key);
 }
 

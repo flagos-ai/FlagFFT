@@ -218,10 +218,33 @@ TEST(Plan1D, DoublePlanAvoidsHighSharedMemoryLeaf) {
   auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(four_step->col_plan);
   ASSERT_NE(row, nullptr);
   ASSERT_NE(col, nullptr);
-  EXPECT_EQ(row->factors, (std::vector<int64_t> {32, 20}));
+  EXPECT_EQ(row->factors, (std::vector<int64_t> {20, 32}));
   EXPECT_EQ(col->factors, (std::vector<int64_t> {32, 32}));
   EXPECT_EQ(row->smem_size, 1024);
   EXPECT_EQ(col->smem_size, 1024);
+}
+
+TEST(Plan1D, A100DoubleUsesOnlyLeafFusedBluesteinOverRader) {
+  flagfft::FFTRequest request;
+  request.input_dtype = "complex128";
+  request.output_dtype = "complex128";
+  request.device_type = flagfft::adaptor::backend_name();
+  request.device_index = 0;
+  request.device_arch = "sm_80";
+  request.direction = "forward";
+  request.batch = 1;
+
+  request.fft_length = 1009;
+  request.requested_n = request.fft_length;
+  flagfft::PlanBuilder leaf_builder;
+  auto leaf_fused = leaf_builder.build(request.fft_length, request);
+  EXPECT_NE(std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(leaf_fused), nullptr);
+
+  request.fft_length = 8191;
+  request.requested_n = request.fft_length;
+  flagfft::PlanBuilder four_step_builder;
+  auto four_step = four_step_builder.build(request.fft_length, request);
+  EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(four_step), nullptr);
 }
 
 TEST(Plan1D, DoubleMixedPlansModelCooperativeStagesAndRowPacking) {

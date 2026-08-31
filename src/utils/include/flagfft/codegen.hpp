@@ -402,6 +402,24 @@ struct CompiledRawR2CNode final : CompiledRawNode {
   DeviceAllocation full_output;
 };
 
+struct CompiledRawPackedR2CNode final : CompiledRawNode {
+  CompiledRawPackedR2CNode(int64_t length,
+                           std::shared_ptr<CompiledRawNode> fft,
+                           std::shared_ptr<JitKernel> postprocess_kernel,
+                           DeviceAllocation twiddle,
+                           DeviceAllocation packed_output);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t length;
+  std::shared_ptr<CompiledRawNode> fft;
+  std::shared_ptr<JitKernel> postprocess_kernel;
+  DeviceAllocation twiddle;
+  DeviceAllocation packed_output;
+};
+
 struct CompiledRawR2CLeafNode final : CompiledRawNode {
   CompiledRawR2CLeafNode(int64_t length,
                          std::shared_ptr<JitKernel> kernel,
@@ -490,6 +508,24 @@ struct CompiledRawC2RNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> pack_kernel;
   DeviceAllocation full_input;
   DeviceAllocation full_output;
+};
+
+struct CompiledRawPackedC2RNode final : CompiledRawNode {
+  CompiledRawPackedC2RNode(int64_t length,
+                           std::shared_ptr<JitKernel> preprocess_kernel,
+                           std::shared_ptr<CompiledRawNode> fft,
+                           DeviceAllocation twiddle,
+                           DeviceAllocation packed_input);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t length;
+  std::shared_ptr<JitKernel> preprocess_kernel;
+  std::shared_ptr<CompiledRawNode> fft;
+  DeviceAllocation twiddle;
+  DeviceAllocation packed_input;
 };
 
 struct CompiledRawC2RLeafNode final : CompiledRawNode {
@@ -980,6 +1016,8 @@ class TritonCompiler {
                                                                  int64_t n2);
   std::shared_ptr<JitKernel> compile_real_to_complex_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_r2c_half_pack_kernel(const FFTRequest &request, int64_t n);
+  std::shared_ptr<JitKernel> compile_r2c_packed_postprocess_kernel(const FFTRequest &request, int64_t n);
+  std::shared_ptr<JitKernel> compile_c2r_packed_preprocess_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_compact_to_hermitian_full_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_complex_to_real_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_tiled_transpose_kernel(const FFTRequest &request,
@@ -996,6 +1034,7 @@ class TritonCompiler {
 std::string triton_target_for_request(const FFTRequest &request);
 FFTRequest forward_child_request(const FFTRequest &request);
 DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2);
+DeviceAllocation build_raw_packed_real_twiddle(const FFTRequest &request, int64_t n);
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign);
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m);
 DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx);

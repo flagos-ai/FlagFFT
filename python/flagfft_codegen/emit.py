@@ -40,9 +40,11 @@ from .kernels_layout import (
 )
 from .kernels_leaf import _build_leaf_kernel_source_for_io
 from .kernels_real import (
+    _build_c2r_packed_preprocess_kernel_source,
     _build_compact_to_hermitian_full_kernel_source,
     _build_complex_to_real_kernel_source,
     _build_r2c_half_pack_kernel_source,
+    _build_r2c_packed_postprocess_kernel_source,
     _build_real_to_complex_kernel_source,
 )
 from .kernels_special import _build_direct_dft_kernel_source
@@ -420,6 +422,20 @@ def _emit_r2c_pointwise_jit_kernel(
             arg_names,
             rows_per_block,
         ) = _build_r2c_half_pack_kernel_source(n, dtype)
+    elif kernel == "r2c_packed_postprocess":
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            rows_per_block,
+        ) = _build_r2c_packed_postprocess_kernel_source(n, dtype)
+    elif kernel == "c2r_packed_preprocess":
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            rows_per_block,
+        ) = _build_c2r_packed_preprocess_kernel_source(n, dtype)
     elif kernel == "compact_to_hermitian_full":
         (
             kernel_name,

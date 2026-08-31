@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-"""Real-transform pointwise kernels: expand/half-pack/Hermitian-full/real-pack."""
+"""Real-transform pointwise kernels, including packed even-length transforms."""
 
 from textwrap import dedent
 
@@ -114,6 +114,127 @@ def _build_r2c_half_pack_kernel_source(
     )
 
 
+def _build_r2c_packed_postprocess_kernel_source(
+    n: int, dtype: str
+) -> tuple[str, list[str], list[str]]:
+    if n % 2 != 0:
+        raise ValueError("packed real FFT requires an even length")
+    packed = n // 2
+    half = packed + 1
+    block = 256
+    block_cols, rows_per_block = _packed_layout(half, block)
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    kernel_name = f"_r2c_packed_postprocess_kernel_n{n}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            twiddle_ptr,
+            out_ptr,
+            output_distance,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(1)
+            row_offsets = pid_batch * {rows_per_block} + tl.arange(0, {rows_per_block})[:, None]
+            col_offsets = pid_block * {block_cols} + tl.arange(0, {block_cols})[None, :]
+            mask = (row_offsets < nbatch) & (col_offsets < {half})
+            safe_rows = tl.minimum(row_offsets, nbatch - 1)
+            k = tl.minimum(col_offsets, {packed})
+            a_k = k % {packed}
+            b_k = ({packed} - k) % {packed}
+            a_ptr = in_ptr + (safe_rows * {packed} + a_k) * 2
+            b_ptr = in_ptr + (safe_rows * {packed} + b_k) * 2
+            ar = tl.load(a_ptr, mask=mask, other={zero})
+            ai = tl.load(a_ptr + 1, mask=mask, other={zero})
+            br = tl.load(b_ptr, mask=mask, other={zero})
+            bi = -tl.load(b_ptr + 1, mask=mask, other={zero})
+            wr = tl.load(twiddle_ptr + k * 2, mask=mask, other={zero})
+            wi = tl.load(twiddle_ptr + k * 2 + 1, mask=mask, other={zero})
+            sum_r = ar + br
+            sum_i = ai + bi
+            diff_r = ar - br
+            diff_i = ai - bi
+            prod_r = diff_r * wr - diff_i * wi
+            prod_i = diff_i * wr + diff_r * wi
+            out_r = 0.5 * (sum_r + prod_i)
+            out_i = 0.5 * (sum_i - prod_r)
+            dst = out_ptr + (safe_rows * output_distance + k) * 2
+            tl.store(dst, out_r, mask=mask)
+            tl.store(dst + 1, out_i, mask=mask)
+        """
+    )
+    return (
+        kernel_name,
+        source,
+        ["in_ptr", "twiddle_ptr", "out_ptr", "output_distance", "nbatch"],
+        rows_per_block,
+    )
+
+
+def _build_c2r_packed_preprocess_kernel_source(
+    n: int, dtype: str
+) -> tuple[str, list[str], list[str]]:
+    if n % 2 != 0:
+        raise ValueError("packed real FFT requires an even length")
+    packed = n // 2
+    block = 256
+    block_cols, rows_per_block = _packed_layout(packed, block)
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    kernel_name = f"_c2r_packed_preprocess_kernel_n{n}_{suffix}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            twiddle_ptr,
+            out_ptr,
+            input_distance,
+            nbatch,
+        ):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(1)
+            row_offsets = pid_batch * {rows_per_block} + tl.arange(0, {rows_per_block})[:, None]
+            col_offsets = pid_block * {block_cols} + tl.arange(0, {block_cols})[None, :]
+            mask = (row_offsets < nbatch) & (col_offsets < {packed})
+            safe_rows = tl.minimum(row_offsets, nbatch - 1)
+            k = tl.minimum(col_offsets, {packed - 1})
+            q = {packed} - k
+            x_ptr = in_ptr + (safe_rows * input_distance + k) * 2
+            q_ptr = in_ptr + (safe_rows * input_distance + q) * 2
+            xr = tl.load(x_ptr, mask=mask, other={zero})
+            xi = tl.load(x_ptr + 1, mask=mask, other={zero})
+            qr = tl.load(q_ptr, mask=mask, other={zero})
+            qi = -tl.load(q_ptr + 1, mask=mask, other={zero})
+            wr = tl.load(twiddle_ptr + k * 2, mask=mask, other={zero})
+            wi = tl.load(twiddle_ptr + k * 2 + 1, mask=mask, other={zero})
+            sum_r = xr + qr
+            sum_i = xi + qi
+            diff_r = xr - qr
+            diff_i = xi - qi
+            # Multiply the difference by conj(W), then by +i.  Omitting the
+            # conventional 0.5 here supplies the factor of two needed to turn
+            # an unnormalised N/2 inverse FFT into an unnormalised N-point C2R.
+            prod_r = diff_r * wr + diff_i * wi
+            prod_i = diff_i * wr - diff_r * wi
+            packed_r = sum_r - prod_i
+            packed_i = sum_i + prod_r
+            dst = out_ptr + (safe_rows * {packed} + k) * 2
+            tl.store(dst, packed_r, mask=mask)
+            tl.store(dst + 1, packed_i, mask=mask)
+        """
+    )
+    return (
+        kernel_name,
+        source,
+        ["in_ptr", "twiddle_ptr", "out_ptr", "input_distance", "nbatch"],
+        rows_per_block,
+    )
+
+
 def _build_compact_to_hermitian_full_kernel_source(
     n: int, dtype: str
 ) -> tuple[str, list[str], list[str]]:
@@ -198,9 +319,11 @@ def _build_complex_to_real_kernel_source(
 
 
 __all__ = [
+    "_build_c2r_packed_preprocess_kernel_source",
     "_build_compact_to_hermitian_full_kernel_source",
     "_build_complex_to_real_kernel_source",
     "_build_r2c_half_pack_kernel_source",
+    "_build_r2c_packed_postprocess_kernel_source",
     "_build_real_to_complex_kernel_source",
     "_packed_layout",
 ]

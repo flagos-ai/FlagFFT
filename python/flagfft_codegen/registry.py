@@ -189,6 +189,8 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("transpose3d", TRANSPOSE3D, requires=_TRANSPOSE3D_FLAGS),
     KernelSpec("real_to_complex", REAL_POINTWISE, requires=("length",)),
     KernelSpec("r2c_half_pack", REAL_POINTWISE, requires=("length",)),
+    KernelSpec("r2c_packed_postprocess", REAL_POINTWISE, requires=("length",)),
+    KernelSpec("c2r_packed_preprocess", REAL_POINTWISE, requires=("length",)),
     KernelSpec(
         "compact_to_hermitian_full", REAL_POINTWISE, requires=("length",)
     ),

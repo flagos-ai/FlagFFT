@@ -969,6 +969,64 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(int64_t length,
+                                                   std::shared_ptr<CompiledRawNode> fft,
+                                                   std::shared_ptr<JitKernel> postprocess_kernel,
+                                                   DeviceAllocation twiddle,
+                                                   DeviceAllocation packed_output)
+    : length(length),
+      fft(std::move(fft)),
+      postprocess_kernel(std::move(postprocess_kernel)),
+      twiddle(std::move(twiddle)),
+      packed_output(std::move(packed_output)) {
+}
+
+std::string CompiledRawPackedR2CNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawPackedR2C(n=" << length << ", packed_n=" << length / 2
+      << ", fft=" << (fft ? fft->describe() : "null")
+      << ", postprocess_kernel=" << (postprocess_kernel ? postprocess_kernel->kernel_name : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
+                                                adaptor::DevicePtr output,
+                                                const RawExecutionContext &context) const {
+  try {
+    constexpr int64_t block = 256;
+    const int64_t packed = length / 2;
+    const int64_t half = packed + 1;
+    const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
+    if (context.batch != 1) {
+      throw std::runtime_error("packed R2C is selected only for batch=1");
+    }
+
+    RawExecutionContext child_context {context.request, context.stream, context.batch};
+    flagfftResult result = fft->execute(input, packed_output.get(), child_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(packed_output.get()),
+        JitKernelArg::device(twiddle.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(output_distance),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    postprocess_kernel->launch(context.stream,
+                               args,
+                               ceil_div(half, block),
+                               grid_rows(postprocess_kernel, context.batch),
+                               1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] PackedR2C execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawR2CLeafNode::CompiledRawR2CLeafNode(int64_t length,
                                                std::shared_ptr<JitKernel> kernel,
                                                std::vector<DeviceAllocation> tables)
@@ -1225,6 +1283,60 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] C2R execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawPackedC2RNode::CompiledRawPackedC2RNode(int64_t length,
+                                                   std::shared_ptr<JitKernel> preprocess_kernel,
+                                                   std::shared_ptr<CompiledRawNode> fft,
+                                                   DeviceAllocation twiddle,
+                                                   DeviceAllocation packed_input)
+    : length(length),
+      preprocess_kernel(std::move(preprocess_kernel)),
+      fft(std::move(fft)),
+      twiddle(std::move(twiddle)),
+      packed_input(std::move(packed_input)) {
+}
+
+std::string CompiledRawPackedC2RNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawPackedC2R(n=" << length << ", packed_n=" << length / 2
+      << ", preprocess_kernel=" << (preprocess_kernel ? preprocess_kernel->kernel_name : "null")
+      << ", fft=" << (fft ? fft->describe() : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
+                                                adaptor::DevicePtr output,
+                                                const RawExecutionContext &context) const {
+  try {
+    constexpr int64_t block = 256;
+    const int64_t packed = length / 2;
+    const int64_t half = packed + 1;
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
+    if (context.batch != 1) {
+      throw std::runtime_error("packed C2R is selected only for batch=1");
+    }
+
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(twiddle.get()),
+        JitKernelArg::device(packed_input.get()),
+        JitKernelArg::i64(input_distance),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    preprocess_kernel->launch(context.stream,
+                              args,
+                              ceil_div(packed, block),
+                              grid_rows(preprocess_kernel, context.batch),
+                              1);
+
+    RawExecutionContext child_context {context.request, context.stream, context.batch};
+    return fft->execute(packed_input.get(), output, child_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] PackedC2R execute failed: %s\n", e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }

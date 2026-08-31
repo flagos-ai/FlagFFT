@@ -182,8 +182,17 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
     const double bluestein_candidate_cost = bluestein_cost(n, bluestein->conv_length);
     candidates.push_back({node, bluestein_candidate_cost, priority(node)});
+    const bool fp64_input = context.input_dtype == "complex128" || context.input_dtype == "float64";
+    const bool fp64_output = context.output_dtype == "complex128" || context.output_dtype == "float64";
+    // A100 can fuse the Bluestein boundary into a leaf convolution FFT.  Do
+    // not suppress Rader for larger, Four-Step convolutions: their FP64
+    // boundary kernels remain unfused and Rader is still faster there.
+    const bool has_a100_fp64_fused_leaf =
+        context.device_arch == "sm_80" && context.batch == 1 && fp64_input && fp64_output &&
+        std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
     const bool has_fused_bluestein =
-        context.input_dtype == "complex64" && context.output_dtype == "complex64";
+        (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
+        has_a100_fp64_fused_leaf;
     if (!has_fused_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);

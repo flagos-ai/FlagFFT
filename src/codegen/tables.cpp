@@ -216,6 +216,34 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
   return adaptor::Memory::from_floats(interleaved);
 }
 
+DeviceAllocation build_raw_packed_real_twiddle(const FFTRequest &request, int64_t n) {
+  if (n <= 0 || n % 2 != 0) {
+    throw std::runtime_error("packed real twiddle requires a positive even length");
+  }
+  const bool is_double = dtype_is_double(request.input_dtype);
+  const int64_t half = n / 2 + 1;
+  const std::size_t total = static_cast<std::size_t>(half * 2);
+  if (is_double) {
+    constexpr long double kPiLong = 3.141592653589793238462643383279502884L;
+    std::vector<double> interleaved(total);
+    for (int64_t k = 0; k < half; ++k) {
+      const long double angle = -2.0L * kPiLong * static_cast<long double>(k) / static_cast<long double>(n);
+      const std::size_t offset = static_cast<std::size_t>(k * 2);
+      interleaved[offset] = static_cast<double>(std::cos(angle));
+      interleaved[offset + 1] = static_cast<double>(std::sin(angle));
+    }
+    return adaptor::Memory::from_doubles(interleaved);
+  }
+  std::vector<float> interleaved(total);
+  for (int64_t k = 0; k < half; ++k) {
+    const double angle = -2.0 * kPi * static_cast<double>(k) / static_cast<double>(n);
+    const std::size_t offset = static_cast<std::size_t>(k * 2);
+    interleaved[offset] = static_cast<float>(std::cos(angle));
+    interleaved[offset + 1] = static_cast<float>(std::sin(angle));
+  }
+  return adaptor::Memory::from_floats(interleaved);
+}
+
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign) {
   const bool is_double = dtype_is_double(request.input_dtype);
   const std::size_t total = static_cast<std::size_t>(n * 2);

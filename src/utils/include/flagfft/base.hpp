@@ -145,6 +145,8 @@ enum class KernelKind {
   TwiddleReshapePack,
   RealToComplex,
   R2CHalfPack,
+  R2CPackedPostprocess,
+  C2RPackedPreprocess,
   CompactToHermitianFull,
   ComplexToReal,
   TiledTranspose,
