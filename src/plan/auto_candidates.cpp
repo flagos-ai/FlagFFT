@@ -191,7 +191,8 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         context.device_arch == "sm_80" && context.batch == 1 && fp64_input && fp64_output &&
         std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
     const bool has_musa_s5000_fp64_fused_leaf =
-        context.device_arch == "31" && context.batch == 1 && fp64_input && fp64_output &&
+        context.device_type == "musa" && context.device_arch == "31" && context.batch == 1 && fp64_input &&
+        fp64_output &&
         std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
     const bool has_fused_bluestein =
         (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
