@@ -36,7 +36,16 @@ namespace {
     if (disable || request.input_dtype != "complex128" || batch != 1 || n <= 0 || n % 2 != 0) {
       return std::nullopt;
     }
-    if (!force && (request.device_arch != "sm_80" || n < 65536)) {
+    const bool is_a100_fp64_target = request.device_type == "cuda" && request.device_arch == "sm_80";
+    // MTT S5000 (MUSA capability 3.1) uses a different code-generation target
+    // and leaf shape from A100.  It has been validated only for large
+    // batch-1 transforms, so keep its rollout scoped until other MUSA devices
+    // have their own tuning data.
+    const bool is_musa_s5000_fp64_target = request.device_type == "musa" && request.device_arch == "31";
+    if (!force && (!is_a100_fp64_target && !is_musa_s5000_fp64_target)) {
+      return std::nullopt;
+    }
+    if (!force && (n < 65536 || (is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
     }
 
@@ -56,10 +65,11 @@ namespace {
     const bool child_is_leaf_pair = four_step != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
-    // On A100, a half-length transform wins only while both generated leaf
-    // kernels stay below the high-register large-leaf regime.  Keep the gate
-    // tied to code-generation shape instead of selecting a new factor order.
-    const bool bounded_leaf_pair = child_is_leaf_pair && four_step->n1 <= 768 && four_step->n2 <= 768;
+    // A half-length transform wins only while both generated leaf kernels stay
+    // below the high-register large-leaf regime.  The MUSA S5000 threshold is
+    // wider than A100's based on the validated grid, but remains target-local.
+    const int64_t leaf_limit = is_musa_s5000_fp64_target ? 1088 : 768;
+    const bool bounded_leaf_pair = child_is_leaf_pair && four_step->n1 <= leaf_limit && four_step->n2 <= leaf_limit;
     auto original_four_step = std::dynamic_pointer_cast<FourStepPlanNode>(original_plan);
     const bool original_has_large_leaf =
         inverse && original_four_step != nullptr &&
