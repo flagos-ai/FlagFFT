@@ -32,8 +32,8 @@ target_include_directories(numpy_fft_capture PRIVATE
     "${FLAGFFT_SOURCE_DIR}/src")
 target_link_libraries(numpy_fft_capture PRIVATE flagfft)
 
-# The existing test adaptor is compiled directly into this experiment.  This
-# keeps the experiment independent of the FlagFFT build graph while reusing
+# The existing test adaptor is compiled directly into this tool.  This keeps
+# the tool independent of the FlagFFT build graph while reusing
 # the exact platform-library calls already used by ctest and flagfft-cli.
 if(BACKEND STREQUAL "CUDA")
     find_package(CUDAToolkit REQUIRED)
@@ -79,16 +79,16 @@ endif()
 # standalone executable.  The run script also adds vendor paths to
 # LD_LIBRARY_PATH, but these entries make the common build-tree case work
 # without extra linker flags.
-set(_experiment_rpath
+set(_tool_rpath
     "${FLAGFFT_BUILD_DIR}"
     "${FLAGFFT_BUILD_DIR}/deps/libtriton_jit/src")
 if(BACKEND STREQUAL "CUDA")
-    list(APPEND _experiment_rpath "${CUDAToolkit_LIBRARY_ROOT}")
+    list(APPEND _tool_rpath "${CUDAToolkit_LIBRARY_ROOT}")
 elseif(BACKEND STREQUAL "MUSA")
-    list(APPEND _experiment_rpath "${MUSA_HOME}/lib64" "${MUSA_HOME}/lib")
+    list(APPEND _tool_rpath "${MUSA_HOME}/lib64" "${MUSA_HOME}/lib")
 elseif(BACKEND STREQUAL "PPU")
-    list(APPEND _experiment_rpath "${PPU_HOME}/CUDA_SDK/lib64" "${PPU_HOME}/lib64" "${PPU_HOME}/lib")
+    list(APPEND _tool_rpath "${PPU_HOME}/CUDA_SDK/lib64" "${PPU_HOME}/lib64" "${PPU_HOME}/lib")
 endif()
 set_target_properties(numpy_fft_capture PROPERTIES
-    BUILD_RPATH "${_experiment_rpath}"
+    BUILD_RPATH "${_tool_rpath}"
     INSTALL_RPATH_USE_LINK_PATH TRUE)

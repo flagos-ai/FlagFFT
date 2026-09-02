@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This is deliberately an experiment-only executable.  It links to an
+// This is deliberately an out-of-tree validation executable.  It links to an
 // already-built FlagFFT shared library and compiles the existing platform
 // reference adaptor; it is not part of the FlagFFT library or its public API.
 

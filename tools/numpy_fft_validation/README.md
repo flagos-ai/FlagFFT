@@ -1,6 +1,6 @@
-# FlagFFT / platform FFT / NumPy correctness experiment
+# FlagFFT / platform FFT / NumPy correctness validation tool
 
-This directory is an experiment-only harness.  It does not add a source file
+This directory contains an out-of-tree validation harness.  It does not add a source file
 to `libflagfft`, change the public API, or change the existing ctest suite.
 
 The native executable links against an existing `libflagfft.so` and compiles
@@ -27,7 +27,7 @@ Run this from the host or from the development container.  `FLAGFFT_BUILD_DIR`
 must point to the already-built FlagFFT tree for the target platform.
 
 ```bash
-cmake -S experiments/numpy_fft_validation \
+cmake -S tools/numpy_fft_validation \
       -B /tmp/flagfft-numpy-capture-cuda \
       -DFLAGFFT_SOURCE_DIR="$PWD" \
       -DFLAGFFT_BUILD_DIR="$PWD/build" \
@@ -39,14 +39,14 @@ For MUSA or PPU, use `-DBACKEND=MUSA` or `-DBACKEND=PPU` and set
 `-DMUSA_HOME=...` or `-DPPU_HOME=...` when the SDK is not in its default
 location.  The build directory must have been built with the same backend.
 
-## Run a smoke experiment
+## Run a smoke validation
 
 The result directory is created under the workspace-level `results/` directory
 with the required timestamp prefix.  A full matrix can contain very large
 batch-256 arrays; start with a small combination and then expand it.
 
 ```bash
-python3 experiments/numpy_fft_validation/validate.py \
+python3 tools/numpy_fft_validation/validate.py \
     --capture-bin /tmp/flagfft-numpy-capture-cuda/numpy_fft_capture \
     --backend CUDA \
     --combination 1d_ct_single \
@@ -78,7 +78,7 @@ If the metric implementation or NumPy environment changes, recompute results
 without touching the GPU:
 
 ```bash
-python3 experiments/numpy_fft_validation/validate.py \
+python3 tools/numpy_fft_validation/validate.py \
     --analyze-only /path/to/results/20260901_120000_numpy_fft_correctness
 ```
 

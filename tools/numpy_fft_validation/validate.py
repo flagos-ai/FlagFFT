@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run and analyze an out-of-tree FlagFFT/platform-vs-NumPy experiment.
+"""Run and analyze an out-of-tree FlagFFT/platform-vs-NumPy validation.
 
 The native capture executable runs FlagFFT and the platform FFT library on the
 same device input and stores their host outputs as raw bytes.  This script
@@ -754,7 +754,7 @@ def run_experiment(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--capture-bin", help="path to the experiment-only native capture executable")
+    parser.add_argument("--capture-bin", help="path to the native validation capture executable")
     parser.add_argument("--source-dir", default=str(source_root()))
     parser.add_argument("--backend", default=None, help="recorded backend name, e.g. CUDA, MUSA, or PPU")
     parser.add_argument("--combination", default="full", help="matrix combination, or full/all")
