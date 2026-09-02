@@ -332,6 +332,102 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(json_safe(value), indent=2, allow_nan=True) + "\n")
 
 
+def write_process_output(path: Path, value: Any) -> None:
+    if value is None:
+        path.write_text("")
+    elif isinstance(value, bytes):
+        path.write_bytes(value)
+    else:
+        path.write_text(str(value))
+
+
+def run_capture_stage(
+    capture_bin: Path,
+    base_case: dict[str, Any],
+    case_dir: Path,
+    env: dict[str, str],
+    timeout: int,
+    implementation: str,
+) -> dict[str, Any]:
+    """Run one device implementation with an independent timeout."""
+
+    command = [
+        str(capture_bin),
+        f"--api={base_case['api']}",
+        f"--shape={'x'.join(str(value) for value in base_case['shape'])}",
+        f"--batch={base_case['batch']}",
+        f"--direction={base_case['direction']}",
+        f"--input={case_dir / 'input.bin'}",
+        f"--output-dir={case_dir}",
+        f"--implementation={implementation}",
+    ]
+    stdout_file = case_dir / f"{implementation}.stdout"
+    stderr_file = case_dir / f"{implementation}.stderr"
+    output_file = case_dir / f"{implementation}.bin"
+    if output_file.is_file():
+        output_file.unlink()
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            command,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        write_process_output(stdout_file, error.stdout)
+        write_process_output(stderr_file, error.stderr)
+        return {
+            "status": "timeout",
+            "duration_s": round(time.monotonic() - started, 3),
+            "command": command,
+            "stdout_file": stdout_file.name,
+            "stderr_file": stderr_file.name,
+            "error": str(error),
+        }
+    except Exception as error:
+        write_process_output(stdout_file, None)
+        write_process_output(stderr_file, None)
+        return {
+            "status": "error",
+            "duration_s": round(time.monotonic() - started, 3),
+            "command": command,
+            "stdout_file": stdout_file.name,
+            "stderr_file": stderr_file.name,
+            "error": repr(error),
+        }
+
+    write_process_output(stdout_file, completed.stdout)
+    write_process_output(stderr_file, completed.stderr)
+    result = {
+        "status": "passed" if completed.returncode == 0 else "error",
+        "duration_s": round(time.monotonic() - started, 3),
+        "command": command,
+        "returncode": completed.returncode,
+        "stdout_file": stdout_file.name,
+        "stderr_file": stderr_file.name,
+    }
+    if completed.returncode != 0:
+        result["error"] = completed.stderr[-4000:]
+    return result
+
+
+def combine_capture_outputs(case_dir: Path, stream_name: str) -> None:
+    """Keep the legacy capture.{stdout,stderr} files as a combined view."""
+
+    parts = []
+    for implementation in ("flagfft", "platform"):
+        path = case_dir / f"{implementation}.{stream_name}"
+        if not path.is_file():
+            continue
+        content = path.read_bytes().decode("utf-8", errors="replace")
+        parts.append(f"[{implementation}]\n{content}")
+    (case_dir / f"capture.{stream_name}").write_text("".join(parts))
+
+
 def parse_scales(raw: str | None, matrix_scales: list[float]) -> list[float]:
     if raw is None:
         return [float(value) for value in matrix_scales]
@@ -495,55 +591,72 @@ def analyze_case(case_dir: Path, case: dict[str, Any]) -> dict[str, Any]:
     batch = int(case["batch"])
     transform_elements = product(shape)
     input_file = case_dir / "input.bin"
-    flagfft_file = case_dir / "flagfft.bin"
-    platform_file = case_dir / "platform.bin"
     input_value = load_raw(input_file, api, shape, batch)
-    flagfft_value = load_raw(flagfft_file, api, shape, batch)
-    platform_value = load_raw(platform_file, api, shape, batch)
-    numpy_value = np.ascontiguousarray(numpy_reference(input_value, api, shape, case["direction"]))
-    np.save(case_dir / "numpy.npy", numpy_value, allow_pickle=False)
-
-    output_elements = product(output_shape(api, shape, batch)[1:])
-    limits = accuracy_limit(api, transform_elements)
-    flagfft_stats = judged_stats(
-        error_stats(flagfft_value, numpy_value, output_elements, batch), limits
-    )
-    platform_stats = judged_stats(
-        error_stats(platform_value, numpy_value, output_elements, batch), limits
-    )
-    pairwise_stats = error_stats(flagfft_value, platform_value, output_elements, batch)
+    output_files = {
+        "flagfft": case_dir / "flagfft.bin",
+        "platform": case_dir / "platform.bin",
+    }
+    output_values = {
+        stage: load_raw(path, api, shape, batch)
+        for stage, path in output_files.items()
+        if path.is_file()
+    }
 
     result = dict(case)
-    prior_capture_status = case.get("status", {}).get("capture", "passed")
-    if prior_capture_status == "running":
-        prior_capture_status = "passed"
+    raw_status = case.get("status", {})
+    status = dict(raw_status) if isinstance(raw_status, dict) else {}
     result.update({
         "input_file": str(input_file.name),
-        "flagfft_file": str(flagfft_file.name),
-        "platform_file": str(platform_file.name),
-        "numpy_file": "numpy.npy",
         "input_sha256": sha256(input_file),
-        "flagfft_sha256": sha256(flagfft_file),
-        "platform_sha256": sha256(platform_file),
-        "numpy_sha256": sha256(case_dir / "numpy.npy"),
-        "numpy_dtype": str(numpy_value.dtype),
-        "metric": {
+    })
+    for stage, path in output_files.items():
+        if path.is_file():
+            result[f"{stage}_file"] = str(path.name)
+            result[f"{stage}_sha256"] = sha256(path)
+
+    if output_values:
+        numpy_value = np.ascontiguousarray(numpy_reference(input_value, api, shape, case["direction"]))
+        numpy_file = case_dir / "numpy.npy"
+        np.save(numpy_file, numpy_value, allow_pickle=False)
+
+        output_elements = product(output_shape(api, shape, batch)[1:])
+        limits = accuracy_limit(api, transform_elements)
+        metric = {
             "definition": "ctest/flagfft_test.h::error_stats",
             "transform_class": api_class(api),
             "transform_elements": transform_elements,
             "output_elements_per_transform": output_elements,
             "limits": limits,
-            "flagfft_vs_numpy": flagfft_stats,
-            "platform_vs_numpy": platform_stats,
-            "flagfft_vs_platform": pairwise_stats,
-        },
-        "status": {
-            "capture": prior_capture_status,
-            "flagfft": "passed" if flagfft_stats["passed"] else "failed",
-            "platform": "passed" if platform_stats["passed"] else "failed",
-            "both": bool(flagfft_stats["passed"] and platform_stats["passed"]),
-        },
-    })
+        }
+        for stage, value in output_values.items():
+            stats = judged_stats(error_stats(value, numpy_value, output_elements, batch), limits)
+            metric[f"{stage}_vs_numpy"] = stats
+            # A process timeout/error is more informative than an accuracy
+            # result and must not be overwritten when a partial output exists.
+            if status.get(stage) not in ("timeout", "error"):
+                status[stage] = "passed" if stats["passed"] else "failed"
+        if len(output_values) == len(output_files):
+            metric["flagfft_vs_platform"] = error_stats(
+                output_values["flagfft"], output_values["platform"], output_elements, batch
+            )
+        result.update({
+            "numpy_file": str(numpy_file.name),
+            "numpy_sha256": sha256(numpy_file),
+            "numpy_dtype": str(numpy_value.dtype),
+            "metric": metric,
+        })
+
+    status.setdefault("flagfft", "not_run")
+    status.setdefault("platform", "not_run")
+    status["both"] = bool(
+        status.get("flagfft") == "passed"
+        and status.get("platform") == "passed"
+        and "flagfft_vs_numpy" in result.get("metric", {})
+        and "platform_vs_numpy" in result.get("metric", {})
+    )
+    if status.get("capture") == "running":
+        status["capture"] = "passed" if len(output_values) == len(output_files) else "partial"
+    result["status"] = status
     write_json(case_dir / "case.json", result)
     return result
 
@@ -567,6 +680,7 @@ def write_summary(output_dir: Path, records: list[dict[str, Any]], config: dict[
             "platform_failed": sum(record.get("status", {}).get("platform") == "failed" for record in records),
             "both_passed": sum(record.get("status", {}).get("both", False) for record in records),
             "capture_errors": sum(record.get("status", {}).get("capture") == "error" for record in records),
+            "capture_timeouts": sum(record.get("status", {}).get("capture") == "timeout" for record in records),
             "duration_s": round(duration, 3),
         },
     }
@@ -659,6 +773,8 @@ def run_experiment(args: argparse.Namespace) -> int:
         "shapes": args.shapes,
         "gpu": str(args.gpu),
         "timeout_s": args.timeout,
+        "timeout_scope": "per_implementation",
+        "capture_implementations": ["flagfft", "platform"],
         "case_count": len(cases),
     }
     write_json(output_dir / "run_config.json", {"config": config, "environment": environment})
@@ -677,11 +793,16 @@ def run_experiment(args: argparse.Namespace) -> int:
             "input_dtype": str(value.dtype),
             "input_shape": list(value.shape),
             "output_shape": list(output_shape(base_case["api"], tuple(base_case["shape"]), base_case["batch"])),
-            "status": {"capture": "running"},
+            "status": {
+                "capture": "running",
+                "flagfft": "pending",
+                "platform": "pending",
+                "both": False,
+            },
         })
         write_json(case_dir / "case.json", case)
 
-        command = [
+        base_command = [
             str(capture_bin),
             f"--api={base_case['api']}",
             f"--shape={'x'.join(str(value) for value in base_case['shape'])}",
@@ -695,45 +816,55 @@ def run_experiment(args: argparse.Namespace) -> int:
         env["MUSA_VISIBLE_DEVICES"] = str(args.gpu)
         if args.backend and args.backend.upper() == "PPU":
             env.setdefault("PPU_VISIBLE_DEVICES", str(args.gpu))
-        capture_started = time.monotonic()
+
+        stage_results = {}
         try:
-            completed = subprocess.run(
-                command,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=args.timeout,
-                check=False,
-            )
-            (case_dir / "capture.stdout").write_text(completed.stdout)
-            (case_dir / "capture.stderr").write_text(completed.stderr)
-            case["capture_duration_s"] = round(time.monotonic() - capture_started, 3)
-            case["capture_command"] = command
-            if completed.returncode != 0:
-                case["status"] = {"capture": "error"}
-                case["capture_returncode"] = completed.returncode
-                case["error"] = completed.stderr[-4000:]
+            for implementation in ("flagfft", "platform"):
+                case["status"][implementation] = "running"
                 write_json(case_dir / "case.json", case)
-                records.append(case)
-                if args.stop_on_error:
-                    break
-                continue
+                stage_result = run_capture_stage(
+                    capture_bin,
+                    base_case,
+                    case_dir,
+                    env,
+                    args.timeout,
+                    implementation,
+                )
+                stage_results[implementation] = stage_result
+                case["status"][implementation] = stage_result["status"]
+                case[f"{implementation}_capture_duration_s"] = stage_result["duration_s"]
+                case.setdefault("capture_commands", {})[implementation] = stage_result["command"]
+                if "returncode" in stage_result:
+                    case[f"{implementation}_capture_returncode"] = stage_result["returncode"]
+                if "error" in stage_result:
+                    case[f"{implementation}_capture_error"] = stage_result["error"]
+                case["capture_duration_s"] = round(
+                    sum(item["duration_s"] for item in stage_results.values()), 3
+                )
+                write_json(case_dir / "case.json", case)
+
+            combine_capture_outputs(case_dir, "stdout")
+            combine_capture_outputs(case_dir, "stderr")
+            stage_statuses = [item["status"] for item in stage_results.values()]
+            if "timeout" in stage_statuses:
+                case["status"]["capture"] = "timeout"
+            elif "error" in stage_statuses:
+                case["status"]["capture"] = "error"
+            else:
+                case["status"]["capture"] = "passed"
+            case["capture_stages"] = stage_results
+            case["capture_command"] = base_command
+            stage_errors = [
+                f"{implementation}: {stage_result['error']}"
+                for implementation, stage_result in stage_results.items()
+                if "error" in stage_result
+            ]
+            if stage_errors:
+                case["error"] = "\n".join(stage_errors)
             case = analyze_case(case_dir, case)
-        except subprocess.TimeoutExpired as error:
-            case["status"] = {"capture": "timeout"}
-            case["capture_duration_s"] = round(time.monotonic() - capture_started, 3)
-            case["capture_command"] = command
-            case["error"] = str(error)
-            write_json(case_dir / "case.json", case)
-            records.append(case)
-            if args.stop_on_error:
-                break
-            continue
         except Exception as error:
-            case["status"] = {"capture": "error"}
-            case["capture_duration_s"] = round(time.monotonic() - capture_started, 3)
-            case["capture_command"] = command
+            case["status"]["capture"] = "error"
+            case["capture_command"] = base_command
             case["error"] = repr(error)
             write_json(case_dir / "case.json", case)
             records.append(case)
@@ -742,9 +873,11 @@ def run_experiment(args: argparse.Namespace) -> int:
             continue
 
         records.append(case)
-        flagfft_status = case["status"]["flagfft"]
-        platform_status = case["status"]["platform"]
+        flagfft_status = case["status"].get("flagfft", "unknown")
+        platform_status = case["status"].get("platform", "unknown")
         print(f"[{index}/{len(cases)}] {case_dir.name}: FlagFFT={flagfft_status}, platform={platform_status}")
+        if args.stop_on_error and case["status"].get("capture") in ("timeout", "error"):
+            break
 
     summary = write_summary(output_dir, records, config, environment, time.monotonic() - started)
     print(json.dumps(summary["summary"], indent=2))

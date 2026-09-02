@@ -5,10 +5,13 @@ to `libflagfft`, change the public API, or change the existing ctest suite.
 
 The native executable links against an existing `libflagfft.so` and compiles
 the already-existing platform test adaptor (`cuFFT`, `muFFT`, or the PPU
-CUDA-compatible FFT library).  For every case it runs both device libraries
-on the same input and stores their host outputs.  The Python driver then
-computes a NumPy reference and applies the current `ctest/flagfft_test.h`
-metric:
+CUDA-compatible FFT library).  It accepts the optional
+`--implementation=both|flagfft|platform` switch; omitting it keeps the legacy
+`both` behavior.  The Python driver uses the two single-implementation modes
+so FlagFFT and the platform library each have an independent process and
+timeout, while still using the same input and storing the same output files.
+It then computes a NumPy reference and applies the current
+`ctest/flagfft_test.h` metric:
 
 * worst-batch relative L2 error (`rel_l2`);
 * worst-batch relative L-infinity error (`rel_linf`);
@@ -67,12 +70,22 @@ Each case directory contains:
 * `flagfft.bin` and `platform.bin`: exact host output bytes from each library;
 * `numpy.npy`: the NumPy reference output;
 * `case.json`: dimensions, seed, hashes, metric values, limits, and statuses;
-* `capture.stdout`, `capture.stderr`, and `flagfft_plan.txt` for diagnosis.
+* `capture.stdout`, `capture.stderr`, `flagfft.stdout`, `flagfft.stderr`,
+  `platform.stdout`, `platform.stderr`, and `flagfft_plan.txt` for diagnosis.
 
 The suite-level `summary.json` and `summary.csv` report both independent
 comparisons (`FlagFFT vs NumPy`, `platform vs NumPy`) and the diagnostic
 `FlagFFT vs platform` comparison.  A run returns zero only when every captured
-case passes for both libraries.
+case passes for both libraries.  `case.json` retains the legacy `status.capture`
+field and adds independent `status.flagfft` / `status.platform` values.  A
+timeout in one implementation is therefore recorded as, for example,
+`flagfft=passed, platform=timeout`; `capture_stages` also records each stage's
+command, duration, return code, and stage-specific stdout/stderr files.
+
+The existing `--timeout` option is applied independently to each
+implementation.  The legacy `capture.stdout` and `capture.stderr` files are
+still written as a combined view; the separate logs are `flagfft.stdout`,
+`flagfft.stderr`, `platform.stdout`, and `platform.stderr`.
 
 If the metric implementation or NumPy environment changes, recompute results
 without touching the GPU:

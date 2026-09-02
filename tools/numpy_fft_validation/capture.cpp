@@ -28,6 +28,7 @@
 #include <iostream>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -40,6 +41,12 @@ using flagfft::adaptor::Memory;
 using flagfft::adaptor::Stream;
 using flagfft::test_adaptor::RefPlanHandle;
 
+enum class Implementation {
+  kBoth,
+  kFlagFFT,
+  kPlatform,
+};
+
 struct Spec {
   flagfftType type = FLAGFFT_C2C;
   std::string api;
@@ -48,6 +55,7 @@ struct Spec {
   int direction = FLAGFFT_FORWARD;
   fs::path input;
   fs::path output_dir;
+  Implementation implementation = Implementation::kBoth;
 };
 
 struct Layout {
@@ -90,9 +98,18 @@ struct FlagPlan {
 
 void usage() {
   std::cout << "Usage: numpy_fft_capture --api API --shape N[,N[,N]] --batch B "
-                "--direction forward|inverse --input INPUT.bin --output-dir DIR\n"
+                "--direction forward|inverse --input INPUT.bin --output-dir DIR "
+                "[--implementation both|flagfft|platform]\n"
                 "\n"
                 "API is one of c2c, z2z, r2c, d2z, c2r, z2d.\n";
+}
+
+Implementation parse_implementation(const std::string& value) {
+  if (value == "both") return Implementation::kBoth;
+  if (value == "flagfft") return Implementation::kFlagFFT;
+  if (value == "platform") return Implementation::kPlatform;
+  throw std::runtime_error("unknown --implementation: " + value +
+                           " (expected both, flagfft, or platform)");
 }
 
 std::map<std::string, std::string> parse_arguments(int argc, char** argv) {
@@ -236,6 +253,10 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
   }
   spec.input = required("input");
   spec.output_dir = required("output-dir");
+  auto implementation = args.find("implementation");
+  if (implementation != args.end()) {
+    spec.implementation = parse_implementation(implementation->second);
+  }
 
   if (is_real_forward(spec.type) && spec.direction != FLAGFFT_FORWARD) {
     throw std::runtime_error(spec.api + " only supports forward direction");
@@ -456,32 +477,56 @@ int run(const Spec& spec) {
   std::vector<std::uint8_t> host_input = read_bytes(spec.input, layout.input_bytes);
 
   fs::create_directories(spec.output_dir);
-  Memory flag_input(layout.input_bytes);
-  Memory flag_output(layout.output_bytes);
-  Memory reference_input(layout.input_bytes);
-  Memory reference_output(layout.output_bytes);
-  flag_input.copy_from_host(host_input.data(), layout.input_bytes);
-  reference_input.copy_from_host(host_input.data(), layout.input_bytes);
+  const bool run_flagfft = spec.implementation != Implementation::kPlatform;
+  const bool run_platform = spec.implementation != Implementation::kFlagFFT;
+
+  Memory flag_input;
+  Memory flag_output;
+  Memory reference_input;
+  Memory reference_output;
+  if (run_flagfft) {
+    flag_input.allocate(layout.input_bytes);
+    flag_output.allocate(layout.output_bytes);
+    flag_input.copy_from_host(host_input.data(), layout.input_bytes);
+  }
+  if (run_platform) {
+    reference_input.allocate(layout.input_bytes);
+    reference_output.allocate(layout.output_bytes);
+    reference_input.copy_from_host(host_input.data(), layout.input_bytes);
+  }
 
   Stream stream;
-  FlagPlan flag_plan = make_flag_plan(spec, layout);
-  check_flagfft(flagfftSetStream(flag_plan.handle, stream.get()), "flagfftSetStream");
-  RefPlanHandle reference_plan = make_reference_plan(spec);
-  flagfft::test_adaptor::ref_set_stream(reference_plan, stream.get());
+  FlagPlan flag_plan;
+  std::optional<RefPlanHandle> reference_plan;
+  if (run_flagfft) {
+    flag_plan = make_flag_plan(spec, layout);
+    check_flagfft(flagfftSetStream(flag_plan.handle, stream.get()), "flagfftSetStream");
+  }
+  if (run_platform) {
+    reference_plan.emplace(make_reference_plan(spec));
+    flagfft::test_adaptor::ref_set_stream(*reference_plan, stream.get());
+  }
 
-  execute_flagfft(flag_plan.handle, spec, flag_input.data(), flag_output.data());
-  stream.sync();
-  execute_reference(reference_plan, spec, layout, reference_input.data(), reference_output.data());
-  stream.sync();
+  if (run_flagfft) {
+    execute_flagfft(flag_plan.handle, spec, flag_input.data(), flag_output.data());
+    stream.sync();
+  }
+  if (run_platform) {
+    execute_reference(*reference_plan, spec, layout, reference_input.data(), reference_output.data());
+    stream.sync();
+  }
 
-  std::vector<std::uint8_t> host_flagfft(layout.output_bytes);
-  std::vector<std::uint8_t> host_reference(layout.output_bytes);
-  flag_output.copy_to_host(host_flagfft.data(), layout.output_bytes);
-  reference_output.copy_to_host(host_reference.data(), layout.output_bytes);
-
-  write_bytes(spec.output_dir / "flagfft.bin", host_flagfft.data(), host_flagfft.size());
-  write_bytes(spec.output_dir / "platform.bin", host_reference.data(), host_reference.size());
-  write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
+  if (run_flagfft) {
+    std::vector<std::uint8_t> host_flagfft(layout.output_bytes);
+    flag_output.copy_to_host(host_flagfft.data(), layout.output_bytes);
+    write_bytes(spec.output_dir / "flagfft.bin", host_flagfft.data(), host_flagfft.size());
+    write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
+  }
+  if (run_platform) {
+    std::vector<std::uint8_t> host_reference(layout.output_bytes);
+    reference_output.copy_to_host(host_reference.data(), layout.output_bytes);
+    write_bytes(spec.output_dir / "platform.bin", host_reference.data(), host_reference.size());
+  }
 
   std::ofstream backend_file(spec.output_dir / "capture_backend.txt", std::ios::trunc);
   if (!backend_file.is_open()) {
