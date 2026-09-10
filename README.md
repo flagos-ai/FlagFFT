@@ -1,9 +1,10 @@
 # FlagFFT
 
-FlagFFT is a JIT-compiled GPU FFT library. It generates CUDA kernels at runtime
-via [Triton/TLE](https://github.com/FlagTree/flagtree) and
+FlagFFT is a JIT-compiled GPU FFT library. It generates backend-targeted GPU
+kernels at runtime via [Triton/TLE](https://github.com/FlagTree/flagtree) and
 [libtriton_jit](https://github.com/Artlesbol/libtriton_jit), targeting
-arbitrary-length transforms that cuFFT does not optimally support.
+arbitrary-length transforms that vendor FFT libraries may not optimally
+support. The current CMake build supports CUDA, MUSA, and PPU backends.
 
 ---
 
@@ -47,17 +48,21 @@ python tools/run_tests.py --combination full --gpus 0
 
 The runner prints a live progress table and writes `summary.json` with
 per-operator accuracy (pass/fail) and performance (geometric mean speedup vs
-cuFFT) results.
+the selected backend's reference FFT library) results.
 
 ### Docker
 
-A pre-built environment with all dependencies is available:
+A CUDA development environment with the default dependencies is available:
 
 ```bash
 docker build -t flagfft-dev -f docker/Dockerfile .
 docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
 # Inside the container, run steps 3-5 from above.
 ```
+
+The Docker image and CI configuration use Python 3.12. MUSA and PPU builds
+require their corresponding vendor SDK environment and should be configured
+with `-DBACKEND=MUSA` or `-DBACKEND=PPU`.
 
 ---
 
@@ -69,10 +74,10 @@ docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
 |---|---|---|
 | CMake | 3.18 | Build system |
 | C++ compiler | C++20 support | GCC 11+, Clang 14+ |
-| Python | 3.12 | JIT codegen + test runner |
+| Python | 3.10 | JIT codegen + test runner; the provided CUDA Docker/CI environments use 3.12 |
 | flagtree | 0.5.0 | triton TLE support |
 | SQLite3 | — | Tuning database |
-| CUDA Toolkit | 12.x | cudart, cuFFT (for test adaptor/benchmarks) |
+| Backend SDK | — | CUDA Toolkit for CUDA, MUSA SDK for MUSA, or PPU SDK for PPU |
 | libtriton_jit | submodule | Triton JIT compiler (`deps/libtriton_jit`) |
 | PyYAML | — | Test runner (`pip install pyyaml`) |
 
@@ -113,8 +118,8 @@ This produces `build/libflagfft.so`.
 | Option | Default | Description |
 |---|---|---|
 | `FLAGFFT_BUILD_CLI` | `OFF` | Build the `flagfft-cli` benchmark/verification tool |
-| `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test + CUDA) |
-| `BACKEND` | `CUDA` | GPU backend selector (only `CUDA` is currently supported) |
+| `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test + the selected backend's reference FFT library) |
+| `BACKEND` | `CUDA` | GPU backend selector: `CUDA`, `MUSA`, or `PPU` |
 | `CMAKE_BUILD_TYPE` | — | `Release`, `Debug`, `RelWithDebInfo` |
 
 ### Full Build (library + CLI + tests)
@@ -126,11 +131,15 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j$(nproc)
 ```
 
+The default backend is CUDA. Select another supported backend at configure
+time, for example `-DBACKEND=MUSA` or `-DBACKEND=PPU`; the corresponding SDK
+and runtime libraries must be installed.
+
 ### Environment Variables
 
 | Variable | Description |
 |---|---|
-| `FLAGFFT_PYTHON` | Path to the Python interpreter used by JIT codegen (default: `python3` from PATH) |
+| `FLAGFFT_PYTHON` | Path to the Python interpreter used by JIT codegen (default: `python3` from PATH); keep its Python minor version aligned with the CMake build interpreter |
 | `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `~/.flagfft/tune.db`) |
 | `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
 
@@ -154,7 +163,7 @@ FlagFFT exposes a cuFFT-compatible C API in `include/flagfft.h`.
 ```c
 flagfftPlan1d(plan, nx, type, batch)
 flagfftPlan2d(plan, nx, ny, type)
-flagfftPlan3d(plan, nx, ny, nz, type)        // NOT_SUPPORTED
+flagfftPlan3d(plan, nx, ny, nz, type)        // contiguous row-major rank-3 plan
 flagfftPlanMany(plan, rank, n, inembed, istride, idist,
                 onembed, ostride, odist, type, batch)
 ```
@@ -178,7 +187,7 @@ flagfftExecZ2D(plan, idata, odata)
 ### Management
 
 ```c
-flagfftSetStream(plan, stream)    // Attach a CUDA stream
+flagfftSetStream(plan, stream)    // Attach a backend stream
 flagfftDestroy(plan)              // Free plan resources
 flagfftGetPlanDescription(plan)   // Human-readable plan summary
 ```
@@ -203,6 +212,11 @@ flagfftGetPlanDescription(plan)   // Human-readable plan summary
 | `FLAGFFT_C2R` | Complex → Real |
 | `FLAGFFT_Z2D` | Double Complex → Double Real |
 
+`flagfftPlan3d` supports contiguous row-major rank-3 plans for all six
+transform types. The corresponding contiguous rank-3 forms are also available
+through `flagfftPlanMany`; arbitrary custom strides and layouts beyond the
+supported forms remain unsupported.
+
 ### Currently Supported
 
 | Feature | Status |
@@ -217,9 +231,10 @@ flagfftGetPlanDescription(plan)   // Human-readable plan summary
 | Rank-3 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ half-packed on the innermost axis |
 | Batched transforms | ✅ |
 | In-place and out-of-place | ✅ |
-| CUDA stream attachment | ✅ |
+| Backend adaptors | ✅ CUDA, MUSA, PPU (selected at build time) |
+| Backend stream attachment | ✅ |
 
-For `2^20` rank-1 transforms on `sm_80`, the planner selects a `1024 x 1024`
+For the CUDA backend, `2^20` rank-1 transforms on `sm_80` select a `1024 x 1024`
 Four-Step decomposition. The TLE kernels apply contiguous, asynchronously
 loaded twiddles in the row pass, pack two adjacent row FFTs and four adjacent
 column FFTs per block for single precision, and XOR-swizzle shared-memory
@@ -306,7 +321,9 @@ tests (Google Test), and Python codegen tests (pytest).
 
 `tools/run_tests.py` is the primary entry point for running the full test
 suite. It orchestrates both accuracy tests (C++ ctest binaries comparing
-FlagFFT output against cuFFT) and performance benchmarks (flagfft-cli bench).
+FlagFFT output against the selected backend's reference FFT library) and
+performance benchmarks (flagfft-cli bench). The reference is cuFFT for CUDA,
+muFFT for MUSA, and the PPU SDK's cuFFT-compatible wrapper for PPU.
 
 #### Usage
 
@@ -385,8 +402,8 @@ Exit code is `0` if all accuracy tests passed, `1` if any failed.
 ### C++ Tests (ctest/)
 
 Built with `-DFLAGFFT_BUILD_TESTS=ON`. Each test binary compares FlagFFT
-output against cuFFT using normwise relative error metrics (`rel_l2`,
-`rel_linf`).
+output against the selected backend's reference FFT library using normwise
+relative error metrics (`rel_l2`, `rel_linf`).
 
 #### Structure
 
