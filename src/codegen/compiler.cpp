@@ -1016,6 +1016,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const bool rc_eligible = n0 <= 256;
+  // On MUSA S5000, replaying the short batch-1 complex 2D graph adds
+  // about 0.1 ms versus direct launches (both RC and transpose paths).
+  // Keep other devices and unmeasured batch sizes on the existing policy.
+  const bool enable_graph = !(request.device_type == "musa" && request.device_arch == "31" && batch == 1);
 
   // Build row FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -1058,7 +1062,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                  n1,
                                                  std::move(row_fft),
                                                  std::move(col_fft),
-                                                 std::move(temp1));
+                                                 std::move(temp1),
+                                                 enable_graph);
   }
 
   // Small odd column lengths use DirectDFT; keep the same RC structure.
@@ -1071,7 +1076,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                  n1,
                                                  std::move(row_fft),
                                                  std::move(col_fft),
-                                                 std::move(temp1));
+                                                 std::move(temp1),
+                                                 enable_graph);
   }
 
   // Large column lengths that decompose into a four-step leaf pair can also
@@ -1086,7 +1092,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                    n1,
                                                    std::move(row_fft),
                                                    std::move(col_fft),
-                                                   std::move(temp1));
+                                                   std::move(temp1),
+                                                   enable_graph);
     }
   }
 
@@ -1109,7 +1116,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                              std::move(transpose_fwd),
                                              std::move(transpose_inv),
                                              std::move(temp1),
-                                             std::move(temp2));
+                                             std::move(temp2),
+                                             enable_graph);
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(

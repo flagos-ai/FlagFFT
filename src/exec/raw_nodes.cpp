@@ -1349,7 +1349,8 @@ CompiledRaw2DNode::CompiledRaw2DNode(int64_t n0,
                                      std::shared_ptr<JitKernel> transpose_fwd,
                                      std::shared_ptr<JitKernel> transpose_inv,
                                      DeviceAllocation temp1,
-                                     DeviceAllocation temp2)
+                                     DeviceAllocation temp2,
+                                     bool enable_graph)
     : n0(n0),
       n1(n1),
       row_fft(std::move(row_fft)),
@@ -1357,7 +1358,8 @@ CompiledRaw2DNode::CompiledRaw2DNode(int64_t n0,
       transpose_fwd(std::move(transpose_fwd)),
       transpose_inv(std::move(transpose_inv)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      graph_enabled_(enable_graph) {
 }
 
 std::string CompiledRaw2DNode::describe() const {
@@ -1436,7 +1438,7 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
     // already compiled by the direct run above, so capture only records
     // launches.  Any capture/instantiation failure falls back to direct
     // launches for the lifetime of the plan.
-    if (graph_ == nullptr && !graph_failed_) {
+    if (graph_enabled_ && graph_ == nullptr && !graph_failed_) {
       try {
         auto graph = std::make_unique<adaptor::CudaGraph>();
         graph->begin_capture(context.stream);
@@ -1463,8 +1465,14 @@ CompiledRaw2DRCNode::CompiledRaw2DRCNode(int64_t n0,
                                          int64_t n1,
                                          std::shared_ptr<CompiledRawNode> row_fft,
                                          std::shared_ptr<CompiledRawNode> col_fft,
-                                         DeviceAllocation temp1)
-    : n0(n0), n1(n1), row_fft(std::move(row_fft)), col_fft(std::move(col_fft)), temp1(std::move(temp1)) {
+                                         DeviceAllocation temp1,
+                                         bool enable_graph)
+    : n0(n0),
+      n1(n1),
+      row_fft(std::move(row_fft)),
+      col_fft(std::move(col_fft)),
+      temp1(std::move(temp1)),
+      graph_enabled_(enable_graph) {
 }
 
 std::string CompiledRaw2DRCNode::describe() const {
@@ -1507,7 +1515,7 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
       return result;
     }
 
-    if (graph_ == nullptr && !graph_failed_) {
+    if (graph_enabled_ && graph_ == nullptr && !graph_failed_) {
       try {
         auto graph = std::make_unique<adaptor::CudaGraph>();
         graph->begin_capture(context.stream);

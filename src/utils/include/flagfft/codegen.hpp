@@ -634,7 +634,8 @@ struct CompiledRaw2DNode final : CompiledRawNode {
                     std::shared_ptr<JitKernel> transpose_fwd,
                     std::shared_ptr<JitKernel> transpose_inv,
                     DeviceAllocation temp1,
-                    DeviceAllocation temp2);
+                    DeviceAllocation temp2,
+                    bool enable_graph = true);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -654,6 +655,7 @@ struct CompiledRaw2DNode final : CompiledRawNode {
   mutable std::unique_ptr<adaptor::CudaGraph> graph_;
   mutable adaptor::DevicePtr graph_in_ = 0;
   mutable adaptor::DevicePtr graph_out_ = 0;
+  const bool graph_enabled_;
   mutable bool graph_failed_ = false;
 };
 
@@ -662,7 +664,8 @@ struct CompiledRaw2DRCNode final : CompiledRawNode {
                       int64_t n1,
                       std::shared_ptr<CompiledRawNode> row_fft,
                       std::shared_ptr<CompiledRawNode> col_fft,
-                      DeviceAllocation temp1);
+                      DeviceAllocation temp1,
+                      bool enable_graph = true);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -677,6 +680,7 @@ struct CompiledRaw2DRCNode final : CompiledRawNode {
   mutable std::unique_ptr<adaptor::CudaGraph> graph_;
   mutable adaptor::DevicePtr graph_in_ = 0;
   mutable adaptor::DevicePtr graph_out_ = 0;
+  const bool graph_enabled_;
   mutable bool graph_failed_ = false;
 };
 
