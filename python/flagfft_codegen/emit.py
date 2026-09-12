@@ -25,6 +25,7 @@ from typing import Any
 
 from .kernels_common import (
     _dtype_suffix,
+    _mthreads_backend_active,
     _next_power_of_two,
     _zero_other,
     LeafPlan,
@@ -564,7 +565,18 @@ def emit_jit_kernel(
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     radices = tuple(sorted(codelet_radices_for(factors))) if spec.is_leaf_like else ()
-    module_path.write_text(_module_source(kernel_source, radices))
+    # The measured MUSA FP64 209/221 leaves spill with the bundled
+    # odd-radix accumulators. Keep other backends and leaf shapes unchanged.
+    paired_fp64 = (
+        dtype == "complex128"
+        and length in (209, 221)
+        and kernel in {
+            "four_step_row", "four_step_col", "four_step_real_row",
+            "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col",
+        }
+        and _mthreads_backend_active()
+    )
+    module_path.write_text(_module_source(kernel_source, radices, paired_fp64=paired_fp64))
 
     sys.path.insert(0, str(module_path.parent))
     spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
