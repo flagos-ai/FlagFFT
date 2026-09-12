@@ -247,6 +247,58 @@ TEST(Plan1D, A100DoubleUsesOnlyLeafFusedBluesteinOverRader) {
   EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(four_step), nullptr);
 }
 
+TEST(Plan1D, BluesteinBoundaryKernelsKeepPackingMetadata) {
+  flagfft::FFTRequest request;
+  request.input_dtype = "complex64";
+  request.output_dtype = "complex64";
+  request.device_type = flagfft::adaptor::backend_name();
+  request.device_index = 0;
+  request.device_arch = flagfft::adaptor::device_architecture(0);
+  request.direction = "forward";
+  request.batch = 1;
+  request.fft_length = request.requested_n = 8191;
+  flagfft::PlanBuilder builder;
+  auto leaf = builder.build(128, request);
+  auto convolution = std::make_shared<flagfft::FourStepPlanNode>(16384, 128, 128, leaf, leaf);
+  auto plan = std::make_shared<flagfft::BluesteinPlanNode>(8191, 16384, convolution);
+  flagfft::TritonCompiler compiler;
+  auto compiled = std::dynamic_pointer_cast<flagfft::CompiledRawBluesteinFourStepNode>(
+      compiler.compile_raw_node(plan, request, 1));
+  ASSERT_NE(compiled, nullptr);
+  // The boundary kernels and plain column kernel use identical 128-point
+  // leaf layouts. Losing metadata on any boundary used to inflate its grid.
+  ASSERT_GT(compiled->first_col_kernel->inner_pack, 1);
+  EXPECT_EQ(compiled->prepare_row_kernel->inner_pack, compiled->first_col_kernel->inner_pack);
+  EXPECT_EQ(compiled->pointwise_row_kernel->inner_pack, compiled->first_col_kernel->inner_pack);
+  EXPECT_EQ(compiled->finish_col_kernel->inner_pack, compiled->first_col_kernel->inner_pack);
+}
+
+TEST(Plan1D, MusaBatched8191PrefersBluesteinWithoutChangingLeafRader) {
+  flagfft::FFTRequest request;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.device_type = "musa";
+  request.device_arch = "31";
+  request.device_index = 0;
+  request.direction = "forward";
+  flagfft::PlanBuilder builder;
+  request.fft_length = request.requested_n = 8191;
+  request.batch = 16;
+  auto batched = builder.build(8191, request);
+  auto bluestein = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(batched);
+  ASSERT_NE(bluestein, nullptr);
+  EXPECT_EQ(bluestein->conv_length, 16384);
+
+  request.batch = 1;
+  EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(8191, request)), nullptr);
+  request.batch = 16;
+  request.fft_length = request.requested_n = 1009;
+  EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(1009, request)), nullptr);
+  request.device_type = "cuda";
+  request.device_arch = "sm_80";
+  request.fft_length = request.requested_n = 8191;
+  EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(8191, request)), nullptr);
+}
+
 TEST(Plan1D, DoubleMixedPlansModelCooperativeStagesAndRowPacking) {
   struct MixedCase {
     int64_t length;

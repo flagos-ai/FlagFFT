@@ -328,7 +328,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
       key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||
       key.kind == KernelKind::FourStepCol || key.kind == KernelKind::FourStepColStrided ||
-      key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol) {
+      key.kind == KernelKind::FourStepR2CCol || key.kind == KernelKind::FourStepC2RCol ||
+      key.kind == KernelKind::BluesteinFourStepPrepareRow ||
+      key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
+      key.kind == KernelKind::BluesteinFourStepFinishCol) {
     kernel->inner_pack = json_int_field(artifact_json, "inner_pack");
     kernel->tle_fused_twiddle = json_bool_field(artifact_json, "tle_fused_twiddle");
   }

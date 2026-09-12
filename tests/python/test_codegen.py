@@ -173,6 +173,29 @@ def test_four_step_resource_pack_uses_leaf_occupancy(kernels) -> None:
     )
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_mthreads_small_mixed_pack_is_bounded_and_backend_local(kernels, monkeypatch, dtype) -> None:
+    from flagfft_codegen import kernels_common as common
+
+    plan = kernels.LeafPlan(
+        length=209, factors=(19, 11), remainder=1, lanes=1,
+        num_warps=1, generic_radices=(), smem_size=256, dtype=dtype,
+    )
+    monkeypatch.setattr(common, "_mthreads_backend_active", lambda: False)
+    assert common.four_step_row_inner_pack_for(209, 221, dtype, plan) == 4
+    monkeypatch.setattr(common, "_mthreads_backend_active", lambda: True)
+    pack = common.four_step_row_inner_pack_for(209, 221, dtype, plan)
+    assert pack == 8
+    assert 4 * plan.smem_size * pack * common._real_element_bytes(dtype) <= 64 * 1024
+    # The same leaf in the column pass must have matching launch metadata.
+    assert common.four_step_col_inner_pack_for(221, 209, dtype, plan) == pack
+    power_of_two = kernels.LeafPlan(
+        length=128, factors=(8, 4, 4), remainder=1, lanes=16,
+        num_warps=1, generic_radices=(), smem_size=128, dtype=dtype,
+    )
+    assert common.four_step_row_inner_pack_for(128, 128, dtype, power_of_two) == 4
+
+
 def test_low_lane_three_stage_leaf_uses_cooperative_stage_lanes(kernels) -> None:
     plan = kernels.LeafPlan(
         length=780,

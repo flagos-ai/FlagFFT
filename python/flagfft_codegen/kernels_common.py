@@ -239,6 +239,22 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     return _floor_power_of_two(max(1, min(thread_pack, smem_pack)))
 
 
+def _mthreads_small_mixed_leaf(plan: LeafPlan) -> bool:
+    """Pack low-lane mixed leaves without changing power-of-two FFT layouts.
+
+    Eight transforms per CTA improve MUSA's 209/221-point four-step leaves;
+    sixteen regressed in measurements. The 256-element cap keeps eight FP64
+    transforms within 64 KiB of shared memory; the resource policy below
+    still applies the thread and shared-memory limits.
+    """
+    return (
+        _mthreads_backend_active()
+        and 128 <= plan.length <= 256
+        and plan.lanes == 1
+        and len(plan.factors) > 1
+    )
+
+
 def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     if len(plan.factors) <= 1:
         return 1
@@ -253,8 +269,11 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     thread_pack = max(1, _FOUR_STEP_PACK_TARGET_THREADS // lane_block)
     bytes_per_fft = 4 * plan.smem_size * _real_element_bytes(plan.dtype)
     smem_pack = max(1, _FOUR_STEP_PACK_SMEM_BUDGET_BYTES // bytes_per_fft)
+    max_pack = _FOUR_STEP_LARGE_INNER_PACK
+    if _mthreads_small_mixed_leaf(plan):
+        max_pack = 8
     return _floor_power_of_two(
-        max(1, min(_FOUR_STEP_LARGE_INNER_PACK, thread_pack, smem_pack))
+        max(1, min(max_pack, thread_pack, smem_pack))
     )
 
 
@@ -264,6 +283,8 @@ def four_step_col_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
+    if plan is not None and _mthreads_small_mixed_leaf(plan):
+        return _four_step_resource_inner_pack_for(plan)
     if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
         return 1
     if use_tle_fused_twiddle(n1, n2, dtype):
@@ -283,6 +304,8 @@ def four_step_row_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
+    if plan is not None and _mthreads_small_mixed_leaf(plan):
+        return _four_step_resource_inner_pack_for(plan)
     if use_tle_fused_twiddle(n1, n2, dtype):
         return _FOUR_STEP_LARGE_INNER_PACK
     if (
