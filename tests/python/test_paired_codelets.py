@@ -49,39 +49,47 @@ def test_paired_codelet_matches_dft(radix, scale, dtype):
     assert np.linalg.norm(inverse - radix * x) / np.linalg.norm(radix * x) < tolerance
 
 
-@pytest.mark.parametrize("backend", ["musa", "cuda", "ppu"])
+@pytest.mark.parametrize("radix", [11, 13, 17, 19])
+def test_bundled_codelets_use_paired_arithmetic(radix):
+    from flagfft_codegen.paired_codelets import paired_codelet_source
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "python"
+        / "flagfft_codegen"
+        / "codelet"
+        / f"radix{radix}.py"
+    ).read_text()
+    assert source[source.index("@triton.jit") :] == paired_codelet_source(radix)
+
+
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize(
-    "length,kernel",
-    [(209, "four_step_row"), (128, "four_step_row"), (209, "leaf")],
+    "kernel",
+    [
+        "leaf",
+        "four_step_row",
+        "four_step_row_strided",
+        "bluestein_four_step_prepare_row",
+    ],
 )
-def test_paired_codelets_are_scoped_to_supported_backends(
-    tmp_path, monkeypatch, backend, dtype, length, kernel
-):
+def test_paired_codelets_are_used_for_all_kernel_kinds(tmp_path, dtype, kernel):
     from flagfft_codegen import emit
 
-    monkeypatch.setattr(emit, "_mthreads_backend_active", lambda: backend == "musa")
-    monkeypatch.setattr(emit, "_ppu_backend_active", lambda: backend == "ppu")
-    monkeypatch.setattr(
-        emit,
-        "_triton_plugin_present",
-        lambda plugin: plugin == "nvidia" and backend in ("cuda", "ppu"),
-    )
     metadata = emit.emit_jit_kernel(
         kernel=kernel,
-        length=length,
-        factors=(19, 11) if length == 209 else (16, 8),
+        length=143,
+        factors=(13, 11),
         lanes=1,
         num_warps=1,
         generic_radices=(),
         smem_size=256,
         direction="forward",
         dtype=dtype,
-        prime_n=0,
-        four_step_n1=length,
+        prime_n=67,
+        four_step_n1=143,
         four_step_n2=221,
         out_dir=tmp_path,
     )
     source = Path(metadata["module_path"]).read_text()
-    paired = backend in ("musa", "cuda") and length == 209 and kernel == "four_step_row"
-    assert ("    c1r = r0" in source) == paired
+    assert "    c1r = r0" in source
