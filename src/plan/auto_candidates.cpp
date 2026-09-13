@@ -194,13 +194,12 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         context.device_type == "musa" && context.device_arch == "31" && context.batch == 1 && fp64_input &&
         fp64_output &&
         std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
-    // Measured S5000 crossover: FP64 Rader convolutions for 8191/16381
-    // use expensive irregular leaves (910/455). Padded power-of-two
-    // Bluestein convolutions are faster from batch 16, including axis batches.
+    // Preserve the pre-existing 8191-point policy. Other prime lengths
+    // can compare both algorithms using the generic measured-plan tuner.
     // Keep the leaf Rader route (e.g. 1009) and small batches unchanged.
     const bool prefer_musa_batched_bluestein =
         context.device_type == "musa" && context.device_arch == "31" && context.batch >= 16 &&
-        fp64_input && fp64_output && (n == 8191 || n == 16381);
+        fp64_input && fp64_output && n == 8191;
     const bool prefer_bluestein =
         (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
         has_a100_fp64_fused_leaf || has_musa_s5000_fp64_fused_leaf || prefer_musa_batched_bluestein;

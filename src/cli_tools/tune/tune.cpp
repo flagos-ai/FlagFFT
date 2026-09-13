@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "adaptor/adaptor.h"
@@ -43,6 +44,7 @@ namespace {
     bool valid = false;
     double rel_l2 = std::numeric_limits<double>::infinity();
     double rel_linf = std::numeric_limits<double>::infinity();
+    double limit = kCorrectnessRelL2Limit;
   };
 
   struct TimingResult {
@@ -110,8 +112,8 @@ namespace {
         {     "valid",           accuracy.valid},
         {    "rel_l2",          accuracy.rel_l2},
         {  "rel_linf",        accuracy.rel_linf},
-        {  "limit_l2",   kCorrectnessRelL2Limit},
-        {"limit_linf", kCorrectnessRelLinfLimit},
+        {  "limit_l2", accuracy.limit},
+        {"limit_linf", accuracy.limit},
     };
   }
 
@@ -134,8 +136,8 @@ namespace {
     desc.idist = options.length;
     desc.odist = options.length;
     desc.batch = options.batch;
-    desc.type = FLAGFFT_C2C;
-    desc.precision = FlagFFTPrecision::Float32;
+    desc.type = options.api == "z2z" ? FLAGFFT_Z2Z : FLAGFFT_C2C;
+    desc.precision = options.api == "z2z" ? FlagFFTPrecision::Float64 : FlagFFTPrecision::Float32;
     desc.kind = FlagFFTTransformKind::C2C;
     int device_index = 0;
     std::string device_arch;
@@ -145,20 +147,23 @@ namespace {
     return desc;
   }
 
-  std::vector<flagfftComplex> make_input(int64_t count) {
-    std::vector<flagfftComplex> input(static_cast<std::size_t>(count));
+  template <typename Complex>
+  std::vector<Complex> make_input(int64_t count) {
+    using Real = decltype(Complex{}.x);
+    std::vector<Complex> input(static_cast<std::size_t>(count));
     for (int64_t index = 0; index < count; ++index) {
       double phase = static_cast<double>(index + 1) * 0.173;
       input[static_cast<std::size_t>(index)] = {
-          static_cast<float>(std::sin(phase)),
-          static_cast<float>(std::cos(phase * 0.731)),
+          static_cast<Real>(std::sin(phase)),
+          static_cast<Real>(std::cos(phase * 0.731)),
       };
     }
     return input;
   }
 
-  AccuracyResult compare_outputs(const std::vector<flagfftComplex>& output,
-                                 const std::vector<flagfftComplex>& reference) {
+  template <typename Complex>
+  AccuracyResult compare_outputs(const std::vector<Complex>& output,
+                                 const std::vector<Complex>& reference) {
     long double error_sq = 0.0L;
     long double reference_sq = 0.0L;
     long double max_error = 0.0L;
@@ -180,15 +185,17 @@ namespace {
     }
 
     AccuracyResult result;
+    result.limit = std::is_same_v<Complex, flagfftDoubleComplex> ? 1.0e-12 : kCorrectnessRelL2Limit;
     result.rel_l2 = reference_sq == 0.0L ? static_cast<double>(std::sqrt(error_sq))
                                          : static_cast<double>(std::sqrt(error_sq / reference_sq));
     result.rel_linf = max_reference == 0.0L ? static_cast<double>(max_error)
                                             : static_cast<double>(max_error / max_reference);
     result.valid =
-        finite && result.rel_l2 <= kCorrectnessRelL2Limit && result.rel_linf <= kCorrectnessRelLinfLimit;
+        finite && result.rel_l2 <= result.limit && result.rel_linf <= result.limit;
     return result;
   }
 
+  template <typename Complex>
   class TuneHarness {
    public:
     TuneHarness(const TuneOptions& options, FFTRequest forward_request, FFTRequest inverse_request)
@@ -196,16 +203,17 @@ namespace {
           forward_request_(std::move(forward_request)),
           inverse_request_(std::move(inverse_request)),
           element_count_(static_cast<int64_t>(options.length) * options.batch),
-          bytes_(static_cast<std::size_t>(element_count_) * sizeof(flagfftComplex)),
+          bytes_(static_cast<std::size_t>(element_count_) * sizeof(Complex)),
           input_(bytes_),
           output_(bytes_),
           reference_output_(bytes_),
-          host_input_(make_input(element_count_)),
+          host_input_(make_input<Complex>(element_count_)),
           host_output_(static_cast<std::size_t>(element_count_)),
           forward_reference_(static_cast<std::size_t>(element_count_)),
           inverse_reference_(static_cast<std::size_t>(element_count_)) {
       input_.copy_from_host(host_input_.data(), bytes_);
-      test_adaptor::ref_plan_1d(reference_plan_, options.length, FLAGFFT_C2C, options.batch);
+      test_adaptor::ref_plan_1d(reference_plan_, options.length,
+                              options.api == "z2z" ? FLAGFFT_Z2Z : FLAGFFT_C2C, options.batch);
       test_adaptor::ref_set_stream(reference_plan_, stream_.get());
       build_reference(FLAGFFT_FORWARD, forward_reference_);
       build_reference(FLAGFFT_INVERSE, inverse_reference_);
@@ -265,13 +273,16 @@ namespace {
 
    private:
     void execute_reference(int direction) {
-      test_adaptor::ref_exec_c2c(reference_plan_,
-                                 static_cast<flagfftComplex*>(input_.data()),
-                                 static_cast<flagfftComplex*>(reference_output_.data()),
-                                 direction);
+      if constexpr (std::is_same_v<Complex, flagfftDoubleComplex>) {
+        test_adaptor::ref_exec_z2z(reference_plan_, static_cast<Complex*>(input_.data()),
+                                  static_cast<Complex*>(reference_output_.data()), direction);
+      } else {
+        test_adaptor::ref_exec_c2c(reference_plan_, static_cast<Complex*>(input_.data()),
+                                  static_cast<Complex*>(reference_output_.data()), direction);
+      }
     }
 
-    void build_reference(int direction, std::vector<flagfftComplex>& host) {
+    void build_reference(int direction, std::vector<Complex>& host) {
       execute_reference(direction);
       stream_.sync();
       reference_output_.copy_to_host(host.data(), bytes_);
@@ -285,16 +296,17 @@ namespace {
     adaptor::Memory input_;
     adaptor::Memory output_;
     adaptor::Memory reference_output_;
-    std::vector<flagfftComplex> host_input_;
-    std::vector<flagfftComplex> host_output_;
-    std::vector<flagfftComplex> forward_reference_;
-    std::vector<flagfftComplex> inverse_reference_;
+    std::vector<Complex> host_input_;
+    std::vector<Complex> host_output_;
+    std::vector<Complex> forward_reference_;
+    std::vector<Complex> inverse_reference_;
     test_adaptor::RefPlanHandle reference_plan_;
     adaptor::Stream stream_;
     adaptor::EventTimer timer_;
   };
 
-  PhaseResult benchmark_phase(TuneHarness& harness, const CandidateResult& candidate, int warmup, int iters) {
+  template <typename Complex>
+  PhaseResult benchmark_phase(TuneHarness<Complex>& harness, const CandidateResult& candidate, int warmup, int iters) {
     PhaseResult result;
     result.forward = harness.benchmark(candidate.forward, FLAGFFT_FORWARD, warmup, iters);
     result.inverse = harness.benchmark(candidate.inverse, FLAGFFT_INVERSE, warmup, iters);
@@ -459,6 +471,8 @@ namespace {
         {       "rank",  rank                       },
         {     "status",             candidate.status},
         {   "plan_key",                candidate.key},
+        {"estimated_cost", candidate.candidate.cost},
+        {"root_kind", plan_node_kind_name(candidate.candidate.node->kind)},
         {      "split", {candidate.n1, candidate.n2}},
         {"correctness",
          {
@@ -480,9 +494,10 @@ namespace {
 
 }  // namespace
 
-nlohmann::json run_decomposition_tune(const TuneOptions& options) {
-  if (options.batch != 1) {
-    throw AssertionFailure("decomposition tuner v1 currently supports only --batch 1");
+template <typename Complex>
+nlohmann::json run_decomposition_tune_impl(const TuneOptions& options) {
+  if (options.batch <= 0 || options.length <= 0) {
+    throw AssertionFailure("tune length and batch must be positive");
   }
   if (options.max_candidates <= 0 || options.finalists <= 0 || options.finalists > options.max_candidates) {
     throw AssertionFailure("--finalists must be between 1 and --max-candidates");
@@ -502,7 +517,7 @@ nlohmann::json run_decomposition_tune(const TuneOptions& options) {
     throw CliException("no decomposition candidates were generated", kExitFailed);
   }
 
-  TuneHarness harness(options, forward_request, inverse_request);
+  TuneHarness<Complex> harness(options, forward_request, inverse_request);
   std::vector<CandidateResult> candidates;
   candidates.reserve(plans.size());
   TritonCompiler compiler;
@@ -590,7 +605,7 @@ nlohmann::json run_decomposition_tune(const TuneOptions& options) {
       {           "mode",                              "decomposition"},
       {         "run_id",                                       run_id},
       {          "shape",                             {options.length}},
-      {            "api",                                        "c2c"},
+      {            "api",                                  options.api},
       {          "batch",                                options.batch},
       {"candidate_count",                            candidates.size()},
       {     "candidates",                 std::move(candidate_reports)},
@@ -608,6 +623,12 @@ nlohmann::json run_decomposition_tune(const TuneOptions& options) {
        }                                                              },
       {        "db_path", db_path.has_value() ? db_path->string() : ""},
   };
+}
+
+nlohmann::json run_decomposition_tune(const TuneOptions& options) {
+  if (options.api == "c2c") return run_decomposition_tune_impl<flagfftComplex>(options);
+  if (options.api == "z2z") return run_decomposition_tune_impl<flagfftDoubleComplex>(options);
+  throw AssertionFailure("tune --api must be c2c or z2z");
 }
 
 }  // namespace flagfft::cli::tune
