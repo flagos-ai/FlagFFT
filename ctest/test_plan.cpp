@@ -299,6 +299,57 @@ TEST(Plan1D, MusaBatched8191PrefersBluesteinWithoutChangingLeafRader) {
   EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(8191, request)), nullptr);
 }
 
+TEST(Plan1D, MusaBatched16381UsesBluesteinOnlyForMeasuredTarget) {
+  flagfft::FFTRequest request;
+  request.device_index = 0;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.device_type = "musa";
+  request.device_arch = "31";
+  request.fft_length = request.requested_n = 16381;
+  request.direction = "forward";
+  flagfft::PlanBuilder builder;
+  for (int64_t batch : {16, 64, 512, 4096}) {
+    request.batch = batch;
+    auto plan = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(builder.build(16381, request));
+    ASSERT_NE(plan, nullptr);
+    EXPECT_EQ(plan->conv_length, 32768);
+  }
+  for (int64_t batch : {1, 4, 15}) {
+    request.batch = batch;
+    EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(16381, request)), nullptr);
+  }
+  request.batch = 64;
+  request.device_type = "cuda";
+  request.device_arch = "sm_80";
+  EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(16381, request)), nullptr);
+}
+
+TEST(Plan1D, MusaBatched131072UsesMeasuredSplit) {
+  flagfft::FFTRequest request;
+  request.device_index = 0;
+  request.device_type = "musa";
+  request.device_arch = "31";
+  request.fft_length = request.requested_n = 131072;
+  request.direction = "forward";
+  flagfft::PlanBuilder builder;
+  for (const char *dtype : {"complex64", "complex128"}) {
+    request.input_dtype = request.output_dtype = dtype;
+    for (int64_t batch : {16, 64, 512, 4096}) {
+      request.batch = batch;
+      auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, request));
+      ASSERT_NE(plan, nullptr);
+      EXPECT_EQ(plan->n1, 512);
+      EXPECT_EQ(plan->n2, 256);
+    }
+  }
+  for (int64_t batch : {1, 4, 15}) {
+    request.batch = batch;
+    auto single = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, request));
+    ASSERT_NE(single, nullptr);
+    EXPECT_EQ(single->n1, 128);
+  }
+}
+
 TEST(Plan1D, DoubleMixedPlansModelCooperativeStagesAndRowPacking) {
   struct MixedCase {
     int64_t length;

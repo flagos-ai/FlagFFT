@@ -151,13 +151,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_full_leaf =
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf) &&
         leaf != nullptr;
-    // S5000's batched 8191-point FP64 path can fuse the chirp/pointwise
-    // passes into its 128 x 128 convolution. Retain chunking above the
-    // workspace budget, and leave other unmeasured FP64 routes unchanged.
+    // S5000's batched 8191/16381-point FP64 paths can fuse the
+    // chirp/pointwise passes into their small-leaf convolutions. Retain
+    // chunking above the workspace budget and other FP64 defaults.
     const bool use_musa_fp64_four_step =
         request.device_type == "musa" && request.device_arch == "31" &&
-        request.input_dtype == "complex128" && bluestein->length == 8191 &&
-        bluestein->conv_length == 16384 && batch >= 16 && batch == chunk_batch;
+        request.input_dtype == "complex128" &&
+        ((bluestein->length == 8191 && bluestein->conv_length == 16384) ||
+         (bluestein->length == 16381 && bluestein->conv_length == 32768)) &&
+        batch >= 16 && batch == chunk_batch;
     const bool use_four_step = (request.input_dtype == "complex64" || use_musa_fp64_four_step) &&
                                four_step != nullptr &&
                                row_leaf != nullptr && col_leaf != nullptr && row_leaf->length < 512 &&

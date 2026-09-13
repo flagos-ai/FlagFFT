@@ -12,7 +12,8 @@
 | TLE fused twiddle | 内核生成/四步执行 | 满足条件的四步内核融合 twiddle，默认按现有判定启用 | `use_tle_fused_twiddle()` 及尺寸、dtype 条件 | 非融合 twiddle 四步路径 | 既有 codegen 测试与 2D/3D 回归 | 平台特性开关；与打包策略分开 |
 | Bluestein full-leaf 融合 | 计划编译/内核生成 | 将卷积 FFT 边界融合到单个叶内核 | 当前对 complex64，以及已验证的 CUDA/A100、MUSA FP64 batch=1 | 普通 Bluestein 多内核流水线 | A100/MUSA 2D BS correctness 与性能 | 算法特性开关；条件表配置 |
 | Bluestein 四步边界融合 | 计划编译/内核生成 | 小叶四步卷积使用融合边界内核 | 叶长度小于 512，且满足 dtype/平台条件 | 普通四步 Bluestein 路径 | MUSA `8191×1009` 等 BS case | 算法特性开关；阈值配置 |
-| MUSA 8191 批量优先 Bluestein | 计划选择 | 对 batch≥16 的 FP64 8191 点变换优先 Bluestein，避开较慢 Rader | MUSA capability 3.1、FP64、`n=8191`、batch≥16 | Rader 候选 | MUSA 8191 batch 性能与 correctness | 平台计划策略；交叉点应可配置 |
+| MUSA 8191/16381 批量优先 Bluestein | 计划选择 | 对 batch≥16 的 FP64 8191/16381 点变换优先 Bluestein，避开较慢 Rader；预算内可融合边界 | MUSA capability 3.1、FP64、batch≥16 | Rader 候选；超预算保留非融合分块 | MUSA batch 性能与 correctness，见 [1D batch 分析](1d-batch-optimization.md) | 平台计划策略；交叉点应可配置 |
+| MUSA 131072 批量分解偏好 | 计划选择 | 成本模型优先 512×256，替代 128×1024 | MUSA capability 3.1、batch≥16、`n=131072` | 原始成本模型 | 六种 API、batch=16/512；四分解 A/B，见 [1D batch 分析](1d-batch-optimization.md) | 平台计划策略；后续纳入实测配置 |
 | FP64 packed-real child | 计划编译 | 偶数长度 FP64 real transform 可转为半长 complex child | 当前由 `FLAGFFT_PACKED_REAL`、平台、batch 和叶阈值共同决定 | 原始 real-to-complex / complex-to-real 路径 | MUSA/A100 FP64 real correctness 与性能 | 高优先级；统一为 `auto/on/off` 配置 |
 | MUSA S5000 2D graph 策略 | 执行 | batch=1 的 complex 2D 禁用 graph replay | MUSA capability 3.1、batch=1 | CUDA/A100 和其他情况保留 graph | MUSA 128² 约 3–5 倍收益；A100 A/B 证明 graph 更快 | 平台执行配置；禁止写死在编译器判断中 |
 | Bluestein chunk byte budget | 执行/内存 | 按 256 MiB 工作区预算切分 batch，避免大卷积超出显存 | `kBluesteinChunkByteBudget` | 由 batch 一次性执行 | 大尺寸 BS batch 回归 | 通用内存策略；预算配置化 |

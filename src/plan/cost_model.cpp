@@ -163,6 +163,13 @@ double PlanBuilder::four_step_cost(int64_t n1, int64_t n2) {
   } else if (context.batch >= kLargeBatchFourStepMinBatch) {
     preferred_n1 = measured_large_batch_four_step_n1(n, context.input_dtype, context.device_arch);
   }
+  // S5000 batch sweeps favor 512 x 256 over 128 x 1024 at this length
+  // for both precisions and real wrappers. Keep other targets and lengths
+  // on their existing cost policy.
+  if (context.device_type == "musa" && context.device_arch == "31" &&
+      context.batch >= 16 && n == 131072) {
+    preferred_n1 = 512;
+  }
   if (preferred_n1 > 0 && n1 != preferred_n1) {
     cost += static_cast<double>(n) * kMeasuredFourStepPenaltyScale;
   }
