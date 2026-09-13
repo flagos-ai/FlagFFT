@@ -26,6 +26,8 @@ from typing import Any
 from .kernels_common import (
     _dtype_suffix,
     _mthreads_backend_active,
+    _ppu_backend_active,
+    _triton_plugin_present,
     _next_power_of_two,
     _zero_other,
     LeafPlan,
@@ -574,7 +576,10 @@ def emit_jit_kernel(
             "four_step_row", "four_step_col", "four_step_real_row",
             "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col",
         }
-        and _mthreads_backend_active()
+        and (
+            _mthreads_backend_active()
+            or (_triton_plugin_present("nvidia") and not _ppu_backend_active())
+        )
     )
     module_path.write_text(_module_source(kernel_source, radices, paired_odd_radices=paired_odd_radices))
 

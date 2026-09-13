@@ -49,25 +49,28 @@ def test_paired_codelet_matches_dft(radix, scale, dtype):
     assert np.linalg.norm(inverse - radix * x) / np.linalg.norm(radix * x) < tolerance
 
 
+@pytest.mark.parametrize("backend", ["musa", "cuda", "ppu"])
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize(
-    "musa,dtype,paired",
-    [
-        (True, "complex128", True),
-        (True, "complex64", True),
-        (False, "complex128", False),
-        (False, "complex64", False),
-    ],
+    "length,kernel",
+    [(209, "four_step_row"), (128, "four_step_row"), (209, "leaf")],
 )
 def test_paired_codelets_are_scoped_to_supported_backends(
-    tmp_path, monkeypatch, musa, dtype, paired
+    tmp_path, monkeypatch, backend, dtype, length, kernel
 ):
     from flagfft_codegen import emit
 
-    monkeypatch.setattr(emit, "_mthreads_backend_active", lambda: musa)
+    monkeypatch.setattr(emit, "_mthreads_backend_active", lambda: backend == "musa")
+    monkeypatch.setattr(emit, "_ppu_backend_active", lambda: backend == "ppu")
+    monkeypatch.setattr(
+        emit,
+        "_triton_plugin_present",
+        lambda plugin: plugin == "nvidia" and backend in ("cuda", "ppu"),
+    )
     metadata = emit.emit_jit_kernel(
-        kernel="four_step_row",
-        length=209,
-        factors=(19, 11),
+        kernel=kernel,
+        length=length,
+        factors=(19, 11) if length == 209 else (16, 8),
         lanes=1,
         num_warps=1,
         generic_radices=(),
@@ -75,9 +78,10 @@ def test_paired_codelets_are_scoped_to_supported_backends(
         direction="forward",
         dtype=dtype,
         prime_n=0,
-        four_step_n1=209,
+        four_step_n1=length,
         four_step_n2=221,
         out_dir=tmp_path,
     )
     source = Path(metadata["module_path"]).read_text()
+    paired = backend in ("musa", "cuda") and length == 209 and kernel == "four_step_row"
     assert ("    c1r = r0" in source) == paired
