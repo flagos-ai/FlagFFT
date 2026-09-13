@@ -209,7 +209,6 @@ def _rader_kernel_source(
 ) -> tuple[str, str, list[str]]:
     zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
-    sum_block = _next_power_of_two(n)
     if kind == "rader_prepare":
         return (
             "_rader_prepare_kernel",
@@ -252,6 +251,9 @@ def _rader_kernel_source(
                     a_ptr,
                     b_ptr,
                     out_ptr,
+                    input_ptr,
+                    dc_ptr,
+                    n,
                     m,
                     nbatch,
                 ):
@@ -271,9 +273,18 @@ def _rader_kernel_source(
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, pr, mask=mask)
                     tl.store(dst + 1, -pi, mask=mask)
+
+                    # A[0] is the sum of the permuted nonzero input.
+                    # Reuse it before the inverse convolution overwrites A.
+                    if pid_block == 0:
+                        a0 = a_ptr + pid_batch * m * 2
+                        x0 = input_ptr + pid_batch * n * 2
+                        dc = dc_ptr + pid_batch * n * 2
+                        tl.store(dc, tl.load(a0) + tl.load(x0))
+                        tl.store(dc + 1, tl.load(a0 + 1) + tl.load(x0 + 1))
                 """
             ),
-            ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
+            ["a_ptr", "b_ptr", "out_ptr", "input_ptr", "dc_ptr", "n", "m", "nbatch"],
         )
     if kind == "rader_finalize":
         return (
@@ -309,15 +320,6 @@ def _rader_kernel_source(
                     tl.store(dst, yr, mask=mask)
                     tl.store(dst + 1, yi, mask=mask)
 
-                    sum_offsets = tl.arange(0, {sum_block})
-                    sum_mask = sum_offsets < n
-                    sum_src = input_ptr + (pid_batch * n + sum_offsets) * 2
-                    sr = tl.load(sum_src, mask=sum_mask, other={zero})
-                    si = tl.load(sum_src + 1, mask=sum_mask, other={zero})
-                    out0 = out_ptr + pid_batch * n * 2
-                    block0 = pid_block == 0
-                    tl.store(out0, tl.sum(sr, axis=0), mask=block0)
-                    tl.store(out0 + 1, tl.sum(si, axis=0), mask=block0)
                 """
             ),
             ["input_ptr", "conv_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],

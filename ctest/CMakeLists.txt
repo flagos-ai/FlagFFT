@@ -20,6 +20,8 @@ endif()
 
 set(TEST_TARGETS
     test_plan
+    test_packed_real_batch
+    test_rader_dc
     test_2d_correctness
     test_3d_correctness
     test_exec_c2c_2p20_tle

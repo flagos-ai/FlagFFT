@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #pragma once
+#include <functional>
 
 #include <string>
 
@@ -407,7 +408,8 @@ struct CompiledRawPackedR2CNode final : CompiledRawNode {
                            std::shared_ptr<CompiledRawNode> fft,
                            std::shared_ptr<JitKernel> postprocess_kernel,
                            DeviceAllocation twiddle,
-                           DeviceAllocation packed_output);
+                           DeviceAllocation packed_output,
+                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -418,6 +420,9 @@ struct CompiledRawPackedR2CNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> postprocess_kernel;
   DeviceAllocation twiddle;
   DeviceAllocation packed_output;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawR2CLeafNode final : CompiledRawNode {
@@ -515,7 +520,8 @@ struct CompiledRawPackedC2RNode final : CompiledRawNode {
                            std::shared_ptr<JitKernel> preprocess_kernel,
                            std::shared_ptr<CompiledRawNode> fft,
                            DeviceAllocation twiddle,
-                           DeviceAllocation packed_input);
+                           DeviceAllocation packed_input,
+                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -526,6 +532,9 @@ struct CompiledRawPackedC2RNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> fft;
   DeviceAllocation twiddle;
   DeviceAllocation packed_input;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawC2RLeafNode final : CompiledRawNode {
@@ -916,10 +925,12 @@ class TritonCompiler {
                                                     int64_t batch);
   std::shared_ptr<CompiledRawNode> compile_raw_r2c_node(const PlanNodePtr &node,
                                                         const FFTRequest &request,
-                                                        int64_t batch);
+                                                        int64_t batch,
+                                                        bool allow_packed = true);
   std::shared_ptr<CompiledRawNode> compile_raw_c2r_node(const PlanNodePtr &node,
                                                         const FFTRequest &request,
-                                                        int64_t batch);
+                                                        int64_t batch,
+                                                        bool allow_packed = true);
   std::shared_ptr<CompiledRawNode> compile_raw_2d_node(const std::shared_ptr<TwoDimPlanNode> &node,
                                                        const FFTRequest &request,
                                                        int64_t batch);

@@ -23,8 +23,8 @@ namespace flagfft {
 TuneFingerprints tune_fingerprints() {
   TuneFingerprints fps;
   fps.planner = "planner-schema-3-exact-batch-candidates";
-  fps.codegen = "codegen-schema-3-directional-ifft";
-  fps.runtime = "runtime-schema-4-packed-real-batch";
+  fps.codegen = "codegen-schema-4-rader-dc-reuse";
+  fps.runtime = "runtime-schema-5-rader-dc-reuse";
   fps.benchmark = "benchmark-schema-2-api-dispatch";
   return fps;
 }
