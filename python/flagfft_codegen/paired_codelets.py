@@ -1,6 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Shared cosine/sine accumulators for bounded odd-radix FP64 codelets."""
+"""Shared cosine/sine accumulators for bounded odd-radix codelets."""
 
 import math
 

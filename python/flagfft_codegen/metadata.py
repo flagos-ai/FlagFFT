@@ -53,7 +53,7 @@ def _csv_ints(raw: str) -> tuple[int, ...]:
 
 
 def _module_source(
-    kernel_source: str, radices: tuple[int, ...] = (), *, paired_fp64: bool = False
+    kernel_source: str, radices: tuple[int, ...] = (), *, paired_odd_radices: bool = False
 ) -> str:
     helpers = (
         "import triton\n"
@@ -66,7 +66,7 @@ def _module_source(
 
     for radix in radices:
         codelet_path = _CODELET_DIR / f"radix{radix}.py"
-        if paired_fp64 and radix in (11, 13, 17, 19):
+        if paired_odd_radices and radix in (11, 13, 17, 19):
             helpers += paired_codelet_source(radix) + "\n\n"
         elif codelet_path.exists():
             helpers += codelet_path.read_text() + "\n\n"

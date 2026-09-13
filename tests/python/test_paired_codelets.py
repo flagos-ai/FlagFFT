@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 @pytest.mark.parametrize("radix", [11, 13, 17, 19])
 @pytest.mark.parametrize("scale", [1e-6, 1.0, 1e6])
-def test_paired_codelet_matches_dft(radix, scale):
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+def test_paired_codelet_matches_dft(radix, scale, dtype):
     from flagfft_codegen.paired_codelets import paired_codelet_source
 
     namespace = {}
@@ -32,29 +33,32 @@ def test_paired_codelet_matches_dft(radix, scale):
         * scale
     )
 
+    x = x.astype(dtype)
+    tolerance = 3e-7 if dtype == np.complex64 else 2e-15
+
     def transform(values):
         result = np.asarray(kernel(*values.real.T, *values.imag.T))
         return (result[:radix] + 1j * result[radix:]).T
 
     expected = np.fft.fft(x, axis=1)
     actual = transform(x)
-    assert np.linalg.norm(actual - expected) / np.linalg.norm(expected) < 2e-15
+    assert np.linalg.norm(actual - expected) / np.linalg.norm(expected) < tolerance
     # Existing inverse codelets swap real and imaginary inputs/outputs.
     swapped = transform(actual.imag + 1j * actual.real)
     inverse = swapped.imag + 1j * swapped.real
-    assert np.linalg.norm(inverse - radix * x) / np.linalg.norm(radix * x) < 2e-15
+    assert np.linalg.norm(inverse - radix * x) / np.linalg.norm(radix * x) < tolerance
 
 
 @pytest.mark.parametrize(
     "musa,dtype,paired",
     [
         (True, "complex128", True),
-        (True, "complex64", False),
+        (True, "complex64", True),
         (False, "complex128", False),
         (False, "complex64", False),
     ],
 )
-def test_paired_codelets_are_scoped_to_musa_fp64(
+def test_paired_codelets_are_scoped_to_supported_backends(
     tmp_path, monkeypatch, musa, dtype, paired
 ):
     from flagfft_codegen import emit
