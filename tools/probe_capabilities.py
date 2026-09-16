@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -57,16 +58,26 @@ def arithmetic_worker(layer, native_compiler=None, native_arch="ivcore11"):
 
 
 def run(cmd, directory, timeout):
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, start_new_session=True)
+    timed_out = False
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        (directory / "stdout.txt").write_text(proc.stdout)
-        (directory / "stderr.txt").write_text(proc.stderr)
-        if proc.returncode:
-            return {"status": "failed", "returncode": proc.returncode,
-                    "reason": "see stderr.txt; failure does not prove hardware lacks FP64"}
-        return {"status": "passed", "stdout": proc.stdout}
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = proc.communicate()
+    (directory / "stdout.txt").write_text(stdout)
+    (directory / "stderr.txt").write_text(stderr)
+    if timed_out:
         return {"status": "unknown", "reason": "probe timed out"}
+    if proc.returncode:
+        return {"status": "failed", "returncode": proc.returncode,
+                "reason": "see stderr.txt; failure does not prove hardware lacks FP64"}
+    return {"status": "passed", "stdout": stdout}
 
 
 def main():
