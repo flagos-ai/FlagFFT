@@ -206,7 +206,12 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
         target_include_directories(flagfft_test_adaptor PUBLIC
             "${ASCEND_OPS_FFT_INCLUDE_DIR}")
         target_link_libraries(flagfft_test_adaptor PUBLIC
-            "${ASCEND_OPS_FFT_LIBRARY}")
+            "${ASCEND_OPS_FFT_LIBRARY}"
+            # The ops-fft public header includes acl/acl.h.  Linking the
+            # imported CANN targets also propagates the complete CANN include
+            # tree (including pkg_inc) to this object target.
+            Ascend::ascendcl
+            Ascend::runtime)
     endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
     target_include_directories(flagfft_test_adaptor PUBLIC

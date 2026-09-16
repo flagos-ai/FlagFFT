@@ -99,7 +99,12 @@ elseif(BACKEND STREQUAL "NPU")
     set(REFERENCE_SOURCE "${FLAGFFT_SOURCE_DIR}/src/adaptor/backend/npu/test_adaptor.cpp")
     target_include_directories(numpy_fft_capture PRIVATE "${ASCEND_OPS_FFT_INCLUDE_DIR}")
     target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
-    target_link_libraries(numpy_fft_capture PRIVATE "${ASCEND_OPS_FFT_LIBRARY}")
+    target_link_libraries(numpy_fft_capture PRIVATE
+        "${ASCEND_OPS_FFT_LIBRARY}"
+        # cann_ops_fft.h includes acl/acl.h; the imported CANN targets carry
+        # the toolkit and pkg_inc include directories needed to compile it.
+        Ascend::ascendcl
+        Ascend::runtime)
 else()
     message(FATAL_ERROR "Unsupported BACKEND=${BACKEND}; expected CUDA, MUSA, PPU, IX, or NPU")
 endif()
