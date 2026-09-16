@@ -14,6 +14,8 @@ import run_tests as acceptance
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=Path("build"))
+    parser.add_argument("--baseline-build-dir", type=Path,
+                        help="Optional unmodified main build used for the legacy measurements")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--policies", default="legacy,native,packed")
     parser.add_argument("--repeats", type=int, default=3)
@@ -25,6 +27,7 @@ def main():
                         help="Reuse one benchmark process per case/policy for repeated timing series")
     args = parser.parse_args()
     build, root = args.build_dir.resolve(), args.output_dir.resolve()
+    baseline = args.baseline_build_dir.resolve() if args.baseline_build_dir else build
     root.mkdir(parents=True, exist_ok=False)
     policies = args.policies.split(",")
     if (args.repeats < 1 or args.timeout <= 0 or any(p not in {"legacy", "native", "packed"} for p in policies)
@@ -35,6 +38,8 @@ def main():
     (root / "environment.json").write_text(json.dumps({"device": json.loads(device.stdout),
         "warmup": 5, "iters": 20, "repeats": args.repeats, "policies": policies,
         "in_process_repeats": args.in_process_repeats,
+        "baseline_build_dir": str(baseline),
+        "baseline_commit": acceptance.git_commit(baseline.parent),
         "git_commit": acceptance.git_commit(Path(__file__).resolve().parents[1])}, indent=2))
     shapes = [((16,), 1), ((256,), 257), ((1024,), 256), ((65536,), 1),
               ((23,), 256), ((997,), 1), ((8191,), 16),
@@ -67,11 +72,13 @@ def main():
                         directory = root / case_id / policy / str(repeat)
                         directory.mkdir(parents=True)
                         env = dict(os.environ, FLAGFFT_EXECUTION_POLICY=policy, FLAGFFT_TUNE_DISABLE="1")
+                        active_build = baseline if policy == "legacy" else build
+                        env["PYTHONPATH"] = str(active_build.parent / "python") + os.pathsep + env.get("PYTHONPATH", "")
                         record = dict(case=case_id, policy=policy, repeat=repeat, status="failed")
                         try:
                             if policy not in correct:
                                 value.tofile(directory / "input.bin")
-                                proc = subprocess.run(acceptance.build_accuracy_cmd(case, build / "ctest/numpy_fft_capture",
+                                proc = subprocess.run(acceptance.build_accuracy_cmd(case, active_build / "ctest/numpy_fft_capture",
                                                           directory, "flagfft"), env=env, capture_output=True,
                                                       text=True, timeout=args.timeout)
                                 (directory / "accuracy.log").write_text(proc.stdout + proc.stderr)
@@ -89,7 +96,7 @@ def main():
                             record["correct"] = correct[policy]
                             if not correct[policy]:
                                 raise RuntimeError("NumPy correctness failed")
-                            cmd = acceptance.build_perf_cmd(case, build, 5, 20)
+                            cmd = acceptance.build_perf_cmd(case, active_build, 5, 20)
                             if args.in_process_repeats:
                                 shape_index = cmd.index("--shape") + 1
                                 cmd[shape_index] = ",".join([cmd[shape_index]] * args.repeats)
