@@ -234,6 +234,7 @@ if(FLAGFFT_BUILD_CLI)
             flagfft_cli_common
             flagfft_test_adaptor
             nlohmann_json::nlohmann_json
+            SQLite3::SQLite3
     )
     if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
         target_link_libraries(flagfft-cli PRIVATE CUDA::cufft)
