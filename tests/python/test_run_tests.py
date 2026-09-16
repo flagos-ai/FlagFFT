@@ -383,6 +383,16 @@ def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
     )
 
 
+def test_numpy_reference_chunks_batched_transforms(monkeypatch):
+    value, _ = RUN_TESTS.make_input("c2c", (8,), 3, 1.0)
+    expected = np.fft.fftn(
+        value.astype(np.complex128), s=(8,), axes=(1,)
+    )
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+    actual = RUN_TESTS.numpy_reference(value, "c2c", (8,), "forward")
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_error_metric_detects_worst_batch_and_nonfinite_values():
     reference = np.ones((2, 8), dtype=np.float64)
     value = reference.copy()
@@ -397,6 +407,17 @@ def test_error_metric_detects_worst_batch_and_nonfinite_values():
     assert not RUN_TESTS.judged_stats(stats, RUN_TESTS.accuracy_limit("z2z", 8))[
         "passed"
     ]
+
+
+def test_error_stats_reduces_in_bounded_chunks(monkeypatch):
+    reference = np.arange(24, dtype=np.float64).reshape(2, 12)
+    value = reference.copy()
+    value[1, 7] += 0.1
+    monkeypatch.setattr(RUN_TESTS, "ERROR_STATS_CHUNK_ELEMENTS", 3)
+    chunked = RUN_TESTS.error_stats(value, reference, 12, 2)
+    monkeypatch.setattr(RUN_TESTS, "ERROR_STATS_CHUNK_ELEMENTS", 100)
+    whole = RUN_TESTS.error_stats(value, reference, 12, 2)
+    assert chunked == whole
 
 
 PLAN = 'LeafPlan(n=256, factors=[4,4,4,4])\nCompiledRawLeaf(kernel="fft")\n'

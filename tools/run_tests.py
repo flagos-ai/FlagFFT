@@ -125,6 +125,12 @@ RAW_ARTIFACT_FILENAMES = (
     "numpy.npy",
 )
 
+# Accuracy runs can contain hundreds of millions of values.  Keep the NumPy
+# oracle and the error reduction bounded even when a single batch is very
+# large; the native capture processes already have their own peak memory.
+REFERENCE_BATCH_CHUNK = 4
+ERROR_STATS_CHUNK_ELEMENTS = 1 << 18
+
 
 def product(shape: Iterable[int]) -> int:
     value = 1
@@ -264,16 +270,30 @@ def numpy_reference(
     )
     axes = tuple(range(1, len(shape) + 1))
     transform_size = product(shape)
-    if is_complex(api):
-        if direction == "forward":
-            return np.fft.fftn(value, s=shape, axes=axes)
-        return np.fft.ifftn(value, s=shape, axes=axes) * transform_size
-    if is_real_forward(api):
-        return np.fft.rfftn(value, s=shape, axes=axes)
-    if is_real_inverse(api):
-        # The device APIs intentionally use the unnormalized inverse.
-        return np.fft.irfftn(value, s=shape, axes=axes) * transform_size
-    raise ValueError(f"unknown API: {api}")
+    output_dtype = np.complex128 if is_complex(api) or is_real_forward(api) else np.float64
+    result = np.empty(output_shape(api, shape, value.shape[0]), dtype=output_dtype)
+    # Compute each small group of batches independently.  Calling NumPy FFT
+    # over all 256 batches at once can allocate a large internal workspace in
+    # addition to the input and output arrays under the 8 GiB MUSA cgroup.
+    for start in range(0, value.shape[0], REFERENCE_BATCH_CHUNK):
+        stop = min(value.shape[0], start + REFERENCE_BATCH_CHUNK)
+        chunk = value[start:stop]
+        if is_complex(api):
+            if direction == "forward":
+                transformed = np.fft.fftn(chunk, s=shape, axes=axes)
+            else:
+                transformed = np.fft.ifftn(chunk, s=shape, axes=axes)
+                transformed *= transform_size
+        elif is_real_forward(api):
+            transformed = np.fft.rfftn(chunk, s=shape, axes=axes)
+        elif is_real_inverse(api):
+            # The device APIs intentionally use the unnormalized inverse.
+            transformed = np.fft.irfftn(chunk, s=shape, axes=axes)
+            transformed *= transform_size
+        else:
+            raise ValueError(f"unknown API: {api}")
+        result[start:stop] = transformed
+    return result
 
 
 def _component_arrays(
@@ -297,25 +317,6 @@ def _component_arrays(
 def error_stats(
     value: np.ndarray, reference: np.ndarray, elements_per_batch: int, batch: int
 ) -> dict[str, Any]:
-    diff, ref_abs, _ = _component_arrays(
-        value.reshape(batch, elements_per_batch),
-        reference.reshape(batch, elements_per_batch),
-    )
-    finite = bool(np.all(np.isfinite(diff)) and np.all(np.isfinite(ref_abs)))
-
-    if not finite:
-        bad_batches = ~np.all(np.isfinite(diff) & np.isfinite(ref_abs), axis=1)
-        worst = int(np.flatnonzero(bad_batches)[0])
-        return {
-            "rel_l2": float("inf"),
-            "rel_linf": float("inf"),
-            "max_abs": float("inf"),
-            "mixed_pointwise": float("inf"),
-            "worst_l2_batch": worst,
-            "worst_linf_batch": worst,
-            "finite": False,
-        }
-
     rel_l2 = np.longdouble(0.0)
     rel_linf = np.longdouble(0.0)
     max_abs = np.longdouble(0.0)
@@ -323,17 +324,45 @@ def error_stats(
     worst_l2_batch = 0
     worst_linf_batch = 0
 
+    value = np.asarray(value).reshape(batch, elements_per_batch)
+    reference = np.asarray(reference).reshape(batch, elements_per_batch)
     for batch_index in range(batch):
-        batch_diff = diff[batch_index]
-        batch_ref = ref_abs[batch_index]
-        err_sq = np.sum(batch_diff * batch_diff, dtype=np.longdouble)
-        ref_sq = np.sum(batch_ref * batch_ref, dtype=np.longdouble)
-        err_max = np.max(batch_diff, initial=np.longdouble(0.0))
-        ref_max = np.max(batch_ref, initial=np.longdouble(0.0))
-        mixed_max = np.max(
-            batch_diff / np.maximum(batch_ref, np.longdouble(1.0)),
-            initial=np.longdouble(0.0),
-        )
+        err_sq = np.longdouble(0.0)
+        ref_sq = np.longdouble(0.0)
+        err_max = np.longdouble(0.0)
+        ref_max = np.longdouble(0.0)
+        mixed_max = np.longdouble(0.0)
+        for start in range(0, elements_per_batch, ERROR_STATS_CHUNK_ELEMENTS):
+            stop = min(elements_per_batch, start + ERROR_STATS_CHUNK_ELEMENTS)
+            batch_diff, batch_ref, _ = _component_arrays(
+                value[batch_index, start:stop],
+                reference[batch_index, start:stop],
+            )
+            finite = bool(
+                np.all(np.isfinite(batch_diff))
+                and np.all(np.isfinite(batch_ref))
+            )
+            if not finite:
+                return {
+                    "rel_l2": float("inf"),
+                    "rel_linf": float("inf"),
+                    "max_abs": float("inf"),
+                    "mixed_pointwise": float("inf"),
+                    "worst_l2_batch": batch_index,
+                    "worst_linf_batch": batch_index,
+                    "finite": False,
+                }
+            err_sq += np.sum(batch_diff * batch_diff, dtype=np.longdouble)
+            ref_sq += np.sum(batch_ref * batch_ref, dtype=np.longdouble)
+            err_max = max(err_max, np.max(batch_diff, initial=np.longdouble(0.0)))
+            ref_max = max(ref_max, np.max(batch_ref, initial=np.longdouble(0.0)))
+            mixed_max = max(
+                mixed_max,
+                np.max(
+                    batch_diff / np.maximum(batch_ref, np.longdouble(1.0)),
+                    initial=np.longdouble(0.0),
+                ),
+            )
 
         batch_rel_l2 = (
             np.sqrt(err_sq / ref_sq)
@@ -1013,15 +1042,20 @@ def run_accuracy_case(
                 tuple(case["shape"]),
                 case["batch"],
             )
+            reference_value = np.asarray(
+                reference_input,
+                dtype=np.complex128 if np.iscomplexobj(reference_input) else np.float64,
+            )
+            del reference_input
             try:
                 reference = numpy_reference(
-                    reference_input,
+                    reference_value,
                     case["api"],
                     tuple(case["shape"]),
                     case["direction"],
                 )
             finally:
-                del reference_input
+                del reference_value
             record["numpy_dtype"] = str(reference.dtype)
 
             for implementation, field in (
@@ -1567,9 +1601,19 @@ def reanalyze_case(case: dict, case_dir: Path) -> dict:
     value = load_raw(
         case_dir / "input.bin", case["api"], tuple(case["shape"]), case["batch"]
     )
-    reference = numpy_reference(
-        value, case["api"], tuple(case["shape"]), case["direction"]
+    reference_value = np.asarray(
+        value, dtype=np.complex128 if np.iscomplexobj(value) else np.float64
     )
+    del value
+    try:
+        reference = numpy_reference(
+            reference_value,
+            case["api"],
+            tuple(case["shape"]),
+            case["direction"],
+        )
+    finally:
+        del reference_value
     case.pop("numpy_sha256", None)
     case["numpy_dtype"] = str(reference.dtype)
     for implementation, field in (
