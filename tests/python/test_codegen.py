@@ -24,6 +24,16 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
 
 
+@pytest.fixture(autouse=True)
+def cuda_source_profile():
+    # These source-contract tests describe CUDA kernels, independently of the
+    # installed compiler. IX behavior is covered by explicit profile tests.
+    from flagfft_codegen.backend_profile import BackendProfile, set_profile, reset_profile
+    token = set_profile(BackendProfile(device_arch="source-contract"))
+    yield
+    reset_profile(token)
+
+
 @pytest.fixture(scope="module")
 def kernels():
     pytest.importorskip("triton")

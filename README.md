@@ -158,6 +158,42 @@ runtime (for example `flagtree===0.5.1+iluvatar3.1`).
 | `FLAGFFT_PYTHON` | Path to the Python interpreter used by JIT codegen (default: `python3` from PATH); keep its Python minor version aligned with the CMake build interpreter |
 | `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `~/.flagfft/tune.db`) |
 | `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
+| `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `native` (default), `legacy` (comparison), or `packed` (experimental wider leaf packing) |
+
+### Hardware profiles and IX experiments
+
+`flagfft-cli device-info --json` reports the current device's driver-queried
+warp size, thread-block limit and shared-memory limits. Code generation receives
+these facts explicitly. `native` uses the device warp width for leaf launch
+heuristics and bounds packing by queried shared-memory limits. Algorithmic
+radices and transpose tile dimensions retain their existing meaning.
+`packed` additionally targets one device warp when packing small leaf FFTs;
+it is an experiment, not a claim of better performance for every shape.
+Generated modules use profile-specific directories, and compiled plan text
+records warp size, block threads, packing and the profile identifier.
+
+Run isolated FP64 diagnostics and correctness-gated paired experiments in the
+backend's container, with `PYTHONPATH` pointing at this checkout's `python/`:
+
+```bash
+./build/flagfft-cli device-info --json
+python tools/probe_capabilities.py --build-dir build \
+  --output-dir ../results/20260917_000000_ix_fp64_probe
+python tools/benchmark_hardware_profile.py --build-dir build --repeats 3 \
+  --output-dir ../results/20260917_001000_ix_hardware_policy
+```
+
+Use a fresh timestamped output directory for each run. The paired experiment
+uses warmup 5 / iterations 20, rotates policy order across repetitions, checks
+FlagFFT against NumPy, and writes incremental CSV plus per-case logs. Times
+cover the complete FFT execution, excluding plan creation/JIT and host copies.
+For acceptance use `tools/run_tests.py`; the experiment is a representative
+matrix, not a replacement for the complete 36-operator report.
+
+FP64 diagnostics test CoreX/CuPy arithmetic, Triton arithmetic and small
+FlagFFT/platform FFTs in separate bounded processes. A failed compiler or
+library probe does not prove missing hardware support; passing a small probe
+does not certify every transform. Diagnostics do not enable IX FP64 acceptance.
 
 ### Install
 
@@ -365,7 +401,7 @@ expansion with `--dry-run`. Single and current 3D cases require
 batch 1. CT/Prime are acceptance size categories; the recorded runtime plan
 shows the actual selected algorithm, including DirectDFT, Rader or Bluestein.
 
-On IX, CoreX does not support FP64. The three FP64 APIs (`Z2Z`, `Z2D`, and
+The current IX acceptance policy disables FP64. The three FP64 APIs (`Z2Z`, `Z2D`, and
 `D2Z`) remain present in the 36-operator manifest for a stable acceptance
 surface, but the runner records their accuracy and performance cases as
 policy `Skipped` and never dispatches them. The other 18 operators are run

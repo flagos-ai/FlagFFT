@@ -413,6 +413,8 @@ def _triton_plugin_present(plugin: str) -> bool:
 
 def _mthreads_backend_active() -> bool:
     """Whether the installed Triton targets Moore Threads (MUSA/mtgpu)."""
+    if current_profile().device_arch != "unspecified":
+        return current_profile().backend == "musa"
     return _triton_plugin_present("mthreads")
 
 
@@ -423,11 +425,15 @@ def _ppu_backend_active() -> bool:
     transpose variants rely on PTX inline-asm register patterns that the
     PPU compiler toolchain does not support, so they are disabled there.
     """
+    if current_profile().device_arch != "unspecified":
+        return current_profile().backend == "ppu"
     return _triton_plugin_present("ppu")
 
 
 def _ix_backend_active() -> bool:
     """Whether the installed Triton targets Iluvatar (Tianshu/CoreX)."""
+    if current_profile().device_arch != "unspecified":
+        return current_profile().backend == "ix"
     return _triton_plugin_present("iluvatar")
 
 

@@ -29,6 +29,27 @@ class ProfileTest(unittest.TestCase):
         self.assertNotEqual(p.fingerprint, replace(p, policy="legacy").fingerprint)
         self.assertNotEqual(p.fingerprint, replace(p, max_dynamic_shared_memory=32768).fingerprint)
 
+    def test_explicit_ix_disables_cuda_specializations(self):
+        from flagfft_codegen.kernels_common import _ix_backend_active, use_tle_fused_twiddle
+        token = set_profile(self.profile())
+        try:
+            self.assertTrue(_ix_backend_active())
+            self.assertFalse(use_tle_fused_twiddle(1024, 1024))
+        finally:
+            reset_profile(token)
+
+    def test_metadata_native_warps(self):
+        from pathlib import Path
+        from flagfft_codegen.metadata import _metadata
+        token = set_profile(self.profile())
+        try:
+            metadata = _metadata(module_path=Path("unused.py"), kernel_name="unused", arg_names=[],
+                                 plan=LeafPlan(1024, (16, 16, 4), 1, 64, 2, (), 1024),
+                                 kernel_type="leaf", n1=0, n2=0, dtype="complex64")
+            self.assertEqual(metadata["num_warps"], 1)
+        finally:
+            reset_profile(token)
+
     def test_packing_uses_profile_and_restores(self):
         from dataclasses import replace
         plan = LeafPlan(256, (16, 16), 1, 16, 1, (), 256)

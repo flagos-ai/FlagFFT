@@ -42,6 +42,7 @@ struct Args {
 void print_usage() {
   std::cout << "Usage: flagfft-cli bench --rank 1|2|3 --shape <format> [options]\n"
                "       flagfft-cli tune [options]\n"
+               "       flagfft-cli device-info [--json]\n"
                "\n"
                "Bench options:\n"
                "  --rank 1|2|3             Transform rank (required)\n"
