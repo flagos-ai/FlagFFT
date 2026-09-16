@@ -188,3 +188,37 @@ NumPy validation records FlagFFT and mcFFT independently. A vendor-library
 failure or a process error remains a failure even if another implementation
 passes. Benchmark compilation time is separate from event timings; measure
 performance after correctness validation finishes on card 4.
+
+## C550 performance baseline
+
+The 28-case baseline used physical card 4 alone, 10 warmups and 100 timed
+iterations with native MACA events. FlagFFT kept its default API execution
+(2D/3D graph paths enabled); mcFFT used native direct Exec. Compilation
+was completed before event timing. Five cases were faster than mcFFT;
+the geometric mean speedup was **0.487x**, with a range of **0.103–1.358x**.
+This implementation establishes functional compatibility; performance parity
+requires further C550 tuning.
+
+| API / shape / batch | FlagFFT median ms | mcFFT median ms | Speedup |
+|---|---:|---:|---:|
+| C2C / 4096 / 1 | 0.061440 | 0.022016 | 0.358x |
+| Z2Z / 4096 / 1 | 0.030720 | 0.041728 | 1.358x |
+| C2C / 65536 / 256 | 3.703552 | 0.574976 | 0.155x |
+| Z2Z / 65536 / 256 | 14.690816 | 1.513728 | 0.103x |
+| Z2Z / 8191 / 1 | 0.085760 | 0.097792 | 1.140x |
+| Z2Z / 16x32x64 / 1 | 0.084736 | 0.035584 | 0.420x |
+
+Full JSON reports, paths, process wall times and incremental CSV are under
+`/workspace/FlagFFT-results/performance_baseline/`. The validated native
+NumPy suites are stored next to that directory: 384 cases for the initial
+four-warp compatibility checkpoint and 120 cases for the final settings.
+Across these suites, FlagFFT's maximum relative L2 errors were 2.627e-7
+for FP32 and 2.303e-15 for FP64.
+
+The next performance work should compare large FP32 leaves with Four-Step
+alternatives, calibrate the portable register-exchange cost model, and compare
+Four-Step fused I/O with explicit tiled transpose and batch packing. The
+4096-point batch-1 FP32 baseline chose a 4096-point leaf; FP64 chose 64x64
+Four-Step. These measurements identify candidates for comparison rather than
+proving the cause of the performance gap. A working mctle lowering would
+also allow the existing TLE path to be evaluated separately.
