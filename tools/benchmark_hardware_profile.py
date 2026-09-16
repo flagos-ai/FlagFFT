@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Paired end-to-end policy experiments with NumPy correctness and incremental CSV."""
+import argparse
+import csv
+import json
+import os
+from pathlib import Path
+import subprocess
+
+import numpy as np
+import run_tests as acceptance
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-dir", type=Path, default=Path("build"))
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--policies", default="legacy,native,packed")
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--quick", action="store_true")
+    args = parser.parse_args()
+    build, root = args.build_dir.resolve(), args.output_dir.resolve()
+    root.mkdir(parents=True, exist_ok=False)
+    policies = args.policies.split(",")
+    if args.repeats < 1 or any(p not in {"legacy", "native", "packed"} for p in policies):
+        parser.error("positive repeats and valid execution policies required")
+    device = subprocess.run([str(build / "flagfft-cli"), "device-info", "--json"],
+                            capture_output=True, text=True, check=True, timeout=30)
+    (root / "environment.json").write_text(json.dumps({"device": json.loads(device.stdout),
+        "warmup": 5, "iters": 20, "repeats": args.repeats, "policies": policies,
+        "git_commit": acceptance.git_commit(Path(__file__).resolve().parents[1])}, indent=2))
+    shapes = [((16,), 1), ((256,), 257), ((1024,), 256), ((65536,), 1),
+              ((23,), 256), ((997,), 1), ((8191,), 16),
+              ((64, 64), 1), ((1024, 1024), 1), ((32, 32, 32), 1), ((128, 128, 128), 1)]
+    if args.quick:
+        shapes = [((256,), 257), ((64, 64), 1), ((32, 32, 32), 1)]
+    records = []
+    with (root / "incremental.csv").open("w", newline="") as out:
+        writer = csv.DictWriter(out, fieldnames=["case", "policy", "repeat", "status", "correct",
+                                                "flagfft_ms", "platform_ms", "plan", "reason"])
+        writer.writeheader()
+        for shape, batch in shapes:
+            for api in ("c2c", "r2c", "c2r"):
+                direction = "inverse" if api == "c2r" else "forward"
+                case_id = f"{api}_{'x'.join(map(str, shape))}_b{batch}"
+                case = dict(api=api, shape=shape, rank=len(shape), batch=batch, direction=direction)
+                value, _ = acceptance.make_input(api, shape, batch, 1.0)
+                expected = acceptance.numpy_reference(value, api, shape, direction)
+                correct = {}
+                for repeat in range(args.repeats):
+                    # Rotate policy order to reduce systematic clock/thermal bias.
+                    order = policies[repeat % len(policies):] + policies[:repeat % len(policies)]
+                    for policy in order:
+                        directory = root / case_id / policy / str(repeat)
+                        directory.mkdir(parents=True)
+                        env = dict(os.environ, FLAGFFT_EXECUTION_POLICY=policy, FLAGFFT_TUNE_DISABLE="1")
+                        record = dict(case=case_id, policy=policy, repeat=repeat, status="failed")
+                        try:
+                            if policy not in correct:
+                                value.tofile(directory / "input.bin")
+                                proc = subprocess.run(acceptance.build_accuracy_cmd(case, build / "ctest/numpy_fft_capture",
+                                                          directory, "flagfft"), env=env, capture_output=True,
+                                                      text=True, timeout=args.timeout)
+                                (directory / "accuracy.log").write_text(proc.stdout + proc.stderr)
+                                if proc.returncode:
+                                    raise RuntimeError(f"capture exit {proc.returncode}")
+                                actual = acceptance.load_raw(directory / "flagfft.bin", api, shape, batch)
+                                stats = acceptance.judged_stats(acceptance.error_stats(actual, expected,
+                                                 expected.size // batch, batch), acceptance.accuracy_limit(api, acceptance.product(shape)))
+                                (directory / "accuracy.json").write_text(json.dumps(stats, indent=2))
+                                correct[policy] = stats["passed"]
+                                # Successful raw buffers are not needed for performance analysis.
+                                if stats["passed"]:
+                                    (directory / "input.bin").unlink()
+                                    (directory / "flagfft.bin").unlink()
+                            record["correct"] = correct[policy]
+                            if not correct[policy]:
+                                raise RuntimeError("NumPy correctness failed")
+                            cmd = acceptance.build_perf_cmd(case, build, 5, 20)
+                            proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=args.timeout)
+                            (directory / "performance.log").write_text(proc.stdout + proc.stderr)
+                            if proc.returncode:
+                                raise RuntimeError(f"benchmark exit {proc.returncode}")
+                            result = json.loads(proc.stdout)["cases"][0]
+                            (directory / "performance.json").write_text(json.dumps(result, indent=2))
+                            record.update(status="passed", flagfft_ms=result["timing"]["flagfft_median_ms"],
+                                          platform_ms=result["timing"]["ref_median_ms"], plan=result.get("plan_description", ""))
+                        except (subprocess.SubprocessError, OSError, ValueError, RuntimeError, KeyError) as exc:
+                            record["reason"] = str(exc)
+                        records.append(record)
+                        writer.writerow(record)
+                        out.flush()
+                        print(json.dumps({k: v for k, v in record.items() if k != "plan"}), flush=True)
+    (root / "records.json").write_text(json.dumps(records, indent=2))
+
+
+if __name__ == "__main__":
+    main()
