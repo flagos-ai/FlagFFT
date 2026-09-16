@@ -96,7 +96,7 @@ CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
 
 std::string CompiledRawLeafNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawLeaf(n=" << length << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+  oss << "CompiledRawLeaf(n=" << length << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
   return oss.str();
@@ -140,8 +140,8 @@ CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(int64_t length,
 std::string CompiledRawFourStepFusedNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawFourStepFused(n=" << length << ", n1=" << n1 << ", n2=" << n2
-      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
-      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+      << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -193,8 +193,8 @@ std::string CompiledRawFourStepStridedNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawFourStepStrided(n=" << length << ", n1=" << n1 << ", n2=" << n2
       << ", outer_stride=" << outer_stride
-      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
-      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+      << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -242,7 +242,7 @@ CompiledRawStridedLeafNode::CompiledRawStridedLeafNode(int64_t length,
 std::string CompiledRawStridedLeafNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawStridedLeaf(n=" << length << ", outer_stride=" << outer_stride
-      << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+      << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
   return oss.str();
@@ -280,7 +280,7 @@ CompiledRawStridedDirectDftNode::CompiledRawStridedDirectDftNode(int64_t length,
 std::string CompiledRawStridedDirectDftNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawStridedDirectDft(n=" << length << ", outer_stride=" << outer_stride
-      << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+      << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
   return oss.str();
@@ -320,7 +320,7 @@ CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
 
 std::string CompiledRawDirectDftNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawDirectDft(n=" << length << ", kernel=" << (kernel ? kernel->kernel_name : "null") << ")";
+  oss << "CompiledRawDirectDft(n=" << length << ", kernel=" << (kernel ? kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -373,9 +373,9 @@ CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
 std::string CompiledRawBluesteinNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawBluestein(n=" << length << ", conv_length=" << conv_length
-      << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->kernel_name : "null")
-      << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->kernel_name : "null")
-      << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->kernel_name : "null")
+      << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->execution_description() : "null")
+      << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->execution_description() : "null")
+      << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -478,8 +478,8 @@ CompiledRawBluesteinLeafNode::CompiledRawBluesteinLeafNode(int64_t length,
 std::string CompiledRawBluesteinLeafNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawBluesteinLeaf(n=" << length << ", conv_length=" << conv_length
-      << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->kernel_name : "null")
-      << ", finish_kernel=" << (finish_kernel ? finish_kernel->kernel_name : "null")
+      << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->execution_description() : "null")
+      << ", finish_kernel=" << (finish_kernel ? finish_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -547,7 +547,7 @@ CompiledRawBluesteinFullLeafNode::CompiledRawBluesteinFullLeafNode(int64_t lengt
 std::string CompiledRawBluesteinFullLeafNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawBluesteinFullLeaf(n=" << length << ", conv_length=" << conv_length
-      << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+      << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -621,10 +621,10 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
 std::string CompiledRawBluesteinFourStepNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawBluesteinFourStep(n=" << length << ", conv_length=" << conv_length << ", n1=" << n1
-      << ", n2=" << n2 << ", prepare_row=" << (prepare_row_kernel ? prepare_row_kernel->kernel_name : "null")
-      << ", first_col=" << (first_col_kernel ? first_col_kernel->kernel_name : "null")
-      << ", pointwise_row=" << (pointwise_row_kernel ? pointwise_row_kernel->kernel_name : "null")
-      << ", finish_col=" << (finish_col_kernel ? finish_col_kernel->kernel_name : "null") << ")";
+      << ", n2=" << n2 << ", prepare_row=" << (prepare_row_kernel ? prepare_row_kernel->execution_description() : "null")
+      << ", first_col=" << (first_col_kernel ? first_col_kernel->execution_description() : "null")
+      << ", pointwise_row=" << (pointwise_row_kernel ? pointwise_row_kernel->execution_description() : "null")
+      << ", finish_col=" << (finish_col_kernel ? finish_col_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -731,9 +731,9 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
 std::string CompiledRawRaderNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawRader(n=" << length << ", conv_length=" << conv_length
-      << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->kernel_name : "null")
-      << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->kernel_name : "null")
-      << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->kernel_name : "null")
+      << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->execution_description() : "null")
+      << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->execution_description() : "null")
+      << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -919,9 +919,9 @@ CompiledRawR2CNode::CompiledRawR2CNode(int64_t length,
 std::string CompiledRawR2CNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawR2C(n=" << length
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -990,7 +990,7 @@ std::string CompiledRawPackedR2CNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawPackedR2C(n=" << length << ", packed_n=" << length / 2
       << ", fft=" << (fft ? fft->describe() : "null")
-      << ", postprocess_kernel=" << (postprocess_kernel ? postprocess_kernel->kernel_name : "null") << ")";
+      << ", postprocess_kernel=" << (postprocess_kernel ? postprocess_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -1047,7 +1047,7 @@ CompiledRawR2CLeafNode::CompiledRawR2CLeafNode(int64_t length,
 
 std::string CompiledRawR2CLeafNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawR2CLeaf(n=" << length << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+  oss << "CompiledRawR2CLeaf(n=" << length << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
   return oss.str();
@@ -1110,9 +1110,9 @@ CompiledRawR2CFourStepHalfOutNode::CompiledRawR2CFourStepHalfOutNode(int64_t len
 std::string CompiledRawR2CFourStepHalfOutNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawR2CFourStepHalfOut(n=" << length << ", n1=" << n1 << ", n2=" << n2
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
-      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
-      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
+      << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -1187,8 +1187,8 @@ CompiledRawR2CFourStepRealInHalfOutNode::CompiledRawR2CFourStepRealInHalfOutNode
 std::string CompiledRawR2CFourStepRealInHalfOutNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawR2CFourStepRealInHalfOut(n=" << length << ", n1=" << n1 << ", n2=" << n2
-      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
-      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+      << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -1246,9 +1246,9 @@ CompiledRawC2RNode::CompiledRawC2RNode(int64_t length,
 std::string CompiledRawC2RNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawC2R(n=" << length
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -1317,7 +1317,7 @@ CompiledRawPackedC2RNode::CompiledRawPackedC2RNode(int64_t length,
 std::string CompiledRawPackedC2RNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawPackedC2R(n=" << length << ", packed_n=" << length / 2
-      << ", preprocess_kernel=" << (preprocess_kernel ? preprocess_kernel->kernel_name : "null")
+      << ", preprocess_kernel=" << (preprocess_kernel ? preprocess_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -1385,8 +1385,8 @@ std::string CompiledRaw2DNode::describe() const {
   oss << "CompiledRaw2D(n0=" << n0 << ", n1=" << n1
       << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
-      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->kernel_name : "null")
-      << ", transpose_inv=" << (transpose_inv ? transpose_inv->kernel_name : "null") << ")";
+      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
+      << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -1581,7 +1581,7 @@ CompiledRawC2RLeafNode::CompiledRawC2RLeafNode(int64_t length,
 
 std::string CompiledRawC2RLeafNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawC2RLeaf(n=" << length << ", kernel=" << (kernel ? kernel->kernel_name : "null")
+  oss << "CompiledRawC2RLeaf(n=" << length << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
   return oss.str();
@@ -1645,12 +1645,12 @@ CompiledRaw2DR2CNode::CompiledRaw2DR2CNode(int64_t n0,
 std::string CompiledRaw2DR2CNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw2DR2C(n0=" << n0 << ", n1=" << n1
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
-      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->kernel_name : "null")
-      << ", transpose_inv=" << (transpose_inv ? transpose_inv->kernel_name : "null") << ")";
+      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
+      << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -1767,9 +1767,9 @@ CompiledRaw2DR2CRCNode::CompiledRaw2DR2CRCNode(int64_t n0,
 std::string CompiledRaw2DR2CRCNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw2DR2CRC(n0=" << n0 << ", n1=" << n1
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -1845,9 +1845,9 @@ CompiledRawC2RFourStepRealOutNode::CompiledRawC2RFourStepRealOutNode(int64_t len
 std::string CompiledRawC2RFourStepRealOutNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawC2RFourStepRealOut(n=" << length << ", n1=" << n1 << ", n2=" << n2
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
-      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
-      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
+      << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -1926,12 +1926,12 @@ CompiledRaw2DC2RNode::CompiledRaw2DC2RNode(int64_t n0,
 std::string CompiledRaw2DC2RNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw2DC2R(n0=" << n0 << ", n1=" << n1
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
       << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
-      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->kernel_name : "null")
-      << ", transpose_inv=" << (transpose_inv ? transpose_inv->kernel_name : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
+      << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -2049,9 +2049,9 @@ std::string CompiledRaw2DC2RRCNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw2DC2RRC(n0=" << n0 << ", n1=" << n1
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", row_fft=" << (row_fft ? row_fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -2127,8 +2127,8 @@ CompiledRawC2RFourStepCompactInRealOutNode::CompiledRawC2RFourStepCompactInRealO
 std::string CompiledRawC2RFourStepCompactInRealOutNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawC2RFourStepCompactInRealOut(n=" << length << ", n1=" << n1 << ", n2=" << n2
-      << ", row_kernel=" << (row_kernel ? row_kernel->kernel_name : "null")
-      << ", col_kernel=" << (col_kernel ? col_kernel->kernel_name : "null") << ")";
+      << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null")
+      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -2205,9 +2205,9 @@ std::string CompiledRaw3DNode::describe() const {
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
       << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
-      << ", perm_021_fwd=" << (perm_021_fwd ? perm_021_fwd->kernel_name : "null")
-      << ", perm_210_fwd=" << (perm_210_fwd ? perm_210_fwd->kernel_name : "null")
-      << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->kernel_name : "null") << ")";
+      << ", perm_021_fwd=" << (perm_021_fwd ? perm_021_fwd->execution_description() : "null")
+      << ", perm_210_fwd=" << (perm_210_fwd ? perm_210_fwd->execution_description() : "null")
+      << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -2305,9 +2305,9 @@ CompiledRaw3DR2CNode::CompiledRaw3DR2CNode(int64_t n0,
 std::string CompiledRaw3DR2CNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DR2C(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
       << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null") << ")";
   return oss.str();
@@ -2427,9 +2427,9 @@ std::string CompiledRaw3DC2RNode::describe() const {
   oss << "CompiledRaw3DC2R(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
-      << ", expand_kernel=" << (expand_kernel ? expand_kernel->kernel_name : "null")
+      << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->kernel_name : "null") << ")";
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 

@@ -44,6 +44,14 @@ JitKernelArg JitKernelArg::i64(int64_t value) {
 
 JitKernel::~JitKernel() = default;
 
+std::string JitKernel::execution_description() const {
+  std::ostringstream out;
+  out << kernel_name << "{warp_size=" << warp_size << ",num_warps=" << num_warps
+      << ",block_threads=" << warp_size * num_warps << ",batch_per_block=" << batch_per_block
+      << ",inner_pack=" << inner_pack << ",profile=" << profile_id << "}";
+  return out.str();
+}
+
 void JitKernel::compile() {
   std::lock_guard<std::mutex> lock(mutex);
   if (jit_function != nullptr) {

@@ -52,6 +52,7 @@ struct JitKernelArg {
 };
 
 struct JitKernel {
+  std::string execution_description() const;
   ~JitKernel();
   void compile();
   void launch(adaptor::StreamHandle stream,
@@ -65,6 +66,7 @@ struct JitKernel {
   std::string signature;
   int64_t num_warps = 1;
   int64_t warp_size = 0;
+  std::string profile_id;
   int64_t num_stages = 1;
   int64_t batch_per_block = 1;
   int64_t inner_pack = 1;

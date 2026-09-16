@@ -280,7 +280,7 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     )
 
 
-def four_step_col_inner_pack_for(
+def _four_step_col_inner_pack_for(
     n1: int,
     n2: int,
     dtype: str = "complex64",
@@ -301,7 +301,7 @@ def four_step_col_inner_pack_for(
     return _FOUR_STEP_COL_INNER_PACK
 
 
-def four_step_row_inner_pack_for(
+def _four_step_row_inner_pack_for(
     n1: int,
     n2: int,
     dtype: str = "complex64",
@@ -334,6 +334,22 @@ def four_step_row_inner_pack_for(
     ):
         return _FOUR_STEP_LARGE_INNER_PACK
     return 1
+
+
+def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
+    profile = current_profile()
+    if plan is None or profile.policy == "legacy" or profile.max_dynamic_shared_memory is None:
+        return pack
+    bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
+    return _floor_power_of_two(max(1, min(pack, profile.max_dynamic_shared_memory // bytes_per_fft)))
+
+
+def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
+    return _bounded_inner_pack(_four_step_col_inner_pack_for(n1, n2, dtype, plan), plan)
+
+
+def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
+    return _bounded_inner_pack(_four_step_row_inner_pack_for(n1, n2, dtype, plan), plan)
 
 
 def use_tle_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") -> bool:
