@@ -303,6 +303,11 @@ def _four_step_col_inner_pack_for(
 ) -> int:
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
+    if plan is not None and current_profile().policy != "legacy":
+        # Hardware-profile-aware packing: the legacy n1 threshold encodes a
+        # 32-lane device tradeoff. Derive the pack from the queried warp
+        # width, cooperative stage lanes and shared-memory budget instead.
+        return _four_step_resource_inner_pack_for(plan)
     if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
         return 1
     if use_tle_fused_twiddle(n1, n2, dtype):
