@@ -888,7 +888,11 @@ def pending_accuracy() -> dict:
 
 
 def compare_output(
-    case: dict, case_dir: Path, implementation: str, reference: np.ndarray, stage: dict
+    case: dict,
+    case_dir: Path,
+    implementation: str,
+    reference: np.ndarray | None,
+    stage: dict,
 ) -> dict:
     limits = accuracy_limit(case["api"], product(case["shape"]))
     result = {
@@ -959,29 +963,81 @@ def run_accuracy_case(
             case["api"], tuple(case["shape"]), case["batch"], case["scale"]
         )
         value.tofile(case_dir / "input.bin")
-        reference = numpy_reference(
-            value, case["api"], tuple(case["shape"]), case["direction"]
-        )
         record.update(
             {
                 "seed": seed,
                 "input_dtype": str(value.dtype),
-                "numpy_dtype": str(reference.dtype),
                 "input_sha256": sha256(case_dir / "input.bin"),
             }
         )
+        # The native capture is a separate process.  Drop the generated input
+        # before starting it so the worker does not retain a full-size array
+        # alongside the capture process and its output buffers.
+        del value
+
+        capture_stages = {}
         for implementation, field in (
             ("flagfft", "accuracy"),
             ("platform", "platform_accuracy"),
         ):
             command = build_accuracy_cmd(case, capture_bin, case_dir, implementation)
             stage = run_subprocess(command, timeout, gpu_id, case_dir, implementation)
-            record[field] = compare_output(
-                case, case_dir, implementation, reference, stage
-            )
-            record[field]["data_file"] = data_file
-            # Keep the FlagFFT result on disk before the platform stage starts.
+            capture_stages[implementation] = stage
+            record["capture_stages"] = capture_stages
+            # Persist each native stage before starting the next one.  This is
+            # also useful when a long-running worker is interrupted.
             write_json(case_dir / "case.json", record)
+
+        # A failed or timed-out native capture does not need a NumPy reference.
+        # Record those stage results first, then only compare completed output.
+        for implementation, field in (
+            ("flagfft", "accuracy"),
+            ("platform", "platform_accuracy"),
+        ):
+            stage = capture_stages[implementation]
+            if stage.get("status") != "Completed":
+                record[field] = compare_output(
+                    case, case_dir, implementation, None, stage
+                )
+                record[field]["data_file"] = data_file
+
+        if any(
+            stage.get("status") == "Completed" for stage in capture_stages.values()
+        ):
+            # Both native processes have exited before NumPy allocates its
+            # double-precision reference.  Reloading from disk avoids keeping
+            # the original input alive through the capture phase.
+            reference_input = load_raw(
+                case_dir / "input.bin",
+                case["api"],
+                tuple(case["shape"]),
+                case["batch"],
+            )
+            try:
+                reference = numpy_reference(
+                    reference_input,
+                    case["api"],
+                    tuple(case["shape"]),
+                    case["direction"],
+                )
+            finally:
+                del reference_input
+            record["numpy_dtype"] = str(reference.dtype)
+
+            for implementation, field in (
+                ("flagfft", "accuracy"),
+                ("platform", "platform_accuracy"),
+            ):
+                stage = capture_stages[implementation]
+                if stage.get("status") == "Completed":
+                    record[field] = compare_output(
+                        case, case_dir, implementation, reference, stage
+                    )
+                    record[field]["data_file"] = data_file
+
+            # Release the large reference before artifact cleanup and before
+            # the worker starts the next case.
+            reference = None
     except Exception as error:
         for field in ("accuracy", "platform_accuracy"):
             if record[field]["status"] == "NotFound":

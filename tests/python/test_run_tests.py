@@ -441,6 +441,39 @@ def mock_capture(monkeypatch, platform_status="Completed", platform_corrupt=Fals
     monkeypatch.setattr(RUN_TESTS, "run_subprocess", run_subprocess)
 
 
+def test_accuracy_captures_finish_before_numpy_reference(
+    tmp_path, monkeypatch, operators, matrix
+):
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    events = []
+    original_reference = RUN_TESTS.numpy_reference
+
+    def delayed_reference(value, api, shape, direction):
+        events.append("reference")
+        return original_reference(value, api, shape, direction)
+
+    def capture(cmd, timeout, gpu_id, case_dir, implementation):
+        events.append(f"capture:{implementation}")
+        value = RUN_TESTS.load_raw(
+            case_dir / "input.bin", case["api"], tuple(case["shape"]), case["batch"]
+        )
+        np.zeros_like(value).tofile(case_dir / f"{implementation}.bin")
+        if implementation == "flagfft":
+            (case_dir / "flagfft_plan.txt").write_text(PLAN)
+        return {"status": "Completed", "duration": 0.01, "command": cmd}
+
+    monkeypatch.setattr(RUN_TESTS, "numpy_reference", delayed_reference)
+    monkeypatch.setattr(RUN_TESTS, "run_subprocess", capture)
+
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "none"
+    )
+
+    assert events == ["capture:flagfft", "capture:platform", "reference"]
+    assert record["capture_stages"]["flagfft"]["status"] == "Completed"
+    assert record["capture_stages"]["platform"]["status"] == "Completed"
+
+
 def accuracy_message(case, record):
     return {
         **case,
