@@ -223,7 +223,13 @@ void CudaGraph::end_capture(StreamHandle stream) {
   CUgraph graph = nullptr;
   check(cuStreamEndCapture(as_stream(stream), &graph), "cuStreamEndCapture");
   CUgraphExec exec = nullptr;
+#if CUDA_VERSION >= 11000
   check(cuGraphInstantiate(&exec, graph, 0), "cuGraphInstantiate");
+#else
+  // CoreX 4.4 advertises CUDA 10.2 and retains the legacy five-argument
+  // driver entry point. CUDA 11+ uses the three-argument form.
+  check(cuGraphInstantiate(&exec, graph, nullptr, nullptr, 0), "cuGraphInstantiate");
+#endif
   check(cuGraphDestroy(graph), "cuGraphDestroy");
   graph_ = nullptr;
   exec_ = reinterpret_cast<void *>(exec);
