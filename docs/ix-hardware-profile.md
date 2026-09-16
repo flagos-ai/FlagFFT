@@ -24,6 +24,25 @@ These budgets prune packing choices; they do not predict registers or replace
 the compiler/driver's final resource checks. The initial candidate set uses
 1/2/4/8 warps. The 4096-thread hardware limit is not a recommended block size.
 
+Four-Step row and column kernels use the same profile model. Their legacy
+packing thresholds (`n1 <= 512`, `n1 >= 128`) encode 32-lane device tradeoffs;
+under a queried profile both kernels derive the inner pack from the device warp
+width, cooperative stage lanes and shared-memory budget instead. This keeps
+the four-step data passes coalesced on a 64-lane device: on the BI-V150,
+1D C2C 8192 batch 256 dropped from 0.79 ms to 0.37 ms and 1048576 batch 1 from
+0.57 ms to 0.33 ms. Measured packing above the budget (8) regressed, so 4
+remains the cap for complex64. Algorithmic radices, DFT chunk lengths and the
+2D transpose tile keep their existing values.
+
+The 3D axis permutation has three generator variants: `v1` (correctness-first,
+one contiguous destination block per program, uncoalesced source reads), `v2`
+(tiled, `ld/st.global.v2` inline asm, NVIDIA only) and `tile` (tiled register
+transpose with `tl.trans`, no inline asm). Targets where the Triton runtime
+exposes a `mthreads`, `ppu` or `iluvatar` module use `tile`, which keeps both
+sides of the permutation coalesced and cut 3D C2C 128x2048x64 from 20.9 ms to
+6.8 ms on the BI-V150. Tile 32 with four warps measured best; tile 64 was
+about 40% slower and is not used.
+
 `balanced` is the default IX policy. It estimates the live FFT value bytes per physical thread from the
 transform length, precision, cooperative stage lanes and candidate packing.
 It permits packing growth only within the native physical-warp budget and
@@ -41,9 +60,12 @@ verified with compiler/profiler counters; measured end-to-end time decides.
 Generated module paths contain a fingerprint of the profile, policy version,
 Triton version and code-generator sources. The in-process kernel cache includes
 device facts and policy; tuned-plan codegen fingerprints distinguish policies.
-Compiled plan descriptions expose actual warp count, block-thread count,
-batch/inner packing and profile identifier. Acceptance records device facts and
-policy in `env`, preserving the existing 36 operators and JSON/CSV plan fields.
+The cache key is built from `KernelKey::repr()`, so every field that reaches
+the generator must appear in it; `ctest/test_kernel_key.cpp` guards that
+invariant. Compiled plan descriptions expose actual warp count, block-thread
+count, batch/inner packing and profile identifier. Acceptance records device
+facts and policy in `env`, preserving the existing 36 operators and JSON/CSV
+plan fields.
 
 ## Reproduction
 

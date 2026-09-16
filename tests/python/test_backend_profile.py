@@ -83,6 +83,28 @@ class ProfileTest(unittest.TestCase):
         finally:
             reset_profile(token)
 
+    def test_four_step_packing_uses_profile_budget(self):
+        from dataclasses import replace
+        from flagfft_codegen.kernels_common import (
+            four_step_col_inner_pack_for,
+            four_step_row_inner_pack_for,
+        )
+
+        plan = LeafPlan(1024, (32, 32), 1, 32, 2, (), 1024)
+        legacy = replace(self.profile(max_dynamic_shared_memory=131072), policy="legacy")
+        profiled = replace(legacy, policy="balanced")
+        token = set_profile(legacy)
+        try:
+            self.assertEqual(four_step_row_inner_pack_for(1024, 1024, "complex64", plan), 1)
+        finally:
+            reset_profile(token)
+        token = set_profile(profiled)
+        try:
+            self.assertGreater(four_step_row_inner_pack_for(1024, 1024, "complex64", plan), 1)
+            self.assertGreater(four_step_col_inner_pack_for(1024, 1024, "complex64", plan), 1)
+        finally:
+            reset_profile(token)
+
 
 if __name__ == "__main__":
     unittest.main()
