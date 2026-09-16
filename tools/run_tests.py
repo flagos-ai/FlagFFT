@@ -1077,6 +1077,7 @@ def aggregate_results(
                 "duration": 0,
                 "data_file": f"{op['id']}/{phase}_result.json",
                 "cases": entries if enabled else {},
+                **({"data": {}} if phase == "performance" else {"details": []}),
             }
     for message in raw_results:
         if message.get("op_id") not in op_results:
@@ -1133,6 +1134,48 @@ def aggregate_results(
                 block["status"] = "Passed"
             elif block["skipped"]:
                 block["status"] = "Skipped"
+        # Preserve the report consumer's existing accuracy.details and
+        # performance.data structure alongside the richer per-case records.
+        for phase in ("accuracy", "platform_accuracy"):
+            block = op_result[phase]
+            block["details"] = [
+                {
+                    "case": entry["case_id"],
+                    "status": entry["status"],
+                    "message": entry.get("error", "NumPy comparison failed"),
+                    "metric": entry.get("metric", {}),
+                    "limits": entry.get("limits", {}),
+                }
+                for entry in block["cases"].values()
+                if entry["status"] in ("Failed", "Error", "Timeout")
+            ]
+        perf = op_result["performance"]
+        details = {}
+        speeds = []
+        for entry in perf["cases"].values():
+            if "speedup" not in entry:
+                continue
+            key = "[" + ",".join(str(n) for n in entry.get("shape", [])) + "]"
+            if entry.get("batch", 1) > 1:
+                key += f"batch={entry['batch']}"
+            key += f"direction={entry.get('direction', 'unknown')}"
+            details[key] = {
+                "base": entry.get("ref_median_ms", 0),
+                "gems": entry.get("flagfft_median_ms", 0),
+                "speedup": entry["speedup"],
+            }
+            if entry["status"] == "Passed" and entry.get("baseline_valid") is not False:
+                speeds.append(entry["speedup"])
+        if details:
+            perf["data"] = {
+                "default": {
+                    "result": "OK" if perf["status"] == "Passed" else "FAIL",
+                    "details": details,
+                    "speedup": math.exp(sum(math.log(s) for s in speeds) / len(speeds))
+                    if speeds
+                    else 0,
+                }
+            }
     return op_results
 
 
@@ -1323,10 +1366,15 @@ def reanalyze_case(case: dict, case_dir: Path) -> dict:
 
 
 def analyze_only(output_dir: Path) -> int:
+    started = time.monotonic()
     manifest_file = output_dir / "manifest.json"
     if not manifest_file.is_file():
         raise ValueError(f"manifest.json not found in {output_dir}")
     manifest = json.loads(manifest_file.read_text())
+    old_summary_file = output_dir / "summary.json"
+    old_summary = (
+        json.loads(old_summary_file.read_text()) if old_summary_file.is_file() else {}
+    )
     ENV_INFO.update(manifest["env"])
     ENV_INFO["analysis_numpy"] = np.__version__
     messages = []
@@ -1383,8 +1431,13 @@ def analyze_only(output_dir: Path) -> int:
         writer = csv.DictWriter(stream, fieldnames=INC_COLUMNS)
         writer.writeheader()
         writer.writerows(incremental_row(message) for message in messages)
-    config = {**manifest["config"], "analyze_only": True}
-    write_summary(output_dir / "summary.json", results, config, 0)
+    config = {
+        **manifest["config"],
+        "analyze_only": True,
+        "analysis_duration": time.monotonic() - started,
+    }
+    duration = old_summary.get("summary", {}).get("total_duration", 0)
+    write_summary(output_dir / "summary.json", results, config, duration)
     return 0 if requested_phases_passed(results, run_accuracy, run_performance) else 1
 
 

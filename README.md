@@ -410,6 +410,8 @@ python tools/run_tests.py --analyze-only ../results/20260916_120000_acceptance36
 All outputs use format version 2. A full run has 36 keys under
 `summary.json.result`, in acceptance order. Filtered runs contain the
 selected operators, and the manifest records the exact partial selection.
+The existing `accuracy.details` and `performance.data.default` report fields
+are retained alongside the new per-case metrics and plans.
 
 - `manifest.json`: selected operators, complete expected case lists, parameter matrix and runtime environment.
 - `summary.json`: each operator's `accuracy`, `platform_accuracy` and `performance` results.

@@ -18,7 +18,11 @@ import csv
 import importlib.util
 import io
 import json
+import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -93,6 +97,96 @@ def test_missing_operator_is_not_accepted_as_a_complete_suite(tmp_path, operator
     path.write_text(yaml.safe_dump({"ops": operators[:-1]}))
     with pytest.raises(ValueError, match="36 acceptance operators"):
         RUN_TESTS.load_operators(path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group signals")
+def test_interrupt_saves_completed_cases_and_stops_native_process(
+    tmp_path, operators, matrix
+):
+    # A CPU-only capture fixture exercises the real CLI/worker/signal path.
+    capture = tmp_path / "capture"
+    capture.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import os
+import sys
+import time
+from pathlib import Path
+import numpy as np
+args = dict(arg[2:].split('=', 1) for arg in sys.argv[1:])
+directory = Path(args['output-dir'])
+if args['implementation'] == 'flagfft':
+    (directory / 'flagfft_plan.txt').write_text('CPU capture fixture plan\\n')
+    if args['direction'] == 'inverse':
+        (directory / 'native.pid').write_text(str(os.getpid()))
+        time.sleep(30)
+value = np.fromfile(args['input'], dtype=np.complex64)
+value = value.reshape(int(args['batch']), int(args['shape']))
+np.fft.fft(value.astype(np.complex128), axis=1).astype(np.complex64).tofile(
+    directory / (args['implementation'] + '.bin')
+)
+"""
+    )
+    capture.chmod(0o755)
+    size = min(matrix[operators[0]["sizes"]])
+    cases = RUN_TESTS.expand_test_cases(
+        [operators[0]], matrix, shapes={(size,)}, scales="1"
+    )
+    inverse = next(case for case in cases if case["direction"] == "inverse")
+    output = tmp_path / "output"
+    pid_file = output / inverse["op_id"] / inverse["case_id"] / "native.pid"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(ROOT / "tools/run_tests.py"),
+            "--accuracy-only",
+            "--ops",
+            operators[0]["id"],
+            "--shapes",
+            str(size),
+            "--scales",
+            "1",
+            "--capture-bin",
+            str(capture),
+            "--output-dir",
+            str(output),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while (
+            not pid_file.is_file()
+            and process.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+        assert pid_file.is_file(), "inverse fixture did not start"
+        native_pid = int(pid_file.read_text())
+        process.send_signal(signal.SIGINT)
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == 130, stdout + stderr
+        summary = json.loads((output / "summary.json").read_text())
+        assert summary["config"]["interrupted"]
+        accuracy = summary["result"][operators[0]["id"]]["accuracy"]
+        assert accuracy["status"] == "Incomplete"
+        assert accuracy["passed"] == 1 and accuracy["missing"] == 1
+        with pytest.raises(ProcessLookupError):
+            os.kill(native_pid, 0)
+        assert (output / "manifest.json").is_file()
+        assert (output / "incremental.csv").is_file()
+    finally:
+        if pid_file.is_file():
+            try:
+                os.killpg(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate(timeout=5)
 
 
 @pytest.mark.parametrize("mode,expected", [("timeout", "Timeout"), ("error", "Error")])
@@ -383,6 +477,37 @@ def test_benchmark_parser_keeps_actual_plan_and_ref_timing():
     assert result["ref_median_ms"] == 2
     assert result["plan"] == PLAN
     assert "cufft_median_ms" not in result
+
+
+def test_existing_report_structure_keeps_both_benchmark_directions(operators, matrix):
+    cases = RUN_TESTS.expand_test_cases([operators[0]], matrix)[:2]
+    messages = [
+        {
+            **case,
+            "case_id": RUN_TESTS.case_name(case, performance=True),
+            "phase": "performance",
+            "result": {
+                "status": "Passed",
+                "flagfft_median_ms": 1.0,
+                "ref_median_ms": 2.0,
+                "speedup": 2.0,
+                "plan": PLAN,
+            },
+        }
+        for case in cases
+    ]
+    results = RUN_TESTS.aggregate_results(messages, [operators[0]], cases, False, True)
+    op = results[operators[0]["id"]]
+    assert op["accuracy"]["details"] == []
+    report = op["performance"]["data"]["default"]
+    assert report["result"] == "OK" and report["speedup"] == 2.0
+    assert len(report["details"]) == 2
+    assert any("direction=forward" in key for key in report["details"])
+    assert any("direction=inverse" in key for key in report["details"])
+    assert all(
+        value["base"] == 2.0 and value["gems"] == 1.0
+        for value in report["details"].values()
+    )
 
 
 def test_speedup_summary_excludes_incorrect_baseline():
