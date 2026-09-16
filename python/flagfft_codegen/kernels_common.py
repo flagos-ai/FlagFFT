@@ -281,7 +281,11 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     if not _is_double_dtype(plan.dtype) and all(
         lanes == plan.lanes for lanes in stage_lanes
     ):
-        return 1
+        # Legacy heuristic: no cooperative staging means the lane mapping is
+        # already uniform and packing was not required on 32-lane devices.
+        # Profile-aware backends still benefit from filling the wider block.
+        if current_profile().policy == "legacy":
+            return 1
     active_lanes = max(stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
     thread_pack = max(1, _FOUR_STEP_PACK_TARGET_THREADS // lane_block)
@@ -328,6 +332,10 @@ def _four_step_row_inner_pack_for(
     plan: LeafPlan | None = None,
 ) -> int:
     if plan is not None and _mthreads_small_mixed_leaf(plan):
+        return _four_step_resource_inner_pack_for(plan)
+    if plan is not None and current_profile().policy != "legacy":
+        # Hardware-profile-aware packing, mirroring the column kernel.  The
+        # legacy n1/n2 thresholds below encode 32-lane device tradeoffs.
         return _four_step_resource_inner_pack_for(plan)
     if use_tle_fused_twiddle(n1, n2, dtype):
         return _FOUR_STEP_LARGE_INNER_PACK
