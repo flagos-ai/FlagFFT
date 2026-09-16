@@ -20,6 +20,7 @@ from textwrap import dedent
 
 from .kernels_common import _dtype_suffix, _zero_other
 
+
 def _build_reshape_pack_kernel_source(
     n1: int, n2: int, dtype: str
 ) -> tuple[str, list[str], list[str]]:
@@ -109,6 +110,7 @@ def _build_twiddle_reshape_pack_kernel_source(
         """
     )
     return kernel_name, source, ["in_ptr", "twiddle_ptr", "out_ptr", "nbatch"]
+
 
 def _build_tiled_transpose3d_v2_kernel_source(
     s0: int,

@@ -28,7 +28,12 @@ sys.path.insert(0, str(ROOT / "python"))
 def cuda_source_profile():
     # These source-contract tests describe CUDA kernels, independently of the
     # installed compiler. IX behavior is covered by explicit profile tests.
-    from flagfft_codegen.backend_profile import BackendProfile, set_profile, reset_profile
+    from flagfft_codegen.backend_profile import (
+        BackendProfile,
+        reset_profile,
+        set_profile,
+    )
+
     token = set_profile(BackendProfile(device_arch="source-contract"))
     yield
     reset_profile(token)
@@ -184,12 +189,20 @@ def test_four_step_resource_pack_uses_leaf_occupancy(kernels) -> None:
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
-def test_mthreads_small_mixed_pack_is_bounded_and_backend_local(kernels, monkeypatch, dtype) -> None:
+def test_mthreads_small_mixed_pack_is_bounded_and_backend_local(
+    kernels, monkeypatch, dtype
+) -> None:
     from flagfft_codegen import kernels_common as common
 
     plan = kernels.LeafPlan(
-        length=209, factors=(19, 11), remainder=1, lanes=1,
-        num_warps=1, generic_radices=(), smem_size=256, dtype=dtype,
+        length=209,
+        factors=(19, 11),
+        remainder=1,
+        lanes=1,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=256,
+        dtype=dtype,
     )
     monkeypatch.setattr(common, "_mthreads_backend_active", lambda: False)
     assert common.four_step_row_inner_pack_for(209, 221, dtype, plan) == 4
@@ -200,8 +213,14 @@ def test_mthreads_small_mixed_pack_is_bounded_and_backend_local(kernels, monkeyp
     # The same leaf in the column pass must have matching launch metadata.
     assert common.four_step_col_inner_pack_for(221, 209, dtype, plan) == pack
     power_of_two = kernels.LeafPlan(
-        length=128, factors=(8, 4, 4), remainder=1, lanes=16,
-        num_warps=1, generic_radices=(), smem_size=128, dtype=dtype,
+        length=128,
+        factors=(8, 4, 4),
+        remainder=1,
+        lanes=16,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=128,
+        dtype=dtype,
     )
     assert common.four_step_row_inner_pack_for(128, 128, dtype, power_of_two) == 4
 
@@ -694,7 +713,12 @@ def test_tiled_transpose_uses_register_transpose(kernels) -> None:
 
 
 def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> None:
-    kernel_name, source, _, grid_x = kernels._build_tiled_transpose3d_tile_kernel_source(
+    (
+        kernel_name,
+        source,
+        _,
+        grid_x,
+    ) = kernels._build_tiled_transpose3d_tile_kernel_source(
         128, 2048, 64, "201", "complex64", tile=32
     )
 
@@ -709,7 +733,9 @@ def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> Non
     assert "safe_cols[None, :] * 2" in source
 
 
-def test_tiled_transpose3d_tile_selected_without_inline_asm(kernels, tmp_path, monkeypatch) -> None:
+def test_tiled_transpose3d_tile_selected_without_inline_asm(
+    kernels, tmp_path, monkeypatch
+) -> None:
     from flagfft_codegen import emit
 
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
@@ -719,7 +745,12 @@ def test_tiled_transpose3d_tile_selected_without_inline_asm(kernels, tmp_path, m
 
     assert "_tile" in metadata["kernel_name"]
     assert metadata["grid_x_override"] > 0
-    assert "inline_asm" not in (tmp_path / "flagfft_jit_transpose3d_201_n128_2048_64_f32.py").read_text()
+    assert (
+        "inline_asm"
+        not in (
+            tmp_path / "flagfft_jit_transpose3d_201_n128_2048_64_f32.py"
+        ).read_text()
+    )
 
 
 def test_strided_four_step_row_kernel_source_generation(kernels) -> None:

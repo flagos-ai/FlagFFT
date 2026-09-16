@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+
 from .backend_profile import current_profile
 
 _MODULE_DIR = Path(__file__).resolve().parent
@@ -228,9 +229,13 @@ def _register_bounded_batch_pack(plan: LeafPlan, pack: int, native_pack: int) ->
     if profile.policy != "balanced":
         return pack
     lanes = lane_block_for(max(cooperative_stage_lanes_for(plan), default=plan.lanes))
-    native_warps = max(profile.planner_warps(plan.num_warps), profile.warps_for(lanes * native_pack))
+    native_warps = max(
+        profile.planner_warps(plan.num_warps), profile.warps_for(lanes * native_pack)
+    )
     while pack > native_pack:
-        warps = max(profile.planner_warps(plan.num_warps), profile.warps_for(lanes * pack))
+        warps = max(
+            profile.planner_warps(plan.num_warps), profile.warps_for(lanes * pack)
+        )
         live_bytes = plan.length * pack * 2 * _real_element_bytes(plan.dtype)
         budget = warps * profile.warp_size * profile.leaf_live_bytes_per_thread
         # Fill spare lanes, but do not add physical warps simply to pack more
@@ -244,6 +249,7 @@ def _register_bounded_batch_pack(plan: LeafPlan, pack: int, native_pack: int) ->
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     profile = current_profile()
     lane_block = lane_block_for(plan.lanes)
+
     def pack_for(target_threads):
         thread_pack = max(1, target_threads // lane_block)
         tiny_single_stage = plan.length <= 8 and len(plan.factors) == 1
@@ -252,9 +258,14 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
         if len(plan.factors) <= 1:
             return thread_pack
         bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
-        smem_pack = max(1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft)
+        smem_pack = max(
+            1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
+        )
         return _floor_power_of_two(max(1, min(thread_pack, smem_pack)))
-    return _register_bounded_batch_pack(plan, pack_for(profile.leaf_target_threads), pack_for(32))
+
+    return _register_bounded_batch_pack(
+        plan, pack_for(profile.leaf_target_threads), pack_for(32)
+    )
 
 
 def _mthreads_small_mixed_leaf(plan: LeafPlan) -> bool:
@@ -290,13 +301,15 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     lane_block = lane_block_for(active_lanes)
     thread_pack = max(1, _FOUR_STEP_PACK_TARGET_THREADS // lane_block)
     bytes_per_fft = 4 * plan.smem_size * _real_element_bytes(plan.dtype)
-    smem_pack = max(1, current_profile().shared_budget(_FOUR_STEP_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft)
+    smem_pack = max(
+        1,
+        current_profile().shared_budget(_FOUR_STEP_PACK_SMEM_BUDGET_BYTES)
+        // bytes_per_fft,
+    )
     max_pack = _FOUR_STEP_LARGE_INNER_PACK
     if _mthreads_small_mixed_leaf(plan):
         max_pack = 8
-    return _floor_power_of_two(
-        max(1, min(max_pack, thread_pack, smem_pack))
-    )
+    return _floor_power_of_two(max(1, min(max_pack, thread_pack, smem_pack)))
 
 
 def _four_step_col_inner_pack_for(
@@ -366,10 +379,16 @@ def _four_step_row_inner_pack_for(
 
 def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
     profile = current_profile()
-    if plan is None or profile.policy == "legacy" or profile.max_dynamic_shared_memory is None:
+    if (
+        plan is None
+        or profile.policy == "legacy"
+        or profile.max_dynamic_shared_memory is None
+    ):
         return pack
     bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
-    return _floor_power_of_two(max(1, min(pack, profile.max_dynamic_shared_memory // bytes_per_fft)))
+    return _floor_power_of_two(
+        max(1, min(pack, profile.max_dynamic_shared_memory // bytes_per_fft))
+    )
 
 
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
@@ -429,6 +448,7 @@ def _use_single_smem_buffer(
         and plan.length == 1024
         and len(plan.factors) > 2
     )
+
 
 def _triton_plugin_present(plugin: str) -> bool:
     try:

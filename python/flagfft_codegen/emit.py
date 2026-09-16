@@ -24,10 +24,10 @@ from textwrap import dedent
 from typing import Any
 
 from .kernels_common import (
+    LeafPlan,
     _dtype_suffix,
     _next_power_of_two,
     _zero_other,
-    LeafPlan,
     codelet_radices_for,
     lane_block_for,
 )
@@ -66,6 +66,7 @@ _RADER_NUM_WARPS = 4
 _RADER_NUM_STAGES = 4
 _RESHAPE_NUM_WARPS = 4
 _RESHAPE_NUM_STAGES = 1
+
 
 def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]]:
     zero = _zero_other(dtype)
@@ -668,7 +669,9 @@ def _emit_tiled_transpose3d_jit_kernel(
             kernel_source,
             arg_names,
             grid_x,
-        ) = _build_tiled_transpose3d_tile_kernel_source(n0, n1, n2, order, dtype, tile=32)
+        ) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=32
+        )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
             n0, n1, n2, order, dtype

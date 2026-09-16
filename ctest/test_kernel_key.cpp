@@ -32,8 +32,11 @@ TEST(KernelKeyRepr, TiledTransposeDistinguishesDimensions) {
 TEST(KernelKeyRepr, SameKindDifferentFieldsDiffer) {
   EXPECT_NE(flagfft::KernelKey::leaf("t", "forward", "complex64", 64, {4, 4, 4}, 16, 1, {}, 64).repr(),
             flagfft::KernelKey::leaf("t", "inverse", "complex64", 64, {4, 4, 4}, 16, 1, {}, 64).repr());
-  EXPECT_NE(flagfft::KernelKey::four_step_col("t", "forward", "complex64", 209, 221, 46189, {19, 11}, 1, 2, {}, 256).repr(),
-            flagfft::KernelKey::four_step_col("t", "forward", "complex64", 209, 221, 46189, {17, 13}, 1, 2, {}, 256).repr());
+  EXPECT_NE(
+      flagfft::KernelKey::four_step_col("t", "forward", "complex64", 209, 221, 46189, {19, 11}, 1, 2, {}, 256)
+          .repr(),
+      flagfft::KernelKey::four_step_col("t", "forward", "complex64", 209, 221, 46189, {17, 13}, 1, 2, {}, 256)
+          .repr());
   EXPECT_NE(flagfft::KernelKey::transpose3d("t", "complex64", 128, 2048, 64, "021").repr(),
             flagfft::KernelKey::transpose3d("t", "complex64", 128, 2048, 64, "210").repr());
   EXPECT_NE(flagfft::KernelKey::reshape_pack("t", "complex64", 64, 128).repr(),
