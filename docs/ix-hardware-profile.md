@@ -24,7 +24,7 @@ These budgets prune packing choices; they do not predict registers or replace
 the compiler/driver's final resource checks. The initial candidate set uses
 1/2/4/8 warps. The 4096-thread hardware limit is not a recommended block size.
 
-`balanced` estimates the live FFT value bytes per physical thread from the
+`balanced` is the default IX policy. It estimates the live FFT value bytes per physical thread from the
 transform length, precision, cooperative stage lanes and candidate packing.
 It permits packing growth only within the native physical-warp budget and
 while the estimate is at most 128 bytes per thread. Otherwise it falls back
@@ -58,7 +58,7 @@ python tools/probe_capabilities.py --build-dir build-ix \
   --output-dir ../results/<timestamp>_ix_fp64
 python tools/benchmark_hardware_profile.py --build-dir build-ix \
   --baseline-build-dir ../FlagFFT-dev-ix-hardware-baseline/build-ix \
-  --policies legacy,native,packed --repeats 3 \
+  --policies legacy,balanced --repeats 3 \
   --output-dir ../results/<timestamp>_ix_profile
 ```
 

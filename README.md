@@ -158,14 +158,16 @@ runtime (for example `flagtree===0.5.1+iluvatar3.1`).
 | `FLAGFFT_PYTHON` | Path to the Python interpreter used by JIT codegen (default: `python3` from PATH); keep its Python minor version aligned with the CMake build interpreter |
 | `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `~/.flagfft/tune.db`) |
 | `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
-| `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `native` (IX default), `legacy` (other backends' default/comparison), or `packed` (experimental wider leaf packing) |
+| `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `balanced` (IX default), `legacy` (other backends' default/comparison), `native` (device warp only), or `packed` (experimental wider leaf packing) |
 
 ### Hardware profiles and IX experiments
 
 `flagfft-cli device-info --json` reports the current device's driver-queried
 warp size, thread-block limit and shared-memory limits. Code generation receives
-these facts explicitly. `native` uses the device warp width for leaf launch
-heuristics and bounds packing by queried shared-memory limits. Algorithmic
+these facts explicitly. `balanced` uses the device warp width for leaf launch
+heuristics and bounds packing by queried shared-memory and live-value limits.
+`native` uses the device warp width without the live-value packing guard.
+Algorithmic
 radices and transpose tile dimensions retain their existing meaning.
 `packed` additionally targets one device warp when packing small leaf FFTs;
 it is an experiment, not a claim of better performance for every shape.
@@ -179,7 +181,7 @@ backend's container, with `PYTHONPATH` pointing at this checkout's `python/`:
 ./build/flagfft-cli device-info --json
 python tools/probe_capabilities.py --build-dir build \
   --output-dir ../results/20260917_000000_ix_fp64_probe
-python tools/benchmark_hardware_profile.py --build-dir build --repeats 3 \
+python tools/benchmark_hardware_profile.py --build-dir build --policies legacy,balanced --repeats 3 \
   --output-dir ../results/20260917_001000_ix_hardware_policy
 ```
 

@@ -25,7 +25,7 @@ TuneFingerprints tune_fingerprints() {
   fps.planner = "planner-schema-3-exact-batch-candidates";
   const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
   fps.codegen = std::string("codegen-schema-5-hardware-profile-") +
-                (policy ? policy : (adaptor::backend_name() == "ix" ? "native" : "legacy"));
+                (policy ? policy : (adaptor::backend_name() == "ix" ? "balanced" : "legacy"));
   fps.runtime = "runtime-schema-5-rader-dc-reuse";
   fps.benchmark = "benchmark-schema-2-api-dispatch";
   return fps;

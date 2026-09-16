@@ -812,7 +812,7 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
     except ImportError:
         ENV_INFO["triton"] = {"version": "N/A"}
     ENV_INFO["execution_policy"] = os.environ.get("FLAGFFT_EXECUTION_POLICY",
-                                                "native" if ENV_INFO["backend"] == "ix" else "legacy")
+                                                "balanced" if ENV_INFO["backend"] == "ix" else "legacy")
     try:
         query_env = os.environ.copy()
         if gpu_id is not None:
