@@ -88,7 +88,7 @@ def test_leaf_matches_numpy(runtime, n, factors, lanes, dtype, direction, batch)
         for table in (np.cos(angle), np.sin(angle)):
             args.append(torch.tensor(table.reshape(-1), dtype=real_dtype, device="cuda"))
     args.append(batch)
-    scope[name][(math.ceil(batch / contiguous_batch_pack_for(plan)),)](*args, num_warps=4)
+    scope[name][(math.ceil(batch / contiguous_batch_pack_for(plan)),)](*args, num_warps=2)
     expected = np.fft.fft(x, axis=-1) if direction == "forward" else np.fft.ifft(x, axis=-1) * n
     # A global norm avoids treating cancellation near zero as relative error.
     relative_error = np.linalg.norm((output.cpu().numpy() - expected).ravel()) / np.linalg.norm(expected.ravel())

@@ -130,8 +130,8 @@ def _metadata(
         num_warps = 4
     from .kernels_common import _maca_backend_active
     if _maca_backend_active():
-        # Start with the four-warp configurations validated on C550.
-        num_warps = max(4, num_warps)
+        # One warp triggers unsupported shuffle lowering in multi-stage leaves.
+        num_warps = max(2, num_warps)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

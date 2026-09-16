@@ -166,7 +166,7 @@ int64_t PlanBuilder::choose_num_warps(int64_t lanes) {
   const bool is_maca = request_context_.has_value() && request_context_->device_type == "maca";
   const int64_t warp_size = is_maca ? 64 : 32;
   int64_t warps = std::max<int64_t>(1, ceil_div(lane_block_for(lanes), warp_size));
-  int64_t choice = is_maca ? 4 : 1;
+  int64_t choice = is_maca ? 2 : 1;
   while (choice < warps) {
     choice *= 2;
   }

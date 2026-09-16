@@ -76,7 +76,7 @@ buffer. Small supported FFTs use one existing codelet. Multi-stage exchange
 uses tensors of at least 128 elements and avoids `tl.join`, because the SDK
 cannot parse the plugin's `maca.shfl.sync` for warp layout conversions.
 
-The planner and codegen use 64 threads per warp, at least four warps and one transform per
+The planner and codegen use 64 threads per warp, at least two warps and one transform per
 multi-stage leaf block. Small single-codelet leaves retain batch packing.
 MACA-specific settings do not change the other backends' FFT decomposition
 or data exchange.
@@ -92,6 +92,11 @@ finish pipeline. The double-FFT fused leaf is disabled for MACA: compilation
 of a 257-point transform with a 1024-point convolution did not finish after
 several minutes during validation. The split pipeline avoids that optimization
 problem. MACA has separate planner/codegen/runtime tuning fingerprints.
+
+The two-warp floor passed both precisions and directions for single codelets
+and 64/256/780/1024-point multi-stage leaves. One-warp multi-stage kernels
+still emit the unsupported shuffle operation. Larger leaves increase the
+warp count from the full stage lane count, up to eight.
 
 MACA compiles in the existing codegen Python process using libtriton_jit's
 `standalone_compile.py`, then loads `.mcfatbin` and launches raw arguments in
