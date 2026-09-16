@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if(BACKEND STREQUAL "CUDA")
+if(BACKEND STREQUAL "NPU")
+    target_sources(flagfft PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/backend/npu/adaptor.cpp
+    )
+    target_link_libraries(flagfft PRIVATE Ascend::ascendcl Ascend::runtime)
+elseif(BACKEND STREQUAL "CUDA")
     find_package(CUDAToolkit REQUIRED)
     target_sources(flagfft PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/backend/cuda/adaptor.cpp
@@ -29,5 +34,5 @@ elseif(BACKEND STREQUAL "PPU")
     )
     target_link_libraries(flagfft PRIVATE PPU::ppu_runtime)
 else()
-    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA, BACKEND=MUSA, or BACKEND=PPU")
+    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, or BACKEND=NPU")
 endif()

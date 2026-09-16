@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cstdio>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
@@ -70,6 +71,14 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
   flagfftResult device_result = adaptor::ensure_device(desc.device_index, desc.device_arch);
   if (device_result != FLAGFFT_SUCCESS) {
     return device_result;
+  }
+  if (adaptor::backend_name() == "npu" &&
+      (desc.rank != 1 || desc.type != FLAGFFT_C2C || desc.n.size() != 1 ||
+       desc.n[0] > kDirectDftMaxN)) {
+    // Plain-Triton Ascend bootstrap scope: contiguous 1D complex64 only,
+    // with Direct DFT capped at 128 points.  This keeps all other paths from
+    // accidentally instantiating the current TLE-based kernels.
+    return FLAGFFT_NOT_SUPPORTED;
   }
 
   try {
@@ -334,7 +343,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     return FLAGFFT_SUCCESS;
   } catch (const std::bad_alloc &) {
     return FLAGFFT_ALLOC_FAILED;
-  } catch (const std::exception &) {
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] plan setup failed: %s\n", e.what());
     return FLAGFFT_SETUP_FAILED;
   }
 }

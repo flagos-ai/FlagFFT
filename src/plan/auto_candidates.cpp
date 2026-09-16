@@ -118,6 +118,17 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }
+  // The first Ascend milestone deliberately uses only the standard Triton
+  // Direct DFT kernel.  Leaf/Four-Step/Bluestein routes still contain
+  // FlagTree TLE code and are enabled only after their Ascend lowering path
+  // has been validated separately.
+  if (request_context().device_type == "npu") {
+    if (n > kDirectDftMaxN) {
+      return {};
+    }
+    PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+    return {{node, estimate_direct_dft_cost(n), priority(node)}};
+  }
 
   std::vector<PlanCandidate> candidates;
   Factorization factorization = factorize_supported_radices(n);

@@ -60,10 +60,16 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                        int64_t grid_y,
                        int64_t grid_z) {
   compile();
+#if !defined(BACKEND_NPU)
   adaptor::DevicePtr global_scratch = 0;
   adaptor::DevicePtr profile_scratch = 0;
+#endif
   std::vector<void *> args;
+#if defined(BACKEND_NPU)
+  args.reserve(kernel_args.size());
+#else
   args.reserve(kernel_args.size() + 2);
+#endif
   for (const JitKernelArg &arg : kernel_args) {
     switch (arg.kind) {
       case JitArgKind::DevicePtr:
@@ -77,8 +83,10 @@ void JitKernel::launch(adaptor::StreamHandle stream,
         break;
     }
   }
+#if !defined(BACKEND_NPU)
   args.push_back(&global_scratch);
   args.push_back(&profile_scratch);
+#endif
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
   function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
                                  static_cast<unsigned int>(grid_x),

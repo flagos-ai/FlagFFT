@@ -19,10 +19,10 @@ project(flagfft LANGUAGES CXX)
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "NPU")
 
-if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU"))
-    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, or BACKEND=PPU")
+if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "NPU"))
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, or BACKEND=NPU")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
@@ -49,12 +49,15 @@ else()
                     "this is the likely cause.")
 endif()
 
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit/CMakeLists.txt")
-    message(FATAL_ERROR "deps/libtriton_jit is required")
-endif()
 set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORCE)
 set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
-add_subdirectory(deps/libtriton_jit)
+set(FLAGFFT_TRITON_JIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit"
+    CACHE PATH "libtriton_jit source directory")
+if(NOT EXISTS "${FLAGFFT_TRITON_JIT_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "libtriton_jit source is required at ${FLAGFFT_TRITON_JIT_SOURCE_DIR}")
+endif()
+add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
+                 "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
 
 set(FLAGFFT_CORE_SOURCES
     src/utils/base.cpp
@@ -163,6 +166,8 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             PPU::ppu_runtime
             ${PPU_FFT_LIB}
         )
+    elseif(BACKEND STREQUAL "NPU")
+        message(FATAL_ERROR "FLAGFFT_BUILD_CLI/TESTS is not available for BACKEND=NPU yet; use the plain-Triton Ascend smoke test")
     endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
     target_include_directories(flagfft_test_adaptor PUBLIC

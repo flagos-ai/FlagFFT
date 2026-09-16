@@ -53,10 +53,23 @@ def _csv_ints(raw: str) -> tuple[int, ...]:
 
 def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
     helpers = (
+        "import os\n"
+        "if (os.environ.get('TRITON_BACKEND') in {'torch_npu', 'npu'}\n"
+        "        or os.environ.get('FLAGTREE_BACKEND') == 'ascend'\n"
+        "        or os.environ.get('TRITON_JIT_BACKEND') == 'NPU'):\n"
+        "    import torch\n"
+        "    import torch_npu\n"
         "import triton\n"
         "import triton.language as tl\n"
-        "import triton.experimental.tle.language as tle\n\n"
     )
+    # Keep the plain-Triton path independent of FlagTree TLE.  Leaf kernels
+    # still request TLE explicitly through their generated ``tle.`` calls,
+    # while direct/pointwise/transpose kernels only need the standard Triton
+    # language and can therefore be bootstrapped on a backend before TLE
+    # features are enabled.
+    if radices or "tle." in kernel_source:
+        helpers += "import triton.experimental.tle.language as tle\n"
+    helpers += "\n"
     utils_path = _CODELET_DIR / "utils.py"
     if utils_path.exists():
         helpers += utils_path.read_text() + "\n\n"
