@@ -76,8 +76,10 @@ class ProfileTest(unittest.TestCase):
         try:
             small = LeafPlan(256, (16, 16), 1, 16, 1, (), 256)
             large = LeafPlan(1024, (32, 32), 1, 32, 1, (), 1024)
+            changing_lanes = LeafPlan(128, (8, 4, 4), 1, 16, 1, (), 128)
             self.assertEqual(contiguous_batch_pack_for(small), 4)
             self.assertEqual(contiguous_batch_pack_for(large), 1)
+            self.assertEqual(contiguous_batch_pack_for(changing_lanes), 2)
         finally:
             reset_profile(token)
 

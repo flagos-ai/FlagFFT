@@ -26,11 +26,17 @@ the compiler/driver's final resource checks. The initial candidate set uses
 
 `balanced` estimates the live FFT value bytes per physical thread from the
 transform length, precision, cooperative stage lanes and candidate packing.
-It halves packing until the estimate is at most 128 bytes per thread. This is
+It permits packing growth only within the native physical-warp budget and
+while the estimate is at most 128 bytes per thread. Otherwise it falls back
+toward the native packing. This is
 a tunable policy budget rather than a measured register allocation. The first
 paired experiment motivated this constraint: packing four 256-point transforms
 helped, while packing two 1024-point transforms into one 64-thread block hurt.
-The constraint expresses that pressure tradeoff without a shape-specific rule.
+The 128-cubed experiment additionally showed that packing based only on the
+initial stage lanes could increase the actual launch from one warp to two.
+The constraints express those pressure and exchange tradeoffs without a
+shape-specific rule. Register usage and barrier costs remain hypotheses until
+verified with compiler/profiler counters; measured end-to-end time decides.
 
 Generated module paths contain a fingerprint of the profile, policy version,
 Triton version and code-generator sources. The in-process kernel cache includes
