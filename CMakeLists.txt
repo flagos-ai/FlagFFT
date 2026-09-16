@@ -56,6 +56,14 @@ set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORC
 set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
 add_subdirectory(deps/libtriton_jit)
 
+if(TRITON_JIT_USE_EXTERNAL_JSON)
+    # With an external package, libtriton_jit's imported target is scoped to
+    # its subdirectory. Re-find it here for FlagFFT targets. When JSON is
+    # provided through FetchContent, the normal target is already global and
+    # must not be looked up as an installed package.
+    find_package(nlohmann_json 3.11.3 REQUIRED)
+endif()
+
 set(FLAGFFT_CORE_SOURCES
     src/utils/base.cpp
     src/utils/problem_key.cpp
