@@ -56,11 +56,6 @@ set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORC
 set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
 add_subdirectory(deps/libtriton_jit)
 
-# The libtriton_jit submodule may resolve nlohmann_json through an external
-# package; its imported target is only visible inside that directory scope, so
-# re-find it here for the FlagFFT targets.
-find_package(nlohmann_json 3.11.3 REQUIRED)
-
 set(FLAGFFT_CORE_SOURCES
     src/utils/base.cpp
     src/utils/problem_key.cpp
