@@ -2114,15 +2114,20 @@ def main(argv: list[str] | None = None) -> int:
     # FlagFFT still needs to run the NumPy accuracy check.  Such cases are
     # therefore absent from runnable_perf_cases but must not cause a lookup
     # failure when their accuracy case is attached below.
+    # Keep the performance case canonical (without the accuracy scale suffix),
+    # while still creating a job for every accuracy case.  The latter is
+    # required for reference-library skips: FlagFFT accuracy still runs even
+    # when the corresponding platform/performance case is suppressed.
+    performance_by_name = {
+        case["case_id"]: case for case in performance_cases(cases)
+    }
     jobs = {
-        case_name(case, performance=True): {
-            "performance_case": case,
-            "accuracy_cases": [],
-        }
-        for case in cases
+        key: {"performance_case": case, "accuracy_cases": []}
+        for key, case in performance_by_name.items()
     }
     for case in cases:
-        jobs[case_name(case, performance=True)]["accuracy_cases"].append(case)
+        key = case_name(case, performance=True)
+        jobs[key]["accuracy_cases"].append(case)
     # Spawn avoids forking an initialized CUDA/PyTorch runtime.
     context = multiprocessing.get_context("spawn")
     work_queue = context.Queue()
