@@ -70,6 +70,17 @@ class ProfileTest(unittest.TestCase):
         finally:
             reset_profile(token)
 
+    def test_live_value_budget_preserves_small_pack_and_bounds_large_pack(self):
+        from dataclasses import replace
+        token = set_profile(replace(self.profile(), policy="balanced"))
+        try:
+            small = LeafPlan(256, (16, 16), 1, 16, 1, (), 256)
+            large = LeafPlan(1024, (32, 32), 1, 32, 1, (), 1024)
+            self.assertEqual(contiguous_batch_pack_for(small), 4)
+            self.assertEqual(contiguous_batch_pack_for(large), 1)
+        finally:
+            reset_profile(token)
+
 
 if __name__ == "__main__":
     unittest.main()

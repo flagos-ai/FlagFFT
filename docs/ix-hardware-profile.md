@@ -18,10 +18,19 @@ Policies:
 | legacy | Existing 32-lane hint | 32 logical lanes | Existing heuristic budgets |
 | native | Queried device width | 32 logical lanes | Capped by queried device limit |
 | packed | Queried device width | One device warp | Capped by queried device limit |
+| balanced | Queried device width | One device warp, bounded by live-value budget | Capped by queried device limit |
 
 These budgets prune packing choices; they do not predict registers or replace
 the compiler/driver's final resource checks. The initial candidate set uses
 1/2/4/8 warps. The 4096-thread hardware limit is not a recommended block size.
+
+`balanced` estimates the live FFT value bytes per physical thread from the
+transform length, precision, cooperative stage lanes and candidate packing.
+It halves packing until the estimate is at most 128 bytes per thread. This is
+a tunable policy budget rather than a measured register allocation. The first
+paired experiment motivated this constraint: packing four 256-point transforms
+helped, while packing two 1024-point transforms into one 64-thread block hurt.
+The constraint expresses that pressure tradeoff without a shape-specific rule.
 
 Generated module paths contain a fingerprint of the profile, policy version,
 Triton version and code-generator sources. The in-process kernel cache includes

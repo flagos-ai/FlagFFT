@@ -30,7 +30,7 @@ def main():
     baseline = args.baseline_build_dir.resolve() if args.baseline_build_dir else build
     root.mkdir(parents=True, exist_ok=False)
     policies = args.policies.split(",")
-    if (args.repeats < 1 or args.timeout <= 0 or any(p not in {"legacy", "native", "packed"} for p in policies)
+    if (args.repeats < 1 or args.timeout <= 0 or any(p not in {"legacy", "native", "packed", "balanced"} for p in policies)
             or any(api not in {"c2c", "r2c", "c2r"} for api in args.apis.split(","))):
         parser.error("positive repeats and valid execution policies required")
     device = subprocess.run([str(build / "flagfft-cli"), "device-info", "--json"],

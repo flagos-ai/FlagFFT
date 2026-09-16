@@ -16,12 +16,14 @@ class BackendProfile:
     policy_version: int = 1
     toolchain: str = "unspecified"
     source_fingerprint: str = "unspecified"
+    # Policy budget for live FFT values, not a queried physical register count.
+    leaf_live_bytes_per_thread: int = 128
 
     @classmethod
     def from_device(cls, device: dict, policy: str = "native"):
         if device.get("backend") not in {"cuda", "musa", "ppu", "ix"} or not device.get("device_arch"):
             raise ValueError("missing or unsupported device identity")
-        if policy not in {"legacy", "native", "packed"}:
+        if policy not in {"legacy", "native", "packed", "balanced"}:
             raise ValueError(f"unknown execution policy: {policy}")
         warp = device.get("warp_size")
         threads = device.get("max_threads_per_block")
@@ -38,7 +40,7 @@ class BackendProfile:
 
     @property
     def leaf_target_threads(self):
-        return self.warp_size if self.policy == "packed" else 32
+        return self.warp_size if self.policy in {"packed", "balanced"} else 32
 
     @property
     def fingerprint(self):

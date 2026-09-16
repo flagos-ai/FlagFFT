@@ -223,6 +223,21 @@ def _next_power_of_two(value: int) -> int:
     return result
 
 
+def _register_bounded_batch_pack(plan: LeafPlan, pack: int) -> int:
+    profile = current_profile()
+    if profile.policy != "balanced":
+        return pack
+    lanes = lane_block_for(max(cooperative_stage_lanes_for(plan), default=plan.lanes))
+    while pack > 1:
+        warps = max(profile.planner_warps(plan.num_warps), profile.warps_for(lanes * pack))
+        live_bytes = plan.length * pack * 2 * _real_element_bytes(plan.dtype)
+        budget = warps * profile.warp_size * profile.leaf_live_bytes_per_thread
+        if live_bytes <= budget:
+            break
+        pack //= 2
+    return pack
+
+
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     profile = current_profile()
     target_threads = profile.leaf_target_threads
@@ -235,11 +250,11 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     if not tiny_single_stage and plan.length <= 128:
         thread_pack = min(thread_pack, 4)
     if len(plan.factors) <= 1:
-        return thread_pack
+        return _register_bounded_batch_pack(plan, thread_pack)
 
     bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
     smem_pack = max(1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft)
-    return _floor_power_of_two(max(1, min(thread_pack, smem_pack)))
+    return _register_bounded_batch_pack(plan, _floor_power_of_two(max(1, min(thread_pack, smem_pack))))
 
 
 def _mthreads_small_mixed_leaf(plan: LeafPlan) -> bool:

@@ -84,7 +84,7 @@ def main() -> None:
     parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--device-profile", help="JSON device capabilities from the adaptor")
-    parser.add_argument("--execution-policy", choices=("legacy", "native", "packed"), default="native")
+    parser.add_argument("--execution-policy", choices=("legacy", "native", "packed", "balanced"), default="native")
     args = parser.parse_args()
     if args.device_profile:
         set_profile(BackendProfile.from_device(json.loads(args.device_profile), args.execution_policy))
