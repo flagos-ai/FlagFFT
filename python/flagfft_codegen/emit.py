@@ -16,6 +16,7 @@ from __future__ import annotations
 
 """Kernel source emission: per-family builders plus the registry-driven dispatch."""
 
+import ast
 import importlib.util
 import json
 import sys
@@ -573,13 +574,11 @@ def emit_jit_kernel(
     radices = tuple(sorted(codelet_radices_for(factors))) if spec.is_leaf_like or spec.family == STOCKHAM else ()
     module_path.write_text(_module_source(kernel_source, radices))
 
-    sys.path.insert(0, str(module_path.parent))
-    spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"failed to load generated kernel module {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    arg_names = list(getattr(module, kernel_name).arg_names)
+    # Metadata describes the emitted function, not the generator's active
+    # device. Do not import backend-specific TLE helpers just to read arguments.
+    function = next(node for node in ast.parse(kernel_source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == kernel_name)
+    arg_names = [arg.arg for arg in function.args.args]
     metadata = _metadata(
         module_path=module_path,
         kernel_name=kernel_name,
