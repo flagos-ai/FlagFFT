@@ -2,22 +2,39 @@
 """Bounded, isolated FP64 diagnostics; does not change acceptance policy."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
 
-def arithmetic_worker(layer):
+def arithmetic_worker(layer, native_compiler=None, native_arch="ivcore11"):
     import numpy as np
     x = np.array([1 + 2.0**-40, 1 - 2.0**-40, -1 + 2.0**-40], dtype=np.float64)
     expected = (x - 1.0) * 3.0
+    details = {}
     if layer == "runtime":
         with tempfile.TemporaryDirectory(prefix="flagfft-fp64-") as directory:
             binary = str(Path(directory) / "native_probe")
-            subprocess.run(["nvcc", str(Path(__file__).with_name("fp64_runtime_probe.cu")),
-                            "-o", binary], check=True, stdout=sys.stderr, stderr=sys.stderr)
-            output = subprocess.run([binary], capture_output=True, text=True, check=True)
+            corex = Path(os.environ.get("COREX_HOME", "/usr/local/corex"))
+            compiler = native_compiler or (str(corex / "bin/clang++") if (corex / "bin/clang++").is_file() else "nvcc")
+            command = [compiler, str(Path(__file__).with_name("fp64_runtime_probe.cu")), "-o", binary]
+            if Path(compiler).name.startswith("clang"):
+                sdk = Path(compiler).resolve().parent.parent
+                command[1:1] = ["-x", "ivcore", f"--cuda-gpu-arch={native_arch}"]
+                command += [f"-L{sdk / 'lib64'}", "-lcudart"]
+            details["compile_command"] = command
+            compilation = subprocess.run(command, stdout=sys.stderr, stderr=sys.stderr)
+            if compilation.returncode:
+                return {"status": "failed", "stage": "compile", **details}
+            if not Path(binary).is_file():
+                return {"status": "unknown", "stage": "compile",
+                        "reason": "compiler returned success without creating a binary", **details}
+            output = subprocess.run([binary], capture_output=True, text=True)
+            if output.returncode:
+                print(output.stderr, file=sys.stderr)
+                return {"status": "failed", "stage": "execute", **details}
             actual = np.array([float(v) for v in output.stdout.split()], dtype=np.float64)
     else:
         import torch
@@ -36,7 +53,7 @@ def arithmetic_worker(layer):
         actual = dy.cpu().numpy()
     passed = bool(np.array_equal(actual, expected))
     return {"status": "passed" if passed else "failed", "actual": actual.tolist(),
-            "expected": expected.tolist(), "scope": "FP64 subtraction/multiplication; 3 inputs"}
+            "expected": expected.tolist(), "scope": "FP64 subtraction/multiplication; 3 inputs", **details}
 
 
 def run(cmd, directory, timeout):
@@ -58,9 +75,11 @@ def main():
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--worker", choices=("runtime", "triton"))
+    parser.add_argument("--native-compiler", help="SDK compiler override; CoreX clang++ is preferred when installed")
+    parser.add_argument("--native-arch", default="ivcore11", help="CoreX native-probe target")
     args = parser.parse_args()
     if args.worker:
-        print(json.dumps(arithmetic_worker(args.worker)))
+        print(json.dumps(arithmetic_worker(args.worker, args.native_compiler, args.native_arch)))
         return
     if args.output_dir is None:
         parser.error("--output-dir is required")
@@ -76,7 +95,10 @@ def main():
     for layer in ("runtime", "triton"):
         directory = root / layer
         directory.mkdir()
-        result = run([sys.executable, str(Path(__file__).resolve()), "--worker", layer], directory, args.timeout)
+        command = [sys.executable, str(Path(__file__).resolve()), "--worker", layer, "--native-arch", args.native_arch]
+        if args.native_compiler:
+            command += ["--native-compiler", args.native_compiler]
+        result = run(command, directory, args.timeout)
         if result["status"] == "passed":
             try:
                 result = json.loads(result["stdout"])

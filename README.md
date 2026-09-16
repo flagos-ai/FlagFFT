@@ -190,7 +190,7 @@ cover the complete FFT execution, excluding plan creation/JIT and host copies.
 For acceptance use `tools/run_tests.py`; the experiment is a representative
 matrix, not a replacement for the complete 36-operator report.
 
-FP64 diagnostics test native-SDK arithmetic (compiled with `nvcc`), Triton arithmetic and small
+FP64 diagnostics test native-SDK arithmetic (CoreX `clang++`, otherwise `nvcc`), Triton arithmetic and small
 FlagFFT/platform FFTs in separate bounded processes. A failed compiler or
 library probe does not prove missing hardware support; passing a small probe
 does not certify every transform. Diagnostics do not enable IX FP64 acceptance.
