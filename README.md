@@ -397,6 +397,7 @@ limits and reject nonfinite values.
 | `--max-cases` | — | Select the first N cases for a partial run |
 | `--timeout` | `600` | Independent timeout for each FlagFFT/platform/benchmark process |
 | `--warmup` / `--iters` | `10 / 100` | Benchmark warmup and measurement iterations |
+| `--artifacts` | `failed` | Raw correctness artifacts: `none`, `failed`, or `all` |
 | `--dry-run` | — | Print selected cases without execution or result files |
 | `--analyze-only RESULT_DIR` | — | Recompute NumPy comparisons from captured inputs and outputs |
 | `--color` | `auto` | `auto/always/never` |
@@ -425,11 +426,14 @@ python tools/run_tests.py --scales all --ops 1d_ct_single_c2c
 
 # Reanalyze saved data without executing device kernels.
 python tools/run_tests.py --analyze-only ../results/20260916_120000_acceptance36
+
+# Keep all raw correctness data when offline reanalysis is needed.
+python tools/run_tests.py --artifacts all --accuracy-only --ops 1d_ct_single_c2c
 ```
 
 #### Output
 
-All outputs use format version 2. A full run has 36 keys under
+All outputs use format version 3. A full run has 36 keys under
 `summary.json.result`, in acceptance order. Filtered runs contain the
 selected operators, and the manifest records the exact partial selection.
 The existing `accuracy.details` and `performance.data.default` report fields
@@ -439,7 +443,7 @@ are retained alongside the new per-case metrics and plans.
 - `summary.json`: each operator's `accuracy`, `platform_accuracy` and `performance` results.
 - `incremental.csv`: case/phase, operator ID, shape, numeric batch, direction, scale, both correctness statuses and errors, policy skip reason, limits, timings and actual plan. CSV quoting preserves multiline plan text.
 - `{op_id}/{case_id}/case.json`: correctness metrics, input seed/hashes, independent capture statuses and actual `accuracy.plan`.
-- `{op_id}/{case_id}/`: exact inputs, NumPy and device outputs, per-library logs and `flagfft_plan.txt`.
+- `{op_id}/{case_id}/`: `case.json`, per-library logs and `flagfft_plan.txt`; raw `bin` files are retained according to `--artifacts` and no `npy` files are generated.
 - `{op_id}/performance/{case_id}/result.json`: timings and the benchmark's own `performance.plan`.
 - `{op_id}/{accuracy,platform_accuracy,performance}_result.json`: aggregate per-operator results.
 - `reanalyzed.csv`: refreshed comparisons produced by `--analyze-only`.
@@ -459,7 +463,9 @@ Exit code is 0 when all requested FlagFFT correctness and/or performance phases
 pass; an explicit backend-policy skip such as IX FP64 is allowed. Exit code 1
 indicates a failure, incomplete phase, or unexpected skip; 2 is a configuration
 error and 130 is interruption. Platform correctness is reported independently.
-Results are preserved on interruption; reanalysis uses the original manifest.
+`--artifacts failed` preserves raw data only for failed, timed-out, or otherwise
+incomplete correctness cases. `--analyze-only` requires a result created with
+`--artifacts all`; legacy results without an artifact policy remain readable.
 
 ### C++ Tests (ctest/)
 
