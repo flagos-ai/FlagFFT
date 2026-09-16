@@ -76,10 +76,22 @@ buffer. Small supported FFTs use one existing codelet. Multi-stage exchange
 uses tensors of at least 128 elements and avoids `tl.join`, because the SDK
 cannot parse the plugin's `maca.shfl.sync` for warp layout conversions.
 
-The initial launch policy uses at least four warps and one transform per
+The planner and codegen use 64 threads per warp, at least four warps and one transform per
 multi-stage leaf block. Small single-codelet leaves retain batch packing.
 MACA-specific settings do not change the other backends' FFT decomposition
 or data exchange.
+
+MACA does not apply the existing small-batch radix/lane heuristic or the
+measured thread-local Four-Step preference. Its cost estimate uses all stage
+butterflies, matching the portable kernel. Four-Step inner packing is one in
+both planning and codegen. Rader and Bluestein remain available to the tuner;
+MACA does not inherit the FP32 preference based on fused Bluestein.
+
+Bluestein uses the existing separate prepare, FFT, pointwise, inverse FFT and
+finish pipeline. The double-FFT fused leaf is disabled for MACA: compilation
+of a 257-point transform with a 1024-point convolution did not finish after
+several minutes during validation. The split pipeline avoids that optimization
+problem. MACA has separate planner/codegen/runtime tuning fingerprints.
 
 MACA compiles in the existing codegen Python process using libtriton_jit's
 `standalone_compile.py`, then loads `.mcfatbin` and launches raw arguments in

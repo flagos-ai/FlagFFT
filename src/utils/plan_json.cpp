@@ -26,6 +26,11 @@ TuneFingerprints tune_fingerprints() {
   fps.codegen = "codegen-schema-4-rader-dc-reuse";
   fps.runtime = "runtime-schema-5-rader-dc-reuse";
   fps.benchmark = "benchmark-schema-2-api-dispatch";
+  if (adaptor::backend_name() == "maca") {
+    fps.planner = "planner-schema-4-maca-warp64";
+    fps.codegen = "codegen-schema-5-maca-register-exchange";
+    fps.runtime = "runtime-schema-6-maca-native-dispatch";
+  }
   return fps;
 }
 

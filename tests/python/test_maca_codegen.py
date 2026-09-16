@@ -47,14 +47,15 @@ def runtime():
 
 
 @pytest.mark.parametrize("n,factors,lanes", [
-    (8, (2, 2, 2), 4), (15, (3, 5), 1),
+    (8, (8,), 1), (15, (15,), 1), (16, (16,), 1), (32, (32,), 1),
     (64, (2, 2, 2, 2, 2, 2), 32),
     (256, (2, 2, 2, 2, 2, 2, 2, 2), 128),
     (780, (13, 10, 6), 2),
 ])
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("direction", ["forward", "inverse"])
-def test_leaf_matches_numpy(runtime, n, factors, lanes, dtype, direction):
+@pytest.mark.parametrize("batch", [1, 2, 7, 16, 256])
+def test_leaf_matches_numpy(runtime, n, factors, lanes, dtype, direction, batch):
     np, torch = runtime
     from flagfft_codegen.kernels_common import (
         LeafPlan, codelet_radices_for, contiguous_batch_pack_for,
@@ -73,7 +74,7 @@ def test_leaf_matches_numpy(runtime, n, factors, lanes, dtype, direction):
     exec(compile(module, filename, "exec"), scope)
 
     rng = np.random.default_rng(1234)
-    x = (rng.normal(size=(7, n)) + 1j * rng.normal(size=(7, n))).astype(dtype)
+    x = (rng.normal(size=(batch, n)) + 1j * rng.normal(size=(batch, n))).astype(dtype)
     input_tensor = torch.from_numpy(x).cuda()
     output = torch.empty_like(input_tensor)
     args = [torch.view_as_real(input_tensor), torch.view_as_real(output)]
@@ -86,8 +87,8 @@ def test_leaf_matches_numpy(runtime, n, factors, lanes, dtype, direction):
                  (prefix * factors[stage]))
         for table in (np.cos(angle), np.sin(angle)):
             args.append(torch.tensor(table.reshape(-1), dtype=real_dtype, device="cuda"))
-    args.append(7)
-    scope[name][(math.ceil(7 / contiguous_batch_pack_for(plan)),)](*args, num_warps=4)
+    args.append(batch)
+    scope[name][(math.ceil(batch / contiguous_batch_pack_for(plan)),)](*args, num_warps=4)
     expected = np.fft.fft(x, axis=-1) if direction == "forward" else np.fft.ifft(x, axis=-1) * n
     # A global norm avoids treating cancellation near zero as relative error.
     relative_error = np.linalg.norm((output.cpu().numpy() - expected).ravel()) / np.linalg.norm(expected.ravel())

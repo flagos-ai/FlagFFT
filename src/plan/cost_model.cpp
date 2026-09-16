@@ -118,7 +118,14 @@ double PlanBuilder::estimate_leaf_warm_cost(int64_t n, const std::vector<int64_t
   int64_t lanes = choose_lanes(n, factors);
   const RequestContext &context = request_context();
   const bool is_double = context.input_dtype == "complex128" || context.input_dtype == "float64";
-  const std::vector<int64_t> stage_lanes = estimated_stage_lanes(n, factors, lanes, is_double);
+  std::vector<int64_t> stage_lanes;
+  if (context.device_type == "maca") {
+    for (int64_t radix : factors) {
+      stage_lanes.push_back(n / radix);
+    }
+  } else {
+    stage_lanes = estimated_stage_lanes(n, factors, lanes, is_double);
+  }
   const int64_t active_lanes = *std::max_element(stage_lanes.begin(), stage_lanes.end());
   const int64_t warps = choose_num_warps(active_lanes);
   double base = 0.0;

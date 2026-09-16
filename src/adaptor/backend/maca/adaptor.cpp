@@ -220,11 +220,15 @@ void CudaGraph::end_capture(StreamHandle stream) {
   ensure_current_context();
   mcGraph_t graph = nullptr;
   check(mcStreamEndCapture(as_stream(stream), &graph), "mcStreamEndCapture");
+  graph_ = reinterpret_cast<void *>(graph);
   mcGraphExec_t exec = nullptr;
   check(mcGraphInstantiate(&exec, graph, nullptr, nullptr, 0), "mcGraphInstantiate");
+  if (exec_ != nullptr) {
+    mcGraphExecDestroy(as_graph_exec(exec_));
+  }
+  exec_ = reinterpret_cast<void *>(exec);
   check(mcGraphDestroy(graph), "mcGraphDestroy");
   graph_ = nullptr;
-  exec_ = reinterpret_cast<void *>(exec);
 }
 
 void CudaGraph::launch(StreamHandle stream) {

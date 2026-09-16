@@ -25,12 +25,18 @@ inline constexpr int64_t kTleFusedTwiddleMinLength = int64_t {1} << 18;
 inline constexpr int64_t kTleFusedTwiddleMaxLeaf = 1024;
 
 bool use_tle_fused_twiddle(int64_t n1, int64_t n2, const std::string &dtype) {
+  if (adaptor::backend_name() == "maca") {
+    return false;
+  }
   const bool is_double = dtype == "complex128" || dtype == "float64";
   return !is_double && n1 * n2 >= kTleFusedTwiddleMinLength && n1 <= kTleFusedTwiddleMaxLeaf &&
          n2 <= kTleFusedTwiddleMaxLeaf;
 }
 
 int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2, const std::string &dtype) {
+  if (adaptor::backend_name() == "maca") {
+    return 1;
+  }
   if (n1 < kFourStepColInnerPackMinN1) {
     return 1;
   }
@@ -46,6 +52,9 @@ int64_t four_step_col_inner_pack_for(int64_t n1, int64_t n2, const std::string &
 }
 
 int64_t four_step_row_inner_pack_for(int64_t n1, int64_t n2, const std::string &dtype) {
+  if (adaptor::backend_name() == "maca") {
+    return 1;
+  }
   if (use_tle_fused_twiddle(n1, n2, dtype)) {
     return kFourStepLargeInnerPack;
   }
