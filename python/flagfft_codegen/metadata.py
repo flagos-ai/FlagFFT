@@ -114,7 +114,7 @@ def _metadata(
     else:
         inner_pack = 1
     profile = current_profile()
-    num_warps = profile.warps_for(int(plan.num_warps) * 32)
+    num_warps = profile.planner_warps(int(plan.num_warps))
     if kernel_type == "direct_dft" and dtype == "complex64":
         num_warps = 4
     if tle_fused_twiddle:

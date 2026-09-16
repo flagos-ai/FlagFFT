@@ -19,7 +19,7 @@ class ProfileTest(unittest.TestCase):
 
     def test_invalid_device(self):
         for field, value in (("warp_size", None), ("max_threads_per_block", 16),
-                             ("max_dynamic_shared_memory", -1)):
+                             ("max_dynamic_shared_memory", -1), ("backend", "unknown")):
             with self.assertRaises(ValueError):
                 self.profile(**{field: value})
 
@@ -60,6 +60,15 @@ class ProfileTest(unittest.TestCase):
         finally:
             reset_profile(token)
         self.assertEqual(contiguous_batch_pack_for(plan), 2)
+
+    def test_four_step_respects_device_memory(self):
+        from flagfft_codegen.kernels_common import four_step_col_inner_pack_for
+        token = set_profile(self.profile(max_dynamic_shared_memory=32768))
+        try:
+            plan = LeafPlan(1024, (16, 16, 4), 1, 64, 2, (), 1024)
+            self.assertEqual(four_step_col_inner_pack_for(1024, 1024, "complex64", plan), 1)
+        finally:
+            reset_profile(token)
 
 
 if __name__ == "__main__":

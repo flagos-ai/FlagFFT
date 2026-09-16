@@ -19,6 +19,8 @@ class BackendProfile:
 
     @classmethod
     def from_device(cls, device: dict, policy: str = "native"):
+        if device.get("backend") not in {"cuda", "musa", "ppu", "ix"} or not device.get("device_arch"):
+            raise ValueError("missing or unsupported device identity")
         if policy not in {"legacy", "native", "packed"}:
             raise ValueError(f"unknown execution policy: {policy}")
         warp = device.get("warp_size")
@@ -52,6 +54,11 @@ class BackendProfile:
         candidates = [n for n in (1, 2, 4, 8) if n * self.warp_size <= self.max_threads_per_block]
         # Logical lanes may span multiple elements per physical thread.
         return next((n for n in candidates if n >= wanted), candidates[-1])
+
+    def planner_warps(self, hint):
+        # The existing plan format expresses its hint in 32-thread units.
+        # Convert that budget once at codegen, keeping serialized plans compatible.
+        return self.warps_for(hint * 32)
 
     def validate(self, num_warps):
         if num_warps not in (1, 2, 4, 8) or num_warps * self.warp_size > self.max_threads_per_block:
