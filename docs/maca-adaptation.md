@@ -174,10 +174,11 @@ workspace-level `results/20260916_154838_maca_implementation/`. Keep all test
 and benchmark output under that mount, including intermediate CSV files:
 
 ```bash
-/opt/conda/bin/python tools/numpy_fft_validation/validate.py \
-    --capture-bin /workspace/FlagFFT-build/numpy-capture/numpy_fft_capture \
-    --backend MACA --combination 1d_ct_single --shapes 256 \
-    --gpu 4 --output-dir /workspace/FlagFFT-results/numpy_smoke
+/opt/conda/bin/python tools/run_tests.py \
+    --build-dir /workspace/FlagFFT-build/release \
+    --combination 1d_ct_single --ops 1d_ct_single_c2c \
+    --gpus 4 --accuracy-only \
+    --output-dir /workspace/FlagFFT-results/numpy_smoke
 /opt/conda/bin/python tools/run_tests.py \
     --build-dir /workspace/FlagFFT-build/release --gpus 4 \
     --combination 1d_ct_single --accuracy-only \
