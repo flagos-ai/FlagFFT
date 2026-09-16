@@ -39,7 +39,7 @@ import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 ENV_INFO: dict[str, Any] = {}
 WORKER_PROCESSES: list[multiprocessing.Process] = []
 INTERRUPTED = False
@@ -115,6 +115,17 @@ ACCURACY_CONSTANTS = {
 }
 
 DEFAULT_SCALES = (2.0**-20, 1.0, 2.0**20)
+ARTIFACT_POLICIES = ("none", "failed", "all")
+# These files are the native capture boundary. The .npy files are included
+# only so old/interrupted result directories can be cleaned consistently;
+# new runs never create them.
+RAW_ARTIFACT_FILENAMES = (
+    "input.bin",
+    "flagfft.bin",
+    "platform.bin",
+    "input.npy",
+    "numpy.npy",
+)
 
 
 def product(shape: Iterable[int]) -> int:
@@ -405,6 +416,35 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def cleanup_raw_artifacts(case_dir: Path) -> list[str]:
+    """Remove only known numerical artifacts, leaving reports and logs intact."""
+    errors = []
+    for filename in RAW_ARTIFACT_FILENAMES:
+        path = case_dir / filename
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            errors.append(f"{filename}: {error}")
+    return errors
+
+
+def retain_raw_artifacts(policy: str, record: dict[str, Any]) -> bool:
+    if policy == "all":
+        return True
+    if policy == "none":
+        return False
+    if policy == "failed":
+        return any(
+            record.get(field, {}).get("status") != "Passed"
+            for field in ("accuracy", "platform_accuracy")
+        )
+    raise ValueError(
+        f"unknown artifact policy: {policy}; expected one of {', '.join(ARTIFACT_POLICIES)}"
+    )
 
 
 def load_raw(path: Path, api: str, shape: tuple[int, ...], batch: int) -> np.ndarray:
@@ -935,7 +975,11 @@ def pending_accuracy() -> dict:
 
 
 def compare_output(
-    case: dict, case_dir: Path, implementation: str, reference: np.ndarray, stage: dict
+    case: dict,
+    case_dir: Path,
+    implementation: str,
+    reference: np.ndarray | None,
+    stage: dict,
 ) -> dict:
     limits = accuracy_limit(case["api"], product(case["shape"]))
     result = {
@@ -979,14 +1023,28 @@ def run_accuracy_case(
     output_dir: Path,
     gpu_id: int,
     timeout: int,
+    artifact_policy: str = "failed",
     backend: str = "cuda",
 ) -> dict:
+    # Keep compatibility with the pre-artifact-policy internal call, which
+    # passed the backend as the sixth positional argument.
+    if artifact_policy in {"cuda", "musa", "ppu", "ix", "npu"} and backend == "cuda":
+        backend = artifact_policy
+        artifact_policy = "failed"
+    if artifact_policy not in ARTIFACT_POLICIES:
+        raise ValueError(
+            f"unknown artifact policy: {artifact_policy}; expected one of {', '.join(ARTIFACT_POLICIES)}"
+        )
     case_dir = output_dir / case["op_id"] / case["case_id"]
     case_dir.mkdir(parents=True, exist_ok=True)
     reference_skip_reason = case.get("skip_reason") if backend == "npu" else None
     record = {
         "format_version": FORMAT_VERSION,
         **case,
+        "artifact_policy": artifact_policy,
+        # Keep partial data available until the case reaches its final state,
+        # unless the user explicitly selected the strict no-artifact mode.
+        "raw_artifacts_retained": artifact_policy != "none",
         "accuracy": pending_accuracy(),
         "platform_accuracy": (
             {
@@ -1009,38 +1067,87 @@ def run_accuracy_case(
             case["api"], tuple(case["shape"]), case["batch"], case["scale"]
         )
         value.tofile(case_dir / "input.bin")
-        np.save(case_dir / "input.npy", value, allow_pickle=False)
-        reference = numpy_reference(
-            value, case["api"], tuple(case["shape"]), case["direction"]
-        )
-        np.save(case_dir / "numpy.npy", reference, allow_pickle=False)
         record.update(
             {
                 "seed": seed,
                 "input_dtype": str(value.dtype),
-                "numpy_dtype": str(reference.dtype),
                 "input_sha256": sha256(case_dir / "input.bin"),
-                "numpy_sha256": sha256(case_dir / "numpy.npy"),
             }
         )
         implementations = [("flagfft", "accuracy")]
         if not reference_skip_reason:
             implementations.append(("platform", "platform_accuracy"))
+        # The native capture is a separate process.  Drop the generated input
+        # before starting it so the worker does not retain a full-size array
+        # alongside the capture process and its output buffers.
+        del value
+
+        capture_stages = {}
         for implementation, field in implementations:
             command = build_accuracy_cmd(case, capture_bin, case_dir, implementation)
             stage = run_subprocess(command, timeout, gpu_id, case_dir, implementation)
-            record[field] = compare_output(
-                case, case_dir, implementation, reference, stage
-            )
-            record[field]["data_file"] = data_file
-            # Keep the FlagFFT result on disk before the platform stage starts.
+            capture_stages[implementation] = stage
+            record["capture_stages"] = capture_stages
+            # Persist each native stage before starting the next one.  This is
+            # also useful when a long-running worker is interrupted.
             write_json(case_dir / "case.json", record)
+
+        # A failed or timed-out native capture does not need a NumPy reference.
+        # Record those stage results first, then only compare completed output.
+        for implementation, field in implementations:
+            stage = capture_stages[implementation]
+            if stage.get("status") != "Completed":
+                record[field] = compare_output(
+                    case, case_dir, implementation, None, stage
+                )
+                record[field]["data_file"] = data_file
+
+        if any(
+            stage.get("status") == "Completed" for stage in capture_stages.values()
+        ):
+            # Both native processes have exited before NumPy allocates its
+            # double-precision reference.  Reloading from disk avoids keeping
+            # the original input alive through the capture phase.
+            reference_input = load_raw(
+                case_dir / "input.bin",
+                case["api"],
+                tuple(case["shape"]),
+                case["batch"],
+            )
+            try:
+                reference = numpy_reference(
+                    reference_input,
+                    case["api"],
+                    tuple(case["shape"]),
+                    case["direction"],
+                )
+            finally:
+                del reference_input
+            record["numpy_dtype"] = str(reference.dtype)
+
+            for implementation, field in implementations:
+                stage = capture_stages[implementation]
+                if stage.get("status") == "Completed":
+                    record[field] = compare_output(
+                        case, case_dir, implementation, reference, stage
+                    )
+                    record[field]["data_file"] = data_file
+
+            # Release the large reference before artifact cleanup and before
+            # the worker starts the next case.
+            reference = None
     except Exception as error:
         for field in ("accuracy", "platform_accuracy"):
             if record[field]["status"] == "NotFound":
                 record[field] = {"status": "Error", "error": repr(error), "plan": None}
-    record["duration"] = time.monotonic() - started
-    write_json(case_dir / "case.json", record)
+    finally:
+        record["duration"] = time.monotonic() - started
+        keep = retain_raw_artifacts(artifact_policy, record)
+        cleanup_errors = [] if keep else cleanup_raw_artifacts(case_dir)
+        record["raw_artifacts_retained"] = keep or bool(cleanup_errors)
+        if cleanup_errors:
+            record["artifact_cleanup_errors"] = cleanup_errors
+        write_json(case_dir / "case.json", record)
     return record
 
 
@@ -1140,7 +1247,13 @@ def worker_proc(
         baseline_valid = None if args.performance_only else True
         for case in job["accuracy_cases"] if not args.performance_only else []:
             record = run_accuracy_case(
-                case, capture_bin, output_dir, gpu_id, args.timeout, backend
+                case,
+                capture_bin,
+                output_dir,
+                gpu_id,
+                args.timeout,
+                args.artifact_policy,
+                backend,
             )
             if backend != "npu":
                 baseline_valid = (
@@ -1588,8 +1701,7 @@ def reanalyze_case(case: dict, case_dir: Path) -> dict:
     reference = numpy_reference(
         value, case["api"], tuple(case["shape"]), case["direction"]
     )
-    np.save(case_dir / "numpy.npy", reference, allow_pickle=False)
-    case["numpy_sha256"] = sha256(case_dir / "numpy.npy")
+    case.pop("numpy_sha256", None)
     case["numpy_dtype"] = str(reference.dtype)
     implementations = [("flagfft", "accuracy")]
     if not case.get("skip_reason"):
@@ -1617,6 +1729,12 @@ def analyze_only(output_dir: Path) -> int:
     if not manifest_file.is_file():
         raise ValueError(f"manifest.json not found in {output_dir}")
     manifest = json.loads(manifest_file.read_text())
+    artifact_policy = manifest["config"].get("artifact_policy", "all")
+    if artifact_policy != "all":
+        raise ValueError(
+            "--analyze-only requires a result generated with --artifacts all; "
+            f"this result used --artifacts {artifact_policy}"
+        )
     old_summary_file = output_dir / "summary.json"
     old_summary = (
         json.loads(old_summary_file.read_text()) if old_summary_file.is_file() else {}
@@ -1786,6 +1904,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dump-output",
         action="store_true",
         help="Native stdout/stderr are always retained",
+    )
+    parser.add_argument(
+        "--artifacts",
+        dest="artifact_policy",
+        choices=ARTIFACT_POLICIES,
+        default="failed",
+        help="Raw correctness artifacts: none, failed, or all (default: failed)",
     )
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -1971,6 +2096,7 @@ def main(argv: list[str] | None = None) -> int:
         "capture_bin": str(capture_bin),
         "test_matrix": matrix,
         "incremental_csv": str(csv_path),
+        "artifact_policy": args.artifact_policy,
     }
     write_json(
         output_dir / "manifest.json",

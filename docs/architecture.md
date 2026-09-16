@@ -165,7 +165,10 @@ Its native capture target compares FlagFFT and the platform library independentl
 against NumPy; FlagFFT correctness alone decides acceptance. Performance uses
 `flagfft-cli bench` once per shape/batch/direction, regardless of input scales.
 JSON and incremental CSV retain per-case runtime plans and both correctness
-results. `--analyze-only` recomputes comparisons from captured data without a GPU.
+results. Native correctness `bin` files are retained according to the runner's
+`--artifacts` policy; NumPy arrays are compared in memory and are not persisted.
+`--analyze-only` recomputes comparisons from captured data without a GPU and
+therefore requires `--artifacts all` on the original run.
 `tests/python/` covers runner behavior and code generation.
 
 On IX, CoreX does not support FP64. `run_tests.py` keeps the corresponding

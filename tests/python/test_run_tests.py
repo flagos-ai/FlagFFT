@@ -249,6 +249,12 @@ def test_ix_policy_skip_is_visible_in_incremental_csv(operators):
     assert row["skip_reason"] == case["skip_reason"]
 
 
+def test_artifact_policy_cli_defaults_to_failed():
+    assert RUN_TESTS.parse_args([]).artifact_policy == "failed"
+    assert RUN_TESTS.parse_args(["--artifacts", "none"]).artifact_policy == "none"
+    assert RUN_TESTS.parse_args(["--artifacts", "all"]).artifact_policy == "all"
+
+
 def test_ix_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     build_dir = tmp_path / "ix-build"
     build_dir.mkdir()
@@ -547,6 +553,39 @@ def mock_capture(monkeypatch, platform_status="Completed", platform_corrupt=Fals
     monkeypatch.setattr(RUN_TESTS, "run_subprocess", run_subprocess)
 
 
+def test_accuracy_captures_finish_before_numpy_reference(
+    tmp_path, monkeypatch, operators, matrix
+):
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    events = []
+    original_reference = RUN_TESTS.numpy_reference
+
+    def delayed_reference(value, api, shape, direction):
+        events.append("reference")
+        return original_reference(value, api, shape, direction)
+
+    def capture(cmd, timeout, gpu_id, case_dir, implementation):
+        events.append(f"capture:{implementation}")
+        value = RUN_TESTS.load_raw(
+            case_dir / "input.bin", case["api"], tuple(case["shape"]), case["batch"]
+        )
+        np.zeros_like(value).tofile(case_dir / f"{implementation}.bin")
+        if implementation == "flagfft":
+            (case_dir / "flagfft_plan.txt").write_text(PLAN)
+        return {"status": "Completed", "duration": 0.01, "command": cmd}
+
+    monkeypatch.setattr(RUN_TESTS, "numpy_reference", delayed_reference)
+    monkeypatch.setattr(RUN_TESTS, "run_subprocess", capture)
+
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "none"
+    )
+
+    assert events == ["capture:flagfft", "capture:platform", "reference"]
+    assert record["capture_stages"]["flagfft"]["status"] == "Completed"
+    assert record["capture_stages"]["platform"]["status"] == "Completed"
+
+
 def accuracy_message(case, record):
     return {
         **case,
@@ -595,14 +634,66 @@ def test_case_artifacts_are_not_overwritten_for_multiple_scales(
     case2 = {**case1, "scale": 2.0}
     case2["case_id"] = RUN_TESTS.case_name(case2)
     mock_capture(monkeypatch)
-    first = RUN_TESTS.run_accuracy_case(case1, tmp_path / "capture", tmp_path, 0, 10)
-    second = RUN_TESTS.run_accuracy_case(case2, tmp_path / "capture", tmp_path, 0, 10)
+    first = RUN_TESTS.run_accuracy_case(
+        case1, tmp_path / "capture", tmp_path, 0, 10, "all"
+    )
+    second = RUN_TESTS.run_accuracy_case(
+        case2, tmp_path / "capture", tmp_path, 0, 10, "all"
+    )
     assert first["data_file"] != second["data_file"]
     assert first["input_sha256"] != second["input_sha256"]
     for record in (first, second):
         saved = json.loads((tmp_path / record["data_file"]).read_text())
         assert saved["scale"] == record["scale"]
         assert saved["accuracy"]["plan"] == PLAN
+
+
+def test_none_artifact_policy_keeps_only_results_and_logs(
+    tmp_path, monkeypatch, operators, matrix
+):
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    mock_capture(monkeypatch)
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "none"
+    )
+    case_dir = tmp_path / case["op_id"] / case["case_id"]
+    assert record["accuracy"]["status"] == "Passed"
+    assert record["raw_artifacts_retained"] is False
+    assert "numpy_sha256" not in record
+    assert not any(
+        (case_dir / filename).exists()
+        for filename in RUN_TESTS.RAW_ARTIFACT_FILENAMES
+    )
+    assert (case_dir / "case.json").is_file()
+    assert (case_dir / "flagfft.stdout").is_file()
+
+
+def test_analyze_only_requires_all_artifacts(tmp_path):
+    RUN_TESTS.write_json(
+        tmp_path / "manifest.json",
+        {"config": {"artifact_policy": "failed"}},
+    )
+    with pytest.raises(ValueError, match="--artifacts all"):
+        RUN_TESTS.analyze_only(tmp_path)
+
+
+def test_failed_artifact_policy_retains_failed_case_without_npy(
+    tmp_path, monkeypatch, operators, matrix
+):
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    mock_capture(monkeypatch, platform_corrupt=True)
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "failed"
+    )
+    case_dir = tmp_path / case["op_id"] / case["case_id"]
+    assert record["accuracy"]["status"] == "Passed"
+    assert record["platform_accuracy"]["status"] == "Failed"
+    assert record["raw_artifacts_retained"] is True
+    assert (case_dir / "input.bin").is_file()
+    assert (case_dir / "flagfft.bin").is_file()
+    assert (case_dir / "platform.bin").is_file()
+    assert not (case_dir / "input.npy").exists()
+    assert not (case_dir / "numpy.npy").exists()
 
 
 def test_missing_case_prevents_operator_pass(operators, matrix):
@@ -727,7 +818,9 @@ def test_reanalysis_uses_saved_data_without_gpu_execution(
 ):
     case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
     mock_capture(monkeypatch)
-    record = RUN_TESTS.run_accuracy_case(case, tmp_path / "capture", tmp_path, 0, 10)
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "all"
+    )
     RUN_TESTS.write_json(
         tmp_path / "manifest.json",
         {
@@ -735,7 +828,11 @@ def test_reanalysis_uses_saved_data_without_gpu_execution(
             "cases": [case],
             "performance_cases": RUN_TESTS.performance_cases([case]),
             "env": {},
-            "config": {"accuracy_only": True, "performance_only": False},
+            "config": {
+                "accuracy_only": True,
+                "performance_only": False,
+                "artifact_policy": "all",
+            },
         },
     )
     case_dir = tmp_path / case["op_id"] / case["case_id"]
