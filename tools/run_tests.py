@@ -776,7 +776,7 @@ def git_commit(source: Path) -> str:
     return "unknown"
 
 
-def probe_env(build_dir: Path) -> None:
+def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
     ENV_INFO.update(
         {
             "architecture": platform.machine(),
@@ -814,9 +814,14 @@ def probe_env(build_dir: Path) -> None:
     ENV_INFO["execution_policy"] = os.environ.get("FLAGFFT_EXECUTION_POLICY",
                                                 "native" if ENV_INFO["backend"] == "ix" else "legacy")
     try:
+        query_env = os.environ.copy()
+        if gpu_id is not None:
+            for variable in ("CUDA_VISIBLE_DEVICES", "MUSA_VISIBLE_DEVICES", "PPU_VISIBLE_DEVICES", "IX_VISIBLE_DEVICES"):
+                query_env[variable] = str(gpu_id)
         probe = subprocess.run([str(build_dir / "flagfft-cli"), "device-info", "--json"],
-                               capture_output=True, text=True, timeout=30, check=True)
+                               capture_output=True, text=True, timeout=30, check=True, env=query_env)
         ENV_INFO["device"] = json.loads(probe.stdout)
+        ENV_INFO["device"]["selected_gpu"] = gpu_id
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         ENV_INFO["device"] = {"status": "unknown", "reason": str(exc)}
 
@@ -1892,7 +1897,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if not args.accuracy_only and not (build_dir / "flagfft-cli").is_file():
         raise ValueError(f"benchmark executable not found: {build_dir / 'flagfft-cli'}")
-    probe_env(build_dir)
+    probe_env(build_dir, None if args.gpus == "all" else int(args.gpus.split(",")[0]))
     if args.gpus == "all":
         count = ENV_INFO.get("torch", {}).get("device_count", 0)
         if not count:
