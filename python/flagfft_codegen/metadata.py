@@ -21,6 +21,7 @@ from typing import Any
 
 from .kernels_common import (
     _CODELET_DIR,
+    _maca_backend_active,
     _dtype_suffix,
     _zero_other,
     LeafPlan,
@@ -66,7 +67,12 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
         if codelet_path.exists():
             helpers += codelet_path.read_text() + "\n\n"
 
-    return helpers + "\n\n" + kernel_source + "\n"
+    source = helpers + "\n\n" + kernel_source + "\n"
+    if _maca_backend_active():
+        # Portable MACA kernels do not use TLE. Keep their modules independent
+        # of the backend-specific TLE extensions during isolated compilation.
+        source = source.replace("import triton.experimental.tle.language as tle\n", "")
+    return source
 
 
 def _arg_signature(name: str, dtype: str) -> str:

@@ -226,9 +226,12 @@ def main() -> None:
         compiler = importlib.util.module_from_spec(compile_spec)
         sys.modules[compile_spec.name] = compiler
         compile_spec.loader.exec_module(compiler)
+        from triton.backends.compiler import GPUTarget
+        backend, arch, warp = args.target.split(":")
         metadata["binary_dir"] = compiler.compile_a_kernel(
             metadata["module_path"], metadata["kernel_name"], metadata["signature"],
-            metadata["num_warps"], metadata["num_stages"], 0, {})
+            metadata["num_warps"], metadata["num_stages"], 0, {},
+            compile_target=GPUTarget(backend, int(arch), int(warp)))
         kernel_metadata = Path(metadata["binary_dir"]) / (metadata["kernel_name"] + ".json")
         compiled = json.loads(kernel_metadata.read_text())
         if compiled.get("global_scratch_size", 0) or compiled.get("profile_scratch_size", 0):

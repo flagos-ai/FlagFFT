@@ -36,9 +36,22 @@ The backend registration name is `metax`; its runtime target name is `maca`.
 ## Build
 
 Execute build commands in the container; edit the mounted sources on the host.
-The fixed libtriton_jit revision includes the MACA consumer CMake fixes:
+The fixed libtriton_jit revision `f3382f9` includes the MACA consumer CMake fixes:
 public `USE_MACA`, a globally visible `MACA::mcruntime` imported target, and
-respect for an explicit `MACA_PATH`.
+respect for an explicit `MACA_PATH`. Its isolated compilation helper also
+accepts a known target and selects MACA's hint handler without querying a
+Torch CUDA compatibility device.
+
+This dependency commit is on the local `codex/maca-consumer` branch. The
+development results contain `libtriton_jit-maca.bundle` with its history.
+For a checkout that already has the original submodule, restore the revision
+before building:
+
+```bash
+git -C deps/libtriton_jit fetch /workspace/FlagFFT-results/libtriton_jit-maca.bundle \
+    refs/heads/codex/maca-consumer
+git -C deps/libtriton_jit checkout f3382f9
+```
 
 ```bash
 export CUCC_PATH=/opt/maca/tools/cu-bridge
@@ -106,7 +119,37 @@ loading finish before graph capture. This process boundary avoids the SDK's
 executables. Kernels requiring nonzero global/profile scratch are rejected;
 the supported kernels use the backend ABI's two trailing null scratch pointers.
 
+The compiler receives `GPUTarget("maca", 80, 64)` directly. Generated MACA
+modules omit unused TLE imports, and the isolated helper binds FlagTree's
+hint manager to MACA rather than detecting Torch's `cuda` compatibility type.
+This avoids device initialization in the compiler process. A cached 16-point
+leaf probe took 2.25 seconds and verified `torch.cuda.is_initialized() == False`;
+the earlier device-properties query alone took 19.47 seconds. These are startup
+measurements, separate from FFT event timings.
+
 ## Validation
+
+The implementation checkpoint passed these checks:
+
+| Check | Coverage | Result |
+|---|---|---|
+| Portable leaf against NumPy | FP32/FP64, both directions, lengths 8/15/16/32/64/256/780, batches 1/2/7/16/256, two warps | 140 passed |
+| Forced prime runtime against CPU direct DFT | Rader and split Bluestein, N=257, batch=7, FP32/FP64, both directions; stream, graph replay and in-place | Passed |
+| Packed real batch runtime | N=1024, batch=7, D2Z/Z2D, dense/padded/in-place layouts | Passed |
+| libtriton_jit runtime | Hooks, C++/Python arguments, tuple signatures | 5 passed |
+| Planner structural regression | Existing CUDA/MUSA synthetic-context cases | 6 passed |
+| Python CPU regression | Complete existing Python test directory | 89 passed, 140 GPU tests skipped |
+| CUDA compile regression | Core library, CLI and complete C++ test targets; no GPU execution | Passed |
+
+The native C API NumPy matrix and serial mcFFT performance measurements are
+recorded separately in the development results. The numerical harness uses
+native MACA allocations and a nondefault stream without importing Torch;
+FlagFFT and mcFFT each execute three times before comparison with NumPy.
+
+The public PlanMany API keeps the existing layout limits: unit element strides,
+dense batch distances, and the standard padded 1D real layout for in-place
+transforms. Arbitrary element strides or extra batch padding, including padded
+2D/3D layouts, return `FLAGFFT_NOT_SUPPORTED`.
 
 Run the opt-in portable-leaf numerical tests on the selected card:
 
