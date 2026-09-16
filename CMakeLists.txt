@@ -59,6 +59,22 @@ endif()
 add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
                  "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
 
+# libtorch's ARM OpenBLAS build has a private libgfortran dependency in
+# torch.libs.  libtriton_jit discovers this directory in its subdirectory,
+# but that directory scope does not reach the standalone CLI/capture targets
+# declared here.  Add it at the parent scope so their link step can resolve
+# the same transitive dependency.
+execute_process(
+    COMMAND ${Python_EXECUTABLE} -c
+            "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), '..', 'torch.libs'))"
+    OUTPUT_VARIABLE FLAGFFT_TORCH_LIBS_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(FLAGFFT_TORCH_LIBS_PATH AND EXISTS "${FLAGFFT_TORCH_LIBS_PATH}")
+    link_directories("${FLAGFFT_TORCH_LIBS_PATH}")
+endif()
+
 if(TRITON_JIT_USE_EXTERNAL_JSON)
     # With an external package, libtriton_jit's imported target is scoped to
     # its subdirectory. Re-find it here for FlagFFT targets. When JSON is
