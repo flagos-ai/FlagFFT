@@ -167,7 +167,7 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             ${PPU_FFT_LIB}
         )
     elseif(BACKEND STREQUAL "NPU")
-        message(FATAL_ERROR "FLAGFFT_BUILD_CLI/TESTS is not available for BACKEND=NPU yet; use the plain-Triton Ascend smoke test")
+        message(FATAL_ERROR "FLAGFFT_BUILD_CLI/TESTS needs a native NPU reference adaptor; validate the C API with tests/python/test_npu_fft.py and FLAGFFT_TEST_LIBRARY")
     endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
     target_include_directories(flagfft_test_adaptor PUBLIC
