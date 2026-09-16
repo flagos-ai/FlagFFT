@@ -141,3 +141,14 @@ def test_c2c_inplace(api, shape, user_stream):
 @pytest.mark.parametrize("batch", [65, 257])
 def test_large_batch(api, batch):
     run_fft(api, (8,), batch, "c2c", True)
+
+
+@pytest.mark.parametrize("radix", [3, 6, 9, 10, 11, 12, 13, 15, 17, 19])
+def test_shared_radix_codelets(api, radix):
+    run_fft(api, (radix,), 3, "c2c", True)
+
+
+@pytest.mark.parametrize("shape", [(16, 256), (8, 16, 32)])
+@pytest.mark.parametrize("operation", ["c2c", "r2c", "c2r"])
+def test_multidimensional_stages(api, shape, operation):
+    run_fft(api, shape, 3, operation, True)
