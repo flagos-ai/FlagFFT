@@ -103,14 +103,14 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
 
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
-  PlanNodePtr fft_plan = build_auto_node(conv_length);
+  PlanNodePtr fft_plan = build_auto_node(conv_length, false);
   return std::make_shared<BluesteinPlanNode>(n, conv_length, std::move(fft_plan));
 }
 
 PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
   int64_t root = find_primitive_root(n);
   std::vector<int64_t> idx = build_rader_index_table(n, root);
-  PlanNodePtr conv_plan = build_auto_node(n - 1);
+  PlanNodePtr conv_plan = build_auto_node(n - 1, false);
   return std::make_shared<RaderPlanNode>(n, root, std::move(idx), std::move(conv_plan));
 }
 
@@ -133,8 +133,10 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   }
 
   const RequestContext &context = request_context();
-  if (context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
-      n % kThreadLocalColLength == 0) {
+  const bool thread_local_complex =
+      (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
+      (context.input_dtype == "complex128" && context.output_dtype == "complex128");
+  if (thread_local_complex && n % kThreadLocalColLength == 0) {
     const int64_t n1 = n / kThreadLocalColLength;
     const int64_t register_radix = n1 / kThreadLocalCrossRadix;
     if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix)) {
@@ -167,8 +169,8 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
     int64_t n2 = n / n1;
     try {
-      PlanNodePtr row = build_auto_node(n1);
-      PlanNodePtr col = build_auto_node(n2);
+      PlanNodePtr row = build_auto_node(n1, false);
+      PlanNodePtr col = build_auto_node(n2, false);
       PlanNodePtr node = std::make_shared<FourStepPlanNode>(n, n1, n2, row, col);
       double balance = std::abs(std::log(static_cast<double>(n1)) - std::log(static_cast<double>(n2)));
       candidates.push_back({node, four_step_cost(n1, n2) + balance, priority(node)});
@@ -180,9 +182,28 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
     const double bluestein_candidate_cost = bluestein_cost(n, bluestein->conv_length);
     candidates.push_back({node, bluestein_candidate_cost, priority(node)});
-    const bool has_fused_bluestein =
-        context.input_dtype == "complex64" && context.output_dtype == "complex64";
-    if (!has_fused_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
+    const bool fp64_input = context.input_dtype == "complex128" || context.input_dtype == "float64";
+    const bool fp64_output = context.output_dtype == "complex128" || context.output_dtype == "float64";
+    // A100 can fuse the Bluestein boundary into a leaf convolution FFT.  Do
+    // not suppress Rader for larger, Four-Step convolutions: their FP64
+    // boundary kernels remain unfused and Rader is still faster there.
+    const bool has_a100_fp64_fused_leaf =
+        context.device_arch == "sm_80" && context.batch == 1 && fp64_input && fp64_output &&
+        std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
+    const bool has_musa_s5000_fp64_fused_leaf =
+        context.device_type == "musa" && context.device_arch == "31" && context.batch == 1 && fp64_input &&
+        fp64_output &&
+        std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
+    // Preserve the pre-existing 8191-point policy. Other prime lengths
+    // can compare both algorithms using the generic measured-plan tuner.
+    // Keep the leaf Rader route (e.g. 1009) and small batches unchanged.
+    const bool prefer_musa_batched_bluestein =
+        context.device_type == "musa" && context.device_arch == "31" && context.batch >= 16 &&
+        fp64_input && fp64_output && n == 8191;
+    const bool prefer_bluestein =
+        (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
+        has_a100_fp64_fused_leaf || has_musa_s5000_fp64_fused_leaf || prefer_musa_batched_bluestein;
+    if (!prefer_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);
       const Factorization rader_factorization = factorize_supported_radices(n - 1);

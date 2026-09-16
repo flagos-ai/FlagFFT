@@ -18,7 +18,7 @@
 namespace flagfft {
 
 bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
-  return input_dtype == other.input_dtype && output_dtype == other.output_dtype &&
+  return input_dtype == other.input_dtype && output_dtype == other.output_dtype && device_type == other.device_type &&
          device_index == other.device_index && device_arch == other.device_arch && batch == other.batch &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
@@ -27,6 +27,7 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   RequestContext context;
   context.input_dtype = request.input_dtype;
   context.output_dtype = request.output_dtype;
+  context.device_type = request.device_type;
   context.device_index = request.device_index;
   context.device_arch = request.device_arch;
   context.batch = request.batch;
@@ -59,7 +60,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }
-  return build_auto_node(n);
+  return build_auto_node(n, true);
 }
 
 double PlanBuilder::cost_for(int64_t n, const FFTRequest &request) {
@@ -72,7 +73,16 @@ double PlanBuilder::cost_for(int64_t n) {
   if (it != cost_cache_.end()) {
     return it->second;
   }
-  std::vector<PlanCandidate> candidates = build_auto_candidates(n);
+  const bool previous_heuristic = parallel_leaf_heuristic_enabled_;
+  parallel_leaf_heuristic_enabled_ = false;
+  std::vector<PlanCandidate> candidates;
+  try {
+    candidates = build_auto_candidates(n);
+  } catch (...) {
+    parallel_leaf_heuristic_enabled_ = previous_heuristic;
+    throw;
+  }
+  parallel_leaf_heuristic_enabled_ = previous_heuristic;
   if (candidates.empty()) {
     throw std::runtime_error("length " + std::to_string(n) + " has no supported FFT implementation route");
   }

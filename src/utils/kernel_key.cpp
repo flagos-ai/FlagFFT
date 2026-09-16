@@ -530,6 +530,18 @@ KernelKey KernelKey::r2c_half_pack(std::string target, std::string dtype, int64_
   return key;
 }
 
+KernelKey KernelKey::r2c_packed_postprocess(std::string target, std::string dtype, int64_t length) {
+  KernelKey key = KernelKey::r2c_half_pack(std::move(target), std::move(dtype), length);
+  key.kind = KernelKind::R2CPackedPostprocess;
+  return key;
+}
+
+KernelKey KernelKey::c2r_packed_preprocess(std::string target, std::string dtype, int64_t length) {
+  KernelKey key = KernelKey::r2c_half_pack(std::move(target), std::move(dtype), length);
+  key.kind = KernelKind::C2RPackedPreprocess;
+  return key;
+}
+
 KernelKey KernelKey::compact_to_hermitian_full(std::string target, std::string dtype, int64_t length) {
   KernelKey key;
   key.kind = KernelKind::CompactToHermitianFull;

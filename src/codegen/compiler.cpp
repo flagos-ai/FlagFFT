@@ -13,8 +13,99 @@
 // limitations under the License.
 
 #include "flagfft/core.hpp"
+#include "flagfft/tune_json.hpp"
+
+#include <cstdlib>
+#include <optional>
 
 namespace flagfft {
+namespace {
+
+  struct PackedRealChild {
+    FFTRequest request;
+    PlanNodePtr plan;
+  };
+
+  std::optional<PackedRealChild> select_packed_real_child(const PlanNodePtr &original_plan,
+                                                          const FFTRequest &request,
+                                                          int64_t batch,
+                                                          bool inverse) {
+    const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
+    const bool force = setting != nullptr && std::string(setting) == "1";
+    const bool disable = setting != nullptr && std::string(setting) == "0";
+    const int64_t n = request.requested_n;
+    if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") ||
+        n <= 0 || n % 2 != 0) {
+      return std::nullopt;
+    }
+    const bool is_a100_fp64_target = request.device_type == "cuda" && request.device_arch == "sm_80";
+    // Resource bounds remain target-local; batching itself is implemented
+    // by the shared packed-real kernels with a distance-aware fallback.
+    const bool is_musa_s5000_fp64_target = request.device_type == "musa" && request.device_arch == "31";
+    if (!force && (!is_a100_fp64_target && !is_musa_s5000_fp64_target)) {
+      return std::nullopt;
+    }
+    if (!force && (request.input_dtype != "complex128" || n < 65536 ||
+                   (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
+      return std::nullopt;
+    }
+
+    FFTRequest child_request = request;
+    child_request.fft_length = n / 2;
+    child_request.requested_n = n / 2;
+    child_request.n = n / 2;
+    child_request.output_dtype = child_request.input_dtype;
+    child_request.direction = inverse ? "inverse" : "forward";
+    child_request.norm = "backward";
+    child_request.batch = batch;
+    child_request.input_shape = {batch, n / 2};
+    child_request.input_strides = {n / 2, 1};
+    child_request.input_layout = "contiguous";
+
+    PlanBuilder child_builder;
+    PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    // A measured complex plan is also valid for this dense half-length
+    // child. Keep the same exact-batch, direction and fingerprint lookup.
+    if (auto tuned = lookup_tuned_plan_json(child_request)) {
+      try {
+        auto candidate = plan_node_from_json(child_builder, tuned->at("root"));
+        auto pair = std::dynamic_pointer_cast<FourStepPlanNode>(candidate);
+        if (pair && pair->n1 * pair->n2 == n / 2 &&
+            std::dynamic_pointer_cast<LeafPlanNode>(pair->row_plan) &&
+            std::dynamic_pointer_cast<LeafPlanNode>(pair->col_plan)) {
+          child_plan = std::move(candidate);
+        }
+      } catch (const std::exception &) {
+        // An obsolete or malformed cache must not prevent plan creation.
+      }
+    }
+    auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(child_plan);
+    const bool child_is_leaf_pair = four_step != nullptr &&
+                                    std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
+                                    std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
+    // A half-length transform wins only while both generated leaf kernels stay
+    // below the high-register large-leaf regime.  The MUSA S5000 threshold is
+    // wider than A100's based on the validated grid, but remains target-local.
+    const int64_t leaf_limit = (batch == 1 && is_musa_s5000_fp64_target) ? 1088 : 768;
+    const bool bounded_leaf_pair = child_is_leaf_pair && four_step->n1 <= leaf_limit && four_step->n2 <= leaf_limit;
+    auto original_four_step = std::dynamic_pointer_cast<FourStepPlanNode>(original_plan);
+    const bool original_has_large_leaf =
+        inverse && original_four_step != nullptr &&
+        std::dynamic_pointer_cast<LeafPlanNode>(original_four_step->row_plan) != nullptr &&
+        std::dynamic_pointer_cast<LeafPlanNode>(original_four_step->col_plan) != nullptr &&
+        (original_four_step->n1 > 768 || original_four_step->n2 > 768);
+    // Compact C2R input handling is especially expensive in a large generated
+    // leaf.  Its half-length complex route remains profitable a little beyond
+    // the general FP64 leaf bound, provided it replaces such a large leaf.
+    const bool c2r_large_leaf_relief =
+        original_has_large_leaf && child_is_leaf_pair && four_step->n1 <= 1536 && four_step->n2 <= 1536;
+    if (!force && !bounded_leaf_pair && !c2r_large_leaf_relief) {
+      return std::nullopt;
+    }
+    return PackedRealChild {std::move(child_request), std::move(child_plan)};
+  }
+
+}  // namespace
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNodePtr &node,
                                                                   const FFTRequest &request,
@@ -69,8 +160,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     DeviceAllocation chirp =
         build_raw_bluestein_chirp(request, bluestein->length, request.direction == "inverse");
     DeviceAllocation b_time = build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
-    const bool use_full_leaf = request.input_dtype == "complex64" && leaf != nullptr;
-    const bool use_four_step = request.input_dtype == "complex64" && four_step != nullptr &&
+    const bool use_a100_fp64_full_leaf =
+        request.device_type == "cuda" && request.device_arch == "sm_80" && request.input_dtype == "complex128" &&
+        batch == 1;
+    const bool use_musa_s5000_fp64_full_leaf =
+        request.device_type == "musa" && request.device_arch == "31" && request.input_dtype == "complex128" &&
+        batch == 1;
+    const bool use_full_leaf =
+        (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf) &&
+        leaf != nullptr;
+    // Batched S5000 FP64 convolutions can fuse the boundary when both
+    // leaves fit the bounds below and the complete batch fits the existing
+    // workspace budget. This is independent of the original prime length.
+    const bool use_musa_fp64_four_step =
+        request.device_type == "musa" && request.device_arch == "31" &&
+        request.input_dtype == "complex128" &&
+        batch >= 16 && batch == chunk_batch;
+    const bool use_four_step = (request.input_dtype == "complex64" || use_musa_fp64_four_step) &&
+                               four_step != nullptr &&
                                row_leaf != nullptr && col_leaf != nullptr && row_leaf->length < 512 &&
                                col_leaf->length < 512;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -223,9 +330,25 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const PlanNodePtr &node,
                                                                       const FFTRequest &request,
-                                                                      int64_t batch) {
+                                                                      int64_t batch,
+                                                                      bool allow_packed) {
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (auto packed_child = allow_packed ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
+    const int64_t packed = n / 2;
+    DeviceAllocation packed_output =
+        adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
+    return std::make_shared<CompiledRawPackedR2CNode>(
+        n,
+        compile_raw_node(packed_child->plan, packed_child->request, batch),
+        compile_r2c_packed_postprocess_kernel(request, n),
+        build_raw_packed_real_twiddle(request, n),
+        std::move(packed_output),
+        [node, request, batch]() {
+          TritonCompiler compiler;
+          return compiler.compile_raw_r2c_node(node, request, batch, false);
+        });
+  }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
@@ -262,9 +385,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const PlanNodePtr &node,
                                                                       const FFTRequest &request,
-                                                                      int64_t batch) {
+                                                                      int64_t batch,
+                                                                      bool allow_packed) {
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (auto packed_child = allow_packed ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
+    const int64_t packed = n / 2;
+    DeviceAllocation packed_input = adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
+    return std::make_shared<CompiledRawPackedC2RNode>(
+        n,
+        compile_c2r_packed_preprocess_kernel(request, n),
+        compile_raw_node(packed_child->plan, packed_child->request, batch),
+        build_raw_packed_real_twiddle(request, n),
+        std::move(packed_input),
+        [node, request, batch]() {
+          TritonCompiler compiler;
+          return compiler.compile_raw_c2r_node(node, request, batch, false);
+        });
+  }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
@@ -678,6 +816,20 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_half_pack_kernel(const FF
   return compile_kernel(key);
 }
 
+std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_packed_postprocess_kernel(const FFTRequest &request,
+                                                                                 int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::r2c_packed_postprocess(target, complex_dtype_for(request.input_dtype), n);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_c2r_packed_preprocess_kernel(const FFTRequest &request,
+                                                                                int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::c2r_packed_preprocess(target, complex_dtype_for(request.input_dtype), n);
+  return compile_kernel(key);
+}
+
 std::shared_ptr<JitKernel> TritonCompiler::compile_compact_to_hermitian_full_kernel(const FFTRequest &request,
                                                                                     int64_t n) {
   std::string target = triton_target_for_request(request);
@@ -900,6 +1052,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const bool rc_eligible = n0 <= 256;
+  // On MUSA S5000, replaying the short batch-1 complex 2D graph adds
+  // about 0.1 ms versus direct launches (both RC and transpose paths).
+  // Keep other devices and unmeasured batch sizes on the existing policy.
+  const bool enable_graph = !(request.device_type == "musa" && request.device_arch == "31" && batch == 1);
 
   // Build row FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -942,7 +1098,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                  n1,
                                                  std::move(row_fft),
                                                  std::move(col_fft),
-                                                 std::move(temp1));
+                                                 std::move(temp1),
+                                                 enable_graph);
   }
 
   // Small odd column lengths use DirectDFT; keep the same RC structure.
@@ -955,7 +1112,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                  n1,
                                                  std::move(row_fft),
                                                  std::move(col_fft),
-                                                 std::move(temp1));
+                                                 std::move(temp1),
+                                                 enable_graph);
   }
 
   // Large column lengths that decompose into a four-step leaf pair can also
@@ -970,7 +1128,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                    n1,
                                                    std::move(row_fft),
                                                    std::move(col_fft),
-                                                   std::move(temp1));
+                                                   std::move(temp1),
+                                                   enable_graph);
     }
   }
 
@@ -993,7 +1152,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                              std::move(transpose_fwd),
                                              std::move(transpose_inv),
                                              std::move(temp1),
-                                             std::move(temp2));
+                                             std::move(temp2),
+                                             enable_graph);
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(

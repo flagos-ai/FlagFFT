@@ -14,13 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FlagFFT unified test runner."""
+"""Unified 36-operator acceptance runner: FlagFFT/platform FFT vs NumPy."""
 
 from __future__ import annotations
 
 import argparse
 import csv
-import glob
+import hashlib
 import json
 import math
 import multiprocessing
@@ -33,98 +33,631 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
+import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-
-# Global state for environment info, worker tracking, and signal handling
+FORMAT_VERSION = 2
 ENV_INFO: dict[str, Any] = {}
 WORKER_PROCESSES: list[multiprocessing.Process] = []
 INTERRUPTED = False
-
-# ANSI color variables -- overridden by init_colors()
-RED = ""
-GREEN = ""
-YELLOW = ""
-CYAN = ""
-DIM = ""
-NC = ""
+GROUPS = (
+    "1d_ct_single",
+    "1d_prime_single",
+    "1d_ct_batch",
+    "1d_prime_batch",
+    "2d",
+    "3d",
+)
+# The acceptance manifest always keeps all 36 operator definitions.  Backend
+# limitations are represented as policy skips in the manifest/summary instead
+# of silently removing operators from the acceptance surface.
+UNSUPPORTED_APIS_BY_BACKEND: dict[str, frozenset[str]] = {
+    "ix": frozenset({"z2z", "z2d", "d2z"}),
+}
+BACKEND_SKIP_REASONS = {
+    "ix": "IX/CoreX does not support FP64; Z2Z, Z2D and D2Z are excluded from execution.",
+}
+DIRECTIONS = {
+    "c2c": ("forward", "inverse"),
+    "c2r": ("inverse",),
+    "r2c": ("forward",),
+    "z2z": ("forward", "inverse"),
+    "z2d": ("inverse",),
+    "d2z": ("forward",),
+}
+RED = GREEN = YELLOW = NC = ""
 
 
 def init_colors(mode: str) -> None:
-    """Set ANSI color codes based on --color mode."""
-    global RED, GREEN, YELLOW, CYAN, DIM, NC
-    if mode == "never":
-        RED = GREEN = YELLOW = CYAN = DIM = NC = ""
-    elif mode == "always" or (mode == "auto" and sys.stderr.isatty()):
-        RED = "\033[31m"
-        GREEN = "\033[32m"
-        YELLOW = "\033[33m"
-        CYAN = "\033[36m"
-        DIM = "\033[2m"
-        NC = "\033[0m"
+    global RED, GREEN, YELLOW, NC
+    if mode == "always" or (mode == "auto" and sys.stderr.isatty()):
+        RED, GREEN, YELLOW, NC = "\033[31m", "\033[32m", "\033[33m", "\033[0m"
+    else:
+        RED = GREEN = YELLOW = NC = ""
 
 
 def pinfo(msg: str) -> None:
-    print(f"{GREEN}[INFO]{NC} {msg}")
+    print(f"{GREEN}[INFO]{NC} {msg}", flush=True)
 
 
 def pwarn(msg: str) -> None:
-    print(f"{YELLOW}[WARN]{NC} {msg}", file=sys.stderr)
+    print(f"{YELLOW}[WARN]{NC} {msg}", file=sys.stderr, flush=True)
 
 
 def perror(msg: str) -> None:
-    print(f"{RED}[ERROR]{NC} {msg}", file=sys.stderr)
+    print(f"{RED}[ERROR]{NC} {msg}", file=sys.stderr, flush=True)
 
 
-def probe_env() -> None:
-    """Probe runtime environment and store results in ENV_INFO."""
-    ENV_INFO["architecture"] = platform.machine()
-    ENV_INFO["python"] = platform.python_version()
+MASK64 = (1 << 64) - 1
+SPLITMIX_INCREMENT = 0x9E3779B97F4A7C15
+SPLITMIX_MULTIPLIER_1 = 0xBF58476D1CE4E5B9
+SPLITMIX_MULTIPLIER_2 = 0x94D049BB133111EB
+SEED_TAG = 0x4654464654455354
 
-    # PyTorch
-    try:
-        import torch
+TYPE_CODES = {
+    "r2c": 0x2A,
+    "c2r": 0x2C,
+    "c2c": 0x29,
+    "d2z": 0x6A,
+    "z2d": 0x6C,
+    "z2z": 0x69,
+}
 
-        ENV_INFO["torch"] = {
-            "version": torch.__version__,
-            "cuda_available": torch.cuda.is_available(),
-            "device_name": (
-                torch.cuda.get_device_name() if torch.cuda.is_available() else "N/A"
-            ),
-            "device_count": (
-                torch.cuda.device_count() if torch.cuda.is_available() else 0
-            ),
+ACCURACY_CONSTANTS = {
+    "complex": (1.2419386546059821, 1.9343969087678796),
+    "real_forward": (1.234681000407627, 1.8260558195934091),
+    "real_inverse": (0.97722970418819066, 1.372182697342486),
+}
+
+DEFAULT_SCALES = (2.0**-20, 1.0, 2.0**20)
+
+
+def product(shape: Iterable[int]) -> int:
+    value = 1
+    for dimension in shape:
+        value *= int(dimension)
+    return value
+
+
+def api_class(api: str) -> str:
+    if api in ("c2c", "z2z"):
+        return "complex"
+    if api in ("r2c", "d2z"):
+        return "real_forward"
+    if api in ("c2r", "z2d"):
+        return "real_inverse"
+    raise ValueError(f"unknown API: {api}")
+
+
+def is_double(api: str) -> bool:
+    return api in ("z2z", "d2z", "z2d")
+
+
+def is_complex(api: str) -> bool:
+    return api in ("c2c", "z2z")
+
+
+def is_real_forward(api: str) -> bool:
+    return api in ("r2c", "d2z")
+
+
+def is_real_inverse(api: str) -> bool:
+    return api in ("c2r", "z2d")
+
+
+def real_dtype(api: str) -> np.dtype:
+    return np.dtype(np.float64 if is_double(api) else np.float32)
+
+
+def complex_dtype(api: str) -> np.dtype:
+    return np.dtype(np.complex128 if is_double(api) else np.complex64)
+
+
+def half_shape(shape: tuple[int, ...]) -> tuple[int, ...]:
+    return (*shape[:-1], shape[-1] // 2 + 1)
+
+
+def input_shape(api: str, shape: tuple[int, ...], batch: int) -> tuple[int, ...]:
+    if is_real_inverse(api):
+        return (batch, *half_shape(shape))
+    return (batch, *shape)
+
+
+def output_shape(api: str, shape: tuple[int, ...], batch: int) -> tuple[int, ...]:
+    if is_real_forward(api):
+        return (batch, *half_shape(shape))
+    if is_real_inverse(api):
+        return (batch, *shape)
+    return (batch, *shape)
+
+
+def splitmix_signed_unit(count: int, seed: int) -> np.ndarray:
+    """Match ctest/flagfft_test.h's StableRng::signed_unit sequence."""
+
+    if count == 0:
+        return np.empty(0, dtype=np.float64)
+    indices = np.arange(count, dtype=np.uint64)
+    state = np.uint64(seed & MASK64) + indices * np.uint64(SPLITMIX_INCREMENT)
+    value = state
+    value = (value ^ (value >> np.uint64(30))) * np.uint64(SPLITMIX_MULTIPLIER_1)
+    value = (value ^ (value >> np.uint64(27))) * np.uint64(SPLITMIX_MULTIPLIER_2)
+    value = value ^ (value >> np.uint64(31))
+    bits = (value >> np.uint64(11)).astype(np.float64)
+    return bits * (2.0 / 9007199254740992.0) - 1.0
+
+
+def accuracy_seed(
+    api: str, transform_elements: int, batch: int, variant: int = 0
+) -> int:
+    return (
+        SEED_TAG
+        ^ ((TYPE_CODES[api] << 48) & MASK64)
+        ^ ((int(transform_elements) << 16) & MASK64)
+        ^ int(batch)
+        ^ ((int(variant) * SPLITMIX_INCREMENT) & MASK64)
+    ) & MASK64
+
+
+def as_complex_from_interleaved(
+    values: np.ndarray, api: str, shape: tuple[int, ...]
+) -> np.ndarray:
+    dtype = complex_dtype(api)
+    scalar = values.astype(real_dtype(api), copy=False)
+    return scalar.view(dtype).reshape(shape)
+
+
+def make_input(
+    api: str, shape: tuple[int, ...], batch: int, scale: float
+) -> tuple[np.ndarray, int]:
+    """Generate deterministic native-dtype input, including valid real half spectra."""
+    seed = accuracy_seed(api, product(shape), batch)
+    target_shape = input_shape(api, shape, batch)
+    count = product(target_shape)
+    if is_complex(api) or is_real_inverse(api):
+        result = as_complex_from_interleaved(
+            splitmix_signed_unit(count * 2, seed), api, target_shape
+        )
+        if is_real_inverse(api):
+            # DC/Nyquist planes must be Hermitian across every preceding FFT
+            # axis. Merely zeroing their imaginary parts is only valid in 1D.
+            boundaries = [0] + ([shape[-1] // 2] if shape[-1] % 2 == 0 else [])
+            for boundary in boundaries:
+                plane = result[..., boundary]
+                mirrored = plane
+                for axis, length in enumerate(shape[:-1], 1):
+                    mirrored = np.take(
+                        mirrored, (-np.arange(length)) % length, axis=axis
+                    )
+                result[..., boundary] = (plane + mirrored.conj()) * 0.5
+    else:
+        result = (
+            splitmix_signed_unit(count, seed)
+            .astype(real_dtype(api))
+            .reshape(target_shape)
+        )
+    scale_value = np.asarray(scale, dtype=real_dtype(api)).item()
+    result = result * scale_value
+    return np.ascontiguousarray(result), seed
+
+
+def numpy_reference(
+    value: np.ndarray, api: str, shape: tuple[int, ...], direction: str
+) -> np.ndarray:
+    # NumPy 2.x can keep float32 FFTs in single precision. Explicitly use
+    # float64/complex128 so the oracle does not inherit device rounding.
+    value = np.asarray(
+        value, dtype=np.complex128 if np.iscomplexobj(value) else np.float64
+    )
+    axes = tuple(range(1, len(shape) + 1))
+    transform_size = product(shape)
+    if is_complex(api):
+        if direction == "forward":
+            return np.fft.fftn(value, s=shape, axes=axes)
+        return np.fft.ifftn(value, s=shape, axes=axes) * transform_size
+    if is_real_forward(api):
+        return np.fft.rfftn(value, s=shape, axes=axes)
+    if is_real_inverse(api):
+        # The device APIs intentionally use the unnormalized inverse.
+        return np.fft.irfftn(value, s=shape, axes=axes) * transform_size
+    raise ValueError(f"unknown API: {api}")
+
+
+def _component_arrays(
+    value: np.ndarray, reference: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    value = np.asarray(value)
+    reference = np.asarray(reference)
+    if np.iscomplexobj(value) or np.iscomplexobj(reference):
+        value_real = np.asarray(value.real, dtype=np.longdouble)
+        value_imag = np.asarray(value.imag, dtype=np.longdouble)
+        ref_real = np.asarray(reference.real, dtype=np.longdouble)
+        ref_imag = np.asarray(reference.imag, dtype=np.longdouble)
+        diff = np.hypot(value_real - ref_real, value_imag - ref_imag)
+        ref_abs = np.hypot(ref_real, ref_imag)
+        return diff, ref_abs, True
+    value_real = np.asarray(value, dtype=np.longdouble)
+    ref_real = np.asarray(reference, dtype=np.longdouble)
+    return np.abs(value_real - ref_real), np.abs(ref_real), False
+
+
+def error_stats(
+    value: np.ndarray, reference: np.ndarray, elements_per_batch: int, batch: int
+) -> dict[str, Any]:
+    diff, ref_abs, _ = _component_arrays(
+        value.reshape(batch, elements_per_batch),
+        reference.reshape(batch, elements_per_batch),
+    )
+    finite = bool(np.all(np.isfinite(diff)) and np.all(np.isfinite(ref_abs)))
+
+    if not finite:
+        bad_batches = ~np.all(np.isfinite(diff) & np.isfinite(ref_abs), axis=1)
+        worst = int(np.flatnonzero(bad_batches)[0])
+        return {
+            "rel_l2": float("inf"),
+            "rel_linf": float("inf"),
+            "max_abs": float("inf"),
+            "mixed_pointwise": float("inf"),
+            "worst_l2_batch": worst,
+            "worst_linf_batch": worst,
+            "finite": False,
         }
-    except ImportError:
-        ENV_INFO["torch"] = {
-            "version": "N/A",
-            "cuda_available": False,
-            "device_name": "N/A",
-            "device_count": 0,
-        }
 
-    # Triton
-    try:
-        import triton
+    rel_l2 = np.longdouble(0.0)
+    rel_linf = np.longdouble(0.0)
+    max_abs = np.longdouble(0.0)
+    mixed_pointwise = np.longdouble(0.0)
+    worst_l2_batch = 0
+    worst_linf_batch = 0
 
-        ENV_INFO["triton"] = {"version": triton.__version__}
-    except ImportError:
-        ENV_INFO["triton"] = {"version": "N/A"}
+    for batch_index in range(batch):
+        batch_diff = diff[batch_index]
+        batch_ref = ref_abs[batch_index]
+        err_sq = np.sum(batch_diff * batch_diff, dtype=np.longdouble)
+        ref_sq = np.sum(batch_ref * batch_ref, dtype=np.longdouble)
+        err_max = np.max(batch_diff, initial=np.longdouble(0.0))
+        ref_max = np.max(batch_ref, initial=np.longdouble(0.0))
+        mixed_max = np.max(
+            batch_diff / np.maximum(batch_ref, np.longdouble(1.0)),
+            initial=np.longdouble(0.0),
+        )
+
+        batch_rel_l2 = (
+            np.sqrt(err_sq / ref_sq)
+            if ref_sq != 0
+            else (np.longdouble(0.0) if err_sq == 0 else np.longdouble(np.inf))
+        )
+        batch_rel_linf = (
+            err_max / ref_max
+            if ref_max != 0
+            else (np.longdouble(0.0) if err_max == 0 else np.longdouble(np.inf))
+        )
+        if batch_rel_l2 > rel_l2:
+            rel_l2 = batch_rel_l2
+            worst_l2_batch = batch_index
+        if batch_rel_linf > rel_linf:
+            rel_linf = batch_rel_linf
+            worst_linf_batch = batch_index
+        max_abs = max(max_abs, err_max)
+        mixed_pointwise = max(mixed_pointwise, mixed_max)
+
+    return {
+        "rel_l2": float(rel_l2),
+        "rel_linf": float(rel_linf),
+        "max_abs": float(max_abs),
+        "mixed_pointwise": float(mixed_pointwise),
+        "worst_l2_batch": int(worst_l2_batch),
+        "worst_linf_batch": int(worst_linf_batch),
+        "finite": finite,
+    }
+
+
+def ceil_log2_covering(value: int) -> int:
+    return max(0, (int(value) - 1).bit_length())
+
+
+def work_factor(n: int) -> float:
+    if n <= 64:
+        return float(n)
+    return float(3 * ceil_log2_covering(2 * n - 1) + 3)
+
+
+def accuracy_limit(api: str, n: int) -> dict[str, float]:
+    constants = ACCURACY_CONSTANTS[api_class(api)]
+    unit_roundoff = float(np.finfo(real_dtype(api)).eps) / 2.0
+    scale = unit_roundoff * work_factor(n)
+    return {
+        "rel_l2": constants[0] * scale,
+        "rel_linf": constants[1] * scale,
+        "normalized_scale": scale,
+    }
+
+
+def judged_stats(stats: dict[str, Any], limits: dict[str, float]) -> dict[str, Any]:
+    result = dict(stats)
+    result["normalized_l2"] = stats["rel_l2"] / limits["normalized_scale"]
+    result["normalized_linf"] = stats["rel_linf"] / limits["normalized_scale"]
+    result["passed"] = bool(
+        stats["finite"]
+        and stats["rel_l2"] <= limits["rel_l2"]
+        and stats["rel_linf"] <= limits["rel_linf"]
+    )
+    return result
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_raw(path: Path, api: str, shape: tuple[int, ...], batch: int) -> np.ndarray:
+    is_input = path.name == "input.bin"
+    complex_values = (
+        (is_complex(api) or is_real_inverse(api))
+        if is_input
+        else (is_complex(api) or is_real_forward(api))
+    )
+    dtype = complex_dtype(api) if complex_values else real_dtype(api)
+    expected_shape = (
+        input_shape(api, shape, batch) if is_input else output_shape(api, shape, batch)
+    )
+    data = np.fromfile(path, dtype=dtype)
+    expected = product(expected_shape)
+    if data.size != expected:
+        raise ValueError(f"{path}: expected {expected} {dtype} values, got {data.size}")
+    return data.reshape(expected_shape)
+
+
+def json_safe(value: Any) -> Any:
+    """Emit strict JSON even when failed numeric comparisons contain NaN/Inf."""
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        return json_safe(value.item())
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(json_safe(value), indent=2, allow_nan=False) + "\n")
+
+
+def load_operators(path: Path) -> list[dict[str, Any]]:
+    data = yaml.safe_load(path.read_text())
+    ops = data.get("ops", [])
+    seen = set()
+    for op in ops:
+        op_id = op["id"]
+        if op_id in seen:
+            raise ValueError(f"duplicate operator ID: {op_id}")
+        seen.add(op_id)
+        if (
+            op.get("api") not in DIRECTIONS
+            or type(op.get("rank")) is not int
+            or op["rank"] not in (1, 2, 3)
+        ):
+            raise ValueError(f"{op_id}: invalid api or rank")
+        if op["rank"] == 1:
+            if op.get("algorithm") not in ("ct", "prime") or op.get("batch") not in (
+                "single",
+                "batch",
+            ):
+                raise ValueError(
+                    f"{op_id}: 1D requires algorithm ct/prime and batch single/batch"
+                )
+            expected = f"1d_{op['algorithm']}_{op['batch']}_{op['api']}"
+        else:
+            expected = f"{op['rank']}d_{op['api']}"
+        if op_id != expected or not isinstance(op.get("sizes"), str):
+            raise ValueError(
+                f"{op_id}: expected ID {expected} and a size-set reference"
+            )
+    expected_ids = {f"{group}_{api}" for group in GROUPS for api in DIRECTIONS}
+    if seen != expected_ids:
+        missing = ", ".join(sorted(expected_ids - seen))
+        raise ValueError(
+            f"operators.yaml must define all 36 acceptance operators; missing: {missing}"
+        )
+    return ops
+
+
+def parse_scales(raw: str | None, matrix_scales: list[float]) -> list[float]:
+    if raw is None:
+        values = matrix_scales
+    elif raw.strip().lower() == "all":
+        values = DEFAULT_SCALES
+    else:
+        values = [float(part.strip()) for part in raw.split(",") if part.strip()]
+    values = [float(value) for value in values]
+    if not values or any(not math.isfinite(value) or value <= 0 for value in values):
+        raise ValueError("scales must be finite positive numbers")
+    if len(set(values)) != len(values):
+        raise ValueError("duplicate scales")
+    return values
+
+
+def load_test_matrix(path: Path) -> dict[str, Any]:
+    matrix = yaml.safe_load(path.read_text())
+    for mode, values in matrix.get("batches", {}).items():
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"batches.{mode} must be a nonempty list")
+        if any(type(value) is not int or value <= 0 for value in values) or len(
+            set(values)
+        ) != len(values):
+            raise ValueError(f"batches.{mode} must contain distinct positive integers")
+        if mode in ("single", "3d") and values != [1]:
+            raise ValueError(f"batches.{mode} must be [1]")
+        if mode == "batch" and any(value <= 1 for value in values):
+            raise ValueError("batches.batch values must be greater than 1")
+    parse_scales(None, matrix.get("scales", [1.0]))
+    return matrix
+
+
+def operator_group(op: dict) -> str:
+    if op["rank"] == 1:
+        return f"1d_{op['algorithm']}_{op['batch']}"
+    return f"{op['rank']}d"
+
+
+def resolve_combination_names(value: str, matrix: dict | None = None) -> list[str]:
+    """Group filters are derived from operators, not a second operator matrix."""
+    names = [name.strip() for name in value.split(",") if name.strip()]
+    if not names:
+        raise ValueError("no combination specified")
+    if any(name in ("full", "all") for name in names):
+        if len(names) != 1:
+            raise ValueError("'full'/'all' must be used alone")
+        return list(GROUPS)
+    aliases = {"1d_bs_single": "1d_prime_single", "1d_bs_batch": "1d_prime_batch"}
+    names = [aliases.get(name, name) for name in names]
+    unknown = set(names) - set(GROUPS)
+    if unknown:
+        raise ValueError(f"unknown combinations: {', '.join(sorted(unknown))}")
+    return list(dict.fromkeys(names))
+
+
+def parse_shape_filter(raw: str | None) -> set[tuple[int, ...]] | None:
+    if raw is None:
+        return None
+    shapes = set()
+    for part in raw.split(","):
+        dimensions = tuple(int(value) for value in part.strip().lower().split("x"))
+        if len(dimensions) not in (1, 2, 3) or any(value <= 0 for value in dimensions):
+            raise ValueError("shapes must be positive dimensions, e.g. 256,64x64")
+        shapes.add(dimensions)
+    return shapes
+
+
+def case_name(case: dict, performance: bool = False) -> str:
+    shape = "x".join(str(value) for value in case["shape"])
+    name = f"{case['op_id']}__n{shape}__b{case['batch']}__{case['direction']}"
+    if not performance:
+        scale = (
+            f"{case['scale']:.17g}".replace("-", "m")
+            .replace(".", "p")
+            .replace("+", "p")
+        )
+        name += f"__s{scale}"
+    return name
+
+
+def expand_test_cases(
+    ops: list[dict],
+    matrix: dict,
+    combination: str = "full",
+    scales: str | None = None,
+    shapes: set[tuple[int, ...]] | None = None,
+) -> list[dict[str, Any]]:
+    groups = set(resolve_combination_names(combination))
+    scale_values = parse_scales(scales, matrix.get("scales", [1.0]))
+    cases = []
+    seen = set()
+    for op in ops:
+        group = operator_group(op)
+        if group not in groups:
+            continue
+        sizes = matrix.get(op["sizes"])
+        if not isinstance(sizes, list) or not sizes:
+            raise ValueError(f"{op['id']}: missing or empty size set {op['sizes']}")
+        batch_key = op["batch"] if op["rank"] == 1 else f"{op['rank']}d"
+        batches = matrix.get("batches", {}).get(batch_key)
+        if not batches:
+            raise ValueError(f"{op['id']}: missing batches.{batch_key}")
+        for size in sizes:
+            shape = size if isinstance(size, list) else [size]
+            if len(shape) != op["rank"] or any(
+                type(n) is not int or n <= 0 for n in shape
+            ):
+                raise ValueError(f"{op['id']}: invalid rank-{op['rank']} shape {shape}")
+            if shapes is not None and tuple(shape) not in shapes:
+                continue
+            for batch in batches:
+                for scale in scale_values:
+                    for direction in DIRECTIONS[op["api"]]:
+                        case = {
+                            "op_id": op["id"],
+                            "api": op["api"],
+                            "rank": op["rank"],
+                            "algorithm": op.get("algorithm", f"{op['rank']}d"),
+                            "batch_mode": op.get("batch"),
+                            "shape": list(shape),
+                            "batch": batch,
+                            "scale": scale,
+                            "direction": direction,
+                        }
+                        case["case_id"] = case_name(case)
+                        if case["case_id"] in seen:
+                            raise ValueError(f"duplicate case: {case['case_id']}")
+                        seen.add(case["case_id"])
+                        cases.append(case)
+    return cases
+
+
+def expand_all_test_cases(ops: list[dict], matrix: dict) -> list[dict[str, Any]]:
+    return expand_test_cases(ops, matrix)
+
+
+def performance_cases(cases: list[dict]) -> list[dict]:
+    unique = {}
+    for case in cases:
+        key = case_name(case, performance=True)
+        if key not in unique:
+            perf_case = {key: value for key, value in case.items() if key != "scale"}
+            perf_case["case_id"] = key
+            unique[key] = perf_case
+    return list(unique.values())
+
+
+def build_accuracy_cmd(
+    case: dict, capture_bin: Path, case_dir: Path, implementation: str
+) -> list[str]:
+    return [
+        str(capture_bin),
+        f"--api={case['api']}",
+        f"--shape={'x'.join(str(value) for value in case['shape'])}",
+        f"--batch={case['batch']}",
+        f"--direction={case['direction']}",
+        f"--input={case_dir / 'input.bin'}",
+        f"--output-dir={case_dir}",
+        f"--implementation={implementation}",
+    ]
+
+
+def build_perf_cmd(case: dict, build_dir: Path, warmup: int, iters: int) -> list[str]:
+    return [
+        str(build_dir / "flagfft-cli"),
+        "bench",
+        "--api",
+        case["api"],
+        "--rank",
+        str(case["rank"]),
+        "--shape",
+        "x".join(str(n) for n in case["shape"]),
+        "--batch",
+        str(case["batch"]),
+        "--direction",
+        case["direction"],
+        "--warmup",
+        str(warmup),
+        "--iters",
+        str(iters),
+        "--json",
+        "--print-path",
+    ]
 
 
 def detect_backend(build_dir: Path) -> str:
-    """Detect the FlagFFT backend used to build the binaries in ``build_dir``.
-
-    The CMake cache is the authoritative source (``BACKEND=CUDA``,
-    ``BACKEND=MUSA``, ``BACKEND=PPU``, or ``BACKEND=IX``). If it is
-    unavailable, fall back to inspecting the installed Triton: PPU builds
-    expose ``libtriton.ppu``, MUSA builds expose ``libtriton.mthreads``,
-    Iluvatar builds expose ``libtriton.iluvatar``, and CUDA builds expose
-    neither.
-    """
+    """Detect the backend from CMake, then from the installed Triton plugin."""
     cache = build_dir / "CMakeCache.txt"
     if cache.is_file():
         try:
@@ -141,1006 +674,1274 @@ def detect_backend(build_dir: Path) -> str:
 
         if hasattr(libtriton, "ppu"):
             return "ppu"
-        elif hasattr(libtriton, "mthreads"):
+        if hasattr(libtriton, "mthreads"):
             return "musa"
-        elif hasattr(libtriton, "iluvatar"):
+        if hasattr(libtriton, "iluvatar"):
             return "ix"
-        elif hasattr(libtriton, "cuda"):
+        if hasattr(libtriton, "cuda"):
             return "cuda"
-        else:
-            raise ImportError("unknown Triton backend")
-
     except ImportError:
-        return "unknown"
+        pass
+    return "unknown"
 
 
-def terminate_workers() -> None:
-    """Send SIGTERM to all tracked worker processes, then force-kill survivors."""
-    for p in WORKER_PROCESSES:
-        if p.is_alive():
-            try:
-                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-            except (OSError, ProcessLookupError):
-                pass
-    for p in WORKER_PROCESSES:
-        p.join(timeout=5)
-        if p.is_alive():
-            p.kill()
-
-
-def cleanup_intermediate_files() -> None:
-    """Remove temporary accuracy JSON files left behind by workers."""
-    for pattern in ["/tmp/flagfft_acc_*.json"]:
-        for f in glob.glob(pattern):
-            try:
-                os.unlink(f)
-            except OSError:
-                pass
-
-
-def handle_interrupt(signum, frame) -> None:
-    """Handle SIGINT/SIGTERM: terminate workers, clean up, and exit."""
-    global INTERRUPTED
-    if INTERRUPTED:
-        return
-    INTERRUPTED = True
-    pwarn("Interrupted. Cleaning up ...")
-    terminate_workers()
-    cleanup_intermediate_files()
-    pwarn("Cleanup done.")
-    sys.exit(1)
-
-
-def load_operators(path: Path) -> list[dict[str, Any]]:
-    with open(path) as f:
-        data = yaml.safe_load(f)
-    return data.get("ops", [])
-
-
-def load_test_matrix(path: Path) -> dict[str, Any]:
-    with open(path) as f:
-        return yaml.safe_load(f)
-
-
-def resolve_sizes(matrix: dict, ref) -> list:
-    if isinstance(ref, str):
-        return matrix.get(ref, [])
-    return ref if isinstance(ref, list) else []
-
-
-def resolve_combination_names(value: str, matrix: dict) -> list[str]:
-    """Resolve --combination input into concrete matrix combination names.
-
-    ``full``/``all`` must be used alone; otherwise the input is treated as a
-    comma-separated list of concrete combination names.
-    """
-    names = [name.strip() for name in value.split(",") if name.strip()]
-    if not names:
-        perror("no combination specified")
-        sys.exit(1)
-    if any(name in ("full", "all") for name in names):
-        if len(names) != 1:
-            perror("'full'/'all' cannot be mixed with other combinations")
-            sys.exit(1)
-        return list(matrix.get("combinations", {}).keys())
-    for name in names:
-        if name not in matrix.get("combinations", {}):
-            perror(f"unknown combination '{name}'")
-            sys.exit(1)
-    return names
-
-
-def resolve_combo_scope(
-    matrix: dict, combination: str, combo: dict
-) -> tuple[int, list[str], list, list, list]:
-    """Resolve rank, algorithms and parameter lists for one combination rule.
-
-    A combination rule may declare ``rank`` and ``algorithms`` explicitly.
-    Otherwise the rank is inferred from the shape arity, and the 1D algorithm
-    scope is inferred from the combination name (``1d_ct_*`` -> ct,
-    ``1d_bs_*`` -> bs).
-    """
-    sizes = resolve_sizes(matrix, combo["sizes"])
-    batches = resolve_sizes(matrix, combo.get("batches", [1]))
-    scales = resolve_sizes(matrix, combo.get("scales", [1.0]))
-
-    if not sizes:
-        perror(f"combination '{combination}' has no sizes")
-        sys.exit(1)
-
-    rank = combo.get("rank")
-    if rank is None:
-        first = sizes[0]
-        rank = len(first) if isinstance(first, list) else 1
-
-    algorithms = combo.get("algorithms")
-    if algorithms is None:
-        if rank == 1:
-            name_parts = set(combination.split("_"))
-            algorithms = [a for a in ("ct", "bs") if a in name_parts]
-            if not algorithms:
-                algorithms = ["ct", "bs"]
-        else:
-            algorithms = [f"{rank}d"]
-
-    return rank, algorithms, sizes, batches, scales
-
-
-def expand_test_cases(
-    ops: list[dict], matrix: dict, combination: str
-) -> list[dict[str, Any]]:
-    combo = matrix.get("combinations", {}).get(combination)
-    if combo is None:
-        perror(f"unknown combination '{combination}'")
-        sys.exit(1)
-
-    rank, algorithms, sizes, batches, scales = resolve_combo_scope(
-        matrix, combination, combo
+def operator_skip_reason(op: dict, backend: str) -> str | None:
+    if op.get("api") not in UNSUPPORTED_APIS_BY_BACKEND.get(backend, frozenset()):
+        return None
+    return BACKEND_SKIP_REASONS.get(
+        backend, f"backend {backend.upper()} does not support API {op['api'].upper()}."
     )
 
-    cases = []
-    for op in ops:
-        if op.get("rank") != rank:
+
+def git_commit(source: Path) -> str:
+    commands = [["git", "-C", str(source), "rev-parse", "HEAD"]]
+    git_pointer = source / ".git"
+    if git_pointer.is_file():
+        pointer = git_pointer.read_text().strip()
+        if pointer.startswith("gitdir:"):
+            gitdir = Path(pointer.split(":", 1)[1].strip())
+            commands.append(["git", "--git-dir", str(gitdir), "rev-parse", "HEAD"])
+            # A worktree created on the host may retain the host-side absolute
+            # admin path in .git.  The standard development container mounts
+            # the workspace at /workspace, so translate that one known mount
+            # point when the first command cannot see the host path.
+            host_workspace = Path("/rjs/llb/fft-dev")
+            container_workspace = Path("/workspace")
+            try:
+                relative = gitdir.relative_to(host_workspace)
+            except ValueError:
+                pass
+            else:
+                commands.append(
+                    [
+                        "git",
+                        "--git-dir",
+                        str(container_workspace / relative),
+                        "rev-parse",
+                        "HEAD",
+                    ]
+                )
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
             continue
-        for algo in op["algorithms"]:
-            if algo not in algorithms:
-                continue
-
-            for size in sizes:
-                for batch in batches:
-                    for scale in scales:
-                        for direction in op["directions"]:
-                            nx = size[0] if isinstance(size, list) else size
-                            ny = size[1] if isinstance(size, list) else 0
-                            nz = (
-                                size[2]
-                                if isinstance(size, list) and len(size) > 2
-                                else 0
-                            )
-                            cases.append(
-                                {
-                                    "op_id": op["id"],
-                                    "algo": algo,
-                                    "nx": nx,
-                                    "ny": ny,
-                                    "nz": nz,
-                                    "batch": batch,
-                                    "scale": scale,
-                                    "direction": direction,
-                                    "ctest": op["ctest"],
-                                    "cli_type": op["cli_type"],
-                                    "rank": op["rank"],
-                                }
-                            )
-    return cases
+        return completed.stdout.strip()
+    return "unknown"
 
 
-def expand_all_test_cases(ops: list[dict], matrix: dict) -> list[dict[str, Any]]:
-    """Expand every combination rule in the matrix into test cases."""
-    cases = []
-    for combination in matrix.get("combinations", {}):
-        cases.extend(expand_test_cases(ops, matrix, combination))
-    return cases
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="FlagFFT unified test runner")
-    parser.add_argument("--ops", default=None, help="Comma-separated operator IDs")
-    parser.add_argument(
-        "--op-list-file",
-        default=None,
-        help="Path to operator list file (one ID per line, # for comments)",
+def probe_env(build_dir: Path) -> None:
+    ENV_INFO.update(
+        {
+            "architecture": platform.machine(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "git_commit": git_commit(ROOT),
+            "backend": detect_backend(build_dir),
+        }
     )
-    parser.add_argument(
-        "--start", default=None, help="ID of the first operator to test"
-    )
-    parser.add_argument("--stages", default="stable", help="Comma-separated stages")
-    parser.add_argument(
-        "--combination",
-        default="full",
-        help=(
-            "Comma-separated combination names from conf/test_matrix.yaml, "
-            "or 'full'/'all' to run every combination (default: full)"
-        ),
-    )
-    parser.add_argument("--gpus", default="0", help="Comma-separated GPU IDs or 'all'")
-    parser.add_argument("--accuracy-only", action="store_true")
-    parser.add_argument("--performance-only", action="store_true")
-    parser.add_argument("--build-dir", default=str(ROOT / "build"))
-    parser.add_argument(
-        "--output-dir", default="results", help="Relative path to root for test data"
-    )
-    parser.add_argument("--timeout", type=int, default=600)
-    parser.add_argument(
-        "--warmup", type=int, default=10, help="Benchmark warmup iterations"
-    )
-    parser.add_argument("--iters", type=int, default=100, help="Benchmark iterations")
-    parser.add_argument(
-        "--incremental-csv",
-        default=None,
-        help="Append one CSV row per finished case (live progress)",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument(
-        "--dump-output",
-        action="store_true",
-        help="Dump stdout/stderr of each test to log files",
-    )
-    parser.add_argument(
-        "--color",
-        choices=["auto", "always", "never"],
-        default="auto",
-        help="Color mode for terminal output",
-    )
-    return parser.parse_args()
+    ENV_INFO["reference_library"] = {
+        "cuda": "cuFFT",
+        "musa": "muFFT",
+        "ppu": "PPU cuFFT-compatible FFT",
+        "ix": "ixfft (CoreX cuFFT-compatible FFT)",
+    }.get(ENV_INFO["backend"], "unknown")
+    try:
+        import torch
 
+        ENV_INFO["torch"] = {
+            "version": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "device_count": torch.cuda.device_count(),
+            "device_name": (
+                torch.cuda.get_device_name() if torch.cuda.is_available() else "N/A"
+            ),
+        }
+    except ImportError:
+        ENV_INFO["torch"] = {"version": "N/A", "device_count": 0}
+    try:
+        import triton
 
-# Test execution functions
-
-# Operators that include direction (fwd/inv) in their binary name
-_OPS_WITH_DIRECTION = {"c2c", "z2z"}
-
-
-def build_accuracy_cmd(case: dict, build_dir: Path) -> tuple[list[str], str]:
-    # Build binary name based on algorithm:
-    # - 2D/3D tests use one correctness binary per rank
-    # - 1D tests: test_exec_{type}_{direction}_{algo}_{batch_mode}
-    #   For types with direction (c2c, z2z): include fwd/inv
-    #   For types without direction (r2c, c2r, d2z, z2d, r2c_c2r, d2z_z2d): no direction
-    #   batch_mode: batch=1 -> _s, batch>1 -> _b
-    ctest_base = case["ctest"]
-    algo = case["algo"]
-
-    if algo in ("2d", "3d"):
-        # Multi-dimensional tests use a single binary for all API types.
-        binary_name = ctest_base
-    else:
-        batch_mode = "s" if case["batch"] == 1 else "b"
-        # Check if this operator has direction in binary name
-        # Extract the type prefix from op_id (e.g., "c2c_1d" -> "c2c")
-        type_prefix = case["op_id"].split("_")[0]
-        has_direction = type_prefix in _OPS_WITH_DIRECTION
-
-        if has_direction:
-            dir_str = "fwd" if case["direction"] == "forward" else "inv"
-            binary_name = f"{ctest_base}_{dir_str}_{algo}_{batch_mode}"
-        else:
-            binary_name = f"{ctest_base}_{algo}_{batch_mode}"
-
-    binary = build_dir / "ctest" / binary_name
-    cmd = [str(binary), f"--nx={case['nx']}"]
-    if case["rank"] == 2:
-        cmd.append(f"--ny={case['ny']}")
-    elif case["rank"] == 3:
-        cmd.append(f"--ny={case['ny']}")
-        cmd.append(f"--nz={case['nz']}")
-    cmd.append(f"--batch={case['batch']}")
-    cmd.append(f"--api={case['cli_type']}")
-    cmd.append(f"--direction={case['direction']}")
-    cmd.append(f"--scale={case['scale']}")
-    json_file = (
-        f"/tmp/flagfft_acc_{os.getpid()}_{case['op_id']}_{case['algo']}_"
-        f"{case['direction']}_{case['nx']}_{case['batch']}.json"
-    )
-    cmd.append(f"--json-file={json_file}")
-    return cmd, json_file
-
-
-def build_perf_cmd(case: dict, build_dir: Path, warmup: int, iters: int) -> list[str]:
-    binary = build_dir / "flagfft-cli"
-    cmd = [
-        str(binary),
-        "bench",
-        "--api",
-        case["cli_type"],
-        "--direction",
-        case["direction"],
-        "--json",
-    ]
-    if case["rank"] == 1:
-        cmd += ["--shape", str(case["nx"])]
-    elif case["rank"] == 2:
-        cmd += ["--rank", "2", "--shape", f"{case['nx']}x{case['ny']}"]
-    else:
-        cmd += ["--rank", "3", "--shape", f"{case['nx']}x{case['ny']}x{case['nz']}"]
-    cmd += [
-        "--batch",
-        str(case["batch"]),
-        "--warmup",
-        str(warmup),
-        "--iters",
-        str(iters),
-    ]
-    return cmd
+        ENV_INFO["triton"] = {"version": triton.__version__}
+    except ImportError:
+        ENV_INFO["triton"] = {"version": "N/A"}
 
 
 def run_subprocess(
-    cmd: list[str], timeout: int, gpu_id: int
-) -> tuple[int, str, str, float]:
+    cmd: list[str], timeout: int, gpu_id: int, case_dir: Path, stage: str
+) -> dict:
+    """Stream logs to disk and kill the complete subprocess group on timeout."""
     env = os.environ.copy()
-    # Vendor-aware GPU selection: FlagFFT targets CUDA only.
-    # For multi-vendor support (ROCm, etc.), extend this based on ENV_INFO.
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    start = time.monotonic()
-    try:
-        result = subprocess.run(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            start_new_session=True,
-        )
-        return result.returncode, result.stdout, result.stderr, time.monotonic() - start
-    except subprocess.TimeoutExpired:
-        return -100, "", "TIMEOUT", time.monotonic() - start
-
-
-def parse_accuracy_result(json_file: str, data_file: str = "") -> dict[str, Any]:
-    try:
-        with open(json_file) as f:
-            data = json.load(f)
-        total = data.get("total", 0)
-        passed = data.get("passed", 0)
-        failed = data.get("failed", 0)
-        skipped = data.get("skipped", 0)
-        status = "Failed" if failed > 0 else ("Passed" if passed > 0 else "Skipped")
-        result: dict[str, Any] = {
-            "status": status,
-            "total": total,
-            "passed": passed,
-            "failed": failed,
-            "skipped": skipped,
-            "duration_ms": data.get("duration_ms", 0),
-            "details": data.get("failures", []),
-        }
-        if data_file:
-            result["data_file"] = data_file
-        return result
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        return {"status": "Error", "error": str(e)}
-
-
-def parse_perf_result(output: str, case: dict | None = None) -> dict[str, Any]:
-    try:
-        # The PPU ACOMPUTE/ALINPU logger prints a device-caps INFO line to
-        # stdout before the CLI's JSON payload; skip any leading non-JSON
-        # noise (and trailing garbage after the closing brace).
-        start = output.find("{")
-        if start > 0:
-            output = output[start:]
-        end = output.rfind("}")
-        if end != -1:
-            output = output[: end + 1]
-        data = json.loads(output)
-        cases = data.get("cases", [])
-        if not cases:
-            return {"status": "Error", "error": "no cases in output"}
-        raw_case = cases[0]
-        timing = raw_case.get("timing", {})
-        speedup = timing.get("speedup", 0)
-        passed = (
-            speedup > 0
-            and timing.get("flagfft_median_ms", 0) > 0
-            and timing.get("ref_median_ms", 0) > 0
-        )
-
-        # Include direction in the key so forward/inverse results cannot overwrite
-        # each other when aggregating the same API and shape.
-        if case is not None:
-            nx = case.get("nx", 0)
-            batch = case.get("batch", 1)
-            ny = case.get("ny", 0)
-            nz = case.get("nz", 0)
-            if ny > 0 and nz > 0:
-                shape_key = f"[{nx},{ny},{nz}]"
-            elif ny > 0:
-                shape_key = f"[{nx},{ny}]"
-            else:
-                shape_key = f"[{nx}]"
-            if batch > 1:
-                shape_key += f"batch={batch}"
-            shape_key += f"direction={case.get('direction', 'unknown')}"
-        else:
-            shape_key = "[unknown]"
-
-        details_entry = {
-            "base": timing.get("ref_median_ms", 0),
-            "gems": timing.get("flagfft_median_ms", 0),
-            "speedup": speedup,
-        }
-
-        return {
-            "status": "Passed" if passed else "Failed",
-            "speedup": speedup,
-            "flagfft_median_ms": timing.get("flagfft_median_ms", 0),
-            "ref_median_ms": timing.get("ref_median_ms", 0),
-            "data": {
-                "default": {
-                    "result": "OK" if passed else "FAIL",
-                    "details": {shape_key: details_entry},
-                    "speedup": speedup,
+    for variable in (
+        "CUDA_VISIBLE_DEVICES",
+        "MUSA_VISIBLE_DEVICES",
+        "PPU_VISIBLE_DEVICES",
+        "IX_VISIBLE_DEVICES",
+    ):
+        env[variable] = str(gpu_id)
+    env["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + env.get("PYTHONPATH", "")
+    started = time.monotonic()
+    result = {
+        "command": cmd,
+        "stdout_file": f"{stage}.stdout",
+        "stderr_file": f"{stage}.stderr",
+    }
+    process = None
+    with (
+        (case_dir / result["stdout_file"]).open("w") as stdout,
+        (case_dir / result["stderr_file"]).open("w") as stderr,
+    ):
+        try:
+            process = subprocess.Popen(
+                cmd,
+                cwd=case_dir,
+                env=env,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
+            returncode = process.wait(timeout=timeout)
+            result.update(
+                {
+                    "status": (
+                        "Completed"
+                        if returncode == 0
+                        else ("Skipped" if returncode == 77 else "Error")
+                    ),
+                    "returncode": returncode,
                 }
-            },
+            )
+            if returncode != 0:
+                result["error"] = f"process exited with code {returncode}"
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            result.update(
+                {"status": "Timeout", "error": f"exceeded {timeout}s timeout"}
+            )
+        except OSError as error:
+            result.update({"status": "Error", "error": str(error)})
+        except BaseException:
+            if process is not None and process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            raise
+    result["duration"] = time.monotonic() - started
+    if result["status"] == "Error":
+        with (case_dir / result["stderr_file"]).open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 4000))
+            detail = stream.read().decode("utf-8", errors="replace").strip()
+        if detail:
+            result["error"] += f": {detail}"
+    return result
+
+
+def pending_accuracy() -> dict:
+    return {"status": "NotFound", "reference": "numpy.fft", "plan": None}
+
+
+def compare_output(
+    case: dict, case_dir: Path, implementation: str, reference: np.ndarray, stage: dict
+) -> dict:
+    limits = accuracy_limit(case["api"], product(case["shape"]))
+    result = {
+        "status": stage.get("status", "Error"),
+        "reference": "numpy.fft",
+        "limits": limits,
+        "capture": stage,
+        "duration": stage.get("duration", 0),
+        "plan": None,
+    }
+    if implementation == "flagfft":
+        plan_file = case_dir / "flagfft_plan.txt"
+        if plan_file.is_file():
+            result["plan"] = plan_file.read_text(errors="replace")
+    if result["status"] != "Completed":
+        result["error"] = stage.get("error", result["status"])
+        return result
+    try:
+        output = load_raw(
+            case_dir / f"{implementation}.bin",
+            case["api"],
+            tuple(case["shape"]),
+            case["batch"],
+        )
+        elements = product(
+            output_shape(case["api"], tuple(case["shape"]), case["batch"])[1:]
+        )
+        result["metric"] = judged_stats(
+            error_stats(output, reference, elements, case["batch"]), limits
+        )
+        result["status"] = "Passed" if result["metric"]["passed"] else "Failed"
+        result["output_sha256"] = sha256(case_dir / f"{implementation}.bin")
+    except (OSError, ValueError) as error:
+        result.update({"status": "Error", "error": str(error)})
+    return result
+
+
+def run_accuracy_case(
+    case: dict, capture_bin: Path, output_dir: Path, gpu_id: int, timeout: int
+) -> dict:
+    case_dir = output_dir / case["op_id"] / case["case_id"]
+    case_dir.mkdir(parents=True, exist_ok=True)
+    record = {
+        "format_version": FORMAT_VERSION,
+        **case,
+        "accuracy": pending_accuracy(),
+        "platform_accuracy": pending_accuracy(),
+    }
+    data_file = (case_dir / "case.json").relative_to(output_dir).as_posix()
+    record["data_file"] = data_file
+    write_json(case_dir / "case.json", record)
+    started = time.monotonic()
+    try:
+        value, seed = make_input(
+            case["api"], tuple(case["shape"]), case["batch"], case["scale"]
+        )
+        value.tofile(case_dir / "input.bin")
+        np.save(case_dir / "input.npy", value, allow_pickle=False)
+        reference = numpy_reference(
+            value, case["api"], tuple(case["shape"]), case["direction"]
+        )
+        np.save(case_dir / "numpy.npy", reference, allow_pickle=False)
+        record.update(
+            {
+                "seed": seed,
+                "input_dtype": str(value.dtype),
+                "numpy_dtype": str(reference.dtype),
+                "input_sha256": sha256(case_dir / "input.bin"),
+                "numpy_sha256": sha256(case_dir / "numpy.npy"),
+            }
+        )
+        for implementation, field in (
+            ("flagfft", "accuracy"),
+            ("platform", "platform_accuracy"),
+        ):
+            command = build_accuracy_cmd(case, capture_bin, case_dir, implementation)
+            stage = run_subprocess(command, timeout, gpu_id, case_dir, implementation)
+            record[field] = compare_output(
+                case, case_dir, implementation, reference, stage
+            )
+            record[field]["data_file"] = data_file
+            # Keep the FlagFFT result on disk before the platform stage starts.
+            write_json(case_dir / "case.json", record)
+    except Exception as error:
+        for field in ("accuracy", "platform_accuracy"):
+            if record[field]["status"] == "NotFound":
+                record[field] = {"status": "Error", "error": repr(error), "plan": None}
+    record["duration"] = time.monotonic() - started
+    write_json(case_dir / "case.json", record)
+    return record
+
+
+def parse_perf_result(output: str, case: dict | None = None) -> dict:
+    decoder = json.JSONDecoder()
+    data = None
+    for index, char in enumerate(output):
+        if char != "{":
+            continue
+        try:
+            candidate, _ = decoder.raw_decode(output[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict) and "cases" in candidate:
+            data = candidate
+            break
+    if not data or not data.get("cases"):
+        return {
+            "status": "Error",
+            "error": "no benchmark cases in output",
+            "plan": None,
         }
-    except (json.JSONDecodeError, IndexError, KeyError) as e:
-        return {"status": "Error", "error": str(e)}
+    raw_case = data["cases"][0]
+    timing = raw_case.get("timing", {})
+    ff = timing.get("flagfft_median_ms", 0)
+    ref = timing.get("ref_median_ms", 0)
+    speedup = timing.get("speedup", 0)
+    valid = all(
+        isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+        for value in (ff, ref, speedup)
+    )
+    return {
+        "status": "Passed" if valid else "Failed",
+        "flagfft_median_ms": ff,
+        "ref_median_ms": ref,
+        "speedup": speedup,
+        "plan": raw_case.get("plan_description"),
+    }
 
 
-# Worker process
+def run_performance_case(
+    case: dict,
+    build_dir: Path,
+    output_dir: Path,
+    gpu_id: int,
+    timeout: int,
+    warmup: int,
+    iters: int,
+    baseline_valid: bool | None,
+) -> dict:
+    case_dir = output_dir / case["op_id"] / "performance" / case["case_id"]
+    case_dir.mkdir(parents=True, exist_ok=True)
+    command = build_perf_cmd(case, build_dir, warmup, iters)
+    stage = run_subprocess(command, timeout, gpu_id, case_dir, "bench")
+    if stage["status"] == "Completed":
+        result = parse_perf_result(
+            (case_dir / "bench.stdout").read_text(errors="replace"), case
+        )
+    else:
+        result = {"status": stage["status"], "error": stage.get("error"), "plan": None}
+    result.update(
+        {
+            "duration": stage["duration"],
+            "capture": stage,
+            "baseline_valid": baseline_valid,
+            "data_file": (case_dir / "result.json").relative_to(output_dir).as_posix(),
+        }
+    )
+    record = {"format_version": FORMAT_VERSION, **case, "performance": result}
+    write_json(case_dir / "result.json", record)
+    return record
 
 
 def worker_proc(
-    gpu_id,
+    gpu_id: int,
     work_queue,
     display_queue,
-    build_dir,
-    timeout,
-    accuracy_only,
-    performance_only,
-    warmup,
-    iters,
-    output_dir,
-):
+    capture_bin: Path,
+    build_dir: Path,
+    output_dir: Path,
+    args,
+) -> None:
+    def stop_worker(signum, frame):
+        raise SystemExit(130)
+
+    signal.signal(signal.SIGTERM, stop_worker)
+    signal.signal(signal.SIGINT, stop_worker)
     while True:
-        try:
-            case = work_queue.get_nowait()
-        except queue.Empty:
+        job = work_queue.get()
+        if job is None:
             break
-
-        case_id = (
-            f"{case['op_id']} algo={case['algo']} direction={case['direction']} "
-            f"nx={case['nx']} ny={case['ny']} nz={case.get('nz', 0)} batch={case['batch']} "
-            f"scale={case['scale']}"
-        )
-        op_dir = output_dir / case["op_id"]
-        op_dir.mkdir(parents=True, exist_ok=True)
-
-        if not performance_only:
+        baseline_valid = None if args.performance_only else True
+        for case in job["accuracy_cases"] if not args.performance_only else []:
+            record = run_accuracy_case(
+                case, capture_bin, output_dir, gpu_id, args.timeout
+            )
+            baseline_valid = (
+                baseline_valid and record["platform_accuracy"]["status"] == "Passed"
+            )
             display_queue.put(
                 {
+                    **case,
                     "gpu": gpu_id,
                     "phase": "accuracy",
-                    "case": case_id,
-                    "status": "running",
+                    "status": record["accuracy"]["status"],
+                    "duration": record["duration"],
+                    "result": record["accuracy"],
+                    "platform_result": record["platform_accuracy"],
                 }
             )
-            cmd, jf = build_accuracy_cmd(case, build_dir)
-            rc, stdout, stderr, elapsed = run_subprocess(cmd, timeout, gpu_id)
-            data_file = f"{case['op_id']}/accuracy_result.json"
-            if rc == -100:
-                acc_result = {"status": "Timeout", "duration": elapsed}
-            elif rc in (0, 77) or os.path.exists(jf):
-                acc_result = parse_accuracy_result(jf, data_file=data_file)
-                acc_result["duration"] = elapsed
-            else:
-                acc_result = {"status": "Error", "rc": rc, "stderr": stderr[:500]}
-            # Save per-op accuracy result file
+        if not args.accuracy_only:
+            case = job["performance_case"]
             try:
-                with open(op_dir / "accuracy_result.json", "w") as f:
-                    json.dump(acc_result, f, indent=2)
-            except OSError:
-                pass
+                record = run_performance_case(
+                    case,
+                    build_dir,
+                    output_dir,
+                    gpu_id,
+                    args.timeout,
+                    args.warmup,
+                    args.iters,
+                    baseline_valid,
+                )
+                result = record["performance"]
+            except Exception as error:
+                result = {"status": "Error", "error": repr(error), "plan": None}
             display_queue.put(
                 {
-                    "gpu": gpu_id,
-                    "phase": "accuracy",
-                    "case": case_id,
-                    "status": acc_result["status"],
-                    "duration": elapsed,
-                    "result": acc_result,
-                    "op_id": case["op_id"],
-                    "algo": case["algo"],
-                    "direction": case["direction"],
-                    "nx": case["nx"],
-                    "ny": case["ny"],
-                    "nz": case.get("nz", 0),
-                    "batch": case["batch"],
-                    "scale": case["scale"],
-                }
-            )
-            try:
-                os.unlink(jf)
-            except OSError:
-                pass
-
-        if not accuracy_only:
-            display_queue.put(
-                {
+                    **case,
                     "gpu": gpu_id,
                     "phase": "performance",
-                    "case": case_id,
-                    "status": "running",
-                }
-            )
-            cmd = build_perf_cmd(case, build_dir, warmup, iters)
-            rc, stdout, stderr, elapsed = run_subprocess(cmd, timeout, gpu_id)
-            data_file = f"{case['op_id']}/performance_result.json"
-            if rc == -100:
-                perf_result = {"status": "Timeout", "duration": elapsed}
-            elif rc in (0, 77):
-                perf_result = parse_perf_result(stdout, case=case)
-                perf_result["duration"] = elapsed
-                perf_result["data_file"] = data_file
-            else:
-                perf_result = {"status": "Error", "rc": rc, "stderr": stderr[:500]}
-            # Save per-op performance result file
-            try:
-                with open(op_dir / "performance_result.json", "w") as f:
-                    json.dump(perf_result, f, indent=2)
-            except OSError:
-                pass
-            display_queue.put(
-                {
-                    "gpu": gpu_id,
-                    "phase": "performance",
-                    "case": case_id,
-                    "status": perf_result["status"],
-                    "duration": elapsed,
-                    "result": perf_result,
-                    "op_id": case["op_id"],
-                    "algo": case["algo"],
-                    "direction": case["direction"],
-                    "nx": case["nx"],
-                    "ny": case["ny"],
-                    "nz": case.get("nz", 0),
-                    "batch": case["batch"],
-                    "scale": case["scale"],
+                    "status": result["status"],
+                    "duration": result.get("duration", 0),
+                    "result": result,
                 }
             )
 
 
-# LiveDisplay class
+def policy_skip_message(case: dict, phase: str) -> dict:
+    """Create a report/CSV message for a case excluded by backend policy."""
+    reason = case.get("skip_reason", "unsupported by backend policy")
+    result = {
+        "status": "Skipped",
+        "reference": (
+            ENV_INFO.get("reference_library")
+            if phase == "performance"
+            else "numpy.fft"
+        ),
+        "plan": None,
+        "skip_reason": reason,
+        "error": reason,
+    }
+    message = {
+        **case,
+        "gpu": None,
+        "phase": phase,
+        "status": "Skipped",
+        "duration": 0.0,
+        "result": result,
+    }
+    if phase == "accuracy":
+        message["platform_result"] = {
+            "status": "Skipped",
+            "reference": "numpy.fft",
+            "plan": None,
+            "skip_reason": reason,
+            "error": reason,
+        }
+    return message
 
 
-class LiveDisplay:
-    def __init__(self, n_gpus: int):
-        self.n_gpus = n_gpus
-        self.gpu_status: dict[int, str] = {i: "idle" for i in range(n_gpus)}
-        self.completed = 0
-        self.total = 0
-        self.is_tty = sys.stderr.isatty()
-        self._last_lines = 0
-        self.completed_cases: set[str] = set()
-
-    def set_total(self, total: int):
-        self.total = total
-
-    def update(self, msg: dict):
-        gpu = msg["gpu"]
-        phase = msg["phase"]
-        case = msg["case"]
-        status = msg["status"]
-        duration = msg.get("duration", 0)
-
-        if status == "running":
-            self.gpu_status[gpu] = f"{phase:12s} {case}"
-        else:
-            self.gpu_status[gpu] = f"{phase:12s} {case} [{status:>8s} {duration:.1f}s]"
-            if case not in self.completed_cases:
-                self.completed_cases.add(case)
-                self.completed = len(self.completed_cases)
-        self._render()
-
-    def _render(self):
-        if not self.is_tty:
-            return
-        for _ in range(self._last_lines):
-            sys.stderr.write("\033[1A\033[2K")
-        lines = []
-        for gpu_id in range(self.n_gpus):
-            lines.append(f"  [GPU {gpu_id}] {self.gpu_status[gpu_id]}")
-        if self.total > 0:
-            pct = self.completed / self.total
-            bar_width = 40
-            filled = int(bar_width * pct)
-            bar = "━" * filled + "╸" + " " * max(0, bar_width - filled - 1)
-            lines.append(f"  {bar} {self.completed}/{self.total} ({pct * 100:.1f}%)")
-        for line in lines:
-            sys.stderr.write(line + "\n")
-        self._last_lines = len(lines)
-
-    def finish(self):
-        if self.is_tty and self._last_lines > 0:
-            for _ in range(self._last_lines):
-                sys.stderr.write("\033[1A\033[2K")
-
-
-# Result aggregation
-
-
-def aggregate_results(raw_results: list[dict], ops: list[dict]) -> dict[str, Any]:
-    op_results: dict[str, dict] = {}
+def aggregate_results(
+    raw_results: list[dict],
+    ops: list[dict],
+    cases: list[dict] | None = None,
+    run_accuracy: bool = True,
+    run_performance: bool = True,
+    skipped_op_ids: set[str] | None = None,
+    skip_reasons: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Judge all expected cases; a missing worker result cannot become Passed."""
+    op_results = {}
+    skipped_op_ids = skipped_op_ids or set()
+    skip_reasons = skip_reasons or {}
+    phases = ("accuracy", "platform_accuracy", "performance")
     for op in ops:
-        op_results[op["id"]] = {
-            "accuracy": {
-                "status": "NotFound",
-                "total": 0,
+        op_results[op["id"]] = {}
+        for phase in phases:
+            enabled = run_performance if phase == "performance" else run_accuracy
+            policy_skipped = op["id"] in skipped_op_ids and enabled
+            skip_reason = skip_reasons.get(
+                op["id"], "unsupported by backend policy"
+            )
+            expected = (
+                performance_cases(cases or [])
+                if phase == "performance"
+                else cases or []
+            )
+            entries = {
+                case["case_id"]: {**case, "status": "NotFound", "plan": None}
+                for case in expected
+                if case["op_id"] == op["id"]
+            }
+            op_results[op["id"]][phase] = {
+                "status": (
+                    "Skipped"
+                    if policy_skipped
+                    else ("NotFound" if enabled else "NotRun")
+                ),
+                "reference": (
+                    ENV_INFO.get("reference_library")
+                    if phase == "performance"
+                    else "numpy.fft"
+                ),
+                "total": len(entries),
+                "completed": 0,
                 "passed": 0,
                 "failed": 0,
                 "skipped": 0,
+                "missing": len(entries),
                 "duration": 0,
-                "data_file": "",
-                "details": [],
-                "cases": {},
-            },
-            "performance": {
-                "status": "NotFound",
-                "duration": 0,
-                "data_file": "",
-                "data": {},
-                "cases": {},
-            },
-        }
-
-    for result in raw_results:
-        op_id = result.get("op_id")
-        if op_id not in op_results:
+                "data_file": f"{op['id']}/{phase}_result.json",
+                "cases": entries if enabled else {},
+                **({"policy_skipped": True, "skip_reason": skip_reason} if policy_skipped else {}),
+                **({"data": {}} if phase == "performance" else {"details": []}),
+            }
+            if policy_skipped:
+                for entry in op_results[op["id"]][phase]["cases"].values():
+                    entry.update(
+                        {
+                            "status": "Skipped",
+                            "skip_reason": skip_reason,
+                            "error": skip_reason,
+                            "plan": None,
+                        }
+                    )
+    for message in raw_results:
+        if message.get("op_id") not in op_results:
             continue
-        phase = result.get("phase")
-        r = result.get("result", {})
-
-        if phase == "accuracy":
-            acc = op_results[op_id]["accuracy"]
-            acc["cases"][result.get("case", "unknown")] = {
-                "status": r.get("status", "Error"),
-                "algo": result.get("algo"),
-                "direction": result.get("direction"),
-                "nx": result.get("nx"),
-                "ny": result.get("ny"),
-                "nz": result.get("nz", 0),
-                "batch": result.get("batch"),
-                "scale": result.get("scale"),
-                "total": r.get("total", 0),
-                "passed": r.get("passed", 0),
-                "failed": r.get("failed", 0),
-                "skipped": r.get("skipped", 0),
-                "details": r.get("details", []),
+        phase = message["phase"]
+        fields = [
+            ("accuracy", message["result"]),
+            ("platform_accuracy", message.get("platform_result", {})),
+        ]
+        if phase == "performance":
+            fields = [("performance", message["result"])]
+        for field, result in fields:
+            if not result:
+                continue
+            block = op_results[message["op_id"]][field]
+            key = message["case_id"]
+            meta = {
+                key: message[key]
+                for key in (
+                    "case_id",
+                    "op_id",
+                    "api",
+                    "rank",
+                    "algorithm",
+                    "batch_mode",
+                    "shape",
+                    "batch",
+                    "direction",
+                    "scale",
+                    "skip_reason",
+                )
+                if key in message
             }
-            acc["total"] += r.get("total", 0)
-            acc["passed"] += r.get("passed", 0)
-            acc["failed"] += r.get("failed", 0)
-            acc["skipped"] += r.get("skipped", 0)
-            acc["duration"] += result.get("duration", 0)
-            if r.get("data_file"):
-                acc["data_file"] = r["data_file"]
-            # Merge details from each case result
-            case_details = r.get("details", [])
-            if case_details:
-                acc["details"].extend(case_details)
-            case_status = r.get("status", "Error")
-            if case_status in ("Failed", "Error", "Timeout"):
-                if r.get("failed", 0) == 0:
-                    acc["total"] += 1
-                    acc["failed"] += 1
-                acc["status"] = "Failed"
-            elif acc["status"] != "Failed" and acc["passed"] > 0:
-                acc["status"] = "Passed"
-            elif acc["status"] != "Failed" and acc["skipped"] > 0:
-                acc["status"] = "Skipped"
-
-        elif phase == "performance":
-            perf = op_results[op_id]["performance"]
-            perf["cases"][result.get("case", "unknown")] = {
-                "status": r.get("status", "Error"),
-                "algo": result.get("algo"),
-                "direction": result.get("direction"),
-                "nx": result.get("nx"),
-                "ny": result.get("ny"),
-                "nz": result.get("nz", 0),
-                "batch": result.get("batch"),
-                "scale": result.get("scale"),
-                "flagfft_median_ms": r.get("flagfft_median_ms", 0),
-                "cufft_median_ms": r.get("ref_median_ms", 0),
-                "speedup": r.get("speedup", 0),
-                "error": r.get("error", r.get("stderr", "")),
+            block["cases"][key] = {**meta, **result}
+    for op_result in op_results.values():
+        for block in op_result.values():
+            if block["status"] == "NotRun":
+                block.update({"total": 0, "missing": 0})
+                continue
+            entries = list(block["cases"].values())
+            block["total"] = len(entries)
+            block["passed"] = sum(entry["status"] == "Passed" for entry in entries)
+            block["failed"] = sum(
+                entry["status"] in ("Failed", "Error", "Timeout") for entry in entries
+            )
+            block["skipped"] = sum(entry["status"] == "Skipped" for entry in entries)
+            block["missing"] = sum(entry["status"] == "NotFound" for entry in entries)
+            block["completed"] = block["total"] - block["missing"]
+            block["duration"] = sum(entry.get("duration", 0) for entry in entries)
+            if block["failed"]:
+                block["status"] = "Failed"
+            elif block["missing"]:
+                block["status"] = "Incomplete"
+            elif block["total"] and block["passed"] == block["total"]:
+                block["status"] = "Passed"
+            elif block["skipped"]:
+                block["status"] = "Skipped"
+        # Preserve the report consumer's existing accuracy.details and
+        # performance.data structure alongside the richer per-case records.
+        for phase in ("accuracy", "platform_accuracy"):
+            block = op_result[phase]
+            block["details"] = [
+                {
+                    "case": entry["case_id"],
+                    "status": entry["status"],
+                    "message": entry.get("error", "NumPy comparison failed"),
+                    "metric": entry.get("metric", {}),
+                    "limits": entry.get("limits", {}),
+                }
+                for entry in block["cases"].values()
+                if entry["status"] in ("Failed", "Error", "Timeout")
+            ]
+        perf = op_result["performance"]
+        details = {}
+        speeds = []
+        for entry in perf["cases"].values():
+            if "speedup" not in entry:
+                continue
+            key = "[" + ",".join(str(n) for n in entry.get("shape", [])) + "]"
+            if entry.get("batch", 1) > 1:
+                key += f"batch={entry['batch']}"
+            key += f"direction={entry.get('direction', 'unknown')}"
+            details[key] = {
+                "base": entry.get("ref_median_ms", 0),
+                "gems": entry.get("flagfft_median_ms", 0),
+                "speedup": entry["speedup"],
             }
-            perf["duration"] += result.get("duration", 0)
-            if r.get("data_file"):
-                perf["data_file"] = r["data_file"]
-            # Merge data (dtype -> details) from each case result
-            perf_data = r.get("data", {})
-            for dtype_key, dtype_info in perf_data.items():
-                if dtype_key not in perf["data"]:
-                    perf["data"][dtype_key] = {
-                        "result": dtype_info.get("result", "OK"),
-                        "details": {},
-                        "speedup": dtype_info.get("speedup", 0),
-                    }
-                perf["data"][dtype_key]["details"].update(dtype_info.get("details", {}))
-                # Update overall speedup to latest
-                perf["data"][dtype_key]["speedup"] = dtype_info.get("speedup", 0)
-            if r.get("status") == "Passed":
-                if perf["status"] != "Failed":
-                    perf["status"] = "Passed"
-            elif r.get("status") in ("Failed", "Error", "Timeout"):
-                perf["status"] = "Failed"
-
+            if entry["status"] == "Passed" and entry.get("baseline_valid") is not False:
+                speeds.append(entry["speedup"])
+        if details:
+            perf["data"] = {
+                "default": {
+                    "result": "OK" if perf["status"] == "Passed" else "FAIL",
+                    "details": details,
+                    "speedup": math.exp(sum(math.log(s) for s in speeds) / len(speeds))
+                    if speeds
+                    else 0,
+                }
+            }
     return op_results
 
 
 def compute_speedup_stats(op_results: dict) -> dict:
-    """Compute aggregate speedup statistics across all operators."""
-    all_speedups = []
-    for op_result in op_results.values():
-        for dtype_info in op_result.get("performance", {}).get("data", {}).values():
-            for detail in dtype_info.get("details", {}).values():
-                if detail.get("speedup", 0) > 0:
-                    all_speedups.append(detail["speedup"])
-
-    if not all_speedups:
+    values = [
+        case["speedup"]
+        for op in op_results.values()
+        if op.get("accuracy", {}).get("status", "NotRun") in ("Passed", "NotRun")
+        for case in op["performance"]["cases"].values()
+        if case.get("status") == "Passed" and case.get("baseline_valid") is not False
+    ]
+    if not values:
         return {"count": 0}
-
-    log_sum = sum(math.log(s) for s in all_speedups)
-    geo_mean = math.exp(log_sum / len(all_speedups))
-
     return {
-        "count": len(all_speedups),
-        "geometric_mean_speedup": round(geo_mean, 4),
-        "min_speedup": round(min(all_speedups), 4),
-        "max_speedup": round(max(all_speedups), 4),
+        "count": len(values),
+        "geometric_mean_speedup": round(
+            math.exp(sum(math.log(value) for value in values) / len(values)), 4
+        ),
+        "min_speedup": round(min(values), 4),
+        "max_speedup": round(max(values), 4),
     }
 
 
 def write_summary(
     output_path: Path, op_results: dict, config: dict, total_duration: float
-):
+) -> dict:
+    counts = {}
+    for phase in ("accuracy", "platform_accuracy", "performance"):
+        for status in (
+            "Passed",
+            "Failed",
+            "Incomplete",
+            "Skipped",
+            "NotRun",
+            "NotFound",
+        ):
+            counts[f"{phase}_{status.lower()}"] = sum(
+                op[phase]["status"] == status for op in op_results.values()
+            )
     summary = {
+        "format_version": FORMAT_VERSION,
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "env": ENV_INFO,
+        "reference": {
+            "implementation": "numpy.fft",
+            "dtype_policy": "float64/complex128 reference; device inputs and outputs retain native dtype",
+            "normalization": "device inverse is unnormalized; NumPy inverse multiplied by product(shape)",
+            "metric": "ctest/flagfft_test.h::error_stats (worst batch rel_l2 and rel_linf)",
+            "constants": ACCURACY_CONSTANTS,
+        },
         "config": config,
         "result": op_results,
         "summary": {
             "total_ops": len(op_results),
-            "accuracy_passed": sum(
-                1 for r in op_results.values() if r["accuracy"]["status"] == "Passed"
-            ),
-            "accuracy_failed": sum(
-                1 for r in op_results.values() if r["accuracy"]["status"] == "Failed"
-            ),
-            "performance_passed": sum(
-                1 for r in op_results.values() if r["performance"]["status"] == "Passed"
-            ),
-            "performance_failed": sum(
-                1 for r in op_results.values() if r["performance"]["status"] == "Failed"
-            ),
-            "total_duration": round(total_duration, 1),
+            **counts,
+            "total_duration": round(total_duration, 3),
             "speedup_stats": compute_speedup_stats(op_results),
         },
     }
-    with open(output_path, "w") as f:
-        json.dump(summary, f, indent=2)
-    print(f"\nSummary written to {output_path}")
+    for op_id, result in op_results.items():
+        op_dir = output_path.parent / op_id
+        op_dir.mkdir(parents=True, exist_ok=True)
+        for phase, details in result.items():
+            write_json(op_dir / f"{phase}_result.json", details)
+    write_json(output_path, summary)
+    pinfo(f"Summary written to {output_path}")
+    return summary
+
+
+INC_COLUMNS = [
+    "format_version",
+    "phase",
+    "case_id",
+    "op_id",
+    "api",
+    "rank",
+    "algorithm",
+    "batch_mode",
+    "shape",
+    "batch",
+    "direction",
+    "scale",
+    "status",
+    "skip_reason",
+    "flagfft_status",
+    "platform_status",
+    "flagfft_rel_l2",
+    "flagfft_rel_linf",
+    "platform_rel_l2",
+    "platform_rel_linf",
+    "limit_rel_l2",
+    "limit_rel_linf",
+    "flagfft_median_ms",
+    "ref_median_ms",
+    "speedup",
+    "baseline_valid",
+    "plan",
+    "data_file",
+    "duration_s",
+    "error",
+    "platform_error",
+    "backend",
+    "written_at",
+]
+
+
+def incremental_row(message: dict) -> dict:
+    result = message.get("result", {})
+    platform_result = message.get("platform_result", {})
+    flag_metric = result.get("metric", {})
+    platform_metric = platform_result.get("metric", {})
+    limits = result.get("limits", {})
+    row = {
+        "format_version": FORMAT_VERSION,
+        **{
+            key: message.get(key, "")
+            for key in (
+                "phase",
+                "case_id",
+                "op_id",
+                "api",
+                "rank",
+                "algorithm",
+                "batch_mode",
+                "batch",
+                "direction",
+                "scale",
+            )
+        },
+        "shape": "x".join(str(n) for n in message.get("shape", [])),
+        "status": result.get("status", "Error"),
+        "skip_reason": result.get("skip_reason", message.get("skip_reason", "")),
+        "flagfft_status": (
+            result.get("status", "") if message["phase"] == "accuracy" else ""
+        ),
+        "platform_status": platform_result.get("status", ""),
+        "flagfft_rel_l2": flag_metric.get("rel_l2", ""),
+        "flagfft_rel_linf": flag_metric.get("rel_linf", ""),
+        "platform_rel_l2": platform_metric.get("rel_l2", ""),
+        "platform_rel_linf": platform_metric.get("rel_linf", ""),
+        "limit_rel_l2": limits.get("rel_l2", ""),
+        "limit_rel_linf": limits.get("rel_linf", ""),
+        "flagfft_median_ms": result.get("flagfft_median_ms", ""),
+        "ref_median_ms": result.get("ref_median_ms", ""),
+        "speedup": result.get("speedup", ""),
+        "baseline_valid": result.get("baseline_valid", ""),
+        "plan": result.get("plan") or "",
+        "data_file": result.get("data_file", ""),
+        "duration_s": round(message.get("duration", 0), 3),
+        "error": result.get("error", ""),
+        "platform_error": platform_result.get("error", ""),
+        "backend": ENV_INFO.get("backend", ""),
+        "written_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return json_safe(row)
+
+
+def requested_phases_passed(
+    op_results: dict, run_accuracy: bool, run_performance: bool
+) -> bool:
+    phases = (["accuracy"] if run_accuracy else []) + (
+        ["performance"] if run_performance else []
+    )
+    return bool(op_results) and all(
+        op[phase]["status"] == "Passed"
+        or (
+            op[phase]["status"] == "Skipped"
+            and op[phase].get("policy_skipped", False)
+        )
+        for op in op_results.values()
+        for phase in phases
+    )
+
+
+def reanalyze_case(case: dict, case_dir: Path) -> dict:
+    value = load_raw(
+        case_dir / "input.bin", case["api"], tuple(case["shape"]), case["batch"]
+    )
+    reference = numpy_reference(
+        value, case["api"], tuple(case["shape"]), case["direction"]
+    )
+    np.save(case_dir / "numpy.npy", reference, allow_pickle=False)
+    case["numpy_sha256"] = sha256(case_dir / "numpy.npy")
+    case["numpy_dtype"] = str(reference.dtype)
+    for implementation, field in (
+        ("flagfft", "accuracy"),
+        ("platform", "platform_accuracy"),
+    ):
+        stage = case.get(field, {}).get("capture", {"status": "NotFound"})
+        case[field] = compare_output(case, case_dir, implementation, reference, stage)
+        case[field]["data_file"] = case["data_file"]
+    write_json(case_dir / "case.json", case)
+    return case
+
+
+def analyze_only(output_dir: Path) -> int:
+    started = time.monotonic()
+    manifest_file = output_dir / "manifest.json"
+    if not manifest_file.is_file():
+        raise ValueError(f"manifest.json not found in {output_dir}")
+    manifest = json.loads(manifest_file.read_text())
+    old_summary_file = output_dir / "summary.json"
+    old_summary = (
+        json.loads(old_summary_file.read_text()) if old_summary_file.is_file() else {}
+    )
+    ENV_INFO.update(manifest["env"])
+    ENV_INFO["analysis_numpy"] = np.__version__
+    skipped_op_ids = set(manifest["config"].get("skipped_ops", []))
+    skip_reasons = manifest["config"].get("skip_reasons", {})
+    messages = []
+    for case in manifest["cases"] if not manifest["config"]["performance_only"] else []:
+        case_dir = output_dir / case["op_id"] / case["case_id"]
+        record_file = case_dir / "case.json"
+        if not record_file.is_file():
+            continue
+        record = reanalyze_case(json.loads(record_file.read_text()), case_dir)
+        messages.append(
+            {
+                **case,
+                "phase": "accuracy",
+                "duration": record.get("duration", 0),
+                "result": record["accuracy"],
+                "platform_result": record["platform_accuracy"],
+            }
+        )
+    baselines = {}
+    for message in messages:
+        key = case_name(message, performance=True)
+        baselines[key] = (
+            baselines.get(key, True)
+            and message["platform_result"]["status"] == "Passed"
+        )
+    for case in (
+        manifest["performance_cases"] if not manifest["config"]["accuracy_only"] else []
+    ):
+        path = (
+            output_dir / case["op_id"] / "performance" / case["case_id"] / "result.json"
+        )
+        if not path.is_file():
+            continue
+        result = json.loads(path.read_text())["performance"]
+        result["baseline_valid"] = baselines.get(case["case_id"])
+        messages.append(
+            {
+                **case,
+                "phase": "performance",
+                "result": result,
+                "duration": result.get("duration", 0),
+            }
+        )
+    run_accuracy = not manifest["config"]["performance_only"]
+    run_performance = not manifest["config"]["accuracy_only"]
+    for case in manifest["cases"]:
+        if case["op_id"] in skipped_op_ids and run_accuracy:
+            messages.append(policy_skip_message(case, "accuracy"))
+    for case in manifest["performance_cases"]:
+        if case["op_id"] in skipped_op_ids and run_performance:
+            messages.append(policy_skip_message(case, "performance"))
+    results = aggregate_results(
+        messages,
+        manifest["operators"],
+        manifest["cases"],
+        run_accuracy,
+        run_performance,
+        skipped_op_ids,
+        skip_reasons,
+    )
+    with (output_dir / "reanalyzed.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=INC_COLUMNS)
+        writer.writeheader()
+        writer.writerows(incremental_row(message) for message in messages)
+    config = {
+        **manifest["config"],
+        "analyze_only": True,
+        "analysis_duration": time.monotonic() - started,
+    }
+    duration = old_summary.get("summary", {}).get("total_duration", 0)
+    write_summary(output_dir / "summary.json", results, config, duration)
+    return 0 if requested_phases_passed(results, run_accuracy, run_performance) else 1
+
+
+def handle_interrupt(signum, frame) -> None:
+    global INTERRUPTED
+    if not INTERRUPTED:
+        INTERRUPTED = True
+        pwarn("Interrupted; stopping workers and saving completed results")
+
+
+def terminate_workers() -> None:
+    for worker in WORKER_PROCESSES:
+        if worker.is_alive():
+            worker.terminate()
+    for worker in WORKER_PROCESSES:
+        worker.join(timeout=5)
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=5)
 
 
 def read_op_list_file(path: str) -> list[str]:
-    """Read operator IDs from a file, one per line. Lines starting with # are comments."""
-    op_ids = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            op_ids.append(line)
-    return op_ids
+    return [
+        line.split("#", 1)[0].strip()
+        for line in Path(path).read_text().splitlines()
+        if line.split("#", 1)[0].strip()
+    ]
 
 
-def main() -> int:
-    args = parse_args()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--ops", help="Comma-separated IDs from the 36-operator acceptance list"
+    )
+    parser.add_argument(
+        "--op-list-file", help="One operator ID per line; # starts a comment"
+    )
+    parser.add_argument(
+        "--start", help="Start at this operator in operators.yaml order"
+    )
+    parser.add_argument(
+        "--combination",
+        default="full",
+        help="Group filter: full/all, or comma-separated " + ",".join(GROUPS),
+    )
+    parser.add_argument("--gpus", default="0", help="Comma-separated GPU IDs or all")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--accuracy-only", action="store_true")
+    mode.add_argument("--performance-only", action="store_true")
+    parser.add_argument("--build-dir", default=str(ROOT / "build"))
+    parser.add_argument("--capture-bin", help="Override build/ctest/numpy_fft_capture")
+    parser.add_argument(
+        "--output-dir",
+        help="Result directory; default workspace results/<timestamp>_acceptance36",
+    )
+    parser.add_argument(
+        "--incremental-csv", help="CSV path; default <output-dir>/incremental.csv"
+    )
+    parser.add_argument(
+        "--scales",
+        help="Positive scales, comma-separated, or all; default matrix scales",
+    )
+    parser.add_argument(
+        "--shapes", help="Exact configured shapes, comma-separated, e.g. 256,64x64"
+    )
+    parser.add_argument(
+        "--max-cases",
+        type=int,
+        help="Select only the first N correctness cases (partial run)",
+    )
+    parser.add_argument(
+        "--analyze-only",
+        metavar="RESULT_DIR",
+        help="Recompute NumPy comparisons from saved inputs/outputs",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print expanded cases without GPU execution or result files",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=600,
+        help="Independent timeout per native implementation",
+    )
+    parser.add_argument("--warmup", type=int, default=10)
+    parser.add_argument("--iters", type=int, default=100)
+    parser.add_argument(
+        "--dump-output",
+        action="store_true",
+        help="Native stdout/stderr are always retained",
+    )
+    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args(argv)
+    if (
+        args.timeout <= 0
+        or args.iters <= 0
+        or args.warmup < 0
+        or (args.max_cases is not None and args.max_cases <= 0)
+    ):
+        parser.error(
+            "timeout/iters/max-cases must be positive; warmup must be nonnegative"
+        )
+    return args
 
-    # Probe environment info before anything else
-    probe_env()
 
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, handle_interrupt)
-    signal.signal(signal.SIGTERM, handle_interrupt)
-
+def main(argv: list[str] | None = None) -> int:
+    global INTERRUPTED
+    args = parse_args(argv)
     init_colors(args.color)
-
-    build_dir = Path(args.build_dir)
-    ENV_INFO["backend"] = detect_backend(build_dir)
-
+    if args.analyze_only:
+        return analyze_only(Path(args.analyze_only).resolve())
+    build_dir = Path(args.build_dir).resolve()
+    backend = detect_backend(build_dir)
+    ENV_INFO["backend"] = backend
     ops = load_operators(ROOT / "conf" / "operators.yaml")
     matrix = load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
-
-    stages = set(args.stages.split(","))
-    ops = [
-        op
-        for op in ops
-        if any(list(s.keys())[0] in stages for s in (op.get("stages") or []))
-    ]
-
+    all_ids = {op["id"] for op in ops}
+    selected = None
     if args.ops:
-        op_ids = set(args.ops.split(","))
-        ops = [op for op in ops if op["id"] in op_ids]
-
+        selected = {part.strip() for part in args.ops.split(",") if part.strip()}
     if args.op_list_file:
-        file_op_ids = set(read_op_list_file(args.op_list_file))
-        ops = [op for op in ops if op["id"] in file_op_ids]
-
+        file_ids = set(read_op_list_file(args.op_list_file))
+        selected = file_ids if selected is None else selected & file_ids
+    if selected is not None:
+        unknown = selected - all_ids
+        if unknown:
+            raise ValueError(f"unknown operator IDs: {', '.join(sorted(unknown))}")
+        ops = [op for op in ops if op["id"] in selected]
     if args.start:
-        ops = [op for op in ops if op["id"] >= args.start]
-
-    if not ops:
-        perror("no operators match the filter criteria")
-        return 1
-
-    combination_names = resolve_combination_names(args.combination, matrix)
-    cases = []
-    for combination in combination_names:
-        cases.extend(expand_test_cases(ops, matrix, combination))
-    print(f"Expanded {len(cases)} test cases from {len(ops)} operators")
-
-    if args.gpus == "all":
-        gpu_ids = list(range(os.cpu_count() or 1))
-    else:
-        gpu_ids = [int(g) for g in args.gpus.split(",")]
-
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"Using GPUs: {gpu_ids}")
-    print(f"Build dir: {build_dir}")
-    print(f"Combinations: {', '.join(combination_names)}")
-    print(f"Accuracy: {not args.performance_only}")
-    print(f"Performance: {not args.accuracy_only}")
-    print()
-
-    work_queue: multiprocessing.Queue = multiprocessing.Queue()
-    display_queue: multiprocessing.Queue = multiprocessing.Queue()
-
-    for case in cases:
-        work_queue.put(case)
-
-    workers = []
-    for gpu_id in gpu_ids:
-        p = multiprocessing.Process(
-            target=worker_proc,
-            args=(
-                gpu_id,
-                work_queue,
-                display_queue,
-                build_dir,
-                args.timeout,
-                args.accuracy_only,
-                args.performance_only,
-                args.warmup,
-                args.iters,
-                output_dir,
-            ),
-        )
-        p.start()
-        workers.append(p)
-        WORKER_PROCESSES.append(p)
-
-    display = LiveDisplay(len(gpu_ids))
-    display.set_total(len(cases))
-
-    raw_results = []
-    start_time = time.monotonic()
-
-    inc_csv_file = None
-    inc_csv_writer = None
-    _INC_COLS = [
-        "phase",
-        "op_id",
-        "algo",
-        "direction",
-        "nx",
-        "ny",
-        "nz",
-        "batch",
-        "scale",
-        "status",
-        "duration_s",
-        "acc_total",
-        "acc_passed",
-        "acc_failed",
-        "acc_skipped",
-        "flagfft_median_ms",
-        "cufft_median_ms",
-        "speedup",
-        "backend",
-        "written_at",
+        ids = [op["id"] for op in ops]
+        if args.start not in ids:
+            raise ValueError(f"start operator not selected: {args.start}")
+        ops = ops[ids.index(args.start) :]
+    combinations = resolve_combination_names(args.combination)
+    expanded_cases = expand_test_cases(
+        ops, matrix, args.combination, args.scales, parse_shape_filter(args.shapes)
+    )
+    skip_reasons = {
+        op["id"]: reason
+        for op in ops
+        if (reason := operator_skip_reason(op, backend)) is not None
+    }
+    skipped_ids = set(skip_reasons)
+    runnable_cases = [
+        case for case in expanded_cases if case["op_id"] not in skipped_ids
     ]
-
-    def _inc_row(msg):
-        r = msg.get("result", {})
-        return {
-            "backend": ENV_INFO.get("backend", ""),
-            "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "phase": msg.get("phase"),
-            "op_id": msg.get("op_id"),
-            "algo": msg.get("algo"),
-            "direction": msg.get("direction"),
-            "nx": msg.get("nx"),
-            "ny": msg.get("ny"),
-            "nz": msg.get("nz"),
-            "batch": msg.get("batch"),
-            "scale": msg.get("scale"),
-            "status": msg.get("status"),
-            "duration_s": round(msg.get("duration", 0) or 0, 3),
-            "acc_total": r.get("total", ""),
-            "acc_passed": r.get("passed", ""),
-            "acc_failed": r.get("failed", ""),
-            "acc_skipped": r.get("skipped", ""),
-            "flagfft_median_ms": r.get("flagfft_median_ms", ""),
-            "cufft_median_ms": r.get("ref_median_ms", ""),
-            "speedup": r.get("speedup", ""),
+    if args.max_cases is not None:
+        runnable_case_ids = {
+            case["case_id"] for case in runnable_cases[: args.max_cases]
         }
-
-    if args.incremental_csv:
-        inc_csv_file = open(args.incremental_csv, "w", newline="")
-        inc_csv_writer = csv.DictWriter(inc_csv_file, fieldnames=_INC_COLS)
-        inc_csv_writer.writeheader()
-        inc_csv_file.flush()
-
-    def _record(msg):
-        if "result" in msg:
-            raw_results.append(msg)
-            if inc_csv_writer is not None:
-                inc_csv_writer.writerow(_inc_row(msg))
-                inc_csv_file.flush()
-
-    while any(w.is_alive() for w in workers):
-        try:
-            msg = display_queue.get(timeout=0.5)
-            display.update(msg)
-            _record(msg)
-        except queue.Empty:
-            pass
-
-    # Drain remaining messages
-    while not display_queue.empty():
-        try:
-            msg = display_queue.get_nowait()
-            display.update(msg)
-            _record(msg)
-        except queue.Empty:
-            break
-
-    if inc_csv_file is not None:
-        inc_csv_file.close()
-
-    for p in workers:
-        p.join(timeout=30)
-
-    display.finish()
-    total_duration = time.monotonic() - start_time
-
-    op_results = aggregate_results(raw_results, ops)
+    else:
+        runnable_case_ids = {case["case_id"] for case in runnable_cases}
+    all_cases = []
+    for case in expanded_cases:
+        if case["op_id"] in skipped_ids:
+            all_cases.append({**case, "skip_reason": skip_reasons[case["op_id"]]})
+        elif case["case_id"] in runnable_case_ids:
+            all_cases.append(case)
+    cases = [case for case in all_cases if case["op_id"] not in skipped_ids]
+    skipped_cases = [case for case in all_cases if case["op_id"] in skipped_ids]
+    active_ids = {case["op_id"] for case in all_cases}
+    ops = [op for op in ops if op["id"] in active_ids]
+    skipped_ids &= active_ids
+    skip_reasons = {op_id: skip_reasons[op_id] for op_id in skipped_ids}
+    if not all_cases:
+        raise ValueError("no test cases selected")
+    perf_cases = performance_cases(all_cases)
+    runnable_perf_cases = performance_cases(cases)
+    pinfo(
+        f"Expanded {len(all_cases)} accuracy cases and {len(perf_cases)} performance cases "
+        f"from {len(ops)} operators"
+    )
+    if skipped_cases:
+        pwarn(
+            f"Backend {backend} policy skipped {len(skipped_cases)} cases "
+            f"across {len(skipped_ids)} operators"
+        )
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "backend": backend,
+                    "operators": [op["id"] for op in ops],
+                    "skipped_operators": skip_reasons,
+                    "cases": all_cases,
+                    "performance_cases": perf_cases,
+                },
+                indent=2,
+            )
+        )
+        return 0
+    capture_bin = (
+        Path(args.capture_bin).resolve()
+        if args.capture_bin
+        else build_dir / "ctest" / "numpy_fft_capture"
+    )
+    if not args.performance_only and not capture_bin.is_file():
+        raise ValueError(
+            f"capture executable not found: {capture_bin}; build with FLAGFFT_BUILD_TESTS=ON"
+        )
+    if not args.accuracy_only and not (build_dir / "flagfft-cli").is_file():
+        raise ValueError(f"benchmark executable not found: {build_dir / 'flagfft-cli'}")
+    probe_env(build_dir)
+    if args.gpus == "all":
+        count = ENV_INFO.get("torch", {}).get("device_count", 0)
+        if not count:
+            raise ValueError("cannot discover GPUs; specify --gpus explicitly")
+        gpu_ids = list(range(count))
+    else:
+        gpu_ids = [int(part.strip()) for part in args.gpus.split(",")]
+    if (
+        not gpu_ids
+        or any(gpu < 0 for gpu in gpu_ids)
+        or len(set(gpu_ids)) != len(gpu_ids)
+    ):
+        raise ValueError("GPU IDs must be distinct nonnegative integers")
+    output_dir = (
+        Path(args.output_dir).resolve()
+        if args.output_dir
+        else (
+            ROOT.parent
+            / "results"
+            / (datetime.now().astimezone().strftime("%Y%m%d_%H%M%S") + "_acceptance36")
+        )
+    )
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError(
+            f"result directory is not empty: {output_dir}; use a new directory or --analyze-only"
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = (
+        Path(args.incremental_csv).resolve()
+        if args.incremental_csv
+        else output_dir / "incremental.csv"
+    )
+    if csv_path.exists():
+        raise ValueError(f"incremental CSV already exists: {csv_path}")
     config = {
-        "combination": args.combination,
-        "combinations": combination_names,
-        "stages": list(stages),
+        "ops": [op["id"] for op in ops],
+        "skipped_ops": sorted(skipped_ids),
+        "skip_reasons": skip_reasons,
+        "combinations": combinations,
         "gpus": gpu_ids,
         "accuracy_only": args.accuracy_only,
         "performance_only": args.performance_only,
+        "scales": parse_scales(args.scales, matrix.get("scales", [1.0])),
+        "shapes": args.shapes,
+        "max_cases": args.max_cases,
+        "timeout": args.timeout,
+        "warmup": args.warmup,
+        "iters": args.iters,
+        "build_dir": str(build_dir),
+        "capture_bin": str(capture_bin),
+        "test_matrix": matrix,
+        "incremental_csv": str(csv_path),
     }
-    write_summary(output_dir / "summary.json", op_results, config, total_duration)
+    write_json(
+        output_dir / "manifest.json",
+        {
+            "format_version": FORMAT_VERSION,
+            "env": ENV_INFO,
+            "config": config,
+            "operators": ops,
+            "cases": all_cases,
+            "performance_cases": perf_cases,
+        },
+    )
+    jobs = {
+        case["case_id"]: {"performance_case": case, "accuracy_cases": []}
+        for case in runnable_perf_cases
+    }
+    for case in cases:
+        jobs[case_name(case, performance=True)]["accuracy_cases"].append(case)
+    # Spawn avoids forking an initialized CUDA/PyTorch runtime.
+    context = multiprocessing.get_context("spawn")
+    work_queue = context.Queue()
+    display_queue = context.Queue()
+    for job in jobs.values():
+        work_queue.put(job)
+    for _ in gpu_ids:
+        work_queue.put(None)
+    INTERRUPTED = False
+    WORKER_PROCESSES.clear()
+    signal.signal(signal.SIGINT, handle_interrupt)
+    signal.signal(signal.SIGTERM, handle_interrupt)
+    started = time.monotonic()
+    messages = []
+    total = (0 if args.performance_only else len(all_cases)) + (
+        0 if args.accuracy_only else len(perf_cases)
+    )
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=INC_COLUMNS)
+        writer.writeheader()
+        stream.flush()
+        for gpu_id in gpu_ids:
+            worker = context.Process(
+                target=worker_proc,
+                args=(
+                    gpu_id,
+                    work_queue,
+                    display_queue,
+                    capture_bin,
+                    build_dir,
+                    output_dir,
+                    args,
+                ),
+            )
+            worker.start()
+            WORKER_PROCESSES.append(worker)
 
-    acc_passed = sum(
-        1 for r in op_results.values() if r["accuracy"]["status"] == "Passed"
+        def record(message):
+            messages.append(message)
+            writer.writerow(incremental_row(message))
+            stream.flush()
+            extra = (
+                f", platform={message['platform_result']['status']}"
+                if "platform_result" in message
+                else ""
+            )
+            pinfo(
+                f"[{len(messages)}/{total}] GPU {message['gpu']} {message['phase']} "
+                f"{message['case_id']}: {message['status']}{extra}"
+            )
+
+        try:
+            while any(worker.is_alive() for worker in WORKER_PROCESSES):
+                if INTERRUPTED:
+                    terminate_workers()
+                    break
+                try:
+                    record(display_queue.get(timeout=0.2))
+                except queue.Empty:
+                    pass
+            # Process joins flush multiprocessing queue feeder threads first.
+            for worker in WORKER_PROCESSES:
+                worker.join(timeout=5)
+            while True:
+                try:
+                    record(display_queue.get(timeout=0.2))
+                except queue.Empty:
+                    break
+        finally:
+            if any(worker.is_alive() for worker in WORKER_PROCESSES):
+                terminate_workers()
+        for case in skipped_cases:
+            if not args.performance_only:
+                message = policy_skip_message(case, "accuracy")
+                messages.append(message)
+                writer.writerow(incremental_row(message))
+                stream.flush()
+            if not args.accuracy_only:
+                message = policy_skip_message(case, "performance")
+                messages.append(message)
+                writer.writerow(incremental_row(message))
+                stream.flush()
+    results = aggregate_results(
+        messages,
+        ops,
+        all_cases,
+        not args.performance_only,
+        not args.accuracy_only,
+        skipped_ids,
+        skip_reasons,
     )
-    acc_failed = sum(
-        1 for r in op_results.values() if r["accuracy"]["status"] == "Failed"
+    config["interrupted"] = INTERRUPTED
+    config["worker_exitcodes"] = [worker.exitcode for worker in WORKER_PROCESSES]
+    summary = write_summary(
+        output_dir / "summary.json", results, config, time.monotonic() - started
     )
-    perf_passed = sum(
-        1 for r in op_results.values() if r["performance"]["status"] == "Passed"
-    )
-    perf_failed = sum(
-        1 for r in op_results.values() if r["performance"]["status"] == "Failed"
+    pinfo(json.dumps(summary["summary"]))
+    if INTERRUPTED:
+        return 130
+    return (
+        0
+        if requested_phases_passed(
+            results, not args.performance_only, not args.accuracy_only
+        )
+        else 1
     )
 
-    print(f"\n{'=' * 60}")
-    print(f"Accuracy:    {acc_passed} passed, {acc_failed} failed")
-    print(f"Performance: {perf_passed} passed, {perf_failed} failed")
-    print(f"Duration:    {total_duration:.1f}s")
-    print(f"{'=' * 60}")
 
-    return 1 if acc_failed > 0 or perf_failed > 0 else 0
+def cli() -> int:
+    try:
+        return main()
+    except (OSError, ValueError, KeyError, yaml.YAMLError) as error:
+        perror(str(error))
+        return 2
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(cli())

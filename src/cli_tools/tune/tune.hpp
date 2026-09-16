@@ -23,6 +23,7 @@ namespace flagfft::cli::tune {
 struct TuneOptions {
   int length = 1 << 20;
   int batch = 1;
+  std::string api = "c2c";
   int max_candidates = 5;
   int finalists = 2;
   int screen_warmup = 10;

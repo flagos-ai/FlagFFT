@@ -223,7 +223,7 @@ void CudaGraph::end_capture(StreamHandle stream) {
   CUgraph graph = nullptr;
   check(cuStreamEndCapture(as_stream(stream), &graph), "cuStreamEndCapture");
   CUgraphExec exec = nullptr;
-  check(cuGraphInstantiate(&exec, graph, nullptr, nullptr, 0), "cuGraphInstantiate");
+  check(cuGraphInstantiate(&exec, graph, 0), "cuGraphInstantiate");
   check(cuGraphDestroy(graph), "cuGraphDestroy");
   graph_ = nullptr;
   exec_ = reinterpret_cast<void *>(exec);

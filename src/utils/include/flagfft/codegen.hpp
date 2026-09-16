@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #pragma once
+#include <functional>
 
 #include <string>
 
@@ -402,6 +403,28 @@ struct CompiledRawR2CNode final : CompiledRawNode {
   DeviceAllocation full_output;
 };
 
+struct CompiledRawPackedR2CNode final : CompiledRawNode {
+  CompiledRawPackedR2CNode(int64_t length,
+                           std::shared_ptr<CompiledRawNode> fft,
+                           std::shared_ptr<JitKernel> postprocess_kernel,
+                           DeviceAllocation twiddle,
+                           DeviceAllocation packed_output,
+                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t length;
+  std::shared_ptr<CompiledRawNode> fft;
+  std::shared_ptr<JitKernel> postprocess_kernel;
+  DeviceAllocation twiddle;
+  DeviceAllocation packed_output;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
+};
+
 struct CompiledRawR2CLeafNode final : CompiledRawNode {
   CompiledRawR2CLeafNode(int64_t length,
                          std::shared_ptr<JitKernel> kernel,
@@ -490,6 +513,28 @@ struct CompiledRawC2RNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> pack_kernel;
   DeviceAllocation full_input;
   DeviceAllocation full_output;
+};
+
+struct CompiledRawPackedC2RNode final : CompiledRawNode {
+  CompiledRawPackedC2RNode(int64_t length,
+                           std::shared_ptr<JitKernel> preprocess_kernel,
+                           std::shared_ptr<CompiledRawNode> fft,
+                           DeviceAllocation twiddle,
+                           DeviceAllocation packed_input,
+                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t length;
+  std::shared_ptr<JitKernel> preprocess_kernel;
+  std::shared_ptr<CompiledRawNode> fft;
+  DeviceAllocation twiddle;
+  DeviceAllocation packed_input;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawC2RLeafNode final : CompiledRawNode {
@@ -598,7 +643,8 @@ struct CompiledRaw2DNode final : CompiledRawNode {
                     std::shared_ptr<JitKernel> transpose_fwd,
                     std::shared_ptr<JitKernel> transpose_inv,
                     DeviceAllocation temp1,
-                    DeviceAllocation temp2);
+                    DeviceAllocation temp2,
+                    bool enable_graph = true);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -618,6 +664,7 @@ struct CompiledRaw2DNode final : CompiledRawNode {
   mutable std::unique_ptr<adaptor::CudaGraph> graph_;
   mutable adaptor::DevicePtr graph_in_ = 0;
   mutable adaptor::DevicePtr graph_out_ = 0;
+  const bool graph_enabled_;
   mutable bool graph_failed_ = false;
 };
 
@@ -626,7 +673,8 @@ struct CompiledRaw2DRCNode final : CompiledRawNode {
                       int64_t n1,
                       std::shared_ptr<CompiledRawNode> row_fft,
                       std::shared_ptr<CompiledRawNode> col_fft,
-                      DeviceAllocation temp1);
+                      DeviceAllocation temp1,
+                      bool enable_graph = true);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -641,6 +689,7 @@ struct CompiledRaw2DRCNode final : CompiledRawNode {
   mutable std::unique_ptr<adaptor::CudaGraph> graph_;
   mutable adaptor::DevicePtr graph_in_ = 0;
   mutable adaptor::DevicePtr graph_out_ = 0;
+  const bool graph_enabled_;
   mutable bool graph_failed_ = false;
 };
 
@@ -876,10 +925,12 @@ class TritonCompiler {
                                                     int64_t batch);
   std::shared_ptr<CompiledRawNode> compile_raw_r2c_node(const PlanNodePtr &node,
                                                         const FFTRequest &request,
-                                                        int64_t batch);
+                                                        int64_t batch,
+                                                        bool allow_packed = true);
   std::shared_ptr<CompiledRawNode> compile_raw_c2r_node(const PlanNodePtr &node,
                                                         const FFTRequest &request,
-                                                        int64_t batch);
+                                                        int64_t batch,
+                                                        bool allow_packed = true);
   std::shared_ptr<CompiledRawNode> compile_raw_2d_node(const std::shared_ptr<TwoDimPlanNode> &node,
                                                        const FFTRequest &request,
                                                        int64_t batch);
@@ -980,6 +1031,8 @@ class TritonCompiler {
                                                                  int64_t n2);
   std::shared_ptr<JitKernel> compile_real_to_complex_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_r2c_half_pack_kernel(const FFTRequest &request, int64_t n);
+  std::shared_ptr<JitKernel> compile_r2c_packed_postprocess_kernel(const FFTRequest &request, int64_t n);
+  std::shared_ptr<JitKernel> compile_c2r_packed_preprocess_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_compact_to_hermitian_full_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_complex_to_real_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_tiled_transpose_kernel(const FFTRequest &request,
@@ -996,6 +1049,7 @@ class TritonCompiler {
 std::string triton_target_for_request(const FFTRequest &request);
 FFTRequest forward_child_request(const FFTRequest &request);
 DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t n1, int64_t n2);
+DeviceAllocation build_raw_packed_real_twiddle(const FFTRequest &request, int64_t n);
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign);
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m);
 DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx);

@@ -54,6 +54,67 @@ def _direction_sign(direction: Literal["forward", "inverse"]) -> float:
     return 1.0 if direction == "inverse" else -1.0
 
 
+def _vector_asm_suffix(dtype: str) -> str:
+    return "f64" if _is_double_dtype(dtype) else "f32"
+
+
+def _vector_asm_reg(dtype: str) -> str:
+    return "d" if _is_double_dtype(dtype) else "f"
+
+
+def _vector_asm_dtype(dtype: str) -> str:
+    return "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
+
+
+def _emit_vectorized_complex_load(
+    indent: str,
+    ptr: str,
+    mask: str,
+    dest: str,
+    dtype: str,
+) -> list[str]:
+    suffix = _vector_asm_suffix(dtype)
+    reg = _vector_asm_reg(dtype)
+    tl_dtype = _vector_asm_dtype(dtype)
+    return [
+        f"{indent}{dest} = tl.inline_asm_elementwise(",
+        "'{\\n"
+        ".reg .pred p;\\n"
+        "setp.ne.b32 p, $3, 0;\\n"
+        f"@p ld.global.v2.{suffix} {{$0, $1}}, [$2];\\n"
+        f"@!p mov.{suffix} $0, 0.0;\\n"
+        f"@!p mov.{suffix} $1, 0.0;\\n"
+        "}', "
+        f'"={reg},={reg},l,r", '
+        f"[tl.cast({ptr}, tl.uint64), tl.cast({mask}, tl.int32)], "
+        f"dtype=({tl_dtype}, {tl_dtype}), is_pure=False, pack=1)"
+    ]
+
+
+def _emit_vectorized_complex_store(
+    indent: str,
+    ptr: str,
+    r_name: str,
+    i_name: str,
+    mask: str,
+    dtype: str,
+) -> list[str]:
+    suffix = _vector_asm_suffix(dtype)
+    reg = _vector_asm_reg(dtype)
+    return [
+        f"{indent}tl.inline_asm_elementwise(",
+        "'{\\n"
+        ".reg .pred p;\\n"
+        "setp.ne.b32 p, $4, 0;\\n"
+        f"@p st.global.v2.{suffix} [$1], {{$2, $3}};\\n"
+        "mov.u32 $0, 0;\\n"
+        "}', "
+        f'"=r,l,{reg},{reg},r", '
+        f"[tl.cast({ptr}, tl.uint64), {r_name}, {i_name}, tl.cast({mask}, tl.int32)], "
+        "dtype=tl.int32, is_pure=False, pack=1)"
+    ]
+
+
 def _emit_table_codelet(
     indent: str, radix: int, lane_block: int, dtype: str = "complex64"
 ) -> list[str]:
@@ -430,6 +491,23 @@ def _emit_stage_block(
     lines: list[str] = []
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
+    vectorized_four_step_complex_io = (
+        io_mode
+        in {
+            "four_step_row",
+            "four_step_col",
+            "four_step_r2c_col",
+            "four_step_c2r_col",
+            "four_step_hermitian_row",
+        }
+        and not _non_nvidia_backend_active()
+    )
+    vectorized_complex_io = (
+        io_mode in {"contiguous", "contiguous_c2r"} or vectorized_four_step_complex_io
+    ) and not _non_nvidia_backend_active()
+    vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
+    vector_reg = "d" if _is_double_dtype(dtype) else "f"
+    vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
     lines.append(f"    for group_{stage} in tl.range(0, {groups}):")
     indent = "        "
 
@@ -464,12 +542,29 @@ def _emit_stage_block(
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             if io_mode == "contiguous":
-                lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other={zero})"
-                )
+                if vectorized_complex_io:
+                    lines.append(
+                        f"{indent}r{j}, i{j} = tl.inline_asm_elementwise("
+                        "'{\\n"
+                        ".reg .pred p;\\n"
+                        "setp.ne.b32 p, $3, 0;\\n"
+                        f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
+                        f"@!p mov.{vector_suffix} $0, 0.0;\\n"
+                        f"@!p mov.{vector_suffix} $1, 0.0;\\n"
+                        "}', \"=" + vector_reg + ",=" + vector_reg + ",l,r\", ["
+                        f"tl.cast(in_ptr + (batch_base + in{j}) * 2, tl.uint64), "
+                        "tl.cast(lane_mask, tl.int32)], "
+                        f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                    )
+                else:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, "
+                        f"mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, "
+                        f"mask=lane_mask, other={zero})"
+                    )
             elif io_mode == "strided":
                 lines.append(
                     f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2, "
@@ -493,12 +588,27 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_ptr{j} = in_ptr + (input_batch_base + compact_idx{j}) * 2"
                 )
-                lines.append(
-                    f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
-                )
+                if vectorized_complex_io:
+                    lines.append(
+                        f"{indent}r{j}, i{j} = tl.inline_asm_elementwise("
+                        "'{\\n"
+                        ".reg .pred p;\\n"
+                        "setp.ne.b32 p, $3, 0;\\n"
+                        f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
+                        f"@!p mov.{vector_suffix} $0, 0.0;\\n"
+                        f"@!p mov.{vector_suffix} $1, 0.0;\\n"
+                        "}', \"=" + vector_reg + ",=" + vector_reg + ",l,r\", ["
+                        f"tl.cast(src_ptr{j}, tl.uint64), "
+                        "tl.cast(lane_mask, tl.int32)], "
+                        f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                    )
+                else:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
+                    )
                 lines.append(f"{indent}i{j} = tl.where(in{j} < {half_n}, i{j}, -i{j})")
                 lines.append(
                     f"{indent}i{j} = tl.where((in{j} == 0){nyquist_guard}, 0.0, i{j})"
@@ -629,14 +739,25 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
                 )
-                lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
-                    f"mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
-                    f"mask=lane_mask, other={zero})"
-                )
+                if vectorized_complex_io:
+                    lines.extend(
+                        _emit_vectorized_complex_load(
+                            indent,
+                            f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                            "lane_mask",
+                            f"r{j}, i{j}",
+                            dtype,
+                        )
+                    )
+                else:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                        f"mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                        f"mask=lane_mask, other={zero})"
+                    )
             elif io_mode == "four_step_row_strided":
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
@@ -675,12 +796,19 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_ptr{j} = in_ptr + (four_step_batch * input_distance + compact_idx{j}) * 2"
                 )
-                lines.append(
-                    f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
-                )
+                if vectorized_complex_io:
+                    lines.extend(
+                        _emit_vectorized_complex_load(
+                            indent, f"src_ptr{j}", "lane_mask", f"r{j}, i{j}", dtype
+                        )
+                    )
+                else:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
+                    )
                 lines.append(
                     f"{indent}i{j} = tl.where(src_idx{j} < {half_n}, i{j}, -i{j})"
                 )
@@ -717,29 +845,60 @@ def _emit_stage_block(
                     f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
                 if fuse_twiddle_into_row:
-                    lines.append(
-                        f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
-                        f"mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
-                        f"mask=lane_mask, other={zero})"
-                    )
+                    if vectorized_complex_io:
+                        lines.extend(
+                            _emit_vectorized_complex_load(
+                                indent,
+                                f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                                "lane_mask",
+                                f"r{j}, i{j}",
+                                dtype,
+                            )
+                        )
+                    else:
+                        lines.append(
+                            f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                        lines.append(
+                            f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                            f"mask=lane_mask, other={zero})"
+                        )
                 else:
-                    lines.append(
-                        f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
-                        f"mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
-                        f"mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
-                    )
+                    if vectorized_complex_io:
+                        lines.extend(
+                            _emit_vectorized_complex_load(
+                                indent,
+                                f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                                "lane_mask",
+                                f"r{j}, i{j}",
+                                dtype,
+                            )
+                        )
+                        lines.extend(
+                            _emit_vectorized_complex_load(
+                                indent,
+                                f"twiddle_ptr + src_idx{j} * 2",
+                                "lane_mask",
+                                f"tw_r{j}, tw_i{j}",
+                                dtype,
+                            )
+                        )
+                    else:
+                        lines.append(
+                            f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                        lines.append(
+                            f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                        lines.append(
+                            f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
+                        )
+                        lines.append(
+                            f"{indent}tw_i{j} = tl.load(twiddle_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
+                        )
                     lines.append(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
@@ -789,12 +948,28 @@ def _emit_stage_block(
                         f"i{j}, mask=lane_mask)"
                     )
                 else:
-                    lines.append(
-                        f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, r{j}, mask=lane_mask)"
-                    )
-                    lines.append(
-                        f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
-                    )
+                    if vectorized_complex_io:
+                        lines.append(
+                            f"{indent}tl.inline_asm_elementwise("
+                            "'{\\n"
+                            ".reg .pred p;\\n"
+                            "setp.ne.b32 p, $4, 0;\\n"
+                            f"@p st.global.v2.{vector_suffix} [$1], {{$2, $3}};\\n"
+                            "mov.u32 $0, 0;\\n"
+                            "}', \"=r,l," + vector_reg + "," + vector_reg + ",r\", ["
+                            f"tl.cast(out_ptr + (batch_base + out_idx{j}) * 2, tl.uint64), "
+                            f"r{j}, i{j}, tl.cast(lane_mask, tl.int32)], "
+                            "dtype=tl.int32, is_pure=False, pack=1)"
+                        )
+                    else:
+                        lines.append(
+                            f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2, "
+                            f"r{j}, mask=lane_mask)"
+                        )
+                        lines.append(
+                            f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, "
+                            f"i{j}, mask=lane_mask)"
+                        )
             elif io_mode == "contiguous_r2c":
                 lines.append(
                     f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {n // 2 + 1})"
@@ -942,14 +1117,25 @@ def _emit_stage_block(
                 )
                 if fuse_twiddle_into_row:
                     if _is_double_dtype(dtype):
-                        lines.append(
-                            f"{indent}tw_r{j} = tl.load(twiddle_ptr + dst_idx{j} * 2, "
-                            f"mask=lane_mask, other={zero})"
-                        )
-                        lines.append(
-                            f"{indent}tw_i{j} = tl.load(twiddle_ptr + dst_idx{j} * 2 + 1, "
-                            f"mask=lane_mask, other={zero})"
-                        )
+                        if vectorized_complex_io:
+                            lines.extend(
+                                _emit_vectorized_complex_load(
+                                    indent,
+                                    f"twiddle_ptr + dst_idx{j} * 2",
+                                    "lane_mask",
+                                    f"tw_r{j}, tw_i{j}",
+                                    dtype,
+                                )
+                            )
+                        else:
+                            lines.append(
+                                f"{indent}tw_r{j} = tl.load(twiddle_ptr + dst_idx{j} * 2, "
+                                f"mask=lane_mask, other={zero})"
+                            )
+                            lines.append(
+                                f"{indent}tw_i{j} = tl.load(twiddle_ptr + dst_idx{j} * 2 + 1, "
+                                f"mask=lane_mask, other={zero})"
+                            )
                     else:
                         outer_twiddle_scale = (
                             _direction_sign(direction)
@@ -972,12 +1158,24 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
-                lines.append(
-                    f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
-                )
-                lines.append(
-                    f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
-                )
+                if vectorized_complex_io:
+                    lines.extend(
+                        _emit_vectorized_complex_store(
+                            indent,
+                            f"out_ptr + (four_step_batch_base + dst_idx{j}) * 2",
+                            f"r{j}",
+                            f"i{j}",
+                            "lane_mask",
+                            dtype,
+                        )
+                    )
+                else:
+                    lines.append(
+                        f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+                    )
             elif io_mode == "four_step_r2c_col":
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
@@ -988,12 +1186,24 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * output_distance + dst_idx{j}) * 2"
                 )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})"
-                )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
-                )
+                if vectorized_complex_io:
+                    lines.extend(
+                        _emit_vectorized_complex_store(
+                            indent,
+                            f"dst_ptr{j}",
+                            f"r{j}",
+                            f"i{j}",
+                            f"compact_mask{j}",
+                            dtype,
+                        )
+                    )
+                else:
+                    lines.append(
+                        f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
+                    )
             elif io_mode == "four_step_c2r_col":
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
@@ -1020,12 +1230,24 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
                 )
-                lines.append(
-                    f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
-                )
-                lines.append(
-                    f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
-                )
+                if vectorized_complex_io:
+                    lines.extend(
+                        _emit_vectorized_complex_store(
+                            indent,
+                            f"out_ptr + (four_step_batch_base + dst_idx{j}) * 2",
+                            f"r{j}",
+                            f"i{j}",
+                            "lane_mask",
+                            dtype,
+                        )
+                    )
+                else:
+                    lines.append(
+                        f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+                    )
         else:
             lines.extend(
                 _emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j)
@@ -1144,12 +1366,15 @@ def _use_thread_local_mixed_leaf(
     expected_length = four_step_n1 if io_mode in row_modes else four_step_n2
     return (
         io_mode in row_modes | col_modes
-        and plan.dtype == "complex64"
+        and plan.dtype in {"complex64", "complex128"}
         and register_radix in _THREAD_LOCAL_MIXED_RADICES
         and cross_radix == 32
         and plan.length == register_radix * cross_radix
         and plan.length == expected_length
-        and use_tle_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
+        and (
+            use_tle_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
+            or use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, plan.dtype)
+        )
     )
 
 
@@ -1209,6 +1434,11 @@ def _build_thread_local_mixed_four_step_kernel_source(
     smem_reshape_dims = ", ".join(["1"] * smem_chunk_dims)
     smem_block_dims = ", ".join(["2"] * smem_chunk_dims)
     smem_n = plan.smem_size * inner_pack
+    vector_suffix = "f64" if _is_double_dtype(plan.dtype) else "f32"
+    vector_reg = "d" if _is_double_dtype(plan.dtype) else "f"
+    vector_dtype = "tl.float64" if _is_double_dtype(plan.dtype) else "tl.float32"
+    asm_load_constraints = f'"={vector_reg},={vector_reg},l"'
+    asm_store_constraints = f'"=r,l,{vector_reg},{vector_reg}"'
     row_modes = {
         "four_step_row",
         "four_step_real_row",
@@ -1259,11 +1489,11 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"four_step_batch * {four_step_n1 * four_step_n2}"
             ),
             (
-                f"    smem_r = tle.gpu.alloc([{smem_n}], dtype=tl.float32, "
+                f"    smem_r = tle.gpu.alloc([{smem_n}], dtype={vector_dtype}, "
                 "layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
             ),
             (
-                f"    smem_i = tle.gpu.alloc([{smem_n}], dtype=tl.float32, "
+                f"    smem_i = tle.gpu.alloc([{smem_n}], dtype={vector_dtype}, "
                 "layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)"
             ),
         ]
@@ -1298,9 +1528,10 @@ def _build_thread_local_mixed_four_step_kernel_source(
             )
             body.append(
                 f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                f"{asm_load_constraints}, "
                 f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
             )
             body.append(
                 f"    i{idx} = tl.where(src_idx{idx} < {half_n}, i{idx}, -i{idx})"
@@ -1316,9 +1547,10 @@ def _build_thread_local_mixed_four_step_kernel_source(
             body.append(
                 # The selected leaves and pack=4 cover every input lane exactly.
                 f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                '"ld.global.v2.f32 {$0, $1}, [$2];", "=f,=f,l", '
+                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                f"{asm_load_constraints}, "
                 f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                "dtype=(tl.float32, tl.float32), is_pure=False, pack=1)"
+                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
             )
 
     body.extend(_emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
@@ -1534,8 +1766,8 @@ def _build_thread_local_mixed_four_step_kernel_source(
             )
             body.append(
                 f"    output_dummy{idx} = tl.inline_asm_elementwise("
-                '"st.global.v2.f32 [$1], {$2, $3}; mov.u32 $0, 0;", '
-                '"=r,l,f,f", '
+                f'"st.global.v2.{vector_suffix} [$1], {{$2, $3}}; mov.u32 $0, 0;", '
+                f"{asm_store_constraints}, "
                 f"[tl.cast(out_ptr + output_offset{idx}, tl.uint64), "
                 f"r{idx}, i{idx}], "
                 "dtype=tl.int32, is_pure=False, pack=1)"

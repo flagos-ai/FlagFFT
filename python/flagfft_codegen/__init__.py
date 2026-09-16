@@ -26,9 +26,11 @@ from .kernels_leaf import (
     _build_leaf_kernel_source,
 )
 from .kernels_real import (
+    _build_c2r_packed_preprocess_kernel_source,
     _build_compact_to_hermitian_full_kernel_source,
     _build_complex_to_real_kernel_source,
     _build_r2c_half_pack_kernel_source,
+    _build_r2c_packed_postprocess_kernel_source,
     _build_real_to_complex_kernel_source,
 )
 
@@ -38,12 +40,14 @@ __all__ = [
     "_FOUR_STEP_NUM_WARPS",
     "_FOUR_STEP_TILE_COLS",
     "_FOUR_STEP_TILE_ROWS",
+    "_build_c2r_packed_preprocess_kernel_source",
     "_build_compact_to_hermitian_full_kernel_source",
     "_build_complex_to_real_kernel_source",
     "_build_four_step_col_kernel_source",
     "_build_four_step_row_kernel_source",
     "_build_leaf_kernel_source",
     "_build_r2c_half_pack_kernel_source",
+    "_build_r2c_packed_postprocess_kernel_source",
     "_build_real_to_complex_kernel_source",
     "lane_block_for",
 ]

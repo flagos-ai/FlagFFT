@@ -33,9 +33,9 @@ timing, and tuning enter through `flagfft-cli`.
 - `python/flagfft_codegen/` provides the pip-installable source generator and
   its bundled codelets.
 - `src/adaptor/` owns device allocation, stream/event operations, target
-  identity, and device capability queries. Its current backend implementation
-  is CUDA Driver based; the common plan/codegen/exec code does not depend on
-  CUDA device types.
+  identity, and device capability queries. CUDA and IX use the CUDA-compatible
+  driver interface, while MUSA and PPU use their vendor runtime interfaces;
+  the common plan/codegen/exec code does not depend on device types.
 - `src/utils/` owns shared request/key utilities, JSON/SQLite tuning support, and internal
   headers under `src/utils/include/flagfft/`.
 
@@ -80,12 +80,12 @@ Raw nodes mirror the existing plan tree:
 ## CLI Tools
 
 `src/cli_tools/common/` owns `CaseSpec`, deterministic buffer generation,
-FlagFFT/cuFFT dispatch, and comparison. Device memory, stream, synchronization,
-timer, and query operations use `src/adaptor/`; cuFFT remains in the CLI only
-as the CUDA validation/performance oracle.
+FlagFFT/platform-FFT dispatch, and comparison. Device memory, stream,
+synchronization, timer, and query operations use `src/adaptor/`; the selected
+backend's cuFFT-compatible library is the validation/performance oracle.
 The bench subcommand queries that capability layer before plan creation:
 
-- `bench` binds FlagFFT and cuFFT reference plans to one adaptor stream before
+- `bench` binds FlagFFT and the platform reference plan to one adaptor stream before
   warmup and timing so reported event durations cover the actual kernel work.
 - `tune` is currently a placeholder and exits with an unsupported status.
 
@@ -96,12 +96,12 @@ The JSON status boundary is `passed`/`0`, `failed`/`1`, runtime `error`/`2`,
 and `skipped` or `unsupported`/`77`. A failed CUDA device query is a runtime
 error; `skipped` applies only when a successful query reports zero devices.
 Correctness comparison counts non-finite values and fails validation when any
-FlagFFT or cuFFT output, or their difference, is non-finite.
+FlagFFT or platform output, or their difference, is non-finite.
 
 ## Build Options
 
 The default CMake build produces only `flagfft`. `FLAGFFT_BUILD_CLI=ON` adds
-`flagfft-cli` and its cuFFT dependency. `FLAGFFT_BUILD_TESTS=ON` adds the
+`flagfft-cli` and the selected backend's reference FFT dependency. `FLAGFFT_BUILD_TESTS=ON` adds the
 Google Test targets under `ctest/`; CLI behavior remains covered by pytest.
 The standalone `bench_vs_cufft` and `flagfft-tuner` targets were removed.
 
@@ -150,6 +150,16 @@ database when `FLAGFFT_TUNE_DB=PATH` is set.
 ## Tests
 
 `ctest/` contains Google Test based accuracy tests for all operators.
-`tools/run_tests.py` is the unified test runner that orchestrates both
-accuracy and performance testing across multiple GPUs. `tests/python/`
-continues to cover code generation.
+`tools/run_tests.py` expands 36 acceptance operators from `conf/operators.yaml`
+using the dimensions, numeric batches and scales in `conf/test_matrix.yaml`.
+Its native capture target compares FlagFFT and the platform library independently
+against NumPy; FlagFFT correctness alone decides acceptance. Performance uses
+`flagfft-cli bench` once per shape/batch/direction, regardless of input scales.
+JSON and incremental CSV retain per-case runtime plans and both correctness
+results. `--analyze-only` recomputes comparisons from captured data without a GPU.
+`tests/python/` covers runner behavior and code generation.
+
+On IX, CoreX does not support FP64. `run_tests.py` keeps the corresponding
+`Z2Z`, `Z2D`, and `D2Z` operators in the 36-operator report, marks their cases
+as policy-skipped, and does not launch them; the remaining 18 operators are
+executed normally. The skip reason is retained in JSON and incremental CSV.

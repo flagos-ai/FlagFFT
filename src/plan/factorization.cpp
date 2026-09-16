@@ -121,6 +121,23 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     return it->second;
   }
 
+  const RequestContext &context = request_context();
+  // Batch-1 small leaves can be latency-bound with only 1-2 warps. Use
+  // extra radix-4/8 stages to raise lane counts while keeping one shared-memory
+  // leaf; apply as a generic heuristic first and validate per API/backend.
+  if (context.batch == 1 && parallel_leaf_heuristic_enabled_) {
+    // More radix-4/8 stages raise lane counts to 64-128 while keeping the FFT
+    // in one shared-memory leaf, which is faster than the fewest-stage choice.
+    if (n == 256) {
+      best_leaf_factors_cache_[n] = {4, 4, 4, 4};
+      return best_leaf_factors_cache_[n];
+    }
+    if (n == 1024) {
+      best_leaf_factors_cache_[n] = {8, 8, 4, 4};
+      return best_leaf_factors_cache_[n];
+    }
+  }
+
   std::vector<std::vector<int64_t>> candidates = enumerate_supported_factorizations(n);
   std::vector<int64_t> best;
   if (candidates.empty()) {
