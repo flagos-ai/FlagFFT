@@ -172,21 +172,18 @@ void copy_device_to_device(DevicePtr destination,
     return;
   }
   ensure_current_device();
+  aclrtStream copy_stream = as_stream(stream);
   if (stream == nullptr) {
-    check(aclrtMemcpy(reinterpret_cast<void *>(destination),
-                      bytes,
-                      reinterpret_cast<const void *>(source),
-                      bytes,
-                      ACL_MEMCPY_DEVICE_TO_DEVICE),
-          "aclrtMemcpy(D2D)");
-    return;
+    // A synchronous memcpy is not ordered after kernels queued on the
+    // implicit runtime stream. Enqueue the copy on that same stream instead.
+    check(aclrtCtxGetCurrentDefaultStream(&copy_stream), "aclrtCtxGetCurrentDefaultStream");
   }
   check(aclrtMemcpyAsync(reinterpret_cast<void *>(destination),
                          bytes,
                          reinterpret_cast<const void *>(source),
                          bytes,
                          ACL_MEMCPY_DEVICE_TO_DEVICE,
-                         as_stream(stream)),
+                         copy_stream),
         "aclrtMemcpyAsync(D2D)");
 }
 

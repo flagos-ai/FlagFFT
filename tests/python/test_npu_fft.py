@@ -97,6 +97,8 @@ def run_fft(api, shape, batch, operation, user_stream, inplace=False):
                 output_bytes = expected.size * np.dtype(real_dtype).itemsize * (1 if real_inverse else 2)
                 storage = torch.full((output_bytes + 128,), 0xA5, dtype=torch.uint8, device="npu")
                 output = source_tensor if inplace else storage[64:-64]
+                if not inplace:
+                    output.fill_(0xFF)  # NaN sentinels detect omitted stores.
                 torch.npu.synchronize()
                 call = getattr(api, "flagfftExec" + operation.upper())
                 args = [plan, source_tensor.data_ptr(), output.data_ptr()]
@@ -131,8 +133,9 @@ def test_fp32(api, shape, batch, user_stream, operation):
 
 
 @pytest.mark.parametrize("shape", [(8,), (256,), (8, 16), (4, 5, 8)])
-def test_c2c_inplace(api, shape):
-    run_fft(api, shape, 3, "c2c", True, inplace=True)
+@pytest.mark.parametrize("user_stream", [False, True])
+def test_c2c_inplace(api, shape, user_stream):
+    run_fft(api, shape, 3, "c2c", user_stream, inplace=True)
 
 
 @pytest.mark.parametrize("batch", [65, 257])
