@@ -288,25 +288,13 @@ def _component_arrays(
 def error_stats(
     value: np.ndarray, reference: np.ndarray, elements_per_batch: int, batch: int
 ) -> dict[str, Any]:
-    diff, ref_abs, _ = _component_arrays(
-        value.reshape(batch, elements_per_batch),
-        reference.reshape(batch, elements_per_batch),
-    )
-    finite = bool(np.all(np.isfinite(diff)) and np.all(np.isfinite(ref_abs)))
-
-    if not finite:
-        bad_batches = ~np.all(np.isfinite(diff) & np.isfinite(ref_abs), axis=1)
-        worst = int(np.flatnonzero(bad_batches)[0])
-        return {
-            "rel_l2": float("inf"),
-            "rel_linf": float("inf"),
-            "max_abs": float("inf"),
-            "mixed_pointwise": float("inf"),
-            "worst_l2_batch": worst,
-            "worst_linf_batch": worst,
-            "finite": False,
-        }
-
+    # Keep the metric numerically identical while processing one batch at a
+    # time.  Casting a large batched FP32 result to longdouble for all real,
+    # imaginary, difference and reference arrays at once can consume tens of
+    # gigabytes (for example, 1M points x 256 batches on Ascend).
+    value_batches = np.asarray(value).reshape(batch, elements_per_batch)
+    reference_batches = np.asarray(reference).reshape(batch, elements_per_batch)
+    complex_values = np.iscomplexobj(value) or np.iscomplexobj(reference)
     rel_l2 = np.longdouble(0.0)
     rel_linf = np.longdouble(0.0)
     max_abs = np.longdouble(0.0)
@@ -315,8 +303,30 @@ def error_stats(
     worst_linf_batch = 0
 
     for batch_index in range(batch):
-        batch_diff = diff[batch_index]
-        batch_ref = ref_abs[batch_index]
+        batch_value = value_batches[batch_index]
+        batch_reference = reference_batches[batch_index]
+        if complex_values:
+            value_real = np.asarray(batch_value.real, dtype=np.longdouble)
+            value_imag = np.asarray(batch_value.imag, dtype=np.longdouble)
+            ref_real = np.asarray(batch_reference.real, dtype=np.longdouble)
+            ref_imag = np.asarray(batch_reference.imag, dtype=np.longdouble)
+            batch_diff = np.hypot(value_real - ref_real, value_imag - ref_imag)
+            batch_ref = np.hypot(ref_real, ref_imag)
+        else:
+            value_real = np.asarray(batch_value, dtype=np.longdouble)
+            ref_real = np.asarray(batch_reference, dtype=np.longdouble)
+            batch_diff = np.abs(value_real - ref_real)
+            batch_ref = np.abs(ref_real)
+        if not bool(np.all(np.isfinite(batch_diff)) and np.all(np.isfinite(batch_ref))):
+            return {
+                "rel_l2": float("inf"),
+                "rel_linf": float("inf"),
+                "max_abs": float("inf"),
+                "mixed_pointwise": float("inf"),
+                "worst_l2_batch": batch_index,
+                "worst_linf_batch": batch_index,
+                "finite": False,
+            }
         err_sq = np.sum(batch_diff * batch_diff, dtype=np.longdouble)
         ref_sq = np.sum(batch_ref * batch_ref, dtype=np.longdouble)
         err_max = np.max(batch_diff, initial=np.longdouble(0.0))
@@ -352,7 +362,7 @@ def error_stats(
         "mixed_pointwise": float(mixed_pointwise),
         "worst_l2_batch": int(worst_l2_batch),
         "worst_linf_batch": int(worst_linf_batch),
-        "finite": finite,
+        "finite": True,
     }
 
 
