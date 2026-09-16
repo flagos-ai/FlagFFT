@@ -255,6 +255,15 @@ def test_artifact_policy_cli_defaults_to_failed():
     assert RUN_TESTS.parse_args(["--artifacts", "all"]).artifact_policy == "all"
 
 
+def test_source_commit_override_is_recorded_for_archive_runs(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLAGFFT_SOURCE_COMMIT", "c3ca9d2")
+    monkeypatch.setattr(RUN_TESTS, "git_commit", lambda _source: "unknown")
+    monkeypatch.setattr(RUN_TESTS, "detect_backend", lambda _build: "npu")
+    RUN_TESTS.ENV_INFO.clear()
+    RUN_TESTS.probe_env(tmp_path)
+    assert RUN_TESTS.ENV_INFO["git_commit"] == "c3ca9d2"
+
+
 def test_ix_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     build_dir = tmp_path / "ix-build"
     build_dir.mkdir()

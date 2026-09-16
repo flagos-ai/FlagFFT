@@ -842,12 +842,16 @@ def git_commit(source: Path) -> str:
 
 
 def probe_env(build_dir: Path) -> None:
+    # Archive-based remote source syncs intentionally omit .git.  Let the
+    # caller provide the exact committed source SHA in that environment so
+    # result manifests remain reproducible instead of recording "unknown".
+    source_commit = os.environ.get("FLAGFFT_SOURCE_COMMIT") or git_commit(ROOT)
     ENV_INFO.update(
         {
             "architecture": platform.machine(),
             "python": platform.python_version(),
             "numpy": np.__version__,
-            "git_commit": git_commit(ROOT),
+            "git_commit": source_commit,
             "backend": detect_backend(build_dir),
         }
     )
