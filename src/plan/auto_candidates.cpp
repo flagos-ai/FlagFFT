@@ -59,6 +59,11 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
   }
   int64_t power = ceil_power_of_two(minimum);
   const RequestContext &context = request_context();
+  // Keep NPU convolution children on the validated small-radix path, including
+  // lengths above the GPU-specific power-of-two preference threshold.
+  if (context.device_type == "npu") {
+    return power;
+  }
   const bool is_fp32 = context.input_dtype == "complex64" || context.input_dtype == "float32";
   if (is_fp32 && power <= kBluesteinPow2ConvMaxLength) {
     // fp32 four-step kernels are measurably faster for power-of-two convolution
@@ -122,7 +127,11 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   // CUDA shared-memory leaf layouts are not used on this path.
   if (request_context().device_type == "npu") {
     Factorization factorization = factorize_supported_radices(n);
-    if (n > 1 && factorization.remainder == 1) {
+    // Large prime codelets produce expensive compiler scheduling on CANN 9
+    // (radix 13 exceeded several minutes). Keep 13/17/19 on the existing DFT
+    // or Bluestein route until their vector lowering is qualified separately.
+    const bool small_radices = n % 13 != 0 && n % 17 != 0 && n % 19 != 0;
+    if (n > 1 && factorization.remainder == 1 && small_radices) {
       std::vector<int64_t> factors;
       for (int64_t factor : factorization.factors) {
         // Split composite register layouts into natural-order shared codelets.

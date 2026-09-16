@@ -143,9 +143,14 @@ def test_large_batch(api, batch):
     run_fft(api, (8,), batch, "c2c", True)
 
 
-@pytest.mark.parametrize("radix", [3, 6, 9, 10, 11, 12, 13, 15, 17, 19])
+@pytest.mark.parametrize("radix", [3, 6, 9, 10, 11, 12, 15])
 def test_shared_radix_codelets(api, radix):
     run_fft(api, (radix,), 3, "c2c", True)
+
+
+@pytest.mark.parametrize("length", [13, 17, 19, 169, 289, 361])
+def test_prime_radix_fallback(api, length):
+    run_fft(api, (length,), 3, "c2c", True)
 
 
 @pytest.mark.parametrize("shape", [(16, 256), (8, 16, 32)])
