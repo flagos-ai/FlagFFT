@@ -14,6 +14,8 @@ class BackendProfile:
     max_dynamic_shared_memory: int | None = None
     policy: str = "legacy"
     policy_version: int = 1
+    toolchain: str = "unspecified"
+    source_fingerprint: str = "unspecified"
 
     @classmethod
     def from_device(cls, device: dict, policy: str = "native"):

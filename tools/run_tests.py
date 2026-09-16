@@ -811,7 +811,8 @@ def probe_env(build_dir: Path) -> None:
         ENV_INFO["triton"] = {"version": triton.__version__}
     except ImportError:
         ENV_INFO["triton"] = {"version": "N/A"}
-    ENV_INFO["execution_policy"] = os.environ.get("FLAGFFT_EXECUTION_POLICY", "native")
+    ENV_INFO["execution_policy"] = os.environ.get("FLAGFFT_EXECUTION_POLICY",
+                                                "native" if ENV_INFO["backend"] == "ix" else "legacy")
     try:
         probe = subprocess.run([str(build_dir / "flagfft-cli"), "device-info", "--json"],
                                capture_output=True, text=True, timeout=30, check=True)

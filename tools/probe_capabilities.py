@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 
 def arithmetic_worker(layer):
@@ -12,12 +13,12 @@ def arithmetic_worker(layer):
     x = np.array([1 + 2.0**-40, 1 - 2.0**-40, -1 + 2.0**-40], dtype=np.float64)
     expected = (x - 1.0) * 3.0
     if layer == "runtime":
-        import cupy as cp
-        kernel = cp.RawKernel('extern "C" __global__ void probe(const double *x, double *y) '
-                              '{ int i=threadIdx.x; if(i<3) y[i]=(x[i]-1.0)*3.0; }', "probe")
-        dx, dy = cp.asarray(x), cp.empty_like(cp.asarray(x))
-        kernel((1,), (64,), (dx, dy))
-        actual = cp.asnumpy(dy)
+        with tempfile.TemporaryDirectory(prefix="flagfft-fp64-") as directory:
+            binary = str(Path(directory) / "native_probe")
+            subprocess.run(["nvcc", str(Path(__file__).with_name("fp64_runtime_probe.cu")),
+                            "-o", binary], check=True, stdout=sys.stderr, stderr=sys.stderr)
+            output = subprocess.run([binary], capture_output=True, text=True, check=True)
+            actual = np.array([float(v) for v in output.stdout.split()], dtype=np.float64)
     else:
         import torch
         import triton

@@ -158,7 +158,7 @@ runtime (for example `flagtree===0.5.1+iluvatar3.1`).
 | `FLAGFFT_PYTHON` | Path to the Python interpreter used by JIT codegen (default: `python3` from PATH); keep its Python minor version aligned with the CMake build interpreter |
 | `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `~/.flagfft/tune.db`) |
 | `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
-| `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `native` (default), `legacy` (comparison), or `packed` (experimental wider leaf packing) |
+| `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `native` (IX default), `legacy` (other backends' default/comparison), or `packed` (experimental wider leaf packing) |
 
 ### Hardware profiles and IX experiments
 
@@ -190,7 +190,7 @@ cover the complete FFT execution, excluding plan creation/JIT and host copies.
 For acceptance use `tools/run_tests.py`; the experiment is a representative
 matrix, not a replacement for the complete 36-operator report.
 
-FP64 diagnostics test CoreX/CuPy arithmetic, Triton arithmetic and small
+FP64 diagnostics test native-SDK arithmetic (compiled with `nvcc`), Triton arithmetic and small
 FlagFFT/platform FFTs in separate bounded processes. A failed compiler or
 library probe does not prove missing hardware support; passing a small probe
 does not certify every transform. Diagnostics do not enable IX FP64 acceptance.

@@ -45,7 +45,9 @@ from .registry import (
 )
 
 def main() -> None:
-    from dataclasses import asdict
+    from dataclasses import asdict, replace
+    import hashlib
+    import triton
     from .backend_profile import BackendProfile, current_profile, set_profile
     parser = argparse.ArgumentParser(
         description="Generate FlagFFT libtriton_jit kernel sources"
@@ -86,7 +88,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.device_profile:
         set_profile(BackendProfile.from_device(json.loads(args.device_profile), args.execution_policy))
-    profile = current_profile()
+    source_hash = hashlib.sha256()
+    for source_path in sorted(Path(__file__).parent.rglob("*.py")):
+        source_hash.update(source_path.relative_to(Path(__file__).parent).as_posix().encode())
+        source_hash.update(source_path.read_bytes())
+    profile = replace(current_profile(), toolchain=triton.__version__, source_fingerprint=source_hash.hexdigest())
+    set_profile(profile)
     args.out_dir = args.out_dir / profile.fingerprint
 
     spec = kernel_spec(args.kernel)
