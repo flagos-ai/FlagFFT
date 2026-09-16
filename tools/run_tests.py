@@ -1147,7 +1147,7 @@ def worker_proc(
                     "platform_result": record["platform_accuracy"],
                 }
             )
-        if not args.accuracy_only:
+        if not args.accuracy_only and not job["performance_case"].get("skip_reason"):
             case = job["performance_case"]
             try:
                 record = run_performance_case(
@@ -1973,9 +1973,17 @@ def main(argv: list[str] | None = None) -> int:
             "performance_cases": perf_cases,
         },
     )
+    # Keep a job for every selected accuracy case.  A reference-library
+    # limitation suppresses only its platform/performance phases, while
+    # FlagFFT still needs to run the NumPy accuracy check.  Such cases are
+    # therefore absent from runnable_perf_cases but must not cause a lookup
+    # failure when their accuracy case is attached below.
     jobs = {
-        case["case_id"]: {"performance_case": case, "accuracy_cases": []}
-        for case in runnable_perf_cases
+        case_name(case, performance=True): {
+            "performance_case": case,
+            "accuracy_cases": [],
+        }
+        for case in cases
     }
     for case in cases:
         jobs[case_name(case, performance=True)]["accuracy_cases"].append(case)
@@ -2058,11 +2066,6 @@ def main(argv: list[str] | None = None) -> int:
                 writer.writerow(incremental_row(message))
                 stream.flush()
         for case in reference_skipped_cases:
-            if not args.accuracy_only:
-                message = policy_skip_message(case, "performance")
-                messages.append(message)
-                writer.writerow(incremental_row(message))
-                stream.flush()
             if not args.accuracy_only:
                 message = policy_skip_message(case, "performance")
                 messages.append(message)
