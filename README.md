@@ -194,6 +194,10 @@ FP64 diagnostics test native-SDK arithmetic (CoreX `clang++`, otherwise `nvcc`),
 FlagFFT/platform FFTs in separate bounded processes. A failed compiler or
 library probe does not prove missing hardware support; passing a small probe
 does not certify every transform. Diagnostics do not enable IX FP64 acceptance.
+Pass `--capability-report <probe-dir>/capabilities.json` to `tools/run_tests.py`
+to attach the probe to the acceptance JSON. The runner checks the device identity
+and launch limits before accepting this report; its recorded environment and
+tested scope remain relevant when interpreting the results.
 
 ### Install
 

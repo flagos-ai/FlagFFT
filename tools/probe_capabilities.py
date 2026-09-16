@@ -102,6 +102,9 @@ def main():
     info = subprocess.run([str(build / "flagfft-cli"), "device-info", "--json"],
                           capture_output=True, text=True, timeout=30, check=True)
     report = {"device": json.loads(info.stdout), "fp64": {},
+              "environment": {"python": sys.version, "git_commit": acceptance.git_commit(Path(__file__).resolve().parents[1]),
+                              "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                              "ix_visible_devices": os.environ.get("IX_VISIBLE_DEVICES")},
               "acceptance_policy": "unchanged; IX FP64 remains skipped"}
     for layer in ("runtime", "triton"):
         directory = root / layer

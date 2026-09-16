@@ -1736,6 +1736,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--performance-only", action="store_true")
     parser.add_argument("--build-dir", default=str(ROOT / "build"))
     parser.add_argument("--capture-bin", help="Override build/ctest/numpy_fft_capture")
+    parser.add_argument("--capability-report", type=Path,
+                        help="Attach an explicit device-matched probe_capabilities.py report")
     parser.add_argument(
         "--output-dir",
         help="Result directory; default workspace results/<timestamp>_acceptance36",
@@ -1898,6 +1900,14 @@ def main(argv: list[str] | None = None) -> int:
     if not args.accuracy_only and not (build_dir / "flagfft-cli").is_file():
         raise ValueError(f"benchmark executable not found: {build_dir / 'flagfft-cli'}")
     probe_env(build_dir, None if args.gpus == "all" else int(args.gpus.split(",")[0]))
+    if args.capability_report:
+        capabilities = json.loads(args.capability_report.read_text())
+        probed_device = capabilities.get("device", {})
+        current_device = ENV_INFO.get("device", {})
+        for field in ("backend", "device_arch", "warp_size", "max_threads_per_block"):
+            if field not in current_device or probed_device.get(field) != current_device[field]:
+                raise ValueError(f"capability report does not match selected device: {field}")
+        ENV_INFO["capabilities"] = capabilities
     if args.gpus == "all":
         count = ENV_INFO.get("torch", {}).get("device_count", 0)
         if not count:
