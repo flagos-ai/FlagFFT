@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from .backend_profile import current_profile
 
 from .kernels_common import (
     _CODELET_DIR,
@@ -112,7 +113,8 @@ def _metadata(
         inner_pack = four_step_col_inner_pack_for(n1, n2, dtype, plan)
     else:
         inner_pack = 1
-    num_warps = int(plan.num_warps)
+    profile = current_profile()
+    num_warps = profile.warps_for(int(plan.num_warps) * 32)
     if kernel_type == "direct_dft" and dtype == "complex64":
         num_warps = 4
     if tle_fused_twiddle:
@@ -120,7 +122,7 @@ def _metadata(
     work_pack = max(batch_per_block, inner_pack)
     if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):
         cooperative_warps = 1
-        required_warps = (lane_block_for(max(stage_lanes)) * work_pack + 31) // 32
+        required_warps = profile.warps_for(lane_block_for(max(stage_lanes)) * work_pack)
         while cooperative_warps < required_warps and cooperative_warps < 8:
             cooperative_warps *= 2
         num_warps = max(num_warps, cooperative_warps)

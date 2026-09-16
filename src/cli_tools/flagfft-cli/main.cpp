@@ -16,6 +16,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include "adaptor/adaptor.h"
 
 #include "cli_tools/bench/report.hpp"
 #include "cli_tools/bench/runner.hpp"
@@ -201,6 +202,12 @@ Args parse_args(int argc, char** argv) {
 
 int main(int argc, char** argv) {
   try {
+    if (argc >= 2 && std::string(argv[1]) == "device-info") {
+      if (argc > 3 || (argc == 3 && std::string(argv[2]) != "--json"))
+        throw std::runtime_error("usage: flagfft-cli device-info [--json]");
+      std::cout << flagfft::adaptor::device_capabilities_json() << "\n";
+      return 0;
+    }
     Args args = parse_args(argc, argv);
 
     std::string reason;

@@ -23,7 +23,8 @@ namespace flagfft {
 TuneFingerprints tune_fingerprints() {
   TuneFingerprints fps;
   fps.planner = "planner-schema-3-exact-batch-candidates";
-  fps.codegen = "codegen-schema-4-rader-dc-reuse";
+  const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+  fps.codegen = std::string("codegen-schema-5-hardware-profile-") + (policy ? policy : "native");
   fps.runtime = "runtime-schema-5-rader-dc-reuse";
   fps.benchmark = "benchmark-schema-2-api-dispatch";
   return fps;

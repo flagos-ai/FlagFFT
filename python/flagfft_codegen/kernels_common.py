@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from .backend_profile import current_profile
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _MODULE_DIR.parents[1]
@@ -223,11 +224,13 @@ def _next_power_of_two(value: int) -> int:
 
 
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
+    profile = current_profile()
+    target_threads = profile.leaf_target_threads
     lane_block = lane_block_for(plan.lanes)
-    if lane_block >= _LEAF_PACK_TARGET_THREADS:
+    if lane_block >= target_threads:
         return 1
 
-    thread_pack = max(1, _LEAF_PACK_TARGET_THREADS // lane_block)
+    thread_pack = max(1, target_threads // lane_block)
     tiny_single_stage = plan.length <= 8 and len(plan.factors) == 1
     if not tiny_single_stage and plan.length <= 128:
         thread_pack = min(thread_pack, 4)
@@ -235,7 +238,7 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
         return thread_pack
 
     bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
-    smem_pack = max(1, _LEAF_PACK_SMEM_BUDGET_BYTES // bytes_per_fft)
+    smem_pack = max(1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft)
     return _floor_power_of_two(max(1, min(thread_pack, smem_pack)))
 
 
@@ -268,7 +271,7 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     lane_block = lane_block_for(active_lanes)
     thread_pack = max(1, _FOUR_STEP_PACK_TARGET_THREADS // lane_block)
     bytes_per_fft = 4 * plan.smem_size * _real_element_bytes(plan.dtype)
-    smem_pack = max(1, _FOUR_STEP_PACK_SMEM_BUDGET_BYTES // bytes_per_fft)
+    smem_pack = max(1, current_profile().shared_budget(_FOUR_STEP_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft)
     max_pack = _FOUR_STEP_LARGE_INNER_PACK
     if _mthreads_small_mixed_leaf(plan):
         max_pack = 8

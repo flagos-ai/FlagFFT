@@ -49,6 +49,8 @@ void JitKernel::compile() {
   if (jit_function != nullptr) {
     return;
   }
+  if (warp_size != triton_jit::DefaultBackend::WARP_SIZE)
+    throw std::runtime_error("codegen warp size disagrees with launch backend");
   jit_function = &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
   function->compile(signature,

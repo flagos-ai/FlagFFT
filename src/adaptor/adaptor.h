@@ -118,5 +118,7 @@ int64_t max_dynamic_smem_bytes(int device_index);
 void synchronize();
 std::string backend_name();
 std::string triton_target(const std::string &device_arch);
+// JSON containing queried device limits; unavailable optional fields are null.
+std::string device_capabilities_json();
 
 }  // namespace flagfft::adaptor

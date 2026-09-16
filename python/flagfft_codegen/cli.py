@@ -45,6 +45,8 @@ from .registry import (
 )
 
 def main() -> None:
+    from dataclasses import asdict
+    from .backend_profile import BackendProfile, current_profile, set_profile
     parser = argparse.ArgumentParser(
         description="Generate FlagFFT libtriton_jit kernel sources"
     )
@@ -79,7 +81,13 @@ def main() -> None:
     parser.add_argument("--transpose3d-order", choices=("021", "210", "201", "120"))
     parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--device-profile", help="JSON device capabilities from the adaptor")
+    parser.add_argument("--execution-policy", choices=("legacy", "native", "packed"), default="native")
     args = parser.parse_args()
+    if args.device_profile:
+        set_profile(BackendProfile.from_device(json.loads(args.device_profile), args.execution_policy))
+    profile = current_profile()
+    args.out_dir = args.out_dir / profile.fingerprint
 
     spec = kernel_spec(args.kernel)
     missing = [
@@ -208,6 +216,11 @@ def main() -> None:
     else:
         raise AssertionError(f"unreachable kernel spec: {args.kernel}")
 
+    profile.validate(metadata["num_warps"])
+    metadata.update({"hardware_profile": asdict(profile), "profile_id": profile.fingerprint,
+                     "warp_size": profile.warp_size,
+                     "block_threads": metadata["num_warps"] * profile.warp_size})
+    Path(metadata["module_path"]).with_suffix(".json").write_text(json.dumps(metadata, sort_keys=True))
     print(json.dumps(metadata, sort_keys=True))
 
 

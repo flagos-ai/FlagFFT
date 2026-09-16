@@ -64,6 +64,7 @@ struct JitKernel {
   std::string module_path;
   std::string signature;
   int64_t num_warps = 1;
+  int64_t warp_size = 0;
   int64_t num_stages = 1;
   int64_t batch_per_block = 1;
   int64_t inner_pack = 1;

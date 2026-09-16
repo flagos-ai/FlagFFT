@@ -114,7 +114,7 @@ namespace {
 
   struct KernelCacheState {
     std::mutex mutex;
-    std::unordered_map<KernelKey, std::shared_ptr<JitKernel>, KernelKeyHash> cache;
+    std::unordered_map<std::string, std::shared_ptr<JitKernel>> cache;
     int64_t hits = 0;
     int64_t misses = 0;
   };
@@ -128,10 +128,14 @@ namespace {
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) const {
   reject_legacy_backend_env();
+  const auto device_profile = adaptor::device_capabilities_json();
+  const char *policy_env = std::getenv("FLAGFFT_EXECUTION_POLICY");
+  const std::string policy = policy_env ? policy_env : "native";
+  const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1";
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);
-    auto it = state.cache.find(key);
+    auto it = state.cache.find(cache_key);
     if (it != state.cache.end()) {
       ++state.hits;
       return it->second;
@@ -255,7 +259,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   std::ostringstream jit_command;
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(out_dir().string()) << " --dtype "
-              << shell_quote(key.dtype);
+              << shell_quote(key.dtype) << " --device-profile " << shell_quote(device_profile)
+              << " --execution-policy " << shell_quote(policy);
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
       key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafBluesteinPrepare ||
@@ -315,6 +320,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->module_path = json_string_field(artifact_json, "module_path");
   kernel->signature = json_string_field(artifact_json, "signature");
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
+  kernel->warp_size = json_int_field(artifact_json, "warp_size");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
   if (key.kind == KernelKind::Transpose3D) {
@@ -338,7 +344,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->compile();
 
   std::lock_guard<std::mutex> lock(state.mutex);
-  auto [it, inserted] = state.cache.emplace(key, kernel);
+  auto [it, inserted] = state.cache.emplace(cache_key, kernel);
   return inserted ? kernel : it->second;
 }
 

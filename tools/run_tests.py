@@ -58,7 +58,7 @@ UNSUPPORTED_APIS_BY_BACKEND: dict[str, frozenset[str]] = {
     "ix": frozenset({"z2z", "z2d", "d2z"}),
 }
 BACKEND_SKIP_REASONS = {
-    "ix": "IX/CoreX does not support FP64; Z2Z, Z2D and D2Z are excluded from execution.",
+    "ix": "Current IX acceptance policy disables FP64; use probe_capabilities.py for device-specific evidence.",
 }
 DIRECTIONS = {
     "c2c": ("forward", "inverse"),
@@ -811,6 +811,13 @@ def probe_env(build_dir: Path) -> None:
         ENV_INFO["triton"] = {"version": triton.__version__}
     except ImportError:
         ENV_INFO["triton"] = {"version": "N/A"}
+    ENV_INFO["execution_policy"] = os.environ.get("FLAGFFT_EXECUTION_POLICY", "native")
+    try:
+        probe = subprocess.run([str(build_dir / "flagfft-cli"), "device-info", "--json"],
+                               capture_output=True, text=True, timeout=30, check=True)
+        ENV_INFO["device"] = json.loads(probe.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        ENV_INFO["device"] = {"status": "unknown", "reason": str(exc)}
 
 
 def run_subprocess(
