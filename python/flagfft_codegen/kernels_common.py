@@ -17,6 +17,7 @@ from __future__ import annotations
 """Shared plan model, dtype helpers and occupancy/heuristic policy for kernel generation."""
 
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -407,6 +408,12 @@ def _ppu_backend_active() -> bool:
     return _triton_plugin_present("ppu")
 
 
+def _npu_backend_active() -> bool:
+    return (os.environ.get("TRITON_JIT_BACKEND") == "NPU"
+            or os.environ.get("FLAGTREE_BACKEND") == "ascend"
+            or os.environ.get("TRITON_BACKEND") in {"npu", "torch_npu"})
+
+
 def _non_nvidia_backend_active() -> bool:
     """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU).
 
@@ -416,7 +423,7 @@ def _non_nvidia_backend_active() -> bool:
     and that the PPU toolchain does not support, so they are disabled on
     these backends.
     """
-    return _mthreads_backend_active() or _ppu_backend_active()
+    return _npu_backend_active() or _mthreads_backend_active() or _ppu_backend_active()
 
 
 __all__ = [

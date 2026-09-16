@@ -118,15 +118,27 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }
-  // The first Ascend milestone deliberately uses only the standard Triton
-  // Direct DFT kernel.  Leaf/Four-Step/Bluestein routes still contain
-  // FlagTree TLE code and are enabled only after their Ascend lowering path
-  // has been validated separately.
+  // Reuse the radix codelets through the GM Stockham mapping on Ascend.
+  // CUDA shared-memory leaf layouts are not used on this path.
   if (request_context().device_type == "npu") {
-    if (n > kDirectDftMaxN) {
-      return {};
+    Factorization factorization = factorize_supported_radices(n);
+    if (n > 1 && factorization.remainder == 1) {
+      std::vector<int64_t> factors;
+      for (int64_t factor : factorization.factors) {
+        // Split composite register layouts into natural-order shared codelets.
+        for (int64_t radix : {19, 17, 15, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2}) {
+          while (factor % radix == 0) {
+            factors.push_back(radix);
+            factor /= radix;
+          }
+        }
+        if (factor != 1) throw std::runtime_error("unsupported Stockham radix");
+      }
+      PlanNodePtr node = std::make_shared<StockhamPlanNode>(n, factors);
+      return {{node, static_cast<double>(n * factors.size()), priority(node)}};
     }
-    PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+    PlanNodePtr node = n <= kDirectDftMaxN ? PlanNodePtr(std::make_shared<DirectDFTPlanNode>(n))
+                                         : make_bluestein_plan(n);
     return {{node, estimate_direct_dft_cost(n), priority(node)}};
   }
 

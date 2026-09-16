@@ -67,7 +67,7 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
     # while direct/pointwise/transpose kernels only need the standard Triton
     # language and can therefore be bootstrapped on a backend before TLE
     # features are enabled.
-    if radices or "tle." in kernel_source:
+    if "tle." in kernel_source:
         helpers += "import triton.experimental.tle.language as tle\n"
     helpers += "\n"
     utils_path = _CODELET_DIR / "utils.py"
@@ -85,7 +85,7 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
 def _arg_signature(name: str, dtype: str) -> str:
     if name == "nbatch":
         return "i32"
-    if name in {"n", "m", "input_distance", "output_distance", "outer_stride"}:
+    if name in {"n", "m", "input_distance", "output_distance", "outer_stride", "span"}:
         return "i64"
     if name == "idx_ptr":
         return "*i32:16"

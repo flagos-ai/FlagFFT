@@ -177,6 +177,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::DirectDftStrided:
       kernel_kind = "direct_dft_strided";
       break;
+    case KernelKind::StockhamStage:
+      kernel_kind = "stockham_stage";
+      break;
     case KernelKind::FourStepRow:
       kernel_kind = "four_step_row";
       break;
@@ -273,6 +276,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
+  }
+  if (key.kind == KernelKind::StockhamStage) {
+    jit_command << " --length " << key.length << " --factors " << shell_quote(join_ints(key.factors))
+                << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
       key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||

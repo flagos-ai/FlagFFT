@@ -30,6 +30,7 @@ FOUR_STEP = "four_step"
 BLUESTEIN_LEAF = "bluestein_leaf"
 BLUESTEIN_FOUR_STEP = "bluestein_four_step"
 DIRECT_DFT = "direct_dft"
+STOCKHAM = "stockham"
 BLUESTEIN = "bluestein"
 RADER = "rader"
 RESHAPE = "reshape"
@@ -73,6 +74,7 @@ _TRANSPOSE3D_FLAGS = (
 )
 
 _SPECS: tuple[KernelSpec, ...] = (
+    KernelSpec("stockham_stage", STOCKHAM, requires=("length", "factors")),
     KernelSpec("leaf", CT_LEAF, io_mode="contiguous", requires=_BASE_LEAF_FLAGS),
     KernelSpec("leaf_strided", CT_LEAF, io_mode="strided", requires=_BASE_LEAF_FLAGS),
     KernelSpec(
@@ -275,6 +277,8 @@ def module_name_for(
     four_step_n2: int,
 ) -> str:
     """Build the on-disk generated module name for a kernel spec."""
+    if spec.family == STOCKHAM:
+        return f"flagfft_jit_stockham_{direction_tag}_n{length}_r{factor_tag}_{dtype_tag}"
     if spec.family == BLUESTEIN_LEAF:
         return (
             f"flagfft_jit_{spec.name}_{direction_tag}_{factor_tag}"

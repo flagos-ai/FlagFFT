@@ -35,6 +35,7 @@ from .registry import (
     BLUESTEIN_FOUR_STEP,
     BLUESTEIN_LEAF,
     DIRECT_DFT,
+    STOCKHAM,
     KERNEL_NAMES,
     RADER,
     REAL_POINTWISE,
@@ -161,13 +162,13 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
-    elif spec.family == DIRECT_DFT:
+    elif spec.family in {DIRECT_DFT, STOCKHAM}:
         if args.length is None or args.length <= 0:
             parser.error("--kernel direct_dft requires --length")
         metadata = emit_jit_kernel(
             kernel=args.kernel,
             length=args.length,
-            factors=(),
+            factors=args.factors if spec.family == STOCKHAM else (),
             lanes=1,
             num_warps=1,
             generic_radices=(),

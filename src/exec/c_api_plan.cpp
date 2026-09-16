@@ -40,6 +40,9 @@ namespace {
   }
 
   PlanNodePtr lookup_or_build_root(PlanBuilder &builder, const FFTRequest &request) {
+    if (request.device_type == "npu") {
+      return builder.build(request.requested_n, request);
+    }
     auto tuned = lookup_tuned_plan_json(request);
     if (tuned.has_value()) {
       try {
@@ -73,11 +76,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     return device_result;
   }
   if (adaptor::backend_name() == "npu" &&
-      (desc.rank != 1 || desc.type != FLAGFFT_C2C || desc.n.size() != 1 ||
-       desc.n[0] > kDirectDftMaxN)) {
-    // Plain-Triton Ascend bootstrap scope: contiguous 1D complex64 only,
-    // with Direct DFT capped at 128 points.  This keeps all other paths from
-    // accidentally instantiating the current TLE-based kernels.
+      (desc.type == FLAGFFT_Z2Z || desc.type == FLAGFFT_D2Z || desc.type == FLAGFFT_Z2D)) {
+    // Ascend's SIMD compiler does not support native FP64 vector arithmetic.
     return FLAGFFT_NOT_SUPPORTED;
   }
 

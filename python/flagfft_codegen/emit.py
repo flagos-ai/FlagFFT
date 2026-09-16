@@ -48,9 +48,11 @@ from .kernels_real import (
     _build_real_to_complex_kernel_source,
 )
 from .kernels_special import _build_direct_dft_kernel_source
+from .kernels_stockham import build_stockham_stage
 from .metadata import _metadata, _module_source, _signature
 from .registry import (
     DIRECT_DFT,
+    STOCKHAM,
     FOUR_STEP_COL_NAMES,
     FOUR_STEP_ROW_NAMES,
     kernel_spec,
@@ -532,6 +534,11 @@ def emit_jit_kernel(
         )
         n1 = four_step_n1 if spec.is_four_step else 0
         n2 = four_step_n2 if spec.is_four_step else 0
+    elif spec.family == STOCKHAM:
+        if len(factors) != 1:
+            raise ValueError("a Stockham stage needs exactly one radix")
+        kernel_name, kernel_source = build_stockham_stage(length, factors[0], direction, dtype)
+        n1 = n2 = 0
     elif spec.family == DIRECT_DFT:
         kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
             length,
@@ -563,7 +570,7 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    radices = tuple(sorted(codelet_radices_for(factors))) if spec.is_leaf_like else ()
+    radices = tuple(sorted(codelet_radices_for(factors))) if spec.is_leaf_like or spec.family == STOCKHAM else ()
     module_path.write_text(_module_source(kernel_source, radices))
 
     sys.path.insert(0, str(module_path.parent))
@@ -630,6 +637,9 @@ def _transpose3d_v2_supported() -> bool:
     the PPU toolchain does not support the PTX inline asm either, so fall
     back to the plain tiled transpose on both.
     """
+    from .kernels_common import _npu_backend_active
+    if _npu_backend_active():
+        return False
     try:
         from triton._C import libtriton
 
