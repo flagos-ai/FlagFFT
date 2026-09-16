@@ -13,219 +13,237 @@
 # limitations under the License.
 
 # FlagFFT 算子定义
-# 每个算子对应一个变换类型×维度组合
-# id: 算子唯一标识，格式 {type}_{rank}d
-# ctest: ctest 可执行文件名前缀
-# cli_type: flagfft-cli --api 参数值
-# rank: FFT 维度 (1, 2, 3)
-# directions: 支持的方向 (forward, inverse)
-# algorithms: 支持的算法
-#   ct=Cooley-Tukey, bs=Bluestein/Rader, 2d=2D FFT, 3d=3D FFT
+
+# 固定 36 个验收算子，顺序与验收清单一致。
+# api 同时用于 FlagFFT、平台库和 NumPy；方向由 api 推导。
+# 1D algorithm: ct / prime，batch: single / batch；实际批次数在 test_matrix.yaml。
+# 2D/3D 不细分算法或 batch 类别；sizes 引用 test_matrix.yaml 中的尺寸集合。
 
 ops:
-  # ── 1D Complex-to-Complex ──────────────────────────────────────
-  - id: c2c_1d
-    description: "Complex-to-Complex 1D FFT"
-    labels: [c2c, 1d, complex]
-    ctest: test_exec_c2c
-    cli_type: c2c
+  - id: 1d_ct_single_c2c
+    api: c2c
     rank: 1
-    directions: [forward, inverse]
-    algorithms: [ct, bs]
-    stages:
-      - stable: '1.0'
+    algorithm: ct
+    batch: single
+    sizes: sizes_1d_ct
 
-  - id: z2z_1d
-    description: "Double-Complex to Double-Complex 1D FFT"
-    labels: [z2z, 1d, complex, double]
-    ctest: test_exec_z2z
-    cli_type: z2z
+  - id: 1d_ct_single_c2r
+    api: c2r
     rank: 1
-    directions: [forward, inverse]
-    algorithms: [ct, bs]
-    stages:
-      - stable: '1.0'
+    algorithm: ct
+    batch: single
+    sizes: sizes_1d_ct
 
-  # ── 1D Real-to-Complex ────────────────────────────────────────
-  - id: r2c_1d
-    description: "Real-to-Complex 1D FFT"
-    labels: [r2c, 1d, real]
-    ctest: test_exec_r2c
-    cli_type: r2c
+  - id: 1d_ct_single_r2c
+    api: r2c
     rank: 1
-    directions: [forward]
-    algorithms: [ct, bs]
-    stages:
-      - stable: '1.0'
+    algorithm: ct
+    batch: single
+    sizes: sizes_1d_ct
 
-  - id: d2z_1d
-    description: "Double-Real to Double-Complex 1D FFT"
-    labels: [d2z, 1d, real, double]
-    ctest: test_exec_d2z
-    cli_type: d2z
+  - id: 1d_ct_single_z2z
+    api: z2z
     rank: 1
-    directions: [forward]
-    algorithms: [ct, bs]
-    stages:
-      - stable: '1.0'
+    algorithm: ct
+    batch: single
+    sizes: sizes_1d_ct
 
-  # ── 1D Complex-to-Real ────────────────────────────────────────
-  - id: c2r_1d
-    description: "Complex-to-Real 1D FFT"
-    labels: [c2r, 1d, real]
-    ctest: test_exec_c2r
-    cli_type: c2r
+  - id: 1d_ct_single_z2d
+    api: z2d
     rank: 1
-    directions: [inverse]
-    algorithms: [ct, bs]
-    stages:
-      - stable: '1.0'
+    algorithm: ct
+    batch: single
+    sizes: sizes_1d_ct
 
-  - id: z2d_1d
-    description: "Double-Complex to Double-Real 1D FFT"
-    labels: [z2d, 1d, real, double]
-    ctest: test_exec_z2d
-    cli_type: z2d
+  - id: 1d_ct_single_d2z
+    api: d2z
     rank: 1
-    directions: [inverse]
-    algorithms: [ct, bs]
-    stages:
-      - stable: '1.0'
+    algorithm: ct
+    batch: single
+    sizes: sizes_1d_ct
 
-  # ── 2D Complex-to-Complex ─────────────────────────────────────
-  - id: c2c_2d
-    description: "Complex-to-Complex 2D FFT"
-    labels: [c2c, 2d, complex]
-    ctest: test_2d_correctness
-    cli_type: c2c
+  - id: 1d_prime_single_c2c
+    api: c2c
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_single_c2r
+    api: c2r
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_single_r2c
+    api: r2c
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_single_z2z
+    api: z2z
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_single_z2d
+    api: z2d
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_single_d2z
+    api: d2z
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_bs
+
+  - id: 1d_ct_batch_c2c
+    api: c2c
+    rank: 1
+    algorithm: ct
+    batch: batch
+    sizes: sizes_1d_ct
+
+  - id: 1d_ct_batch_c2r
+    api: c2r
+    rank: 1
+    algorithm: ct
+    batch: batch
+    sizes: sizes_1d_ct
+
+  - id: 1d_ct_batch_r2c
+    api: r2c
+    rank: 1
+    algorithm: ct
+    batch: batch
+    sizes: sizes_1d_ct
+
+  - id: 1d_ct_batch_z2z
+    api: z2z
+    rank: 1
+    algorithm: ct
+    batch: batch
+    sizes: sizes_1d_ct
+
+  - id: 1d_ct_batch_z2d
+    api: z2d
+    rank: 1
+    algorithm: ct
+    batch: batch
+    sizes: sizes_1d_ct
+
+  - id: 1d_ct_batch_d2z
+    api: d2z
+    rank: 1
+    algorithm: ct
+    batch: batch
+    sizes: sizes_1d_ct
+
+  - id: 1d_prime_batch_c2c
+    api: c2c
+    rank: 1
+    algorithm: prime
+    batch: batch
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_batch_c2r
+    api: c2r
+    rank: 1
+    algorithm: prime
+    batch: batch
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_batch_r2c
+    api: r2c
+    rank: 1
+    algorithm: prime
+    batch: batch
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_batch_z2z
+    api: z2z
+    rank: 1
+    algorithm: prime
+    batch: batch
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_batch_z2d
+    api: z2d
+    rank: 1
+    algorithm: prime
+    batch: batch
+    sizes: sizes_1d_bs
+
+  - id: 1d_prime_batch_d2z
+    api: d2z
+    rank: 1
+    algorithm: prime
+    batch: batch
+    sizes: sizes_1d_bs
+
+  - id: 2d_c2c
+    api: c2c
     rank: 2
-    directions: [forward, inverse]
-    algorithms: [2d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_2d
 
-  - id: z2z_2d
-    description: "Double-Complex to Double-Complex 2D FFT"
-    labels: [z2z, 2d, complex, double]
-    ctest: test_2d_correctness
-    cli_type: z2z
+  - id: 2d_c2r
+    api: c2r
     rank: 2
-    directions: [forward, inverse]
-    algorithms: [2d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_2d
 
-  # ── 2D Real-to-Complex ────────────────────────────────────────
-  - id: r2c_2d
-    description: "Real-to-Complex 2D FFT"
-    labels: [r2c, 2d, real]
-    ctest: test_2d_correctness
-    cli_type: r2c
+  - id: 2d_r2c
+    api: r2c
     rank: 2
-    directions: [forward]
-    algorithms: [2d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_2d
 
-  - id: d2z_2d
-    description: "Double-Real to Double-Complex 2D FFT"
-    labels: [d2z, 2d, real, double]
-    ctest: test_2d_correctness
-    cli_type: d2z
+  - id: 2d_z2z
+    api: z2z
     rank: 2
-    directions: [forward]
-    algorithms: [2d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_2d
 
-  # ── 2D Complex-to-Real ────────────────────────────────────────
-  - id: c2r_2d
-    description: "Complex-to-Real 2D FFT"
-    labels: [c2r, 2d, real]
-    ctest: test_2d_correctness
-    cli_type: c2r
+  - id: 2d_z2d
+    api: z2d
     rank: 2
-    directions: [inverse]
-    algorithms: [2d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_2d
 
-  - id: z2d_2d
-    description: "Double-Complex to Double-Real 2D FFT"
-    labels: [z2d, 2d, real, double]
-    ctest: test_2d_correctness
-    cli_type: z2d
+  - id: 2d_d2z
+    api: d2z
     rank: 2
-    directions: [inverse]
-    algorithms: [2d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_2d
 
-  # ── 3D Complex-to-Complex ─────────────────────────────────────
-  - id: c2c_3d
-    description: "Complex-to-Complex 3D FFT"
-    labels: [c2c, 3d, complex]
-    ctest: test_3d_correctness
-    cli_type: c2c
+  - id: 3d_c2c
+    api: c2c
     rank: 3
-    directions: [forward, inverse]
-    algorithms: [3d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_3d
 
-  - id: z2z_3d
-    description: "Double-Complex to Double-Complex 3D FFT"
-    labels: [z2z, 3d, complex, double]
-    ctest: test_3d_correctness
-    cli_type: z2z
+  - id: 3d_c2r
+    api: c2r
     rank: 3
-    directions: [forward, inverse]
-    algorithms: [3d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_3d
 
-  # ── 3D Real-to-Complex ────────────────────────────────────────
-  - id: r2c_3d
-    description: "Real-to-Complex 3D FFT"
-    labels: [r2c, 3d, real]
-    ctest: test_3d_correctness
-    cli_type: r2c
+  - id: 3d_r2c
+    api: r2c
     rank: 3
-    directions: [forward]
-    algorithms: [3d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_3d
 
-  - id: d2z_3d
-    description: "Double-Real to Double-Complex 3D FFT"
-    labels: [d2z, 3d, real, double]
-    ctest: test_3d_correctness
-    cli_type: d2z
+  - id: 3d_z2z
+    api: z2z
     rank: 3
-    directions: [forward]
-    algorithms: [3d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_3d
 
-  # ── 3D Complex-to-Real ────────────────────────────────────────
-  - id: c2r_3d
-    description: "Complex-to-Real 3D FFT"
-    labels: [c2r, 3d, real]
-    ctest: test_3d_correctness
-    cli_type: c2r
+  - id: 3d_z2d
+    api: z2d
     rank: 3
-    directions: [inverse]
-    algorithms: [3d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_3d
 
-  - id: z2d_3d
-    description: "Double-Complex to Double-Real 3D FFT"
-    labels: [z2d, 3d, real, double]
-    ctest: test_3d_correctness
-    cli_type: z2d
+  - id: 3d_d2z
+    api: d2z
     rank: 3
-    directions: [inverse]
-    algorithms: [3d]
-    stages:
-      - stable: '1.0'
+    sizes: sizes_3d

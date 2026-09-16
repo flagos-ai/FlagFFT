@@ -72,6 +72,11 @@ void ref_exec_z2d(RefPlanHandle& plan, flagfftDoubleComplex* idata, flagfftDoubl
 
 void initialize();
 std::string backend_name();
+bool reference_available();
+// Some reference libraries expose a host-pointer API and perform their own
+// device transfers.  The benchmark/capture path uses this to avoid passing
+// device allocations to such libraries.
+bool reference_uses_host_memory();
 
 // =========================================================================
 // Data generation

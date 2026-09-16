@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flagfft/core.hpp"
+#include "rader_utils.hpp"
 
 namespace flagfft {
 
@@ -184,8 +185,18 @@ std::vector<PlanCandidate> PlanBuilder::build_decomposition_tune_candidates(int6
 
   PlanCandidate automatic = select_candidate(build_auto_candidates(n));
   auto automatic_four_step = std::dynamic_pointer_cast<FourStepPlanNode>(automatic.node);
-  if (automatic_four_step != nullptr) {
-    append_unique(automatic);
+  append_unique(automatic);
+  if (is_prime_length(n) && n > kDirectDftMaxN) {
+    if (static_cast<int64_t>(result.size()) < limit) {
+      auto bs = make_bluestein_plan(n);
+      auto convolution = std::dynamic_pointer_cast<BluesteinPlanNode>(bs);
+      append_unique({bs, bluestein_cost(n, convolution->conv_length), priority(bs)});
+    }
+    if (n <= 16384 && static_cast<int64_t>(result.size()) < limit) {
+      auto rader = make_rader_plan(n);
+      append_unique({rader, rader_cost(n), priority(rader)});
+    }
+    return result;
   }
 
   struct DivisorPair {

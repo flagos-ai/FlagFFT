@@ -19,10 +19,10 @@ project(flagfft LANGUAGES CXX)
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "NPU")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX" "NPU")
 
-if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "NPU"))
-    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, or BACKEND=NPU")
+if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX" OR BACKEND STREQUAL "NPU"))
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, or BACKEND=NPU")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
@@ -58,6 +58,14 @@ if(NOT EXISTS "${FLAGFFT_TRITON_JIT_SOURCE_DIR}/CMakeLists.txt")
 endif()
 add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
                  "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
+
+if(TRITON_JIT_USE_EXTERNAL_JSON)
+    # With an external package, libtriton_jit's imported target is scoped to
+    # its subdirectory. Re-find it here for FlagFFT targets. When JSON is
+    # provided through FetchContent, the normal target is already global and
+    # must not be looked up as an installed package.
+    find_package(nlohmann_json 3.11.3 REQUIRED)
+endif()
 
 set(FLAGFFT_CORE_SOURCES
     src/utils/base.cpp
@@ -107,8 +115,8 @@ install(TARGETS flagfft
 install(DIRECTORY include/ DESTINATION "include")
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.
-# Reused by flagfft-cli (bench/verify) and ctest (correctness tests).
-# Only built when CLI or tests are enabled (both need a reference FFT library).
+# Reused by flagfft-cli (bench/verify) and the native capture target. NPU links
+# the external CANN ops-fft reference when CLI/tests are enabled.
 if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
     if(BACKEND STREQUAL "CUDA")
         find_package(CUDAToolkit REQUIRED)
@@ -166,8 +174,39 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             PPU::ppu_runtime
             ${PPU_FFT_LIB}
         )
+    elseif(BACKEND STREQUAL "IX")
+        find_package(CUDAToolkit REQUIRED)
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/ix/test_adaptor.cpp
+        )
+        target_link_libraries(flagfft_test_adaptor PUBLIC
+            CUDA::cufft
+            CUDA::cudart
+            CUDA::cuda_driver
+        )
     elseif(BACKEND STREQUAL "NPU")
-        message(FATAL_ERROR "FLAGFFT_BUILD_CLI/TESTS needs a native NPU reference adaptor; validate the C API with tests/python/test_npu_fft.py and FLAGFFT_TEST_LIBRARY")
+        set(ASCEND_OPS_FFT_ROOT "$ENV{ASCEND_OPS_FFT_ROOT}" CACHE PATH
+            "ops-fft installation root used as the Ascend reference library")
+        find_path(ASCEND_OPS_FFT_INCLUDE_DIR cann_ops_fft.h
+            HINTS
+                "${ASCEND_OPS_FFT_ROOT}/include"
+                "${ASCEND_OPS_FFT_ROOT}/include/math_libs"
+                "${ASCEND_OPS_FFT_ROOT}/src/include"
+            REQUIRED)
+        find_library(ASCEND_OPS_FFT_LIBRARY NAMES cann_ops_fft
+            HINTS
+                "${ASCEND_OPS_FFT_ROOT}/lib"
+                "${ASCEND_OPS_FFT_ROOT}/lib64"
+                "${ASCEND_OPS_FFT_ROOT}/build/lib"
+                "${ASCEND_OPS_FFT_ROOT}/build"
+            REQUIRED)
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/npu/test_adaptor.cpp
+        )
+        target_include_directories(flagfft_test_adaptor PUBLIC
+            "${ASCEND_OPS_FFT_INCLUDE_DIR}")
+        target_link_libraries(flagfft_test_adaptor PUBLIC
+            "${ASCEND_OPS_FFT_LIBRARY}")
     endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
     target_include_directories(flagfft_test_adaptor PUBLIC
@@ -178,7 +217,7 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
 endif()
 
 if(FLAGFFT_BUILD_CLI)
-    if(BACKEND STREQUAL "CUDA")
+    if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
         # cuFFT is only needed by test_adaptor (not by CLI directly).
         find_package(CUDAToolkit REQUIRED)
         if(NOT TARGET CUDA::cufft)
@@ -222,7 +261,7 @@ if(FLAGFFT_BUILD_CLI)
             flagfft_test_adaptor
             nlohmann_json::nlohmann_json
     )
-    if(BACKEND STREQUAL "CUDA")
+    if(BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "IX")
         target_link_libraries(flagfft-cli PRIVATE CUDA::cufft)
     elseif(BACKEND STREQUAL "PPU")
         target_link_libraries(flagfft-cli PRIVATE ${PPU_FFT_LIB})
@@ -232,7 +271,7 @@ endif()
 
 if(FLAGFFT_BUILD_TESTS)
     enable_testing()
-    if(NOT TARGET gtest)
+    if(NOT BACKEND STREQUAL "NPU" AND NOT TARGET gtest)
         include(FetchContent)
         FetchContent_Declare(googletest
             URL https://github.com/google/googletest/archive/refs/tags/v1.16.0.tar.gz

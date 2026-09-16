@@ -4,7 +4,8 @@ FlagFFT is a JIT-compiled GPU FFT library. It generates backend-targeted GPU
 kernels at runtime via [Triton/TLE](https://github.com/FlagTree/flagtree) and
 [libtriton_jit](https://github.com/Artlesbol/libtriton_jit), targeting
 arbitrary-length transforms that vendor FFT libraries may not optimally
-support. The current CMake build supports CUDA, MUSA, and PPU backends.
+support. The current CMake build supports CUDA, MUSA, PPU, IX
+(Iluvatar/Tianshu), and NPU (Ascend) backends.
 
 ---
 
@@ -60,9 +61,10 @@ docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
 # Inside the container, run steps 3-5 from above.
 ```
 
-The Docker image and CI configuration use Python 3.12. MUSA and PPU builds
-require their corresponding vendor SDK environment and should be configured
-with `-DBACKEND=MUSA` or `-DBACKEND=PPU`.
+The Docker image and CI configuration use Python 3.12. MUSA, PPU, IX, and NPU
+builds require their corresponding vendor SDK/runtime environment and should
+be configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`, or
+`-DBACKEND=NPU`.
 
 ---
 
@@ -77,7 +79,7 @@ with `-DBACKEND=MUSA` or `-DBACKEND=PPU`.
 | Python | 3.10 | JIT codegen + test runner; the provided CUDA Docker/CI environments use 3.12 |
 | flagtree | 0.5.0 | triton TLE support |
 | SQLite3 | — | Tuning database |
-| Backend SDK | — | CUDA Toolkit for CUDA, MUSA SDK for MUSA, or PPU SDK for PPU |
+| Backend SDK | — | CUDA Toolkit, MUSA SDK, PPU SDK, CoreX CUDA-compatible SDK for IX, or CANN/Ascend runtime for NPU |
 | libtriton_jit | submodule | Triton JIT compiler (`deps/libtriton_jit`) |
 | PyYAML | — | Test runner (`pip install pyyaml`) |
 
@@ -118,8 +120,8 @@ This produces `build/libflagfft.so`.
 | Option | Default | Description |
 |---|---|---|
 | `FLAGFFT_BUILD_CLI` | `OFF` | Build the `flagfft-cli` benchmark/verification tool |
-| `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test + the selected backend's reference FFT library) |
-| `BACKEND` | `CUDA` | GPU backend selector: `CUDA`, `MUSA`, or `PPU` |
+| `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (NPU builds the NumPy capture target; other backends also require a reference FFT library) |
+| `BACKEND` | `CUDA` | Backend selector: `CUDA`, `MUSA`, `PPU`, `IX`, or `NPU` |
 | `CMAKE_BUILD_TYPE` | — | `Release`, `Debug`, `RelWithDebInfo` |
 
 ### Full Build (library + CLI + tests)
@@ -132,8 +134,54 @@ cmake --build build -j$(nproc)
 ```
 
 The default backend is CUDA. Select another supported backend at configure
-time, for example `-DBACKEND=MUSA` or `-DBACKEND=PPU`; the corresponding SDK
-and runtime libraries must be installed.
+time, for example `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`, or `-DBACKEND=NPU`; the
+corresponding SDK and runtime libraries must be installed.
+
+### Iluvatar/Tianshu (IX) Build
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+      -DBACKEND=IX \
+      -DCUDAToolkit_ROOT=/usr/local/corex-4.4.0 \
+      -DFLAGFFT_BUILD_CLI=ON \
+      -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+```
+
+The IX backend uses the CoreX CUDA-compatible driver/runtime and ixfft
+reference library. It also requires an Iluvatar-enabled FlagTree/Triton
+runtime (for example `flagtree===0.5.1+iluvatar3.1`).
+
+### Ascend (NPU) Build
+
+Use the CANN 9 toolchain and the Ascend-enabled Triton/libtriton_jit checkout:
+
+```bash
+source /usr/local/Ascend/cann-9.0.0/set_env.sh
+export ASCEND_OPS_FFT_ROOT=/path/to/ops-fft
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+      -DBACKEND=NPU \
+      -DFLAGFFT_TRITON_JIT_SOURCE_DIR=/path/to/libtriton_jit \
+      -DASCEND_OPS_FFT_ROOT="$ASCEND_OPS_FFT_ROOT" \
+      -DFLAGFFT_BUILD_CLI=ON \
+      -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+```
+
+The FlagFFT Ascend 910B profile is FP32 `C2C`, `R2C`, and `C2R` for
+contiguous 1D, 2D, and 3D plans. Native FP64 is unavailable on Ascend 910B:
+`Z2Z`, `Z2D`, and `D2Z` plans return `FLAGFFT_NOT_SUPPORTED`; they are never
+silently downcast or moved to a CPU fallback. The unified acceptance runner
+keeps those three APIs in its 36-operator manifest and records them as policy
+skips on NPU.
+
+For the native comparison and performance baseline, set
+`ASCEND_OPS_FFT_ROOT` to a built [CANN ops-fft](https://gitcode.com/cann/ops-fft)
+tree. Its current 910B reference is FP32-only: horizontal 1D
+`C2C`/`R2C`/`C2R` subject to the documented length limits, and 2D `C2C` only
+when each dimension is 32, 64, or 128. It has no 2D real or 3D plans. The
+runner still checks FlagFFT against NumPy for those cases and marks only the
+unavailable platform/performance rows as `Skipped` with the ops-fft reason.
 
 ### Environment Variables
 
@@ -229,9 +277,10 @@ supported forms remain unsupported.
 | Rank-2 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ |
 | Rank-3 contiguous row-major C2C, Z2Z | ✅ RTRT decomposition (n2 → n1 → n0 + 3D axis permutations) |
 | Rank-3 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ half-packed on the innermost axis |
+| Ascend 910B FP32 profile | ✅ FlagFFT C2C, R2C, C2R for contiguous 1D/2D/3D; FP64 Z2Z/Z2D/D2Z return `FLAGFFT_NOT_SUPPORTED`; ops-fft reference has narrower 1D/2D coverage |
 | Batched transforms | ✅ |
 | In-place and out-of-place | ✅ |
-| Backend adaptors | ✅ CUDA, MUSA, PPU (selected at build time) |
+| Backend adaptors | ✅ CUDA, MUSA, PPU, IX, NPU (selected at build time) |
 | Backend stream attachment | ✅ |
 
 For the CUDA backend, `2^20` rank-1 transforms on `sm_80` select a `1024 x 1024`
@@ -319,91 +368,152 @@ tests (Google Test), and Python codegen tests (pytest).
 
 ### Unified Test Runner
 
-`tools/run_tests.py` is the primary entry point for running the full test
-suite. It orchestrates both accuracy tests (C++ ctest binaries comparing
-FlagFFT output against the selected backend's reference FFT library) and
-performance benchmarks (flagfft-cli bench). The reference is cuFFT for CUDA,
-muFFT for MUSA, and the PPU SDK's cuFFT-compatible wrapper for PPU.
+`tools/run_tests.py` is the single entry point for the 36 acceptance operators.
+Correctness compares FlagFFT and, when available, the platform FFT library
+independently against a float64/complex128 NumPy reference. An operator passes
+correctness only when all selected FlagFFT-vs-NumPy cases pass; platform-library
+failures are reported under `platform_accuracy` and do not fail FlagFFT
+correctness. Performance continues to use `flagfft-cli bench`.
+
+Install test dependencies with `pip install -e '.[test]'` and build with
+`-DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON`. The test build includes
+`build/ctest/numpy_fft_capture`; no separate validation build is required.
+
+`conf/operators.yaml` defines exactly 36 operators: six APIs
+(C2C, C2R, R2C, Z2Z, Z2D, D2Z) for each of the following groups, in this order:
+
+| Group | Operator ID example |
+|---|---|
+| 1D Cooley-Tukey single | `1d_ct_single_c2c` |
+| 1D Prime single | `1d_prime_single_c2c` |
+| 1D Cooley-Tukey batch | `1d_ct_batch_c2c` |
+| 1D Prime batch | `1d_prime_batch_c2c` |
+| 2D | `2d_c2c` |
+| 3D | `3d_c2c` |
+
+`batch: single/batch` in an operator is a category, not a numeric batch
+count. `conf/test_matrix.yaml` owns size sets, numeric batches and scales.
+The matrix controls the case count and numeric batch sizes; inspect the current
+expansion with `--dry-run`. Single and current 3D cases require
+batch 1. CT/Prime are acceptance size categories; the recorded runtime plan
+shows the actual selected algorithm, including DirectDFT, Rader or Bluestein.
+
+On IX, CoreX does not support FP64. The three FP64 APIs (`Z2Z`, `Z2D`, and
+`D2Z`) remain present in the 36-operator manifest for a stable acceptance
+surface, but the runner records their accuracy and performance cases as
+policy `Skipped` and never dispatches them. The other 18 operators are run
+normally. The limitation is recorded in `skip_reason` in JSON and CSV.
+
+On NPU, Ascend 910B has the same three FP64 APIs in the manifest, but the
+runner records their accuracy and performance cases as policy `Skipped` before
+launch. The remaining FP32 cases run FlagFFT against NumPy. The ops-fft
+reference is used for supported horizontal 1D FP32 C2C/R2C/C2R cases and
+supported 2D C2C sizes; its unsupported 2D real, 3D, out-of-matrix 2D, and
+out-of-range 1D cases retain the FlagFFT NumPy result while their platform and
+performance rows are marked `Skipped`. NPU performance reports ops-fft
+reference timing and speedup wherever that reference exists.
+
+Complex APIs test both directions; real-to-complex APIs test forward and
+complex-to-real APIs test inverse. Real-inverse inputs have valid
+multidimensional Hermitian half spectra. NumPy inverse results are multiplied
+by the transform size to match the unnormalized device APIs. Both comparisons
+use the existing size/precision-aware worst-batch `rel_l2` and `rel_linf`
+limits and reject nonfinite values.
 
 #### Usage
 
-```bash
-python tools/run_tests.py [OPTIONS]
-```
-
 | Flag | Default | Description |
 |---|---|---|
-| `--ops` | — | Comma-separated operator IDs to test |
-| `--op-list-file` | — | Path to file with one operator ID per line (`#` for comments) |
-| `--start` | — | Skip operators whose ID is lexicographically before this value |
-| `--stages` | `stable` | Comma-separated stages to include (`stable`, `alpha`, `beta`) |
-| `--combination` | `full` | Comma-separated combination names from `conf/test_matrix.yaml`; `full`/`all` runs every combination and must be used alone |
-| `--gpus` | `0` | Comma-separated GPU IDs or `all` |
-| `--output-dir` | `results` | Directory for summary and per-operator result files |
-| `--build-dir` | `build` | Path to CMake build directory |
-| `--accuracy-only` | — | Run only accuracy tests |
-| `--performance-only` | — | Run only performance (benchmark) tests |
-| `--timeout` | `600` | Per-test subprocess timeout in seconds |
-| `--warmup` | `10` | Benchmark warmup iterations |
-| `--iters` | `100` | Benchmark measurement iterations |
-| `--dump-output` | — | Save stdout/stderr of each test to log files |
-| `--color` | `auto` | Color mode: `auto`, `always`, `never` |
-| `-v, --verbose` | — | Verbose output |
+| `--ops` | All 36 | Comma-separated acceptance operator IDs |
+| `--op-list-file` | — | One operator ID per line; `#` starts a comment |
+| `--start` | — | Start at this operator in configuration order |
+| `--combination` | `full` | Group filter: the six groups above; comma-separated, or `full/all` alone |
+| `--gpus` | `0` | Comma-separated device IDs or `all` |
+| `--build-dir` | `build` beside the runner | CMake build directory |
+| `--capture-bin` | `<build-dir>/ctest/numpy_fft_capture` | Optional native capture override |
+| `--output-dir` | Workspace `results/<timestamp>_acceptance36` | Fresh result directory |
+| `--incremental-csv` | `<output-dir>/incremental.csv` | One flushed row per completed case/phase |
+| `--accuracy-only` / `--performance-only` | Both phases | Mutually exclusive phase filters |
+| `--scales` | Matrix scales, or `[1.0]` if omitted | Comma-separated positive input amplitudes, or `all` for `2^-20,1,2^20` |
+| `--shapes` | All configured sizes | Exact shapes, e.g. `256,64x64` |
+| `--max-cases` | — | Select the first N cases for a partial run |
+| `--timeout` | `600` | Independent timeout for each FlagFFT/platform/benchmark process |
+| `--warmup` / `--iters` | `10 / 100` | Benchmark warmup and measurement iterations |
+| `--dry-run` | — | Print selected cases without execution or result files |
+| `--analyze-only RESULT_DIR` | — | Recompute NumPy comparisons from captured inputs and outputs |
+| `--color` | `auto` | `auto/always/never` |
 
-#### Combination Presets
-
-| Preset | Description |
-|---|---|
-| `full` / `all` | All combinations defined in `conf/test_matrix.yaml` (default) |
-| `1d_ct_single` | 1D Cooley-Tukey sizes, batch 1, scale 1.0 |
-| `1d_ct_batch` | 1D Cooley-Tukey sizes, batch 256, scale 1.0 |
-| `1d_bs_single` | 1D Bluestein/Rader/DirectDFT sizes, batch 1, scale 1.0 |
-| `1d_bs_batch` | 1D Bluestein/Rader/DirectDFT sizes, batch 256, scale 1.0 |
-| `2d_ct` | 2D Cooley-Tukey sizes, batch 1, scale 1.0 |
-| `2d_bs` | 2D Bluestein/Rader/DirectDFT sizes, batch 1, scale 1.0 |
-| `3d` | 3D sizes, batch 1, scale 1.0 |
-
-Note: `full`/`all` cannot be mixed with other combination names (e.g.
-`full,1d_ct_single` is rejected). The CLI accepts comma-separated concrete
-combination names; the GitHub Actions `combination` input is a single-choice
-dropdown, so it can only select one combination or `full` at a time.
-
-#### Examples
+The old 18 API/rank IDs are replaced by the acceptance IDs above. The old
+`1d_bs_single/batch` group filters are accepted as aliases for
+`1d_prime_single/batch`; 2D is now one group containing both CT and Prime
+sizes. Stages are no longer configured or filtered.
 
 ```bash
-# Full test suite (default)
-python tools/run_tests.py
-
-# Full test suite on GPU 0
+# Full acceptance suite; results are outside the repository/worktree.
 python tools/run_tests.py --gpus 0
 
-# Full suite across 4 GPUs
-python tools/run_tests.py --combination full --gpus 0,1,2,3
+# Inspect the entire 36-operator execution matrix without using a GPU.
+python tools/run_tests.py --dry-run
 
-# Accuracy only, specific operators
-python tools/run_tests.py --combination full --ops c2c_1d,r2c_1d --accuracy-only
+# NumPy correctness for selected operators.
+python tools/run_tests.py --accuracy-only \
+  --ops 1d_ct_single_c2c,1d_prime_batch_z2d
 
-# Performance benchmarks only
-python tools/run_tests.py --combination full --performance-only
+# Prime batch group.
+python tools/run_tests.py --combination 1d_prime_batch --gpus 0
 
-# A single combination, e.g. 1D Bluestein batch tests
-python tools/run_tests.py --combination 1d_bs_batch --gpus 0
+# All three correctness scales. Benchmark runs once per shape/batch/direction.
+python tools/run_tests.py --scales all --ops 1d_ct_single_c2c
+
+# Reanalyze saved data without executing device kernels.
+python tools/run_tests.py --analyze-only ../results/20260916_120000_acceptance36
 ```
 
 #### Output
 
-- Console: Real-time progress with per-GPU status
-- `results/summary.json` — Top-level summary with `timestamp`, `env`, `config`, `result`, and `summary` sections
-- `results/{op_id}/accuracy_result.json` — Per-operator accuracy details
-- `results/{op_id}/performance_result.json` — Per-operator benchmark details
+All outputs use format version 2. A full run has 36 keys under
+`summary.json.result`, in acceptance order. Filtered runs contain the
+selected operators, and the manifest records the exact partial selection.
+The existing `accuracy.details` and `performance.data.default` report fields
+are retained alongside the new per-case metrics and plans.
 
-Exit code is `0` if all accuracy tests passed, `1` if any failed.
+- `manifest.json`: selected operators, complete expected case lists, parameter matrix and runtime environment.
+- `summary.json`: each operator's `accuracy`, `platform_accuracy` and `performance` results.
+- `incremental.csv`: case/phase, operator ID, shape, numeric batch, direction, scale, both correctness statuses and errors, policy skip reason, limits, timings and actual plan. CSV quoting preserves multiline plan text.
+- `{op_id}/{case_id}/case.json`: correctness metrics, input seed/hashes, independent capture statuses and actual `accuracy.plan`.
+- `{op_id}/{case_id}/`: exact inputs, NumPy and device outputs, per-library logs and `flagfft_plan.txt`.
+- `{op_id}/performance/{case_id}/result.json`: timings and the benchmark's own `performance.plan`.
+- `{op_id}/{accuracy,platform_accuracy,performance}_result.json`: aggregate per-operator results.
+- `reanalyzed.csv`: refreshed comparisons produced by `--analyze-only`.
+
+Correctness and performance have separate case IDs; scale is omitted from
+performance IDs. A missing result cannot make an operator pass. Numeric
+failures serialize nonfinite metrics as JSON null while retaining failure
+status. A plan is saved as soon as its creation succeeds and refreshed after
+successful execution; creation failures have `plan: null`.
+
+Performance rows retain the raw speedup and record `baseline_valid`. NPU rows
+for ops-fft-supported cases include reference timing and speedup; policy-skipped
+reference cases serialize those fields as `null`.
+An incorrect platform baseline is excluded from the aggregate speedup
+statistics; operators failing FlagFFT correctness are excluded as well.
+Performance-only runs have an unknown baseline validity.
+
+Exit code is 0 when all requested FlagFFT correctness and/or performance phases
+pass; an explicit backend-policy skip such as IX FP64 is allowed. Exit code 1
+indicates a failure, incomplete phase, or unexpected skip; 2 is a configuration
+error and 130 is interruption. Platform correctness is reported independently.
+Results are preserved on interruption; reanalysis uses the original manifest.
 
 ### C++ Tests (ctest/)
 
 Built with `-DFLAGFFT_BUILD_TESTS=ON`. Each test binary compares FlagFFT
 output against the selected backend's reference FFT library using normwise
-relative error metrics (`rel_l2`, `rel_linf`).
+relative error metrics (`rel_l2`, `rel_linf`). On NPU, the reference-based
+GTest binaries are skipped because they are not wired to the host-pointer
+ops-fft adaptor; `ctest/numpy_fft_capture` is used by the unified runner. It
+runs FlagFFT for every selected FP32 case, compares against NumPy, and invokes
+ops-fft for cases inside its support matrix.
 
 #### Structure
 
@@ -423,6 +533,15 @@ relative error metrics (`rel_l2`, `rel_linf`).
 
 Suffix key: `s` = single-batch, `b` = multi-batch; `ct` = Cooley-Tukey, `bs`
 = Bluestein/Rader.
+
+The unified acceptance runner is the supported entry point for IX and NPU. It
+keeps the three FP64 APIs in the report but filters them before native
+execution. On NPU it also applies the ops-fft 1D/2D/3D support matrix per case:
+FlagFFT accuracy continues to run, while an unavailable platform comparison or
+benchmark is recorded as `Skipped`. Direct invocation of bundled FP64 C++ test
+binaries is not an IX or NPU acceptance test and may call unsupported vendor
+functionality. NPU `FLAGFFT_BUILD_TESTS` builds the capture executable and
+links ops-fft when `ASCEND_OPS_FFT_ROOT` is set.
 
 #### Running Individual Tests
 
@@ -461,8 +580,8 @@ automatically skipped when dependencies are unavailable.
 
 The test parameter space is defined in `conf/`:
 
-- `conf/operators.yaml` — 18 operator definitions (1D/2D/3D × C2C/Z2Z/R2C/D2Z/C2R/Z2D)
-- `conf/test_matrix.yaml` — Parameter space for 1D CT/BS and 2D/3D sizes, with 7 combination rules
+- `conf/operators.yaml` — the fixed 36-operator acceptance list (six APIs across six groups)
+- `conf/test_matrix.yaml` — 1D CT/Prime and 2D/3D sizes, numeric batch counts, and scales
 
 ---
 

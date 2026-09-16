@@ -299,6 +299,58 @@ TEST(Plan1D, MusaBatched8191PrefersBluesteinWithoutChangingLeafRader) {
   EXPECT_NE(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(8191, request)), nullptr);
 }
 
+TEST(Plan1D, BatchedPrimeTunerIncludesBothAlgorithms) {
+  flagfft::FFTRequest request;
+  request.device_index = 0;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.device_type = "musa";
+  request.device_arch = "31";
+  request.direction = "forward";
+  flagfft::PlanBuilder builder;
+  request.batch = 64;
+  for (int64_t n : {4093, 8191, 12289, 16381}) {
+    request.fft_length = request.requested_n = n;
+    auto plans = builder.build_decomposition_tune_candidates(n, request, 3);
+    ASSERT_EQ(plans.size(), 2u);
+    bool bs = false, rader = false;
+    for (const auto &p : plans) {
+      bs |= std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(p.node) != nullptr;
+      rader |= std::dynamic_pointer_cast<flagfft::RaderPlanNode>(p.node) != nullptr;
+    }
+    EXPECT_TRUE(bs);
+    EXPECT_TRUE(rader);
+    EXPECT_EQ(builder.build_decomposition_tune_candidates(n, request, 1).size(), 1u);
+  }
+}
+
+TEST(Plan1D, BatchedCompositeTunerIncludesBothSplitOrientations) {
+  flagfft::FFTRequest request;
+  request.device_index = 0;
+  request.device_type = "musa";
+  request.device_arch = "31";
+  request.direction = "forward";
+  flagfft::PlanBuilder builder;
+  for (const char *dtype : {"complex64", "complex128"}) {
+    request.input_dtype = request.output_dtype = dtype;
+    request.batch = 64;
+    for (int64_t n : {98304, 131072, 196608}) {
+      request.fft_length = request.requested_n = n;
+      auto plans = builder.build_decomposition_tune_candidates(n, request, 5);
+      bool row_shorter = false, col_shorter = false;
+      for (const auto &p : plans) {
+        auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(p.node);
+        if (!plan) continue;
+        row_shorter |= plan->n1 < plan->n2;
+        col_shorter |= plan->n1 > plan->n2;
+      }
+      EXPECT_TRUE(row_shorter);
+      EXPECT_TRUE(col_shorter);
+    }
+  }
+  EXPECT_NE(flagfft::batch_bucket(16), flagfft::batch_bucket(64));
+  EXPECT_NE(flagfft::batch_bucket(512), flagfft::batch_bucket(513));
+}
+
 TEST(Plan1D, DoubleMixedPlansModelCooperativeStagesAndRowPacking) {
   struct MixedCase {
     int64_t length;

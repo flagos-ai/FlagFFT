@@ -62,16 +62,9 @@ std::string batch_bucket(int64_t batch) {
   if (batch <= 1) {
     return "1";
   }
-  if (batch <= 8) {
-    return "2-8";
-  }
-  if (batch <= 64) {
-    return "9-64";
-  }
-  if (batch <= 512) {
-    return "65-512";
-  }
-  return "513+";
+  // A measured winner is valid for the measured workload, not an entire
+  // bucket that may cross occupancy or Bluestein chunking boundaries.
+  return "exact:" + std::to_string(batch);
 }
 
 bool env_flag_enabled(const char *value) {

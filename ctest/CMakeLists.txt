@@ -14,12 +14,29 @@
 
 enable_testing()
 
+# Native output capture used by tools/run_tests.py's NumPy acceptance checks.
+# It reuses the same platform adaptor as the standalone C++ tests.
+add_executable(numpy_fft_capture ../tools/numpy_fft_validation/capture.cpp)
+target_compile_features(numpy_fft_capture PRIVATE cxx_std_20)
+target_include_directories(numpy_fft_capture PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(numpy_fft_capture PRIVATE flagfft flagfft_test_adaptor)
+
+# The unified runner uses NumPy for FlagFFT accuracy and invokes the external
+# ops-fft reference only for cases it supports. The generic GTest binaries
+# below assume a device-pointer reference API, so they are not built on NPU;
+# numpy_fft_capture remains the native NPU test entry point.
+if(BACKEND STREQUAL "NPU")
+    return()
+endif()
+
 if(NOT TARGET gtest)
     find_package(GTest REQUIRED)
 endif()
 
 set(TEST_TARGETS
     test_plan
+    test_packed_real_batch
+    test_rader_dc
     test_2d_correctness
     test_3d_correctness
     test_exec_c2c_2p20_tle

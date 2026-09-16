@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -44,6 +45,24 @@ namespace {
     std::size_t allocation_bytes;
   };
 
+  // ops-fft exposes a host-pointer API and performs H2D/D2H transfers inside
+  // its execution call. Keep aligned host storage for that reference path.
+  struct HostBuffer {
+    std::vector<std::max_align_t> storage;
+    std::size_t bytes = 0;
+
+    void resize(std::size_t size) {
+      bytes = size;
+      const std::size_t words =
+          (size + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
+      storage.resize(words);
+    }
+
+    void* data() noexcept {
+      return storage.empty() ? nullptr : static_cast<void*>(storage.data());
+    }
+  };
+
   BufferLayout layout_for(const CaseSpec& spec) {
     const int innermost = spec.shape.back();
     int outer = spec.batch;
@@ -68,12 +87,14 @@ namespace {
     return {innermost, padded, outer, scalar, std::max(in_bytes, out_bytes)};
   }
 
-  void seed_input(DeviceMemory& device, const BufferLayout& layout, const CaseSpec& spec) {
+  HostBuffer make_host_input(const BufferLayout& layout, const CaseSpec& spec) {
+    HostBuffer buffer;
+    buffer.resize(layout.allocation_bytes);
     const std::size_t count = layout.allocation_bytes / layout.scalar_bytes;
     const int n = layout.innermost;
 
     if (layout.scalar_bytes == sizeof(float)) {
-      std::vector<float> host(count);
+      auto* host = static_cast<float*>(buffer.data());
       for (std::size_t i = 0; i < count; ++i) {
         host[i] = std::sin(static_cast<float>(i + 1) * 0.173f);
       }
@@ -83,9 +104,8 @@ namespace {
           if (n % 2 == 0) host[static_cast<std::size_t>(row * layout.padded + n + 1)] = 0.0f;
         }
       }
-      device.copy_from_host(host.data(), layout.allocation_bytes);
     } else {
-      std::vector<double> host(count);
+      auto* host = static_cast<double*>(buffer.data());
       for (std::size_t i = 0; i < count; ++i) {
         host[i] = std::sin(static_cast<double>(i + 1) * 0.173);
       }
@@ -95,8 +115,13 @@ namespace {
           if (n % 2 == 0) host[static_cast<std::size_t>(row * layout.padded + n + 1)] = 0.0;
         }
       }
-      device.copy_from_host(host.data(), layout.allocation_bytes);
     }
+    return buffer;
+  }
+
+  void seed_input(DeviceMemory& device, const BufferLayout& layout, const CaseSpec& spec) {
+    HostBuffer host = make_host_input(layout, spec);
+    device.copy_from_host(host.data(), host.bytes);
   }
 
   FlagfftPlanHandle make_flagfft_plan(const CaseSpec& spec, const BufferLayout& layout) {
@@ -249,39 +274,72 @@ namespace {
 
 BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool include_path) {
   const BufferLayout layout = layout_for(spec);
+  const bool has_reference = test_adaptor::reference_available();
+  const bool reference_uses_host_memory =
+      has_reference && test_adaptor::reference_uses_host_memory();
 
   DeviceMemory ff_in(layout.allocation_bytes);
-  DeviceMemory ref_in(layout.allocation_bytes);
+  DeviceMemory ref_in;
+  HostBuffer ref_host_in;
+  HostBuffer ref_host_out;
+  if (has_reference && !reference_uses_host_memory) {
+    ref_in.allocate(layout.allocation_bytes);
+  }
 
   DeviceMemory ff_out;
   DeviceMemory ref_out;
   if (spec.placement == Placement::OutOfPlace) {
     ff_out.allocate(layout.allocation_bytes);
-    ref_out.allocate(layout.allocation_bytes);
+    if (has_reference && !reference_uses_host_memory) {
+      ref_out.allocate(layout.allocation_bytes);
+    }
   }
 
   seed_input(ff_in, layout, spec);
-  seed_input(ref_in, layout, spec);
+  if (has_reference) {
+    if (reference_uses_host_memory) {
+      ref_host_in = make_host_input(layout, spec);
+      if (spec.placement == Placement::OutOfPlace) {
+        ref_host_out.resize(layout.allocation_bytes);
+      }
+    } else {
+      seed_input(ref_in, layout, spec);
+    }
+  }
 
   FlagfftPlanHandle ff_plan = make_flagfft_plan(spec, layout);
-  test_adaptor::RefPlanHandle ref_plan = make_ref_plan(spec, layout);
+  std::unique_ptr<test_adaptor::RefPlanHandle> ref_plan;
+  if (has_reference) {
+    ref_plan = std::make_unique<test_adaptor::RefPlanHandle>(make_ref_plan(spec, layout));
+  }
 
   auto ff_output = [&]() -> void* {
     return spec.placement == Placement::InPlace ? ff_in.get() : ff_out.get();
   };
   auto ref_output = [&]() -> void* {
+    if (reference_uses_host_memory) {
+      return spec.placement == Placement::InPlace ? ref_host_in.data() : ref_host_out.data();
+    }
     return spec.placement == Placement::InPlace ? ref_in.get() : ref_out.get();
+  };
+
+  auto ref_input = [&]() -> void* {
+    return reference_uses_host_memory ? ref_host_in.data() : ref_in.get();
   };
 
   Stream stream;
   check_flagfft(flagfftSetStream(ff_plan.get(), stream.get()), "flagfftSetStream");
-  test_adaptor::ref_set_stream(ref_plan, stream.get());
+  if (has_reference) {
+    test_adaptor::ref_set_stream(*ref_plan, stream.get());
+  }
   Timer timer;
 
   // Warmup
   for (int i = 0; i < warmup; ++i) {
     exec_flagfft(ff_plan.get(), spec, ff_in.get(), ff_output());
-    exec_ref(ref_plan, spec, ref_in.get(), ref_output());
+    if (has_reference) {
+      exec_ref(*ref_plan, spec, ref_input(), ref_output());
+    }
   }
   adaptor::synchronize();
 
@@ -292,9 +350,9 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
   ref_times.reserve(iters);
 
   for (int i = 0; i < iters; ++i) {
-    if ((i & 1) == 0) {
+    if (has_reference && (i & 1) == 0) {
       timer.start(stream.get());
-      exec_ref(ref_plan, spec, ref_in.get(), ref_output());
+      exec_ref(*ref_plan, spec, ref_input(), ref_output());
       timer.stop(stream.get());
       ref_times.push_back(timer.elapsed_ms());
 
@@ -302,25 +360,34 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
       exec_flagfft(ff_plan.get(), spec, ff_in.get(), ff_output());
       timer.stop(stream.get());
       ff_times.push_back(timer.elapsed_ms());
+    } else if (has_reference) {
+      timer.start(stream.get());
+      exec_flagfft(ff_plan.get(), spec, ff_in.get(), ff_output());
+      timer.stop(stream.get());
+      ff_times.push_back(timer.elapsed_ms());
+
+      timer.start(stream.get());
+      exec_ref(*ref_plan, spec, ref_input(), ref_output());
+      timer.stop(stream.get());
+      ref_times.push_back(timer.elapsed_ms());
     } else {
       timer.start(stream.get());
       exec_flagfft(ff_plan.get(), spec, ff_in.get(), ff_output());
       timer.stop(stream.get());
       ff_times.push_back(timer.elapsed_ms());
-
-      timer.start(stream.get());
-      exec_ref(ref_plan, spec, ref_in.get(), ref_output());
-      timer.stop(stream.get());
-      ref_times.push_back(timer.elapsed_ms());
     }
   }
   stream.sync();
 
   TimingStats ff_stats {percentile(ff_times, 0.5), percentile(ff_times, 0.9), ff_times};
-  TimingStats ref_stats {percentile(ref_times, 0.5), percentile(ref_times, 0.9), ref_times};
-  double speedup = ff_stats.median_ms > 0.0 ? ref_stats.median_ms / ff_stats.median_ms : 0.0;
+  TimingStats ref_stats;
+  double speedup = 0.0;
+  if (has_reference) {
+    ref_stats = TimingStats {percentile(ref_times, 0.5), percentile(ref_times, 0.9), ref_times};
+    speedup = ff_stats.median_ms > 0.0 ? ref_stats.median_ms / ff_stats.median_ms : 0.0;
+  }
 
-  BenchResult result {ff_stats, ref_stats, speedup, ""};
+  BenchResult result {ff_stats, ref_stats, speedup, "", has_reference};
   if (include_path) {
     const char* desc = flagfftGetPlanDescription(ff_plan.get());
     result.plan_description = desc ? desc : "";

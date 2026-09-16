@@ -57,10 +57,11 @@ void print_usage() {
                "  --json                    Output JSON report\n"
                "  --print-path              Include plan description in output\n"
                "\n"
-               "Tune options (decomposition-only v1):\n"
+               "Tune options (complex FFT plans):\n"
                "  --shape N                 1D FFT length\n"
-               "  --batch N                 Batch size (currently 1)\n"
-               "  --max-candidates N        Number of FourStep splits to screen (default: 5)\n"
+               "  --batch N                 Batch size (default: 1)\n"
+               "  --api c2c|z2z             Complex precision (default: c2c)\n"
+               "  --max-candidates N        Number of plans to screen (default: 5)\n"
                "  --finalists N             Candidates receiving the long benchmark (default: 2)\n"
                "  --screen-warmup N         Screening warmup iterations (default: 10)\n"
                "  --screen-iters N          Screening timed iterations (default: 50)\n"
@@ -98,6 +99,11 @@ Args parse_args(int argc, char** argv) {
         args.tune.length = shape[0];
       } else if (argument == "--batch") {
         args.tune.batch = parse_positive("--batch", need("--batch"));
+      } else if (argument == "--api") {
+        args.tune.api = need("--api");
+        if (args.tune.api != "c2c" && args.tune.api != "z2z") {
+          throw AssertionFailure("tune --api must be c2c or z2z");
+        }
       } else if (argument == "--max-candidates") {
         args.tune.max_candidates = parse_positive("--max-candidates", need("--max-candidates"));
       } else if (argument == "--finalists") {

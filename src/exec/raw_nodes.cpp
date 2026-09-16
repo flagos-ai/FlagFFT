@@ -822,6 +822,9 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
         JitKernelArg::device(work_buf.get()),
         JitKernelArg::device(b_fft_buf.get()),
         JitKernelArg::device(a_buf.get()),
+        JitKernelArg::device(effective_input),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(length),
         JitKernelArg::i64(conv_length),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
@@ -1013,12 +1016,14 @@ CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(int64_t length,
                                                    std::shared_ptr<CompiledRawNode> fft,
                                                    std::shared_ptr<JitKernel> postprocess_kernel,
                                                    DeviceAllocation twiddle,
-                                                   DeviceAllocation packed_output)
+                                                   DeviceAllocation packed_output,
+                                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       fft(std::move(fft)),
       postprocess_kernel(std::move(postprocess_kernel)),
       twiddle(std::move(twiddle)),
-      packed_output(std::move(packed_output)) {
+      packed_output(std::move(packed_output)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawPackedR2CNode::describe() const {
@@ -1037,8 +1042,15 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
     const int64_t packed = length / 2;
     const int64_t half = packed + 1;
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
-    if (context.batch != 1) {
-      throw std::runtime_error("packed R2C is selected only for batch=1");
+    // Reinterpreting adjacent real pairs as complex values requires a dense
+    // input batch. In-place real rows carry Nyquist padding; preserve their
+    // original distance-aware implementation.
+    if (context.batch > 1 && (input == output ||
+        (context.input_distance > 0 && context.input_distance != length))) {
+      std::lock_guard<std::mutex> lock(layout_mutex);
+      if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+      if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
+      return layout_fallback->execute(input, output, context);
     }
 
     RawExecutionContext child_context {context.request, context.stream, context.batch};
@@ -1332,12 +1344,14 @@ CompiledRawPackedC2RNode::CompiledRawPackedC2RNode(int64_t length,
                                                    std::shared_ptr<JitKernel> preprocess_kernel,
                                                    std::shared_ptr<CompiledRawNode> fft,
                                                    DeviceAllocation twiddle,
-                                                   DeviceAllocation packed_input)
+                                                   DeviceAllocation packed_input,
+                                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       preprocess_kernel(std::move(preprocess_kernel)),
       fft(std::move(fft)),
       twiddle(std::move(twiddle)),
-      packed_input(std::move(packed_input)) {
+      packed_input(std::move(packed_input)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawPackedC2RNode::describe() const {
@@ -1356,8 +1370,12 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
     const int64_t packed = length / 2;
     const int64_t half = packed + 1;
     const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
-    if (context.batch != 1) {
-      throw std::runtime_error("packed C2R is selected only for batch=1");
+    if (context.batch > 1 && (input == output ||
+        (context.output_distance > 0 && context.output_distance != length))) {
+      std::lock_guard<std::mutex> lock(layout_mutex);
+      if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+      if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
+      return layout_fallback->execute(input, output, context);
     }
 
     std::vector<JitKernelArg> args = {

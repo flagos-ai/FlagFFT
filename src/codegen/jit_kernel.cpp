@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #include "flagfft/core.hpp"
+#include <cstdio>
+#include <cstdlib>
+#include <optional>
 
 #include "triton_jit/triton_jit_function.h"
 
@@ -88,6 +91,14 @@ void JitKernel::launch(adaptor::StreamHandle stream,
   args.push_back(&profile_scratch);
 #endif
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
+  // Diagnostic timings synchronise each launch and must not be used as
+  // end-to-end benchmark results. Disabled unless explicitly requested.
+  static const bool profile = env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS"));
+  std::optional<adaptor::EventTimer> timer;
+  if (profile) {
+    timer.emplace();
+    timer->start(stream);
+  }
   function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
                                  static_cast<unsigned int>(grid_x),
                                  static_cast<unsigned int>(grid_y),
@@ -97,6 +108,12 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                                  signature,
                                  args.data(),
                                  args.size());
+  if (timer) {
+    timer->stop(stream);
+    std::fprintf(stderr, "[kernel-profile],%s,%lld,%lld,%lld,%.6f\n", kernel_name.c_str(),
+                 static_cast<long long>(grid_x), static_cast<long long>(grid_y),
+                 static_cast<long long>(grid_z), timer->elapsed_ms());
+  }
 }
 
 }  // namespace flagfft

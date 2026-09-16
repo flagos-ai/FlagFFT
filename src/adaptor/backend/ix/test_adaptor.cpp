@@ -30,7 +30,7 @@ static_assert(sizeof(flagfftDoubleComplex) == 2 * sizeof(double),
 namespace flagfft::test_adaptor {
 
 // =========================================================================
-// RefPlanHandle - cuFFT implementation
+// RefPlanHandle - cuFFT (Iluvatar ixfft) implementation
 // =========================================================================
 
 static cufftHandle to_cufft(std::uintptr_t v) {
@@ -81,7 +81,7 @@ void RefPlanHandle::replace(std::uintptr_t new_handle) {
 void initialize() {
 }
 std::string backend_name() {
-  return "cuda";
+  return "ix";
 }
 bool reference_available() {
   return true;
