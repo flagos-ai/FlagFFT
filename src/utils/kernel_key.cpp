@@ -610,7 +610,8 @@ std::string KernelKey::repr() const {
       kind == KernelKind::RaderFinalize) {
     out << ";rader_n=" << rader_n << ";rader_m=" << rader_m;
   }
-  if (kind == KernelKind::ReshapePack || kind == KernelKind::TwiddleReshapePack) {
+  if (kind == KernelKind::ReshapePack || kind == KernelKind::TwiddleReshapePack ||
+      kind == KernelKind::TiledTranspose) {
     out << ";reshape_n1=" << reshape_n1 << ";reshape_n2=" << reshape_n2;
   }
   if (kind == KernelKind::Transpose3D) {

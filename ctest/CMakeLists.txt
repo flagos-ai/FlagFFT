@@ -27,6 +27,7 @@ endif()
 
 set(TEST_TARGETS
     test_plan
+    test_kernel_key
     test_packed_real_batch
     test_rader_dc
     test_2d_correctness
