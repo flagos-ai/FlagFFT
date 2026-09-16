@@ -175,8 +175,12 @@ def lane_block_for(lanes: int) -> int:
 
 
 def emitted_leaf_factors(plan: LeafPlan, io_mode: str = "contiguous") -> tuple[int, ...]:
-    if (_maca_backend_active() and io_mode != "bluestein_full_leaf"
-            and plan.length in _NATURAL_ORDER_CODELET_RADICES | _THREAD_LOCAL_MIXED_RADICES | {16}):
+    if (
+        _maca_backend_active()
+        and io_mode != "bluestein_full_leaf"
+        and plan.length
+        in _NATURAL_ORDER_CODELET_RADICES | _THREAD_LOCAL_MIXED_RADICES | {16}
+    ):
         # Keep small FFTs in registers: this SDK cannot parse the plugin's
         # maca.shfl.sync op generated for small tensor layout conversions.
         return (plan.length,)
@@ -239,7 +243,10 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
         lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
         if len(emitted_leaf_factors(plan)) > 1:
             return 1
-        return max(1, min(32 if len(plan.factors) == 1 else 4, 64 // lane_block))
+        return max(
+            1,
+            min(32 if len(plan.factors) == 1 else 4, 64 // lane_block),
+        )
     lane_block = lane_block_for(plan.lanes)
     if lane_block >= _LEAF_PACK_TARGET_THREADS:
         return 1
@@ -418,8 +425,13 @@ def _triton_plugin_present(plugin: str) -> bool:
 def _mthreads_backend_active() -> bool:
     """Whether the installed Triton targets Moore Threads (MUSA/mtgpu)."""
     from .target import backend_name
+
     backend = backend_name()
-    return backend in {"musa", "mthreads", "mtgpu"} if backend else _triton_plugin_present("mthreads")
+    return (
+        backend in {"musa", "mthreads", "mtgpu"}
+        if backend
+        else _triton_plugin_present("mthreads")
+    )
 
 
 def _ppu_backend_active() -> bool:
@@ -430,30 +442,43 @@ def _ppu_backend_active() -> bool:
     PPU compiler toolchain does not support, so they are disabled there.
     """
     from .target import backend_name
+
     backend = backend_name()
     return backend == "ppu" if backend else _triton_plugin_present("ppu")
 
 
 def _maca_backend_active() -> bool:
     from .target import backend_name
+
     backend = backend_name()
     return backend in {"maca", "metax"} if backend else _triton_plugin_present("metax")
 
 
+def _ix_backend_active() -> bool:
+    """Whether the installed Triton targets Iluvatar (Tianshu/CoreX)."""
+    return _triton_plugin_present("iluvatar")
+
+
 def _non_nvidia_backend_active() -> bool:
-    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU).
+    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU/IX/MACA).
 
     The thread-local mixed-radix four-step kernels and the vectorized 3D
     transpose variants rely on register/asm patterns that the MThreads
     MTGPU LLVM backend cannot compile (llc register allocation failure)
-    and that the PPU toolchain does not support, so they are disabled on
+    and that the PPU/IX toolchains do not support, so they are disabled on
     these backends.
     """
     from .target import backend_name
+
     backend = backend_name()
     if backend:
         return backend != "cuda"
-    return _mthreads_backend_active() or _ppu_backend_active() or _maca_backend_active()
+    return (
+        _mthreads_backend_active()
+        or _ppu_backend_active()
+        or _ix_backend_active()
+        or _maca_backend_active()
+    )
 
 
 __all__ = [
@@ -487,6 +512,8 @@ __all__ = [
     "_floor_power_of_two",
     "_four_step_resource_inner_pack_for",
     "_is_double_dtype",
+    "_ix_backend_active",
+    "_maca_backend_active",
     "_mthreads_backend_active",
     "_next_power_of_two",
     "_non_nvidia_backend_active",
@@ -499,6 +526,7 @@ __all__ = [
     "codelet_radices_for",
     "contiguous_batch_pack_for",
     "cooperative_stage_lanes_for",
+    "emitted_leaf_factors",
     "four_step_col_inner_pack_for",
     "four_step_row_inner_pack_for",
     "lane_block_for",

@@ -22,18 +22,17 @@ on:
         required: false
         default: "main"
       combination:
-        description: "Combination from conf/test_matrix.yaml (single choice in workflow; CLI accepts comma-separated names), or full for all"
+        description: "Acceptance operator group (CLI also accepts comma-separated groups), or full for all 36 operators"
         required: false
         default: "full"
         type: choice
         options:
           - full
           - 1d_ct_single
+          - 1d_prime_single
           - 1d_ct_batch
-          - 1d_bs_single
-          - 1d_bs_batch
-          - 2d_ct
-          - 2d_bs
+          - 1d_prime_batch
+          - 2d
           - 3d
       gpus:
         description: "Comma-separated GPU IDs or 'all'"
@@ -74,18 +73,23 @@ jobs:
           ref: ${{ inputs.branch || github.ref }}
           fetch-depth: 1
 
+      - name: Select result directory
+        run: |
+          FFT_RESULT_DIR="$(dirname "$GITHUB_WORKSPACE")/results/$(date +%Y%m%d_%H%M%S)_acceptance36"
+          printf 'FFT_RESULT_DIR=%s\n' "$FFT_RESULT_DIR" >> "$GITHUB_ENV"
+
       - name: Initialize submodules
         run: |
           git submodule update --init --recursive
 
       - name: Install Python dependencies
         run: |
-          pip install --no-warn-conflicts nanobind ninja cmake pybind11 pytest pyyaml
+          pip install --no-warn-conflicts nanobind ninja cmake pybind11
           pip install --no-warn-conflicts -U pip "setuptools<82" wheel scikit-build-core
 
       - name: Install project
         run: |
-          pip install -e .
+          pip install -e '.[test]'
 
       - name: Build project
         run: |
@@ -102,14 +106,14 @@ jobs:
             --gpus ${{ inputs.gpus || '0' }} \
             ${{ inputs.accuracy_only == true && '--accuracy-only' || '' }} \
             ${{ inputs.performance_only == true && '--performance-only' || '' }} \
-            --output-dir results \
+            --output-dir "$FFT_RESULT_DIR" \
             -v
 
       - name: Upload test results
-        if: always()
+        if: always() && env.FFT_RESULT_DIR != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results
           path: |
-            results/
+            ${{ env.FFT_RESULT_DIR }}/
             build/ctest/Testing/

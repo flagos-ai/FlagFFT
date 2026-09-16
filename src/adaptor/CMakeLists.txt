@@ -28,10 +28,17 @@ elseif(BACKEND STREQUAL "PPU")
         ${CMAKE_CURRENT_LIST_DIR}/backend/ppu/adaptor.cpp
     )
     target_link_libraries(flagfft PRIVATE PPU::ppu_runtime)
+elseif(BACKEND STREQUAL "IX")
+    find_package(CUDAToolkit REQUIRED COMPONENTS cuda_driver)
+    target_sources(flagfft PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/backend/ix/adaptor.cpp
+    )
+    target_link_libraries(flagfft PRIVATE CUDA::cuda_driver)
 elseif(BACKEND STREQUAL "MACA")
     target_sources(flagfft PRIVATE
-        ${CMAKE_CURRENT_LIST_DIR}/backend/maca/adaptor.cpp)
+        ${CMAKE_CURRENT_LIST_DIR}/backend/maca/adaptor.cpp
+    )
     target_link_libraries(flagfft PRIVATE MACA::mcruntime)
 else()
-    message(FATAL_ERROR "Unsupported FlagFFT adaptor BACKEND=${BACKEND}")
+    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, or BACKEND=MACA")
 endif()

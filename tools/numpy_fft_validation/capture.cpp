@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This is deliberately an out-of-tree validation executable.  It links to an
-// already-built FlagFFT shared library and compiles the existing platform
-// reference adaptor; it is not part of the FlagFFT library or its public API.
+// Native output capture for the unified NumPy acceptance runner. It is built
+// with the test suite or, optionally, against an existing FlagFFT build.
 
 #include "adaptor/adaptor.h"
 #include "adaptor/test_adaptor.h"
@@ -98,18 +97,17 @@ struct FlagPlan {
 
 void usage() {
   std::cout << "Usage: numpy_fft_capture --api API --shape N[,N[,N]] --batch B "
-                "--direction forward|inverse --input INPUT.bin --output-dir DIR "
-                "[--implementation both|flagfft|platform]\n"
-                "\n"
-                "API is one of c2c, z2z, r2c, d2z, c2r, z2d.\n";
+               "--direction forward|inverse --input INPUT.bin --output-dir DIR "
+               "[--implementation both|flagfft|platform]\n"
+               "\n"
+               "API is one of c2c, z2z, r2c, d2z, c2r, z2d.\n";
 }
 
 Implementation parse_implementation(const std::string& value) {
   if (value == "both") return Implementation::kBoth;
   if (value == "flagfft") return Implementation::kFlagFFT;
   if (value == "platform") return Implementation::kPlatform;
-  throw std::runtime_error("unknown --implementation: " + value +
-                           " (expected both, flagfft, or platform)");
+  throw std::runtime_error("unknown --implementation: " + value + " (expected both, flagfft, or platform)");
 }
 
 std::map<std::string, std::string> parse_arguments(int argc, char** argv) {
@@ -304,8 +302,8 @@ void write_bytes(const fs::path& path, const void* data, std::size_t bytes) {
 
 void check_flagfft(flagfftResult result, const std::string& context) {
   if (result != FLAGFFT_SUCCESS) {
-    throw std::runtime_error(context + " failed with flagfftResult=" +
-                             std::to_string(static_cast<int>(result)));
+    throw std::runtime_error(context +
+                             " failed with flagfftResult=" + std::to_string(static_cast<int>(result)));
   }
 }
 
@@ -319,18 +317,9 @@ FlagPlan make_flag_plan(const Spec& spec, const Layout& layout) {
     const int half = spec.shape[0] * (spec.shape[1] / 2 + 1);
     const int idist = is_real_inverse(spec.type) ? half : full;
     const int odist = is_real_forward(spec.type) ? half : full;
-    check_flagfft(flagfftPlanMany(&plan.handle,
-                                  2,
-                                  n,
-                                  nullptr,
-                                  1,
-                                  idist,
-                                  nullptr,
-                                  1,
-                                  odist,
-                                  spec.type,
-                                  spec.batch),
-                  "flagfftPlanMany(rank=2)");
+    check_flagfft(
+        flagfftPlanMany(&plan.handle, 2, n, nullptr, 1, idist, nullptr, 1, odist, spec.type, spec.batch),
+        "flagfftPlanMany(rank=2)");
   } else {
     check_flagfft(flagfftPlan3d(&plan.handle, spec.shape[0], spec.shape[1], spec.shape[2], spec.type),
                   "flagfftPlan3d");
@@ -372,10 +361,9 @@ void execute_flagfft(flagfftHandle plan, const Spec& spec, void* input, void* ou
                     "flagfftExecZ2Z");
       return;
     case FLAGFFT_R2C:
-      check_flagfft(flagfftExecR2C(plan,
-                                   static_cast<flagfftReal*>(input),
-                                   static_cast<flagfftComplex*>(output)),
-                    "flagfftExecR2C");
+      check_flagfft(
+          flagfftExecR2C(plan, static_cast<flagfftReal*>(input), static_cast<flagfftComplex*>(output)),
+          "flagfftExecR2C");
       return;
     case FLAGFFT_D2Z:
       check_flagfft(flagfftExecD2Z(plan,
@@ -384,10 +372,9 @@ void execute_flagfft(flagfftHandle plan, const Spec& spec, void* input, void* ou
                     "flagfftExecD2Z");
       return;
     case FLAGFFT_C2R:
-      check_flagfft(flagfftExecC2R(plan,
-                                   static_cast<flagfftComplex*>(input),
-                                   static_cast<flagfftReal*>(output)),
-                    "flagfftExecC2R");
+      check_flagfft(
+          flagfftExecC2R(plan, static_cast<flagfftComplex*>(input), static_cast<flagfftReal*>(output)),
+          "flagfftExecC2R");
       return;
     case FLAGFFT_Z2D:
       check_flagfft(flagfftExecZ2D(plan,
@@ -437,11 +424,8 @@ void execute_reference_one(RefPlanHandle& plan, const Spec& spec, void* input, v
   throw std::runtime_error("unsupported FFT type");
 }
 
-void execute_reference(RefPlanHandle& plan,
-                       const Spec& spec,
-                       const Layout& layout,
-                       void* input,
-                       void* output) {
+void execute_reference(
+    RefPlanHandle& plan, const Spec& spec, const Layout& layout, void* input, void* output) {
   // ref_plan_2d is intentionally a one-transform plan.  Use the same
   // per-batch execution convention as the existing 2D correctness tests.
   if (spec.shape.size() != 2 || spec.batch == 1) {
@@ -501,6 +485,9 @@ int run(const Spec& spec) {
   if (run_flagfft) {
     flag_plan = make_flag_plan(spec, layout);
     check_flagfft(flagfftSetStream(flag_plan.handle, stream.get()), "flagfftSetStream");
+    // Retain the chosen plan even when execution subsequently fails/hangs.
+    // The successful path writes it again with compiled execution details.
+    write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
   }
   if (run_platform) {
     reference_plan.emplace(make_reference_plan(spec));

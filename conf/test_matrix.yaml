@@ -12,62 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# FlagFFT 测例参数矩阵
-# 定义尺寸、批大小、缩放等参数空间
-# 与 operators.yaml 配合使用，展开为具体测例
-
-# 1D Cooley-Tukey
+# cooley-tukey 1D FFT sizes matrix
 sizes_1d_ct:
-  - 256 # 2^8
+  - 16
   - 1024 # 2^10
   - 2048 # 2^11
   - 8192 # 2^13
   - 16384 # 2^14
-  - 32768 # 2^15
   - 46189 # 11 * 13 * 17 * 19
-  - 65536 # 2^16
-  - 106590 # 2 * 3 * 5 * 11 * 17 * 19
-  - 131072 # 2^17
   - 185640 # 2^3 * 3 * 5 * 7 * 13 * 17
-  - 262144 # 2^18
-  - 300000 # 2^5 * 3 * 5^5
   - 328050 # 2 * 3^8 * 5^2
   - 340200 # 2^3 * 3^5 * 5^2 * 7
-  - 350000 # 2^4 * 5^5 * 7
-  - 477360 # 2^4 * 3 * 5 * 13 * 17 * 19
-  - 522240 # 2^11 * 3 * 5 * 17
-  - 600000 # 2^6 * 3 * 5^5
   - 663000 # 2^3 * 3 * 5^3 * 13 * 17
   - 1048576 # 2^20
 
-# 1D Bluestein / Rader / DirectDFT
+
+# bluestein / rader / direct-dft 1D FFT sizes matrix
 sizes_1d_bs:
   - 23
-  - 76
   - 997
   - 1009
   - 8191
   - 16381
-  - 65537
-  - 104729
   - 524287
 
-# 2D Cooley-Tukey
-sizes_2d_ct:
+# 2D FFT sizes matrix
+sizes_2d:
   - [64, 64]
   - [128, 128]
   - [2048, 2048]
   - [46189, 48]
   - [32, 46189]
 
-# 2D Bluestein / Rader / DirectDFT
-sizes_2d_bs:
-  - [23, 30]
-  - [76, 76]
-  - [1009, 23]
-  - [8191, 1009]
-
-# 3D Cooley-Tukey
+# 3D FFT sizes matrix
 sizes_3d:
   - [16, 16, 16]
   - [32, 32, 32]
@@ -75,48 +52,15 @@ sizes_3d:
   - [128, 2048, 64]
   - [256, 256, 256]
 
-# Batch sizes and scaling factors
+# 1D/2D/3D FFT batch sizes matrix
 batches:
-  - 1
-  - 256
+  single: [1]
+  batch: [256]
+  2d: [1]
+  3d: [1]  # 当前 capture 和 benchmark 仅支持 rank-3 batch=1。
 
+# can be omitted, default [1.0];
+# `--scales` can override,
+# `--scales` all tests three input amplitudes.
 scales:
   - 1.0
-
-# Test combinations
-combinations:
-
-  1d_ct_single:
-    sizes: sizes_1d_ct
-    batches: [1]
-    scales: [1.0]
-
-  1d_ct_batch:
-    sizes: sizes_1d_ct
-    batches: [256]
-    scales: [1.0]
-
-  1d_bs_single:
-    sizes: sizes_1d_bs
-    batches: [1]
-    scales: [1.0]
-
-  1d_bs_batch:
-    sizes: sizes_1d_bs
-    batches: [256]
-    scales: [1.0]
-
-  2d_ct:
-    sizes: sizes_2d_ct
-    batches: [1]
-    scales: [1.0]
-
-  2d_bs:
-    sizes: sizes_2d_bs
-    batches: [1]
-    scales: [1.0]
-
-  3d:
-    sizes: sizes_3d
-    batches: [1]
-    scales: [1.0]

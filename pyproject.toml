@@ -24,6 +24,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 
+[project.optional-dependencies]
+test = ["numpy>=1.24", "PyYAML>=6", "pytest>=7"]
+
 [tool.setuptools]
 package-dir = {"" = "python"}
 
