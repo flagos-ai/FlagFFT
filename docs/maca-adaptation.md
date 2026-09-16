@@ -39,8 +39,8 @@ Execute build commands in the container; edit the mounted sources on the host.
 The fixed libtriton_jit revision `f3382f9` includes the MACA consumer CMake fixes:
 public `USE_MACA`, a globally visible `MACA::mcruntime` imported target, and
 respect for an explicit `MACA_PATH`. Its isolated compilation helper also
-accepts a known target and selects MACA's hint handler without querying a
-Torch CUDA compatibility device.
+accepts a known target and binds FlagTree's hint manager to MACA without
+querying a Torch CUDA compatibility device.
 
 This dependency commit is on the local `codex/maca-consumer` branch. The
 development results contain `libtriton_jit-maca.bundle` with its history.
@@ -134,6 +134,7 @@ The implementation checkpoint passed these checks:
 | Check | Coverage | Result |
 |---|---|---|
 | Portable leaf against NumPy | FP32/FP64, both directions, lengths 8/15/16/32/64/256/780, batches 1/2/7/16/256, two warps | 140 passed |
+| Final native C API against NumPy | Six APIs; 1D/2D/3D, 257/8191-point primes, odd/prime axes, nondefault stream, batch 7/256 | 120 passed; mcFFT checked independently |
 | Forced prime runtime against CPU direct DFT | Rader and split Bluestein, N=257, batch=7, FP32/FP64, both directions; stream, graph replay and in-place | Passed |
 | Packed real batch runtime | N=1024, batch=7, D2Z/Z2D, dense/padded/in-place layouts | Passed |
 | libtriton_jit runtime | Hooks, C++/Python arguments, tuple signatures | 5 passed |
