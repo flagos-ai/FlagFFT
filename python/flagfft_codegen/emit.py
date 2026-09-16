@@ -34,6 +34,7 @@ from .kernels_common import (
 from .kernels_layout import (
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
+    _build_tiled_transpose3d_tile_kernel_source,
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
     _build_twiddle_reshape_pack_kernel_source,
@@ -629,8 +630,9 @@ def _transpose3d_v2_supported() -> bool:
 
     The v2 kernel relies on ld/st.global.v2 inline asm; the MThreads MTGPU
     LLVM backend (FlagTree mthreads) cannot allocate registers for it, and
-    the PPU/Iluvatar toolchains do not support the PTX inline asm either, so
-    fall back to the plain tiled transpose on all of them.
+    the PPU/Iluvatar toolchains do not support the PTX inline asm either.
+    Those targets use the portable register-tile variant instead, which keeps
+    both the load and the store side coalesced.
     """
     try:
         from triton._C import libtriton
@@ -660,6 +662,13 @@ def _emit_tiled_transpose3d_jit_kernel(
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
+    elif dtype == "complex64":
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_tile_kernel_source(n0, n1, n2, order, dtype, tile=32)
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
             n0, n1, n2, order, dtype

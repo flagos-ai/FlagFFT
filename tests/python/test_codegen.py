@@ -693,6 +693,35 @@ def test_tiled_transpose_uses_register_transpose(kernels) -> None:
     assert "safe_col[:, None] * 64 + safe_row[None, :]" in source
 
 
+def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> None:
+    kernel_name, source, _, grid_x = kernels._build_tiled_transpose3d_tile_kernel_source(
+        128, 2048, 64, "201", "complex64", tile=32
+    )
+
+    assert "_tile" in kernel_name
+    assert "inline_asm" not in source
+    assert "tl.trans(src_r)" in source
+    assert "tl.trans(src_i)" in source
+    # 201 maps to a (rows=s2, cols=s1) transpose per s0 slice.
+    assert grid_x == 128 * ((2048 + 31) // 32) * ((64 + 31) // 32)
+    assert "safe_cols[:, None] * 64 * 2" in source
+    assert "safe_rows[:, None] * 262144 * 2" in source
+    assert "safe_cols[None, :] * 2" in source
+
+
+def test_tiled_transpose3d_tile_selected_without_inline_asm(kernels, tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit
+
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+    )
+
+    assert "_tile" in metadata["kernel_name"]
+    assert metadata["grid_x_override"] > 0
+    assert "inline_asm" not in (tmp_path / "flagfft_jit_transpose3d_201_n128_2048_64_f32.py").read_text()
+
+
 def test_strided_four_step_row_kernel_source_generation(kernels) -> None:
     plan = kernels.LeafPlan(
         length=128,
