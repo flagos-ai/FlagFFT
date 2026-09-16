@@ -120,12 +120,18 @@ def _metadata(
     work_pack = max(batch_per_block, inner_pack)
     if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):
         cooperative_warps = 1
-        required_warps = (lane_block_for(max(stage_lanes)) * work_pack + 31) // 32
+        from .target import warp_size
+        threads = warp_size()
+        required_warps = (lane_block_for(max(stage_lanes)) * work_pack + threads - 1) // threads
         while cooperative_warps < required_warps and cooperative_warps < 8:
             cooperative_warps *= 2
         num_warps = max(num_warps, cooperative_warps)
     if "_thread_local_" in kernel_name:
         num_warps = 4
+    from .kernels_common import _maca_backend_active
+    if _maca_backend_active():
+        # Start with the four-warp configurations validated on C550.
+        num_warps = max(4, num_warps)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

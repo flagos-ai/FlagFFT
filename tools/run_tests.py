@@ -142,6 +142,8 @@ def detect_backend(build_dir: Path) -> str:
             return "ppu"
         elif hasattr(libtriton, "mthreads"):
             return "musa"
+        elif hasattr(libtriton, "metax"):
+            return "maca"
         elif hasattr(libtriton, "cuda"):
             return "cuda"
         else:
@@ -455,12 +457,12 @@ def run_subprocess(
     cmd: list[str], timeout: int, gpu_id: int
 ) -> tuple[int, str, str, float]:
     env = os.environ.copy()
-    # Vendor-aware GPU selection: FlagFFT targets CUDA only.
-    # For multi-vendor support (ROCm, etc.), extend this based on ENV_INFO.
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     # MUSA workers use MUSA_VISIBLE_DEVICES; setting only CUDA_VISIBLE_DEVICES
     # leaves all MUSA workers pinned to GPU 0 when running multiple workers.
     env["MUSA_VISIBLE_DEVICES"] = str(gpu_id)
+    env["MACA_VISIBLE_DEVICES"] = str(gpu_id)
+    env["MC_VISIBLE_DEVICES"] = str(gpu_id)
     start = time.monotonic()
     try:
         result = subprocess.run(

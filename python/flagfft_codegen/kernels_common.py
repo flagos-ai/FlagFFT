@@ -174,7 +174,19 @@ def lane_block_for(lanes: int) -> int:
     return value
 
 
+def emitted_leaf_factors(plan: LeafPlan, io_mode: str = "contiguous") -> tuple[int, ...]:
+    if (_maca_backend_active() and io_mode != "bluestein_full_leaf"
+            and plan.length in _NATURAL_ORDER_CODELET_RADICES | _THREAD_LOCAL_MIXED_RADICES | {16}):
+        # Keep small FFTs in registers: this SDK cannot parse the plugin's
+        # maca.shfl.sync op generated for small tensor layout conversions.
+        return (plan.length,)
+    return plan.factors
+
+
 def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
+    if _maca_backend_active():
+        # The portable exchange evaluates every butterfly in one tensor.
+        return tuple(plan.length // radix for radix in plan.factors)
     fixed_lanes_are_compatible = all(
         (plan.length // radix) % plan.lanes == 0 for radix in plan.factors
     )
@@ -223,6 +235,11 @@ def _next_power_of_two(value: int) -> int:
 
 
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
+    if _maca_backend_active():
+        lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
+        if len(emitted_leaf_factors(plan)) > 1:
+            return 1
+        return max(1, min(32 if len(plan.factors) == 1 else 4, 64 // lane_block))
     lane_block = lane_block_for(plan.lanes)
     if lane_block >= _LEAF_PACK_TARGET_THREADS:
         return 1
@@ -283,6 +300,8 @@ def four_step_col_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
+    if _maca_backend_active():
+        return 1
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
     if n1 < _FOUR_STEP_COL_INNER_PACK_MIN_N1:
@@ -304,6 +323,8 @@ def four_step_row_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
+    if _maca_backend_active():
+        return 1
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
     if use_tle_fused_twiddle(n1, n2, dtype):
@@ -361,6 +382,8 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     loading the precomputed twiddle table in the row pass instead of issuing
     the same reads with the strided column access pattern.
     """
+    if _maca_backend_active():
+        return False
     return use_tle_fused_twiddle(n1, n2, dtype) or (
         _is_double_dtype(dtype) and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
     )
@@ -394,7 +417,9 @@ def _triton_plugin_present(plugin: str) -> bool:
 
 def _mthreads_backend_active() -> bool:
     """Whether the installed Triton targets Moore Threads (MUSA/mtgpu)."""
-    return _triton_plugin_present("mthreads")
+    from .target import backend_name
+    backend = backend_name()
+    return backend in {"musa", "mthreads", "mtgpu"} if backend else _triton_plugin_present("mthreads")
 
 
 def _ppu_backend_active() -> bool:
@@ -404,7 +429,15 @@ def _ppu_backend_active() -> bool:
     transpose variants rely on PTX inline-asm register patterns that the
     PPU compiler toolchain does not support, so they are disabled there.
     """
-    return _triton_plugin_present("ppu")
+    from .target import backend_name
+    backend = backend_name()
+    return backend == "ppu" if backend else _triton_plugin_present("ppu")
+
+
+def _maca_backend_active() -> bool:
+    from .target import backend_name
+    backend = backend_name()
+    return backend in {"maca", "metax"} if backend else _triton_plugin_present("metax")
 
 
 def _non_nvidia_backend_active() -> bool:
@@ -416,7 +449,11 @@ def _non_nvidia_backend_active() -> bool:
     and that the PPU toolchain does not support, so they are disabled on
     these backends.
     """
-    return _mthreads_backend_active() or _ppu_backend_active()
+    from .target import backend_name
+    backend = backend_name()
+    if backend:
+        return backend != "cuda"
+    return _mthreads_backend_active() or _ppu_backend_active() or _maca_backend_active()
 
 
 __all__ = [

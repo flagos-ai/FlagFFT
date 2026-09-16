@@ -4,7 +4,7 @@ This directory contains an out-of-tree validation harness.  It does not add a so
 to `libflagfft`, change the public API, or change the existing ctest suite.
 
 The native executable links against an existing `libflagfft.so` and compiles
-the already-existing platform test adaptor (`cuFFT`, `muFFT`, or the PPU
+the already-existing platform test adaptor (`cuFFT`, `muFFT`, `mcFFT`, or the PPU
 CUDA-compatible FFT library).  It accepts the optional
 `--implementation=both|flagfft|platform` switch; omitting it keeps the legacy
 `both` behavior.  The Python driver uses the two single-implementation modes
@@ -41,6 +41,10 @@ cmake --build /tmp/flagfft-numpy-capture-cuda -j
 For MUSA or PPU, use `-DBACKEND=MUSA` or `-DBACKEND=PPU` and set
 `-DMUSA_HOME=...` or `-DPPU_HOME=...` when the SDK is not in its default
 location.  The build directory must have been built with the same backend.
+For MetaX, select `-DBACKEND=MACA -DMACA_PATH=/opt/maca` and build with
+`cmake_maca` / `make_maca` in the MACA environment. The driver accepts
+`--backend MACA --gpu 4`; it sets the MACA and CUDA device filters before
+starting each native capture process.
 
 ## Run a smoke validation
 

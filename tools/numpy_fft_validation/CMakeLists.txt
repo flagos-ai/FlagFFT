@@ -6,8 +6,8 @@ set(FLAGFFT_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH
     "FlagFFT source tree containing include/ and src/")
 set(FLAGFFT_BUILD_DIR "" CACHE PATH
     "Existing FlagFFT build directory containing libflagfft.so")
-set(BACKEND "CUDA" CACHE STRING "FlagFFT backend: CUDA, MUSA, or PPU")
-set_property(CACHE BACKEND PROPERTY STRINGS CUDA MUSA PPU)
+set(BACKEND "CUDA" CACHE STRING "FlagFFT backend: CUDA, MUSA, PPU, or MACA")
+set_property(CACHE BACKEND PROPERTY STRINGS CUDA MUSA PPU MACA)
 
 if(FLAGFFT_BUILD_DIR STREQUAL "")
     message(FATAL_ERROR "-DFLAGFFT_BUILD_DIR=/path/to/FlagFFT/build is required")
@@ -60,6 +60,21 @@ elseif(BACKEND STREQUAL "MUSA")
         "${MUFFT_INCLUDE_DIR}")
     target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
     target_link_libraries(numpy_fft_capture PRIVATE "${MUFFT_LIB}" "${MUSA_RUNTIME_LIB}")
+elseif(BACKEND STREQUAL "MACA")
+    set(MACA_PATH "/opt/maca" CACHE PATH "MACA SDK root")
+    find_path(MACA_INCLUDE_DIR mcr/mc_runtime.h
+        PATHS "${MACA_PATH}/include" NO_DEFAULT_PATH REQUIRED)
+    find_path(MCFFT_INCLUDE_DIR mcfft.h
+        PATHS "${MACA_PATH}/include/mcfft" NO_DEFAULT_PATH REQUIRED)
+    find_library(MACA_RUNTIME_LIB mcruntime
+        PATHS "${MACA_PATH}/lib" NO_DEFAULT_PATH REQUIRED)
+    find_library(MCFFT_LIB mcfft
+        PATHS "${MACA_PATH}/lib" NO_DEFAULT_PATH REQUIRED)
+    target_sources(numpy_fft_capture PRIVATE
+        "${FLAGFFT_SOURCE_DIR}/src/adaptor/backend/maca/test_adaptor.cpp")
+    target_include_directories(numpy_fft_capture PRIVATE
+        "${MACA_INCLUDE_DIR}" "${MACA_INCLUDE_DIR}/mcr" "${MCFFT_INCLUDE_DIR}")
+    target_link_libraries(numpy_fft_capture PRIVATE "${MCFFT_LIB}" "${MACA_RUNTIME_LIB}")
 elseif(BACKEND STREQUAL "PPU")
     set(PPU_HOME "/usr/local/PPU_SDK" CACHE PATH "PPU SDK root")
     find_path(PPU_INCLUDE_DIR cuda_runtime_api.h
@@ -72,7 +87,7 @@ elseif(BACKEND STREQUAL "PPU")
     target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
     target_link_libraries(numpy_fft_capture PRIVATE "${PPU_FFT_LIB}")
 else()
-    message(FATAL_ERROR "Unsupported BACKEND=${BACKEND}; expected CUDA, MUSA, or PPU")
+    message(FATAL_ERROR "Unsupported BACKEND=${BACKEND}; expected CUDA, MUSA, PPU, or MACA")
 endif()
 
 # libflagfft.so's build-tree RPATH is not guaranteed to be present in a
@@ -88,6 +103,8 @@ elseif(BACKEND STREQUAL "MUSA")
     list(APPEND _tool_rpath "${MUSA_HOME}/lib64" "${MUSA_HOME}/lib")
 elseif(BACKEND STREQUAL "PPU")
     list(APPEND _tool_rpath "${PPU_HOME}/CUDA_SDK/lib64" "${PPU_HOME}/lib64" "${PPU_HOME}/lib")
+elseif(BACKEND STREQUAL "MACA")
+    list(APPEND _tool_rpath "${MACA_PATH}/lib" "${MACA_PATH}/mxgpu_llvm/lib")
 endif()
 set_target_properties(numpy_fft_capture PROPERTIES
     BUILD_RPATH "${_tool_rpath}"

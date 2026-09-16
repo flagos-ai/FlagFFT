@@ -579,6 +579,8 @@ def environment_snapshot(backend: str | None, source: Path | None = None) -> dic
             "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
             "MUSA_VISIBLE_DEVICES": os.environ.get("MUSA_VISIBLE_DEVICES", ""),
             "PPU_VISIBLE_DEVICES": os.environ.get("PPU_VISIBLE_DEVICES", ""),
+            "MACA_VISIBLE_DEVICES": os.environ.get("MACA_VISIBLE_DEVICES", ""),
+            "MC_VISIBLE_DEVICES": os.environ.get("MC_VISIBLE_DEVICES", ""),
         },
     }
     snapshot["git_commit"] = git_commit(source or source_root())
@@ -814,6 +816,8 @@ def run_experiment(args: argparse.Namespace) -> int:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
         env["MUSA_VISIBLE_DEVICES"] = str(args.gpu)
+        env["MACA_VISIBLE_DEVICES"] = str(args.gpu)
+        env["MC_VISIBLE_DEVICES"] = str(args.gpu)
         if args.backend and args.backend.upper() == "PPU":
             env.setdefault("PPU_VISIBLE_DEVICES", str(args.gpu))
 
@@ -889,7 +893,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-bin", help="path to the native validation capture executable")
     parser.add_argument("--source-dir", default=str(source_root()))
-    parser.add_argument("--backend", default=None, help="recorded backend name, e.g. CUDA, MUSA, or PPU")
+    parser.add_argument("--backend", default=None, help="recorded backend name, e.g. CUDA, MUSA, PPU, or MACA")
     parser.add_argument("--combination", default="full", help="matrix combination, or full/all")
     parser.add_argument("--ops", default=None, help="comma-separated operator IDs")
     parser.add_argument("--shapes", default=None, help="comma-separated exact shapes, e.g. 256 or 64x64")

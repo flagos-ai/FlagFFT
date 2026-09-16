@@ -28,6 +28,10 @@ elseif(BACKEND STREQUAL "PPU")
         ${CMAKE_CURRENT_LIST_DIR}/backend/ppu/adaptor.cpp
     )
     target_link_libraries(flagfft PRIVATE PPU::ppu_runtime)
+elseif(BACKEND STREQUAL "MACA")
+    target_sources(flagfft PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/backend/maca/adaptor.cpp)
+    target_link_libraries(flagfft PRIVATE MACA::mcruntime)
 else()
-    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA, BACKEND=MUSA, or BACKEND=PPU")
+    message(FATAL_ERROR "Unsupported FlagFFT adaptor BACKEND=${BACKEND}")
 endif()

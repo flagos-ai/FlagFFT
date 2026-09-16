@@ -4,7 +4,7 @@ FlagFFT is a JIT-compiled GPU FFT library. It generates backend-targeted GPU
 kernels at runtime via [Triton/TLE](https://github.com/FlagTree/flagtree) and
 [libtriton_jit](https://github.com/Artlesbol/libtriton_jit), targeting
 arbitrary-length transforms that vendor FFT libraries may not optimally
-support. The current CMake build supports CUDA, MUSA, and PPU backends.
+support. The current CMake build supports CUDA, MUSA, PPU, and MACA backends.
 
 ---
 
@@ -119,7 +119,7 @@ This produces `build/libflagfft.so`.
 |---|---|---|
 | `FLAGFFT_BUILD_CLI` | `OFF` | Build the `flagfft-cli` benchmark/verification tool |
 | `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test + the selected backend's reference FFT library) |
-| `BACKEND` | `CUDA` | GPU backend selector: `CUDA`, `MUSA`, or `PPU` |
+| `BACKEND` | `CUDA` | GPU backend selector: `CUDA`, `MUSA`, `PPU`, or `MACA` |
 | `CMAKE_BUILD_TYPE` | — | `Release`, `Debug`, `RelWithDebInfo` |
 
 ### Full Build (library + CLI + tests)
@@ -132,8 +132,14 @@ cmake --build build -j$(nproc)
 ```
 
 The default backend is CUDA. Select another supported backend at configure
-time, for example `-DBACKEND=MUSA` or `-DBACKEND=PPU`; the corresponding SDK
+time, for example `-DBACKEND=MUSA`, `-DBACKEND=PPU`, or `-DBACKEND=MACA`; the corresponding SDK
 and runtime libraries must be installed.
+
+For MetaX, use a MACA Torch / FlagTree environment and the SDK's
+`cmake_maca` / `make_maca` toolchain. Set `-DMACA_PATH=/opt/maca` and use
+`mcFFT` as the reference library when building the CLI or tests. See
+[MACA setup and validation](docs/maca-adaptation.md) for the tested environment,
+device selection, build commands, and compiler compatibility limits.
 
 ### Environment Variables
 
