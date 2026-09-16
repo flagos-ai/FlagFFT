@@ -148,6 +148,11 @@ database when `FLAGFFT_TUNE_DB=PATH` is set.
 ## Tests
 
 `ctest/` contains Google Test based accuracy tests for all operators.
-`tools/run_tests.py` is the unified test runner that orchestrates both
-accuracy and performance testing across multiple GPUs. `tests/python/`
-continues to cover code generation.
+`tools/run_tests.py` expands 36 acceptance operators from `conf/operators.yaml`
+using the dimensions, numeric batches and scales in `conf/test_matrix.yaml`.
+Its native capture target compares FlagFFT and the platform library independently
+against NumPy; FlagFFT correctness alone decides acceptance. Performance uses
+`flagfft-cli bench` once per shape/batch/direction, regardless of input scales.
+JSON and incremental CSV retain per-case runtime plans and both correctness
+results. `--analyze-only` recomputes comparisons from captured data without a GPU.
+`tests/python/` covers runner behavior and code generation.

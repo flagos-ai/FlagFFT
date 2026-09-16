@@ -18,6 +18,7 @@ import csv
 import importlib.util
 import io
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -85,6 +86,30 @@ def test_group_selection_and_alias_do_not_duplicate_cases(operators, matrix):
     assert {case["algorithm"] for case in cases} == {"prime"}
     assert {case["batch"] for case in cases} == set(matrix["batches"]["batch"])
     assert {case["rank"] for case in cases} == {1}
+
+
+def test_missing_operator_is_not_accepted_as_a_complete_suite(tmp_path, operators):
+    path = tmp_path / "operators.yaml"
+    path.write_text(yaml.safe_dump({"ops": operators[:-1]}))
+    with pytest.raises(ValueError, match="36 acceptance operators"):
+        RUN_TESTS.load_operators(path)
+
+
+@pytest.mark.parametrize("mode,expected", [("timeout", "Timeout"), ("error", "Error")])
+def test_native_process_timeout_and_error_retain_logs(tmp_path, mode, expected):
+    script = (
+        "import time; print('started', flush=True); time.sleep(30)"
+        if mode == "timeout"
+        else "import sys; print('native failure', file=sys.stderr); sys.exit(1)"
+    )
+    stage = RUN_TESTS.run_subprocess(
+        [sys.executable, "-c", script], 1, 0, tmp_path, "native"
+    )
+    assert stage["status"] == expected
+    if mode == "timeout":
+        assert "started" in (tmp_path / stage["stdout_file"]).read_text()
+    else:
+        assert "native failure" in stage["error"]
 
 
 @pytest.mark.parametrize(
@@ -414,6 +439,24 @@ def test_reanalysis_uses_saved_data_without_gpu_execution(
     assert result["platform_accuracy"]["status"] == "Passed"
     assert result["accuracy"]["cases"][case["case_id"]]["plan"] == PLAN
     assert (tmp_path / record["data_file"]).is_file()
+
+
+def test_speedup_summary_excludes_incorrect_flagfft_output():
+    results = {
+        "failed_op": {
+            "accuracy": {"status": "Failed"},
+            "performance": {
+                "cases": {
+                    "fast_but_wrong": {
+                        "status": "Passed",
+                        "speedup": 100.0,
+                        "baseline_valid": True,
+                    }
+                }
+            },
+        }
+    }
+    assert RUN_TESTS.compute_speedup_stats(results)["count"] == 0
 
 
 def test_failed_numeric_metrics_are_written_as_strict_json(tmp_path):

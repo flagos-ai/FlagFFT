@@ -432,7 +432,11 @@ def load_operators(path: Path) -> list[dict[str, Any]]:
         if op_id in seen:
             raise ValueError(f"duplicate operator ID: {op_id}")
         seen.add(op_id)
-        if op.get("api") not in DIRECTIONS or op.get("rank") not in (1, 2, 3):
+        if (
+            op.get("api") not in DIRECTIONS
+            or type(op.get("rank")) is not int
+            or op["rank"] not in (1, 2, 3)
+        ):
             raise ValueError(f"{op_id}: invalid api or rank")
         if op["rank"] == 1:
             if op.get("algorithm") not in ("ct", "prime") or op.get("batch") not in (
@@ -449,6 +453,12 @@ def load_operators(path: Path) -> list[dict[str, Any]]:
             raise ValueError(
                 f"{op_id}: expected ID {expected} and a size-set reference"
             )
+    expected_ids = {f"{group}_{api}" for group in GROUPS for api in DIRECTIONS}
+    if seen != expected_ids:
+        missing = ", ".join(sorted(expected_ids - seen))
+        raise ValueError(
+            f"operators.yaml must define all 36 acceptance operators; missing: {missing}"
+        )
     return ops
 
 
@@ -784,6 +794,13 @@ def run_subprocess(
                 process.wait()
             raise
     result["duration"] = time.monotonic() - started
+    if result["status"] == "Error":
+        with (case_dir / result["stderr_file"]).open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 4000))
+            detail = stream.read().decode("utf-8", errors="replace").strip()
+        if detail:
+            result["error"] += f": {detail}"
     return result
 
 
@@ -1123,6 +1140,7 @@ def compute_speedup_stats(op_results: dict) -> dict:
     values = [
         case["speedup"]
         for op in op_results.values()
+        if op.get("accuracy", {}).get("status", "NotRun") in ("Passed", "NotRun")
         for case in op["performance"]["cases"].values()
         if case.get("status") == "Passed" and case.get("baseline_valid") is not False
     ]
