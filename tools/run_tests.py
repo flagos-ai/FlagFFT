@@ -130,6 +130,7 @@ RAW_ARTIFACT_FILENAMES = (
 # large; the native capture processes already have their own peak memory.
 REFERENCE_BATCH_CHUNK = 4
 ERROR_STATS_CHUNK_ELEMENTS = 1 << 18
+INPUT_GENERATION_CHUNK_ELEMENTS = 1 << 20
 
 
 def product(shape: Iterable[int]) -> int:
@@ -206,6 +207,16 @@ def splitmix_signed_unit(count: int, seed: int) -> np.ndarray:
     return bits * (2.0 / 9007199254740992.0) - 1.0
 
 
+def fill_splitmix_signed_unit(output: np.ndarray, seed: int) -> None:
+    """Fill native-dtype output without materializing the full float64 stream."""
+    flat = np.asarray(output).reshape(-1)
+    for start in range(0, flat.size, INPUT_GENERATION_CHUNK_ELEMENTS):
+        stop = min(flat.size, start + INPUT_GENERATION_CHUNK_ELEMENTS)
+        chunk_seed = (int(seed) + start * SPLITMIX_INCREMENT) & MASK64
+        generated = splitmix_signed_unit(stop - start, chunk_seed)
+        flat[start:stop] = generated.astype(flat.dtype, copy=False)
+
+
 def accuracy_seed(
     api: str, transform_elements: int, batch: int, variant: int = 0
 ) -> int:
@@ -234,9 +245,9 @@ def make_input(
     target_shape = input_shape(api, shape, batch)
     count = product(target_shape)
     if is_complex(api) or is_real_inverse(api):
-        result = as_complex_from_interleaved(
-            splitmix_signed_unit(count * 2, seed), api, target_shape
-        )
+        scalar = np.empty(count * 2, dtype=real_dtype(api))
+        fill_splitmix_signed_unit(scalar, seed)
+        result = scalar.view(complex_dtype(api)).reshape(target_shape)
         if is_real_inverse(api):
             # DC/Nyquist planes must be Hermitian across every preceding FFT
             # axis. Merely zeroing their imaginary parts is only valid in 1D.
@@ -250,13 +261,10 @@ def make_input(
                     )
                 result[..., boundary] = (plane + mirrored.conj()) * 0.5
     else:
-        result = (
-            splitmix_signed_unit(count, seed)
-            .astype(real_dtype(api))
-            .reshape(target_shape)
-        )
+        result = np.empty(count, dtype=real_dtype(api)).reshape(target_shape)
+        fill_splitmix_signed_unit(result, seed)
     scale_value = np.asarray(scale, dtype=real_dtype(api)).item()
-    result = result * scale_value
+    result *= scale_value
     return np.ascontiguousarray(result), seed
 
 

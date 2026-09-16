@@ -373,6 +373,24 @@ def test_real_inverse_input_is_a_valid_multidimensional_half_spectrum(api, shape
     np.testing.assert_allclose(restored, value, rtol=1e-13, atol=1e-13)
 
 
+def test_input_generation_fills_splitmix_stream_in_bounded_chunks(monkeypatch):
+    seed = 0x123456789ABCDEF0
+    expected = RUN_TESTS.splitmix_signed_unit(37, seed).astype(np.float32)
+    actual = np.empty(expected.size, dtype=np.float32)
+    monkeypatch.setattr(RUN_TESTS, "INPUT_GENERATION_CHUNK_ELEMENTS", 5)
+    RUN_TESTS.fill_splitmix_signed_unit(actual, seed)
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_make_input_preserves_chunked_splitmix_values(monkeypatch):
+    monkeypatch.setattr(RUN_TESTS, "INPUT_GENERATION_CHUNK_ELEMENTS", 3)
+    value, seed = RUN_TESTS.make_input("c2c", (7,), 2, 1.0)
+    expected = RUN_TESTS.as_complex_from_interleaved(
+        RUN_TESTS.splitmix_signed_unit(28, seed), "c2c", (2, 7)
+    )
+    np.testing.assert_array_equal(value, expected)
+
+
 def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
     value, _ = RUN_TESTS.make_input("c2c", (23,), 1, 1.0)
     forward = RUN_TESTS.numpy_reference(value, "c2c", (23,), "forward")
