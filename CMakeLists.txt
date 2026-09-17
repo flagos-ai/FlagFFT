@@ -14,7 +14,9 @@
 
 cmake_minimum_required(VERSION 3.18)
 
-project(flagfft LANGUAGES CXX)
+project(flagfft VERSION 0.1.0 LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
@@ -54,7 +56,20 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit/CMakeLists.txt")
 endif()
 set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORCE)
 set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
+set(TRITON_JIT_BUILD_OPERATORS OFF CACHE BOOL "Build libtriton_jit operators" FORCE)
 add_subdirectory(deps/libtriton_jit)
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    find_package(nlohmann_json 3.10.5 REQUIRED)
+endif()
+
+# libtriton_jit is a private bundled dependency. Give it a FlagFFT-owned
+# soname so an installed libflagfft can coexist with the separately packaged
+# libtriton_jit project, and locate it next to libflagfft at runtime.
+set_target_properties(triton_jit PROPERTIES
+    OUTPUT_NAME flagfft_triton_jit
+    INSTALL_RPATH "$ORIGIN"
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+)
 
 set(FLAGFFT_CORE_SOURCES
     src/utils/base.cpp
@@ -94,14 +109,28 @@ target_include_directories(flagfft
         src/utils/include
         src
 )
-target_link_libraries(flagfft PRIVATE TritonJIT::triton_jit SQLite3::SQLite3 nlohmann_json::nlohmann_json)
-set_target_properties(flagfft PROPERTIES OUTPUT_NAME flagfft)
+target_link_libraries(flagfft PRIVATE
+    TritonJIT::triton_jit
+    SQLite3::SQLite3
+    nlohmann_json::nlohmann_json
+    ${CMAKE_DL_LIBS}
+)
+set_target_properties(flagfft PROPERTIES
+    OUTPUT_NAME flagfft
+    INSTALL_RPATH "$ORIGIN"
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+)
 
-install(TARGETS flagfft
-        LIBRARY DESTINATION "lib"
-        RUNTIME DESTINATION "bin"
-        ARCHIVE DESTINATION "lib")
-install(DIRECTORY include/ DESTINATION "include")
+install(TARGETS flagfft triton_jit
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+# The bundled libtriton_jit imports its Python helpers (standalone_compile)
+# from <prefix>/share/triton_jit/scripts relative to its own library path.
+install(DIRECTORY deps/libtriton_jit/scripts/
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/triton_jit/scripts"
+        FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.
 # Reused by flagfft-cli (bench/verify) and ctest (correctness tests).
@@ -222,7 +251,7 @@ if(FLAGFFT_BUILD_CLI)
     elseif(BACKEND STREQUAL "PPU")
         target_link_libraries(flagfft-cli PRIVATE ${PPU_FFT_LIB})
     endif()
-    install(TARGETS flagfft-cli RUNTIME DESTINATION "bin")
+    install(TARGETS flagfft-cli RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endif()
 
 if(FLAGFFT_BUILD_TESTS)

@@ -1,0 +1,4 @@
+# libpython3.12 from the deadsnakes PPA (Ubuntu 22.04 build environment) ships
+# no shlibs/symbols file, so dpkg-shlibdeps --ignore-missing-info would silently
+# drop the dependency. Ubuntu 24.04's libpython3.12t64 provides libpython3.12.
+libpython3.12 1.0 libpython3.12 (>= 3.12)
