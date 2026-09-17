@@ -312,6 +312,12 @@ int64_t max_dynamic_smem_bytes(int) {
   return 192 * 1024;
 }
 
+int64_t max_launch_blocks() {
+  // ACL's rtKernelLaunch accepts blockDim in [1, 65535]; exec nodes split
+  // larger grids into chunked launches.
+  return 65535;
+}
+
 std::string device_capabilities_json() {
   int index = 0;
   std::string arch;

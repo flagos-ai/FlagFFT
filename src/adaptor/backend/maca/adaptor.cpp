@@ -312,6 +312,11 @@ int64_t max_dynamic_smem_bytes(int device_index) {
   return static_cast<int64_t>(std::max(properties.sharedMemPerBlock, properties.sharedMemPerBlockOptin));
 }
 
+int64_t max_launch_blocks() {
+  // CUDA-compatible gridDim.x limit; the runtime never reaches it in practice.
+  return 2147483647;
+}
+
 std::string device_capabilities_json() {
   int index = 0;
   std::string arch;
