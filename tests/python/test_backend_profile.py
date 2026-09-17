@@ -116,6 +116,23 @@ class ProfileTest(unittest.TestCase):
         finally:
             reset_profile(token)
 
+    def test_single_smem_buffer_only_for_large_single_group_leaves(self):
+        from flagfft_codegen.kernels_common import (
+            _use_single_smem_buffer,
+        )
+
+        token = set_profile(self.profile(max_dynamic_shared_memory=131072))
+        try:
+            large = LeafPlan(2048, (16, 16, 8), 1, 128, 4, (), 2048)
+            multi_group = LeafPlan(1024, (8, 8, 4, 4), 1, 128, 4, (), 1024)
+            small = LeafPlan(256, (16, 16), 1, 128, 4, (), 256)
+            self.assertTrue(_use_single_smem_buffer(large, io_mode="contiguous"))
+            self.assertFalse(_use_single_smem_buffer(multi_group, io_mode="contiguous"))
+            self.assertFalse(_use_single_smem_buffer(small, io_mode="contiguous"))
+            self.assertFalse(_use_single_smem_buffer(large, io_mode="four_step_row"))
+        finally:
+            reset_profile(token)
+
     def test_four_step_packing_uses_profile_budget(self):
         from dataclasses import replace
 

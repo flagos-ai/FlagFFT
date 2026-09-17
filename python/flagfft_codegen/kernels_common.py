@@ -432,14 +432,59 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     )
 
 
-def _use_single_smem_buffer(
+def _leaf_single_smem_buffer_eligible(
     plan: LeafPlan,
     *,
-    io_mode: LeafIoMode,
+    io_mode: LeafMode,
     four_step_n1: int,
     four_step_n2: int,
 ) -> bool:
+    """Whether one shared buffer can safely replace the stage ping-pong.
+
+    In-place stages swap the roles of the two buffers, so a stage's stores
+    may only overwrite data the same stage has already read.  Stages that
+    iterate more than one register group need a barrier per iteration; the
+    measured four-stage 1024 case still produced wrong results with that
+    barrier, so multi-group stages stay out of this path.  The buffer
+    reduction only pays off when the two-buffer footprint would limit
+    residency; small leaves keep their existing layout.
+    """
+    profile = current_profile()
+    if profile.policy == "legacy" or profile.max_dynamic_shared_memory is None:
+        return False
+    if plan.dtype != "complex64" or len(plan.factors) < 2:
+        return False
+    if io_mode not in {"contiguous", "strided"}:
+        return False
+    stage_lanes = cooperative_stage_lanes_for(plan)
+    if any(lanes != plan.lanes for lanes in stage_lanes):
+        return False
+    for index in range(len(plan.factors) - 1):
+        if plan.length // (plan.lanes * plan.factors[index]) != 1:
+            return False
+    batch_pack = contiguous_batch_pack_for(plan)
+    smem_pack = max(batch_pack, 1)
+    smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    smem_n = lane_block_for(smem_slot_stride * smem_pack)
+    smem_bytes = 4 * smem_n * _real_element_bytes(plan.dtype)
+    return smem_bytes >= profile.max_dynamic_shared_memory // 4
+
+
+def _use_single_smem_buffer(
+    plan: LeafPlan,
+    *,
+    io_mode: LeafMode = "contiguous",
+    four_step_n1: int = 0,
+    four_step_n2: int = 0,
+) -> bool:
     """Reuse one shared buffer between generated mixed-radix stages."""
+    if _leaf_single_smem_buffer_eligible(
+        plan,
+        io_mode=io_mode,
+        four_step_n1=four_step_n1,
+        four_step_n2=four_step_n2,
+    ):
+        return True
     return (
         io_mode.startswith("four_step_")
         and not io_mode.endswith("_strided")
