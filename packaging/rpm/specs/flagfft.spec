@@ -1,5 +1,5 @@
 Name:           libflagfft-nvidia
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
 
@@ -96,5 +96,8 @@ readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libflagfft_triton_j
 %{_includedir}/flagfft/
 
 %changelog
+* Thu Sep 17 2026 FlagOS Contributors <contact@flagos.io> - 0.2.0-1
+- Align the packaging baseline with the 0.2.0 release line.
+
 * Thu May 21 2026 FlagOS Contributors <contact@flagos.io> - 0.1.0-1
 - Initial RPM release for the NVIDIA backend.
