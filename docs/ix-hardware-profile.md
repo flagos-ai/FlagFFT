@@ -43,6 +43,20 @@ sides of the permutation coalesced and cut 3D C2C 128x2048x64 from 20.9 ms to
 6.8 ms on the BI-V150. Tile 32 with four warps measured best; tile 64 was
 about 40% slower and is not used.
 
+Large complex64 leaves stage their radix passes through one shared buffer
+instead of the two-buffer ping-pong when the queried device's shared memory
+would otherwise cap residency. The eligibility rule is conservative: the
+legacy policy is excluded, cooperative stage lanes are excluded, every
+non-final stage must cover the transform in a single register group, and the
+two-buffer footprint must reach a quarter of the device's per-SM shared
+memory. In-place stages depend on barriers between the read and write phases,
+and a measured four-stage 1024-point leaf still produced wrong results with
+per-iteration barriers, so multi-group stage layouts keep the ping-pong. On
+the BI-V150 the 2048-point leaf drops from 32 KiB to 16 KiB per block, which
+doubles resident blocks and cuts 2D C2C 2048x2048 from 1.30 ms to 0.96 ms,
+1D C2C 2048 batch 256 from 58 us to 38 us, 2D R2C 2048x2048 from 1.12 ms to
+0.84 ms and 3D C2C 128x2048x64 from 6.9 ms to 6.1 ms.
+
 `balanced` is the default IX policy. It estimates the live FFT value bytes per physical thread from the
 transform length, precision, cooperative stage lanes and candidate packing.
 It permits packing growth only within the native physical-warp budget and
