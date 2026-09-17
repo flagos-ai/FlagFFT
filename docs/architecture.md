@@ -27,17 +27,57 @@ timing, and tuning enter through `flagfft-cli`.
 - `src/exec/` owns `flagfftHandle` lifecycle, plan creation, stream state,
   plan cache, raw pointer exec dispatch, and optional legacy tensor execution.
 - `src/plan/` maps a validated `FFTRequest` to a `PlanNode` tree and is split
-  into node, factorization, cost, auto-candidate, and tune-candidate units.
+  into node, factorization, cost-model, auto/tune-candidate, plan-deserialization
+  and builder-context units.
 - `src/codegen/` invokes installed Python Triton/TLE source generation during
   plan creation and compiles the result through libtriton_jit.
 - `python/flagfft_codegen/` provides the pip-installable source generator and
   its bundled codelets.
 - `src/adaptor/` owns device allocation, stream/event operations, target
   identity, and device capability queries. CUDA and IX use the CUDA-compatible
-  driver interface, while MUSA and PPU use their vendor runtime interfaces;
+  driver interface, while MUSA, PPU, and MACA use their vendor runtime interfaces;
   the common plan/codegen/exec code does not depend on device types.
 - `src/utils/` owns shared request/key utilities, JSON/SQLite tuning support, and internal
   headers under `src/utils/include/flagfft/`.
+
+## Hardware Profile and Execution Policy
+
+The adaptor queries the current device and passes its limits to the code
+generation subprocess as JSON (`--device-profile`). `BackendProfile`
+(`python/flagfft_codegen/backend_profile.py`) turns those facts — backend
+identity, warp width, max threads per block and dynamic shared memory — into
+the launch decisions: warp count, cooperative stage lanes, leaf and batch
+packing, and the shared-memory budget. When the driver omits a fact, the
+backend's static defaults apply and the profile records the fallback.
+
+`FLAGFFT_EXECUTION_POLICY` selects how aggressively the device warp is used:
+
+| Policy | Warp heuristic | Leaf packing | Shared-memory budget | Default |
+|---|---|---|---|---|
+| `legacy` | 32-lane hint | 32 logical lanes | existing heuristic budgets | CUDA, MUSA, PPU, MACA |
+| `native` | queried device width | 32 logical lanes | capped by the queried limit | — |
+| `packed` | queried device width | one device warp | capped by the queried limit | — |
+| `balanced` | queried device width | one device warp, bounded by a live-value budget | capped by the queried limit | IX |
+
+Device facts and policy form a profile fingerprint that participates in the
+generated-module path, the tuned-plan fingerprints and the in-process kernel
+cache key (`KernelKey::repr()` plus the device profile and policy);
+`ctest/test_kernel_key.cpp` guards that every field reaching the generator is
+part of the key.
+
+Platform notes:
+
+- MACA compiles kernels in the code-generation process and loads the resulting
+  `.mcfatbin` from C++ instead of compiling at run time. Its leaves use a
+  portable register exchange rather than TLE shared pointers and require at
+  least two warps.
+- The 3D axis-permutation kernel has three variants: `v1` (correctness
+  baseline), `v2` (inline-asm `ld/st.global.v2`, NVIDIA only) and `tile`
+  (portable register transpose). Only backends validated for `tile`
+  (`ix`, `maca`, `musa`) select it.
+- Large complex64 leaves on profile-aware backends can stage their radix
+  passes through one shared buffer instead of the two-buffer ping-pong when
+  the two-buffer footprint would otherwise limit residency.
 
 The native C API supports arbitrary-length contiguous rank-1 batched C2C,
 Z2Z, R2C, D2Z, C2R, and Z2D plans. Real in-place operation uses padded rows;
@@ -57,14 +97,26 @@ remain unsupported.
 
 Raw nodes mirror the existing plan tree:
 
-- `CompiledRawLeafNode` launches a contiguous leaf kernel with plan-owned
-  twiddle and DFT table allocations.
+- `CompiledRawLeafNode` / `CompiledRawStridedLeafNode` launch a contiguous or
+  strided leaf kernel with plan-owned twiddle and DFT table allocations; the
+  real forms are `CompiledRawR2CLeafNode` / `CompiledRawC2RLeafNode`, and
+  `CompiledRawDirectDftNode` (with a strided sibling) covers the small
+  direct-DFT fallback.
 - `CompiledRawFourStepFusedNode` supports four-step routes whose row and column
   children are both leaves. It owns the four-step twiddle and intermediate
-  stage buffer.
-- `CompiledRawBluesteinNode` handles prime and awkward composite lengths through
-  JIT prepare, pointwise, finalize, and convolution FFT child kernels.
-- `CompiledRaw2DNode` handles contiguous complex 2D plans with an RTRT route.
+  stage buffer. `CompiledRawFourStepGenericNode` and
+  `CompiledRawFourStepStridedNode` extend the route to non-leaf children and
+  strided I/O, and the `R2CFourStep*` / `C2RFourStep*` / `PackedR2C` /
+  `PackedC2R` nodes cover the real-transform forms.
+- `CompiledRawBluesteinNode` and its siblings
+  (`CompiledRawBluesteinLeafNode`, `CompiledRawBluesteinFullLeafNode`,
+  `CompiledRawBluesteinFourStepNode`), together with `CompiledRawRaderNode`,
+  handle prime and awkward composite lengths through JIT prepare, pointwise,
+  finalize, and convolution FFT child kernels.
+- `CompiledRaw2DNode` handles contiguous complex 2D plans with an RTRT route;
+  `CompiledRaw2DR2CNode` / `CompiledRaw2DC2RNode` (and their `...RC` forms)
+  cover the real variants, and `CompiledRaw1DAs2DNode` runs a batched 1D
+  transform through the 2D path.
   This is the correctness baseline for future rocFFT-style `2D_SINGLE` and
   row-plus-block-column strategies.
 - `CompiledRaw3DNode` executes contiguous complex 3D plans: per-axis C2C leaf
@@ -87,7 +139,10 @@ The bench subcommand queries that capability layer before plan creation:
 
 - `bench` binds FlagFFT and the platform reference plan to one adaptor stream before
   warmup and timing so reported event durations cover the actual kernel work.
-- `tune` is currently a placeholder and exits with an unsupported status.
+- `tune` screens candidate plans, re-times the finalists and persists one
+  validated winner per request into the SQLite tuning database (`--db PATH`,
+  `--no-save` to skip persistence); runtime plan lookup consumes that database
+  when `FLAGFFT_TUNE_DB` is set.
 
 The unified interface accepts comma-separated `--shape` values and does not
 retain the removed legacy `--lengths` CSV parsing path.
@@ -105,11 +160,12 @@ The default CMake build produces only `flagfft`. `FLAGFFT_BUILD_CLI=ON` adds
 Google Test targets under `ctest/`; CLI behavior remains covered by pytest.
 The standalone `bench_vs_cufft` and `flagfft-tuner` targets were removed.
 
-`BACKEND=CUDA`, `BACKEND=MUSA`, `BACKEND=PPU`, or `BACKEND=IX` selects both
-the FlagFFT adaptor implementation and the `libtriton_jit` backend. The IX
-backend targets Iluvatar/Tianshu GPUs through the CoreX CUDA-compatible
-driver and uses the CoreX `libcufft` (ixfft) implementation as the reference
-oracle in tests and benchmarks.
+`BACKEND=CUDA`, `BACKEND=MUSA`, `BACKEND=PPU`, `BACKEND=IX`, or `BACKEND=MACA`
+selects both the FlagFFT adaptor implementation and the `libtriton_jit`
+backend. The IX backend targets Iluvatar/Tianshu GPUs through the CoreX
+CUDA-compatible driver and uses the CoreX `libcufft` (ixfft) implementation as
+the reference oracle in tests and benchmarks; the MACA backend targets MetaX
+GPUs through the native `mcruntime` interface and uses mcFFT as its reference.
 
 CMake is the native build/install entrypoint. The pure Python
 `flagfft-codegen` package is installed separately with `pip install .` into
@@ -128,7 +184,7 @@ Retained Python package:
 
 The generator is split by responsibility and algorithm family:
 
-- `registry.py` is the single source of truth for the 34 `--kernel` kinds:
+- `registry.py` is the single source of truth for the 36 `--kernel` kinds:
   family, leaf I/O mode, required CLI flags, and module-name pattern.
 - `cli.py`, `emit.py`, and `metadata.py` own the CLI entry point, per-family
   kernel emission, and generated-module assembly/signatures respectively.
@@ -136,6 +192,9 @@ The generator is split by responsibility and algorithm family:
   `kernels_real.py`, and `kernels_layout.py` contain the shared plan model,
   mixed-radix leaf generation, direct DFT, real-transform pointwise kernels,
   and layout/transpose kernels.
+- `backend_profile.py` holds the queried device facts and the execution
+  policy; `target.py` carries the explicit codegen target and its warp size;
+  `paired_codelets.py` emits the paired odd-radix butterfly forms.
 - `codelet/` remains the bundled radix codelet data; generated modules now
   include only the codelet files actually referenced by a kernel.
 
@@ -143,9 +202,10 @@ The native runtime invokes `python -m flagfft_codegen.jit_source` (a thin
 facade over `cli.py`); the chosen Python environment must already supply
 compatible Triton/TLE dependencies.
 Generated JIT source/metadata live in `.flagfft` beside the executable.
-`flagfft-cli tune --db PATH` writes measurements and one validated rank-zero
-winner with the detected CUDA architecture. Runtime plan lookup consumes that
-database when `FLAGFFT_TUNE_DB=PATH` is set.
+`flagfft-cli tune --db PATH` writes measurements and one validated winner per
+request (device architecture, length, batch bucket, dtype, direction) into the
+SQLite tuning database. Runtime plan lookup consumes that database when
+`FLAGFFT_TUNE_DB=PATH` is set.
 
 ## Tests
 
@@ -158,11 +218,18 @@ against NumPy; FlagFFT correctness alone decides acceptance. Performance uses
 JSON and incremental CSV retain per-case runtime plans and both correctness
 results. Native correctness `bin` files are retained according to the runner's
 `--artifacts` policy; NumPy arrays are compared in memory and are not persisted.
+Workspace policy since 2026-09-17 is not to retain raw `.npy`/`.bin` dumps at
+all: keep the CSV/JSON/log evidence and delete the per-case arrays after a run.
 `--analyze-only` recomputes comparisons from captured data without a GPU and
 therefore requires `--artifacts all` on the original run.
 `tests/python/` covers runner behavior and code generation.
+`tools/probe_capabilities.py` records device facts, FP64 support and prototype
+runs per device; `tools/benchmark_hardware_profile.py` runs the paired
+policy A/B comparisons.
 
-On IX, CoreX does not support FP64. `run_tests.py` keeps the corresponding
-`Z2Z`, `Z2D`, and `D2Z` operators in the 36-operator report, marks their cases
-as policy-skipped, and does not launch them; the remaining 18 operators are
+On IX the acceptance policy currently disables FP64 — that is a policy choice,
+not a hardware verdict: `tools/probe_capabilities.py` records the
+device-specific evidence. `run_tests.py` keeps the corresponding `Z2Z`, `Z2D`,
+and `D2Z` operators in the 36-operator report, marks their cases as
+policy-skipped, and does not launch them; the remaining 18 operators are
 executed normally. The skip reason is retained in JSON and incremental CSV.
