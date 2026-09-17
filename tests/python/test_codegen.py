@@ -765,7 +765,7 @@ def test_tiled_transpose3d_falls_back_to_v1_for_unvalidated_backends(
     )
 
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
-    token = set_profile(BackendProfile(backend="musa", device_arch="31", warp_size=32))
+    token = set_profile(BackendProfile(backend="ppu", device_arch="31", warp_size=32))
     try:
         assert emit._portable_transpose3d_supported() is False
         metadata = emit._emit_tiled_transpose3d_jit_kernel(
