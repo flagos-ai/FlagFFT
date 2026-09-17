@@ -20,8 +20,10 @@
 #include "flagfft.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -31,6 +33,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -273,7 +280,7 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
 // platform reference, but a single invocation still used to materialize the
 // entire batch in host memory and in two device buffers.  That exceeded the
 // 8 GiB MUSA test cgroup for the largest double-complex batch cases.
-constexpr std::size_t kMaxChunkBytes = 256ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kMaxChunkBytes = 128ULL * 1024ULL * 1024ULL;
 
 void validate_file_size(const fs::path& path, std::size_t expected) {
   std::error_code error;
@@ -304,6 +311,40 @@ void write_output_chunk(std::ofstream& output, const fs::path& path, const void*
   if (!output) {
     throw std::runtime_error("failed to write output chunk to: " + path.string());
   }
+}
+
+void release_file_cache(const fs::path& path, std::size_t offset, std::size_t bytes, bool sync_first) {
+#if defined(__linux__)
+  if (bytes == 0) {
+    return;
+  }
+  const int flags = (sync_first ? O_WRONLY : O_RDONLY) | O_CLOEXEC;
+  const int fd = ::open(path.c_str(), flags);
+  if (fd < 0) {
+    throw std::runtime_error("cannot open file for cache release: " + path.string() + ": " +
+                             std::strerror(errno));
+  }
+
+  int result = 0;
+  if (sync_first && ::fsync(fd) != 0) {
+    result = errno;
+  } else {
+    result = ::posix_fadvise(fd, static_cast<off_t>(offset), static_cast<off_t>(bytes), POSIX_FADV_DONTNEED);
+  }
+  const int close_result = ::close(fd);
+  if (result != 0) {
+    throw std::runtime_error("cannot release file cache for " + path.string() + ": " + std::strerror(result));
+  }
+  if (close_result != 0) {
+    throw std::runtime_error("cannot close file used for cache release: " + path.string() + ": " +
+                             std::strerror(errno));
+  }
+#else
+  (void)path;
+  (void)offset;
+  (void)bytes;
+  (void)sync_first;
+#endif
 }
 
 int chunk_batch_size(const Spec& spec, const Layout& full_layout) {
@@ -489,17 +530,25 @@ void run_implementation(const Spec& spec, Implementation implementation) {
     throw std::runtime_error("cannot open output file: " + output_path.string());
   }
 
+  std::size_t input_offset = 0;
+  std::size_t output_offset = 0;
   for (int batch_start = 0; batch_start < spec.batch; batch_start += batch_chunk) {
     const int current_batch = std::min(batch_chunk, spec.batch - batch_start);
     Spec chunk_spec = spec;
     chunk_spec.batch = current_batch;
     const Layout chunk_layout = make_layout(chunk_spec);
     std::vector<std::uint8_t> host_input = read_input_chunk(input, spec.input, chunk_layout.input_bytes);
+    release_file_cache(spec.input, input_offset, chunk_layout.input_bytes, false);
+    input_offset += chunk_layout.input_bytes;
+
+    std::vector<std::uint8_t> host_output;
 
     {
       Memory device_input(chunk_layout.input_bytes);
       Memory device_output(chunk_layout.output_bytes);
       device_input.copy_from_host(host_input.data(), chunk_layout.input_bytes);
+      host_input.clear();
+      host_input.shrink_to_fit();
 
       Stream stream;
       FlagPlan flag_plan;
@@ -522,13 +571,20 @@ void run_implementation(const Spec& spec, Implementation implementation) {
       }
       stream.sync();
 
-      std::vector<std::uint8_t> host_output(chunk_layout.output_bytes);
+      host_output.resize(chunk_layout.output_bytes);
       device_output.copy_to_host(host_output.data(), chunk_layout.output_bytes);
-      write_output_chunk(output, output_path, host_output.data(), host_output.size());
       if (implementation == Implementation::kFlagFFT) {
         write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
       }
     }
+
+    write_output_chunk(output, output_path, host_output.data(), host_output.size());
+    output.flush();
+    if (!output) {
+      throw std::runtime_error("failed to flush output chunk: " + output_path.string());
+    }
+    release_file_cache(output_path, output_offset, host_output.size(), true);
+    output_offset += host_output.size();
   }
 
   output.flush();
