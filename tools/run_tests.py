@@ -2070,7 +2070,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--timeout",
         type=int,
-        default=600,
+        default=200,
         help="Independent timeout per native implementation",
     )
     parser.add_argument("--warmup", type=int, default=10)
