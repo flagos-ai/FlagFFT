@@ -41,7 +41,16 @@ transpose with `tl.trans`, no inline asm). Targets where the Triton runtime
 exposes a `mthreads`, `ppu` or `iluvatar` module use `tile`, which keeps both
 sides of the permutation coalesced and cut 3D C2C 128x2048x64 from 20.9 ms to
 6.8 ms on the BI-V150. Tile 32 with four warps measured best; tile 64 was
-about 40% slower and is not used.
+about 40% slower and is not used. CUDA keeps `v2` and is intentionally not in
+the portable-tile set: on an A100-SXM4-40GB (CUDA 13.2, Triton 3.6)
+`feature/hw-cuda` `a862264` produced bitwise-identical outputs against `main`
+`7344b5f` for all 32 selected captures (1D 8192, 2D 64x64/128x128, 3D
+16^3/32^3/16x997x64/64^3, small Z2Z), so the default `legacy` policy is
+unchanged there. 19 operators / 48 accuracy cases passed, pytest reported 166
+passed / 140 skipped, and candidate/baseline timing ratios stayed within
+0.99-1.01 outside timer noise with unchanged cuFFT-relative speedups. Evidence:
+`results/20260917_165334_cuda_hw_profile/` (`REPORT.md`, `summary.json`,
+`ab_bitwise/`).
 
 Large complex64 leaves stage their radix passes through one shared buffer
 instead of the two-buffer ping-pong when the queried device's shared memory
