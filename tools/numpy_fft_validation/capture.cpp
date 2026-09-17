@@ -20,8 +20,10 @@
 #include "flagfft.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -31,6 +33,11 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -268,36 +275,87 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
   return spec;
 }
 
-std::vector<std::uint8_t> read_bytes(const fs::path& path, std::size_t expected) {
-  std::ifstream input(path, std::ios::binary | std::ios::ate);
-  if (!input.is_open()) {
-    throw std::runtime_error("cannot open input file: " + path.string());
+// Keep the native capture's host and device allocations bounded.  The
+// acceptance runner invokes this executable separately for FlagFFT and the
+// platform reference, but a single invocation still used to materialize the
+// entire batch in host memory and in two device buffers.  That exceeded the
+// 8 GiB MUSA test cgroup for the largest double-complex batch cases.
+constexpr std::size_t kMaxChunkBytes = 128ULL * 1024ULL * 1024ULL;
+
+void validate_file_size(const fs::path& path, std::size_t expected) {
+  std::error_code error;
+  const auto actual = fs::file_size(path, error);
+  if (error) {
+    throw std::runtime_error("cannot stat file: " + path.string() + ": " + error.message());
   }
-  const std::streamoff size = input.tellg();
-  if (size < 0 || static_cast<std::size_t>(size) != expected) {
-    throw std::runtime_error("input byte count mismatch: expected " + std::to_string(expected) + ", got " +
-                             std::to_string(size < 0 ? 0 : static_cast<std::size_t>(size)));
+  if (actual != expected) {
+    throw std::runtime_error("file byte count mismatch: expected " + std::to_string(expected) + ", got " +
+                             std::to_string(actual));
   }
-  input.seekg(0, std::ios::beg);
-  std::vector<std::uint8_t> bytes(expected);
-  if (expected > 0) {
-    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(expected));
-  }
-  if (!input && !input.eof()) {
-    throw std::runtime_error("failed to read input file: " + path.string());
-  }
-  return bytes;
 }
 
-void write_bytes(const fs::path& path, const void* data, std::size_t bytes) {
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output.is_open()) {
-    throw std::runtime_error("cannot open output file: " + path.string());
+std::vector<std::uint8_t> read_input_chunk(std::ifstream& input, const fs::path& path, std::size_t bytes) {
+  std::vector<std::uint8_t> result(bytes);
+  if (bytes == 0) {
+    return result;
   }
+  input.read(reinterpret_cast<char*>(result.data()), static_cast<std::streamsize>(bytes));
+  if (input.gcount() != static_cast<std::streamsize>(bytes)) {
+    throw std::runtime_error("failed to read input chunk from: " + path.string());
+  }
+  return result;
+}
+
+void write_output_chunk(std::ofstream& output, const fs::path& path, const void* data, std::size_t bytes) {
   output.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
   if (!output) {
-    throw std::runtime_error("failed to write output file: " + path.string());
+    throw std::runtime_error("failed to write output chunk to: " + path.string());
   }
+}
+
+void release_file_cache(const fs::path& path, std::size_t offset, std::size_t bytes, bool sync_first) {
+#if defined(__linux__)
+  if (bytes == 0) {
+    return;
+  }
+  const int flags = (sync_first ? O_WRONLY : O_RDONLY) | O_CLOEXEC;
+  const int fd = ::open(path.c_str(), flags);
+  if (fd < 0) {
+    throw std::runtime_error("cannot open file for cache release: " + path.string() + ": " +
+                             std::strerror(errno));
+  }
+
+  int result = 0;
+  if (sync_first && ::fsync(fd) != 0) {
+    result = errno;
+  } else {
+    result = ::posix_fadvise(fd, static_cast<off_t>(offset), static_cast<off_t>(bytes), POSIX_FADV_DONTNEED);
+  }
+  const int close_result = ::close(fd);
+  if (result != 0) {
+    throw std::runtime_error("cannot release file cache for " + path.string() + ": " + std::strerror(result));
+  }
+  if (close_result != 0) {
+    throw std::runtime_error("cannot close file used for cache release: " + path.string() + ": " +
+                             std::strerror(errno));
+  }
+#else
+  (void)path;
+  (void)offset;
+  (void)bytes;
+  (void)sync_first;
+#endif
+}
+
+int chunk_batch_size(const Spec& spec, const Layout& full_layout) {
+  if (spec.batch <= 1) {
+    return spec.batch;
+  }
+  const std::size_t batch = static_cast<std::size_t>(spec.batch);
+  const std::size_t bytes_per_batch = full_layout.input_bytes / batch + full_layout.output_bytes / batch;
+  const std::size_t max_batch =
+      bytes_per_batch == 0 ? batch : std::max<std::size_t>(1, kMaxChunkBytes / bytes_per_batch);
+  return static_cast<int>(std::min(batch, max_batch));
 }
 
 void check_flagfft(flagfftResult result, const std::string& context) {
@@ -456,63 +514,94 @@ void write_plan_description(flagfftHandle plan, const fs::path& path) {
   output << description;
 }
 
+void run_implementation(const Spec& spec, Implementation implementation) {
+  const Layout full_layout = make_layout(spec);
+  validate_file_size(spec.input, full_layout.input_bytes);
+  const int batch_chunk = chunk_batch_size(spec, full_layout);
+  const fs::path output_path =
+      spec.output_dir / (implementation == Implementation::kFlagFFT ? "flagfft.bin" : "platform.bin");
+
+  std::ifstream input(spec.input, std::ios::binary);
+  if (!input.is_open()) {
+    throw std::runtime_error("cannot open input file: " + spec.input.string());
+  }
+  std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
+  if (!output.is_open()) {
+    throw std::runtime_error("cannot open output file: " + output_path.string());
+  }
+
+  std::size_t input_offset = 0;
+  std::size_t output_offset = 0;
+  for (int batch_start = 0; batch_start < spec.batch; batch_start += batch_chunk) {
+    const int current_batch = std::min(batch_chunk, spec.batch - batch_start);
+    Spec chunk_spec = spec;
+    chunk_spec.batch = current_batch;
+    const Layout chunk_layout = make_layout(chunk_spec);
+    std::vector<std::uint8_t> host_input = read_input_chunk(input, spec.input, chunk_layout.input_bytes);
+    release_file_cache(spec.input, input_offset, chunk_layout.input_bytes, false);
+    input_offset += chunk_layout.input_bytes;
+
+    std::vector<std::uint8_t> host_output;
+
+    {
+      Memory device_input(chunk_layout.input_bytes);
+      Memory device_output(chunk_layout.output_bytes);
+      device_input.copy_from_host(host_input.data(), chunk_layout.input_bytes);
+      host_input.clear();
+      host_input.shrink_to_fit();
+
+      Stream stream;
+      FlagPlan flag_plan;
+      std::optional<RefPlanHandle> reference_plan;
+      if (implementation == Implementation::kFlagFFT) {
+        flag_plan = make_flag_plan(chunk_spec, chunk_layout);
+        check_flagfft(flagfftSetStream(flag_plan.handle, stream.get()), "flagfftSetStream");
+        // Retain the chosen plan even when execution subsequently fails/hangs.
+        // The successful path writes it again with compiled execution details.
+        write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
+        execute_flagfft(flag_plan.handle, chunk_spec, device_input.data(), device_output.data());
+      } else {
+        reference_plan.emplace(make_reference_plan(chunk_spec));
+        flagfft::test_adaptor::ref_set_stream(*reference_plan, stream.get());
+        execute_reference(*reference_plan,
+                          chunk_spec,
+                          chunk_layout,
+                          device_input.data(),
+                          device_output.data());
+      }
+      stream.sync();
+
+      host_output.resize(chunk_layout.output_bytes);
+      device_output.copy_to_host(host_output.data(), chunk_layout.output_bytes);
+      if (implementation == Implementation::kFlagFFT) {
+        write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
+      }
+    }
+
+    write_output_chunk(output, output_path, host_output.data(), host_output.size());
+    output.flush();
+    if (!output) {
+      throw std::runtime_error("failed to flush output chunk: " + output_path.string());
+    }
+    release_file_cache(output_path, output_offset, host_output.size(), true);
+    output_offset += host_output.size();
+  }
+
+  output.flush();
+  if (!output) {
+    throw std::runtime_error("failed to flush output file: " + output_path.string());
+  }
+  output.close();
+  validate_file_size(output_path, full_layout.output_bytes);
+}
+
 int run(const Spec& spec) {
-  const Layout layout = make_layout(spec);
-  std::vector<std::uint8_t> host_input = read_bytes(spec.input, layout.input_bytes);
-
   fs::create_directories(spec.output_dir);
-  const bool run_flagfft = spec.implementation != Implementation::kPlatform;
-  const bool run_platform = spec.implementation != Implementation::kFlagFFT;
-
-  Memory flag_input;
-  Memory flag_output;
-  Memory reference_input;
-  Memory reference_output;
-  if (run_flagfft) {
-    flag_input.allocate(layout.input_bytes);
-    flag_output.allocate(layout.output_bytes);
-    flag_input.copy_from_host(host_input.data(), layout.input_bytes);
+  if (spec.implementation != Implementation::kPlatform) {
+    run_implementation(spec, Implementation::kFlagFFT);
   }
-  if (run_platform) {
-    reference_input.allocate(layout.input_bytes);
-    reference_output.allocate(layout.output_bytes);
-    reference_input.copy_from_host(host_input.data(), layout.input_bytes);
-  }
-
-  Stream stream;
-  FlagPlan flag_plan;
-  std::optional<RefPlanHandle> reference_plan;
-  if (run_flagfft) {
-    flag_plan = make_flag_plan(spec, layout);
-    check_flagfft(flagfftSetStream(flag_plan.handle, stream.get()), "flagfftSetStream");
-    // Retain the chosen plan even when execution subsequently fails/hangs.
-    // The successful path writes it again with compiled execution details.
-    write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
-  }
-  if (run_platform) {
-    reference_plan.emplace(make_reference_plan(spec));
-    flagfft::test_adaptor::ref_set_stream(*reference_plan, stream.get());
-  }
-
-  if (run_flagfft) {
-    execute_flagfft(flag_plan.handle, spec, flag_input.data(), flag_output.data());
-    stream.sync();
-  }
-  if (run_platform) {
-    execute_reference(*reference_plan, spec, layout, reference_input.data(), reference_output.data());
-    stream.sync();
-  }
-
-  if (run_flagfft) {
-    std::vector<std::uint8_t> host_flagfft(layout.output_bytes);
-    flag_output.copy_to_host(host_flagfft.data(), layout.output_bytes);
-    write_bytes(spec.output_dir / "flagfft.bin", host_flagfft.data(), host_flagfft.size());
-    write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
-  }
-  if (run_platform) {
-    std::vector<std::uint8_t> host_reference(layout.output_bytes);
-    reference_output.copy_to_host(host_reference.data(), layout.output_bytes);
-    write_bytes(spec.output_dir / "platform.bin", host_reference.data(), host_reference.size());
+  if (spec.implementation != Implementation::kFlagFFT) {
+    run_implementation(spec, Implementation::kPlatform);
   }
 
   std::ofstream backend_file(spec.output_dir / "capture_backend.txt", std::ios::trunc);
