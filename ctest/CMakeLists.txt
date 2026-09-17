@@ -54,6 +54,10 @@ set(TEST_TARGETS
     test_exec_d2z_z2d_bs_s   test_exec_d2z_z2d_bs_b
 )
 
+if(BACKEND STREQUAL "MACA")
+    list(APPEND TEST_TARGETS test_maca_runtime)
+endif()
+
 foreach(test_name ${TEST_TARGETS})
     add_executable(${test_name} ${test_name}.cpp main.cpp)
     target_link_libraries(${test_name} PRIVATE flagfft flagfft_test_adaptor gtest)

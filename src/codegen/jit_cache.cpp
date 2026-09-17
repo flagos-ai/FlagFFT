@@ -14,6 +14,10 @@
 
 #include "flagfft/core.hpp"
 
+#if defined(BACKEND_MACA)
+#include "triton_jit/jit_utils.h"
+#endif
+
 namespace flagfft {
 namespace {
 
@@ -255,7 +259,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   std::ostringstream jit_command;
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(out_dir().string()) << " --dtype "
-              << shell_quote(key.dtype);
+              << shell_quote(key.dtype) << " --target " << shell_quote(key.target);
+#if defined(BACKEND_MACA)
+  jit_command << " --compile-script "
+              << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());
+#endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
       key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafBluesteinPrepare ||
@@ -313,6 +321,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   auto kernel = std::make_shared<JitKernel>();
   kernel->kernel_name = json_string_field(artifact_json, "kernel_name");
   kernel->module_path = json_string_field(artifact_json, "module_path");
+#if defined(BACKEND_MACA)
+  kernel->binary_dir = json_string_field(artifact_json, "binary_dir");
+#endif
   kernel->signature = json_string_field(artifact_json, "signature");
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");

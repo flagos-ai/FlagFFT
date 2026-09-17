@@ -19,10 +19,10 @@ project(flagfft LANGUAGES CXX)
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX" "MACA")
 
-if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX"))
-    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, or BACKEND=IX")
+if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX" OR BACKEND STREQUAL "MACA"))
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, or BACKEND=MACA")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
@@ -146,6 +146,15 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             MUSA::musa_runtime
             ${MUSA_FFT_LIB}
         )
+    elseif(BACKEND STREQUAL "MACA")
+        find_path(MCFFT_INCLUDE_DIR mcfft.h
+            PATHS "${MACA_PATH}/include/mcfft" NO_DEFAULT_PATH REQUIRED)
+        find_library(MCFFT_LIB mcfft
+            PATHS "${MACA_PATH}/lib" NO_DEFAULT_PATH REQUIRED)
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/maca/test_adaptor.cpp)
+        target_include_directories(flagfft_test_adaptor PUBLIC "${MCFFT_INCLUDE_DIR}")
+        target_link_libraries(flagfft_test_adaptor PUBLIC MACA::mcruntime "${MCFFT_LIB}")
     elseif(BACKEND STREQUAL "PPU")
         if(NOT DEFINED PPU_HOME)
             set(PPU_HOME "/usr/local/PPU_SDK")

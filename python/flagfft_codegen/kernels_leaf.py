@@ -27,12 +27,14 @@ from .kernels_common import (
     _THREAD_LOCAL_MIXED_RADICES,
     _TLE_SMEM_SWIZZLE_SHIFT,
     _is_double_dtype,
+    _maca_backend_active,
     _non_nvidia_backend_active,
     _real_element_bytes,
     _tl_real_dtype,
     _use_single_smem_buffer,
     contiguous_batch_pack_for,
     cooperative_stage_lanes_for,
+    emitted_leaf_factors,
     four_step_col_inner_pack_for,
     four_step_row_inner_pack_for,
     lane_block_for,
@@ -447,6 +449,76 @@ def _emit_route_index(
     return lines
 
 
+def _emit_exchange_load(indent: str, buffer: str, index: str, digit: int,
+                        portable: bool) -> list[str]:
+    if portable:
+        return [
+            f"{indent}r{digit} = tl.where(lane_mask, tl.gather({buffer}_r, {index}, 0), 0.0)",
+            f"{indent}i{digit} = tl.where(lane_mask, tl.gather({buffer}_i, {index}, 0), 0.0)",
+        ]
+    return [
+        f"{indent}r{digit} = tl.load(tle.gpu.local_ptr({buffer}_r, ({index},)), mask=lane_mask, other=0.0)",
+        f"{indent}i{digit} = tl.load(tle.gpu.local_ptr({buffer}_i, ({index},)), mask=lane_mask, other=0.0)",
+    ]
+
+
+def _emit_exchange_store(indent: str, buffer: str, index: str, digit: int,
+                         real: str, imag: str, portable: bool) -> list[str]:
+    if portable:
+        return [f"{indent}exchange_r{digit} = {real}",
+                f"{indent}exchange_i{digit} = {imag}"]
+    return [
+        f"{indent}tl.store(tle.gpu.local_ptr({buffer}_r, ({index},)), {real}, mask=lane_mask)",
+        f"{indent}tl.store(tle.gpu.local_ptr({buffer}_i, ({index},)), {imag}, mask=lane_mask)",
+    ]
+
+
+def _emit_portable_exchange(buffer: str, stage: int, factors: tuple[int, ...],
+                            lane_block: int, size: int, slot_stride: int,
+                            pack: int, natural_order: bool = False) -> list[str]:
+    """Invert the codelet routing and gather from each register tensor.
+
+    Each butterfly runs once; padded lanes/digits never become FFT state.
+    The compiler supplies any shared-memory layout conversions, avoiding
+    TLE local pointers in the MetaX plugin.
+    """
+    n = math.prod(factors)
+    radix = factors[stage]
+    lines = [f"    exchange_pos = tl.arange(0, {size})",
+             f"    exchange_slot = exchange_pos // {slot_stride}",
+             f"    exchange_local = exchange_pos % {slot_stride}",
+             f"    exchange_valid = (exchange_local < {n}) & (exchange_slot < {pack})"]
+    if natural_order:
+        lanes = n // radix
+        lines += [f"    exchange_codelet = exchange_local % {lanes}",
+                  f"    exchange_digit = exchange_local // {lanes}"]
+    else:
+        next_lanes = n // factors[stage + 1]
+        lines += [f"    exchange_rem = exchange_local % {next_lanes}",
+                  f"    exchange_next_digit = exchange_local // {next_lanes}",
+                  "    exchange_codelet = exchange_rem * 0"]
+        stride = 1
+        for axis in range(stage):
+            lines += [f"    exchange_codelet += (exchange_rem % {factors[axis]}) * {stride}",
+                      f"    exchange_rem = exchange_rem // {factors[axis]}"]
+            stride *= factors[axis]
+        lines += [f"    exchange_digit = exchange_rem % {radix}",
+                  f"    exchange_rem = exchange_rem // {radix}"]
+        for axis in range(len(factors) - 1, stage + 1, -1):
+            lines += [f"    exchange_codelet += (exchange_rem % {factors[axis]}) * {stride}",
+                      f"    exchange_rem = exchange_rem // {factors[axis]}"]
+            stride *= factors[axis]
+        lines.append(f"    exchange_codelet += exchange_next_digit * {stride}")
+    lines.append(f"    exchange_src = exchange_codelet + exchange_slot * {lane_block}")
+    lines.append("    exchange_src = tl.where(exchange_valid, exchange_src, 0)")
+    for component in ("r", "i"):
+        lines.append(f"    {buffer}_{component} = tl.full(({size},), 0, exchange_{component}0.dtype)")
+        for digit in range(radix):
+            lines.append(f"    {buffer}_{component} = tl.where(exchange_valid & (exchange_digit == {digit}), "
+                         f"tl.gather(exchange_{component}{digit}, exchange_src, 0), {buffer}_{component})")
+    return lines
+
+
 def _emit_stage_block(
     stage: int,
     factors: tuple[int, ...],
@@ -466,6 +538,9 @@ def _emit_stage_block(
     direction: Literal["forward", "inverse"] = "forward",
     dtype: str = "complex64",
     stage_lanes: tuple[int, ...] | None = None,
+    portable_exchange: bool = False,
+    exchange_size: int = 0,
+    exchange_slot_stride: int = 0,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -508,8 +583,13 @@ def _emit_stage_block(
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
     vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
-    lines.append(f"    for group_{stage} in tl.range(0, {groups}):")
-    indent = "        "
+    if portable_exchange:
+        assert groups == 1
+        lines.append(f"    group_{stage} = 0")
+        indent = "    "
+    else:
+        lines.append(f"    for group_{stage} in tl.range(0, {groups}):")
+        indent = "        "
 
     for j in range(radix):
         lines.append(
@@ -680,14 +760,8 @@ def _emit_stage_block(
                             f"{indent}intermediate_in{j} = in{j} + smem_offset"
                         )
                         intermediate_index = f"intermediate_in{j}"
-                    lines.append(
-                        f"{indent}r{j} = tl.load(tle.gpu.local_ptr({bluestein_intermediate_buffer}_r, "
-                        f"({intermediate_index},)), mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}i{j} = tl.load(tle.gpu.local_ptr({bluestein_intermediate_buffer}_i, "
-                        f"({intermediate_index},)), mask=lane_mask, other={zero})"
-                    )
+                    lines.extend(_emit_exchange_load(
+                        indent, bluestein_intermediate_buffer, intermediate_index, j, portable_exchange))
             elif io_mode == "bluestein_four_step_prepare_row":
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
@@ -904,14 +978,7 @@ def _emit_stage_block(
                     )
         else:
             load_index = f"smem_phys{j}" if fuse_twiddle_into_row else f"phys{j}"
-            lines.append(
-                f"{indent}r{j} = tl.load(tle.gpu.local_ptr({source_buffer}_r, ({load_index},)), "
-                f"mask=lane_mask, other={zero})"
-            )
-            lines.append(
-                f"{indent}i{j} = tl.load(tle.gpu.local_ptr({source_buffer}_i, ({load_index},)), "
-                f"mask=lane_mask, other={zero})"
-            )
+            lines.extend(_emit_exchange_load(indent, source_buffer, load_index, j, portable_exchange))
             lines.append(
                 f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
             )
@@ -1028,14 +1095,9 @@ def _emit_stage_block(
                             f"{indent}intermediate_out{j} = out_idx{j} + smem_offset"
                         )
                         intermediate_index = f"intermediate_out{j}"
-                    lines.append(
-                        f"{indent}tl.store(tle.gpu.local_ptr({bluestein_intermediate_buffer}_r, "
-                        f"({intermediate_index},)), point_r{j}, mask=lane_mask)"
-                    )
-                    lines.append(
-                        f"{indent}tl.store(tle.gpu.local_ptr({bluestein_intermediate_buffer}_i, "
-                        f"({intermediate_index},)), -point_i{j}, mask=lane_mask)"
-                    )
+                    lines.extend(_emit_exchange_store(
+                        indent, bluestein_intermediate_buffer, intermediate_index, j,
+                        f"point_r{j}", f"-point_i{j}", portable_exchange))
                 else:
                     lines.append(
                         f"{indent}prime_mask{j} = lane_mask & (out_idx{j} < {prime_n})"
@@ -1264,14 +1326,18 @@ def _emit_stage_block(
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
                 store_index = f"smem_dst{j}"
-            lines.append(
-                f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_r, ({store_index},)), r{j}, mask=lane_mask)"
-            )
-            lines.append(
-                f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_i, ({store_index},)), i{j}, mask=lane_mask)"
-            )
+            lines.extend(_emit_exchange_store(
+                indent, dest_buffer, store_index, j, f"r{j}", f"i{j}", portable_exchange))
 
-    if not is_last:
+    if portable_exchange:
+        buffer = (bluestein_intermediate_buffer
+                  if is_last and io_mode == "bluestein_full_leaf" and bluestein_pass == 0
+                  else dest_buffer)
+        if buffer is not None:
+            lines.extend(_emit_portable_exchange(
+                buffer, stage, factors, lane_block, exchange_size,
+                exchange_slot_stride, smem_pack, natural_order=is_last))
+    elif not is_last:
         lines.append("    tl.debug_barrier()")
     return lines
 
@@ -1809,13 +1875,19 @@ def _build_leaf_kernel_source_for_io(
             four_step_n2=four_step_n2,
         )
 
-    factors = plan.factors
+    portable_exchange = _maca_backend_active()
+    factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
     smem_n = plan.smem_size
-    stage_lanes = cooperative_stage_lanes_for(plan)
-    uses_cooperative_stage_lanes = any(lanes != plan.lanes for lanes in stage_lanes)
+    stage_lanes = (tuple(n // radix for radix in factors) if portable_exchange
+                   else cooperative_stage_lanes_for(plan))
+    uses_cooperative_stage_lanes = portable_exchange or any(lanes != plan.lanes for lanes in stage_lanes)
     active_lanes = max(stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
+    if portable_exchange and len(factors) > 1:
+        # Avoid the unsupported warp-shuffle lowering: use ordinary gather
+        # from tensors larger than one 64-thread warp, without tl.join.
+        lane_block = max(128, lane_block)
     contiguous_modes = {
         "contiguous",
         "strided",
@@ -2015,7 +2087,7 @@ def _build_leaf_kernel_source_for_io(
     if uses_cooperative_stage_lanes:
         body.append("    base_lane_mask = lane_mask")
 
-    if len(factors) > 1:
+    if len(factors) > 1 and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
         if not single_smem_buffer:
             body.append(
@@ -2063,6 +2135,9 @@ def _build_leaf_kernel_source_for_io(
                 direction=plan.direction,
                 dtype=plan.dtype,
                 stage_lanes=stage_lanes if uses_cooperative_stage_lanes else None,
+                portable_exchange=portable_exchange,
+                exchange_size=smem_n,
+                exchange_slot_stride=smem_slot_stride,
             )
         )
 
@@ -2088,6 +2163,9 @@ def _build_leaf_kernel_source_for_io(
                     direction=plan.direction,
                     dtype=plan.dtype,
                     stage_lanes=stage_lanes if uses_cooperative_stage_lanes else None,
+                    portable_exchange=portable_exchange,
+                    exchange_size=smem_n,
+                    exchange_slot_stride=smem_slot_stride,
                 )
             )
 

@@ -29,6 +29,7 @@ from .kernels_common import (
     _zero_other,
     LeafPlan,
     codelet_radices_for,
+    emitted_leaf_factors,
     lane_block_for,
 )
 from .kernels_layout import (
@@ -565,7 +566,16 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    radices = tuple(sorted(codelet_radices_for(factors))) if spec.is_leaf_like else ()
+    radices = (
+        tuple(
+            sorted(
+                codelet_radices_for(factors)
+                | codelet_radices_for(emitted_leaf_factors(plan, spec.io_mode))
+            )
+        )
+        if spec.is_leaf_like
+        else ()
+    )
     module_path.write_text(_module_source(kernel_source, radices))
 
     sys.path.insert(0, str(module_path.parent))
@@ -632,16 +642,9 @@ def _transpose3d_v2_supported() -> bool:
     the PPU/Iluvatar toolchains do not support the PTX inline asm either, so
     fall back to the plain tiled transpose on all of them.
     """
-    try:
-        from triton._C import libtriton
+    from .kernels_common import _non_nvidia_backend_active
 
-        return not (
-            hasattr(libtriton, "mthreads")
-            or hasattr(libtriton, "ppu")
-            or hasattr(libtriton, "iluvatar")
-        )
-    except ImportError:
-        return True
+    return not _non_nvidia_backend_active()
 
 
 def _emit_tiled_transpose3d_jit_kernel(

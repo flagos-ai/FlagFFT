@@ -873,6 +873,8 @@ def detect_backend(build_dir: Path) -> str:
             return "ppu"
         if hasattr(libtriton, "mthreads"):
             return "musa"
+        if hasattr(libtriton, "metax"):
+            return "maca"
         if hasattr(libtriton, "iluvatar"):
             return "ix"
         if hasattr(libtriton, "cuda"):
@@ -948,6 +950,7 @@ def probe_env(build_dir: Path) -> None:
         "musa": "muFFT",
         "ppu": "PPU cuFFT-compatible FFT",
         "ix": "ixfft (CoreX cuFFT-compatible FFT)",
+        "maca": "mcFFT",
     }.get(ENV_INFO["backend"], "unknown")
     try:
         import torch
@@ -980,6 +983,8 @@ def run_subprocess(
         "MUSA_VISIBLE_DEVICES",
         "PPU_VISIBLE_DEVICES",
         "IX_VISIBLE_DEVICES",
+        "MACA_VISIBLE_DEVICES",
+        "MC_VISIBLE_DEVICES",
     ):
         env[variable] = str(gpu_id)
     env["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + env.get("PYTHONPATH", "")

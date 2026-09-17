@@ -4,8 +4,8 @@ FlagFFT is a JIT-compiled GPU FFT library. It generates backend-targeted GPU
 kernels at runtime via [Triton/TLE](https://github.com/FlagTree/flagtree) and
 [libtriton_jit](https://github.com/Artlesbol/libtriton_jit), targeting
 arbitrary-length transforms that vendor FFT libraries may not optimally
-support. The current CMake build supports CUDA, MUSA, PPU, and IX
-(Iluvatar/Tianshu) backends.
+support. The current CMake build supports CUDA, MUSA, PPU, IX
+(Iluvatar/Tianshu), and MACA (MetaX) backends.
 
 ---
 
@@ -61,9 +61,10 @@ docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
 # Inside the container, run steps 3-5 from above.
 ```
 
-The Docker image and CI configuration use Python 3.12. MUSA, PPU, and IX builds
-require their corresponding vendor SDK/runtime environment and should be
-configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, or `-DBACKEND=IX`.
+The Docker image and CI configuration use Python 3.12. MUSA, PPU, IX, and MACA
+builds require their corresponding vendor SDK/runtime environment and should be
+configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`, or
+`-DBACKEND=MACA`.
 
 ---
 
@@ -78,7 +79,7 @@ configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, or `-DBACKEND=IX`.
 | Python | 3.10 | JIT codegen + test runner; the provided CUDA Docker/CI environments use 3.12 |
 | flagtree | 0.5.0 | triton TLE support |
 | SQLite3 | — | Tuning database |
-| Backend SDK | — | CUDA Toolkit, MUSA SDK, PPU SDK, or CoreX CUDA-compatible SDK for IX |
+| Backend SDK | — | CUDA Toolkit, MUSA SDK, PPU SDK, CoreX CUDA-compatible SDK for IX, or MACA SDK |
 | libtriton_jit | submodule | Triton JIT compiler (`deps/libtriton_jit`) |
 | PyYAML | — | Test runner (`pip install pyyaml`) |
 
@@ -120,7 +121,7 @@ This produces `build/libflagfft.so`.
 |---|---|---|
 | `FLAGFFT_BUILD_CLI` | `OFF` | Build the `flagfft-cli` benchmark/verification tool |
 | `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test + the selected backend's reference FFT library) |
-| `BACKEND` | `CUDA` | GPU backend selector: `CUDA`, `MUSA`, `PPU`, or `IX` |
+| `BACKEND` | `CUDA` | GPU backend selector: `CUDA`, `MUSA`, `PPU`, `IX`, or `MACA` |
 | `CMAKE_BUILD_TYPE` | — | `Release`, `Debug`, `RelWithDebInfo` |
 
 ### Full Build (library + CLI + tests)
@@ -133,7 +134,8 @@ cmake --build build -j$(nproc)
 ```
 
 The default backend is CUDA. Select another supported backend at configure
-time, for example `-DBACKEND=MUSA`, `-DBACKEND=PPU`, or `-DBACKEND=IX`; the
+time, for example `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`, or
+`-DBACKEND=MACA`; the
 corresponding SDK and runtime libraries must be installed.
 
 ### Iluvatar/Tianshu (IX) Build
@@ -150,6 +152,13 @@ cmake --build build -j$(nproc)
 The IX backend uses the CoreX CUDA-compatible driver/runtime and ixfft
 reference library. It also requires an Iluvatar-enabled FlagTree/Triton
 runtime (for example `flagtree===0.5.1+iluvatar3.1`).
+
+### MetaX C550 (MACA) Build
+
+Use the tested MetaX container and the SDK's `cmake_maca` / `make_maca`
+wrappers. Set `-DBACKEND=MACA -DMACA_PATH=/opt/maca`; set all three device
+filters to the physical card being tested. The complete card-4 build and
+validation procedure is in [MACA setup and validation](docs/maca-adaptation.md).
 
 ### Environment Variables
 

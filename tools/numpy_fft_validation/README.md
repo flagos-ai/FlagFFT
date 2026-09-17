@@ -48,7 +48,13 @@ python tools/run_tests.py --accuracy-only \
   --ops 1d_ct_single_c2c
 ```
 
-For MUSA/PPU/IX use the matching backend and SDK paths. For IX, point
+For MUSA/PPU/IX use the matching backend and SDK paths. For MACA, point
+`-DMACA_PATH` at the same SDK used for the FlagFFT build and run the capture
+inside the MetaX environment with `CUDA_VISIBLE_DEVICES=4`,
+`MACA_VISIBLE_DEVICES=4`, and `MC_VISIBLE_DEVICES=4` when validating card 4.
+The capture's platform stage uses mcFFT independently from FlagFFT.
+
+For IX, point
 `CUDAToolkit_ROOT` at the CoreX SDK and use an Iluvatar-enabled Triton runtime;
 the unified runner keeps `Z2Z`, `Z2D`, and `D2Z` in the manifest but skips them
 because IX does not support FP64. The native executable
