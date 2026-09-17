@@ -641,7 +641,7 @@ def _transpose3d_v2_supported() -> bool:
 # Backends whose 3D correctness and performance have been validated with the
 # portable register-tile transpose.  Each backend is added here after its own
 # validation; the remaining non-NVIDIA targets keep the previous v1 kernel.
-_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca"})
+_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca", "musa"})
 
 
 def _portable_transpose3d_supported() -> bool:

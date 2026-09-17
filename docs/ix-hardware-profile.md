@@ -39,20 +39,19 @@ one contiguous destination block per program, uncoalesced source reads), `v2`
 (tiled, `ld/st.global.v2` inline asm, NVIDIA only) and `tile` (tiled register
 transpose with `tl.trans`, no inline asm). Non-NVIDIA targets cannot use the
 inline-asm variant; they keep `v1` unless their declared backend is listed in
-`_PORTABLE_TRANSPOSE3D_BACKENDS`, which is currently `{"ix", "maca"}`. Each
-backend is added only after its own numerical and performance validation. The
-`tile` kernel keeps both sides of the permutation coalesced and cut 3D C2C
+`_PORTABLE_TRANSPOSE3D_BACKENDS`, which is currently `{"ix", "maca", "musa"}`.
+Each backend is added only after its own numerical and performance validation.
+The `tile` kernel keeps both sides of the permutation coalesced and cut 3D C2C
 128x2048x64 from 20.9 ms to 6.8 ms on the BI-V150. Tile 32 with four warps
-measured best; tile 64 was about 40% slower and is not used. On the MetaX C550
-(MACA 3.7.2, FlagTree 0.6.1+metax3.6; `feature/hw-maca` `0cf86bf`) the 28-case
-3D matrix passed with worst rel-L2 2.79e-07 (FP32) and 4.8e-16 (FP64) and
-bit-identical to the v1 baseline (the mcFFT platform reference fails C2C
-16x997x64 in both variants). End-to-end C2C median of 3 runs: 128x2048x64
-10.35 -> 6.78 ms (1.53x) and 16x997x64 0.835 -> 0.775 ms (1.08x), while the
-medium 32^3/64^3 cubes regress 12-19%; FP64 and R2C/C2R keep `v1` and are
-unaffected. 1D/2D regression passed 24/24 cases and pytest reported 166 passed
-/ 140 skipped. Evidence: `results/20260917_165501_maca_hw_profile/`
-(`REPORT.md`, `acc_tile/`, `acc_v1/`, `perf_ab/`).
+measured best; tile 64 was about 40% slower and is not used. On the MTT S5000
+(FlagTree 0.6.1+mthreads3.6; `feature/hw-musa` `7bb64e6`) the 48-case 3D matrix
+covering FP32 and FP64 passed with output bit-identical to the v1 baseline, and
+end-to-end C2C improved on 32x32x32, 64x64x64, 16x997x64 and 128x2048x64
+(0.090 -> 0.073 ms, 0.419 -> 0.355 ms, 4.43 -> 3.56 ms) while 16x16x16
+regressed about 10% and remains the documented follow-up. 1D/2D regression
+passed 24/24 cases and pytest reported 166 passed / 140 skipped.
+Evidence: `results/20260917_165501_maca_hw_profile/` (`REPORT.md`, `acc_tile/`,
+`acc_v1/`, `perf_ab/`) and `results/20260917_170938_musa_hw_profile/`.
 
 Large complex64 leaves stage their radix passes through one shared buffer
 instead of the two-buffer ping-pong when the queried device's shared memory
