@@ -49,10 +49,27 @@ from .registry import (
     kernel_spec,
 )
 
+
+def _toolchain_version() -> str:
+    """Toolchain identity for the cache fingerprint, without importing triton.
+
+    The standalone codegen process cannot always import triton: on Ascend the
+    FlagTree plugin expects torch_npu to be initialised first, and the import
+    aborts code generation. Distribution metadata carries the same identity
+    without executing the package.
+    """
+    from importlib import metadata
+    for distribution in ("flagtree", "triton"):
+        try:
+            return metadata.version(distribution)
+        except metadata.PackageNotFoundError:
+            continue
+    return "unspecified"
+
+
 def main() -> None:
     from dataclasses import asdict, replace
     import hashlib
-    import triton
     from .backend_profile import BackendProfile, current_profile, set_profile
     parser = argparse.ArgumentParser(
         description="Generate FlagFFT libtriton_jit kernel sources"
@@ -103,7 +120,7 @@ def main() -> None:
     for source_path in sorted(Path(__file__).parent.rglob("*.py")):
         source_hash.update(source_path.relative_to(Path(__file__).parent).as_posix().encode())
         source_hash.update(source_path.read_bytes())
-    profile = replace(current_profile(), toolchain=triton.__version__, source_fingerprint=source_hash.hexdigest())
+    profile = replace(current_profile(), toolchain=_toolchain_version(), source_fingerprint=source_hash.hexdigest())
     set_profile(profile)
     args.out_dir = args.out_dir / profile.fingerprint
 
