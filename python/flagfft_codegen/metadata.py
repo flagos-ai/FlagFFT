@@ -124,18 +124,25 @@ def _metadata(
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)
+    maca_backend = _maca_backend_active()
     if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):
         cooperative_warps = 1
-        from .target import warp_size
-        threads = warp_size()
+        # Only MACA is validated against its plugin's 64-thread warp here; the
+        # remaining backends keep the historical 32-thread assumption so their
+        # emitted warps stay identical to before the target became explicit.
+        if maca_backend:
+            from .target import warp_size
+
+            threads = warp_size()
+        else:
+            threads = 32
         required_warps = (lane_block_for(max(stage_lanes)) * work_pack + threads - 1) // threads
         while cooperative_warps < required_warps and cooperative_warps < 8:
             cooperative_warps *= 2
         num_warps = max(num_warps, cooperative_warps)
     if "_thread_local_" in kernel_name:
         num_warps = 4
-    from .kernels_common import _maca_backend_active
-    if _maca_backend_active():
+    if maca_backend:
         # One warp triggers unsupported shuffle lowering in multi-stage leaves.
         num_warps = max(2, num_warps)
     return {
