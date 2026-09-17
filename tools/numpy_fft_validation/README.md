@@ -25,11 +25,13 @@ the NumPy oracle explicitly computes in float64/complex128. Real-inverse inputs
 satisfy multidimensional Hermitian constraints, and inverse normalization
 matches the unnormalized device APIs.
 
-Each correctness case retains `input.bin`, `input.npy`, `flagfft.bin`,
-`platform.bin`, `numpy.npy`, `case.json`, library-specific stdout/stderr,
-and `flagfft_plan.txt`. The actual plan text is also embedded in the final
-JSON and incremental CSV. A plan is saved before execution and updated with
-compiled details after successful execution.
+Each correctness case always retains `case.json`, library-specific
+stdout/stderr, and `flagfft_plan.txt`. The native `input.bin`, `flagfft.bin`,
+and `platform.bin` files are temporary by default and are retained according to
+`--artifacts failed|all`; no `npy` files are generated. Use `--artifacts all`
+when `--analyze-only` or raw-data reproduction is needed. The actual plan text
+is also embedded in the final JSON and incremental CSV. A plan is saved before
+execution and updated with compiled details after successful execution.
 
 ## Optional standalone native build
 

@@ -152,6 +152,12 @@ def test_ix_policy_skip_is_visible_in_incremental_csv(operators):
     assert row["skip_reason"] == case["skip_reason"]
 
 
+def test_artifact_policy_cli_defaults_to_failed():
+    assert RUN_TESTS.parse_args([]).artifact_policy == "failed"
+    assert RUN_TESTS.parse_args(["--artifacts", "none"]).artifact_policy == "none"
+    assert RUN_TESTS.parse_args(["--artifacts", "all"]).artifact_policy == "all"
+
+
 def test_ix_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     build_dir = tmp_path / "ix-build"
     build_dir.mkdir()
@@ -367,6 +373,24 @@ def test_real_inverse_input_is_a_valid_multidimensional_half_spectrum(api, shape
     np.testing.assert_allclose(restored, value, rtol=1e-13, atol=1e-13)
 
 
+def test_input_generation_fills_splitmix_stream_in_bounded_chunks(monkeypatch):
+    seed = 0x123456789ABCDEF0
+    expected = RUN_TESTS.splitmix_signed_unit(37, seed).astype(np.float32)
+    actual = np.empty(expected.size, dtype=np.float32)
+    monkeypatch.setattr(RUN_TESTS, "INPUT_GENERATION_CHUNK_ELEMENTS", 5)
+    RUN_TESTS.fill_splitmix_signed_unit(actual, seed)
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_make_input_preserves_chunked_splitmix_values(monkeypatch):
+    monkeypatch.setattr(RUN_TESTS, "INPUT_GENERATION_CHUNK_ELEMENTS", 3)
+    value, seed = RUN_TESTS.make_input("c2c", (7,), 2, 1.0)
+    expected = RUN_TESTS.as_complex_from_interleaved(
+        RUN_TESTS.splitmix_signed_unit(28, seed), "c2c", (2, 7)
+    )
+    np.testing.assert_array_equal(value, expected)
+
+
 def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
     value, _ = RUN_TESTS.make_input("c2c", (23,), 1, 1.0)
     forward = RUN_TESTS.numpy_reference(value, "c2c", (23,), "forward")
@@ -375,6 +399,61 @@ def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
     np.testing.assert_allclose(
         inverse, value.astype(np.complex128) * 23, rtol=1e-13, atol=1e-13
     )
+
+
+def test_numpy_reference_chunks_batched_transforms(monkeypatch):
+    value, _ = RUN_TESTS.make_input("c2c", (8,), 3, 1.0)
+    expected = np.fft.fftn(
+        value.astype(np.complex128), s=(8,), axes=(1,)
+    )
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+    actual = RUN_TESTS.numpy_reference(value, "c2c", (8,), "forward")
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("api", "direction"),
+    [
+        ("c2c", "forward"),
+        ("c2r", "inverse"),
+        ("r2c", "forward"),
+        ("z2z", "forward"),
+        ("z2d", "inverse"),
+        ("d2z", "forward"),
+    ],
+)
+def test_streaming_error_stats_matches_materialized_reference(
+    tmp_path, monkeypatch, api, direction
+):
+    shape = (8,)
+    batch = 3
+    value, _ = RUN_TESTS.make_input(api, shape, batch, 1.0)
+    reference = RUN_TESTS.numpy_reference(value, api, shape, direction)
+    output_dtype = (
+        RUN_TESTS.complex_dtype(api)
+        if np.iscomplexobj(reference)
+        else RUN_TESTS.real_dtype(api)
+    )
+    input_path = tmp_path / "input.bin"
+    output_path = tmp_path / "flagfft.bin"
+    value.tofile(input_path)
+    reference.astype(output_dtype).tofile(output_path)
+
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+    input_memmap = RUN_TESTS.load_raw_memmap(input_path, api, shape, batch)
+    try:
+        streaming = RUN_TESTS.streaming_error_stats(
+            output_path, input_memmap, api, shape, direction, batch
+        )
+    finally:
+        del input_memmap
+    elements = RUN_TESTS.product(
+        RUN_TESTS.output_shape(api, shape, batch)[1:]
+    )
+    materialized = RUN_TESTS.error_stats(
+        reference.astype(output_dtype), reference, elements, batch
+    )
+    assert streaming == materialized
 
 
 def test_error_metric_detects_worst_batch_and_nonfinite_values():
@@ -391,6 +470,17 @@ def test_error_metric_detects_worst_batch_and_nonfinite_values():
     assert not RUN_TESTS.judged_stats(stats, RUN_TESTS.accuracy_limit("z2z", 8))[
         "passed"
     ]
+
+
+def test_error_stats_reduces_in_bounded_chunks(monkeypatch):
+    reference = np.arange(24, dtype=np.float64).reshape(2, 12)
+    value = reference.copy()
+    value[1, 7] += 0.1
+    monkeypatch.setattr(RUN_TESTS, "ERROR_STATS_CHUNK_ELEMENTS", 3)
+    chunked = RUN_TESTS.error_stats(value, reference, 12, 2)
+    monkeypatch.setattr(RUN_TESTS, "ERROR_STATS_CHUNK_ELEMENTS", 100)
+    whole = RUN_TESTS.error_stats(value, reference, 12, 2)
+    assert chunked == whole
 
 
 PLAN = 'LeafPlan(n=256, factors=[4,4,4,4])\nCompiledRawLeaf(kernel="fft")\n'
@@ -433,6 +523,42 @@ def mock_capture(monkeypatch, platform_status="Completed", platform_corrupt=Fals
         }
 
     monkeypatch.setattr(RUN_TESTS, "run_subprocess", run_subprocess)
+
+
+def test_accuracy_captures_finish_before_numpy_reference(
+    tmp_path, monkeypatch, operators, matrix
+):
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    events = []
+    original_reference_chunks = RUN_TESTS.numpy_reference_chunks
+
+    def delayed_reference_chunks(value, api, shape, direction):
+        events.append("reference")
+        yield from original_reference_chunks(value, api, shape, direction)
+
+    def capture(cmd, timeout, gpu_id, case_dir, implementation):
+        events.append(f"capture:{implementation}")
+        value = RUN_TESTS.load_raw(
+            case_dir / "input.bin", case["api"], tuple(case["shape"]), case["batch"]
+        )
+        np.zeros_like(value).tofile(case_dir / f"{implementation}.bin")
+        if implementation == "flagfft":
+            (case_dir / "flagfft_plan.txt").write_text(PLAN)
+        return {"status": "Completed", "duration": 0.01, "command": cmd}
+
+    monkeypatch.setattr(
+        RUN_TESTS, "numpy_reference_chunks", delayed_reference_chunks
+    )
+    monkeypatch.setattr(RUN_TESTS, "run_subprocess", capture)
+
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "none"
+    )
+
+    assert events[:2] == ["capture:flagfft", "capture:platform"]
+    assert events[2:] == ["reference", "reference"]
+    assert record["capture_stages"]["flagfft"]["status"] == "Completed"
+    assert record["capture_stages"]["platform"]["status"] == "Completed"
 
 
 def accuracy_message(case, record):
@@ -483,14 +609,66 @@ def test_case_artifacts_are_not_overwritten_for_multiple_scales(
     case2 = {**case1, "scale": 2.0}
     case2["case_id"] = RUN_TESTS.case_name(case2)
     mock_capture(monkeypatch)
-    first = RUN_TESTS.run_accuracy_case(case1, tmp_path / "capture", tmp_path, 0, 10)
-    second = RUN_TESTS.run_accuracy_case(case2, tmp_path / "capture", tmp_path, 0, 10)
+    first = RUN_TESTS.run_accuracy_case(
+        case1, tmp_path / "capture", tmp_path, 0, 10, "all"
+    )
+    second = RUN_TESTS.run_accuracy_case(
+        case2, tmp_path / "capture", tmp_path, 0, 10, "all"
+    )
     assert first["data_file"] != second["data_file"]
     assert first["input_sha256"] != second["input_sha256"]
     for record in (first, second):
         saved = json.loads((tmp_path / record["data_file"]).read_text())
         assert saved["scale"] == record["scale"]
         assert saved["accuracy"]["plan"] == PLAN
+
+
+def test_none_artifact_policy_keeps_only_results_and_logs(
+    tmp_path, monkeypatch, operators, matrix
+):
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    mock_capture(monkeypatch)
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "none"
+    )
+    case_dir = tmp_path / case["op_id"] / case["case_id"]
+    assert record["accuracy"]["status"] == "Passed"
+    assert record["raw_artifacts_retained"] is False
+    assert "numpy_sha256" not in record
+    assert not any(
+        (case_dir / filename).exists()
+        for filename in RUN_TESTS.RAW_ARTIFACT_FILENAMES
+    )
+    assert (case_dir / "case.json").is_file()
+    assert (case_dir / "flagfft.stdout").is_file()
+
+
+def test_analyze_only_requires_all_artifacts(tmp_path):
+    RUN_TESTS.write_json(
+        tmp_path / "manifest.json",
+        {"config": {"artifact_policy": "failed"}},
+    )
+    with pytest.raises(ValueError, match="--artifacts all"):
+        RUN_TESTS.analyze_only(tmp_path)
+
+
+def test_failed_artifact_policy_retains_failed_case_without_npy(
+    tmp_path, monkeypatch, operators, matrix
+):
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    mock_capture(monkeypatch, platform_corrupt=True)
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "failed"
+    )
+    case_dir = tmp_path / case["op_id"] / case["case_id"]
+    assert record["accuracy"]["status"] == "Passed"
+    assert record["platform_accuracy"]["status"] == "Failed"
+    assert record["raw_artifacts_retained"] is True
+    assert (case_dir / "input.bin").is_file()
+    assert (case_dir / "flagfft.bin").is_file()
+    assert (case_dir / "platform.bin").is_file()
+    assert not (case_dir / "input.npy").exists()
+    assert not (case_dir / "numpy.npy").exists()
 
 
 def test_missing_case_prevents_operator_pass(operators, matrix):
@@ -615,7 +793,9 @@ def test_reanalysis_uses_saved_data_without_gpu_execution(
 ):
     case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
     mock_capture(monkeypatch)
-    record = RUN_TESTS.run_accuracy_case(case, tmp_path / "capture", tmp_path, 0, 10)
+    record = RUN_TESTS.run_accuracy_case(
+        case, tmp_path / "capture", tmp_path, 0, 10, "all"
+    )
     RUN_TESTS.write_json(
         tmp_path / "manifest.json",
         {
@@ -623,7 +803,11 @@ def test_reanalysis_uses_saved_data_without_gpu_execution(
             "cases": [case],
             "performance_cases": RUN_TESTS.performance_cases([case]),
             "env": {},
-            "config": {"accuracy_only": True, "performance_only": False},
+            "config": {
+                "accuracy_only": True,
+                "performance_only": False,
+                "artifact_policy": "all",
+            },
         },
     )
     case_dir = tmp_path / case["op_id"] / case["case_id"]
