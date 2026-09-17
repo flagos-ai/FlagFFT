@@ -37,11 +37,19 @@ remains the cap for complex64. Algorithmic radices, DFT chunk lengths and the
 The 3D axis permutation has three generator variants: `v1` (correctness-first,
 one contiguous destination block per program, uncoalesced source reads), `v2`
 (tiled, `ld/st.global.v2` inline asm, NVIDIA only) and `tile` (tiled register
-transpose with `tl.trans`, no inline asm). Targets where the Triton runtime
-exposes a `mthreads`, `ppu` or `iluvatar` module use `tile`, which keeps both
-sides of the permutation coalesced and cut 3D C2C 128x2048x64 from 20.9 ms to
-6.8 ms on the BI-V150. Tile 32 with four warps measured best; tile 64 was
-about 40% slower and is not used.
+transpose with `tl.trans`, no inline asm). Non-NVIDIA targets cannot use the
+inline-asm variant; they keep `v1` unless their declared backend is listed in
+`_PORTABLE_TRANSPOSE3D_BACKENDS`, which is currently `{"ix", "maca", "musa"}`.
+Each backend is added only after its own numerical and performance validation.
+The `tile` kernel keeps both sides of the permutation coalesced and cut 3D C2C
+128x2048x64 from 20.9 ms to 6.8 ms on the BI-V150. Tile 32 with four warps
+measured best; tile 64 was about 40% slower and is not used. On the MTT S5000
+(FlagTree 0.6.1+mthreads3.6; `feature/hw-musa` `7bb64e6`) the 48-case 3D matrix
+covering FP32 and FP64 passed with output bit-identical to the v1 baseline, and
+end-to-end C2C improved on 32x32x32, 64x64x64, 16x997x64 and 128x2048x64
+(0.090 -> 0.073 ms, 0.419 -> 0.355 ms, 4.43 -> 3.56 ms) while 16x16x16
+regressed about 10% and remains the documented follow-up. 1D/2D regression and
+the Python suite passed on the same host.
 
 Large complex64 leaves stage their radix passes through one shared buffer
 instead of the two-buffer ping-pong when the queried device's shared memory
