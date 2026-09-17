@@ -26,14 +26,24 @@ class ProfileTest(unittest.TestCase):
             p.validate(3)
 
     def test_invalid_device(self):
-        for field, value in (
-            ("warp_size", None),
-            ("max_threads_per_block", 16),
-            ("max_dynamic_shared_memory", -1),
-            ("backend", "unknown"),
+        with self.assertRaises(ValueError):
+            self.profile(backend="unknown")
+        with self.assertRaises(ValueError):
+            self.profile(device_arch="")
+
+    def test_missing_launch_facts_fall_back_to_backend_defaults(self):
+        for overrides in (
+            {"warp_size": None},
+            {"max_threads_per_block": 16},
+            {"warp_size": 128},
         ):
-            with self.assertRaises(ValueError):
-                self.profile(**{field: value})
+            profile = self.profile(**overrides)
+            self.assertEqual(profile.warp_size, 64)
+            self.assertEqual(profile.max_threads_per_block, 4096)
+            self.assertEqual(profile.facts_source, "backend_default")
+        dropped = self.profile(max_dynamic_shared_memory=-1)
+        self.assertIsNone(dropped.max_dynamic_shared_memory)
+        self.assertEqual(dropped.facts_source, "backend_default")
 
     def test_cache_isolation(self):
         from dataclasses import replace

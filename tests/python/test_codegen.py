@@ -733,12 +733,13 @@ def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> Non
     assert "safe_cols[None, :] * 2" in source
 
 
-def test_tiled_transpose3d_tile_selected_without_inline_asm(
+def test_tiled_transpose3d_tile_selected_only_for_validated_backends(
     kernels, tmp_path, monkeypatch
 ) -> None:
     from flagfft_codegen import emit
 
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
     metadata = emit._emit_tiled_transpose3d_jit_kernel(
         n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
     )
@@ -751,6 +752,29 @@ def test_tiled_transpose3d_tile_selected_without_inline_asm(
             tmp_path / "flagfft_jit_transpose3d_201_n128_2048_64_f32.py"
         ).read_text()
     )
+
+
+def test_tiled_transpose3d_falls_back_to_v1_for_unvalidated_backends(
+    kernels, tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import (
+        BackendProfile,
+        reset_profile,
+        set_profile,
+    )
+
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    token = set_profile(BackendProfile(backend="musa", device_arch="31", warp_size=32))
+    try:
+        assert emit._portable_transpose3d_supported() is False
+        metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+        )
+    finally:
+        reset_profile(token)
+
+    assert "t32_tile" not in metadata["kernel_name"]
 
 
 def test_strided_four_step_row_kernel_source_generation(kernels) -> None:
