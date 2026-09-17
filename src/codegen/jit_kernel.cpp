@@ -42,7 +42,11 @@ JitKernelArg JitKernelArg::i64(int64_t value) {
   return arg;
 }
 
-JitKernel::~JitKernel() = default;
+JitKernel::~JitKernel() {
+#if defined(BACKEND_MACA)
+  delete static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
+#endif
+}
 
 std::string JitKernel::execution_description() const {
   std::ostringstream out;
@@ -59,12 +63,24 @@ void JitKernel::compile() {
   }
   if (warp_size != triton_jit::DefaultBackend::WARP_SIZE)
     throw std::runtime_error("codegen warp size disagrees with launch backend");
+#if defined(BACKEND_MACA)
+  if (binary_dir.empty()) {
+    throw std::runtime_error("MACA JIT binary directory is missing");
+  }
+  // Compilation happens in the codegen process. Embedding this SDK's Torch
+  // in a native executable corrupts its FlashAttn teardown. Native loading
+  // and dispatch continue to use libtriton_jit's MACA backend and hooks.
+  triton_jit::DefaultBackend::ensure_context();
+  triton_jit::DefaultBackend::load_kernel(binary_dir, kernel_name);
+  jit_function = new triton_jit::TritonKernelImpl<triton_jit::DefaultBackend>(binary_dir, kernel_name);
+#else
   jit_function = &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
   function->compile(signature,
                     static_cast<unsigned int>(num_warps),
                     static_cast<unsigned int>(num_stages),
                     triton_jit::DefaultBackend::get_device_index());
+#endif
 }
 
 void JitKernel::launch(adaptor::StreamHandle stream,
@@ -92,7 +108,9 @@ void JitKernel::launch(adaptor::StreamHandle stream,
   }
   args.push_back(&global_scratch);
   args.push_back(&profile_scratch);
+#if !defined(BACKEND_MACA)
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
+#endif
   // Diagnostic timings synchronise each launch and must not be used as
   // end-to-end benchmark results. Disabled unless explicitly requested.
   static const bool profile = env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS"));
@@ -101,6 +119,14 @@ void JitKernel::launch(adaptor::StreamHandle stream,
     timer.emplace();
     timer->start(stream);
   }
+#if defined(BACKEND_MACA)
+  auto *kernel = static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
+  kernel->launch_with_signature(static_cast<unsigned int>(grid_x),
+                               static_cast<unsigned int>(grid_y),
+                               static_cast<unsigned int>(grid_z), num_warps,
+                               reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+                               args.data(), signature, args.size());
+#else
   function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
                                  static_cast<unsigned int>(grid_x),
                                  static_cast<unsigned int>(grid_y),
@@ -110,6 +136,7 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                                  signature,
                                  args.data(),
                                  args.size());
+#endif
   if (timer) {
     timer->stop(stream);
     std::fprintf(stderr, "[kernel-profile],%s,%lld,%lld,%lld,%.6f\n", kernel_name.c_str(),

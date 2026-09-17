@@ -22,6 +22,7 @@ from .backend_profile import current_profile
 
 from .kernels_common import (
     _CODELET_DIR,
+    _maca_backend_active,
     _dtype_suffix,
     _zero_other,
     LeafPlan,
@@ -67,7 +68,12 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
         if codelet_path.exists():
             helpers += codelet_path.read_text() + "\n\n"
 
-    return helpers + "\n\n" + kernel_source + "\n"
+    source = helpers + "\n\n" + kernel_source + "\n"
+    if _maca_backend_active():
+        # Portable MACA kernels do not use TLE. Keep their modules independent
+        # of the backend-specific TLE extensions during isolated compilation.
+        source = source.replace("import triton.experimental.tle.language as tle\n", "")
+    return source
 
 
 def _arg_signature(name: str, dtype: str) -> str:
@@ -120,14 +126,28 @@ def _metadata(
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)
+    maca_backend = _maca_backend_active()
     if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):
         cooperative_warps = 1
-        required_warps = profile.warps_for(lane_block_for(max(stage_lanes)) * work_pack)
+        # MACA is validated against its plugin's 64-thread warp; the other
+        # backends derive the warp count from the queried hardware profile.
+        if maca_backend:
+            from .target import warp_size
+
+            threads = warp_size()
+            required_warps = (
+                lane_block_for(max(stage_lanes)) * work_pack + threads - 1
+            ) // threads
+        else:
+            required_warps = profile.warps_for(lane_block_for(max(stage_lanes)) * work_pack)
         while cooperative_warps < required_warps and cooperative_warps < 8:
             cooperative_warps *= 2
         num_warps = max(num_warps, cooperative_warps)
     if "_thread_local_" in kernel_name:
         num_warps = 4
+    if maca_backend:
+        # One warp triggers unsupported shuffle lowering in multi-stage leaves.
+        num_warps = max(2, num_warps)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

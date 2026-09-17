@@ -125,6 +125,13 @@ RAW_ARTIFACT_FILENAMES = (
     "numpy.npy",
 )
 
+# Accuracy runs can contain hundreds of millions of values.  Keep the NumPy
+# oracle and the error reduction bounded even when a single batch is very
+# large; the native capture processes already have their own peak memory.
+REFERENCE_BATCH_CHUNK = 4
+ERROR_STATS_CHUNK_ELEMENTS = 1 << 18
+INPUT_GENERATION_CHUNK_ELEMENTS = 1 << 20
+
 
 def product(shape: Iterable[int]) -> int:
     value = 1
@@ -185,6 +192,12 @@ def output_shape(api: str, shape: tuple[int, ...], batch: int) -> tuple[int, ...
     return (batch, *shape)
 
 
+def numpy_reference_dtype(api: str) -> np.dtype:
+    return np.dtype(
+        np.complex128 if is_complex(api) or is_real_forward(api) else np.float64
+    )
+
+
 def splitmix_signed_unit(count: int, seed: int) -> np.ndarray:
     """Match ctest/flagfft_test.h's StableRng::signed_unit sequence."""
 
@@ -198,6 +211,16 @@ def splitmix_signed_unit(count: int, seed: int) -> np.ndarray:
     value = value ^ (value >> np.uint64(31))
     bits = (value >> np.uint64(11)).astype(np.float64)
     return bits * (2.0 / 9007199254740992.0) - 1.0
+
+
+def fill_splitmix_signed_unit(output: np.ndarray, seed: int) -> None:
+    """Fill native-dtype output without materializing the full float64 stream."""
+    flat = np.asarray(output).reshape(-1)
+    for start in range(0, flat.size, INPUT_GENERATION_CHUNK_ELEMENTS):
+        stop = min(flat.size, start + INPUT_GENERATION_CHUNK_ELEMENTS)
+        chunk_seed = (int(seed) + start * SPLITMIX_INCREMENT) & MASK64
+        generated = splitmix_signed_unit(stop - start, chunk_seed)
+        flat[start:stop] = generated.astype(flat.dtype, copy=False)
 
 
 def accuracy_seed(
@@ -228,9 +251,9 @@ def make_input(
     target_shape = input_shape(api, shape, batch)
     count = product(target_shape)
     if is_complex(api) or is_real_inverse(api):
-        result = as_complex_from_interleaved(
-            splitmix_signed_unit(count * 2, seed), api, target_shape
-        )
+        scalar = np.empty(count * 2, dtype=real_dtype(api))
+        fill_splitmix_signed_unit(scalar, seed)
+        result = scalar.view(complex_dtype(api)).reshape(target_shape)
         if is_real_inverse(api):
             # DC/Nyquist planes must be Hermitian across every preceding FFT
             # axis. Merely zeroing their imaginary parts is only valid in 1D.
@@ -244,36 +267,63 @@ def make_input(
                     )
                 result[..., boundary] = (plane + mirrored.conj()) * 0.5
     else:
-        result = (
-            splitmix_signed_unit(count, seed)
-            .astype(real_dtype(api))
-            .reshape(target_shape)
-        )
+        result = np.empty(count, dtype=real_dtype(api)).reshape(target_shape)
+        fill_splitmix_signed_unit(result, seed)
     scale_value = np.asarray(scale, dtype=real_dtype(api)).item()
-    result = result * scale_value
+    result *= scale_value
     return np.ascontiguousarray(result), seed
+
+
+def numpy_reference_chunks(
+    value: np.ndarray, api: str, shape: tuple[int, ...], direction: str
+) -> Iterable[tuple[int, int, np.ndarray]]:
+    """Yield bounded double-precision NumPy reference batches.
+
+    The input is deliberately converted inside the batch loop.  Converting a
+    large native input array before the loop creates another full-size array,
+    which is enough to exceed the MUSA test cgroup for the largest batched
+    cases.
+    """
+    value = np.asarray(value)
+    axes = tuple(range(1, len(shape) + 1))
+    transform_size = product(shape)
+    input_dtype = np.complex128 if np.iscomplexobj(value) else np.float64
+    for start in range(0, value.shape[0], REFERENCE_BATCH_CHUNK):
+        stop = min(value.shape[0], start + REFERENCE_BATCH_CHUNK)
+        chunk = np.asarray(value[start:stop], dtype=input_dtype)
+        if is_complex(api):
+            if direction == "forward":
+                transformed = np.fft.fftn(chunk, s=shape, axes=axes)
+            else:
+                transformed = np.fft.ifftn(chunk, s=shape, axes=axes)
+                transformed *= transform_size
+        elif is_real_forward(api):
+            transformed = np.fft.rfftn(chunk, s=shape, axes=axes)
+        elif is_real_inverse(api):
+            # The device APIs intentionally use the unnormalized inverse.
+            transformed = np.fft.irfftn(chunk, s=shape, axes=axes)
+            transformed *= transform_size
+        else:
+            raise ValueError(f"unknown API: {api}")
+        yield start, stop, np.asarray(transformed, dtype=numpy_reference_dtype(api))
+        # The caller has finished comparing this chunk before requesting the
+        # next one.  Drop generator-local references before the next FFT.
+        del chunk, transformed
 
 
 def numpy_reference(
     value: np.ndarray, api: str, shape: tuple[int, ...], direction: str
 ) -> np.ndarray:
-    # NumPy 2.x can keep float32 FFTs in single precision. Explicitly use
-    # float64/complex128 so the oracle does not inherit device rounding.
-    value = np.asarray(
-        value, dtype=np.complex128 if np.iscomplexobj(value) else np.float64
+    """Materialize a NumPy reference for small direct callers and tests."""
+    value = np.asarray(value)
+    result = np.empty(
+        output_shape(api, shape, value.shape[0]), dtype=numpy_reference_dtype(api)
     )
-    axes = tuple(range(1, len(shape) + 1))
-    transform_size = product(shape)
-    if is_complex(api):
-        if direction == "forward":
-            return np.fft.fftn(value, s=shape, axes=axes)
-        return np.fft.ifftn(value, s=shape, axes=axes) * transform_size
-    if is_real_forward(api):
-        return np.fft.rfftn(value, s=shape, axes=axes)
-    if is_real_inverse(api):
-        # The device APIs intentionally use the unnormalized inverse.
-        return np.fft.irfftn(value, s=shape, axes=axes) * transform_size
-    raise ValueError(f"unknown API: {api}")
+    for start, stop, transformed in numpy_reference_chunks(
+        value, api, shape, direction
+    ):
+        result[start:stop] = transformed
+    return result
 
 
 def _component_arrays(
@@ -297,25 +347,6 @@ def _component_arrays(
 def error_stats(
     value: np.ndarray, reference: np.ndarray, elements_per_batch: int, batch: int
 ) -> dict[str, Any]:
-    diff, ref_abs, _ = _component_arrays(
-        value.reshape(batch, elements_per_batch),
-        reference.reshape(batch, elements_per_batch),
-    )
-    finite = bool(np.all(np.isfinite(diff)) and np.all(np.isfinite(ref_abs)))
-
-    if not finite:
-        bad_batches = ~np.all(np.isfinite(diff) & np.isfinite(ref_abs), axis=1)
-        worst = int(np.flatnonzero(bad_batches)[0])
-        return {
-            "rel_l2": float("inf"),
-            "rel_linf": float("inf"),
-            "max_abs": float("inf"),
-            "mixed_pointwise": float("inf"),
-            "worst_l2_batch": worst,
-            "worst_linf_batch": worst,
-            "finite": False,
-        }
-
     rel_l2 = np.longdouble(0.0)
     rel_linf = np.longdouble(0.0)
     max_abs = np.longdouble(0.0)
@@ -323,17 +354,45 @@ def error_stats(
     worst_l2_batch = 0
     worst_linf_batch = 0
 
+    value = np.asarray(value).reshape(batch, elements_per_batch)
+    reference = np.asarray(reference).reshape(batch, elements_per_batch)
     for batch_index in range(batch):
-        batch_diff = diff[batch_index]
-        batch_ref = ref_abs[batch_index]
-        err_sq = np.sum(batch_diff * batch_diff, dtype=np.longdouble)
-        ref_sq = np.sum(batch_ref * batch_ref, dtype=np.longdouble)
-        err_max = np.max(batch_diff, initial=np.longdouble(0.0))
-        ref_max = np.max(batch_ref, initial=np.longdouble(0.0))
-        mixed_max = np.max(
-            batch_diff / np.maximum(batch_ref, np.longdouble(1.0)),
-            initial=np.longdouble(0.0),
-        )
+        err_sq = np.longdouble(0.0)
+        ref_sq = np.longdouble(0.0)
+        err_max = np.longdouble(0.0)
+        ref_max = np.longdouble(0.0)
+        mixed_max = np.longdouble(0.0)
+        for start in range(0, elements_per_batch, ERROR_STATS_CHUNK_ELEMENTS):
+            stop = min(elements_per_batch, start + ERROR_STATS_CHUNK_ELEMENTS)
+            batch_diff, batch_ref, _ = _component_arrays(
+                value[batch_index, start:stop],
+                reference[batch_index, start:stop],
+            )
+            finite = bool(
+                np.all(np.isfinite(batch_diff))
+                and np.all(np.isfinite(batch_ref))
+            )
+            if not finite:
+                return {
+                    "rel_l2": float("inf"),
+                    "rel_linf": float("inf"),
+                    "max_abs": float("inf"),
+                    "mixed_pointwise": float("inf"),
+                    "worst_l2_batch": batch_index,
+                    "worst_linf_batch": batch_index,
+                    "finite": False,
+                }
+            err_sq += np.sum(batch_diff * batch_diff, dtype=np.longdouble)
+            ref_sq += np.sum(batch_ref * batch_ref, dtype=np.longdouble)
+            err_max = max(err_max, np.max(batch_diff, initial=np.longdouble(0.0)))
+            ref_max = max(ref_max, np.max(batch_ref, initial=np.longdouble(0.0)))
+            mixed_max = max(
+                mixed_max,
+                np.max(
+                    batch_diff / np.maximum(batch_ref, np.longdouble(1.0)),
+                    initial=np.longdouble(0.0),
+                ),
+            )
 
         batch_rel_l2 = (
             np.sqrt(err_sq / ref_sq)
@@ -363,6 +422,82 @@ def error_stats(
         "worst_linf_batch": int(worst_linf_batch),
         "finite": finite,
     }
+
+
+def merge_error_stats(
+    aggregate: dict[str, Any] | None,
+    chunk: dict[str, Any],
+    batch_offset: int,
+) -> dict[str, Any]:
+    """Merge error statistics for a contiguous group of batches."""
+    if aggregate is None:
+        aggregate = {
+            "rel_l2": 0.0,
+            "rel_linf": 0.0,
+            "max_abs": 0.0,
+            "mixed_pointwise": 0.0,
+            "worst_l2_batch": 0,
+            "worst_linf_batch": 0,
+            "finite": True,
+        }
+    if not aggregate["finite"]:
+        return aggregate
+    if not chunk["finite"]:
+        return {
+            "rel_l2": float("inf"),
+            "rel_linf": float("inf"),
+            "max_abs": float("inf"),
+            "mixed_pointwise": float("inf"),
+            "worst_l2_batch": int(batch_offset) + int(chunk["worst_l2_batch"]),
+            "worst_linf_batch": int(batch_offset) + int(chunk["worst_linf_batch"]),
+            "finite": False,
+        }
+
+    for metric, worst_batch in (
+        ("rel_l2", "worst_l2_batch"),
+        ("rel_linf", "worst_linf_batch"),
+    ):
+        if chunk[metric] > aggregate[metric]:
+            aggregate[metric] = chunk[metric]
+            aggregate[worst_batch] = int(batch_offset) + int(chunk[worst_batch])
+    aggregate["max_abs"] = max(aggregate["max_abs"], chunk["max_abs"])
+    aggregate["mixed_pointwise"] = max(
+        aggregate["mixed_pointwise"], chunk["mixed_pointwise"]
+    )
+    return aggregate
+
+
+def streaming_error_stats(
+    output_path: Path,
+    input_value: np.ndarray,
+    api: str,
+    shape: tuple[int, ...],
+    direction: str,
+    batch: int,
+) -> dict[str, Any]:
+    """Compare one native output to NumPy without materializing full arrays."""
+    output = load_raw_memmap(output_path, api, shape, batch)
+    elements = product(output_shape(api, shape, batch)[1:])
+    aggregate = None
+    try:
+        for start, stop, reference_chunk in numpy_reference_chunks(
+            input_value, api, shape, direction
+        ):
+            chunk_stats = error_stats(
+                output[start:stop],
+                reference_chunk,
+                elements,
+                stop - start,
+            )
+            aggregate = merge_error_stats(aggregate, chunk_stats, start)
+            del reference_chunk
+            if not aggregate["finite"]:
+                break
+    finally:
+        del output
+    if aggregate is None:
+        raise ValueError("NumPy reference produced no batches")
+    return aggregate
 
 
 def ceil_log2_covering(value: int) -> int:
@@ -435,7 +570,9 @@ def retain_raw_artifacts(policy: str, record: dict[str, Any]) -> bool:
     )
 
 
-def load_raw(path: Path, api: str, shape: tuple[int, ...], batch: int) -> np.ndarray:
+def raw_spec(
+    path: Path, api: str, shape: tuple[int, ...], batch: int
+) -> tuple[np.dtype, tuple[int, ...]]:
     is_input = path.name == "input.bin"
     complex_values = (
         (is_complex(api) or is_real_inverse(api))
@@ -446,11 +583,31 @@ def load_raw(path: Path, api: str, shape: tuple[int, ...], batch: int) -> np.nda
     expected_shape = (
         input_shape(api, shape, batch) if is_input else output_shape(api, shape, batch)
     )
+    return dtype, expected_shape
+
+
+def load_raw(path: Path, api: str, shape: tuple[int, ...], batch: int) -> np.ndarray:
+    dtype, expected_shape = raw_spec(path, api, shape, batch)
     data = np.fromfile(path, dtype=dtype)
     expected = product(expected_shape)
     if data.size != expected:
         raise ValueError(f"{path}: expected {expected} {dtype} values, got {data.size}")
     return data.reshape(expected_shape)
+
+
+def load_raw_memmap(
+    path: Path, api: str, shape: tuple[int, ...], batch: int
+) -> np.ndarray:
+    """Open a raw artifact without allocating a second full-size array."""
+    dtype, expected_shape = raw_spec(path, api, shape, batch)
+    expected_bytes = product(expected_shape) * dtype.itemsize
+    actual_bytes = path.stat().st_size
+    if actual_bytes != expected_bytes:
+        raise ValueError(
+            f"{path}: expected {expected_bytes} bytes for {dtype} {expected_shape}, "
+            f"got {actual_bytes}"
+        )
+    return np.memmap(path, dtype=dtype, mode="r", shape=expected_shape)
 
 
 def json_safe(value: Any) -> Any:
@@ -716,6 +873,8 @@ def detect_backend(build_dir: Path) -> str:
             return "ppu"
         if hasattr(libtriton, "mthreads"):
             return "musa"
+        if hasattr(libtriton, "metax"):
+            return "maca"
         if hasattr(libtriton, "iluvatar"):
             return "ix"
         if hasattr(libtriton, "cuda"):
@@ -791,6 +950,7 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
         "musa": "muFFT",
         "ppu": "PPU cuFFT-compatible FFT",
         "ix": "ixfft (CoreX cuFFT-compatible FFT)",
+        "maca": "mcFFT",
     }.get(ENV_INFO["backend"], "unknown")
     try:
         import torch
@@ -836,6 +996,8 @@ def run_subprocess(
         "MUSA_VISIBLE_DEVICES",
         "PPU_VISIBLE_DEVICES",
         "IX_VISIBLE_DEVICES",
+        "MACA_VISIBLE_DEVICES",
+        "MC_VISIBLE_DEVICES",
     ):
         env[variable] = str(gpu_id)
     env["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + env.get("PYTHONPATH", "")
@@ -906,6 +1068,7 @@ def compare_output(
     implementation: str,
     reference: np.ndarray | None,
     stage: dict,
+    reference_input: np.ndarray | None = None,
 ) -> dict:
     limits = accuracy_limit(case["api"], product(case["shape"]))
     result = {
@@ -924,20 +1087,28 @@ def compare_output(
         result["error"] = stage.get("error", result["status"])
         return result
     try:
-        output = load_raw(
-            case_dir / f"{implementation}.bin",
-            case["api"],
-            tuple(case["shape"]),
-            case["batch"],
-        )
-        elements = product(
-            output_shape(case["api"], tuple(case["shape"]), case["batch"])[1:]
-        )
+        shape = tuple(case["shape"])
+        output_path = case_dir / f"{implementation}.bin"
+        if reference_input is not None:
+            stats = streaming_error_stats(
+                output_path,
+                reference_input,
+                case["api"],
+                shape,
+                case["direction"],
+                case["batch"],
+            )
+        else:
+            if reference is None:
+                raise ValueError("missing NumPy reference input")
+            output = load_raw(output_path, case["api"], shape, case["batch"])
+            elements = product(output_shape(case["api"], shape, case["batch"])[1:])
+            stats = error_stats(output, reference, elements, case["batch"])
         result["metric"] = judged_stats(
-            error_stats(output, reference, elements, case["batch"]), limits
+            stats, limits
         )
         result["status"] = "Passed" if result["metric"]["passed"] else "Failed"
-        result["output_sha256"] = sha256(case_dir / f"{implementation}.bin")
+        result["output_sha256"] = sha256(output_path)
     except (OSError, ValueError) as error:
         result.update({"status": "Error", "error": str(error)})
     return result
@@ -971,6 +1142,7 @@ def run_accuracy_case(
     record["data_file"] = data_file
     write_json(case_dir / "case.json", record)
     started = time.monotonic()
+    reference_input = None
     try:
         value, seed = make_input(
             case["api"], tuple(case["shape"]), case["batch"], case["scale"]
@@ -1017,25 +1189,16 @@ def run_accuracy_case(
         if any(
             stage.get("status") == "Completed" for stage in capture_stages.values()
         ):
-            # Both native processes have exited before NumPy allocates its
-            # double-precision reference.  Reloading from disk avoids keeping
-            # the original input alive through the capture phase.
-            reference_input = load_raw(
+            # Both native processes have exited.  Keep the input on disk and
+            # compare one bounded NumPy batch at a time, so neither the full
+            # double-precision input nor the full reference is resident.
+            reference_input = load_raw_memmap(
                 case_dir / "input.bin",
                 case["api"],
                 tuple(case["shape"]),
                 case["batch"],
             )
-            try:
-                reference = numpy_reference(
-                    reference_input,
-                    case["api"],
-                    tuple(case["shape"]),
-                    case["direction"],
-                )
-            finally:
-                del reference_input
-            record["numpy_dtype"] = str(reference.dtype)
+            record["numpy_dtype"] = str(numpy_reference_dtype(case["api"]))
 
             for implementation, field in (
                 ("flagfft", "accuracy"),
@@ -1044,18 +1207,21 @@ def run_accuracy_case(
                 stage = capture_stages[implementation]
                 if stage.get("status") == "Completed":
                     record[field] = compare_output(
-                        case, case_dir, implementation, reference, stage
+                        case,
+                        case_dir,
+                        implementation,
+                        None,
+                        stage,
+                        reference_input,
                     )
                     record[field]["data_file"] = data_file
-
-            # Release the large reference before artifact cleanup and before
-            # the worker starts the next case.
-            reference = None
     except Exception as error:
         for field in ("accuracy", "platform_accuracy"):
             if record[field]["status"] == "NotFound":
                 record[field] = {"status": "Error", "error": repr(error), "plan": None}
     finally:
+        if reference_input is not None:
+            del reference_input
         record["duration"] = time.monotonic() - started
         keep = retain_raw_artifacts(artifact_policy, record)
         cleanup_errors = [] if keep else cleanup_raw_artifacts(case_dir)
@@ -1577,21 +1743,28 @@ def requested_phases_passed(
 
 
 def reanalyze_case(case: dict, case_dir: Path) -> dict:
-    value = load_raw(
+    reference_input = load_raw_memmap(
         case_dir / "input.bin", case["api"], tuple(case["shape"]), case["batch"]
     )
-    reference = numpy_reference(
-        value, case["api"], tuple(case["shape"]), case["direction"]
-    )
-    case.pop("numpy_sha256", None)
-    case["numpy_dtype"] = str(reference.dtype)
-    for implementation, field in (
-        ("flagfft", "accuracy"),
-        ("platform", "platform_accuracy"),
-    ):
-        stage = case.get(field, {}).get("capture", {"status": "NotFound"})
-        case[field] = compare_output(case, case_dir, implementation, reference, stage)
-        case[field]["data_file"] = case["data_file"]
+    try:
+        case.pop("numpy_sha256", None)
+        case["numpy_dtype"] = str(numpy_reference_dtype(case["api"]))
+        for implementation, field in (
+            ("flagfft", "accuracy"),
+            ("platform", "platform_accuracy"),
+        ):
+            stage = case.get(field, {}).get("capture", {"status": "NotFound"})
+            case[field] = compare_output(
+                case,
+                case_dir,
+                implementation,
+                None,
+                stage,
+                reference_input,
+            )
+            case[field]["data_file"] = case["data_file"]
+    finally:
+        del reference_input
     write_json(case_dir / "case.json", case)
     return case
 

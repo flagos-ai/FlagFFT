@@ -91,6 +91,7 @@ TEST(Plan1D, PrimeLengthRaderSupportsRealWrappers) {
 }
 
 TEST(Plan1D, LargeBatchFourStepUsesMeasuredSplit) {
+  if (flagfft::adaptor::backend_name() != "cuda") GTEST_SKIP() << "Measured CUDA split";
   setenv("FLAGFFT_TUNE_DISABLE", "1", 1);
 
   flagfftHandle plan8192 = nullptr;
@@ -115,6 +116,7 @@ TEST(Plan1D, LargeBatchFourStepUsesMeasuredSplit) {
 }
 
 TEST(Plan1D, SmallBatch16384UsesMeasuredSplit) {
+  if (flagfft::adaptor::backend_name() != "cuda") GTEST_SKIP() << "Measured CUDA split";
   setenv("FLAGFFT_TUNE_DISABLE", "1", 1);
 
   flagfftHandle plan16384 = nullptr;
@@ -129,6 +131,7 @@ TEST(Plan1D, SmallBatch16384UsesMeasuredSplit) {
 }
 
 TEST(Plan1D, Size2P20UsesTleOptimizedSplit) {
+  if (flagfft::adaptor::backend_name() != "cuda") GTEST_SKIP() << "CUDA thread-local leaf layout";
   setenv("FLAGFFT_TUNE_DISABLE", "1", 1);
 
   flagfftHandle plan = nullptr;
@@ -140,6 +143,7 @@ TEST(Plan1D, Size2P20UsesTleOptimizedSplit) {
 }
 
 TEST(Plan1D, LargeMixedRadicesUseThreadLocalRectangularLeaves) {
+  if (flagfft::adaptor::backend_name() != "cuda") GTEST_SKIP() << "CUDA thread-local leaf layout";
   setenv("FLAGFFT_TUNE_DISABLE", "1", 1);
 
   struct MixedCase {
@@ -225,6 +229,7 @@ TEST(Plan1D, DoublePlanAvoidsHighSharedMemoryLeaf) {
 }
 
 TEST(Plan1D, A100DoubleUsesOnlyLeafFusedBluesteinOverRader) {
+  if (flagfft::adaptor::backend_name() != "cuda") GTEST_SKIP() << "A100 fused Bluestein policy";
   flagfft::FFTRequest request;
   request.input_dtype = "complex128";
   request.output_dtype = "complex128";
@@ -248,6 +253,7 @@ TEST(Plan1D, A100DoubleUsesOnlyLeafFusedBluesteinOverRader) {
 }
 
 TEST(Plan1D, BluesteinBoundaryKernelsKeepPackingMetadata) {
+  if (flagfft::adaptor::backend_name() == "maca") GTEST_SKIP() << "MACA uses split Bluestein kernels";
   flagfft::FFTRequest request;
   request.input_dtype = "complex64";
   request.output_dtype = "complex64";
@@ -352,6 +358,7 @@ TEST(Plan1D, BatchedCompositeTunerIncludesBothSplitOrientations) {
 }
 
 TEST(Plan1D, DoubleMixedPlansModelCooperativeStagesAndRowPacking) {
+  if (flagfft::adaptor::backend_name() != "cuda") GTEST_SKIP() << "Measured CUDA splits and packing";
   struct MixedCase {
     int64_t length;
     int64_t n1;
@@ -420,6 +427,7 @@ TEST(Plan1D, LargeMixedDecompositionTuneCandidatesIncludeBalancedSplit) {
 }
 
 TEST(Plan1D, BatchFour8192UsesMeasuredSplit) {
+  if (flagfft::adaptor::backend_name() != "cuda") GTEST_SKIP() << "Measured CUDA split";
   setenv("FLAGFFT_TUNE_DISABLE", "1", 1);
 
   flagfftHandle plan8192 = nullptr;

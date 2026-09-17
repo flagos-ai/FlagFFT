@@ -21,7 +21,7 @@ class BackendProfile:
 
     @classmethod
     def from_device(cls, device: dict, policy: str = "native"):
-        if device.get("backend") not in {"cuda", "musa", "ppu", "ix"} or not device.get("device_arch"):
+        if device.get("backend") not in {"cuda", "musa", "ppu", "ix", "maca"} or not device.get("device_arch"):
             raise ValueError("missing or unsupported device identity")
         if policy not in {"legacy", "native", "packed", "balanced"}:
             raise ValueError(f"unknown execution policy: {policy}")

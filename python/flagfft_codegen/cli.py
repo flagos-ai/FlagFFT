@@ -17,7 +17,10 @@ from __future__ import annotations
 """Command-line entry point for ``python -m flagfft_codegen.jit_source``."""
 
 import argparse
+import importlib.util
 import json
+import os
+import sys
 from pathlib import Path
 
 from .emit import (
@@ -30,6 +33,7 @@ from .emit import (
     emit_jit_kernel,
 )
 from .metadata import _csv_ints
+from .target import set_codegen_target
 from .registry import (
     BLUESTEIN,
     BLUESTEIN_FOUR_STEP,
@@ -83,9 +87,13 @@ def main() -> None:
     parser.add_argument("--transpose3d-order", choices=("021", "210", "201", "120"))
     parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--target", default="", help="Triton backend:architecture:warp_size")
+    parser.add_argument("--compile-script", type=Path,
+                        help="Compile in this process using libtriton_jit's standalone helper")
     parser.add_argument("--device-profile", help="JSON device capabilities from the adaptor")
     parser.add_argument("--execution-policy", choices=("legacy", "native", "packed", "balanced"))
     args = parser.parse_args()
+    set_codegen_target(args.target)
     if args.device_profile:
         device = json.loads(args.device_profile)
         policy = args.execution_policy or ("balanced" if device.get("backend") == "ix" else "legacy")
@@ -225,6 +233,26 @@ def main() -> None:
     else:
         raise AssertionError(f"unreachable kernel spec: {args.kernel}")
 
+    if args.compile_script:
+        if not args.target.startswith("maca:"):
+            parser.error("--compile-script currently requires a MACA target")
+        os.environ["TRITON_JIT_BACKEND"] = "MACA"
+        compile_spec = importlib.util.spec_from_file_location("standalone_compile", args.compile_script)
+        if compile_spec is None or compile_spec.loader is None:
+            raise RuntimeError(f"Cannot load compilation helper: {args.compile_script}")
+        compiler = importlib.util.module_from_spec(compile_spec)
+        sys.modules[compile_spec.name] = compiler
+        compile_spec.loader.exec_module(compiler)
+        from triton.backends.compiler import GPUTarget
+        backend, arch, warp = args.target.split(":")
+        metadata["binary_dir"] = compiler.compile_a_kernel(
+            metadata["module_path"], metadata["kernel_name"], metadata["signature"],
+            metadata["num_warps"], metadata["num_stages"], 0, {},
+            compile_target=GPUTarget(backend, int(arch), int(warp)))
+        kernel_metadata = Path(metadata["binary_dir"]) / (metadata["kernel_name"] + ".json")
+        compiled = json.loads(kernel_metadata.read_text())
+        if compiled.get("global_scratch_size", 0) or compiled.get("profile_scratch_size", 0):
+            raise RuntimeError("MACA kernel requires scratch allocation unsupported by raw launch")
     profile.validate(metadata["num_warps"])
     metadata.update({"hardware_profile": asdict(profile), "profile_id": profile.fingerprint,
                      "warp_size": profile.warp_size,

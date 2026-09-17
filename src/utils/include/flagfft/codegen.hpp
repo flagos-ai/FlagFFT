@@ -53,6 +53,7 @@ struct JitKernelArg {
 
 struct JitKernel {
   std::string execution_description() const;
+  std::string binary_dir;
   ~JitKernel();
   void compile();
   void launch(adaptor::StreamHandle stream,

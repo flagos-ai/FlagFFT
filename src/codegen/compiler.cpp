@@ -166,7 +166,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_musa_s5000_fp64_full_leaf =
         request.device_type == "musa" && request.device_arch == "31" && request.input_dtype == "complex128" &&
         batch == 1;
-    const bool use_full_leaf =
+    // MACA's portable register exchange is compiled separately for each FFT.
+    // Combining both FFTs makes this plugin's optimization prohibitively slow.
+    const bool allow_bluestein_fusion = request.device_type != "maca";
+    const bool use_full_leaf = allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf) &&
         leaf != nullptr;
     // Batched S5000 FP64 convolutions can fuse the boundary when both
@@ -176,7 +179,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.device_type == "musa" && request.device_arch == "31" &&
         request.input_dtype == "complex128" &&
         batch >= 16 && batch == chunk_batch;
-    const bool use_four_step = (request.input_dtype == "complex64" || use_musa_fp64_four_step) &&
+    const bool use_four_step = allow_bluestein_fusion &&
+                               (request.input_dtype == "complex64" || use_musa_fp64_four_step) &&
                                four_step != nullptr &&
                                row_leaf != nullptr && col_leaf != nullptr && row_leaf->length < 512 &&
                                col_leaf->length < 512;

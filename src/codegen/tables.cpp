@@ -359,7 +359,9 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   const bool is_double = dtype_is_double(request.input_dtype);
   std::vector<DeviceAllocation> tables;
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-    const int64_t lanes = use_cooperative_stage_lanes(leaf, request)
+    const int64_t lanes = adaptor::backend_name() == "maca"
+                              ? leaf.length / leaf.factors[stage]
+                              : use_cooperative_stage_lanes(leaf, request)
                               ? cooperative_stage_lanes(leaf.length, leaf.factors[stage])
                               : leaf.lanes;
     if (is_double) {

@@ -136,7 +136,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   const bool thread_local_complex =
       (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
       (context.input_dtype == "complex128" && context.output_dtype == "complex128");
-  if (thread_local_complex && n % kThreadLocalColLength == 0) {
+  if (context.device_type != "maca" && thread_local_complex && n % kThreadLocalColLength == 0) {
     const int64_t n1 = n / kThreadLocalColLength;
     const int64_t register_radix = n1 / kThreadLocalCrossRadix;
     if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix)) {
@@ -201,7 +201,8 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         context.device_type == "musa" && context.device_arch == "31" && context.batch >= 16 &&
         fp64_input && fp64_output && n == 8191;
     const bool prefer_bluestein =
-        (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
+        (context.device_type != "maca" && context.input_dtype == "complex64" &&
+         context.output_dtype == "complex64") ||
         has_a100_fp64_fused_leaf || has_musa_s5000_fp64_fused_leaf || prefer_musa_batched_bluestein;
     if (!prefer_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);

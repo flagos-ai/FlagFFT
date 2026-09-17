@@ -122,10 +122,15 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   }
 
   const RequestContext &context = request_context();
+  if (context.device_type == "maca" && contains(kSupportedRadices, n)) {
+    // Codegen already emits one natural-order codelet for these lengths.
+    best_leaf_factors_cache_[n] = {n};
+    return best_leaf_factors_cache_[n];
+  }
   // Batch-1 small leaves can be latency-bound with only 1-2 warps. Use
   // extra radix-4/8 stages to raise lane counts while keeping one shared-memory
   // leaf; apply as a generic heuristic first and validate per API/backend.
-  if (context.batch == 1 && parallel_leaf_heuristic_enabled_) {
+  if (context.device_type != "maca" && context.batch == 1 && parallel_leaf_heuristic_enabled_) {
     // More radix-4/8 stages raise lane counts to 64-128 while keeping the FFT
     // in one shared-memory leaf, which is faster than the fewest-stage choice.
     if (n == 256) {
@@ -158,8 +163,10 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
 }
 
 int64_t PlanBuilder::choose_num_warps(int64_t lanes) {
-  int64_t warps = std::max<int64_t>(1, (lane_block_for(lanes) + 31) / 32);
-  int64_t choice = 1;
+  const bool is_maca = request_context_.has_value() && request_context_->device_type == "maca";
+  const int64_t warp_size = is_maca ? 64 : 32;
+  int64_t warps = std::max<int64_t>(1, ceil_div(lane_block_for(lanes), warp_size));
+  int64_t choice = is_maca ? 2 : 1;
   while (choice < warps) {
     choice *= 2;
   }
@@ -205,6 +212,12 @@ PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &f
         "inputs");
   }
   int64_t lanes = choose_lanes(n, factors);
+  int64_t execution_lanes = lanes;
+  if (context.device_type == "maca") {
+    for (int64_t radix : factors) {
+      execution_lanes = std::max(execution_lanes, n / radix);
+    }
+  }
   std::vector<int64_t> generic_radices;
   for (int64_t radix : factors) {
     if (!contains(kSpecializedButterflyRadices, radix) &&
@@ -218,7 +231,7 @@ PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &f
                                         factors,
                                         rem,
                                         lanes,
-                                        choose_num_warps(lanes),
+                                        choose_num_warps(execution_lanes),
                                         generic_radices,
                                         *smem_elements);
 }

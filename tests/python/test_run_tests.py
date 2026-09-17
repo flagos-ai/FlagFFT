@@ -373,6 +373,24 @@ def test_real_inverse_input_is_a_valid_multidimensional_half_spectrum(api, shape
     np.testing.assert_allclose(restored, value, rtol=1e-13, atol=1e-13)
 
 
+def test_input_generation_fills_splitmix_stream_in_bounded_chunks(monkeypatch):
+    seed = 0x123456789ABCDEF0
+    expected = RUN_TESTS.splitmix_signed_unit(37, seed).astype(np.float32)
+    actual = np.empty(expected.size, dtype=np.float32)
+    monkeypatch.setattr(RUN_TESTS, "INPUT_GENERATION_CHUNK_ELEMENTS", 5)
+    RUN_TESTS.fill_splitmix_signed_unit(actual, seed)
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_make_input_preserves_chunked_splitmix_values(monkeypatch):
+    monkeypatch.setattr(RUN_TESTS, "INPUT_GENERATION_CHUNK_ELEMENTS", 3)
+    value, seed = RUN_TESTS.make_input("c2c", (7,), 2, 1.0)
+    expected = RUN_TESTS.as_complex_from_interleaved(
+        RUN_TESTS.splitmix_signed_unit(28, seed), "c2c", (2, 7)
+    )
+    np.testing.assert_array_equal(value, expected)
+
+
 def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
     value, _ = RUN_TESTS.make_input("c2c", (23,), 1, 1.0)
     forward = RUN_TESTS.numpy_reference(value, "c2c", (23,), "forward")
@@ -381,6 +399,61 @@ def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
     np.testing.assert_allclose(
         inverse, value.astype(np.complex128) * 23, rtol=1e-13, atol=1e-13
     )
+
+
+def test_numpy_reference_chunks_batched_transforms(monkeypatch):
+    value, _ = RUN_TESTS.make_input("c2c", (8,), 3, 1.0)
+    expected = np.fft.fftn(
+        value.astype(np.complex128), s=(8,), axes=(1,)
+    )
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+    actual = RUN_TESTS.numpy_reference(value, "c2c", (8,), "forward")
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("api", "direction"),
+    [
+        ("c2c", "forward"),
+        ("c2r", "inverse"),
+        ("r2c", "forward"),
+        ("z2z", "forward"),
+        ("z2d", "inverse"),
+        ("d2z", "forward"),
+    ],
+)
+def test_streaming_error_stats_matches_materialized_reference(
+    tmp_path, monkeypatch, api, direction
+):
+    shape = (8,)
+    batch = 3
+    value, _ = RUN_TESTS.make_input(api, shape, batch, 1.0)
+    reference = RUN_TESTS.numpy_reference(value, api, shape, direction)
+    output_dtype = (
+        RUN_TESTS.complex_dtype(api)
+        if np.iscomplexobj(reference)
+        else RUN_TESTS.real_dtype(api)
+    )
+    input_path = tmp_path / "input.bin"
+    output_path = tmp_path / "flagfft.bin"
+    value.tofile(input_path)
+    reference.astype(output_dtype).tofile(output_path)
+
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+    input_memmap = RUN_TESTS.load_raw_memmap(input_path, api, shape, batch)
+    try:
+        streaming = RUN_TESTS.streaming_error_stats(
+            output_path, input_memmap, api, shape, direction, batch
+        )
+    finally:
+        del input_memmap
+    elements = RUN_TESTS.product(
+        RUN_TESTS.output_shape(api, shape, batch)[1:]
+    )
+    materialized = RUN_TESTS.error_stats(
+        reference.astype(output_dtype), reference, elements, batch
+    )
+    assert streaming == materialized
 
 
 def test_error_metric_detects_worst_batch_and_nonfinite_values():
@@ -397,6 +470,17 @@ def test_error_metric_detects_worst_batch_and_nonfinite_values():
     assert not RUN_TESTS.judged_stats(stats, RUN_TESTS.accuracy_limit("z2z", 8))[
         "passed"
     ]
+
+
+def test_error_stats_reduces_in_bounded_chunks(monkeypatch):
+    reference = np.arange(24, dtype=np.float64).reshape(2, 12)
+    value = reference.copy()
+    value[1, 7] += 0.1
+    monkeypatch.setattr(RUN_TESTS, "ERROR_STATS_CHUNK_ELEMENTS", 3)
+    chunked = RUN_TESTS.error_stats(value, reference, 12, 2)
+    monkeypatch.setattr(RUN_TESTS, "ERROR_STATS_CHUNK_ELEMENTS", 100)
+    whole = RUN_TESTS.error_stats(value, reference, 12, 2)
+    assert chunked == whole
 
 
 PLAN = 'LeafPlan(n=256, factors=[4,4,4,4])\nCompiledRawLeaf(kernel="fft")\n'
@@ -446,11 +530,11 @@ def test_accuracy_captures_finish_before_numpy_reference(
 ):
     case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
     events = []
-    original_reference = RUN_TESTS.numpy_reference
+    original_reference_chunks = RUN_TESTS.numpy_reference_chunks
 
-    def delayed_reference(value, api, shape, direction):
+    def delayed_reference_chunks(value, api, shape, direction):
         events.append("reference")
-        return original_reference(value, api, shape, direction)
+        yield from original_reference_chunks(value, api, shape, direction)
 
     def capture(cmd, timeout, gpu_id, case_dir, implementation):
         events.append(f"capture:{implementation}")
@@ -462,14 +546,17 @@ def test_accuracy_captures_finish_before_numpy_reference(
             (case_dir / "flagfft_plan.txt").write_text(PLAN)
         return {"status": "Completed", "duration": 0.01, "command": cmd}
 
-    monkeypatch.setattr(RUN_TESTS, "numpy_reference", delayed_reference)
+    monkeypatch.setattr(
+        RUN_TESTS, "numpy_reference_chunks", delayed_reference_chunks
+    )
     monkeypatch.setattr(RUN_TESTS, "run_subprocess", capture)
 
     record = RUN_TESTS.run_accuracy_case(
         case, tmp_path / "capture", tmp_path, 0, 10, "none"
     )
 
-    assert events == ["capture:flagfft", "capture:platform", "reference"]
+    assert events[:2] == ["capture:flagfft", "capture:platform"]
+    assert events[2:] == ["reference", "reference"]
     assert record["capture_stages"]["flagfft"]["status"] == "Completed"
     assert record["capture_stages"]["platform"]["status"] == "Completed"
 
