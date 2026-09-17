@@ -89,10 +89,16 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                        int64_t grid_y,
                        int64_t grid_z) {
   compile();
+#if !defined(BACKEND_NPU)
   adaptor::DevicePtr global_scratch = 0;
   adaptor::DevicePtr profile_scratch = 0;
+#endif
   std::vector<void *> args;
+#if defined(BACKEND_NPU)
+  args.reserve(kernel_args.size());
+#else
   args.reserve(kernel_args.size() + 2);
+#endif
   for (const JitKernelArg &arg : kernel_args) {
     switch (arg.kind) {
       case JitArgKind::DevicePtr:
@@ -106,10 +112,12 @@ void JitKernel::launch(adaptor::StreamHandle stream,
         break;
     }
   }
+#if !defined(BACKEND_NPU)
   args.push_back(&global_scratch);
   args.push_back(&profile_scratch);
 #if !defined(BACKEND_MACA)
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
+#endif
 #endif
   // Diagnostic timings synchronise each launch and must not be used as
   // end-to-end benchmark results. Disabled unless explicitly requested.

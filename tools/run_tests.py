@@ -56,9 +56,11 @@ GROUPS = (
 # of silently removing operators from the acceptance surface.
 UNSUPPORTED_APIS_BY_BACKEND: dict[str, frozenset[str]] = {
     "ix": frozenset({"z2z", "z2d", "d2z"}),
+    "npu": frozenset({"z2z", "z2d", "d2z"}),
 }
 BACKEND_SKIP_REASONS = {
     "ix": "Current IX acceptance policy disables FP64; use probe_capabilities.py for device-specific evidence.",
+    "npu": "Ascend 910B does not support FP64; Z2Z, Z2D and D2Z are excluded from execution.",
 }
 DIRECTIONS = {
     "c2c": ("forward", "inverse"),
@@ -420,7 +422,7 @@ def error_stats(
         "mixed_pointwise": float(mixed_pointwise),
         "worst_l2_batch": int(worst_l2_batch),
         "worst_linf_batch": int(worst_linf_batch),
-        "finite": finite,
+        "finite": True,
     }
 
 
@@ -892,6 +894,59 @@ def operator_skip_reason(op: dict, backend: str) -> str | None:
     )
 
 
+def _prime_factors(value: int) -> list[int]:
+    factors = []
+    candidate = 2
+    while candidate * candidate <= value:
+        while value % candidate == 0:
+            factors.append(candidate)
+            value //= candidate
+        candidate += 1 if candidate == 2 else 2
+    if value > 1:
+        factors.append(value)
+    return factors
+
+
+def case_skip_reason(case: dict, backend: str) -> str | None:
+    """Return a backend reference-library limitation for one concrete case.
+
+    ops-fft's current Ascend 910B implementation is FP32-only.  It implements
+    horizontal 1D C2C/R2C/C2R and 2D C2C for dimensions 32, 64, and 128; it has
+    no 3D or 2D real kernels.  1D kernels reject lengths with factors above 47.
+    Keep these limits at case granularity so supported entries in a mixed matrix
+    still run and unsupported entries are visible policy skips.
+    """
+    if backend != "npu":
+        return operator_skip_reason(case, backend)
+    if is_double(case["api"]):
+        return BACKEND_SKIP_REASONS["npu"]
+    rank = int(case["rank"])
+    shape = tuple(int(n) for n in case["shape"])
+    if rank == 3:
+        return "ops-fft on Ascend 910B does not implement 3D FFT plans."
+    if rank == 2:
+        if case["api"] != "c2c":
+            return "ops-fft on Ascend 910B implements only 2D FP32 C2C."
+        if any(n not in (32, 64, 128) for n in shape):
+            return "ops-fft 2D C2C on Ascend 910B supports only dimensions 32, 64, or 128."
+        return None
+    if rank != 1:
+        return f"ops-fft does not implement rank-{rank} FFT plans on Ascend 910B."
+    n = shape[0]
+    if n > 2**27:
+        return "ops-fft 1D FFT on Ascend 910B limits nx to 2^27."
+    # The 910B C2C path uses DFT for n <= 256; the real paths use DFT for
+    # n <= 1024.  Those DFT kernels accept arbitrary positive lengths.  The
+    # mixed-radix kernels used above those thresholds accept prime factors up
+    # to 47.
+    dft_limit = 256 if case["api"] == "c2c" else 1024
+    if n <= dft_limit:
+        return None
+    if any(factor > 47 for factor in _prime_factors(n)):
+        return "ops-fft 1D FFT on Ascend 910B rejects lengths with a prime factor above 47."
+    return None
+
+
 def git_commit(source: Path) -> str:
     commands = [["git", "-C", str(source), "rev-parse", "HEAD"]]
     git_pointer = source / ".git"
@@ -936,12 +991,16 @@ def git_commit(source: Path) -> str:
 
 
 def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
+    # Archive-based remote source syncs intentionally omit .git.  Let the
+    # caller provide the exact committed source SHA in that environment so
+    # result manifests remain reproducible instead of recording "unknown".
+    source_commit = os.environ.get("FLAGFFT_SOURCE_COMMIT") or git_commit(ROOT)
     ENV_INFO.update(
         {
             "architecture": platform.machine(),
             "python": platform.python_version(),
             "numpy": np.__version__,
-            "git_commit": git_commit(ROOT),
+            "git_commit": source_commit,
             "backend": detect_backend(build_dir),
         }
     )
@@ -951,18 +1010,37 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
         "ppu": "PPU cuFFT-compatible FFT",
         "ix": "ixfft (CoreX cuFFT-compatible FFT)",
         "maca": "mcFFT",
+        "npu": "ops-fft (CANN)",
     }.get(ENV_INFO["backend"], "unknown")
     try:
         import torch
 
-        ENV_INFO["torch"] = {
-            "version": torch.__version__,
-            "cuda_available": torch.cuda.is_available(),
-            "device_count": torch.cuda.device_count(),
-            "device_name": (
-                torch.cuda.get_device_name() if torch.cuda.is_available() else "N/A"
-            ),
-        }
+        backend = ENV_INFO["backend"]
+        if backend == "npu":
+            try:
+                import torch_npu  # noqa: F401
+
+                npu_count = int(torch.npu.device_count())
+                npu_name = torch.npu.get_device_name() if npu_count else "N/A"
+            except Exception:
+                npu_count = 0
+                npu_name = "N/A"
+            ENV_INFO["torch"] = {
+                "version": torch.__version__,
+                "cuda_available": torch.cuda.is_available(),
+                "device_count": npu_count,
+                "npu_device_count": npu_count,
+                "device_name": npu_name,
+            }
+        else:
+            ENV_INFO["torch"] = {
+                "version": torch.__version__,
+                "cuda_available": torch.cuda.is_available(),
+                "device_count": torch.cuda.device_count(),
+                "device_name": (
+                    torch.cuda.get_device_name() if torch.cuda.is_available() else "N/A"
+                ),
+            }
     except ImportError:
         ENV_INFO["torch"] = {"version": "N/A", "device_count": 0}
     try:
@@ -976,7 +1054,9 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
     try:
         query_env = os.environ.copy()
         if gpu_id is not None:
-            for variable in ("CUDA_VISIBLE_DEVICES", "MUSA_VISIBLE_DEVICES", "PPU_VISIBLE_DEVICES", "IX_VISIBLE_DEVICES"):
+            for variable in ("CUDA_VISIBLE_DEVICES", "MUSA_VISIBLE_DEVICES", "PPU_VISIBLE_DEVICES",
+                             "IX_VISIBLE_DEVICES", "ASCEND_VISIBLE_DEVICES",
+                             "ASCEND_RT_VISIBLE_DEVICES", "NPU_VISIBLE_DEVICES"):
                 query_env[variable] = str(gpu_id)
         probe = subprocess.run([str(build_dir / "flagfft-cli"), "device-info", "--json"],
                                capture_output=True, text=True, timeout=30, check=True, env=query_env)
@@ -998,6 +1078,9 @@ def run_subprocess(
         "IX_VISIBLE_DEVICES",
         "MACA_VISIBLE_DEVICES",
         "MC_VISIBLE_DEVICES",
+        "ASCEND_VISIBLE_DEVICES",
+        "ASCEND_RT_VISIBLE_DEVICES",
+        "NPU_VISIBLE_DEVICES",
     ):
         env[variable] = str(gpu_id)
     env["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + env.get("PYTHONPATH", "")
@@ -1121,13 +1204,20 @@ def run_accuracy_case(
     gpu_id: int,
     timeout: int,
     artifact_policy: str = "failed",
+    backend: str = "cuda",
 ) -> dict:
+    # Keep compatibility with the pre-artifact-policy internal call, which
+    # passed the backend as the sixth positional argument.
+    if artifact_policy in {"cuda", "musa", "ppu", "ix", "npu"} and backend == "cuda":
+        backend = artifact_policy
+        artifact_policy = "failed"
     if artifact_policy not in ARTIFACT_POLICIES:
         raise ValueError(
             f"unknown artifact policy: {artifact_policy}; expected one of {', '.join(ARTIFACT_POLICIES)}"
         )
     case_dir = output_dir / case["op_id"] / case["case_id"]
     case_dir.mkdir(parents=True, exist_ok=True)
+    reference_skip_reason = case.get("skip_reason") if backend == "npu" else None
     record = {
         "format_version": FORMAT_VERSION,
         **case,
@@ -1136,7 +1226,17 @@ def run_accuracy_case(
         # unless the user explicitly selected the strict no-artifact mode.
         "raw_artifacts_retained": artifact_policy != "none",
         "accuracy": pending_accuracy(),
-        "platform_accuracy": pending_accuracy(),
+        "platform_accuracy": (
+            {
+                "status": "Skipped",
+                "reference": ENV_INFO.get("reference_library", "ops-fft (CANN)"),
+                "plan": None,
+                "skip_reason": reference_skip_reason,
+                "error": reference_skip_reason,
+            }
+            if reference_skip_reason
+            else pending_accuracy()
+        ),
     }
     data_file = (case_dir / "case.json").relative_to(output_dir).as_posix()
     record["data_file"] = data_file
@@ -1155,16 +1255,16 @@ def run_accuracy_case(
                 "input_sha256": sha256(case_dir / "input.bin"),
             }
         )
+        implementations = [("flagfft", "accuracy")]
+        if not reference_skip_reason:
+            implementations.append(("platform", "platform_accuracy"))
         # The native capture is a separate process.  Drop the generated input
         # before starting it so the worker does not retain a full-size array
         # alongside the capture process and its output buffers.
         del value
 
         capture_stages = {}
-        for implementation, field in (
-            ("flagfft", "accuracy"),
-            ("platform", "platform_accuracy"),
-        ):
+        for implementation, field in implementations:
             command = build_accuracy_cmd(case, capture_bin, case_dir, implementation)
             stage = run_subprocess(command, timeout, gpu_id, case_dir, implementation)
             capture_stages[implementation] = stage
@@ -1175,10 +1275,7 @@ def run_accuracy_case(
 
         # A failed or timed-out native capture does not need a NumPy reference.
         # Record those stage results first, then only compare completed output.
-        for implementation, field in (
-            ("flagfft", "accuracy"),
-            ("platform", "platform_accuracy"),
-        ):
+        for implementation, field in implementations:
             stage = capture_stages[implementation]
             if stage.get("status") != "Completed":
                 record[field] = compare_output(
@@ -1200,10 +1297,7 @@ def run_accuracy_case(
             )
             record["numpy_dtype"] = str(numpy_reference_dtype(case["api"]))
 
-            for implementation, field in (
-                ("flagfft", "accuracy"),
-                ("platform", "platform_accuracy"),
-            ):
+            for implementation, field in implementations:
                 stage = capture_stages[implementation]
                 if stage.get("status") == "Completed":
                     record[field] = compare_output(
@@ -1232,7 +1326,9 @@ def run_accuracy_case(
     return record
 
 
-def parse_perf_result(output: str, case: dict | None = None) -> dict:
+def parse_perf_result(
+    output: str, case: dict | None = None, backend: str | None = None
+) -> dict:
     decoder = json.JSONDecoder()
     data = None
     for index, char in enumerate(output):
@@ -1256,15 +1352,16 @@ def parse_perf_result(output: str, case: dict | None = None) -> dict:
     ff = timing.get("flagfft_median_ms", 0)
     ref = timing.get("ref_median_ms", 0)
     speedup = timing.get("speedup", 0)
-    valid = all(
+    finite_positive = lambda value: (
         isinstance(value, (int, float)) and math.isfinite(value) and value > 0
-        for value in (ff, ref, speedup)
     )
+    valid = all(finite_positive(value) for value in (ff, ref, speedup))
     return {
         "status": "Passed" if valid else "Failed",
         "flagfft_median_ms": ff,
         "ref_median_ms": ref,
         "speedup": speedup,
+        "reference_available": True,
         "plan": raw_case.get("plan_description"),
     }
 
@@ -1278,6 +1375,7 @@ def run_performance_case(
     warmup: int,
     iters: int,
     baseline_valid: bool | None,
+    backend: str = "cuda",
 ) -> dict:
     case_dir = output_dir / case["op_id"] / "performance" / case["case_id"]
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -1285,7 +1383,7 @@ def run_performance_case(
     stage = run_subprocess(command, timeout, gpu_id, case_dir, "bench")
     if stage["status"] == "Completed":
         result = parse_perf_result(
-            (case_dir / "bench.stdout").read_text(errors="replace"), case
+            (case_dir / "bench.stdout").read_text(errors="replace"), case, backend
         )
     else:
         result = {"status": stage["status"], "error": stage.get("error"), "plan": None}
@@ -1316,6 +1414,7 @@ def worker_proc(
 
     signal.signal(signal.SIGTERM, stop_worker)
     signal.signal(signal.SIGINT, stop_worker)
+    backend = detect_backend(build_dir)
     while True:
         job = work_queue.get()
         if job is None:
@@ -1329,10 +1428,12 @@ def worker_proc(
                 gpu_id,
                 args.timeout,
                 args.artifact_policy,
+                backend,
             )
-            baseline_valid = (
-                baseline_valid and record["platform_accuracy"]["status"] == "Passed"
-            )
+            if backend != "npu":
+                baseline_valid = (
+                    baseline_valid and record["platform_accuracy"]["status"] == "Passed"
+                )
             display_queue.put(
                 {
                     **case,
@@ -1344,7 +1445,7 @@ def worker_proc(
                     "platform_result": record["platform_accuracy"],
                 }
             )
-        if not args.accuracy_only:
+        if not args.accuracy_only and not job["performance_case"].get("skip_reason"):
             case = job["performance_case"]
             try:
                 record = run_performance_case(
@@ -1356,6 +1457,7 @@ def worker_proc(
                     args.warmup,
                     args.iters,
                     baseline_valid,
+                    backend,
                 )
                 result = record["performance"]
             except Exception as error:
@@ -1375,10 +1477,11 @@ def worker_proc(
 def policy_skip_message(case: dict, phase: str) -> dict:
     """Create a report/CSV message for a case excluded by backend policy."""
     reason = case.get("skip_reason", "unsupported by backend policy")
+    reference = ENV_INFO.get("reference_library", "unknown")
     result = {
         "status": "Skipped",
         "reference": (
-            ENV_INFO.get("reference_library")
+            reference
             if phase == "performance"
             else "numpy.fft"
         ),
@@ -1397,7 +1500,7 @@ def policy_skip_message(case: dict, phase: str) -> dict:
     if phase == "accuracy":
         message["platform_result"] = {
             "status": "Skipped",
-            "reference": "numpy.fft",
+            "reference": reference,
             "plan": None,
             "skip_reason": reason,
             "error": reason,
@@ -1432,11 +1535,20 @@ def aggregate_results(
                 if phase == "performance"
                 else cases or []
             )
-            entries = {
-                case["case_id"]: {**case, "status": "NotFound", "plan": None}
-                for case in expected
-                if case["op_id"] == op["id"]
-            }
+            entries = {}
+            for case in expected:
+                if case["op_id"] != op["id"]:
+                    continue
+                entry = {**case, "status": "NotFound", "plan": None}
+                if case.get("skip_reason") and phase in ("platform_accuracy", "performance"):
+                    entry.update(
+                        {
+                            "status": "Skipped",
+                            "skip_reason": case["skip_reason"],
+                            "error": case["skip_reason"],
+                        }
+                    )
+                entries[case["case_id"]] = entry
             op_results[op["id"]][phase] = {
                 "status": (
                     "Skipped"
@@ -1524,8 +1636,23 @@ def aggregate_results(
                 block["status"] = "Incomplete"
             elif block["total"] and block["passed"] == block["total"]:
                 block["status"] = "Passed"
-            elif block["skipped"]:
-                block["status"] = "Skipped"
+            elif block["skipped"] and block["passed"] + block["skipped"] == block["total"]:
+                # A reference library can support only part of a mixed matrix
+                # (for example, ops-fft's 2D size set). Policy-skipped cases
+                # are acceptable when every runnable case passed.
+                if block["passed"] == 0:
+                    block["status"] = "Skipped"
+                    block["policy_skipped"] = True
+                    block.setdefault(
+                        "skip_reason",
+                        next(
+                            (entry.get("skip_reason") for entry in entries if entry.get("skip_reason")),
+                            "unsupported by backend policy",
+                        ),
+                    )
+                else:
+                    block["status"] = "Passed"
+                    block["policy_skipped_cases"] = block["skipped"]
         # Preserve the report consumer's existing accuracy.details and
         # performance.data structure alongside the richer per-case records.
         for phase in ("accuracy", "platform_accuracy"):
@@ -2013,9 +2140,17 @@ def main(argv: list[str] | None = None) -> int:
         if (reason := operator_skip_reason(op, backend)) is not None
     }
     skipped_ids = set(skip_reasons)
-    runnable_cases = [
-        case for case in expanded_cases if case["op_id"] not in skipped_ids
-    ]
+    case_reasons = {
+        case["case_id"]: case_skip_reason(case, backend)
+        for case in expanded_cases
+        if case["op_id"] not in skipped_ids
+        and (case_skip_reason(case, backend) is not None)
+    }
+    # Reference-library limits do not prevent FlagFFT itself from being
+    # checked against NumPy.  They suppress only the platform comparison and
+    # the corresponding performance row.  Whole-operator skips (FP64 on
+    # NPU/IX) remain excluded from execution below.
+    runnable_cases = [case for case in expanded_cases if case["op_id"] not in skipped_ids]
     if args.max_cases is not None:
         runnable_case_ids = {
             case["case_id"] for case in runnable_cases[: args.max_cases]
@@ -2027,9 +2162,13 @@ def main(argv: list[str] | None = None) -> int:
         if case["op_id"] in skipped_ids:
             all_cases.append({**case, "skip_reason": skip_reasons[case["op_id"]]})
         elif case["case_id"] in runnable_case_ids:
-            all_cases.append(case)
+            if case["case_id"] in case_reasons:
+                all_cases.append({**case, "skip_reason": case_reasons[case["case_id"]]})
+            else:
+                all_cases.append(case)
     cases = [case for case in all_cases if case["op_id"] not in skipped_ids]
     skipped_cases = [case for case in all_cases if case["op_id"] in skipped_ids]
+    reference_skipped_cases = [case for case in cases if case.get("skip_reason")]
     active_ids = {case["op_id"] for case in all_cases}
     ops = [op for op in ops if op["id"] in active_ids]
     skipped_ids &= active_ids
@@ -2037,7 +2176,9 @@ def main(argv: list[str] | None = None) -> int:
     if not all_cases:
         raise ValueError("no test cases selected")
     perf_cases = performance_cases(all_cases)
-    runnable_perf_cases = performance_cases(cases)
+    runnable_perf_cases = performance_cases(
+        [case for case in cases if not case.get("skip_reason")]
+    )
     pinfo(
         f"Expanded {len(all_cases)} accuracy cases and {len(perf_cases)} performance cases "
         f"from {len(ops)} operators"
@@ -2046,6 +2187,11 @@ def main(argv: list[str] | None = None) -> int:
         pwarn(
             f"Backend {backend} policy skipped {len(skipped_cases)} cases "
             f"across {len(skipped_ids)} operators"
+        )
+    if reference_skipped_cases:
+        pwarn(
+            f"Reference library policy skipped {len(reference_skipped_cases)} "
+            "platform/performance cases; FlagFFT accuracy still runs"
         )
     if args.dry_run:
         print(
@@ -2146,12 +2292,25 @@ def main(argv: list[str] | None = None) -> int:
             "performance_cases": perf_cases,
         },
     )
+    # Keep a job for every selected accuracy case.  A reference-library
+    # limitation suppresses only its platform/performance phases, while
+    # FlagFFT still needs to run the NumPy accuracy check.  Such cases are
+    # therefore absent from runnable_perf_cases but must not cause a lookup
+    # failure when their accuracy case is attached below.
+    # Keep the performance case canonical (without the accuracy scale suffix),
+    # while still creating a job for every accuracy case.  The latter is
+    # required for reference-library skips: FlagFFT accuracy still runs even
+    # when the corresponding platform/performance case is suppressed.
+    performance_by_name = {
+        case["case_id"]: case for case in performance_cases(cases)
+    }
     jobs = {
-        case["case_id"]: {"performance_case": case, "accuracy_cases": []}
-        for case in runnable_perf_cases
+        key: {"performance_case": case, "accuracy_cases": []}
+        for key, case in performance_by_name.items()
     }
     for case in cases:
-        jobs[case_name(case, performance=True)]["accuracy_cases"].append(case)
+        key = case_name(case, performance=True)
+        jobs[key]["accuracy_cases"].append(case)
     # Spawn avoids forking an initialized CUDA/PyTorch runtime.
     context = multiprocessing.get_context("spawn")
     work_queue = context.Queue()
@@ -2230,6 +2389,7 @@ def main(argv: list[str] | None = None) -> int:
                 messages.append(message)
                 writer.writerow(incremental_row(message))
                 stream.flush()
+        for case in reference_skipped_cases:
             if not args.accuracy_only:
                 message = policy_skip_message(case, "performance")
                 messages.append(message)

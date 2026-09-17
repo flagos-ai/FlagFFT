@@ -32,6 +32,7 @@ struct BenchResult {
   TimingStats reference;
   double speedup = 0.0;
   std::string plan_description;
+  bool reference_available = true;
 };
 
 BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool include_path);

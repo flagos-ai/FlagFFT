@@ -21,13 +21,17 @@ class BackendProfile:
 
     @classmethod
     def from_device(cls, device: dict, policy: str = "native"):
-        if device.get("backend") not in {"cuda", "musa", "ppu", "ix", "maca"} or not device.get("device_arch"):
+        if device.get("backend") not in {"cuda", "musa", "ppu", "ix", "maca", "npu"} or not device.get("device_arch"):
             raise ValueError("missing or unsupported device identity")
         if policy not in {"legacy", "native", "packed", "balanced"}:
             raise ValueError(f"unknown execution policy: {policy}")
         warp = device.get("warp_size")
         threads = device.get("max_threads_per_block")
-        if warp not in (32, 64) or not isinstance(threads, int) or threads < warp:
+        # The Ascend NPU backend launches num_warps as the literal block
+        # dimension (libtriton_jit's npu backend reports WARP_SIZE = 1), so a
+        # warp width of 1 is the queried device fact there, not a fallback.
+        allowed_warps = (1, 32, 64) if device.get("backend") == "npu" else (32, 64)
+        if warp not in allowed_warps or not isinstance(threads, int) or threads < warp:
             raise ValueError("missing or invalid device launch limits")
         shared = device.get("max_dynamic_shared_memory") or device.get("shared_memory_per_block")
         if shared is not None and (not isinstance(shared, int) or shared <= 0):

@@ -165,6 +165,9 @@ bool is_supported_3d_desc(const FlagFFTPlanDesc &desc) {
 }
 
 bool raw_supported_node(const PlanNodePtr &node) {
+  if (std::dynamic_pointer_cast<StockhamPlanNode>(node) != nullptr) {
+    return true;
+  }
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) != nullptr) {
     return true;
   }

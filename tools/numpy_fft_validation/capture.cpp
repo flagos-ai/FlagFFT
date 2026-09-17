@@ -543,7 +543,21 @@ void run_implementation(const Spec& spec, Implementation implementation) {
 
     std::vector<std::uint8_t> host_output;
 
-    {
+    if (implementation == Implementation::kPlatform &&
+        flagfft::test_adaptor::reference_uses_host_memory()) {
+      // The reference library exposes host pointers and performs its own
+      // device transfers, so no device staging buffers are allocated here.
+      host_output.resize(chunk_layout.output_bytes);
+      Stream stream;
+      RefPlanHandle reference_plan = make_reference_plan(chunk_spec);
+      flagfft::test_adaptor::ref_set_stream(reference_plan, stream.get());
+      execute_reference(reference_plan,
+                        chunk_spec,
+                        chunk_layout,
+                        host_input.data(),
+                        host_output.data());
+      stream.sync();
+    } else {
       Memory device_input(chunk_layout.input_bytes);
       Memory device_output(chunk_layout.output_bytes);
       device_input.copy_from_host(host_input.data(), chunk_layout.input_bytes);

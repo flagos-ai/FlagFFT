@@ -5,7 +5,7 @@ kernels at runtime via [Triton/TLE](https://github.com/FlagTree/flagtree) and
 [libtriton_jit](https://github.com/Artlesbol/libtriton_jit), targeting
 arbitrary-length transforms that vendor FFT libraries may not optimally
 support. The current CMake build supports CUDA, MUSA, PPU, IX
-(Iluvatar/Tianshu), and MACA (MetaX) backends.
+(Iluvatar/Tianshu), MACA (MetaX), and NPU (Ascend) backends.
 
 ---
 
@@ -61,10 +61,10 @@ docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
 # Inside the container, run steps 3-5 from above.
 ```
 
-The Docker image and CI configuration use Python 3.12. MUSA, PPU, IX, and MACA
-builds require their corresponding vendor SDK/runtime environment and should be
-configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`, or
-`-DBACKEND=MACA`.
+The Docker image and CI configuration use Python 3.12. MUSA, PPU, IX, MACA, and
+NPU builds require their corresponding vendor SDK/runtime environment and should
+be configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`,
+`-DBACKEND=MACA`, or `-DBACKEND=NPU`.
 
 ---
 
@@ -79,7 +79,7 @@ configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`, or
 | Python | 3.10 | JIT codegen + test runner; the provided CUDA Docker/CI environments use 3.12 |
 | flagtree | 0.5.0 | triton TLE support |
 | SQLite3 | — | Tuning database |
-| Backend SDK | — | CUDA Toolkit, MUSA SDK, PPU SDK, CoreX CUDA-compatible SDK for IX, or MACA SDK |
+| Backend SDK | — | CUDA Toolkit, MUSA SDK, PPU SDK, CoreX CUDA-compatible SDK for IX, MACA SDK, or CANN/Ascend runtime for NPU |
 | libtriton_jit | submodule | Triton JIT compiler (`deps/libtriton_jit`) |
 | PyYAML | — | Test runner (`pip install pyyaml`) |
 
@@ -120,8 +120,8 @@ This produces `build/libflagfft.so`.
 | Option | Default | Description |
 |---|---|---|
 | `FLAGFFT_BUILD_CLI` | `OFF` | Build the `flagfft-cli` benchmark/verification tool |
-| `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test + the selected backend's reference FFT library) |
-| `BACKEND` | `CUDA` | GPU backend selector: `CUDA`, `MUSA`, `PPU`, `IX`, or `MACA` |
+| `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test; NPU also builds the NumPy capture target, other backends also require a reference FFT library) |
+| `BACKEND` | `CUDA` | Backend selector: `CUDA`, `MUSA`, `PPU`, `IX`, `MACA`, or `NPU` |
 | `CMAKE_BUILD_TYPE` | — | `Release`, `Debug`, `RelWithDebInfo` |
 
 ### Full Build (library + CLI + tests)
@@ -134,8 +134,8 @@ cmake --build build -j$(nproc)
 ```
 
 The default backend is CUDA. Select another supported backend at configure
-time, for example `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`, or
-`-DBACKEND=MACA`; the
+time, for example `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`,
+`-DBACKEND=MACA`, or `-DBACKEND=NPU`; the
 corresponding SDK and runtime libraries must be installed.
 
 ### Iluvatar/Tianshu (IX) Build
@@ -159,6 +159,37 @@ Use the tested MetaX container and the SDK's `cmake_maca` / `make_maca`
 wrappers. Set `-DBACKEND=MACA -DMACA_PATH=/opt/maca`; set all three device
 filters to the physical card being tested. The complete card-4 build and
 validation procedure is in [MACA setup and validation](docs/maca-adaptation.md).
+
+### Ascend (NPU) Build
+
+Use the CANN 9 toolchain and the Ascend-enabled Triton/libtriton_jit checkout:
+
+```bash
+source /usr/local/Ascend/cann-9.0.0/set_env.sh
+export ASCEND_OPS_FFT_ROOT=/path/to/ops-fft
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+      -DBACKEND=NPU \
+      -DFLAGFFT_TRITON_JIT_SOURCE_DIR=/path/to/libtriton_jit \
+      -DASCEND_OPS_FFT_ROOT="$ASCEND_OPS_FFT_ROOT" \
+      -DFLAGFFT_BUILD_CLI=ON \
+      -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+```
+
+The FlagFFT Ascend 910B profile is FP32 `C2C`, `R2C`, and `C2R` for
+contiguous 1D, 2D, and 3D plans. Native FP64 is unavailable on Ascend 910B:
+`Z2Z`, `Z2D`, and `D2Z` plans return `FLAGFFT_NOT_SUPPORTED`; they are never
+silently downcast or moved to a CPU fallback. The unified acceptance runner
+keeps those three APIs in its 36-operator manifest and records them as policy
+skips on NPU.
+
+For the native comparison and performance baseline, set
+`ASCEND_OPS_FFT_ROOT` to a built [CANN ops-fft](https://gitcode.com/cann/ops-fft)
+tree. Its current 910B reference is FP32-only: horizontal 1D
+`C2C`/`R2C`/`C2R` subject to the documented length limits, and 2D `C2C` only
+when each dimension is 32, 64, or 128. It has no 2D real or 3D plans. The
+runner still checks FlagFFT against NumPy for those cases and marks only the
+unavailable platform/performance rows as `Skipped` with the ops-fft reason.
 
 ### Environment Variables
 
@@ -296,9 +327,10 @@ supported forms remain unsupported.
 | Rank-2 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ |
 | Rank-3 contiguous row-major C2C, Z2Z | ✅ RTRT decomposition (n2 → n1 → n0 + 3D axis permutations) |
 | Rank-3 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ half-packed on the innermost axis |
+| Ascend 910B FP32 profile | ✅ FlagFFT C2C, R2C, C2R for contiguous 1D/2D/3D; FP64 Z2Z/Z2D/D2Z return `FLAGFFT_NOT_SUPPORTED`; ops-fft reference has narrower 1D/2D coverage |
 | Batched transforms | ✅ |
 | In-place and out-of-place | ✅ |
-| Backend adaptors | ✅ CUDA, MUSA, PPU, IX (selected at build time) |
+| Backend adaptors | ✅ CUDA, MUSA, PPU, IX, NPU (selected at build time) |
 | Backend stream attachment | ✅ |
 
 For the CUDA backend, `2^20` rank-1 transforms on `sm_80` select a `1024 x 1024`
@@ -387,11 +419,11 @@ tests (Google Test), and Python codegen tests (pytest).
 ### Unified Test Runner
 
 `tools/run_tests.py` is the single entry point for the 36 acceptance operators.
-Correctness compares FlagFFT and the platform FFT library independently against
-a float64/complex128 NumPy reference. An operator passes correctness only when
-all selected FlagFFT-vs-NumPy cases pass; platform-library failures are reported
-under `platform_accuracy` and do not fail FlagFFT correctness. Performance
-continues to use `flagfft-cli bench`.
+Correctness compares FlagFFT and, when available, the platform FFT library
+independently against a float64/complex128 NumPy reference. An operator passes
+correctness only when all selected FlagFFT-vs-NumPy cases pass; platform-library
+failures are reported under `platform_accuracy` and do not fail FlagFFT
+correctness. Performance continues to use `flagfft-cli bench`.
 
 Install test dependencies with `pip install -e '.[test]'` and build with
 `-DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON`. The test build includes
@@ -421,6 +453,15 @@ The current IX acceptance policy disables FP64. The three FP64 APIs (`Z2Z`, `Z2D
 surface, but the runner records their accuracy and performance cases as
 policy `Skipped` and never dispatches them. The other 18 operators are run
 normally. The limitation is recorded in `skip_reason` in JSON and CSV.
+
+On NPU, Ascend 910B has the same three FP64 APIs in the manifest, but the
+runner records their accuracy and performance cases as policy `Skipped` before
+launch. The remaining FP32 cases run FlagFFT against NumPy. The ops-fft
+reference is used for supported horizontal 1D FP32 C2C/R2C/C2R cases and
+supported 2D C2C sizes; its unsupported 2D real, 3D, out-of-matrix 2D, and
+out-of-range 1D cases retain the FlagFFT NumPy result while their platform and
+performance rows are marked `Skipped`. NPU performance reports ops-fft
+reference timing and speedup wherever that reference exists.
 
 Complex APIs test both directions; real-to-complex APIs test forward and
 complex-to-real APIs test inverse. Real-inverse inputs have valid
@@ -505,7 +546,9 @@ failures serialize nonfinite metrics as JSON null while retaining failure
 status. A plan is saved as soon as its creation succeeds and refreshed after
 successful execution; creation failures have `plan: null`.
 
-Performance rows retain the raw speedup and record `baseline_valid`.
+Performance rows retain the raw speedup and record `baseline_valid`. NPU rows
+for ops-fft-supported cases include reference timing and speedup; policy-skipped
+reference cases serialize those fields as `null`.
 An incorrect platform baseline is excluded from the aggregate speedup
 statistics; operators failing FlagFFT correctness are excluded as well.
 Performance-only runs have an unknown baseline validity.
@@ -522,7 +565,11 @@ incomplete correctness cases. `--analyze-only` requires a result created with
 
 Built with `-DFLAGFFT_BUILD_TESTS=ON`. Each test binary compares FlagFFT
 output against the selected backend's reference FFT library using normwise
-relative error metrics (`rel_l2`, `rel_linf`).
+relative error metrics (`rel_l2`, `rel_linf`). On NPU, the reference-based
+GTest binaries are skipped because they are not wired to the host-pointer
+ops-fft adaptor; `ctest/numpy_fft_capture` is used by the unified runner. It
+runs FlagFFT for every selected FP32 case, compares against NumPy, and invokes
+ops-fft for cases inside its support matrix.
 
 #### Structure
 
@@ -543,10 +590,14 @@ relative error metrics (`rel_l2`, `rel_linf`).
 Suffix key: `s` = single-batch, `b` = multi-batch; `ct` = Cooley-Tukey, `bs`
 = Bluestein/Rader.
 
-The unified acceptance runner is the supported entry point for IX. It filters
-the three FP64 APIs before launching native capture/benchmark processes. Direct
-invocation of bundled FP64 C++ test binaries is not an IX acceptance test and
-may call unsupported CoreX functionality.
+The unified acceptance runner is the supported entry point for IX and NPU. It
+keeps the three FP64 APIs in the report but filters them before native
+execution. On NPU it also applies the ops-fft 1D/2D/3D support matrix per case:
+FlagFFT accuracy continues to run, while an unavailable platform comparison or
+benchmark is recorded as `Skipped`. Direct invocation of bundled FP64 C++ test
+binaries is not an IX or NPU acceptance test and may call unsupported vendor
+functionality. NPU `FLAGFFT_BUILD_TESTS` builds the capture executable and
+links ops-fft when `ASCEND_OPS_FFT_ROOT` is set.
 
 #### Running Individual Tests
 

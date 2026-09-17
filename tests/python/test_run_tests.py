@@ -130,6 +130,103 @@ def test_ix_backend_detection_and_fp64_policy(tmp_path, operators, matrix):
     assert RUN_TESTS.requested_phases_passed(result, True, True)
 
 
+def test_npu_backend_detection_and_fp64_policy(tmp_path, operators, matrix):
+    build_dir = tmp_path / "npu-build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=NPU\n")
+    assert RUN_TESTS.detect_backend(build_dir) == "npu"
+    assert RUN_TESTS.UNSUPPORTED_APIS_BY_BACKEND["npu"] == {"z2z", "z2d", "d2z"}
+    c2c = next(op for op in operators if op["api"] == "c2c")
+    z2z = next(op for op in operators if op["api"] == "z2z")
+    assert RUN_TESTS.operator_skip_reason(c2c, "npu") is None
+    reason = RUN_TESTS.operator_skip_reason(z2z, "npu")
+    assert reason and "FP64" in reason and "Ascend 910B" in reason
+
+    cases = RUN_TESTS.expand_test_cases([z2z], matrix, "1d_ct_single")[:1]
+    result = RUN_TESTS.aggregate_results(
+        [], [z2z], cases, True, True, {z2z["id"]}, {z2z["id"]: reason}
+    )
+    assert result[z2z["id"]]["accuracy"]["status"] == "Skipped"
+    assert result[z2z["id"]]["performance"]["status"] == "Skipped"
+    assert RUN_TESTS.requested_phases_passed(result, True, True)
+
+
+def test_npu_benchmark_parser_accepts_ops_fft_reference_timing():
+    payload = {
+        "cases": [
+            {
+                "timing": {
+                    "flagfft_median_ms": 1.25,
+                    "ref_median_ms": 2.5,
+                    "speedup": 2.0,
+                },
+                "plan_description": PLAN,
+            }
+        ]
+    }
+    result = RUN_TESTS.parse_perf_result(json.dumps(payload), backend="npu")
+    assert result["status"] == "Passed"
+    assert result["flagfft_median_ms"] == 1.25
+    assert result["ref_median_ms"] == 2.5
+    assert result["speedup"] == 2.0
+    assert result["reference_available"] is True
+
+
+def test_npu_ops_fft_case_policy_limits(operators, matrix):
+    npu_cases = RUN_TESTS.expand_test_cases(
+        [op for op in operators if op["api"] in ("c2c", "r2c", "c2r")],
+        matrix,
+        "full",
+    )
+    reasons = {
+        case["case_id"]: RUN_TESTS.case_skip_reason(case, "npu")
+        for case in npu_cases
+    }
+    assert any(reason and "3D" in reason for reason in reasons.values())
+    assert any(reason and "2D" in reason for reason in reasons.values())
+    assert any(reason and "prime factor" in reason for reason in reasons.values())
+    supported = [case for case, reason in ((case, reasons[case["case_id"]]) for case in npu_cases) if reason is None]
+    assert supported
+    assert all(case["api"] in ("c2c", "r2c", "c2r") for case in supported)
+    assert all(case["rank"] == 1 or (case["api"] == "c2c" and all(n in (32, 64, 128) for n in case["shape"])) for case in supported)
+
+
+def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
+    op = next(op for op in operators if op["id"] == "2d_c2c")
+    case = {
+        "case_id": "npu-2d-reference-skip",
+        "op_id": op["id"],
+        "api": "c2c",
+        "rank": 2,
+        "algorithm": "ct",
+        "batch_mode": "single",
+        "shape": [2048, 2048],
+        "batch": 1,
+        "direction": "forward",
+        "scale": 1.0,
+        "skip_reason": "ops-fft 2D C2C size is unsupported",
+    }
+    passed = {"status": "Passed", "metric": {"passed": True}, "plan": "plan"}
+    skipped = {
+        "status": "Skipped",
+        "skip_reason": case["skip_reason"],
+        "error": case["skip_reason"],
+        "plan": None,
+    }
+    result = RUN_TESTS.aggregate_results(
+        [{**case, "phase": "accuracy", "result": passed, "platform_result": skipped}],
+        [op],
+        [case],
+        True,
+        True,
+    )
+    op_result = result[op["id"]]
+    assert op_result["accuracy"]["status"] == "Passed"
+    assert op_result["platform_accuracy"]["status"] == "Skipped"
+    assert op_result["platform_accuracy"]["policy_skipped"]
+    assert op_result["performance"]["status"] == "Skipped"
+
+
 def test_ix_policy_skip_is_visible_in_incremental_csv(operators):
     op = next(op for op in operators if op["api"] == "d2z")
     case = {
@@ -158,6 +255,15 @@ def test_artifact_policy_cli_defaults_to_failed():
     assert RUN_TESTS.parse_args(["--artifacts", "all"]).artifact_policy == "all"
 
 
+def test_source_commit_override_is_recorded_for_archive_runs(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLAGFFT_SOURCE_COMMIT", "c3ca9d2")
+    monkeypatch.setattr(RUN_TESTS, "git_commit", lambda _source: "unknown")
+    monkeypatch.setattr(RUN_TESTS, "detect_backend", lambda _build: "npu")
+    RUN_TESTS.ENV_INFO.clear()
+    RUN_TESTS.probe_env(tmp_path)
+    assert RUN_TESTS.ENV_INFO["git_commit"] == "c3ca9d2"
+
+
 def test_ix_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     build_dir = tmp_path / "ix-build"
     build_dir.mkdir()
@@ -174,6 +280,21 @@ def test_ix_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     assert {
         case["api"] for case in payload["cases"] if "skip_reason" in case
     } == {"z2z", "z2d", "d2z"}
+
+
+def test_npu_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
+    build_dir = tmp_path / "npu-build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=NPU\n")
+
+    assert RUN_TESTS.main(
+        ["--dry-run", "--build-dir", str(build_dir), "--combination", "2d"]
+    ) == 0
+    output = capsys.readouterr().out
+    payload = json.loads(output[output.index("{") :])
+    assert payload["backend"] == "npu"
+    assert len(payload["operators"]) == 6
+    assert len(payload["skipped_operators"]) == 3
 
 
 def test_missing_operator_is_not_accepted_as_a_complete_suite(tmp_path, operators):

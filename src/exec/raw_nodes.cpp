@@ -308,6 +308,46 @@ flagfftResult CompiledRawStridedDirectDftNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawStockhamNode::CompiledRawStockhamNode(
+    int64_t length, std::vector<int64_t> factors, std::vector<std::shared_ptr<JitKernel>> kernels,
+    DeviceAllocation twiddle, DeviceAllocation first, DeviceAllocation second)
+    : length(length), factors(std::move(factors)), kernels(std::move(kernels)),
+      twiddle(std::move(twiddle)), first(std::move(first)), second(std::move(second)) {}
+
+std::string CompiledRawStockhamNode::describe() const {
+  return "CompiledRawStockham(n=" + std::to_string(length) + ")";
+}
+
+flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                               const RawExecutionContext &context) const {
+  try {
+    adaptor::DevicePtr current = input;
+    int64_t span = 1;
+    for (std::size_t stage = 0; stage < factors.size(); ++stage) {
+      const bool last = stage + 1 == factors.size();
+      adaptor::DevicePtr dst = last && current != output ? output
+                              : (stage % 2 == 0 ? first.get() : second.get());
+      std::vector<JitKernelArg> args = {
+          JitKernelArg::device(current), JitKernelArg::device(dst),
+          JitKernelArg::device(twiddle.get()), JitKernelArg::i64(span),
+          JitKernelArg::i32(static_cast<int32_t>(context.batch))};
+      const int64_t butterflies = context.batch * (length / factors[stage]);
+      kernels[stage]->launch(context.stream, args, (butterflies + 127) / 128, 1, 1);
+      current = dst;
+      span *= factors[stage];
+    }
+    if (current != output) {
+      adaptor::copy_device_to_device(output, current,
+          static_cast<std::size_t>(context.batch * length * complex_element_bytes(context.request.input_dtype)),
+          context.stream);
+    }
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] Stockham execute failed: %s\n", e.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
                                                    std::shared_ptr<JitKernel> kernel,
                                                    std::vector<DeviceAllocation> tables,

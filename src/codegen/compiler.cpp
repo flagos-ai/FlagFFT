@@ -116,6 +116,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
     return compile_raw_direct_dft(*direct, request, batch);
   }
+  if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
+    std::vector<std::shared_ptr<JitKernel>> kernels;
+    for (int64_t radix : stockham->factors) {
+      KernelKey key = KernelKey::direct_dft(triton_target_for_request(request), request.direction,
+                                           request.input_dtype, stockham->length);
+      key.kind = KernelKind::StockhamStage;
+      key.factors = {radix};
+      kernels.push_back(compile_kernel(key));
+    }
+    const int64_t n = stockham->length;
+    std::vector<double> values(static_cast<std::size_t>(2 * n));
+    for (int64_t i = 0; i < n; ++i) {
+      double angle = (request.direction == "inverse" ? 2.0 : -2.0) * kPi * i / n;
+      values[2 * i] = std::cos(angle);
+      values[2 * i + 1] = std::sin(angle);
+    }
+    DeviceAllocation twiddle = request.input_dtype == "complex128"
+        ? adaptor::Memory::from_doubles(values)
+        : adaptor::Memory::from_floats(std::vector<float>(values.begin(), values.end()));
+    const auto bytes = static_cast<std::size_t>(batch * n * complex_element_bytes(request.input_dtype));
+    return std::make_shared<CompiledRawStockhamNode>(n, stockham->factors, std::move(kernels),
+        std::move(twiddle), adaptor::Memory(bytes), adaptor::Memory(bytes));
+  }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);

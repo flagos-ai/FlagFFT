@@ -19,10 +19,10 @@ project(flagfft LANGUAGES CXX)
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX" "MACA")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX" "MACA" "NPU")
 
-if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX" OR BACKEND STREQUAL "MACA"))
-    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, or BACKEND=MACA")
+if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX" OR BACKEND STREQUAL "MACA" OR BACKEND STREQUAL "NPU"))
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, BACKEND=MACA, or BACKEND=NPU")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
@@ -49,12 +49,31 @@ else()
                     "this is the likely cause.")
 endif()
 
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit/CMakeLists.txt")
-    message(FATAL_ERROR "deps/libtriton_jit is required")
-endif()
 set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORCE)
 set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
-add_subdirectory(deps/libtriton_jit)
+set(FLAGFFT_TRITON_JIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit"
+    CACHE PATH "libtriton_jit source directory")
+if(NOT EXISTS "${FLAGFFT_TRITON_JIT_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "libtriton_jit source is required at ${FLAGFFT_TRITON_JIT_SOURCE_DIR}")
+endif()
+add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
+                 "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
+
+# libtorch's ARM OpenBLAS build has a private libgfortran dependency in
+# torch.libs.  libtriton_jit discovers this directory in its subdirectory,
+# but that directory scope does not reach the standalone CLI/capture targets
+# declared here.  Add it at the parent scope so their link step can resolve
+# the same transitive dependency.
+execute_process(
+    COMMAND ${Python_EXECUTABLE} -c
+            "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), '..', 'torch.libs'))"
+    OUTPUT_VARIABLE FLAGFFT_TORCH_LIBS_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(FLAGFFT_TORCH_LIBS_PATH AND EXISTS "${FLAGFFT_TORCH_LIBS_PATH}")
+    link_directories("${FLAGFFT_TORCH_LIBS_PATH}")
+endif()
 
 if(TRITON_JIT_USE_EXTERNAL_JSON)
     # With an external package, libtriton_jit's imported target is scoped to
@@ -112,8 +131,8 @@ install(TARGETS flagfft
 install(DIRECTORY include/ DESTINATION "include")
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.
-# Reused by flagfft-cli (bench/verify) and ctest (correctness tests).
-# Only built when CLI or tests are enabled (both need a reference FFT library).
+# Reused by flagfft-cli (bench/verify) and the native capture target. NPU links
+# the external CANN ops-fft reference when CLI/tests are enabled.
 if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
     if(BACKEND STREQUAL "CUDA")
         find_package(CUDAToolkit REQUIRED)
@@ -190,6 +209,34 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             CUDA::cudart
             CUDA::cuda_driver
         )
+    elseif(BACKEND STREQUAL "NPU")
+        set(ASCEND_OPS_FFT_ROOT "$ENV{ASCEND_OPS_FFT_ROOT}" CACHE PATH
+            "ops-fft installation root used as the Ascend reference library")
+        find_path(ASCEND_OPS_FFT_INCLUDE_DIR cann_ops_fft.h
+            HINTS
+                "${ASCEND_OPS_FFT_ROOT}/include"
+                "${ASCEND_OPS_FFT_ROOT}/include/math_libs"
+                "${ASCEND_OPS_FFT_ROOT}/src/include"
+            REQUIRED)
+        find_library(ASCEND_OPS_FFT_LIBRARY NAMES cann_ops_fft
+            HINTS
+                "${ASCEND_OPS_FFT_ROOT}/lib"
+                "${ASCEND_OPS_FFT_ROOT}/lib64"
+                "${ASCEND_OPS_FFT_ROOT}/build/lib"
+                "${ASCEND_OPS_FFT_ROOT}/build"
+            REQUIRED)
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/npu/test_adaptor.cpp
+        )
+        target_include_directories(flagfft_test_adaptor PUBLIC
+            "${ASCEND_OPS_FFT_INCLUDE_DIR}")
+        target_link_libraries(flagfft_test_adaptor PUBLIC
+            "${ASCEND_OPS_FFT_LIBRARY}"
+            # The ops-fft public header includes acl/acl.h.  Linking the
+            # imported CANN targets also propagates the complete CANN include
+            # tree (including pkg_inc) to this object target.
+            Ascend::ascendcl
+            Ascend::runtime)
     endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
     target_include_directories(flagfft_test_adaptor PUBLIC
@@ -255,7 +302,7 @@ endif()
 
 if(FLAGFFT_BUILD_TESTS)
     enable_testing()
-    if(NOT TARGET gtest)
+    if(NOT BACKEND STREQUAL "NPU" AND NOT TARGET gtest)
         include(FetchContent)
         FetchContent_Declare(googletest
             URL https://github.com/google/googletest/archive/refs/tags/v1.16.0.tar.gz
