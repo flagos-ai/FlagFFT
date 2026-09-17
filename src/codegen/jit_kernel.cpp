@@ -115,9 +115,9 @@ void JitKernel::launch(adaptor::StreamHandle stream,
 #if !defined(BACKEND_NPU)
   args.push_back(&global_scratch);
   args.push_back(&profile_scratch);
+#endif
 #if !defined(BACKEND_MACA)
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
-#endif
 #endif
   // Diagnostic timings synchronise each launch and must not be used as
   // end-to-end benchmark results. Disabled unless explicitly requested.
