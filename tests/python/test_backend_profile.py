@@ -92,13 +92,25 @@ class ProfileTest(unittest.TestCase):
         from dataclasses import replace
 
         plan = LeafPlan(256, (16, 16), 1, 16, 1, (), 256)
-        self.assertEqual(contiguous_batch_pack_for(plan), 2)
+        # Without an explicit profile the packing helper falls back to the
+        # installed Triton plugin, so pin a declared non-MACA backend to keep
+        # this assertion host-independent.
+        default = BackendProfile(backend="cuda", device_arch="80")
+        token = set_profile(default)
+        try:
+            self.assertEqual(contiguous_batch_pack_for(plan), 2)
+        finally:
+            reset_profile(token)
         token = set_profile(replace(self.profile(), policy="packed"))
         try:
             self.assertEqual(contiguous_batch_pack_for(plan), 4)
         finally:
             reset_profile(token)
-        self.assertEqual(contiguous_batch_pack_for(plan), 2)
+        token = set_profile(default)
+        try:
+            self.assertEqual(contiguous_batch_pack_for(plan), 2)
+        finally:
+            reset_profile(token)
 
     def test_four_step_respects_device_memory(self):
         from flagfft_codegen.kernels_common import four_step_col_inner_pack_for
