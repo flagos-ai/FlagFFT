@@ -16,7 +16,6 @@ from __future__ import annotations
 
 """Shared plan model, dtype helpers and occupancy/heuristic policy for kernel generation."""
 
-import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -468,7 +467,7 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
 def _leaf_single_smem_buffer_eligible(
     plan: LeafPlan,
     *,
-    io_mode: LeafMode,
+    io_mode: str,
     four_step_n1: int,
     four_step_n2: int,
 ) -> bool:
@@ -506,7 +505,7 @@ def _leaf_single_smem_buffer_eligible(
 def _use_single_smem_buffer(
     plan: LeafPlan,
     *,
-    io_mode: LeafMode = "contiguous",
+    io_mode: str = "contiguous",
     four_step_n1: int = 0,
     four_step_n2: int = 0,
 ) -> bool:

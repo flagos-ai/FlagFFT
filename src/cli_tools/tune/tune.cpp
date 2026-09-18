@@ -109,11 +109,11 @@ namespace {
 
   nlohmann::json accuracy_json(const AccuracyResult& accuracy) {
     return {
-        {     "valid",           accuracy.valid},
-        {    "rel_l2",          accuracy.rel_l2},
-        {  "rel_linf",        accuracy.rel_linf},
-        {  "limit_l2", accuracy.limit},
-        {"limit_linf", accuracy.limit},
+        {     "valid",    accuracy.valid},
+        {    "rel_l2",   accuracy.rel_l2},
+        {  "rel_linf", accuracy.rel_linf},
+        {  "limit_l2",    accuracy.limit},
+        {"limit_linf",    accuracy.limit},
     };
   }
 
@@ -149,7 +149,7 @@ namespace {
 
   template <typename Complex>
   std::vector<Complex> make_input(int64_t count) {
-    using Real = decltype(Complex{}.x);
+    using Real = decltype(Complex {}.x);
     std::vector<Complex> input(static_cast<std::size_t>(count));
     for (int64_t index = 0; index < count; ++index) {
       double phase = static_cast<double>(index + 1) * 0.173;
@@ -162,8 +162,7 @@ namespace {
   }
 
   template <typename Complex>
-  AccuracyResult compare_outputs(const std::vector<Complex>& output,
-                                 const std::vector<Complex>& reference) {
+  AccuracyResult compare_outputs(const std::vector<Complex>& output, const std::vector<Complex>& reference) {
     long double error_sq = 0.0L;
     long double reference_sq = 0.0L;
     long double max_error = 0.0L;
@@ -190,8 +189,7 @@ namespace {
                                          : static_cast<double>(std::sqrt(error_sq / reference_sq));
     result.rel_linf = max_reference == 0.0L ? static_cast<double>(max_error)
                                             : static_cast<double>(max_error / max_reference);
-    result.valid =
-        finite && result.rel_l2 <= result.limit && result.rel_linf <= result.limit;
+    result.valid = finite && result.rel_l2 <= result.limit && result.rel_linf <= result.limit;
     return result;
   }
 
@@ -212,8 +210,10 @@ namespace {
           forward_reference_(static_cast<std::size_t>(element_count_)),
           inverse_reference_(static_cast<std::size_t>(element_count_)) {
       input_.copy_from_host(host_input_.data(), bytes_);
-      test_adaptor::ref_plan_1d(reference_plan_, options.length,
-                              options.api == "z2z" ? FLAGFFT_Z2Z : FLAGFFT_C2C, options.batch);
+      test_adaptor::ref_plan_1d(reference_plan_,
+                                options.length,
+                                options.api == "z2z" ? FLAGFFT_Z2Z : FLAGFFT_C2C,
+                                options.batch);
       test_adaptor::ref_set_stream(reference_plan_, stream_.get());
       build_reference(FLAGFFT_FORWARD, forward_reference_);
       build_reference(FLAGFFT_INVERSE, inverse_reference_);
@@ -274,11 +274,15 @@ namespace {
    private:
     void execute_reference(int direction) {
       if constexpr (std::is_same_v<Complex, flagfftDoubleComplex>) {
-        test_adaptor::ref_exec_z2z(reference_plan_, static_cast<Complex*>(input_.data()),
-                                  static_cast<Complex*>(reference_output_.data()), direction);
+        test_adaptor::ref_exec_z2z(reference_plan_,
+                                   static_cast<Complex*>(input_.data()),
+                                   static_cast<Complex*>(reference_output_.data()),
+                                   direction);
       } else {
-        test_adaptor::ref_exec_c2c(reference_plan_, static_cast<Complex*>(input_.data()),
-                                  static_cast<Complex*>(reference_output_.data()), direction);
+        test_adaptor::ref_exec_c2c(reference_plan_,
+                                   static_cast<Complex*>(input_.data()),
+                                   static_cast<Complex*>(reference_output_.data()),
+                                   direction);
       }
     }
 
@@ -306,7 +310,10 @@ namespace {
   };
 
   template <typename Complex>
-  PhaseResult benchmark_phase(TuneHarness<Complex>& harness, const CandidateResult& candidate, int warmup, int iters) {
+  PhaseResult benchmark_phase(TuneHarness<Complex>& harness,
+                              const CandidateResult& candidate,
+                              int warmup,
+                              int iters) {
     PhaseResult result;
     result.forward = harness.benchmark(candidate.forward, FLAGFFT_FORWARD, warmup, iters);
     result.inverse = harness.benchmark(candidate.inverse, FLAGFFT_INVERSE, warmup, iters);
@@ -468,17 +475,17 @@ namespace {
 
   nlohmann::json candidate_json(const CandidateResult& candidate, std::size_t rank) {
     nlohmann::json out = {
-        {       "rank",  rank                       },
-        {     "status",             candidate.status},
-        {   "plan_key",                candidate.key},
-        {"estimated_cost", candidate.candidate.cost},
-        {"root_kind", plan_node_kind_name(candidate.candidate.node->kind)},
-        {      "split", {candidate.n1, candidate.n2}},
-        {"correctness",
+        {          "rank",                      rank                          },
+        {        "status",                                    candidate.status},
+        {      "plan_key",                                       candidate.key},
+        {"estimated_cost",                            candidate.candidate.cost},
+        {     "root_kind", plan_node_kind_name(candidate.candidate.node->kind)},
+        {         "split",                        {candidate.n1, candidate.n2}},
+        {   "correctness",
          {
          {"forward", accuracy_json(candidate.forward_accuracy)},
          {"inverse", accuracy_json(candidate.inverse_accuracy)},
-         }                                          },
+         }                                                                    },
     };
     if (!candidate.error.empty()) {
       out["error"] = candidate.error;

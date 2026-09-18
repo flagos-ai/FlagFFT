@@ -17,19 +17,17 @@ from __future__ import annotations
 """Mixed-radix leaf generation: codelet emitters, stage/route emission, thread-local leaves and I/O builders."""
 
 import math
-from textwrap import dedent
 from typing import Literal
 
 from .kernels_common import (
-    LeafIoMode,
-    LeafPlan,
     _NATURAL_ORDER_CODELET_RADICES,
     _THREAD_LOCAL_MIXED_RADICES,
     _TLE_SMEM_SWIZZLE_SHIFT,
+    LeafIoMode,
+    LeafPlan,
     _is_double_dtype,
     _maca_backend_active,
     _non_nvidia_backend_active,
-    _real_element_bytes,
     _tl_real_dtype,
     _use_single_smem_buffer,
     contiguous_batch_pack_for,
@@ -38,9 +36,10 @@ from .kernels_common import (
     four_step_col_inner_pack_for,
     four_step_row_inner_pack_for,
     lane_block_for,
-    use_tle_fused_twiddle,
     use_four_step_row_fused_twiddle,
+    use_tle_fused_twiddle,
 )
+
 
 def _fmt_const(value: float) -> str:
     if abs(value) < 1e-8:
@@ -89,7 +88,7 @@ def _emit_vectorized_complex_load(
         "}', "
         f'"={reg},={reg},l,r", '
         f"[tl.cast({ptr}, tl.uint64), tl.cast({mask}, tl.int32)], "
-        f"dtype=({tl_dtype}, {tl_dtype}), is_pure=False, pack=1)"
+        f"dtype=({tl_dtype}, {tl_dtype}), is_pure=False, pack=1)",
     ]
 
 
@@ -113,7 +112,7 @@ def _emit_vectorized_complex_store(
         "}', "
         f'"=r,l,{reg},{reg},r", '
         f"[tl.cast({ptr}, tl.uint64), {r_name}, {i_name}, tl.cast({mask}, tl.int32)], "
-        "dtype=tl.int32, is_pure=False, pack=1)"
+        "dtype=tl.int32, is_pure=False, pack=1)",
     ]
 
 
@@ -449,8 +448,9 @@ def _emit_route_index(
     return lines
 
 
-def _emit_exchange_load(indent: str, buffer: str, index: str, digit: int,
-                        portable: bool) -> list[str]:
+def _emit_exchange_load(
+    indent: str, buffer: str, index: str, digit: int, portable: bool
+) -> list[str]:
     if portable:
         return [
             f"{indent}r{digit} = tl.where(lane_mask, tl.gather({buffer}_r, {index}, 0), 0.0)",
@@ -462,20 +462,36 @@ def _emit_exchange_load(indent: str, buffer: str, index: str, digit: int,
     ]
 
 
-def _emit_exchange_store(indent: str, buffer: str, index: str, digit: int,
-                         real: str, imag: str, portable: bool) -> list[str]:
+def _emit_exchange_store(
+    indent: str,
+    buffer: str,
+    index: str,
+    digit: int,
+    real: str,
+    imag: str,
+    portable: bool,
+) -> list[str]:
     if portable:
-        return [f"{indent}exchange_r{digit} = {real}",
-                f"{indent}exchange_i{digit} = {imag}"]
+        return [
+            f"{indent}exchange_r{digit} = {real}",
+            f"{indent}exchange_i{digit} = {imag}",
+        ]
     return [
         f"{indent}tl.store(tle.gpu.local_ptr({buffer}_r, ({index},)), {real}, mask=lane_mask)",
         f"{indent}tl.store(tle.gpu.local_ptr({buffer}_i, ({index},)), {imag}, mask=lane_mask)",
     ]
 
 
-def _emit_portable_exchange(buffer: str, stage: int, factors: tuple[int, ...],
-                            lane_block: int, size: int, slot_stride: int,
-                            pack: int, natural_order: bool = False) -> list[str]:
+def _emit_portable_exchange(
+    buffer: str,
+    stage: int,
+    factors: tuple[int, ...],
+    lane_block: int,
+    size: int,
+    slot_stride: int,
+    pack: int,
+    natural_order: bool = False,
+) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
     Each butterfly runs once; padded lanes/digits never become FFT state.
@@ -484,38 +500,54 @@ def _emit_portable_exchange(buffer: str, stage: int, factors: tuple[int, ...],
     """
     n = math.prod(factors)
     radix = factors[stage]
-    lines = [f"    exchange_pos = tl.arange(0, {size})",
-             f"    exchange_slot = exchange_pos // {slot_stride}",
-             f"    exchange_local = exchange_pos % {slot_stride}",
-             f"    exchange_valid = (exchange_local < {n}) & (exchange_slot < {pack})"]
+    lines = [
+        f"    exchange_pos = tl.arange(0, {size})",
+        f"    exchange_slot = exchange_pos // {slot_stride}",
+        f"    exchange_local = exchange_pos % {slot_stride}",
+        f"    exchange_valid = (exchange_local < {n}) & (exchange_slot < {pack})",
+    ]
     if natural_order:
         lanes = n // radix
-        lines += [f"    exchange_codelet = exchange_local % {lanes}",
-                  f"    exchange_digit = exchange_local // {lanes}"]
+        lines += [
+            f"    exchange_codelet = exchange_local % {lanes}",
+            f"    exchange_digit = exchange_local // {lanes}",
+        ]
     else:
         next_lanes = n // factors[stage + 1]
-        lines += [f"    exchange_rem = exchange_local % {next_lanes}",
-                  f"    exchange_next_digit = exchange_local // {next_lanes}",
-                  "    exchange_codelet = exchange_rem * 0"]
+        lines += [
+            f"    exchange_rem = exchange_local % {next_lanes}",
+            f"    exchange_next_digit = exchange_local // {next_lanes}",
+            "    exchange_codelet = exchange_rem * 0",
+        ]
         stride = 1
         for axis in range(stage):
-            lines += [f"    exchange_codelet += (exchange_rem % {factors[axis]}) * {stride}",
-                      f"    exchange_rem = exchange_rem // {factors[axis]}"]
+            lines += [
+                f"    exchange_codelet += (exchange_rem % {factors[axis]}) * {stride}",
+                f"    exchange_rem = exchange_rem // {factors[axis]}",
+            ]
             stride *= factors[axis]
-        lines += [f"    exchange_digit = exchange_rem % {radix}",
-                  f"    exchange_rem = exchange_rem // {radix}"]
+        lines += [
+            f"    exchange_digit = exchange_rem % {radix}",
+            f"    exchange_rem = exchange_rem // {radix}",
+        ]
         for axis in range(len(factors) - 1, stage + 1, -1):
-            lines += [f"    exchange_codelet += (exchange_rem % {factors[axis]}) * {stride}",
-                      f"    exchange_rem = exchange_rem // {factors[axis]}"]
+            lines += [
+                f"    exchange_codelet += (exchange_rem % {factors[axis]}) * {stride}",
+                f"    exchange_rem = exchange_rem // {factors[axis]}",
+            ]
             stride *= factors[axis]
         lines.append(f"    exchange_codelet += exchange_next_digit * {stride}")
     lines.append(f"    exchange_src = exchange_codelet + exchange_slot * {lane_block}")
     lines.append("    exchange_src = tl.where(exchange_valid, exchange_src, 0)")
     for component in ("r", "i"):
-        lines.append(f"    {buffer}_{component} = tl.full(({size},), 0, exchange_{component}0.dtype)")
+        lines.append(
+            f"    {buffer}_{component} = tl.full(({size},), 0, exchange_{component}0.dtype)"
+        )
         for digit in range(radix):
-            lines.append(f"    {buffer}_{component} = tl.where(exchange_valid & (exchange_digit == {digit}), "
-                         f"tl.gather(exchange_{component}{digit}, exchange_src, 0), {buffer}_{component})")
+            lines.append(
+                f"    {buffer}_{component} = tl.where(exchange_valid & (exchange_digit == {digit}), "
+                f"tl.gather(exchange_{component}{digit}, exchange_src, 0), {buffer}_{component})"
+            )
     return lines
 
 
@@ -631,7 +663,7 @@ def _emit_stage_block(
                         f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
                         f"@!p mov.{vector_suffix} $0, 0.0;\\n"
                         f"@!p mov.{vector_suffix} $1, 0.0;\\n"
-                        "}', \"=" + vector_reg + ",=" + vector_reg + ",l,r\", ["
+                        "}', \"=" + vector_reg + ",=" + vector_reg + ',l,r", ['
                         f"tl.cast(in_ptr + (batch_base + in{j}) * 2, tl.uint64), "
                         "tl.cast(lane_mask, tl.int32)], "
                         f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
@@ -677,7 +709,7 @@ def _emit_stage_block(
                         f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
                         f"@!p mov.{vector_suffix} $0, 0.0;\\n"
                         f"@!p mov.{vector_suffix} $1, 0.0;\\n"
-                        "}', \"=" + vector_reg + ",=" + vector_reg + ",l,r\", ["
+                        "}', \"=" + vector_reg + ",=" + vector_reg + ',l,r", ['
                         f"tl.cast(src_ptr{j}, tl.uint64), "
                         "tl.cast(lane_mask, tl.int32)], "
                         f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
@@ -760,8 +792,15 @@ def _emit_stage_block(
                             f"{indent}intermediate_in{j} = in{j} + smem_offset"
                         )
                         intermediate_index = f"intermediate_in{j}"
-                    lines.extend(_emit_exchange_load(
-                        indent, bluestein_intermediate_buffer, intermediate_index, j, portable_exchange))
+                    lines.extend(
+                        _emit_exchange_load(
+                            indent,
+                            bluestein_intermediate_buffer,
+                            intermediate_index,
+                            j,
+                            portable_exchange,
+                        )
+                    )
             elif io_mode == "bluestein_four_step_prepare_row":
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
@@ -978,7 +1017,11 @@ def _emit_stage_block(
                     )
         else:
             load_index = f"smem_phys{j}" if fuse_twiddle_into_row else f"phys{j}"
-            lines.extend(_emit_exchange_load(indent, source_buffer, load_index, j, portable_exchange))
+            lines.extend(
+                _emit_exchange_load(
+                    indent, source_buffer, load_index, j, portable_exchange
+                )
+            )
             lines.append(
                 f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
             )
@@ -1023,7 +1066,7 @@ def _emit_stage_block(
                             "setp.ne.b32 p, $4, 0;\\n"
                             f"@p st.global.v2.{vector_suffix} [$1], {{$2, $3}};\\n"
                             "mov.u32 $0, 0;\\n"
-                            "}', \"=r,l," + vector_reg + "," + vector_reg + ",r\", ["
+                            "}', \"=r,l," + vector_reg + "," + vector_reg + ',r", ['
                             f"tl.cast(out_ptr + (batch_base + out_idx{j}) * 2, tl.uint64), "
                             f"r{j}, i{j}, tl.cast(lane_mask, tl.int32)], "
                             "dtype=tl.int32, is_pure=False, pack=1)"
@@ -1095,9 +1138,17 @@ def _emit_stage_block(
                             f"{indent}intermediate_out{j} = out_idx{j} + smem_offset"
                         )
                         intermediate_index = f"intermediate_out{j}"
-                    lines.extend(_emit_exchange_store(
-                        indent, bluestein_intermediate_buffer, intermediate_index, j,
-                        f"point_r{j}", f"-point_i{j}", portable_exchange))
+                    lines.extend(
+                        _emit_exchange_store(
+                            indent,
+                            bluestein_intermediate_buffer,
+                            intermediate_index,
+                            j,
+                            f"point_r{j}",
+                            f"-point_i{j}",
+                            portable_exchange,
+                        )
+                    )
                 else:
                     lines.append(
                         f"{indent}prime_mask{j} = lane_mask & (out_idx{j} < {prime_n})"
@@ -1326,17 +1377,37 @@ def _emit_stage_block(
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
                 store_index = f"smem_dst{j}"
-            lines.extend(_emit_exchange_store(
-                indent, dest_buffer, store_index, j, f"r{j}", f"i{j}", portable_exchange))
+            lines.extend(
+                _emit_exchange_store(
+                    indent,
+                    dest_buffer,
+                    store_index,
+                    j,
+                    f"r{j}",
+                    f"i{j}",
+                    portable_exchange,
+                )
+            )
 
     if portable_exchange:
-        buffer = (bluestein_intermediate_buffer
-                  if is_last and io_mode == "bluestein_full_leaf" and bluestein_pass == 0
-                  else dest_buffer)
+        buffer = (
+            bluestein_intermediate_buffer
+            if is_last and io_mode == "bluestein_full_leaf" and bluestein_pass == 0
+            else dest_buffer
+        )
         if buffer is not None:
-            lines.extend(_emit_portable_exchange(
-                buffer, stage, factors, lane_block, exchange_size,
-                exchange_slot_stride, smem_pack, natural_order=is_last))
+            lines.extend(
+                _emit_portable_exchange(
+                    buffer,
+                    stage,
+                    factors,
+                    lane_block,
+                    exchange_size,
+                    exchange_slot_stride,
+                    smem_pack,
+                    natural_order=is_last,
+                )
+            )
     elif not is_last:
         lines.append("    tl.debug_barrier()")
     return lines
@@ -1402,6 +1473,7 @@ def _leaf_kernel_params_for_io(
         params.append("outer_stride")
     params.append("nbatch")
     return params
+
 
 def _use_thread_local_mixed_leaf(
     plan: LeafPlan,
@@ -1879,9 +1951,14 @@ def _build_leaf_kernel_source_for_io(
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
     smem_n = plan.smem_size
-    stage_lanes = (tuple(n // radix for radix in factors) if portable_exchange
-                   else cooperative_stage_lanes_for(plan))
-    uses_cooperative_stage_lanes = portable_exchange or any(lanes != plan.lanes for lanes in stage_lanes)
+    stage_lanes = (
+        tuple(n // radix for radix in factors)
+        if portable_exchange
+        else cooperative_stage_lanes_for(plan)
+    )
+    uses_cooperative_stage_lanes = portable_exchange or any(
+        lanes != plan.lanes for lanes in stage_lanes
+    )
     active_lanes = max(stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
     if portable_exchange and len(factors) > 1:

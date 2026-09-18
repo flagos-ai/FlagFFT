@@ -24,7 +24,7 @@ TEST(RaderDC, InPlaceAndSeparateBuffersMatchReference) {
   for (std::size_t i = 0; i < count; ++i) {
     // Nonzero and different DC in each batch makes a missing x[0] or a
     // batch-stride error visible in the DC bin as well as the whole FFT.
-    input[i] = {std::sin(i * 0.071) + 0.1 * (i/n + 1), std::cos(i * 0.039)};
+    input[i] = {std::sin(i * 0.071) + 0.1 * (i / n + 1), std::cos(i * 0.039)};
   }
   flagfft::adaptor::Memory in(count * sizeof(input[0])), out(count * sizeof(input[0]));
   flagfft::adaptor::Memory ref_in(count * sizeof(input[0])), ref_out(count * sizeof(input[0]));
@@ -35,21 +35,27 @@ TEST(RaderDC, InPlaceAndSeparateBuffersMatchReference) {
   ASSERT_NE(std::string(flagfftGetPlanDescription(plan)).find("CompiledRawRader"), std::string::npos);
   for (int direction : {FLAGFFT_FORWARD, FLAGFFT_INVERSE}) {
     ref_in.copy_from_host(input.data(), count * sizeof(input[0]));
-    ref_exec_z2z(ref, static_cast<flagfftDoubleComplex*>(ref_in.data()),
-                 static_cast<flagfftDoubleComplex*>(ref_out.data()), direction);
+    ref_exec_z2z(ref,
+                 static_cast<flagfftDoubleComplex *>(ref_in.data()),
+                 static_cast<flagfftDoubleComplex *>(ref_out.data()),
+                 direction);
     ref_out.copy_to_host(expected.data(), count * sizeof(input[0]));
     for (bool in_place : {false, true}) {
       SCOPED_TRACE(direction);
       SCOPED_TRACE(in_place);
       in.copy_from_host(input.data(), count * sizeof(input[0]));
-      auto *result = static_cast<flagfftDoubleComplex*>(in_place ? in.data() : out.data());
-      ASSERT_EQ(flagfftExecZ2Z(plan, static_cast<flagfftDoubleComplex*>(in.data()), result, direction), FLAGFFT_SUCCESS);
+      auto *result = static_cast<flagfftDoubleComplex *>(in_place ? in.data() : out.data());
+      ASSERT_EQ(flagfftExecZ2Z(plan, static_cast<flagfftDoubleComplex *>(in.data()), result, direction),
+                FLAGFFT_SUCCESS);
       (in_place ? in : out).copy_to_host(actual.data(), count * sizeof(input[0]));
       expect_reference_accuracy(error_stats(actual.data(), expected.data(), n, batch),
-                                FLAGFFT_Z2Z, n, batch, "Rader DC reuse");
+                                FLAGFFT_Z2Z,
+                                n,
+                                batch,
+                                "Rader DC reuse");
       for (int b = 0; b < batch; ++b) {
-        EXPECT_NEAR(actual[b*n].x, expected[b*n].x, 1e-10 * n);
-        EXPECT_NEAR(actual[b*n].y, expected[b*n].y, 1e-10 * n);
+        EXPECT_NEAR(actual[b * n].x, expected[b * n].x, 1e-10 * n);
+        EXPECT_NEAR(actual[b * n].y, expected[b * n].y, 1e-10 * n);
       }
     }
   }

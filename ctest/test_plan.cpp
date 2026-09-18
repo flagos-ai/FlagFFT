@@ -319,7 +319,7 @@ TEST(Plan1D, BatchedPrimeTunerIncludesBothAlgorithms) {
     auto plans = builder.build_decomposition_tune_candidates(n, request, 3);
     ASSERT_EQ(plans.size(), 2u);
     bool bs = false, rader = false;
-    for (const auto &p : plans) {
+    for (const auto& p : plans) {
       bs |= std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(p.node) != nullptr;
       rader |= std::dynamic_pointer_cast<flagfft::RaderPlanNode>(p.node) != nullptr;
     }
@@ -336,14 +336,14 @@ TEST(Plan1D, BatchedCompositeTunerIncludesBothSplitOrientations) {
   request.device_arch = "31";
   request.direction = "forward";
   flagfft::PlanBuilder builder;
-  for (const char *dtype : {"complex64", "complex128"}) {
+  for (const char* dtype : {"complex64", "complex128"}) {
     request.input_dtype = request.output_dtype = dtype;
     request.batch = 64;
     for (int64_t n : {98304, 131072, 196608}) {
       request.fft_length = request.requested_n = n;
       auto plans = builder.build_decomposition_tune_candidates(n, request, 5);
       bool row_shorter = false, col_shorter = false;
-      for (const auto &p : plans) {
+      for (const auto& p : plans) {
         auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(p.node);
         if (!plan) continue;
         row_shorter |= plan->n1 < plan->n2;

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
-from probe_capabilities import run
+from probe_capabilities import run  # noqa: E402
 
 
 class ProbeProcessTest(unittest.TestCase):
@@ -18,12 +18,22 @@ class ProbeProcessTest(unittest.TestCase):
 
     def test_failure_is_not_classified_as_unsupported(self):
         with tempfile.TemporaryDirectory() as directory:
-            result = run([sys.executable, "-c", "raise RuntimeError('compiler failed')"], Path(directory), 2)
+            result = run(
+                [sys.executable, "-c", "raise RuntimeError('compiler failed')"],
+                Path(directory),
+                2,
+            )
             self.assertEqual(result["status"], "failed")
-            self.assertIn("compiler failed", (Path(directory) / "stderr.txt").read_text())
+            self.assertIn(
+                "compiler failed", (Path(directory) / "stderr.txt").read_text()
+            )
 
     def test_timeout_kills_descendant_holding_output_pipe(self):
-        command = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)']); print('started',flush=True); time.sleep(10)"
+        command = (
+            "import subprocess,sys,time;"
+            " subprocess.Popen([sys.executable,'-c','import time; time.sleep(10)']);"
+            " print('started',flush=True); time.sleep(10)"
+        )
         with tempfile.TemporaryDirectory() as directory:
             start = time.monotonic()
             result = run([sys.executable, "-c", command], Path(directory), 0.3)

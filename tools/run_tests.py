@@ -2197,9 +2197,6 @@ def main(argv: list[str] | None = None) -> int:
     if not all_cases:
         raise ValueError("no test cases selected")
     perf_cases = performance_cases(all_cases)
-    runnable_perf_cases = performance_cases(
-        [case for case in cases if not case.get("skip_reason")]
-    )
     pinfo(
         f"Expanded {len(all_cases)} accuracy cases and {len(perf_cases)} performance cases "
         f"from {len(ops)} operators"

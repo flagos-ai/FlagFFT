@@ -38,6 +38,7 @@ def warp_size() -> int:
         return int(target.rsplit(":", 1)[1])
     try:
         from triton._C import libtriton
+
         if hasattr(libtriton, "metax"):
             return 64
     except ImportError:

@@ -20,6 +20,7 @@ from textwrap import dedent
 
 from .kernels_common import _dtype_suffix, _next_power_of_two, _zero_other
 
+
 def _packed_layout(n_cols: int, block: int = 256) -> tuple[int, int]:
     """Choose a (columns, rows-per-block) tile for tiny row-wise kernels.
 
@@ -30,7 +31,6 @@ def _packed_layout(n_cols: int, block: int = 256) -> tuple[int, int]:
     block_cols = min(block, _next_power_of_two(n_cols))
     rows_per_block = max(1, block // block_cols)
     return block_cols, rows_per_block
-
 
 
 def _build_real_to_complex_kernel_source(

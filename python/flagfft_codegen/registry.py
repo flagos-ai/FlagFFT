@@ -23,7 +23,6 @@ between ``jit_source.py``, ``kernels.py`` and the C++ runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
 
 CT_LEAF = "ct_leaf"
 FOUR_STEP = "four_step"

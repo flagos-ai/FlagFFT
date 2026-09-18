@@ -27,7 +27,6 @@ from typing import Any
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
-    _next_power_of_two,
     _zero_other,
     codelet_radices_for,
     emitted_leaf_factors,

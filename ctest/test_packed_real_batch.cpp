@@ -25,11 +25,13 @@ struct PackedSetting {
     setenv("FLAGFFT_PACKED_REAL", "1", 1);
   }
   ~PackedSetting() {
-    if (existed) setenv("FLAGFFT_PACKED_REAL", previous.c_str(), 1);
-    else unsetenv("FLAGFFT_PACKED_REAL");
+    if (existed)
+      setenv("FLAGFFT_PACKED_REAL", previous.c_str(), 1);
+    else
+      unsetenv("FLAGFFT_PACKED_REAL");
   }
 };
-}
+}  // namespace
 
 // Different data in every batch detects accidental batch-0 reuse. Compare
 // each layout with a dense platform transform, including Nyquist padding.
@@ -46,19 +48,31 @@ TEST(PackedRealBatch, DensePaddedAndInPlaceMatchReference) {
   RefPlanHandle fwd, inv;
   ref_plan_1d(fwd, n, FLAGFFT_D2Z, batch);
   ref_plan_1d(inv, n, FLAGFFT_Z2D, batch);
-  ref_exec_d2z(fwd, static_cast<double*>(dense_in.data()),
+  ref_exec_d2z(fwd,
+               static_cast<double*>(dense_in.data()),
                static_cast<flagfftDoubleComplex*>(dense_spectrum.data()));
   std::vector<flagfftDoubleComplex> reference(half * batch);
   dense_spectrum.copy_to_host(reference.data(), reference.size() * sizeof(reference[0]));
-  ref_exec_z2d(inv, static_cast<flagfftDoubleComplex*>(dense_spectrum.data()),
+  ref_exec_z2d(inv,
+               static_cast<flagfftDoubleComplex*>(dense_spectrum.data()),
                static_cast<double*>(dense_inverse.data()));
   std::vector<double> inverse_reference(n * batch);
   dense_inverse.copy_to_host(inverse_reference.data(), inverse_reference.size() * sizeof(double));
 
   flagfftHandle unsupported = nullptr;
   int shape_for_rejection = n;
-  EXPECT_EQ(flagfftPlanMany(&unsupported, 1, &shape_for_rejection, nullptr, 1, n+6,
-                           nullptr, 1, half+3, FLAGFFT_D2Z, batch), FLAGFFT_NOT_SUPPORTED);
+  EXPECT_EQ(flagfftPlanMany(&unsupported,
+                            1,
+                            &shape_for_rejection,
+                            nullptr,
+                            1,
+                            n + 6,
+                            nullptr,
+                            1,
+                            half + 3,
+                            FLAGFFT_D2Z,
+                            batch),
+            FLAGFFT_NOT_SUPPORTED);
   EXPECT_EQ(unsupported, nullptr);
 
   for (int layout = 0; layout < 3; ++layout) {
@@ -69,8 +83,8 @@ TEST(PackedRealBatch, DensePaddedAndInPlaceMatchReference) {
     std::vector<double> real_host(real_distance * batch, -123.0);
     std::vector<flagfftDoubleComplex> complex_host(complex_distance * batch);
     for (int b = 0; b < batch; ++b) {
-      std::copy_n(input.data() + b*n, n, real_host.data() + b*real_distance);
-      std::copy_n(reference.data() + b*half, half, complex_host.data() + b*complex_distance);
+      std::copy_n(input.data() + b * n, n, real_host.data() + b * real_distance);
+      std::copy_n(reference.data() + b * half, half, complex_host.data() + b * complex_distance);
     }
     flagfft::adaptor::Memory real(real_host.size() * sizeof(double));
     flagfft::adaptor::Memory spectrum(complex_host.size() * sizeof(complex_host[0]));
@@ -79,29 +93,59 @@ TEST(PackedRealBatch, DensePaddedAndInPlaceMatchReference) {
                                 : static_cast<flagfftDoubleComplex*>(spectrum.data());
     flagfftHandle plan = nullptr;
     int shape = n;
-    ASSERT_EQ(flagfftPlanMany(&plan, 1, &shape, nullptr, 1, real_distance, nullptr, 1,
-                              complex_distance, FLAGFFT_D2Z, batch), FLAGFFT_SUCCESS);
+    ASSERT_EQ(flagfftPlanMany(&plan,
+                              1,
+                              &shape,
+                              nullptr,
+                              1,
+                              real_distance,
+                              nullptr,
+                              1,
+                              complex_distance,
+                              FLAGFFT_D2Z,
+                              batch),
+              FLAGFFT_SUCCESS);
     EXPECT_NE(std::string(flagfftGetPlanDescription(plan)).find("CompiledRawPackedR2C"), std::string::npos);
     real.copy_from_host(real_host.data(), real_host.size() * sizeof(double));
     ASSERT_EQ(flagfftExecD2Z(plan, real_ptr, complex_ptr), FLAGFFT_SUCCESS);
-    (in_place ? real : spectrum).copy_to_host(complex_host.data(), complex_host.size() * sizeof(complex_host[0]));
+    (in_place ? real : spectrum)
+        .copy_to_host(complex_host.data(), complex_host.size() * sizeof(complex_host[0]));
     for (int b = 0; b < batch; ++b) {
-      expect_reference_accuracy(error_stats(complex_host.data()+b*complex_distance, reference.data()+b*half, half, 1),
-                                FLAGFFT_D2Z, n, 1, "batch-layout");
+      expect_reference_accuracy(
+          error_stats(complex_host.data() + b * complex_distance, reference.data() + b * half, half, 1),
+          FLAGFFT_D2Z,
+          n,
+          1,
+          "batch-layout");
     }
     ASSERT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
 
     for (int b = 0; b < batch; ++b)
-      std::copy_n(reference.data()+b*half, half, complex_host.data()+b*complex_distance);
-    (in_place ? real : spectrum).copy_from_host(complex_host.data(), complex_host.size()*sizeof(complex_host[0]));
-    ASSERT_EQ(flagfftPlanMany(&plan, 1, &shape, nullptr, 1, complex_distance, nullptr, 1,
-                              real_distance, FLAGFFT_Z2D, batch), FLAGFFT_SUCCESS);
+      std::copy_n(reference.data() + b * half, half, complex_host.data() + b * complex_distance);
+    (in_place ? real : spectrum)
+        .copy_from_host(complex_host.data(), complex_host.size() * sizeof(complex_host[0]));
+    ASSERT_EQ(flagfftPlanMany(&plan,
+                              1,
+                              &shape,
+                              nullptr,
+                              1,
+                              complex_distance,
+                              nullptr,
+                              1,
+                              real_distance,
+                              FLAGFFT_Z2D,
+                              batch),
+              FLAGFFT_SUCCESS);
     EXPECT_NE(std::string(flagfftGetPlanDescription(plan)).find("CompiledRawPackedC2R"), std::string::npos);
     ASSERT_EQ(flagfftExecZ2D(plan, complex_ptr, real_ptr), FLAGFFT_SUCCESS);
-    real.copy_to_host(real_host.data(), real_host.size()*sizeof(double));
+    real.copy_to_host(real_host.data(), real_host.size() * sizeof(double));
     for (int b = 0; b < batch; ++b) {
-      expect_reference_accuracy(error_stats(real_host.data()+b*real_distance, inverse_reference.data()+b*n, n, 1),
-                                FLAGFFT_Z2D, n, 1, "batch-layout");
+      expect_reference_accuracy(
+          error_stats(real_host.data() + b * real_distance, inverse_reference.data() + b * n, n, 1),
+          FLAGFFT_Z2D,
+          n,
+          1,
+          "batch-layout");
     }
     ASSERT_EQ(flagfftDestroy(plan), FLAGFFT_SUCCESS);
   }
