@@ -67,6 +67,11 @@ NVIDIA_PY_ROOT=$(python3 -c "import nvidia; print(next(iter(nvidia.__path__)))")
 DESTDIR=%{buildroot} %{__cmake} --install .
 # flagfft_codegen: pure-Python codegen package invoked by libflagfft at
 # plan creation time (python3 -m flagfft_codegen.jit_source).
+# /usr/local is not on this python's default sys.path (same reason as the
+# %build export); put it first so the pip-installed setuptools (with
+# bdist_wheel) wins over the older distro one.
+PY3_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+export PYTHONPATH=/usr/local/lib/python${PY3_VER}/site-packages:/usr/local/lib64/python${PY3_VER}/site-packages
 python3 -m pip install --no-deps --no-build-isolation --no-compile \
     --target %{buildroot}%{python3_sitelib} .
 rm -f %{buildroot}%{python3_sitelib}/flagfft_codegen-*.dist-info/RECORD
