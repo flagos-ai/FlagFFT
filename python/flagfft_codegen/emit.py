@@ -78,8 +78,7 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
     if kind == "bluestein_prepare":
         return (
             "_bluestein_prepare_kernel",
-            dedent(
-                f"""
+            dedent(f"""
                 @triton.jit
                 def _bluestein_prepare_kernel(
                     in_ptr,
@@ -105,15 +104,13 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, yr, mask=mask)
                     tl.store(dst + 1, yi, mask=mask)
-                """
-            ),
+                """),
             ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     if kind == "bluestein_pointwise":
         return (
             "_bluestein_pointwise_kernel",
-            dedent(
-                f"""
+            dedent(f"""
                 @triton.jit
                 def _bluestein_pointwise_kernel(
                     a_ptr,
@@ -138,15 +135,13 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, pr, mask=mask)
                     tl.store(dst + 1, -pi, mask=mask)
-                """
-            ),
+                """),
             ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
         )
     if kind == "bluestein_finalize":
         return (
             "_bluestein_finalize_kernel",
-            dedent(
-                f"""
+            dedent(f"""
                 @triton.jit
                 def _bluestein_finalize_kernel(
                     in_ptr,
@@ -171,8 +166,7 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                     dst = out_ptr + (pid_batch * n + offsets) * 2
                     tl.store(dst, yr, mask=mask)
                     tl.store(dst + 1, yi, mask=mask)
-                """
-            ),
+                """),
             ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     raise ValueError(f"unsupported JIT kernel kind: {kind}")
@@ -218,8 +212,7 @@ def _rader_kernel_source(
     if kind == "rader_prepare":
         return (
             "_rader_prepare_kernel",
-            dedent(
-                f"""
+            dedent(f"""
                 @triton.jit
                 def _rader_prepare_kernel(
                     in_ptr,
@@ -243,15 +236,13 @@ def _rader_kernel_source(
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, xr, mask=mask)
                     tl.store(dst + 1, xi, mask=mask)
-                """
-            ),
+                """),
             ["in_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     if kind == "rader_pointwise":
         return (
             "_rader_pointwise_kernel",
-            dedent(
-                f"""
+            dedent(f"""
                 @triton.jit
                 def _rader_pointwise_kernel(
                     a_ptr,
@@ -288,15 +279,13 @@ def _rader_kernel_source(
                         dc = dc_ptr + pid_batch * n * 2
                         tl.store(dc, tl.load(a0) + tl.load(x0))
                         tl.store(dc + 1, tl.load(a0 + 1) + tl.load(x0 + 1))
-                """
-            ),
+                """),
             ["a_ptr", "b_ptr", "out_ptr", "input_ptr", "dc_ptr", "n", "m", "nbatch"],
         )
     if kind == "rader_finalize":
         return (
             "_rader_finalize_kernel",
-            dedent(
-                f"""
+            dedent(f"""
                 @triton.jit
                 def _rader_finalize_kernel(
                     input_ptr,
@@ -326,8 +315,7 @@ def _rader_kernel_source(
                     tl.store(dst, yr, mask=mask)
                     tl.store(dst + 1, yi, mask=mask)
 
-                """
-            ),
+                """),
             ["input_ptr", "conv_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     raise ValueError(f"unsupported JIT kernel kind: {kind}")
@@ -659,6 +647,19 @@ def _transpose3d_v2_supported() -> bool:
     return not _non_nvidia_backend_active()
 
 
+# Backends whose 3D correctness and performance have been validated with the
+# portable register-tile transpose.  Each backend is added here after its own
+# validation; the remaining non-NVIDIA targets keep the previous v1 kernel.
+_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca", "musa"})
+
+
+def _portable_transpose3d_supported() -> bool:
+    """Whether the portable register-tile 3D transpose is enabled for this backend."""
+    from .kernels_common import _declared_backend
+
+    return _declared_backend() in _PORTABLE_TRANSPOSE3D_BACKENDS
+
+
 def _emit_tiled_transpose3d_jit_kernel(
     *,
     n0: int,
@@ -675,7 +676,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
-    elif dtype == "complex64":
+    elif dtype == "complex64" and _portable_transpose3d_supported():
         (
             kernel_name,
             kernel_source,

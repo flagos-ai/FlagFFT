@@ -1,8 +1,24 @@
 """Device facts and versioned code-generation policy (no device import required)."""
-from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+
 import hashlib
 import json
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass
+
+# Static launch facts used when a driver query cannot provide them.  These keep
+# plan creation working on a backend whose driver omits optional attributes;
+# the profile records `facts_source = "backend_default"` in that case.
+_BACKEND_FACT_DEFAULTS = {
+    "cuda": {"warp_size": 32, "max_threads_per_block": 1024},
+    "musa": {"warp_size": 32, "max_threads_per_block": 1024},
+    "ppu": {"warp_size": 32, "max_threads_per_block": 1024},
+    "ix": {"warp_size": 64, "max_threads_per_block": 4096},
+    "maca": {"warp_size": 64, "max_threads_per_block": 1024},
+    # libtriton_jit's NPU backend reports WARP_SIZE = 1 and launches num_warps
+    # as the literal block dimension, so a warp width of 1 is the device fact
+    # there rather than a missing attribute.
+    "npu": {"warp_size": 1, "max_threads_per_block": 65535},
+}
 
 
 @dataclass(frozen=True)
@@ -16,27 +32,44 @@ class BackendProfile:
     policy_version: int = 1
     toolchain: str = "unspecified"
     source_fingerprint: str = "unspecified"
+    # Where the launch facts came from: the driver query or backend defaults.
+    facts_source: str = "driver_query"
     # Policy budget for live FFT values, not a queried physical register count.
     leaf_live_bytes_per_thread: int = 128
 
     @classmethod
     def from_device(cls, device: dict, policy: str = "native"):
-        if device.get("backend") not in {"cuda", "musa", "ppu", "ix", "maca", "npu"} or not device.get("device_arch"):
+        backend = device.get("backend")
+        if backend not in _BACKEND_FACT_DEFAULTS or not device.get("device_arch"):
             raise ValueError("missing or unsupported device identity")
         if policy not in {"legacy", "native", "packed", "balanced"}:
             raise ValueError(f"unknown execution policy: {policy}")
+        defaults = _BACKEND_FACT_DEFAULTS[backend]
         warp = device.get("warp_size")
         threads = device.get("max_threads_per_block")
-        # The Ascend NPU backend launches num_warps as the literal block
-        # dimension (libtriton_jit's npu backend reports WARP_SIZE = 1), so a
-        # warp width of 1 is the queried device fact there, not a fallback.
-        allowed_warps = (1, 32, 64) if device.get("backend") == "npu" else (32, 64)
+        facts_source = device.get("source") or "driver_query"
+        allowed_warps = (1, 32, 64) if backend == "npu" else (32, 64)
         if warp not in allowed_warps or not isinstance(threads, int) or threads < warp:
-            raise ValueError("missing or invalid device launch limits")
-        shared = device.get("max_dynamic_shared_memory") or device.get("shared_memory_per_block")
+            # Fall back to the backend's static facts instead of failing plan
+            # creation when a driver omits warp/thread-block attributes.
+            warp = defaults["warp_size"]
+            threads = defaults["max_threads_per_block"]
+            facts_source = "backend_default"
+        shared = device.get("max_dynamic_shared_memory") or device.get(
+            "shared_memory_per_block"
+        )
         if shared is not None and (not isinstance(shared, int) or shared <= 0):
-            raise ValueError("invalid shared-memory limit")
-        return cls(device["backend"], device["device_arch"], warp, threads, shared, policy)
+            shared = None
+            facts_source = "backend_default"
+        return cls(
+            backend,
+            device["device_arch"],
+            warp,
+            threads,
+            shared,
+            policy,
+            facts_source=facts_source,
+        )
 
     @property
     def lane_width(self):
@@ -48,7 +81,9 @@ class BackendProfile:
 
     @property
     def fingerprint(self):
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()[:20]
+        return hashlib.sha256(
+            json.dumps(asdict(self), sort_keys=True).encode()
+        ).hexdigest()[:20]
 
     def shared_budget(self, preferred):
         if self.policy == "legacy" or self.max_dynamic_shared_memory is None:
@@ -57,7 +92,9 @@ class BackendProfile:
 
     def warps_for(self, logical_lanes):
         wanted = max(1, (logical_lanes + self.lane_width - 1) // self.lane_width)
-        candidates = [n for n in (1, 2, 4, 8) if n * self.warp_size <= self.max_threads_per_block]
+        candidates = [
+            n for n in (1, 2, 4, 8) if n * self.warp_size <= self.max_threads_per_block
+        ]
         # Logical lanes may span multiple elements per physical thread.
         return next((n for n in candidates if n >= wanted), candidates[-1])
 
@@ -67,7 +104,10 @@ class BackendProfile:
         return self.warps_for(hint * 32)
 
     def validate(self, num_warps):
-        if num_warps not in (1, 2, 4, 8) or num_warps * self.warp_size > self.max_threads_per_block:
+        if (
+            num_warps not in (1, 2, 4, 8)
+            or num_warps * self.warp_size > self.max_threads_per_block
+        ):
             raise ValueError(f"illegal launch: {num_warps} warps on {self}")
 
 

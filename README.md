@@ -157,8 +157,9 @@ runtime (for example `flagtree===0.5.1+iluvatar3.1`).
 
 Use the tested MetaX container and the SDK's `cmake_maca` / `make_maca`
 wrappers. Set `-DBACKEND=MACA -DMACA_PATH=/opt/maca`; set all three device
-filters to the physical card being tested. The complete card-4 build and
-validation procedure is in [MACA setup and validation](docs/maca-adaptation.md).
+filters to the physical card being tested. The card-4 build and validation
+procedure is recorded with the MACA validation results in the workspace
+`results/` tree (`20260917_165501_maca_hw_profile/REPORT.md`).
 
 ### Ascend (NPU) Build
 
@@ -196,7 +197,7 @@ unavailable platform/performance rows as `Skipped` with the ops-fft reason.
 | Variable | Description |
 |---|---|
 | `FLAGFFT_PYTHON` | Path to the Python interpreter used by JIT codegen (default: `python3` from PATH); keep its Python minor version aligned with the CMake build interpreter |
-| `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `~/.flagfft/tune.db`) |
+| `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `.flagfft/tuned_plans.sqlite` beside the executable) |
 | `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
 | `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `balanced` (IX default), `legacy` (other backends' default/comparison), `native` (device warp only), or `packed` (experimental wider leaf packing) |
 
@@ -392,13 +393,31 @@ flagfft-cli bench --api r2c --shape 1024,2048,4096,8192 --json
 flagfft-cli bench --api c2c --shape 997 --print-path --json
 ```
 
-#### `tune` — Auto-tuning (planned)
+#### `tune` — Decomposition auto-tuning
 
 ```bash
-flagfft-cli tune [OPTIONS]
+flagfft-cli tune --api c2c --shape 1048576 --batch 256 --db .flagfft/tuned_plans.sqlite
 ```
 
-Currently a placeholder; exits with `FLAGFFT_NOT_SUPPORTED`.
+`tune` builds the rank-1 decomposition candidates for one length, screens
+`--max-candidates` of them, re-times the best `--finalists`, validates each
+candidate's output against the reference, and persists one validated winner
+per request (device architecture, length, batch bucket, dtype and direction)
+into the SQLite tuning database. `--api` accepts `c2c` or `z2z` today, and
+`--no-save` runs the same search without writing to the database.
+
+| Option | Default | Description |
+|---|---|---|
+| `--shape` | `1048576` | Single 1D FFT length |
+| `--batch` | `1` | Batch size |
+| `--api` | `c2c` | Complex precision: `c2c` or `z2z` |
+| `--max-candidates` | `5` | Candidate plans to screen |
+| `--finalists` | `2` | Candidates that get the long benchmark |
+| `--screen-warmup` / `--screen-iters` | `10` / `50` | Screening timings |
+| `--final-warmup` / `--final-iters` | `50` / `1000` | Finalist timings |
+| `--db` | `.flagfft/tuned_plans.sqlite` beside the executable | Tuning database |
+| `--no-save` | — | Do not persist trials or the winning plan |
+| `--json` | — | Output results as JSON |
 
 ### Exit Codes
 
