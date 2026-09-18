@@ -574,54 +574,20 @@ bool KernelKey::operator==(const KernelKey &other) const {
 
 std::string KernelKey::repr() const {
   std::ostringstream out;
-  out << "kind=" << kernel_kind_name(kind) << ";target=" << target << ";dtype=" << dtype;
-  if (kind == KernelKind::DirectDft || kind == KernelKind::DirectDftStrided) {
-    out << ";direction=" << direction << ";length=" << length;
-  }
-  if (kind == KernelKind::Leaf || kind == KernelKind::LeafStrided || kind == KernelKind::LeafR2C ||
-      kind == KernelKind::LeafC2R || kind == KernelKind::LeafBluestein ||
-      kind == KernelKind::LeafBluesteinPrepare || kind == KernelKind::LeafBluesteinFinish ||
-      kind == KernelKind::BluesteinFourStepPrepareRow || kind == KernelKind::BluesteinFourStepPointwiseRow ||
-      kind == KernelKind::BluesteinFourStepFinishCol || kind == KernelKind::FourStepRow ||
-      kind == KernelKind::FourStepRowStrided || kind == KernelKind::FourStepRealRow ||
-      kind == KernelKind::FourStepHermitianRow || kind == KernelKind::FourStepCol ||
-      kind == KernelKind::FourStepColStrided || kind == KernelKind::FourStepR2CCol ||
-      kind == KernelKind::FourStepC2RCol) {
-    out << ";direction=" << direction << ";length=" << length << ";factors=[" << join_ints(factors) << "]"
-        << ";lanes=" << lanes << ";num_warps=" << num_warps << ";generic_radices=["
-        << join_ints(generic_radices) << "];smem_size=" << smem_size;
-    if (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepRowStrided ||
-        kind == KernelKind::FourStepRealRow || kind == KernelKind::FourStepHermitianRow ||
-        kind == KernelKind::FourStepCol || kind == KernelKind::FourStepColStrided ||
-        kind == KernelKind::FourStepR2CCol || kind == KernelKind::FourStepC2RCol ||
-        kind == KernelKind::BluesteinFourStepPrepareRow ||
-        kind == KernelKind::BluesteinFourStepPointwiseRow || kind == KernelKind::BluesteinFourStepFinishCol) {
-      out << ";four_step_n1=" << four_step_n1 << ";four_step_n2=" << four_step_n2;
-    }
-  }
-  if (kind == KernelKind::LeafBluestein || kind == KernelKind::LeafBluesteinPrepare ||
-      kind == KernelKind::LeafBluesteinFinish || kind == KernelKind::BluesteinFourStepPrepareRow ||
-      kind == KernelKind::BluesteinFourStepPointwiseRow || kind == KernelKind::BluesteinFourStepFinishCol ||
-      kind == KernelKind::BluesteinPrepare || kind == KernelKind::BluesteinPointwise ||
-      kind == KernelKind::BluesteinFinalize) {
-    out << ";bluestein_n=" << bluestein_n << ";bluestein_m=" << bluestein_m;
-  }
-  if (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderPointwise ||
-      kind == KernelKind::RaderFinalize) {
-    out << ";rader_n=" << rader_n << ";rader_m=" << rader_m;
-  }
-  if (kind == KernelKind::ReshapePack || kind == KernelKind::TwiddleReshapePack ||
-      kind == KernelKind::TiledTranspose) {
-    out << ";reshape_n1=" << reshape_n1 << ";reshape_n2=" << reshape_n2;
-  }
-  if (kind == KernelKind::Transpose3D) {
-    out << ";transpose3d_n0=" << transpose3d_n0 << ";transpose3d_n1=" << transpose3d_n1
-        << ";transpose3d_n2=" << transpose3d_n2 << ";order=" << transpose3d_order;
-  }
-  if (kind == KernelKind::RealToComplex || kind == KernelKind::R2CHalfPack ||
-      kind == KernelKind::CompactToHermitianFull || kind == KernelKind::ComplexToReal) {
-    out << ";length=" << length;
-  }
+  // KernelKey::repr doubles as the compiled-kernel cache key, so it has to
+  // name every field that distinguishes two keys. Emitting only the fields a
+  // kind happens to use made stage kernels collide: every Stockham stage of a
+  // plan shares target/dtype and differs in radix, so all stages used the
+  // first compiled radix.
+  out << "kind=" << kernel_kind_name(kind) << ";target=" << target << ";dtype=" << dtype
+      << ";direction=" << direction << ";length=" << length << ";factors=[" << join_ints(factors) << "]"
+      << ";lanes=" << lanes << ";num_warps=" << num_warps << ";generic_radices=["
+      << join_ints(generic_radices) << "];smem_size=" << smem_size << ";four_step_n1=" << four_step_n1
+      << ";four_step_n2=" << four_step_n2 << ";bluestein_n=" << bluestein_n << ";bluestein_m=" << bluestein_m
+      << ";rader_n=" << rader_n << ";rader_m=" << rader_m << ";reshape_n1=" << reshape_n1
+      << ";reshape_n2=" << reshape_n2 << ";transpose3d_n0=" << transpose3d_n0
+      << ";transpose3d_n1=" << transpose3d_n1 << ";transpose3d_n2=" << transpose3d_n2
+      << ";order=" << transpose3d_order;
   return out.str();
 }
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 """Kernel source emission: per-family builders plus the registry-driven dispatch."""
 
+import ast
 import importlib.util
 import json
 import sys
@@ -26,7 +27,6 @@ from typing import Any
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
-    _next_power_of_two,
     _zero_other,
     codelet_radices_for,
     emitted_leaf_factors,
@@ -50,11 +50,13 @@ from .kernels_real import (
     _build_real_to_complex_kernel_source,
 )
 from .kernels_special import _build_direct_dft_kernel_source
+from .kernels_stockham import build_stockham_stage
 from .metadata import _metadata, _module_source, _signature
 from .registry import (
     DIRECT_DFT,
     FOUR_STEP_COL_NAMES,
     FOUR_STEP_ROW_NAMES,
+    STOCKHAM,
     kernel_spec,
     module_name_for,
 )
@@ -75,7 +77,8 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
     if kind == "bluestein_prepare":
         return (
             "_bluestein_prepare_kernel",
-            dedent(f"""
+            dedent(
+                f"""
                 @triton.jit
                 def _bluestein_prepare_kernel(
                     in_ptr,
@@ -101,13 +104,15 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, yr, mask=mask)
                     tl.store(dst + 1, yi, mask=mask)
-                """),
+                """
+            ),
             ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     if kind == "bluestein_pointwise":
         return (
             "_bluestein_pointwise_kernel",
-            dedent(f"""
+            dedent(
+                f"""
                 @triton.jit
                 def _bluestein_pointwise_kernel(
                     a_ptr,
@@ -132,13 +137,15 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, pr, mask=mask)
                     tl.store(dst + 1, -pi, mask=mask)
-                """),
+                """
+            ),
             ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
         )
     if kind == "bluestein_finalize":
         return (
             "_bluestein_finalize_kernel",
-            dedent(f"""
+            dedent(
+                f"""
                 @triton.jit
                 def _bluestein_finalize_kernel(
                     in_ptr,
@@ -163,7 +170,8 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                     dst = out_ptr + (pid_batch * n + offsets) * 2
                     tl.store(dst, yr, mask=mask)
                     tl.store(dst + 1, yi, mask=mask)
-                """),
+                """
+            ),
             ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     raise ValueError(f"unsupported JIT kernel kind: {kind}")
@@ -209,7 +217,8 @@ def _rader_kernel_source(
     if kind == "rader_prepare":
         return (
             "_rader_prepare_kernel",
-            dedent(f"""
+            dedent(
+                f"""
                 @triton.jit
                 def _rader_prepare_kernel(
                     in_ptr,
@@ -233,13 +242,15 @@ def _rader_kernel_source(
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, xr, mask=mask)
                     tl.store(dst + 1, xi, mask=mask)
-                """),
+                """
+            ),
             ["in_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     if kind == "rader_pointwise":
         return (
             "_rader_pointwise_kernel",
-            dedent(f"""
+            dedent(
+                f"""
                 @triton.jit
                 def _rader_pointwise_kernel(
                     a_ptr,
@@ -276,13 +287,15 @@ def _rader_kernel_source(
                         dc = dc_ptr + pid_batch * n * 2
                         tl.store(dc, tl.load(a0) + tl.load(x0))
                         tl.store(dc + 1, tl.load(a0 + 1) + tl.load(x0 + 1))
-                """),
+                """
+            ),
             ["a_ptr", "b_ptr", "out_ptr", "input_ptr", "dc_ptr", "n", "m", "nbatch"],
         )
     if kind == "rader_finalize":
         return (
             "_rader_finalize_kernel",
-            dedent(f"""
+            dedent(
+                f"""
                 @triton.jit
                 def _rader_finalize_kernel(
                     input_ptr,
@@ -312,7 +325,8 @@ def _rader_kernel_source(
                     tl.store(dst, yr, mask=mask)
                     tl.store(dst + 1, yi, mask=mask)
 
-                """),
+                """
+            ),
             ["input_ptr", "conv_ptr", "idx_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     raise ValueError(f"unsupported JIT kernel kind: {kind}")
@@ -525,6 +539,13 @@ def emit_jit_kernel(
         )
         n1 = four_step_n1 if spec.is_four_step else 0
         n2 = four_step_n2 if spec.is_four_step else 0
+    elif spec.family == STOCKHAM:
+        if len(factors) != 1:
+            raise ValueError("a Stockham stage needs exactly one radix")
+        kernel_name, kernel_source = build_stockham_stage(
+            length, factors[0], direction, dtype
+        )
+        n1 = n2 = 0
     elif spec.family == DIRECT_DFT:
         kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
             length,
@@ -556,25 +577,27 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    radices = (
-        tuple(
+    if spec.is_leaf_like:
+        radices = tuple(
             sorted(
                 codelet_radices_for(factors)
                 | codelet_radices_for(emitted_leaf_factors(plan, spec.io_mode))
             )
         )
-        if spec.is_leaf_like
-        else ()
-    )
+    elif spec.family == STOCKHAM:
+        radices = tuple(sorted(codelet_radices_for(factors)))
+    else:
+        radices = ()
     module_path.write_text(_module_source(kernel_source, radices))
 
-    sys.path.insert(0, str(module_path.parent))
-    spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"failed to load generated kernel module {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    arg_names = list(getattr(module, kernel_name).arg_names)
+    # Metadata describes the emitted function, not the generator's active
+    # device. Do not import backend-specific TLE helpers just to read arguments.
+    function = next(
+        node
+        for node in ast.parse(kernel_source).body
+        if isinstance(node, ast.FunctionDef) and node.name == kernel_name
+    )
+    arg_names = [arg.arg for arg in function.args.args]
     metadata = _metadata(
         module_path=module_path,
         kernel_name=kernel_name,
@@ -633,8 +656,10 @@ def _transpose3d_v2_supported() -> bool:
     Those targets use the portable register-tile variant instead, which keeps
     both the load and the store side coalesced.
     """
-    from .kernels_common import _non_nvidia_backend_active
+    from .kernels_common import _non_nvidia_backend_active, _npu_backend_active
 
+    if _npu_backend_active():
+        return False
     return not _non_nvidia_backend_active()
 
 

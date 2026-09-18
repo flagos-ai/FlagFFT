@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cstdio>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
@@ -39,6 +40,9 @@ namespace {
   }
 
   PlanNodePtr lookup_or_build_root(PlanBuilder &builder, const FFTRequest &request) {
+    if (request.device_type == "npu") {
+      return builder.build(request.requested_n, request);
+    }
     auto tuned = lookup_tuned_plan_json(request);
     if (tuned.has_value()) {
       try {
@@ -70,6 +74,11 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
   flagfftResult device_result = adaptor::ensure_device(desc.device_index, desc.device_arch);
   if (device_result != FLAGFFT_SUCCESS) {
     return device_result;
+  }
+  if (adaptor::backend_name() == "npu" &&
+      (desc.type == FLAGFFT_Z2Z || desc.type == FLAGFFT_D2Z || desc.type == FLAGFFT_Z2D)) {
+    // Ascend's SIMD compiler does not support native FP64 vector arithmetic.
+    return FLAGFFT_NOT_SUPPORTED;
   }
 
   try {
@@ -334,7 +343,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     return FLAGFFT_SUCCESS;
   } catch (const std::bad_alloc &) {
     return FLAGFFT_ALLOC_FAILED;
-  } catch (const std::exception &) {
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] plan setup failed: %s\n", e.what());
     return FLAGFFT_SETUP_FAILED;
   }
 }

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "flagfft_test.h"
 #include "flagfft/core.hpp"
+#include "flagfft_test.h"
 
 #include <complex>
 #include <numbers>
@@ -23,7 +23,7 @@ namespace {
 
 template <typename Complex>
 void check_prime_algorithms() {
-  using Scalar = decltype(Complex{}.x);
+  using Scalar = decltype(Complex {}.x);
   constexpr int n = 257;
   constexpr int batch = 7;
   constexpr bool is_double = std::is_same_v<Scalar, double>;
@@ -69,7 +69,7 @@ void check_prime_algorithms() {
       } else {
         ASSERT_EQ(candidate.node->kind, flagfft::PlanNodeKind::Rader);
       }
-      const flagfft::RawExecutionContext context{request, stream.get(), batch};
+      const flagfft::RawExecutionContext context {request, stream.get(), batch};
       auto verify = [&](flagfft::adaptor::Memory &result) {
         stream.sync();
         result.copy_to_host(output.data(), output.size() * sizeof(Complex));

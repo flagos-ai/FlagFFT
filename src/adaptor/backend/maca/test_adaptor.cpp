@@ -14,8 +14,8 @@
 
 #include "adaptor/test_adaptor.h"
 
-#include <mcr/mc_runtime.h>
 #include <mcfft.h>
+#include <mcr/mc_runtime.h>
 
 #include <cmath>
 #include <cstdio>
@@ -82,6 +82,12 @@ void initialize() {
 }
 std::string backend_name() {
   return "maca";
+}
+bool reference_available() {
+  return true;
+}
+bool reference_uses_host_memory() {
+  return false;
 }
 
 // =========================================================================

@@ -17,8 +17,10 @@ from __future__ import annotations
 """Direct DFT kernel source generation."""
 
 from textwrap import dedent
+from typing import Literal
 
-from .kernels_common import _dtype_suffix, _zero_other, lane_block_for
+from .kernels_common import _dtype_suffix, lane_block_for
+
 
 def _build_direct_dft_kernel_source(
     n: int,

@@ -139,9 +139,7 @@ class ProfileTest(unittest.TestCase):
             reset_profile(token)
 
     def test_single_smem_buffer_only_for_large_single_group_leaves(self):
-        from flagfft_codegen.kernels_common import (
-            _use_single_smem_buffer,
-        )
+        from flagfft_codegen.kernels_common import _use_single_smem_buffer
 
         token = set_profile(self.profile(max_dynamic_shared_memory=131072))
         try:

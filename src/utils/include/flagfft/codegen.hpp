@@ -142,6 +142,25 @@ struct CompiledRawStridedDirectDftNode final : CompiledRawNode {
   std::vector<DeviceAllocation> tables;
 };
 
+struct CompiledRawStockhamNode final : CompiledRawNode {
+  CompiledRawStockhamNode(int64_t length,
+                          std::vector<int64_t> factors,
+                          std::vector<std::shared_ptr<JitKernel>> kernels,
+                          DeviceAllocation twiddle,
+                          DeviceAllocation first,
+                          DeviceAllocation second);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  int64_t length;
+  std::vector<int64_t> factors;
+  std::vector<std::shared_ptr<JitKernel>> kernels;
+  DeviceAllocation twiddle;
+  DeviceAllocation first;
+  DeviceAllocation second;
+};
+
 struct CompiledRawDirectDftNode final : CompiledRawNode {
   CompiledRawDirectDftNode(int64_t length,
                            std::shared_ptr<JitKernel> kernel,

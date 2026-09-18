@@ -18,8 +18,9 @@
 namespace flagfft {
 
 bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
-  return input_dtype == other.input_dtype && output_dtype == other.output_dtype && device_type == other.device_type &&
-         device_index == other.device_index && device_arch == other.device_arch && batch == other.batch &&
+  return input_dtype == other.input_dtype && output_dtype == other.output_dtype &&
+         device_type == other.device_type && device_index == other.device_index &&
+         device_arch == other.device_arch && batch == other.batch &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
 

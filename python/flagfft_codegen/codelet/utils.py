@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import triton
-import triton.experimental.tle.language as tle
 import triton.language as tl
 
 

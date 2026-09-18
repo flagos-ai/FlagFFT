@@ -142,6 +142,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "direct_dft";
     case KernelKind::DirectDftStrided:
       return "direct_dft_strided";
+    case KernelKind::StockhamStage:
+      return "stockham_stage";
     case KernelKind::FourStepRow:
       return "four_step_row";
     case KernelKind::FourStepRowStrided:

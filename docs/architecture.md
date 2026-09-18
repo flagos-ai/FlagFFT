@@ -35,8 +35,9 @@ timing, and tuning enter through `flagfft-cli`.
   its bundled codelets.
 - `src/adaptor/` owns device allocation, stream/event operations, target
   identity, and device capability queries. CUDA and IX use the CUDA-compatible
-  driver interface, while MUSA, PPU, and MACA use their vendor runtime interfaces;
-  the common plan/codegen/exec code does not depend on device types.
+  driver interface, while MUSA, PPU, and MACA use their vendor runtime
+  interfaces and NPU uses ACL; the common plan/codegen/exec code does not
+  depend on device types.
 - `src/utils/` owns shared request/key utilities, JSON/SQLite tuning support, and internal
   headers under `src/utils/include/flagfft/`.
 
@@ -134,7 +135,9 @@ Raw nodes mirror the existing plan tree:
 `src/cli_tools/common/` owns `CaseSpec`, deterministic buffer generation,
 FlagFFT/platform-FFT dispatch, and comparison. Device memory, stream,
 synchronization, timer, and query operations use `src/adaptor/`; the selected
-backend's cuFFT-compatible library is the validation/performance oracle.
+backend's reference library is the validation/performance oracle. On Ascend,
+the `ops-fft` reference API accepts host pointers and performs its own H2D/D2H
+transfers, so the reference path keeps aligned host buffers.
 The bench subcommand queries that capability layer before plan creation:
 
 - `bench` binds FlagFFT and the platform reference plan to one adaptor stream before
@@ -160,12 +163,19 @@ The default CMake build produces only `flagfft`. `FLAGFFT_BUILD_CLI=ON` adds
 Google Test targets under `ctest/`; CLI behavior remains covered by pytest.
 The standalone `bench_vs_cufft` and `flagfft-tuner` targets were removed.
 
-`BACKEND=CUDA`, `BACKEND=MUSA`, `BACKEND=PPU`, `BACKEND=IX`, or `BACKEND=MACA`
-selects both the FlagFFT adaptor implementation and the `libtriton_jit`
-backend. The IX backend targets Iluvatar/Tianshu GPUs through the CoreX
-CUDA-compatible driver and uses the CoreX `libcufft` (ixfft) implementation as
-the reference oracle in tests and benchmarks; the MACA backend targets MetaX
-GPUs through the native `mcruntime` interface and uses mcFFT as its reference.
+`BACKEND=CUDA`, `BACKEND=MUSA`, `BACKEND=PPU`, `BACKEND=IX`, `BACKEND=MACA`, or
+`BACKEND=NPU` selects both the FlagFFT adaptor implementation and the
+`libtriton_jit` backend. The IX backend targets Iluvatar/Tianshu GPUs through
+the CoreX CUDA-compatible driver and uses the CoreX `libcufft` (ixfft)
+implementation as the reference oracle in tests and benchmarks; the MACA
+backend targets MetaX GPUs through the native `mcruntime` interface and uses
+mcFFT as its reference.
+
+The NPU adaptor uses ACL for FlagFFT device memory and streams and links the
+CANN `ops-fft` library for native reference calls. The unified runner uses that
+reference only for cases it implements. Reference-unsupported cases still run
+the FlagFFT-versus-NumPy accuracy check, while their platform accuracy and
+performance entries are recorded as policy skips.
 
 CMake is the native build/install entrypoint. The pure Python
 `flagfft-codegen` package is installed separately with `pip install .` into
@@ -233,3 +243,10 @@ device-specific evidence. `run_tests.py` keeps the corresponding `Z2Z`, `Z2D`,
 and `D2Z` operators in the 36-operator report, marks their cases as
 policy-skipped, and does not launch them; the remaining 18 operators are
 executed normally. The skip reason is retained in JSON and incremental CSV.
+
+On Ascend 910B, FP64 is unavailable and `ops-fft` is FP32-only. FlagFFT's
+FP32 path covers contiguous 1D, 2D, and 3D C2C/R2C/C2R plans. The current
+`ops-fft` reference covers horizontal 1D C2C/R2C/C2R subject to its length
+rules and 2D C2C only when each dimension is 32, 64, or 128; it has no 2D real
+or 3D plans. These reference limits are represented per case in the runner;
+they do not disable FlagFFT's NumPy-backed accuracy check.

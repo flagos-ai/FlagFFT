@@ -54,6 +54,14 @@ inside the MetaX environment with `CUDA_VISIBLE_DEVICES=4`,
 `MACA_VISIBLE_DEVICES=4`, and `MC_VISIBLE_DEVICES=4` when validating card 4.
 The capture's platform stage uses mcFFT independently from FlagFFT.
 
+For NPU, use CANN 9 and
+set `ASCEND_OPS_FFT_ROOT` to a built [ops-fft](https://gitcode.com/cann/ops-fft)
+tree; ops-fft uses host pointers, which the NPU adaptor handles explicitly.
+The reference library is FP32-only and currently covers horizontal 1D
+`C2C`/`R2C`/`C2R` plus 2D `C2C` for dimensions 32, 64, and 128. Unsupported
+reference cases are reported as platform/performance `Skipped` rows while
+FlagFFT still runs against NumPy.
+
 For IX, point
 `CUDAToolkit_ROOT` at the CoreX SDK and use an Iluvatar-enabled Triton runtime;
 the unified runner keeps `Z2Z`, `Z2D`, and `D2Z` in the manifest but skips them

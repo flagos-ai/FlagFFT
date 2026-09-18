@@ -134,7 +134,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   reject_legacy_backend_env();
   const auto device_profile = adaptor::device_capabilities_json();
   const char *policy_env = std::getenv("FLAGFFT_EXECUTION_POLICY");
-  const std::string policy = policy_env ? policy_env : (adaptor::backend_name() == "ix" ? "balanced" : "legacy");
+  const std::string policy =
+      policy_env ? policy_env : (adaptor::backend_name() == "ix" ? "balanced" : "legacy");
   const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1";
   KernelCacheState &state = kernel_cache_state();
   {
@@ -184,6 +185,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       break;
     case KernelKind::DirectDftStrided:
       kernel_kind = "direct_dft_strided";
+      break;
+    case KernelKind::StockhamStage:
+      kernel_kind = "stockham_stage";
       break;
     case KernelKind::FourStepRow:
       kernel_kind = "four_step_row";
@@ -263,9 +267,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   std::ostringstream jit_command;
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(out_dir().string()) << " --dtype "
-              << shell_quote(key.dtype) << " --target " << shell_quote(key.target)
-              << " --device-profile " << shell_quote(device_profile)
-              << " --execution-policy " << shell_quote(policy);
+              << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "
+              << shell_quote(device_profile) << " --execution-policy " << shell_quote(policy);
 #if defined(BACKEND_MACA)
   jit_command << " --compile-script "
               << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());
@@ -287,6 +290,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
+  }
+  if (key.kind == KernelKind::StockhamStage) {
+    jit_command << " --length " << key.length << " --factors " << shell_quote(join_ints(key.factors))
+                << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
       key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||

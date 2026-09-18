@@ -14,6 +14,10 @@ _BACKEND_FACT_DEFAULTS = {
     "ppu": {"warp_size": 32, "max_threads_per_block": 1024},
     "ix": {"warp_size": 64, "max_threads_per_block": 4096},
     "maca": {"warp_size": 64, "max_threads_per_block": 1024},
+    # libtriton_jit's NPU backend reports WARP_SIZE = 1 and launches num_warps
+    # as the literal block dimension, so a warp width of 1 is the device fact
+    # there rather than a missing attribute.
+    "npu": {"warp_size": 1, "max_threads_per_block": 65535},
 }
 
 
@@ -44,7 +48,8 @@ class BackendProfile:
         warp = device.get("warp_size")
         threads = device.get("max_threads_per_block")
         facts_source = device.get("source") or "driver_query"
-        if warp not in (32, 64) or not isinstance(threads, int) or threads < warp:
+        allowed_warps = (1, 32, 64) if backend == "npu" else (32, 64)
+        if warp not in allowed_warps or not isinstance(threads, int) or threads < warp:
             # Fall back to the backend's static facts instead of failing plan
             # creation when a driver omits warp/thread-block attributes.
             warp = defaults["warp_size"]

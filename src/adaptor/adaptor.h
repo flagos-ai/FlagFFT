@@ -115,6 +115,9 @@ flagfftResult ensure_device(int &device_index, std::string &device_arch);
 int device_count();
 std::string device_architecture(int device_index);
 int64_t max_dynamic_smem_bytes(int device_index);
+// Largest number of blocks one kernel launch may cover. Chunked launch paths
+// split work above this limit; backends without a hard cap report a sentinel.
+int64_t max_launch_blocks();
 void synchronize();
 std::string backend_name();
 std::string triton_target(const std::string &device_arch);

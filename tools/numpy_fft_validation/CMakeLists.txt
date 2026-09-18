@@ -6,8 +6,8 @@ set(FLAGFFT_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH
     "FlagFFT source tree containing include/ and src/")
 set(FLAGFFT_BUILD_DIR "" CACHE PATH
     "Existing FlagFFT build directory containing libflagfft.so")
-set(BACKEND "CUDA" CACHE STRING "FlagFFT backend: CUDA, MUSA, PPU, IX, or MACA")
-set_property(CACHE BACKEND PROPERTY STRINGS CUDA MUSA PPU IX MACA)
+set(BACKEND "CUDA" CACHE STRING "FlagFFT backend: CUDA, MUSA, PPU, IX, MACA, or NPU")
+set_property(CACHE BACKEND PROPERTY STRINGS CUDA MUSA PPU IX MACA NPU)
 
 if(FLAGFFT_BUILD_DIR STREQUAL "")
     message(FATAL_ERROR "-DFLAGFFT_BUILD_DIR=/path/to/FlagFFT/build is required")
@@ -97,8 +97,33 @@ elseif(BACKEND STREQUAL "MACA")
         "${MCFFT_INCLUDE_DIR}")
     target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
     target_link_libraries(numpy_fft_capture PRIVATE "${MCFFT_LIB}" "${MACA_RUNTIME_LIB}")
+elseif(BACKEND STREQUAL "NPU")
+    set(ASCEND_OPS_FFT_ROOT "$ENV{ASCEND_OPS_FFT_ROOT}" CACHE PATH
+        "ops-fft installation root used as the Ascend reference library")
+    find_path(ASCEND_OPS_FFT_INCLUDE_DIR cann_ops_fft.h
+        HINTS
+            "${ASCEND_OPS_FFT_ROOT}/include"
+            "${ASCEND_OPS_FFT_ROOT}/include/math_libs"
+            "${ASCEND_OPS_FFT_ROOT}/src/include"
+        REQUIRED)
+    find_library(ASCEND_OPS_FFT_LIBRARY NAMES cann_ops_fft
+        HINTS
+            "${ASCEND_OPS_FFT_ROOT}/lib"
+            "${ASCEND_OPS_FFT_ROOT}/lib64"
+            "${ASCEND_OPS_FFT_ROOT}/build/lib"
+            "${ASCEND_OPS_FFT_ROOT}/build"
+        REQUIRED)
+    set(REFERENCE_SOURCE "${FLAGFFT_SOURCE_DIR}/src/adaptor/backend/npu/test_adaptor.cpp")
+    target_include_directories(numpy_fft_capture PRIVATE "${ASCEND_OPS_FFT_INCLUDE_DIR}")
+    target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
+    target_link_libraries(numpy_fft_capture PRIVATE
+        "${ASCEND_OPS_FFT_LIBRARY}"
+        # cann_ops_fft.h includes acl/acl.h; the imported CANN targets carry
+        # the toolkit and pkg_inc include directories needed to compile it.
+        Ascend::ascendcl
+        Ascend::runtime)
 else()
-    message(FATAL_ERROR "Unsupported BACKEND=${BACKEND}; expected CUDA, MUSA, PPU, IX, or MACA")
+    message(FATAL_ERROR "Unsupported BACKEND=${BACKEND}; expected CUDA, MUSA, PPU, IX, MACA, or NPU")
 endif()
 
 # libflagfft.so's build-tree RPATH is not guaranteed to be present in a
@@ -118,6 +143,13 @@ elseif(BACKEND STREQUAL "IX")
     list(APPEND _tool_rpath "${CUDAToolkit_LIBRARY_ROOT}")
 elseif(BACKEND STREQUAL "MACA")
     list(APPEND _tool_rpath "${MACA_PATH}/lib" "${MACA_PATH}/mxgpu_llvm/lib")
+elseif(BACKEND STREQUAL "NPU")
+    # ACL and libtriton_jit paths are supplied by the CANN environment.
+    list(APPEND _tool_rpath
+        "${ASCEND_OPS_FFT_ROOT}/lib"
+        "${ASCEND_OPS_FFT_ROOT}/lib64"
+        "${ASCEND_OPS_FFT_ROOT}/build/lib"
+        "${ASCEND_OPS_FFT_ROOT}/build")
 endif()
 set_target_properties(numpy_fft_capture PROPERTIES
     BUILD_RPATH "${_tool_rpath}"

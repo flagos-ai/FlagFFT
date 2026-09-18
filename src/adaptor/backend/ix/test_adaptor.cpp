@@ -83,6 +83,12 @@ void initialize() {
 std::string backend_name() {
   return "ix";
 }
+bool reference_available() {
+  return true;
+}
+bool reference_uses_host_memory() {
+  return false;
+}
 
 // =========================================================================
 // Helpers

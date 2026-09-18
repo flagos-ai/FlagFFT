@@ -59,6 +59,11 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
   }
   int64_t power = ceil_power_of_two(minimum);
   const RequestContext &context = request_context();
+  // Keep NPU convolution children on the validated small-radix path, including
+  // lengths above the GPU-specific power-of-two preference threshold.
+  if (context.device_type == "npu") {
+    return power;
+  }
   const bool is_fp32 = context.input_dtype == "complex64" || context.input_dtype == "float32";
   if (is_fp32 && power <= kBluesteinPow2ConvMaxLength) {
     // fp32 four-step kernels are measurably faster for power-of-two convolution
@@ -117,6 +122,37 @@ PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
 std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
+  }
+  // Reuse the radix codelets through the GM Stockham mapping on Ascend.
+  // CUDA shared-memory leaf layouts are not used on this path.
+  if (request_context().device_type == "npu") {
+    Factorization factorization = factorize_supported_radices(n);
+    // Large prime codelets produce expensive compiler scheduling on CANN 9
+    // (radix 13 exceeded several minutes). Keep 13/17/19 on the existing DFT
+    // or Bluestein route until their vector lowering is qualified separately.
+    const bool small_radices = n % 13 != 0 && n % 17 != 0 && n % 19 != 0;
+    if (n > 1 && factorization.remainder == 1 && small_radices) {
+      std::vector<int64_t> factors;
+      for (int64_t factor : factorization.factors) {
+        // Split composite register layouts into natural-order shared codelets.
+        for (int64_t radix : {19, 17, 15, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2}) {
+          while (factor % radix == 0) {
+            factors.push_back(radix);
+            factor /= radix;
+          }
+        }
+        if (factor != 1) throw std::runtime_error("unsupported Stockham radix");
+      }
+      PlanNodePtr node = std::make_shared<StockhamPlanNode>(n, factors);
+      return {
+          {node, static_cast<double>(n * factors.size()), priority(node)}
+      };
+    }
+    PlanNodePtr node =
+        n <= kDirectDftMaxN ? PlanNodePtr(std::make_shared<DirectDFTPlanNode>(n)) : make_bluestein_plan(n);
+    return {
+        {node, estimate_direct_dft_cost(n), priority(node)}
+    };
   }
 
   std::vector<PlanCandidate> candidates;
@@ -192,18 +228,16 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
     const bool has_musa_s5000_fp64_fused_leaf =
         context.device_type == "musa" && context.device_arch == "31" && context.batch == 1 && fp64_input &&
-        fp64_output &&
-        std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
+        fp64_output && std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) != nullptr;
     // Preserve the pre-existing 8191-point policy. Other prime lengths
     // can compare both algorithms using the generic measured-plan tuner.
     // Keep the leaf Rader route (e.g. 1009) and small batches unchanged.
-    const bool prefer_musa_batched_bluestein =
-        context.device_type == "musa" && context.device_arch == "31" && context.batch >= 16 &&
-        fp64_input && fp64_output && n == 8191;
-    const bool prefer_bluestein =
-        (context.device_type != "maca" && context.input_dtype == "complex64" &&
-         context.output_dtype == "complex64") ||
-        has_a100_fp64_fused_leaf || has_musa_s5000_fp64_fused_leaf || prefer_musa_batched_bluestein;
+    const bool prefer_musa_batched_bluestein = context.device_type == "musa" && context.device_arch == "31" &&
+                                               context.batch >= 16 && fp64_input && fp64_output && n == 8191;
+    const bool prefer_bluestein = (context.device_type != "maca" && context.input_dtype == "complex64" &&
+                                   context.output_dtype == "complex64") ||
+                                  has_a100_fp64_fused_leaf || has_musa_s5000_fp64_fused_leaf ||
+                                  prefer_musa_batched_bluestein;
     if (!prefer_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);

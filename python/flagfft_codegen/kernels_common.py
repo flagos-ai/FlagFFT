@@ -16,7 +16,7 @@ from __future__ import annotations
 
 """Shared plan model, dtype helpers and occupancy/heuristic policy for kernel generation."""
 
-import math
+import os
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -176,7 +176,9 @@ def lane_block_for(lanes: int) -> int:
     return value
 
 
-def emitted_leaf_factors(plan: LeafPlan, io_mode: str = "contiguous") -> tuple[int, ...]:
+def emitted_leaf_factors(
+    plan: LeafPlan, io_mode: str = "contiguous"
+) -> tuple[int, ...]:
     if (
         _maca_backend_active()
         and io_mode != "bluestein_full_leaf"
@@ -465,7 +467,7 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
 def _leaf_single_smem_buffer_eligible(
     plan: LeafPlan,
     *,
-    io_mode: LeafMode,
+    io_mode: str,
     four_step_n1: int,
     four_step_n2: int,
 ) -> bool:
@@ -503,7 +505,7 @@ def _leaf_single_smem_buffer_eligible(
 def _use_single_smem_buffer(
     plan: LeafPlan,
     *,
-    io_mode: LeafMode = "contiguous",
+    io_mode: str = "contiguous",
     four_step_n1: int = 0,
     four_step_n2: int = 0,
 ) -> bool:
@@ -572,6 +574,22 @@ def _maca_backend_active() -> bool:
     return _triton_plugin_present("metax")
 
 
+def _npu_backend_active() -> bool:
+    """Whether the installed Triton targets the Ascend NPU (CANN/torch_npu).
+
+    The standalone generator has no queried profile, so the legacy environment
+    markers stay as a fallback for direct ``python -m`` invocation.
+    """
+    backend = _declared_backend()
+    if backend:
+        return backend in {"npu", "ascend"}
+    return (
+        os.environ.get("TRITON_JIT_BACKEND") == "NPU"
+        or os.environ.get("FLAGTREE_BACKEND") == "ascend"
+        or os.environ.get("TRITON_BACKEND") in {"npu", "torch_npu"}
+    )
+
+
 def _ix_backend_active() -> bool:
     """Whether the installed Triton targets Iluvatar (Tianshu/CoreX)."""
     backend = _declared_backend()
@@ -581,12 +599,12 @@ def _ix_backend_active() -> bool:
 
 
 def _non_nvidia_backend_active() -> bool:
-    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU/IX/MACA).
+    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU/IX/NPU/MACA).
 
     The thread-local mixed-radix four-step kernels and the vectorized 3D
     transpose variants rely on register/asm patterns that the MThreads
     MTGPU LLVM backend cannot compile (llc register allocation failure)
-    and that the PPU/IX toolchains do not support, so they are disabled on
+    and that the PPU/IX/NPU toolchains do not support, so they are disabled on
     these backends.
     """
     return (
@@ -594,6 +612,7 @@ def _non_nvidia_backend_active() -> bool:
         or _ppu_backend_active()
         or _ix_backend_active()
         or _maca_backend_active()
+        or _npu_backend_active()
     )
 
 
@@ -633,6 +652,7 @@ __all__ = [
     "_mthreads_backend_active",
     "_next_power_of_two",
     "_non_nvidia_backend_active",
+    "_npu_backend_active",
     "_ppu_backend_active",
     "_real_element_bytes",
     "_tl_real_dtype",

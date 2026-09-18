@@ -23,8 +23,8 @@ def paired_codelet_source(radix: int) -> str:
         for c in "ri":
             lines.extend(
                 (
-                    f"    p{j}{c} = {c}{j} + {c}{radix-j}",
-                    f"    m{j}{c} = {c}{j} - {c}{radix-j}",
+                    f"    p{j}{c} = {c}{j} + {c}{radix - j}",
+                    f"    m{j}{c} = {c}{j} - {c}{radix - j}",
                 )
             )
     for c in "ri":
@@ -43,8 +43,8 @@ def paired_codelet_source(radix: int) -> str:
             (
                 f"    y{k}r = c{k}r + s{k}i",
                 f"    y{k}i = c{k}i - s{k}r",
-                f"    y{radix-k}r = c{k}r - s{k}i",
-                f"    y{radix-k}i = c{k}i + s{k}r",
+                f"    y{radix - k}r = c{k}r - s{k}i",
+                f"    y{radix - k}i = c{k}i + s{k}r",
             )
         )
     lines.append(
