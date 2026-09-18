@@ -14,8 +14,8 @@
 
 #include "adaptor/test_adaptor.h"
 
-#include <mcr/mc_runtime.h>
 #include <mcfft.h>
+#include <mcr/mc_runtime.h>
 
 #include <cmath>
 #include <cstdio>

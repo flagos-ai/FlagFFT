@@ -320,11 +320,19 @@ flagfftResult CompiledRawStridedDirectDftNode::execute(adaptor::DevicePtr input,
   }
 }
 
-CompiledRawStockhamNode::CompiledRawStockhamNode(
-    int64_t length, std::vector<int64_t> factors, std::vector<std::shared_ptr<JitKernel>> kernels,
-    DeviceAllocation twiddle, DeviceAllocation first, DeviceAllocation second)
-    : length(length), factors(std::move(factors)), kernels(std::move(kernels)),
-      twiddle(std::move(twiddle)), first(std::move(first)), second(std::move(second)) {}
+CompiledRawStockhamNode::CompiledRawStockhamNode(int64_t length,
+                                                 std::vector<int64_t> factors,
+                                                 std::vector<std::shared_ptr<JitKernel>> kernels,
+                                                 DeviceAllocation twiddle,
+                                                 DeviceAllocation first,
+                                                 DeviceAllocation second)
+    : length(length),
+      factors(std::move(factors)),
+      kernels(std::move(kernels)),
+      twiddle(std::move(twiddle)),
+      first(std::move(first)),
+      second(std::move(second)) {
+}
 
 std::string CompiledRawStockhamNode::describe() const {
   return "CompiledRawStockham(n=" + std::to_string(length) + ")";
@@ -389,7 +397,8 @@ CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
 
 std::string CompiledRawDirectDftNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawDirectDft(n=" << length << ", kernel=" << (kernel ? kernel->execution_description() : "null") << ")";
+  oss << "CompiledRawDirectDft(n=" << length
+      << ", kernel=" << (kernel ? kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -690,7 +699,8 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
 std::string CompiledRawBluesteinFourStepNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawBluesteinFourStep(n=" << length << ", conv_length=" << conv_length << ", n1=" << n1
-      << ", n2=" << n2 << ", prepare_row=" << (prepare_row_kernel ? prepare_row_kernel->execution_description() : "null")
+      << ", n2=" << n2
+      << ", prepare_row=" << (prepare_row_kernel ? prepare_row_kernel->execution_description() : "null")
       << ", first_col=" << (first_col_kernel ? first_col_kernel->execution_description() : "null")
       << ", pointwise_row=" << (pointwise_row_kernel ? pointwise_row_kernel->execution_description() : "null")
       << ", finish_col=" << (finish_col_kernel ? finish_col_kernel->execution_description() : "null") << ")";
@@ -1054,12 +1064,13 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
   }
 }
 
-CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(int64_t length,
-                                                   std::shared_ptr<CompiledRawNode> fft,
-                                                   std::shared_ptr<JitKernel> postprocess_kernel,
-                                                   DeviceAllocation twiddle,
-                                                   DeviceAllocation packed_output,
-                                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(
+    int64_t length,
+    std::shared_ptr<CompiledRawNode> fft,
+    std::shared_ptr<JitKernel> postprocess_kernel,
+    DeviceAllocation twiddle,
+    DeviceAllocation packed_output,
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       fft(std::move(fft)),
       postprocess_kernel(std::move(postprocess_kernel)),
@@ -1071,8 +1082,8 @@ CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(int64_t length,
 std::string CompiledRawPackedR2CNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawPackedR2C(n=" << length << ", packed_n=" << length / 2
-      << ", fft=" << (fft ? fft->describe() : "null")
-      << ", postprocess_kernel=" << (postprocess_kernel ? postprocess_kernel->execution_description() : "null") << ")";
+      << ", fft=" << (fft ? fft->describe() : "null") << ", postprocess_kernel="
+      << (postprocess_kernel ? postprocess_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -1087,8 +1098,8 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
     // Reinterpreting adjacent real pairs as complex values requires a dense
     // input batch. In-place real rows carry Nyquist padding; preserve their
     // original distance-aware implementation.
-    if (context.batch > 1 && (input == output ||
-        (context.input_distance > 0 && context.input_distance != length))) {
+    if (context.batch > 1 &&
+        (input == output || (context.input_distance > 0 && context.input_distance != length))) {
       std::lock_guard<std::mutex> lock(layout_mutex);
       if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
       if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
@@ -1129,7 +1140,8 @@ CompiledRawR2CLeafNode::CompiledRawR2CLeafNode(int64_t length,
 
 std::string CompiledRawR2CLeafNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawR2CLeaf(n=" << length << ", kernel=" << (kernel ? kernel->execution_description() : "null")
+  oss << "CompiledRawR2CLeaf(n=" << length
+      << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
   return oss.str();
@@ -1394,12 +1406,13 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
   }
 }
 
-CompiledRawPackedC2RNode::CompiledRawPackedC2RNode(int64_t length,
-                                                   std::shared_ptr<JitKernel> preprocess_kernel,
-                                                   std::shared_ptr<CompiledRawNode> fft,
-                                                   DeviceAllocation twiddle,
-                                                   DeviceAllocation packed_input,
-                                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+CompiledRawPackedC2RNode::CompiledRawPackedC2RNode(
+    int64_t length,
+    std::shared_ptr<JitKernel> preprocess_kernel,
+    std::shared_ptr<CompiledRawNode> fft,
+    DeviceAllocation twiddle,
+    DeviceAllocation packed_input,
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       preprocess_kernel(std::move(preprocess_kernel)),
       fft(std::move(fft)),
@@ -1424,8 +1437,8 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
     const int64_t packed = length / 2;
     const int64_t half = packed + 1;
     const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
-    if (context.batch > 1 && (input == output ||
-        (context.output_distance > 0 && context.output_distance != length))) {
+    if (context.batch > 1 &&
+        (input == output || (context.output_distance > 0 && context.output_distance != length))) {
       std::lock_guard<std::mutex> lock(layout_mutex);
       if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
       if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
@@ -1675,7 +1688,8 @@ CompiledRawC2RLeafNode::CompiledRawC2RLeafNode(int64_t length,
 
 std::string CompiledRawC2RLeafNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawC2RLeaf(n=" << length << ", kernel=" << (kernel ? kernel->execution_description() : "null")
+  oss << "CompiledRawC2RLeaf(n=" << length
+      << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
   return oss.str();

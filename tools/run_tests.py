@@ -371,8 +371,7 @@ def error_stats(
                 reference[batch_index, start:stop],
             )
             finite = bool(
-                np.all(np.isfinite(batch_diff))
-                and np.all(np.isfinite(batch_ref))
+                np.all(np.isfinite(batch_diff)) and np.all(np.isfinite(batch_ref))
             )
             if not finite:
                 return {
@@ -928,7 +927,9 @@ def case_skip_reason(case: dict, backend: str) -> str | None:
         if case["api"] != "c2c":
             return "ops-fft on Ascend 910B implements only 2D FP32 C2C."
         if any(n not in (32, 64, 128) for n in shape):
-            return "ops-fft 2D C2C on Ascend 910B supports only dimensions 32, 64, or 128."
+            return (
+                "ops-fft 2D C2C on Ascend 910B supports only dimensions 32, 64, or 128."
+            )
         return None
     if rank != 1:
         return f"ops-fft does not implement rank-{rank} FFT plans on Ascend 910B."
@@ -1049,17 +1050,31 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
         ENV_INFO["triton"] = {"version": triton.__version__}
     except ImportError:
         ENV_INFO["triton"] = {"version": "N/A"}
-    ENV_INFO["execution_policy"] = os.environ.get("FLAGFFT_EXECUTION_POLICY",
-                                                "balanced" if ENV_INFO["backend"] == "ix" else "legacy")
+    ENV_INFO["execution_policy"] = os.environ.get(
+        "FLAGFFT_EXECUTION_POLICY",
+        "balanced" if ENV_INFO["backend"] == "ix" else "legacy",
+    )
     try:
         query_env = os.environ.copy()
         if gpu_id is not None:
-            for variable in ("CUDA_VISIBLE_DEVICES", "MUSA_VISIBLE_DEVICES", "PPU_VISIBLE_DEVICES",
-                             "IX_VISIBLE_DEVICES", "ASCEND_VISIBLE_DEVICES",
-                             "ASCEND_RT_VISIBLE_DEVICES", "NPU_VISIBLE_DEVICES"):
+            for variable in (
+                "CUDA_VISIBLE_DEVICES",
+                "MUSA_VISIBLE_DEVICES",
+                "PPU_VISIBLE_DEVICES",
+                "IX_VISIBLE_DEVICES",
+                "ASCEND_VISIBLE_DEVICES",
+                "ASCEND_RT_VISIBLE_DEVICES",
+                "NPU_VISIBLE_DEVICES",
+            ):
                 query_env[variable] = str(gpu_id)
-        probe = subprocess.run([str(build_dir / "flagfft-cli"), "device-info", "--json"],
-                               capture_output=True, text=True, timeout=30, check=True, env=query_env)
+        probe = subprocess.run(
+            [str(build_dir / "flagfft-cli"), "device-info", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+            env=query_env,
+        )
         ENV_INFO["device"] = json.loads(probe.stdout)
         ENV_INFO["device"]["selected_gpu"] = gpu_id
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -1187,9 +1202,7 @@ def compare_output(
             output = load_raw(output_path, case["api"], shape, case["batch"])
             elements = product(output_shape(case["api"], shape, case["batch"])[1:])
             stats = error_stats(output, reference, elements, case["batch"])
-        result["metric"] = judged_stats(
-            stats, limits
-        )
+        result["metric"] = judged_stats(stats, limits)
         result["status"] = "Passed" if result["metric"]["passed"] else "Failed"
         result["output_sha256"] = sha256(output_path)
     except (OSError, ValueError) as error:
@@ -1283,9 +1296,7 @@ def run_accuracy_case(
                 )
                 record[field]["data_file"] = data_file
 
-        if any(
-            stage.get("status") == "Completed" for stage in capture_stages.values()
-        ):
+        if any(stage.get("status") == "Completed" for stage in capture_stages.values()):
             # Both native processes have exited.  Keep the input on disk and
             # compare one bounded NumPy batch at a time, so neither the full
             # double-precision input nor the full reference is resident.
@@ -1480,11 +1491,7 @@ def policy_skip_message(case: dict, phase: str) -> dict:
     reference = ENV_INFO.get("reference_library", "unknown")
     result = {
         "status": "Skipped",
-        "reference": (
-            reference
-            if phase == "performance"
-            else "numpy.fft"
-        ),
+        "reference": (reference if phase == "performance" else "numpy.fft"),
         "plan": None,
         "skip_reason": reason,
         "error": reason,
@@ -1527,9 +1534,7 @@ def aggregate_results(
         for phase in phases:
             enabled = run_performance if phase == "performance" else run_accuracy
             policy_skipped = op["id"] in skipped_op_ids and enabled
-            skip_reason = skip_reasons.get(
-                op["id"], "unsupported by backend policy"
-            )
+            skip_reason = skip_reasons.get(op["id"], "unsupported by backend policy")
             expected = (
                 performance_cases(cases or [])
                 if phase == "performance"
@@ -1540,7 +1545,10 @@ def aggregate_results(
                 if case["op_id"] != op["id"]:
                     continue
                 entry = {**case, "status": "NotFound", "plan": None}
-                if case.get("skip_reason") and phase in ("platform_accuracy", "performance"):
+                if case.get("skip_reason") and phase in (
+                    "platform_accuracy",
+                    "performance",
+                ):
                     entry.update(
                         {
                             "status": "Skipped",
@@ -1569,7 +1577,11 @@ def aggregate_results(
                 "duration": 0,
                 "data_file": f"{op['id']}/{phase}_result.json",
                 "cases": entries if enabled else {},
-                **({"policy_skipped": True, "skip_reason": skip_reason} if policy_skipped else {}),
+                **(
+                    {"policy_skipped": True, "skip_reason": skip_reason}
+                    if policy_skipped
+                    else {}
+                ),
                 **({"data": {}} if phase == "performance" else {"details": []}),
             }
             if policy_skipped:
@@ -1636,7 +1648,10 @@ def aggregate_results(
                 block["status"] = "Incomplete"
             elif block["total"] and block["passed"] == block["total"]:
                 block["status"] = "Passed"
-            elif block["skipped"] and block["passed"] + block["skipped"] == block["total"]:
+            elif (
+                block["skipped"]
+                and block["passed"] + block["skipped"] == block["total"]
+            ):
                 # A reference library can support only part of a mixed matrix
                 # (for example, ops-fft's 2D size set). Policy-skipped cases
                 # are acceptable when every runnable case passed.
@@ -1646,7 +1661,11 @@ def aggregate_results(
                     block.setdefault(
                         "skip_reason",
                         next(
-                            (entry.get("skip_reason") for entry in entries if entry.get("skip_reason")),
+                            (
+                                entry.get("skip_reason")
+                                for entry in entries
+                                if entry.get("skip_reason")
+                            ),
                             "unsupported by backend policy",
                         ),
                     )
@@ -1860,10 +1879,7 @@ def requested_phases_passed(
     )
     return bool(op_results) and all(
         op[phase]["status"] == "Passed"
-        or (
-            op[phase]["status"] == "Skipped"
-            and op[phase].get("policy_skipped", False)
-        )
+        or (op[phase]["status"] == "Skipped" and op[phase].get("policy_skipped", False))
         for op in op_results.values()
         for phase in phases
     )
@@ -2036,8 +2052,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--performance-only", action="store_true")
     parser.add_argument("--build-dir", default=str(ROOT / "build"))
     parser.add_argument("--capture-bin", help="Override build/ctest/numpy_fft_capture")
-    parser.add_argument("--capability-report", type=Path,
-                        help="Attach an explicit device-matched probe_capabilities.py report")
+    parser.add_argument(
+        "--capability-report",
+        type=Path,
+        help="Attach an explicit device-matched probe_capabilities.py report",
+    )
     parser.add_argument(
         "--output-dir",
         help="Result directory; default workspace results/<timestamp>_acceptance36",
@@ -2150,7 +2169,9 @@ def main(argv: list[str] | None = None) -> int:
     # checked against NumPy.  They suppress only the platform comparison and
     # the corresponding performance row.  Whole-operator skips (FP64 on
     # NPU/IX) remain excluded from execution below.
-    runnable_cases = [case for case in expanded_cases if case["op_id"] not in skipped_ids]
+    runnable_cases = [
+        case for case in expanded_cases if case["op_id"] not in skipped_ids
+    ]
     if args.max_cases is not None:
         runnable_case_ids = {
             case["case_id"] for case in runnable_cases[: args.max_cases]
@@ -2224,8 +2245,13 @@ def main(argv: list[str] | None = None) -> int:
         probed_device = capabilities.get("device", {})
         current_device = ENV_INFO.get("device", {})
         for field in ("backend", "device_arch", "warp_size", "max_threads_per_block"):
-            if field not in current_device or probed_device.get(field) != current_device[field]:
-                raise ValueError(f"capability report does not match selected device: {field}")
+            if (
+                field not in current_device
+                or probed_device.get(field) != current_device[field]
+            ):
+                raise ValueError(
+                    f"capability report does not match selected device: {field}"
+                )
         ENV_INFO["capabilities"] = capabilities
     if args.gpus == "all":
         count = ENV_INFO.get("torch", {}).get("device_count", 0)
@@ -2301,9 +2327,7 @@ def main(argv: list[str] | None = None) -> int:
     # while still creating a job for every accuracy case.  The latter is
     # required for reference-library skips: FlagFFT accuracy still runs even
     # when the corresponding platform/performance case is suppressed.
-    performance_by_name = {
-        case["case_id"]: case for case in performance_cases(cases)
-    }
+    performance_by_name = {case["case_id"]: case for case in performance_cases(cases)}
     jobs = {
         key: {"performance_case": case, "accuracy_cases": []}
         for key, case in performance_by_name.items()

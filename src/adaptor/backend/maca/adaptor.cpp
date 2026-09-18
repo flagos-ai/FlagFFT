@@ -178,8 +178,12 @@ void copy_device_to_device(DevicePtr destination, DevicePtr source, std::size_t 
     return;
   }
   ensure_current_context();
-  check(mcMemcpyAsync(as_device_ptr(destination), as_device_ptr(source), bytes,
-                      mcMemcpyDeviceToDevice, as_stream(stream)), "mcMemcpyAsync(DtoD)");
+  check(mcMemcpyAsync(as_device_ptr(destination),
+                      as_device_ptr(source),
+                      bytes,
+                      mcMemcpyDeviceToDevice,
+                      as_stream(stream)),
+        "mcMemcpyAsync(DtoD)");
 }
 
 Stream::Stream() {
@@ -301,13 +305,13 @@ int device_count() {
 }
 
 std::string device_architecture(int device_index) {
-  mcDeviceProp_t properties{};
+  mcDeviceProp_t properties {};
   check(mcGetDeviceProperties(&properties, device_index), "mcGetDeviceProperties");
   return std::to_string(properties.major) + std::to_string(properties.minor);
 }
 
 int64_t max_dynamic_smem_bytes(int device_index) {
-  mcDeviceProp_t properties{};
+  mcDeviceProp_t properties {};
   check(mcGetDeviceProperties(&properties, device_index), "mcGetDeviceProperties");
   return static_cast<int64_t>(std::max(properties.sharedMemPerBlock, properties.sharedMemPerBlockOptin));
 }
@@ -320,19 +324,23 @@ int64_t max_launch_blocks() {
 std::string device_capabilities_json() {
   int index = 0;
   std::string arch;
-  if (ensure_device(index, arch) != FLAGFFT_SUCCESS)
-    throw std::runtime_error("cannot query current device");
+  if (ensure_device(index, arch) != FLAGFFT_SUCCESS) throw std::runtime_error("cannot query current device");
   // The MACA compiler target pins the warp size (64) and the runtime accepts
   // at most 1024 threads per block; the shared-memory limits come from the
   // device properties already queried above.
   nlohmann::json result = {
-      {"schema_version", 1}, {"source", "backend_default"},
-      {"backend", backend_name()}, {"device_index", index},
-      {"device_name", "MetaX GPU"}, {"device_arch", arch},
-      {"warp_size", 64}, {"max_threads_per_block", 1024},
-      {"shared_memory_per_block", static_cast<int64_t>(max_dynamic_smem_bytes(index))},
+      {           "schema_version",                                                   1},
+      {                   "source",                                   "backend_default"},
+      {                  "backend",                                      backend_name()},
+      {             "device_index",                                               index},
+      {              "device_name",                                         "MetaX GPU"},
+      {              "device_arch",                                                arch},
+      {                "warp_size",                                                  64},
+      {    "max_threads_per_block",                                                1024},
+      {  "shared_memory_per_block", static_cast<int64_t>(max_dynamic_smem_bytes(index))},
       {"max_dynamic_shared_memory", static_cast<int64_t>(max_dynamic_smem_bytes(index))},
-      {"multiprocessor_count", nullptr}};
+      {     "multiprocessor_count",                                             nullptr}
+  };
   return result.dump();
 }
 

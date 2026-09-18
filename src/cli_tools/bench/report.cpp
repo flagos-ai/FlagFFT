@@ -48,7 +48,8 @@ std::string format_table(const std::vector<CaseSpec>& cases,
     if (r.reference_available) {
       out << std::setw(14) << r.reference.median_ms << std::setprecision(2) << r.speedup << "x\n";
     } else {
-      out << std::setw(14) << "N/A" << "N/A\n";
+      out << std::setw(14) << "N/A"
+          << "N/A\n";
     }
   }
   return out.str();
@@ -64,14 +65,14 @@ nlohmann::json format_json(const std::vector<CaseSpec>& cases,
     const auto& r = results[i];
     json entry = case_json(spec);
     entry["timing"] = {
-        {"flagfft_median_ms",   r.flagfft.median_ms},
-        {   "flagfft_p90_ms",      r.flagfft.p90_ms},
-        {    "ref_median_ms", r.reference_available ? json(r.reference.median_ms) : json(nullptr)},
-        {       "ref_p90_ms", r.reference_available ? json(r.reference.p90_ms) : json(nullptr)},
-        {          "speedup", r.reference_available ? json(r.speedup) : json(nullptr)},
-        {"reference_available", r.reference_available},
-        {           "warmup",                warmup},
-        {            "iters",                 iters},
+        {  "flagfft_median_ms",                                                 r.flagfft.median_ms},
+        {     "flagfft_p90_ms",                                                    r.flagfft.p90_ms},
+        {      "ref_median_ms", r.reference_available ? json(r.reference.median_ms) : json(nullptr)},
+        {         "ref_p90_ms",    r.reference_available ? json(r.reference.p90_ms) : json(nullptr)},
+        {            "speedup",             r.reference_available ? json(r.speedup) : json(nullptr)},
+        {"reference_available",                                               r.reference_available},
+        {             "warmup",                                                              warmup},
+        {              "iters",                                                               iters},
     };
     if (!r.plan_description.empty()) {
       entry["plan_description"] = r.plan_description;

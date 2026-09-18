@@ -341,11 +341,10 @@ int64_t max_launch_blocks() {
 std::string device_capabilities_json() {
   int index = 0;
   std::string arch;
-  if (ensure_device(index, arch) != FLAGFFT_SUCCESS)
-    throw std::runtime_error("cannot query current device");
+  if (ensure_device(index, arch) != FLAGFFT_SUCCESS) throw std::runtime_error("cannot query current device");
   MUdevice device = 0;
   check(muDeviceGet(&device, index), "device capabilities");
-  auto attribute = [&]( MUdevice_attribute key) -> nlohmann::json {
+  auto attribute = [&](MUdevice_attribute key) -> nlohmann::json {
     int value = 0;
     if (muDeviceGetAttribute(&value, key, device) != MUSA_SUCCESS) return nullptr;
     return value;
@@ -353,14 +352,17 @@ std::string device_capabilities_json() {
   char name[256] = {};
   check(muDeviceGetName(name, sizeof(name), device), "device name");
   nlohmann::json result = {
-      {"schema_version", 1}, {"source", "driver_query"},
-      {"backend", backend_name()}, {"device_index", index},
-      {"device_name", name}, {"device_arch", arch},
-      {"warp_size", attribute(MU_DEVICE_ATTRIBUTE_WARP_SIZE)},
-      {"max_threads_per_block", attribute(MU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)},
-      {"shared_memory_per_block", attribute(MU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK)},
+      {           "schema_version",                                                                1},
+      {                   "source",                                                   "driver_query"},
+      {                  "backend",                                                   backend_name()},
+      {             "device_index",                                                            index},
+      {              "device_name",                                                             name},
+      {              "device_arch",                                                             arch},
+      {                "warp_size",                         attribute(MU_DEVICE_ATTRIBUTE_WARP_SIZE)},
+      {    "max_threads_per_block",             attribute(MU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)},
+      {  "shared_memory_per_block",       attribute(MU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK)},
       {"max_dynamic_shared_memory", attribute(MU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)},
-      {"multiprocessor_count", attribute(MU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)}
+      {     "multiprocessor_count",              attribute(MU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)}
   };
   return result.dump();
 }

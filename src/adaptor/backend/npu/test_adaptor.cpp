@@ -24,79 +24,80 @@
 namespace flagfft::test_adaptor {
 namespace {
 
-aclfftHandle as_ops_handle(std::uintptr_t value) {
-  return reinterpret_cast<aclfftHandle>(value);
-}
-
-std::uintptr_t from_ops_handle(aclfftHandle value) {
-  return reinterpret_cast<std::uintptr_t>(value);
-}
-
-void check_ops(aclfftResult result, const char* context) {
-  if (result == ACLFFT_SUCCESS) {
-    return;
+  aclfftHandle as_ops_handle(std::uintptr_t value) {
+    return reinterpret_cast<aclfftHandle>(value);
   }
-  const char* detail = aclfftGetErrorString(result);
-  std::string message = std::string(context) + " failed with aclfftResult=" +
-                        std::to_string(static_cast<int>(result));
-  if (detail != nullptr && *detail != '\0') {
-    message += ": ";
-    message += detail;
-  }
-  throw std::runtime_error(message);
-}
 
-template <typename T>
-ErrorMetric scalar_error(const T* a, const T* b, std::size_t n) {
-  ErrorMetric error;
-  if (n == 0) {
+  std::uintptr_t from_ops_handle(aclfftHandle value) {
+    return reinterpret_cast<std::uintptr_t>(value);
+  }
+
+  void check_ops(aclfftResult result, const char* context) {
+    if (result == ACLFFT_SUCCESS) {
+      return;
+    }
+    const char* detail = aclfftGetErrorString(result);
+    std::string message =
+        std::string(context) + " failed with aclfftResult=" + std::to_string(static_cast<int>(result));
+    if (detail != nullptr && *detail != '\0') {
+      message += ": ";
+      message += detail;
+    }
+    throw std::runtime_error(message);
+  }
+
+  template <typename T>
+  ErrorMetric scalar_error(const T* a, const T* b, std::size_t n) {
+    ErrorMetric error;
+    if (n == 0) {
+      return error;
+    }
+    double sum_sq = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      const double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
+      error.max_abs = std::max(error.max_abs, std::abs(diff));
+      sum_sq += diff * diff;
+    }
+    error.rms = std::sqrt(sum_sq / static_cast<double>(n));
     return error;
   }
-  double sum_sq = 0.0;
-  for (std::size_t i = 0; i < n; ++i) {
-    const double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
-    error.max_abs = std::max(error.max_abs, std::abs(diff));
-    sum_sq += diff * diff;
-  }
-  error.rms = std::sqrt(sum_sq / static_cast<double>(n));
-  return error;
-}
 
-template <typename T>
-double relative_scalar_error(const T* a, const T* b, int n) {
-  double max_error = 0.0;
-  for (int i = 0; i < n; ++i) {
-    const double numerator = std::abs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
-    const double denominator = std::abs(static_cast<double>(b[i]));
-    if (denominator > 0.0) {
-      max_error = std::max(max_error, numerator / denominator);
+  template <typename T>
+  double relative_scalar_error(const T* a, const T* b, int n) {
+    double max_error = 0.0;
+    for (int i = 0; i < n; ++i) {
+      const double numerator = std::abs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
+      const double denominator = std::abs(static_cast<double>(b[i]));
+      if (denominator > 0.0) {
+        max_error = std::max(max_error, numerator / denominator);
+      }
     }
+    return max_error;
   }
-  return max_error;
-}
 
-template <typename T>
-double complex_magnitude(const T& value) {
-  return std::sqrt(static_cast<double>(value.x) * static_cast<double>(value.x) +
-                   static_cast<double>(value.y) * static_cast<double>(value.y));
-}
+  template <typename T>
+  double complex_magnitude(const T& value) {
+    return std::sqrt(static_cast<double>(value.x) * static_cast<double>(value.x) +
+                     static_cast<double>(value.y) * static_cast<double>(value.y));
+  }
 
-template <typename T>
-double relative_complex_error(const T* a, const T* b, int n) {
-  double max_error = 0.0;
-  for (int i = 0; i < n; ++i) {
-    const double numerator = std::abs(complex_magnitude(a[i]) - complex_magnitude(b[i]));
-    const double denominator = complex_magnitude(b[i]);
-    if (denominator > 0.0) {
-      max_error = std::max(max_error, numerator / denominator);
+  template <typename T>
+  double relative_complex_error(const T* a, const T* b, int n) {
+    double max_error = 0.0;
+    for (int i = 0; i < n; ++i) {
+      const double numerator = std::abs(complex_magnitude(a[i]) - complex_magnitude(b[i]));
+      const double denominator = complex_magnitude(b[i]);
+      if (denominator > 0.0) {
+        max_error = std::max(max_error, numerator / denominator);
+      }
     }
+    return max_error;
   }
-  return max_error;
-}
 
 }  // namespace
 
-RefPlanHandle::RefPlanHandle() : impl_(0) {}
+RefPlanHandle::RefPlanHandle() : impl_(0) {
+}
 
 RefPlanHandle::~RefPlanHandle() {
   if (impl_ != 0) {
@@ -132,11 +133,7 @@ void RefPlanHandle::replace(std::uintptr_t new_handle) {
 
 void ref_plan_1d(RefPlanHandle& plan, int nx, flagfftType type, int batch) {
   aclfftHandle handle = nullptr;
-  check_ops(aclfftPlan1d(&handle,
-                         nx,
-                         static_cast<aclfftType>(type),
-                         batch,
-                         ACLFFT_HORIZONTAL),
+  check_ops(aclfftPlan1d(&handle, nx, static_cast<aclfftType>(type), batch, ACLFFT_HORIZONTAL),
             "aclfftPlan1d");
   plan.replace(from_ops_handle(handle));
 }
@@ -156,10 +153,7 @@ void ref_set_stream(RefPlanHandle& plan, flagfftStream_t stream) {
             "aclfftSetStream");
 }
 
-void ref_exec_c2c(RefPlanHandle& plan,
-                  flagfftComplex* idata,
-                  flagfftComplex* odata,
-                  int direction) {
+void ref_exec_c2c(RefPlanHandle& plan, flagfftComplex* idata, flagfftComplex* odata, int direction) {
   check_ops(aclfftExecC2C(as_ops_handle(plan.get()),
                           reinterpret_cast<aclfftComplex*>(idata),
                           reinterpret_cast<aclfftComplex*>(odata),
@@ -193,7 +187,8 @@ void ref_exec_z2d(RefPlanHandle&, flagfftDoubleComplex*, flagfftDoubleReal*) {
   throw std::runtime_error("ops-fft does not implement FP64 Z2D");
 }
 
-void initialize() {}
+void initialize() {
+}
 
 std::string backend_name() {
   return "npu-ops-fft";
@@ -247,9 +242,7 @@ double max_relative_error(const flagfftComplex* a, const flagfftComplex* b, int 
   return relative_complex_error(a, b, n);
 }
 
-double max_relative_error(const flagfftDoubleComplex* a,
-                          const flagfftDoubleComplex* b,
-                          int n) {
+double max_relative_error(const flagfftDoubleComplex* a, const flagfftDoubleComplex* b, int n) {
   return relative_complex_error(a, b, n);
 }
 
@@ -257,9 +250,7 @@ double max_relative_error_real(const flagfftReal* a, const flagfftReal* b, int n
   return relative_scalar_error(a, b, n);
 }
 
-double max_relative_error_real(const flagfftDoubleReal* a,
-                               const flagfftDoubleReal* b,
-                               int n) {
+double max_relative_error_real(const flagfftDoubleReal* a, const flagfftDoubleReal* b, int n) {
   return relative_scalar_error(a, b, n);
 }
 
@@ -271,18 +262,12 @@ ErrorMetric compute_error(const double* a, const double* b, std::size_t n) {
   return scalar_error(a, b, n);
 }
 
-ErrorMetric compute_error(const flagfftComplex* a,
-                          const flagfftComplex* b,
-                          std::size_t n) {
-  return scalar_error(reinterpret_cast<const float*>(a),
-                      reinterpret_cast<const float*>(b), n * 2);
+ErrorMetric compute_error(const flagfftComplex* a, const flagfftComplex* b, std::size_t n) {
+  return scalar_error(reinterpret_cast<const float*>(a), reinterpret_cast<const float*>(b), n * 2);
 }
 
-ErrorMetric compute_error(const flagfftDoubleComplex* a,
-                          const flagfftDoubleComplex* b,
-                          std::size_t n) {
-  return scalar_error(reinterpret_cast<const double*>(a),
-                      reinterpret_cast<const double*>(b), n * 2);
+ErrorMetric compute_error(const flagfftDoubleComplex* a, const flagfftDoubleComplex* b, std::size_t n) {
+  return scalar_error(reinterpret_cast<const double*>(a), reinterpret_cast<const double*>(b), n * 2);
 }
 
 }  // namespace flagfft::test_adaptor

@@ -124,8 +124,7 @@ def test_ix_backend_detection_and_fp64_policy(tmp_path, operators, matrix):
     assert op_result["performance"]["status"] == "Skipped"
     assert op_result["accuracy"]["policy_skipped"]
     assert all(
-        case["status"] == "Skipped"
-        for case in op_result["accuracy"]["cases"].values()
+        case["status"] == "Skipped" for case in op_result["accuracy"]["cases"].values()
     )
     assert RUN_TESTS.requested_phases_passed(result, True, True)
 
@@ -179,16 +178,23 @@ def test_npu_ops_fft_case_policy_limits(operators, matrix):
         "full",
     )
     reasons = {
-        case["case_id"]: RUN_TESTS.case_skip_reason(case, "npu")
-        for case in npu_cases
+        case["case_id"]: RUN_TESTS.case_skip_reason(case, "npu") for case in npu_cases
     }
     assert any(reason and "3D" in reason for reason in reasons.values())
     assert any(reason and "2D" in reason for reason in reasons.values())
     assert any(reason and "prime factor" in reason for reason in reasons.values())
-    supported = [case for case, reason in ((case, reasons[case["case_id"]]) for case in npu_cases) if reason is None]
+    supported = [
+        case
+        for case, reason in ((case, reasons[case["case_id"]]) for case in npu_cases)
+        if reason is None
+    ]
     assert supported
     assert all(case["api"] in ("c2c", "r2c", "c2r") for case in supported)
-    assert all(case["rank"] == 1 or (case["api"] == "c2c" and all(n in (32, 64, 128) for n in case["shape"])) for case in supported)
+    assert all(
+        case["rank"] == 1
+        or (case["api"] == "c2c" and all(n in (32, 64, 128) for n in case["shape"]))
+        for case in supported
+    )
 
 
 def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
@@ -242,9 +248,7 @@ def test_ix_policy_skip_is_visible_in_incremental_csv(operators):
         "scale": 1.0,
         "skip_reason": "IX/CoreX does not support FP64",
     }
-    row = RUN_TESTS.incremental_row(
-        RUN_TESTS.policy_skip_message(case, "accuracy")
-    )
+    row = RUN_TESTS.incremental_row(RUN_TESTS.policy_skip_message(case, "accuracy"))
     assert row["status"] == "Skipped"
     assert row["skip_reason"] == case["skip_reason"]
 
@@ -269,17 +273,22 @@ def test_ix_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     build_dir.mkdir()
     (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=IX\n")
 
-    assert RUN_TESTS.main(
-        ["--dry-run", "--build-dir", str(build_dir), "--combination", "2d"]
-    ) == 0
+    assert (
+        RUN_TESTS.main(
+            ["--dry-run", "--build-dir", str(build_dir), "--combination", "2d"]
+        )
+        == 0
+    )
     output = capsys.readouterr().out
     payload = json.loads(output[output.index("{") :])
     assert payload["backend"] == "ix"
     assert len(payload["operators"]) == 6
     assert len(payload["skipped_operators"]) == 3
-    assert {
-        case["api"] for case in payload["cases"] if "skip_reason" in case
-    } == {"z2z", "z2d", "d2z"}
+    assert {case["api"] for case in payload["cases"] if "skip_reason" in case} == {
+        "z2z",
+        "z2d",
+        "d2z",
+    }
 
 
 def test_npu_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
@@ -287,9 +296,12 @@ def test_npu_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     build_dir.mkdir()
     (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=NPU\n")
 
-    assert RUN_TESTS.main(
-        ["--dry-run", "--build-dir", str(build_dir), "--combination", "2d"]
-    ) == 0
+    assert (
+        RUN_TESTS.main(
+            ["--dry-run", "--build-dir", str(build_dir), "--combination", "2d"]
+        )
+        == 0
+    )
     output = capsys.readouterr().out
     payload = json.loads(output[output.index("{") :])
     assert payload["backend"] == "npu"
@@ -524,9 +536,7 @@ def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
 
 def test_numpy_reference_chunks_batched_transforms(monkeypatch):
     value, _ = RUN_TESTS.make_input("c2c", (8,), 3, 1.0)
-    expected = np.fft.fftn(
-        value.astype(np.complex128), s=(8,), axes=(1,)
-    )
+    expected = np.fft.fftn(value.astype(np.complex128), s=(8,), axes=(1,))
     monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
     actual = RUN_TESTS.numpy_reference(value, "c2c", (8,), "forward")
     np.testing.assert_array_equal(actual, expected)
@@ -568,9 +578,7 @@ def test_streaming_error_stats_matches_materialized_reference(
         )
     finally:
         del input_memmap
-    elements = RUN_TESTS.product(
-        RUN_TESTS.output_shape(api, shape, batch)[1:]
-    )
+    elements = RUN_TESTS.product(RUN_TESTS.output_shape(api, shape, batch)[1:])
     materialized = RUN_TESTS.error_stats(
         reference.astype(output_dtype), reference, elements, batch
     )
@@ -667,9 +675,7 @@ def test_accuracy_captures_finish_before_numpy_reference(
             (case_dir / "flagfft_plan.txt").write_text(PLAN)
         return {"status": "Completed", "duration": 0.01, "command": cmd}
 
-    monkeypatch.setattr(
-        RUN_TESTS, "numpy_reference_chunks", delayed_reference_chunks
-    )
+    monkeypatch.setattr(RUN_TESTS, "numpy_reference_chunks", delayed_reference_chunks)
     monkeypatch.setattr(RUN_TESTS, "run_subprocess", capture)
 
     record = RUN_TESTS.run_accuracy_case(
@@ -757,8 +763,7 @@ def test_none_artifact_policy_keeps_only_results_and_logs(
     assert record["raw_artifacts_retained"] is False
     assert "numpy_sha256" not in record
     assert not any(
-        (case_dir / filename).exists()
-        for filename in RUN_TESTS.RAW_ARTIFACT_FILENAMES
+        (case_dir / filename).exists() for filename in RUN_TESTS.RAW_ARTIFACT_FILENAMES
     )
     assert (case_dir / "case.json").is_file()
     assert (case_dir / "flagfft.stdout").is_file()

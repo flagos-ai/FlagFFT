@@ -18,14 +18,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from .backend_profile import current_profile
 
+from .backend_profile import current_profile
 from .kernels_common import (
     _CODELET_DIR,
-    _maca_backend_active,
-    _dtype_suffix,
-    _zero_other,
     LeafPlan,
+    _dtype_suffix,
+    _maca_backend_active,
+    _zero_other,
     contiguous_batch_pack_for,
     cooperative_stage_lanes_for,
     four_step_col_inner_pack_for,
@@ -40,6 +40,7 @@ from .registry import (
     STRIDED_FOUR_STEP_KERNELS,
     is_four_step_twiddle_eligible,
 )
+
 
 def _pointer_signature(dtype: str) -> str:
     if dtype == "complex128":
@@ -120,10 +121,9 @@ def _metadata(
         else 1
     )
     stage_lanes = cooperative_stage_lanes_for(plan)
-    tle_fused_twiddle = (
-        is_four_step_twiddle_eligible(kernel_type)
-        and use_four_step_row_fused_twiddle(n1, n2, dtype)
-    )
+    tle_fused_twiddle = is_four_step_twiddle_eligible(
+        kernel_type
+    ) and use_four_step_row_fused_twiddle(n1, n2, dtype)
     if kernel_type in STRIDED_FOUR_STEP_KERNELS:
         inner_pack = 1
     elif kernel_type in INNER_PACK_ROW_KERNELS:
@@ -152,7 +152,9 @@ def _metadata(
                 lane_block_for(max(stage_lanes)) * work_pack + threads - 1
             ) // threads
         else:
-            required_warps = profile.warps_for(lane_block_for(max(stage_lanes)) * work_pack)
+            required_warps = profile.warps_for(
+                lane_block_for(max(stage_lanes)) * work_pack
+            )
         while cooperative_warps < required_warps and cooperative_warps < 8:
             cooperative_warps *= 2
         num_warps = max(num_warps, cooperative_warps)

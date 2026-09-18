@@ -119,12 +119,8 @@ _SPECS: tuple[KernelSpec, ...] = (
         io_mode="bluestein_four_step_finish_col",
         requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
     ),
-    KernelSpec(
-        "direct_dft", DIRECT_DFT, requires=("length",)
-    ),
-    KernelSpec(
-        "direct_dft_strided", DIRECT_DFT, requires=("length",)
-    ),
+    KernelSpec("direct_dft", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_strided", DIRECT_DFT, requires=("length",)),
     KernelSpec(
         "four_step_row",
         FOUR_STEP,
@@ -173,15 +169,9 @@ _SPECS: tuple[KernelSpec, ...] = (
         io_mode="four_step_c2r_col",
         requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS,
     ),
-    KernelSpec(
-        "bluestein_prepare", BLUESTEIN, requires=_BLUESTEIN_FLAGS
-    ),
-    KernelSpec(
-        "bluestein_pointwise", BLUESTEIN, requires=_BLUESTEIN_FLAGS
-    ),
-    KernelSpec(
-        "bluestein_finalize", BLUESTEIN, requires=_BLUESTEIN_FLAGS
-    ),
+    KernelSpec("bluestein_prepare", BLUESTEIN, requires=_BLUESTEIN_FLAGS),
+    KernelSpec("bluestein_pointwise", BLUESTEIN, requires=_BLUESTEIN_FLAGS),
+    KernelSpec("bluestein_finalize", BLUESTEIN, requires=_BLUESTEIN_FLAGS),
     KernelSpec("rader_prepare", RADER, requires=_RADER_FLAGS),
     KernelSpec("rader_pointwise", RADER, requires=_RADER_FLAGS),
     KernelSpec("rader_finalize", RADER, requires=_RADER_FLAGS),
@@ -193,9 +183,7 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("r2c_half_pack", REAL_POINTWISE, requires=("length",)),
     KernelSpec("r2c_packed_postprocess", REAL_POINTWISE, requires=("length",)),
     KernelSpec("c2r_packed_preprocess", REAL_POINTWISE, requires=("length",)),
-    KernelSpec(
-        "compact_to_hermitian_full", REAL_POINTWISE, requires=("length",)
-    ),
+    KernelSpec("compact_to_hermitian_full", REAL_POINTWISE, requires=("length",)),
     KernelSpec("complex_to_real", REAL_POINTWISE, requires=("length",)),
 )
 
@@ -278,7 +266,9 @@ def module_name_for(
 ) -> str:
     """Build the on-disk generated module name for a kernel spec."""
     if spec.family == STOCKHAM:
-        return f"flagfft_jit_stockham_{direction_tag}_n{length}_r{factor_tag}_{dtype_tag}"
+        return (
+            f"flagfft_jit_stockham_{direction_tag}_n{length}_r{factor_tag}_{dtype_tag}"
+        )
     if spec.family == BLUESTEIN_LEAF:
         return (
             f"flagfft_jit_{spec.name}_{direction_tag}_{factor_tag}"
@@ -292,9 +282,7 @@ def module_name_for(
     if spec.name == "direct_dft":
         return f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "direct_dft_strided":
-        return (
-            f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
-        )
+        return f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "leaf":
         return (
             f"flagfft_jit_{direction_tag}_{factor_tag}"

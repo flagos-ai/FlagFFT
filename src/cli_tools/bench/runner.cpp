@@ -53,8 +53,7 @@ namespace {
 
     void resize(std::size_t size) {
       bytes = size;
-      const std::size_t words =
-          (size + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
+      const std::size_t words = (size + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t);
       storage.resize(words);
     }
 
@@ -275,8 +274,7 @@ namespace {
 BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool include_path) {
   const BufferLayout layout = layout_for(spec);
   const bool has_reference = test_adaptor::reference_available();
-  const bool reference_uses_host_memory =
-      has_reference && test_adaptor::reference_uses_host_memory();
+  const bool reference_uses_host_memory = has_reference && test_adaptor::reference_uses_host_memory();
 
   DeviceMemory ff_in(layout.allocation_bytes);
   DeviceMemory ref_in;
@@ -323,9 +321,7 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
     return spec.placement == Placement::InPlace ? ref_in.get() : ref_out.get();
   };
 
-  auto ref_input = [&]() -> void* {
-    return reference_uses_host_memory ? ref_host_in.data() : ref_in.get();
-  };
+  auto ref_input = [&]() -> void* { return reference_uses_host_memory ? ref_host_in.data() : ref_in.get(); };
 
   Stream stream;
   check_flagfft(flagfftSetStream(ff_plan.get(), stream.get()), "flagfftSetStream");

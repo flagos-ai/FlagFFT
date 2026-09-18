@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "flagfft/core.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
+#include "flagfft/core.hpp"
 
 #include "triton_jit/triton_jit_function.h"
 
@@ -130,10 +130,13 @@ void JitKernel::launch(adaptor::StreamHandle stream,
 #if defined(BACKEND_MACA)
   auto *kernel = static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
   kernel->launch_with_signature(static_cast<unsigned int>(grid_x),
-                               static_cast<unsigned int>(grid_y),
-                               static_cast<unsigned int>(grid_z), num_warps,
-                               reinterpret_cast<triton_jit::DefaultStreamType>(stream),
-                               args.data(), signature, args.size());
+                                static_cast<unsigned int>(grid_y),
+                                static_cast<unsigned int>(grid_z),
+                                num_warps,
+                                reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+                                args.data(),
+                                signature,
+                                args.size());
 #else
   function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
                                  static_cast<unsigned int>(grid_x),
@@ -147,9 +150,13 @@ void JitKernel::launch(adaptor::StreamHandle stream,
 #endif
   if (timer) {
     timer->stop(stream);
-    std::fprintf(stderr, "[kernel-profile],%s,%lld,%lld,%lld,%.6f\n", kernel_name.c_str(),
-                 static_cast<long long>(grid_x), static_cast<long long>(grid_y),
-                 static_cast<long long>(grid_z), timer->elapsed_ms());
+    std::fprintf(stderr,
+                 "[kernel-profile],%s,%lld,%lld,%lld,%.6f\n",
+                 kernel_name.c_str(),
+                 static_cast<long long>(grid_x),
+                 static_cast<long long>(grid_y),
+                 static_cast<long long>(grid_z),
+                 timer->elapsed_ms());
   }
 }
 

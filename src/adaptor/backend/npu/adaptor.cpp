@@ -148,8 +148,7 @@ void Memory::copy_from_device(const Memory &source, std::size_t bytes) {
     throw std::runtime_error("device-to-device copy exceeds allocation");
   }
   if (bytes > 0) {
-    check(aclrtMemcpy(data(), bytes_, source.data(), bytes, ACL_MEMCPY_DEVICE_TO_DEVICE),
-          "aclrtMemcpy(D2D)");
+    check(aclrtMemcpy(data(), bytes_, source.data(), bytes, ACL_MEMCPY_DEVICE_TO_DEVICE), "aclrtMemcpy(D2D)");
   }
 }
 
@@ -165,10 +164,7 @@ Memory Memory::from_doubles(const std::vector<double> &values) {
   return allocation;
 }
 
-void copy_device_to_device(DevicePtr destination,
-                           DevicePtr source,
-                           std::size_t bytes,
-                           StreamHandle stream) {
+void copy_device_to_device(DevicePtr destination, DevicePtr source, std::size_t bytes, StreamHandle stream) {
   if (bytes == 0) {
     return;
   }
@@ -267,8 +263,7 @@ void EventTimer::stop(StreamHandle stream) {
 float EventTimer::elapsed_ms() {
   check(aclrtSynchronizeEvent(as_event(stop_)), "aclrtSynchronizeEvent(stop)");
   float milliseconds = 0.0F;
-  check(aclrtEventElapsedTime(&milliseconds, as_event(start_), as_event(stop_)),
-        "aclrtEventElapsedTime");
+  check(aclrtEventElapsedTime(&milliseconds, as_event(start_), as_event(stop_)), "aclrtEventElapsedTime");
   return milliseconds;
 }
 
@@ -321,21 +316,25 @@ int64_t max_launch_blocks() {
 std::string device_capabilities_json() {
   int index = 0;
   std::string arch;
-  if (ensure_device(index, arch) != FLAGFFT_SUCCESS)
-    throw std::runtime_error("cannot query current device");
+  if (ensure_device(index, arch) != FLAGFFT_SUCCESS) throw std::runtime_error("cannot query current device");
   // libtriton_jit's NPU backend uses WARP_SIZE = 1, so a kernel's num_warps is
   // the literal block dimension. The ACL block dimension is far above the
   // 1..8 warps the planner emits; the shared-memory figures reuse the value
   // the planner already gates NPU leaf selection on.
   constexpr int64_t kMaxThreadsPerBlock = 65535;
   nlohmann::json result = {
-      {"schema_version", 1}, {"source", "backend_default"},
-      {"backend", backend_name()}, {"device_index", index},
-      {"device_name", "Ascend NPU"}, {"device_arch", arch},
-      {"warp_size", 1}, {"max_threads_per_block", kMaxThreadsPerBlock},
-      {"shared_memory_per_block", max_dynamic_smem_bytes(index)},
+      {           "schema_version",                             1},
+      {                   "source",             "backend_default"},
+      {                  "backend",                backend_name()},
+      {             "device_index",                         index},
+      {              "device_name",                  "Ascend NPU"},
+      {              "device_arch",                          arch},
+      {                "warp_size",                             1},
+      {    "max_threads_per_block",           kMaxThreadsPerBlock},
+      {  "shared_memory_per_block", max_dynamic_smem_bytes(index)},
       {"max_dynamic_shared_memory", max_dynamic_smem_bytes(index)},
-      {"multiprocessor_count", nullptr}};
+      {     "multiprocessor_count",                       nullptr}
+  };
   return result.dump();
 }
 

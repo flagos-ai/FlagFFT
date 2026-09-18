@@ -177,7 +177,9 @@ def lane_block_for(lanes: int) -> int:
     return value
 
 
-def emitted_leaf_factors(plan: LeafPlan, io_mode: str = "contiguous") -> tuple[int, ...]:
+def emitted_leaf_factors(
+    plan: LeafPlan, io_mode: str = "contiguous"
+) -> tuple[int, ...]:
     if (
         _maca_backend_active()
         and io_mode != "bluestein_full_leaf"
@@ -582,9 +584,11 @@ def _npu_backend_active() -> bool:
     backend = _declared_backend()
     if backend:
         return backend in {"npu", "ascend"}
-    return (os.environ.get("TRITON_JIT_BACKEND") == "NPU"
-            or os.environ.get("FLAGTREE_BACKEND") == "ascend"
-            or os.environ.get("TRITON_BACKEND") in {"npu", "torch_npu"})
+    return (
+        os.environ.get("TRITON_JIT_BACKEND") == "NPU"
+        or os.environ.get("FLAGTREE_BACKEND") == "ascend"
+        or os.environ.get("TRITON_BACKEND") in {"npu", "torch_npu"}
+    )
 
 
 def _ix_backend_active() -> bool:
