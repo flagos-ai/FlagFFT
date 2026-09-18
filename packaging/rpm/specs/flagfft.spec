@@ -98,7 +98,8 @@ readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libflagfft_triton_j
 %{python3_sitelib}/flagfft-triton-jit.pth
 
 %files devel
-%{_includedir}/flagfft/
+# 0.2.0 installs a single public header, not an include/flagfft/ directory.
+%{_includedir}/flagfft.h
 
 %changelog
 * Fri Sep 18 2026 FlagOS Contributors <contact@flagos.io> - 0.2.0-1
