@@ -483,6 +483,22 @@ def _emit_exchange_store(
     ]
 
 
+_PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
+
+
+def _portable_exchange_lane_floor(smem_pack: int) -> int:
+    """Lane block needed for the exchange tensor to span more than one warp.
+
+    ``vector_block = lane_block * smem_pack`` is the tensor the gather reads,
+    so packing raises it without spending lanes.  ``auto`` derives the floor
+    from the pack; a number pins it, and 128 reproduces the bring-up constant.
+    """
+    override = _maca_knob("LANE_MIN", "128")
+    if override == "auto":
+        return max(1, _PORTABLE_EXCHANGE_MIN_ELEMENTS // max(smem_pack, 1))
+    return int(override)
+
+
 def _emit_portable_exchange(
     buffer: str,
     stage: int,
@@ -1978,10 +1994,6 @@ def _build_leaf_kernel_source_for_io(
     )
     active_lanes = max(stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
-    if portable_exchange and len(factors) > 1:
-        # Avoid the unsupported warp-shuffle lowering: use ordinary gather
-        # from tensors larger than one 64-thread warp, without tl.join.
-        lane_block = max(int(_maca_knob("LANE_MIN", "128")), lane_block)
     contiguous_modes = {
         "contiguous",
         "strided",
@@ -2038,6 +2050,13 @@ def _build_leaf_kernel_source_for_io(
         four_step_n2=four_step_n2,
     )
     smem_pack = max(batch_pack, inner_pack)
+    if portable_exchange and len(factors) > 1:
+        # The MetaX plugin cannot lower the warp-shuffle path, so the exchange
+        # must gather from a tensor wider than one 64-thread warp.  Packing
+        # widens that tensor for free, whereas raising the lane block idles
+        # most lanes on a small leaf -- which is what starved the throughput
+        # bound batch and 3D shapes.
+        lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
     smem_n = lane_block_for(smem_slot_stride * smem_pack)
