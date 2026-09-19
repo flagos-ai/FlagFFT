@@ -62,6 +62,8 @@ struct Spec {
   fs::path input;
   fs::path output_dir;
   Implementation implementation = Implementation::kBoth;
+  bool input_from_stdin = false;
+  bool output_to_stdout = false;
 };
 
 struct Layout {
@@ -107,7 +109,13 @@ void usage() {
                "--direction forward|inverse --input INPUT.bin --output-dir DIR "
                "[--implementation both|flagfft|platform]\n"
                "\n"
-               "API is one of c2c, z2z, r2c, d2z, c2r, z2d.\n";
+               "API is one of c2c, z2z, r2c, d2z, c2r, z2d.\n"
+               "\n"
+               "Passing `-` as --input reads the input from stdin and passing `-` as\n"
+               "--output-dir writes the result to stdout, so a caller can compare a\n"
+               "transform without materializing either side on disk.  In that mode the\n"
+               "plan description goes to stderr, wrapped in FLAGFFT PLAN BEGIN/END\n"
+               "delimiters, instead of to flagfft_plan.txt.\n";
 }
 
 Implementation parse_implementation(const std::string& value) {
@@ -258,6 +266,8 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
   }
   spec.input = required("input");
   spec.output_dir = required("output-dir");
+  spec.input_from_stdin = spec.input == "-";
+  spec.output_to_stdout = spec.output_dir == "-";
   auto implementation = args.find("implementation");
   if (implementation != args.end()) {
     spec.implementation = parse_implementation(implementation->second);
@@ -271,6 +281,11 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
   }
   if (spec.shape.size() == 3 && spec.batch != 1) {
     throw std::runtime_error("rank-3 capture currently requires --batch 1");
+  }
+  if (spec.input_from_stdin && spec.implementation == Implementation::kBoth) {
+    // stdin holds a single copy of the input, so it cannot be replayed for a
+    // second library.  The runner always selects one library per invocation.
+    throw std::runtime_error("--input=- requires --implementation=flagfft or platform");
   }
   return spec;
 }
@@ -294,22 +309,37 @@ void validate_file_size(const fs::path& path, std::size_t expected) {
   }
 }
 
-std::vector<std::uint8_t> read_input_chunk(std::ifstream& input, const fs::path& path, std::size_t bytes) {
+std::string describe_input(const Spec& spec) {
+  return spec.input_from_stdin ? std::string("stdin") : spec.input.string();
+}
+
+std::string describe_output(const Spec& spec) {
+  return spec.output_to_stdout ? std::string("stdout") : spec.output_dir.string();
+}
+
+// A regular file delivers a whole chunk at once, but a pipe hands over
+// whatever has arrived so far.  Both modes know the exact expected size, so
+// loop until it is satisfied; any premature end is a hard error.
+std::vector<std::uint8_t> read_input_chunk(std::istream& input, const Spec& spec, std::size_t bytes) {
   std::vector<std::uint8_t> result(bytes);
-  if (bytes == 0) {
-    return result;
-  }
-  input.read(reinterpret_cast<char*>(result.data()), static_cast<std::streamsize>(bytes));
-  if (input.gcount() != static_cast<std::streamsize>(bytes)) {
-    throw std::runtime_error("failed to read input chunk from: " + path.string());
+  std::size_t done = 0;
+  while (done < bytes) {
+    input.read(reinterpret_cast<char*>(result.data()) + done, static_cast<std::streamsize>(bytes - done));
+    const std::streamsize got = input.gcount();
+    if (got <= 0) {
+      throw std::runtime_error("failed to read input chunk from " + describe_input(spec) + ": got " +
+                               std::to_string(done) + " of " + std::to_string(bytes) + " bytes");
+    }
+    done += static_cast<std::size_t>(got);
   }
   return result;
 }
 
-void write_output_chunk(std::ofstream& output, const fs::path& path, const void* data, std::size_t bytes) {
+void write_output_chunk(std::ostream& output, const Spec& spec, const void* data, std::size_t bytes) {
+  // ostream::write is specified to emit every byte, including on a pipe.
   output.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
   if (!output) {
-    throw std::runtime_error("failed to write output chunk to: " + path.string());
+    throw std::runtime_error("failed to write output chunk to " + describe_output(spec));
   }
 }
 
@@ -502,11 +532,23 @@ void execute_reference(
   }
 }
 
-void write_plan_description(flagfftHandle plan, const fs::path& path) {
+// In stdout mode the plan cannot be a sibling file, so it is emitted on stderr
+// between these delimiters.  The runner extracts the text for the JSON and it
+// also reaches the per-operator log, where it stays human-readable.
+constexpr const char* kPlanBegin = "===== FLAGFFT PLAN BEGIN =====";
+constexpr const char* kPlanEnd = "===== FLAGFFT PLAN END =====";
+
+void write_plan_description(flagfftHandle plan, const Spec& spec) {
   const char* description = flagfftGetPlanDescription(plan);
   if (description == nullptr) {
     return;
   }
+  if (spec.output_to_stdout) {
+    std::cerr << kPlanBegin << '\n' << description << '\n' << kPlanEnd << '\n';
+    std::cerr.flush();
+    return;
+  }
+  const fs::path path = spec.output_dir / "flagfft_plan.txt";
   std::ofstream output(path, std::ios::trunc);
   if (!output.is_open()) {
     throw std::runtime_error("cannot open plan description: " + path.string());
@@ -516,18 +558,30 @@ void write_plan_description(flagfftHandle plan, const fs::path& path) {
 
 void run_implementation(const Spec& spec, Implementation implementation) {
   const Layout full_layout = make_layout(spec);
-  validate_file_size(spec.input, full_layout.input_bytes);
+  if (!spec.input_from_stdin) {
+    validate_file_size(spec.input, full_layout.input_bytes);
+  }
   const int batch_chunk = chunk_batch_size(spec, full_layout);
   const fs::path output_path =
       spec.output_dir / (implementation == Implementation::kFlagFFT ? "flagfft.bin" : "platform.bin");
 
-  std::ifstream input(spec.input, std::ios::binary);
-  if (!input.is_open()) {
-    throw std::runtime_error("cannot open input file: " + spec.input.string());
+  std::ifstream input_file;
+  std::istream* input = &std::cin;
+  if (!spec.input_from_stdin) {
+    input_file.open(spec.input, std::ios::binary);
+    if (!input_file.is_open()) {
+      throw std::runtime_error("cannot open input file: " + spec.input.string());
+    }
+    input = &input_file;
   }
-  std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
-  if (!output.is_open()) {
-    throw std::runtime_error("cannot open output file: " + output_path.string());
+  std::ofstream output_file;
+  std::ostream* output = &std::cout;
+  if (!spec.output_to_stdout) {
+    output_file.open(output_path, std::ios::binary | std::ios::trunc);
+    if (!output_file.is_open()) {
+      throw std::runtime_error("cannot open output file: " + output_path.string());
+    }
+    output = &output_file;
   }
 
   std::size_t input_offset = 0;
@@ -537,8 +591,10 @@ void run_implementation(const Spec& spec, Implementation implementation) {
     Spec chunk_spec = spec;
     chunk_spec.batch = current_batch;
     const Layout chunk_layout = make_layout(chunk_spec);
-    std::vector<std::uint8_t> host_input = read_input_chunk(input, spec.input, chunk_layout.input_bytes);
-    release_file_cache(spec.input, input_offset, chunk_layout.input_bytes, false);
+    std::vector<std::uint8_t> host_input = read_input_chunk(*input, spec, chunk_layout.input_bytes);
+    if (!spec.input_from_stdin) {
+      release_file_cache(spec.input, input_offset, chunk_layout.input_bytes, false);
+    }
     input_offset += chunk_layout.input_bytes;
 
     std::vector<std::uint8_t> host_output;
@@ -567,7 +623,7 @@ void run_implementation(const Spec& spec, Implementation implementation) {
         check_flagfft(flagfftSetStream(flag_plan.handle, stream.get()), "flagfftSetStream");
         // Retain the chosen plan even when execution subsequently fails/hangs.
         // The successful path writes it again with compiled execution details.
-        write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
+        write_plan_description(flag_plan.handle, spec);
         execute_flagfft(flag_plan.handle, chunk_spec, device_input.data(), device_output.data());
       } else {
         reference_plan.emplace(make_reference_plan(chunk_spec));
@@ -583,41 +639,41 @@ void run_implementation(const Spec& spec, Implementation implementation) {
       host_output.resize(chunk_layout.output_bytes);
       device_output.copy_to_host(host_output.data(), chunk_layout.output_bytes);
       if (implementation == Implementation::kFlagFFT) {
-        write_plan_description(flag_plan.handle, spec.output_dir / "flagfft_plan.txt");
+        write_plan_description(flag_plan.handle, spec);
       }
     }
 
-    write_output_chunk(output, output_path, host_output.data(), host_output.size());
-    output.flush();
-    if (!output) {
-      throw std::runtime_error("failed to flush output chunk: " + output_path.string());
+    write_output_chunk(*output, spec, host_output.data(), host_output.size());
+    output->flush();
+    if (!*output) {
+      throw std::runtime_error("failed to flush output chunk to " + describe_output(spec));
     }
-    release_file_cache(output_path, output_offset, host_output.size(), true);
+    if (!spec.output_to_stdout) {
+      release_file_cache(output_path, output_offset, host_output.size(), true);
+    }
     output_offset += host_output.size();
   }
 
-  output.flush();
-  if (!output) {
-    throw std::runtime_error("failed to flush output file: " + output_path.string());
+  output->flush();
+  if (!*output) {
+    throw std::runtime_error("failed to flush output to " + describe_output(spec));
   }
-  output.close();
-  validate_file_size(output_path, full_layout.output_bytes);
+  if (!spec.output_to_stdout) {
+    output_file.close();
+    validate_file_size(output_path, full_layout.output_bytes);
+  }
 }
 
 int run(const Spec& spec) {
-  fs::create_directories(spec.output_dir);
+  if (!spec.output_to_stdout) {
+    fs::create_directories(spec.output_dir);
+  }
   if (spec.implementation != Implementation::kPlatform) {
     run_implementation(spec, Implementation::kFlagFFT);
   }
   if (spec.implementation != Implementation::kFlagFFT) {
     run_implementation(spec, Implementation::kPlatform);
   }
-
-  std::ofstream backend_file(spec.output_dir / "capture_backend.txt", std::ios::trunc);
-  if (!backend_file.is_open()) {
-    throw std::runtime_error("cannot write capture backend metadata");
-  }
-  backend_file << flagfft::test_adaptor::backend_name() << '\n';
   return 0;
 }
 
@@ -626,8 +682,11 @@ int run(const Spec& spec) {
 int main(int argc, char** argv) {
   try {
     const auto args = parse_arguments(argc, argv);
-    return run(parse_spec(args));
+    const int status = run(parse_spec(args));
+    std::cout.flush();
+    return status;
   } catch (const std::exception& error) {
+    std::cout.flush();
     std::cerr << "numpy_fft_capture: " << error.what() << '\n';
     return 2;
   }

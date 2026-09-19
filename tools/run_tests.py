@@ -27,9 +27,12 @@ import multiprocessing
 import os
 import platform
 import queue
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,17 +118,6 @@ ACCURACY_CONSTANTS = {
 }
 
 DEFAULT_SCALES = (2.0**-20, 1.0, 2.0**20)
-ARTIFACT_POLICIES = ("none", "failed", "all")
-# These files are the native capture boundary. The .npy files are included
-# only so old/interrupted result directories can be cleaned consistently;
-# new runs never create them.
-RAW_ARTIFACT_FILENAMES = (
-    "input.bin",
-    "flagfft.bin",
-    "platform.bin",
-    "input.npy",
-    "numpy.npy",
-)
 
 # Accuracy runs can contain hundreds of millions of values.  Keep the NumPy
 # oracle and the error reduction bounded even when a single batch is very
@@ -133,6 +125,27 @@ RAW_ARTIFACT_FILENAMES = (
 REFERENCE_BATCH_CHUNK = 4
 ERROR_STATS_CHUNK_ELEMENTS = 1 << 18
 INPUT_GENERATION_CHUNK_ELEMENTS = 1 << 20
+
+# The native capture writes the chosen plan to stderr between these delimiters
+# when its output goes to stdout.  The runner lifts the text into the JSON and
+# it also reaches the per-operator log, where it stays human-readable.
+PLAN_BEGIN = "===== FLAGFFT PLAN BEGIN ====="
+PLAN_END = "===== FLAGFFT PLAN END ====="
+
+ACCURACY_LOG = "accuracy.log"
+PERF_LOG = "perf.log"
+
+# Column order the acceptance platform's performance table expects.  It is
+# keyed by dtype; see flaggems_performance_rows for how FFT cases map onto it.
+FLAGFFT_PERFORMANCE_COLUMNS = (
+    "float16",
+    "float32",
+    "bfloat16",
+    "int16",
+    "int32",
+    "bool",
+    "cfloat",
+)
 
 
 def product(shape: Iterable[int]) -> int:
@@ -468,37 +481,70 @@ def merge_error_stats(
     return aggregate
 
 
-def streaming_error_stats(
-    output_path: Path,
+def read_exactly(stream, count: int) -> bytes:
+    """Read exactly `count` bytes; a pipe may deliver them in several pieces."""
+    if count == 0:
+        return b""
+    blocks = []
+    remaining = count
+    while remaining > 0:
+        block = stream.read(remaining)
+        if not block:
+            raise ValueError(
+                f"native capture produced {count - remaining} of {count} output bytes"
+            )
+        blocks.append(block)
+        remaining -= len(block)
+    return blocks[0] if len(blocks) == 1 else b"".join(blocks)
+
+
+def kill_process_group(process: subprocess.Popen) -> None:
+    """Kill the whole capture session; the child may have spawned helpers."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def compare_stream(
+    stream,
     input_value: np.ndarray,
     api: str,
     shape: tuple[int, ...],
     direction: str,
     batch: int,
-) -> dict[str, Any]:
-    """Compare one native output to NumPy without materializing full arrays."""
-    output = load_raw_memmap(output_path, api, shape, batch)
+) -> tuple[dict[str, Any], str]:
+    """Fold a streamed native output into NumPy error statistics.
+
+    The output never reaches the disk.  Each reference batch is read from the
+    pipe, hashed and compared before the next one is requested, so peak memory
+    stays at one bounded group of batches on each side.
+    """
+    dtype = raw_dtype(api, is_input=False)
     elements = product(output_shape(api, shape, batch)[1:])
+    bytes_per_batch = elements * dtype.itemsize
+    digest = hashlib.sha256()
     aggregate = None
-    try:
-        for start, stop, reference_chunk in numpy_reference_chunks(
-            input_value, api, shape, direction
-        ):
-            chunk_stats = error_stats(
-                output[start:stop],
-                reference_chunk,
-                elements,
-                stop - start,
-            )
-            aggregate = merge_error_stats(aggregate, chunk_stats, start)
+    for start, stop, reference_chunk in numpy_reference_chunks(
+        input_value, api, shape, direction
+    ):
+        buffer = read_exactly(stream, (stop - start) * bytes_per_batch)
+        digest.update(buffer)
+        if aggregate is not None and not aggregate["finite"]:
+            # The comparison already failed.  Keep draining so the child is
+            # not left blocked writing into a full pipe.
             del reference_chunk
-            if not aggregate["finite"]:
-                break
-    finally:
-        del output
+            continue
+        output = np.frombuffer(buffer, dtype=dtype).reshape(stop - start, elements)
+        aggregate = merge_error_stats(
+            aggregate,
+            error_stats(output, reference_chunk, elements, stop - start),
+            start,
+        )
+        del output, reference_chunk
     if aggregate is None:
         raise ValueError("NumPy reference produced no batches")
-    return aggregate
+    return aggregate, digest.hexdigest()
 
 
 def ceil_log2_covering(value: int) -> int:
@@ -542,49 +588,32 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def cleanup_raw_artifacts(case_dir: Path) -> list[str]:
-    """Remove only known numerical artifacts, leaving reports and logs intact."""
-    errors = []
-    for filename in RAW_ARTIFACT_FILENAMES:
-        path = case_dir / filename
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as error:
-            errors.append(f"{filename}: {error}")
-    return errors
+def raw_dtype(api: str, *, is_input: bool) -> np.dtype:
+    """Native dtype of one side of the capture boundary.
 
-
-def retain_raw_artifacts(policy: str, record: dict[str, Any]) -> bool:
-    if policy == "all":
-        return True
-    if policy == "none":
-        return False
-    if policy == "failed":
-        return any(
-            record.get(field, {}).get("status") != "Passed"
-            for field in ("accuracy", "platform_accuracy")
-        )
-    raise ValueError(
-        f"unknown artifact policy: {policy}; expected one of {', '.join(ARTIFACT_POLICIES)}"
-    )
-
-
-def raw_spec(
-    path: Path, api: str, shape: tuple[int, ...], batch: int
-) -> tuple[np.dtype, tuple[int, ...]]:
-    is_input = path.name == "input.bin"
+    The acceptance runner knows which side it is handling, so it calls this
+    directly instead of inferring the side from a filename.
+    """
     complex_values = (
         (is_complex(api) or is_real_inverse(api))
         if is_input
         else (is_complex(api) or is_real_forward(api))
     )
-    dtype = complex_dtype(api) if complex_values else real_dtype(api)
+    return complex_dtype(api) if complex_values else real_dtype(api)
+
+
+def raw_spec(
+    path: Path, api: str, shape: tuple[int, ...], batch: int
+) -> tuple[np.dtype, tuple[int, ...]]:
+    """Dtype and shape of a raw artifact, inferred from its filename.
+
+    Retained for the standalone tools that still capture to named files.
+    """
+    is_input = path.name == "input.bin"
     expected_shape = (
         input_shape(api, shape, batch) if is_input else output_shape(api, shape, batch)
     )
-    return dtype, expected_shape
+    return raw_dtype(api, is_input=is_input), expected_shape
 
 
 def load_raw(path: Path, api: str, shape: tuple[int, ...], batch: int) -> np.ndarray:
@@ -628,6 +657,38 @@ def json_safe(value: Any) -> Any:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(json_safe(value), indent=2, allow_nan=False) + "\n")
+
+
+def append_operator_log(
+    op_dir: Path, log_name: str, case_id: str, label: str, scratch_log: Any
+) -> None:
+    """Append one case's console output to its operator's shared log.
+
+    Workers capture each case into a scratch file outside the result tree and
+    pass only the path here.  The main process is the single writer: two cases
+    of one operator can land on different workers, and concurrent appends would
+    interleave.  Appends follow completion order, not case order; the
+    machine-readable record lives in the JSON, so the log only has to be
+    readable.
+    """
+    if not scratch_log:
+        return
+    scratch_log = Path(scratch_log)
+    if not scratch_log.is_file():
+        return
+    op_dir.mkdir(parents=True, exist_ok=True)
+    text = scratch_log.read_text(errors="replace")
+    with (op_dir / log_name).open("a") as out:
+        out.write(f"===== {case_id} {label} =====\n")
+        out.write(text)
+        if text and not text.endswith("\n"):
+            out.write("\n")
+    scratch_log.unlink(missing_ok=True)
+
+
+def log_scratch(message: dict) -> Any:
+    """The scratch log path a worker attached to one phase of a case."""
+    return (message.get("result") or {}).get("capture", {}).get("log_file")
 
 
 def load_operators(path: Path) -> list[dict[str, Any]]:
@@ -819,6 +880,10 @@ def performance_cases(cases: list[dict]) -> list[dict]:
 def build_accuracy_cmd(
     case: dict, capture_bin: Path, case_dir: Path, implementation: str
 ) -> list[str]:
+    """File-mode capture command, kept for the standalone profiling tools.
+
+    The acceptance runner streams instead; see build_stream_accuracy_cmd.
+    """
     return [
         str(capture_bin),
         f"--api={case['api']}",
@@ -827,6 +892,26 @@ def build_accuracy_cmd(
         f"--direction={case['direction']}",
         f"--input={case_dir / 'input.bin'}",
         f"--output-dir={case_dir}",
+        f"--implementation={implementation}",
+    ]
+
+
+def build_stream_accuracy_cmd(
+    case: dict, capture_bin: Path, implementation: str
+) -> list[str]:
+    """Streaming capture command: input on stdin, output on stdout.
+
+    Neither the multi-gigabyte input nor the output ever lands in the result
+    directory, which is what the acceptance platform has to upload and parse.
+    """
+    return [
+        str(capture_bin),
+        f"--api={case['api']}",
+        f"--shape={'x'.join(str(value) for value in case['shape'])}",
+        f"--batch={case['batch']}",
+        f"--direction={case['direction']}",
+        "--input=-",
+        "--output-dir=-",
         f"--implementation={implementation}",
     ]
 
@@ -1081,10 +1166,7 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
         ENV_INFO["device"] = {"status": "unknown", "reason": str(exc)}
 
 
-def run_subprocess(
-    cmd: list[str], timeout: int, gpu_id: int, case_dir: Path, stage: str
-) -> dict:
-    """Stream logs to disk and kill the complete subprocess group on timeout."""
+def capture_env(gpu_id: int) -> dict[str, str]:
     env = os.environ.copy()
     for variable in (
         "CUDA_VISIBLE_DEVICES",
@@ -1099,115 +1181,185 @@ def run_subprocess(
     ):
         env[variable] = str(gpu_id)
     env["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + env.get("PYTHONPATH", "")
-    started = time.monotonic()
-    result = {
-        "command": cmd,
-        "stdout_file": f"{stage}.stdout",
-        "stderr_file": f"{stage}.stderr",
+    return env
+
+
+def feed_capture_input(stream, input_value: np.ndarray) -> None:
+    """Stream the generated input into the capture's stdin in bounded blocks."""
+    flat = np.asarray(input_value).reshape(-1)
+    try:
+        for start in range(0, flat.size, INPUT_GENERATION_CHUNK_ELEMENTS):
+            stop = min(flat.size, start + INPUT_GENERATION_CHUNK_ELEMENTS)
+            stream.write(np.ascontiguousarray(flat[start:stop]).tobytes())
+        stream.flush()
+    except (BrokenPipeError, OSError, ValueError):
+        # The capture exited or was killed.  The reader reports the real
+        # reason, so there is nothing useful to add here.
+        pass
+
+
+def read_plan(log_path: Path) -> str | None:
+    """Lift the plan the native capture wrote between its stderr delimiters.
+
+    The capture writes it twice: once before execution, so the chosen plan
+    survives a hang or failure, and again afterwards with compiled execution
+    details.  The last block is the most complete one.
+    """
+    try:
+        text = log_path.read_text(errors="replace")
+    except OSError:
+        return None
+    begin = text.rfind(PLAN_BEGIN)
+    if begin < 0:
+        return None
+    begin += len(PLAN_BEGIN)
+    end = text.find(PLAN_END, begin)
+    if end < 0:
+        return None
+    return text[begin:end].strip("\n") or None
+
+
+def tail_text(path: Path, limit: int = 4000) -> str:
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - limit))
+            return stream.read().decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def close_quietly(stream) -> None:
+    try:
+        stream.close()
+    except (OSError, ValueError):
+        pass
+
+
+def run_accuracy_capture(
+    case: dict,
+    capture_bin: Path,
+    case_scratch: Path,
+    input_value: np.ndarray,
+    implementation: str,
+    gpu_id: int,
+    timeout: int,
+) -> dict:
+    """Run one native capture and judge its streamed output against NumPy.
+
+    The input arrives on stdin and the output leaves on stdout, so neither the
+    multi-gigabyte input nor the output is written into the result directory.
+    A watchdog kills the whole process group at the deadline, which also
+    unblocks the reader and the writer thread.
+    """
+    limits = accuracy_limit(case["api"], product(case["shape"]))
+    case_scratch.mkdir(parents=True, exist_ok=True)
+    log_path = case_scratch / f"{implementation}.log"
+    command = build_stream_accuracy_cmd(case, capture_bin, implementation)
+    result: dict[str, Any] = {
+        "status": "Error",
+        "reference": "numpy.fft",
+        "limits": limits,
+        "capture": {"command": command, "log_file": str(log_path)},
+        "duration": 0.0,
+        "plan": None,
     }
+    started = time.monotonic()
+    timed_out = threading.Event()
     process = None
-    with (
-        (case_dir / result["stdout_file"]).open("w") as stdout,
-        (case_dir / result["stderr_file"]).open("w") as stderr,
-    ):
-        try:
+    writer = None
+    watchdog = None
+    try:
+        with log_path.open("wb") as log_stream:
             process = subprocess.Popen(
-                cmd,
-                cwd=case_dir,
-                env=env,
-                stdout=stdout,
-                stderr=stderr,
+                command,
+                cwd=case_scratch,
+                env=capture_env(gpu_id),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=log_stream,
                 start_new_session=True,
             )
-            returncode = process.wait(timeout=timeout)
+            watchdog = threading.Timer(
+                timeout, lambda: (timed_out.set(), kill_process_group(process))
+            )
+            watchdog.daemon = True
+            watchdog.start()
+            writer = threading.Thread(
+                target=feed_capture_input,
+                args=(process.stdin, input_value),
+                daemon=True,
+            )
+            writer.start()
+            try:
+                stats, output_sha256 = compare_stream(
+                    process.stdout,
+                    input_value,
+                    case["api"],
+                    tuple(case["shape"]),
+                    case["direction"],
+                    case["batch"],
+                )
+            finally:
+                close_quietly(process.stdout)
+            returncode = process.wait()
+            metric = judged_stats(stats, limits)
+            if returncode == 77:
+                status = "Skipped"
+            elif returncode != 0:
+                # A capture that exited non-zero is reported as such even when
+                # the bytes it managed to emit compare cleanly; otherwise a
+                # crash after a complete write would read as a pass.
+                status = "Error"
+            else:
+                status = "Passed" if metric["passed"] else "Failed"
             result.update(
                 {
-                    "status": (
-                        "Completed"
-                        if returncode == 0
-                        else ("Skipped" if returncode == 77 else "Error")
-                    ),
+                    "status": status,
                     "returncode": returncode,
+                    "metric": metric,
+                    "output_sha256": output_sha256,
                 }
             )
             if returncode != 0:
                 result["error"] = f"process exited with code {returncode}"
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+    except ValueError as error:
+        if timed_out.is_set():
             result.update(
                 {"status": "Timeout", "error": f"exceeded {timeout}s timeout"}
             )
-        except OSError as error:
+        else:
             result.update({"status": "Error", "error": str(error)})
-        except BaseException:
-            if process is not None and process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
+    except OSError as error:
+        result.update({"status": "Error", "error": str(error)})
+    except BaseException:
+        if process is not None and process.poll() is None:
+            kill_process_group(process)
+            process.wait()
+        raise
+    finally:
+        if watchdog is not None:
+            watchdog.cancel()
+        if writer is not None:
+            writer.join(timeout=5)
+        if process is not None:
+            close_quietly(process.stdin)
+            close_quietly(process.stdout)
+            if process.poll() is None:
+                kill_process_group(process)
                 process.wait()
-            raise
-    result["duration"] = time.monotonic() - started
-    if result["status"] == "Error":
-        with (case_dir / result["stderr_file"]).open("rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, stream.tell() - 4000))
-            detail = stream.read().decode("utf-8", errors="replace").strip()
+        result["duration"] = time.monotonic() - started
+    if implementation == "flagfft":
+        result["plan"] = read_plan(log_path)
+    if result["status"] in ("Error", "Timeout"):
+        detail = tail_text(log_path)
         if detail:
-            result["error"] += f": {detail}"
+            result["error"] = f"{result.get('error', result['status'])}: {detail}"
     return result
 
 
 def pending_accuracy() -> dict:
     return {"status": "NotFound", "reference": "numpy.fft", "plan": None}
-
-
-def compare_output(
-    case: dict,
-    case_dir: Path,
-    implementation: str,
-    reference: np.ndarray | None,
-    stage: dict,
-    reference_input: np.ndarray | None = None,
-) -> dict:
-    limits = accuracy_limit(case["api"], product(case["shape"]))
-    result = {
-        "status": stage.get("status", "Error"),
-        "reference": "numpy.fft",
-        "limits": limits,
-        "capture": stage,
-        "duration": stage.get("duration", 0),
-        "plan": None,
-    }
-    if implementation == "flagfft":
-        plan_file = case_dir / "flagfft_plan.txt"
-        if plan_file.is_file():
-            result["plan"] = plan_file.read_text(errors="replace")
-    if result["status"] != "Completed":
-        result["error"] = stage.get("error", result["status"])
-        return result
-    try:
-        shape = tuple(case["shape"])
-        output_path = case_dir / f"{implementation}.bin"
-        if reference_input is not None:
-            stats = streaming_error_stats(
-                output_path,
-                reference_input,
-                case["api"],
-                shape,
-                case["direction"],
-                case["batch"],
-            )
-        else:
-            if reference is None:
-                raise ValueError("missing NumPy reference input")
-            output = load_raw(output_path, case["api"], shape, case["batch"])
-            elements = product(output_shape(case["api"], shape, case["batch"])[1:])
-            stats = error_stats(output, reference, elements, case["batch"])
-        result["metric"] = judged_stats(stats, limits)
-        result["status"] = "Passed" if result["metric"]["passed"] else "Failed"
-        result["output_sha256"] = sha256(output_path)
-    except (OSError, ValueError) as error:
-        result.update({"status": "Error", "error": str(error)})
-    return result
 
 
 def run_accuracy_case(
@@ -1216,28 +1368,24 @@ def run_accuracy_case(
     output_dir: Path,
     gpu_id: int,
     timeout: int,
-    artifact_policy: str = "failed",
+    scratch_dir: Path,
     backend: str = "cuda",
 ) -> dict:
-    # Keep compatibility with the pre-artifact-policy internal call, which
-    # passed the backend as the sixth positional argument.
-    if artifact_policy in {"cuda", "musa", "ppu", "ix", "npu"} and backend == "cuda":
-        backend = artifact_policy
-        artifact_policy = "failed"
-    if artifact_policy not in ARTIFACT_POLICIES:
-        raise ValueError(
-            f"unknown artifact policy: {artifact_policy}; expected one of {', '.join(ARTIFACT_POLICIES)}"
-        )
-    case_dir = output_dir / case["op_id"] / case["case_id"]
-    case_dir.mkdir(parents=True, exist_ok=True)
+    """Run one accuracy case without writing raw arrays into the result tree.
+
+    The generated input is a transient memmap under `scratch_dir`; the native
+    output is streamed back and compared batch by batch.  Only the JSON results
+    and the per-operator log survive in `output_dir`.
+    """
+    op_dir = output_dir / case["op_id"]
+    op_dir.mkdir(parents=True, exist_ok=True)
+    case_scratch = scratch_dir / "input" / case["op_id"] / case["case_id"]
+    case_scratch.mkdir(parents=True, exist_ok=True)
+    input_path = case_scratch / "input.bin"
     reference_skip_reason = case.get("skip_reason") if backend == "npu" else None
     record = {
         "format_version": FORMAT_VERSION,
         **case,
-        "artifact_policy": artifact_policy,
-        # Keep partial data available until the case reaches its final state,
-        # unless the user explicitly selected the strict no-artifact mode.
-        "raw_artifacts_retained": artifact_policy != "none",
         "accuracy": pending_accuracy(),
         "platform_accuracy": (
             {
@@ -1251,89 +1399,50 @@ def run_accuracy_case(
             else pending_accuracy()
         ),
     }
-    data_file = (case_dir / "case.json").relative_to(output_dir).as_posix()
-    record["data_file"] = data_file
-    write_json(case_dir / "case.json", record)
     started = time.monotonic()
     reference_input = None
     try:
         value, seed = make_input(
             case["api"], tuple(case["shape"]), case["batch"], case["scale"]
         )
-        value.tofile(case_dir / "input.bin")
+        value.tofile(input_path)
         record.update(
             {
                 "seed": seed,
                 "input_dtype": str(value.dtype),
-                "input_sha256": sha256(case_dir / "input.bin"),
+                "input_sha256": sha256(input_path),
             }
         )
+        # The native capture is a separate process.  Drop the generated array
+        # and map the scratch file instead, so the worker does not retain a
+        # full-size input alongside the capture process and its buffers.
+        del value
+        reference_input = load_raw_memmap(
+            input_path, case["api"], tuple(case["shape"]), case["batch"]
+        )
+        record["numpy_dtype"] = str(numpy_reference_dtype(case["api"]))
+
         implementations = [("flagfft", "accuracy")]
         if not reference_skip_reason:
             implementations.append(("platform", "platform_accuracy"))
-        # The native capture is a separate process.  Drop the generated input
-        # before starting it so the worker does not retain a full-size array
-        # alongside the capture process and its output buffers.
-        del value
-
-        capture_stages = {}
         for implementation, field in implementations:
-            command = build_accuracy_cmd(case, capture_bin, case_dir, implementation)
-            stage = run_subprocess(command, timeout, gpu_id, case_dir, implementation)
-            capture_stages[implementation] = stage
-            record["capture_stages"] = capture_stages
-            # Persist each native stage before starting the next one.  This is
-            # also useful when a long-running worker is interrupted.
-            write_json(case_dir / "case.json", record)
-
-        # A failed or timed-out native capture does not need a NumPy reference.
-        # Record those stage results first, then only compare completed output.
-        for implementation, field in implementations:
-            stage = capture_stages[implementation]
-            if stage.get("status") != "Completed":
-                record[field] = compare_output(
-                    case, case_dir, implementation, None, stage
-                )
-                record[field]["data_file"] = data_file
-
-        if any(stage.get("status") == "Completed" for stage in capture_stages.values()):
-            # Both native processes have exited.  Keep the input on disk and
-            # compare one bounded NumPy batch at a time, so neither the full
-            # double-precision input nor the full reference is resident.
-            reference_input = load_raw_memmap(
-                case_dir / "input.bin",
-                case["api"],
-                tuple(case["shape"]),
-                case["batch"],
+            record[field] = run_accuracy_capture(
+                case,
+                capture_bin,
+                case_scratch,
+                reference_input,
+                implementation,
+                gpu_id,
+                timeout,
             )
-            record["numpy_dtype"] = str(numpy_reference_dtype(case["api"]))
-
-            for implementation, field in implementations:
-                stage = capture_stages[implementation]
-                if stage.get("status") == "Completed":
-                    record[field] = compare_output(
-                        case,
-                        case_dir,
-                        implementation,
-                        None,
-                        stage,
-                        reference_input,
-                    )
-                    record[field]["data_file"] = data_file
     except Exception as error:
         for field in ("accuracy", "platform_accuracy"):
             if record[field]["status"] == "NotFound":
                 record[field] = {"status": "Error", "error": repr(error), "plan": None}
     finally:
-        if reference_input is not None:
-            del reference_input
+        del reference_input
         record["duration"] = time.monotonic() - started
-        keep = retain_raw_artifacts(artifact_policy, record)
-        cleanup_errors = [] if keep else cleanup_raw_artifacts(case_dir)
-        record["raw_artifacts_retained"] = keep or bool(cleanup_errors)
-        if cleanup_errors:
-            record["artifact_cleanup_errors"] = cleanup_errors
-        write_json(case_dir / "case.json", record)
+        input_path.unlink(missing_ok=True)
     return record
 
 
@@ -1377,6 +1486,56 @@ def parse_perf_result(
     }
 
 
+def run_logged_command(
+    command: list[str], timeout: int, gpu_id: int, cwd: Path, log_path: Path
+) -> dict:
+    """Run a command with both streams captured to one scratch log file."""
+    started = time.monotonic()
+    result: dict[str, Any] = {"command": command, "log_file": str(log_path)}
+    process = None
+    try:
+        with log_path.open("wb") as log_stream:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=capture_env(gpu_id),
+                stdout=log_stream,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            returncode = process.wait(timeout=timeout)
+        result.update(
+            {
+                "status": (
+                    "Completed"
+                    if returncode == 0
+                    else ("Skipped" if returncode == 77 else "Error")
+                ),
+                "returncode": returncode,
+            }
+        )
+        if returncode != 0:
+            result["error"] = f"process exited with code {returncode}"
+    except subprocess.TimeoutExpired:
+        kill_process_group(process)
+        process.wait()
+        result.update({"status": "Timeout", "error": f"exceeded {timeout}s timeout"})
+    except OSError as error:
+        result.update({"status": "Error", "error": str(error)})
+    except BaseException:
+        if process is not None and process.poll() is None:
+            kill_process_group(process)
+            process.wait()
+        raise
+    finally:
+        result["duration"] = time.monotonic() - started
+    if result["status"] in ("Error", "Timeout"):
+        detail = tail_text(log_path)
+        if detail:
+            result["error"] = f"{result.get('error', result['status'])}: {detail}"
+    return result
+
+
 def run_performance_case(
     case: dict,
     build_dir: Path,
@@ -1386,16 +1545,18 @@ def run_performance_case(
     warmup: int,
     iters: int,
     baseline_valid: bool | None,
+    scratch_dir: Path,
     backend: str = "cuda",
 ) -> dict:
-    case_dir = output_dir / case["op_id"] / "performance" / case["case_id"]
-    case_dir.mkdir(parents=True, exist_ok=True)
+    """Benchmark one case, keeping its console output for the operator log."""
+    (output_dir / case["op_id"]).mkdir(parents=True, exist_ok=True)
+    case_scratch = scratch_dir / "perf" / case["op_id"] / case["case_id"]
+    case_scratch.mkdir(parents=True, exist_ok=True)
+    log_path = case_scratch / "bench.log"
     command = build_perf_cmd(case, build_dir, warmup, iters)
-    stage = run_subprocess(command, timeout, gpu_id, case_dir, "bench")
+    stage = run_logged_command(command, timeout, gpu_id, case_scratch, log_path)
     if stage["status"] == "Completed":
-        result = parse_perf_result(
-            (case_dir / "bench.stdout").read_text(errors="replace"), case, backend
-        )
+        result = parse_perf_result(log_path.read_text(errors="replace"), case, backend)
     else:
         result = {"status": stage["status"], "error": stage.get("error"), "plan": None}
     result.update(
@@ -1403,12 +1564,9 @@ def run_performance_case(
             "duration": stage["duration"],
             "capture": stage,
             "baseline_valid": baseline_valid,
-            "data_file": (case_dir / "result.json").relative_to(output_dir).as_posix(),
         }
     )
-    record = {"format_version": FORMAT_VERSION, **case, "performance": result}
-    write_json(case_dir / "result.json", record)
-    return record
+    return {"format_version": FORMAT_VERSION, **case, "performance": result}
 
 
 def worker_proc(
@@ -1418,6 +1576,7 @@ def worker_proc(
     capture_bin: Path,
     build_dir: Path,
     output_dir: Path,
+    scratch_dir: Path,
     args,
 ) -> None:
     def stop_worker(signum, frame):
@@ -1438,7 +1597,7 @@ def worker_proc(
                 output_dir,
                 gpu_id,
                 args.timeout,
-                args.artifact_policy,
+                scratch_dir,
                 backend,
             )
             if backend != "npu":
@@ -1468,6 +1627,7 @@ def worker_proc(
                     args.warmup,
                     args.iters,
                     baseline_valid,
+                    scratch_dir,
                     backend,
                 )
                 result = record["performance"]
@@ -1572,6 +1732,7 @@ def aggregate_results(
                 "completed": 0,
                 "passed": 0,
                 "failed": 0,
+                "errors": 0,
                 "skipped": 0,
                 "missing": len(entries),
                 "duration": 0,
@@ -1635,14 +1796,18 @@ def aggregate_results(
             entries = list(block["cases"].values())
             block["total"] = len(entries)
             block["passed"] = sum(entry["status"] == "Passed" for entry in entries)
-            block["failed"] = sum(
-                entry["status"] in ("Failed", "Error", "Timeout") for entry in entries
+            block["failed"] = sum(entry["status"] == "Failed" for entry in entries)
+            # FlagGems separates assertion failures from execution errors.  The
+            # platform report reads both, so keep them apart here; a missing
+            # case counts as an error for that report.
+            block["errors"] = sum(
+                entry["status"] in ("Error", "Timeout") for entry in entries
             )
             block["skipped"] = sum(entry["status"] == "Skipped" for entry in entries)
             block["missing"] = sum(entry["status"] == "NotFound" for entry in entries)
             block["completed"] = block["total"] - block["missing"]
             block["duration"] = sum(entry.get("duration", 0) for entry in entries)
-            if block["failed"]:
+            if block["failed"] or block["errors"]:
                 block["status"] = "Failed"
             elif block["missing"]:
                 block["status"] = "Incomplete"
@@ -1737,9 +1902,85 @@ def compute_speedup_stats(op_results: dict) -> dict:
     }
 
 
+def flaggems_accuracy_block(block: dict, log_path: Path) -> dict:
+    """Reshape one accuracy block into what the acceptance platform parses.
+
+    Field names and the PASS/FAIL rule are copied from
+    ref/run_flaggems_test_new.py, which is what the platform's report and
+    per-operator parsers were written against.  `data_file` is an extra key
+    pointing at the detailed per-case record; unknown keys are ignored.
+    """
+    passed, failed, skipped = block["passed"], block["failed"], block["skipped"]
+    errors = block["errors"] + block["missing"]
+    total = passed + failed + skipped
+    if failed > 0 or (errors > 0 and total == 0) or passed == 0:
+        status = "FAIL"
+    else:
+        status = "PASS"
+    return {
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "errors": errors,
+        "total": total,
+        "status": status,
+        "log_path": str(log_path),
+        "exit_code": 0 if status == "PASS" else 1,
+        "data_file": block.get("data_file"),
+    }
+
+
+def flaggems_performance_rows(block: dict, average: float | None) -> list[dict]:
+    """One platform row per performance case.
+
+    The platform keys its columns by dtype, but an FFT operator's dtype is part
+    of its name (c2c/r2c/z2z/...), so the measured speedup goes in the complex
+    column and the remaining dtype columns stay empty rather than being
+    mislabelled.  `avg_speedup` repeats the operator's geometric mean on every
+    row, which is the number the acceptance bar is judged on.
+    """
+    rows = []
+    for case in block["cases"].values():
+        row = {"func_name": case["case_id"]}
+        row.update({column: "" for column in FLAGFFT_PERFORMANCE_COLUMNS})
+        speedup = case.get("speedup")
+        row["cfloat"] = "" if speedup is None else f"{speedup:.6g}"
+        row["avg_speedup"] = "" if average is None else f"{average:.6g}"
+        rows.append(row)
+    return rows
+
+
+def operator_speedup_stats(block: dict) -> dict:
+    values = [
+        case["speedup"]
+        for case in block["cases"].values()
+        if case.get("status") == "Passed"
+        and case.get("baseline_valid") is not False
+        and case.get("speedup")
+    ]
+    if not values:
+        return {"count": 0}
+    return {
+        "count": len(values),
+        "geometric_mean_speedup": round(
+            math.exp(sum(math.log(value) for value in values) / len(values)), 4
+        ),
+        "min_speedup": round(min(values), 4),
+        "max_speedup": round(max(values), 4),
+    }
+
+
 def write_summary(
     output_path: Path, op_results: dict, config: dict, total_duration: float
 ) -> dict:
+    """Write the platform-facing summary as a flat array.
+
+    ref/run_flaggems_test_new.py is the contract the platform parses for both
+    the report and the per-operator results, and it emits a flat array of
+    operator entries.  FlagFFT's own metadata rides along on every element.
+    """
+    output_dir = output_path.parent
+    elements = []
     counts = {}
     for phase in ("accuracy", "platform_accuracy", "performance"):
         for status in (
@@ -1753,34 +1994,50 @@ def write_summary(
             counts[f"{phase}_{status.lower()}"] = sum(
                 op[phase]["status"] == status for op in op_results.values()
             )
-    summary = {
-        "format_version": FORMAT_VERSION,
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "env": ENV_INFO,
-        "reference": {
-            "implementation": "numpy.fft",
-            "dtype_policy": "float64/complex128 reference; device inputs and outputs retain native dtype",
-            "normalization": "device inverse is unnormalized; NumPy inverse multiplied by product(shape)",
-            "metric": "ctest/flagfft_test.h::error_stats (worst batch rel_l2 and rel_linf)",
-            "constants": ACCURACY_CONSTANTS,
-        },
-        "config": config,
-        "result": op_results,
+    for op_id, result in op_results.items():
+        op_dir = output_dir / op_id
+        op_dir.mkdir(parents=True, exist_ok=True)
+        for phase, details in result.items():
+            write_json(op_dir / f"{phase}_result.json", details)
+        speedups = operator_speedup_stats(result["performance"])
+        elements.append(
+            {
+                "operator": op_id,
+                "accuracy": flaggems_accuracy_block(
+                    result["accuracy"], op_dir / ACCURACY_LOG
+                ),
+                "performance": flaggems_performance_rows(
+                    result["performance"], speedups.get("geometric_mean_speedup")
+                ),
+                "platform_accuracy": flaggems_accuracy_block(
+                    result["platform_accuracy"], op_dir / ACCURACY_LOG
+                ),
+                "perf_log_path": str(op_dir / PERF_LOG),
+                "format_version": FORMAT_VERSION,
+                "env": ENV_INFO,
+                "reference": {
+                    "implementation": "numpy.fft",
+                    "dtype_policy": "float64/complex128 reference; device inputs and outputs retain native dtype",
+                    "normalization": "device inverse is unnormalized; NumPy inverse multiplied by product(shape)",
+                    "metric": "ctest/flagfft_test.h::error_stats (worst batch rel_l2 and rel_linf)",
+                    "constants": ACCURACY_CONSTANTS,
+                },
+                "config": config,
+                "speedup_stats": speedups,
+            }
+        )
+    write_json(output_path, elements)
+    pinfo(f"Summary written to {output_path}")
+    return {
         "summary": {
+            "format_version": FORMAT_VERSION,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
             "total_ops": len(op_results),
             **counts,
             "total_duration": round(total_duration, 3),
             "speedup_stats": compute_speedup_stats(op_results),
-        },
+        }
     }
-    for op_id, result in op_results.items():
-        op_dir = output_path.parent / op_id
-        op_dir.mkdir(parents=True, exist_ok=True)
-        for phase, details in result.items():
-            write_json(op_dir / f"{phase}_result.json", details)
-    write_json(output_path, summary)
-    pinfo(f"Summary written to {output_path}")
-    return summary
 
 
 INC_COLUMNS = [
@@ -1885,125 +2142,6 @@ def requested_phases_passed(
     )
 
 
-def reanalyze_case(case: dict, case_dir: Path) -> dict:
-    reference_input = load_raw_memmap(
-        case_dir / "input.bin", case["api"], tuple(case["shape"]), case["batch"]
-    )
-    try:
-        case.pop("numpy_sha256", None)
-        case["numpy_dtype"] = str(numpy_reference_dtype(case["api"]))
-        for implementation, field in (
-            ("flagfft", "accuracy"),
-            ("platform", "platform_accuracy"),
-        ):
-            stage = case.get(field, {}).get("capture", {"status": "NotFound"})
-            case[field] = compare_output(
-                case,
-                case_dir,
-                implementation,
-                None,
-                stage,
-                reference_input,
-            )
-            case[field]["data_file"] = case["data_file"]
-    finally:
-        del reference_input
-    write_json(case_dir / "case.json", case)
-    return case
-
-
-def analyze_only(output_dir: Path) -> int:
-    started = time.monotonic()
-    manifest_file = output_dir / "manifest.json"
-    if not manifest_file.is_file():
-        raise ValueError(f"manifest.json not found in {output_dir}")
-    manifest = json.loads(manifest_file.read_text())
-    artifact_policy = manifest["config"].get("artifact_policy", "all")
-    if artifact_policy != "all":
-        raise ValueError(
-            "--analyze-only requires a result generated with --artifacts all; "
-            f"this result used --artifacts {artifact_policy}"
-        )
-    old_summary_file = output_dir / "summary.json"
-    old_summary = (
-        json.loads(old_summary_file.read_text()) if old_summary_file.is_file() else {}
-    )
-    ENV_INFO.update(manifest["env"])
-    ENV_INFO["analysis_numpy"] = np.__version__
-    skipped_op_ids = set(manifest["config"].get("skipped_ops", []))
-    skip_reasons = manifest["config"].get("skip_reasons", {})
-    messages = []
-    for case in manifest["cases"] if not manifest["config"]["performance_only"] else []:
-        case_dir = output_dir / case["op_id"] / case["case_id"]
-        record_file = case_dir / "case.json"
-        if not record_file.is_file():
-            continue
-        record = reanalyze_case(json.loads(record_file.read_text()), case_dir)
-        messages.append(
-            {
-                **case,
-                "phase": "accuracy",
-                "duration": record.get("duration", 0),
-                "result": record["accuracy"],
-                "platform_result": record["platform_accuracy"],
-            }
-        )
-    baselines = {}
-    for message in messages:
-        key = case_name(message, performance=True)
-        baselines[key] = (
-            baselines.get(key, True)
-            and message["platform_result"]["status"] == "Passed"
-        )
-    for case in (
-        manifest["performance_cases"] if not manifest["config"]["accuracy_only"] else []
-    ):
-        path = (
-            output_dir / case["op_id"] / "performance" / case["case_id"] / "result.json"
-        )
-        if not path.is_file():
-            continue
-        result = json.loads(path.read_text())["performance"]
-        result["baseline_valid"] = baselines.get(case["case_id"])
-        messages.append(
-            {
-                **case,
-                "phase": "performance",
-                "result": result,
-                "duration": result.get("duration", 0),
-            }
-        )
-    run_accuracy = not manifest["config"]["performance_only"]
-    run_performance = not manifest["config"]["accuracy_only"]
-    for case in manifest["cases"]:
-        if case["op_id"] in skipped_op_ids and run_accuracy:
-            messages.append(policy_skip_message(case, "accuracy"))
-    for case in manifest["performance_cases"]:
-        if case["op_id"] in skipped_op_ids and run_performance:
-            messages.append(policy_skip_message(case, "performance"))
-    results = aggregate_results(
-        messages,
-        manifest["operators"],
-        manifest["cases"],
-        run_accuracy,
-        run_performance,
-        skipped_op_ids,
-        skip_reasons,
-    )
-    with (output_dir / "reanalyzed.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=INC_COLUMNS)
-        writer.writeheader()
-        writer.writerows(incremental_row(message) for message in messages)
-    config = {
-        **manifest["config"],
-        "analyze_only": True,
-        "analysis_duration": time.monotonic() - started,
-    }
-    duration = old_summary.get("summary", {}).get("total_duration", 0)
-    write_summary(output_dir / "summary.json", results, config, duration)
-    return 0 if requested_phases_passed(results, run_accuracy, run_performance) else 1
-
-
 def handle_interrupt(signum, frame) -> None:
     global INTERRUPTED
     if not INTERRUPTED:
@@ -2077,11 +2215,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Select only the first N correctness cases (partial run)",
     )
     parser.add_argument(
-        "--analyze-only",
-        metavar="RESULT_DIR",
-        help="Recompute NumPy comparisons from saved inputs/outputs",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print expanded cases without GPU execution or result files",
@@ -2094,18 +2227,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
-    parser.add_argument(
-        "--dump-output",
-        action="store_true",
-        help="Native stdout/stderr are always retained",
-    )
-    parser.add_argument(
-        "--artifacts",
-        dest="artifact_policy",
-        choices=ARTIFACT_POLICIES,
-        default="failed",
-        help="Raw correctness artifacts: none, failed, or all (default: failed)",
-    )
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -2125,8 +2246,6 @@ def main(argv: list[str] | None = None) -> int:
     global INTERRUPTED
     args = parse_args(argv)
     init_colors(args.color)
-    if args.analyze_only:
-        return analyze_only(Path(args.analyze_only).resolve())
     build_dir = Path(args.build_dir).resolve()
     backend = detect_backend(build_dir)
     ENV_INFO["backend"] = backend
@@ -2273,9 +2392,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     if output_dir.exists() and any(output_dir.iterdir()):
-        raise ValueError(
-            f"result directory is not empty: {output_dir}; use a new directory or --analyze-only"
-        )
+        raise ValueError(f"result directory is not empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = (
         Path(args.incremental_csv).resolve()
@@ -2302,7 +2419,6 @@ def main(argv: list[str] | None = None) -> int:
         "capture_bin": str(capture_bin),
         "test_matrix": matrix,
         "incremental_csv": str(csv_path),
-        "artifact_policy": args.artifact_policy,
     }
     write_json(
         output_dir / "manifest.json",
@@ -2350,72 +2466,103 @@ def main(argv: list[str] | None = None) -> int:
         0 if args.accuracy_only else len(perf_cases)
     )
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=INC_COLUMNS)
-        writer.writeheader()
-        stream.flush()
-        for gpu_id in gpu_ids:
-            worker = context.Process(
-                target=worker_proc,
-                args=(
-                    gpu_id,
-                    work_queue,
-                    display_queue,
-                    capture_bin,
-                    build_dir,
-                    output_dir,
-                    args,
-                ),
-            )
-            worker.start()
-            WORKER_PROCESSES.append(worker)
-
-        def record(message):
-            messages.append(message)
-            writer.writerow(incremental_row(message))
+    scratch_root = Path(tempfile.mkdtemp(prefix="flagfft-acceptance-"))
+    try:
+        with csv_path.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=INC_COLUMNS)
+            writer.writeheader()
             stream.flush()
-            extra = (
-                f", platform={message['platform_result']['status']}"
-                if "platform_result" in message
-                else ""
-            )
-            pinfo(
-                f"[{len(messages)}/{total}] GPU {message['gpu']} {message['phase']} "
-                f"{message['case_id']}: {message['status']}{extra}"
-            )
+            for gpu_id in gpu_ids:
+                worker = context.Process(
+                    target=worker_proc,
+                    args=(
+                        gpu_id,
+                        work_queue,
+                        display_queue,
+                        capture_bin,
+                        build_dir,
+                        output_dir,
+                        scratch_root,
+                        args,
+                    ),
+                )
+                worker.start()
+                WORKER_PROCESSES.append(worker)
 
-        try:
-            while any(worker.is_alive() for worker in WORKER_PROCESSES):
-                if INTERRUPTED:
+            def record(message):
+                messages.append(message)
+                writer.writerow(incremental_row(message))
+                stream.flush()
+                op_dir = output_dir / message["op_id"]
+                if message["phase"] == "performance":
+                    append_operator_log(
+                        op_dir,
+                        PERF_LOG,
+                        message["case_id"],
+                        "performance",
+                        log_scratch(message),
+                    )
+                else:
+                    append_operator_log(
+                        op_dir,
+                        ACCURACY_LOG,
+                        message["case_id"],
+                        "flagfft",
+                        log_scratch(message),
+                    )
+                    append_operator_log(
+                        op_dir,
+                        ACCURACY_LOG,
+                        message["case_id"],
+                        "platform",
+                        (message.get("platform_result") or {})
+                        .get("capture", {})
+                        .get("log_file"),
+                    )
+                extra = (
+                    f", platform={message['platform_result']['status']}"
+                    if "platform_result" in message
+                    else ""
+                )
+                pinfo(
+                    f"[{len(messages)}/{total}] GPU {message['gpu']} {message['phase']} "
+                    f"{message['case_id']}: {message['status']}{extra}"
+                )
+
+            try:
+                while any(worker.is_alive() for worker in WORKER_PROCESSES):
+                    if INTERRUPTED:
+                        terminate_workers()
+                        break
+                    try:
+                        record(display_queue.get(timeout=0.2))
+                    except queue.Empty:
+                        pass
+                # Process joins flush multiprocessing queue feeder threads first.
+                for worker in WORKER_PROCESSES:
+                    worker.join(timeout=5)
+                while True:
+                    try:
+                        record(display_queue.get(timeout=0.2))
+                    except queue.Empty:
+                        break
+            finally:
+                if any(worker.is_alive() for worker in WORKER_PROCESSES):
                     terminate_workers()
-                    break
-                try:
-                    record(display_queue.get(timeout=0.2))
-                except queue.Empty:
-                    pass
-            # Process joins flush multiprocessing queue feeder threads first.
-            for worker in WORKER_PROCESSES:
-                worker.join(timeout=5)
-            while True:
-                try:
-                    record(display_queue.get(timeout=0.2))
-                except queue.Empty:
-                    break
-        finally:
-            if any(worker.is_alive() for worker in WORKER_PROCESSES):
-                terminate_workers()
-        for case in skipped_cases:
-            if not args.performance_only:
-                message = policy_skip_message(case, "accuracy")
-                messages.append(message)
-                writer.writerow(incremental_row(message))
-                stream.flush()
-        for case in reference_skipped_cases:
-            if not args.accuracy_only:
-                message = policy_skip_message(case, "performance")
-                messages.append(message)
-                writer.writerow(incremental_row(message))
-                stream.flush()
+            for case in skipped_cases:
+                if not args.performance_only:
+                    message = policy_skip_message(case, "accuracy")
+                    messages.append(message)
+                    writer.writerow(incremental_row(message))
+                    stream.flush()
+            for case in reference_skipped_cases:
+                if not args.accuracy_only:
+                    message = policy_skip_message(case, "performance")
+                    messages.append(message)
+                    writer.writerow(incremental_row(message))
+                    stream.flush()
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
     results = aggregate_results(
         messages,
         ops,

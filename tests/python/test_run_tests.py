@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib.util
 import io
 import json
@@ -46,6 +47,88 @@ def operators():
 @pytest.fixture
 def matrix():
     return RUN_TESTS.load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
+
+
+# A CPU stand-in for the native capture.  It speaks the same stdin/stdout
+# protocol as capture.cpp, so the runner's pipe path, plan parsing and
+# comparison are exercised for real without a GPU.
+FAKE_CAPTURE = """#!{python}
+import os
+import sys
+
+import numpy as np
+
+sys.path.insert(0, {tools!r})
+import run_tests
+
+args = dict(arg[2:].split("=", 1) for arg in sys.argv[1:])
+if args.get("input") != "-" or args.get("output-dir") != "-":
+    print("fake capture requires stream mode", file=sys.stderr)
+    sys.exit(2)
+implementation = args["implementation"]
+api, direction = args["api"], args["direction"]
+shape = tuple(int(n) for n in args["shape"].split(","))
+batch = int(args["batch"])
+mode = os.environ.get("FAKE_CAPTURE_PLATFORM_MODE", "ok")
+if implementation == "platform" and mode == "error":
+    print("platform capture failed", file=sys.stderr)
+    sys.exit(1)
+
+in_shape = run_tests.input_shape(api, shape, batch)
+in_dtype = run_tests.raw_dtype(api, is_input=True)
+wanted = run_tests.product(in_shape) * in_dtype.itemsize
+raw = sys.stdin.buffer.read(wanted)
+if len(raw) != wanted:
+    print(f"short input: {{len(raw)}} of {{wanted}}", file=sys.stderr)
+    sys.exit(3)
+value = np.frombuffer(raw, dtype=in_dtype).reshape(in_shape)
+
+hang = os.environ.get("FAKE_CAPTURE_HANG", "")
+hang_direction = os.environ.get("FAKE_CAPTURE_HANG_DIRECTION", "inverse")
+if hang == implementation and direction == hang_direction:
+    pid_file = os.environ.get("FAKE_CAPTURE_PID_FILE")
+    if pid_file:
+        with open(pid_file, "w") as stream:
+            stream.write(str(os.getpid()))
+    import time
+
+    time.sleep(60)
+
+reference = run_tests.numpy_reference(value, api, shape, direction)
+out_dtype = run_tests.raw_dtype(api, is_input=False)
+output = np.ascontiguousarray(reference.astype(out_dtype))
+if implementation == "platform" and mode == "corrupt":
+    output.reshape(-1)[0] += 100
+
+sys.stderr.write(
+    "===== FLAGFFT PLAN BEGIN =====\\n" + {plan!r} + "===== FLAGFFT PLAN END =====\\n"
+)
+sys.stderr.flush()
+sys.stdout.buffer.write(output.tobytes())
+sys.stdout.buffer.flush()
+"""
+
+PLAN = 'LeafPlan(n=256, factors=[4,4,4,4])\nCompiledRawLeaf(kernel="fft")\n'
+
+
+def fake_capture(tmp_path):
+    """Write the CPU capture stand-in and return its executable path."""
+    script = tmp_path / "fake_capture"
+    script.write_text(
+        FAKE_CAPTURE.format(
+            python=sys.executable,
+            tools=str(ROOT / "tools"),
+            plan=PLAN,
+        )
+    )
+    script.chmod(0o755)
+    return script
+
+
+def summary_op_entry(summary, op_id):
+    """Look one operator up in the flat, FlagGems-shaped summary array."""
+    assert isinstance(summary, list), "summary.json must be a flat array"
+    return next(entry for entry in summary if entry["operator"] == op_id)
 
 
 def test_acceptance_has_36_ordered_operators_and_distinct_cases(operators, matrix):
@@ -253,10 +336,12 @@ def test_ix_policy_skip_is_visible_in_incremental_csv(operators):
     assert row["skip_reason"] == case["skip_reason"]
 
 
-def test_artifact_policy_cli_defaults_to_failed():
-    assert RUN_TESTS.parse_args([]).artifact_policy == "failed"
-    assert RUN_TESTS.parse_args(["--artifacts", "none"]).artifact_policy == "none"
-    assert RUN_TESTS.parse_args(["--artifacts", "all"]).artifact_policy == "all"
+@pytest.mark.parametrize("flag", ["--artifacts", "--analyze-only", "--dump-output"])
+def test_removed_result_tree_flags_are_rejected(flag):
+    # Raw arrays and per-case evidence no longer reach the result tree, so the
+    # flags that controlled them are gone rather than silently ignored.
+    with pytest.raises(SystemExit):
+        RUN_TESTS.parse_args([flag, "x"])
 
 
 def test_source_commit_override_is_recorded_for_archive_runs(tmp_path, monkeypatch):
@@ -321,37 +406,14 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
     tmp_path, operators, matrix
 ):
     # A CPU-only capture fixture exercises the real CLI/worker/signal path.
-    capture = tmp_path / "capture"
-    capture.write_text(
-        f"#!{sys.executable}\n"
-        + """
-import os
-import sys
-import time
-from pathlib import Path
-import numpy as np
-args = dict(arg[2:].split('=', 1) for arg in sys.argv[1:])
-directory = Path(args['output-dir'])
-if args['implementation'] == 'flagfft':
-    (directory / 'flagfft_plan.txt').write_text('CPU capture fixture plan\\n')
-    if args['direction'] == 'inverse':
-        (directory / 'native.pid').write_text(str(os.getpid()))
-        time.sleep(30)
-value = np.fromfile(args['input'], dtype=np.complex64)
-value = value.reshape(int(args['batch']), int(args['shape']))
-np.fft.fft(value.astype(np.complex128), axis=1).astype(np.complex64).tofile(
-    directory / (args['implementation'] + '.bin')
-)
-"""
-    )
-    capture.chmod(0o755)
+    capture = fake_capture(tmp_path)
     size = min(matrix[operators[0]["sizes"]])
     cases = RUN_TESTS.expand_test_cases(
         [operators[0]], matrix, shapes={(size,)}, scales="1"
     )
     inverse = next(case for case in cases if case["direction"] == "inverse")
     output = tmp_path / "output"
-    pid_file = output / inverse["op_id"] / inverse["case_id"] / "native.pid"
+    pid_file = tmp_path / "native.pid"
     process = subprocess.Popen(
         [
             sys.executable,
@@ -368,13 +430,19 @@ np.fft.fft(value.astype(np.complex128), axis=1).astype(np.complex64).tofile(
             "--output-dir",
             str(output),
         ],
+        env={
+            **os.environ,
+            "FAKE_CAPTURE_HANG": "flagfft",
+            "FAKE_CAPTURE_HANG_DIRECTION": "inverse",
+            "FAKE_CAPTURE_PID_FILE": str(pid_file),
+        },
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
     )
     try:
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 60
         while (
             not pid_file.is_file()
             and process.poll() is None
@@ -384,17 +452,23 @@ np.fft.fft(value.astype(np.complex128), axis=1).astype(np.complex64).tofile(
         assert pid_file.is_file(), "inverse fixture did not start"
         native_pid = int(pid_file.read_text())
         process.send_signal(signal.SIGINT)
-        stdout, stderr = process.communicate(timeout=15)
+        stdout, stderr = process.communicate(timeout=30)
         assert process.returncode == 130, stdout + stderr
         summary = json.loads((output / "summary.json").read_text())
-        assert summary["config"]["interrupted"]
-        accuracy = summary["result"][operators[0]["id"]]["accuracy"]
+        entry = summary_op_entry(summary, operators[0]["id"])
+        assert entry["config"]["interrupted"]
+        assert entry["accuracy"]["passed"] == 1
+        accuracy = json.loads(
+            (output / operators[0]["id"] / "accuracy_result.json").read_text()
+        )
         assert accuracy["status"] == "Incomplete"
         assert accuracy["passed"] == 1 and accuracy["missing"] == 1
         with pytest.raises(ProcessLookupError):
             os.kill(native_pid, 0)
         assert (output / "manifest.json").is_file()
         assert (output / "incremental.csv").is_file()
+        assert not any(output.rglob("*.bin"))
+        assert not (output / inverse["op_id"] / inverse["case_id"]).exists()
     finally:
         if pid_file.is_file():
             try:
@@ -413,14 +487,16 @@ def test_native_process_timeout_and_error_retain_logs(tmp_path, mode, expected):
         if mode == "timeout"
         else "import sys; print('native failure', file=sys.stderr); sys.exit(1)"
     )
-    stage = RUN_TESTS.run_subprocess(
-        [sys.executable, "-c", script], 1, 0, tmp_path, "native"
+    log_path = tmp_path / "bench.log"
+    stage = RUN_TESTS.run_logged_command(
+        [sys.executable, "-c", script], 1, 0, tmp_path, log_path
     )
     assert stage["status"] == expected
+    assert log_path.is_file()
     if mode == "timeout":
-        assert "started" in (tmp_path / stage["stdout_file"]).read_text()
+        assert "started" in log_path.read_text()
     else:
-        assert "native failure" in stage["error"]
+        assert "native failure" in log_path.read_text()
 
 
 @pytest.mark.parametrize(
@@ -553,36 +629,34 @@ def test_numpy_reference_chunks_batched_transforms(monkeypatch):
         ("d2z", "forward"),
     ],
 )
-def test_streaming_error_stats_matches_materialized_reference(
-    tmp_path, monkeypatch, api, direction
-):
+def test_compare_stream_matches_materialized_reference(monkeypatch, api, direction):
     shape = (8,)
     batch = 3
     value, _ = RUN_TESTS.make_input(api, shape, batch, 1.0)
     reference = RUN_TESTS.numpy_reference(value, api, shape, direction)
-    output_dtype = (
-        RUN_TESTS.complex_dtype(api)
-        if np.iscomplexobj(reference)
-        else RUN_TESTS.real_dtype(api)
-    )
-    input_path = tmp_path / "input.bin"
-    output_path = tmp_path / "flagfft.bin"
-    value.tofile(input_path)
-    reference.astype(output_dtype).tofile(output_path)
+    output_dtype = RUN_TESTS.raw_dtype(api, is_input=False)
+    payload = np.ascontiguousarray(reference.astype(output_dtype)).tobytes()
 
     monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
-    input_memmap = RUN_TESTS.load_raw_memmap(input_path, api, shape, batch)
-    try:
-        streaming = RUN_TESTS.streaming_error_stats(
-            output_path, input_memmap, api, shape, direction, batch
-        )
-    finally:
-        del input_memmap
+    streaming, digest = RUN_TESTS.compare_stream(
+        io.BytesIO(payload), value, api, shape, direction, batch
+    )
     elements = RUN_TESTS.product(RUN_TESTS.output_shape(api, shape, batch)[1:])
     materialized = RUN_TESTS.error_stats(
         reference.astype(output_dtype), reference, elements, batch
     )
     assert streaming == materialized
+    assert digest == hashlib.sha256(payload).hexdigest()
+
+
+def test_compare_stream_reports_a_truncated_pipe(monkeypatch):
+    shape = (8,)
+    value, _ = RUN_TESTS.make_input("c2c", shape, 2, 1.0)
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+    with pytest.raises(ValueError, match="of"):
+        RUN_TESTS.compare_stream(
+            io.BytesIO(b"\0" * 8), value, "c2c", shape, "forward", 2
+        )
 
 
 def test_error_metric_detects_worst_batch_and_nonfinite_values():
@@ -612,80 +686,53 @@ def test_error_stats_reduces_in_bounded_chunks(monkeypatch):
     assert chunked == whole
 
 
-PLAN = 'LeafPlan(n=256, factors=[4,4,4,4])\nCompiledRawLeaf(kernel="fft")\n'
-
-
-def mock_capture(monkeypatch, platform_status="Completed", platform_corrupt=False):
-    def run_subprocess(cmd, timeout, gpu_id, case_dir, implementation):
-        api = next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("--api="))
-        shape = tuple(
-            int(n)
-            for n in next(
-                arg.split("=", 1)[1] for arg in cmd if arg.startswith("--shape=")
-            ).split("x")
-        )
-        batch = int(
-            next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("--batch="))
-        )
-        direction = next(
-            arg.split("=", 1)[1] for arg in cmd if arg.startswith("--direction=")
-        )
-        value = RUN_TESTS.load_raw(case_dir / "input.bin", api, shape, batch)
-        output = RUN_TESTS.numpy_reference(value, api, shape, direction)
-        dtype = (
-            RUN_TESTS.complex_dtype(api)
-            if np.iscomplexobj(output)
-            else RUN_TESTS.real_dtype(api)
-        )
-        output = output.astype(dtype)
-        if implementation == "platform" and platform_corrupt:
-            output.reshape(-1)[0] += 100
-        output.tofile(case_dir / f"{implementation}.bin")
-        if implementation == "flagfft":
-            (case_dir / "flagfft_plan.txt").write_text(PLAN)
-        (case_dir / f"{implementation}.stdout").write_text("capture complete\n")
-        (case_dir / f"{implementation}.stderr").write_text("")
-        return {
-            "status": "Completed" if implementation == "flagfft" else platform_status,
-            "duration": 0.01,
-            "command": cmd,
-        }
-
-    monkeypatch.setattr(RUN_TESTS, "run_subprocess", run_subprocess)
-
-
-def test_accuracy_captures_finish_before_numpy_reference(
-    tmp_path, monkeypatch, operators, matrix
+def test_accuracy_case_streams_without_writing_arrays_into_the_result_tree(
+    tmp_path, operators, matrix
 ):
     case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
-    events = []
-    original_reference_chunks = RUN_TESTS.numpy_reference_chunks
-
-    def delayed_reference_chunks(value, api, shape, direction):
-        events.append("reference")
-        yield from original_reference_chunks(value, api, shape, direction)
-
-    def capture(cmd, timeout, gpu_id, case_dir, implementation):
-        events.append(f"capture:{implementation}")
-        value = RUN_TESTS.load_raw(
-            case_dir / "input.bin", case["api"], tuple(case["shape"]), case["batch"]
-        )
-        np.zeros_like(value).tofile(case_dir / f"{implementation}.bin")
-        if implementation == "flagfft":
-            (case_dir / "flagfft_plan.txt").write_text(PLAN)
-        return {"status": "Completed", "duration": 0.01, "command": cmd}
-
-    monkeypatch.setattr(RUN_TESTS, "numpy_reference_chunks", delayed_reference_chunks)
-    monkeypatch.setattr(RUN_TESTS, "run_subprocess", capture)
-
+    output = tmp_path / "output"
+    scratch = tmp_path / "scratch"
     record = RUN_TESTS.run_accuracy_case(
-        case, tmp_path / "capture", tmp_path, 0, 10, "none"
+        case, fake_capture(tmp_path), output, 0, 60, scratch
     )
+    assert record["accuracy"]["status"] == "Passed"
+    assert record["platform_accuracy"]["status"] == "Passed"
+    assert record["accuracy"]["plan"] == PLAN.strip()
+    assert record["accuracy"]["metric"]["passed"]
+    # The streamed bytes are hashed as they arrive, so the digest still covers
+    # the whole output even though no output file exists.
+    assert len(record["accuracy"]["output_sha256"]) == 64
+    op_dir = output / case["op_id"]
+    assert list(op_dir.iterdir()) == []
+    assert not (op_dir / case["case_id"]).exists()
+    assert not any(path.suffix in (".bin", ".npy") for path in output.rglob("*"))
+    # The transient input is deleted as soon as the case finishes.
+    assert not any(scratch.rglob("input.bin"))
 
-    assert events[:2] == ["capture:flagfft", "capture:platform"]
-    assert events[2:] == ["reference", "reference"]
-    assert record["capture_stages"]["flagfft"]["status"] == "Completed"
-    assert record["capture_stages"]["platform"]["status"] == "Completed"
+
+def test_operator_logs_collect_every_case(tmp_path, operators, matrix):
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    scratch = tmp_path / "scratch"
+    record = RUN_TESTS.run_accuracy_case(
+        case, fake_capture(tmp_path), tmp_path / "output", 0, 60, scratch
+    )
+    message = accuracy_message(case, record)
+    op_dir = tmp_path / "output" / case["op_id"]
+    for field, label in (("result", "flagfft"), ("platform_result", "platform")):
+        RUN_TESTS.append_operator_log(
+            op_dir,
+            RUN_TESTS.ACCURACY_LOG,
+            case["case_id"],
+            label,
+            (message[field].get("capture") or {}).get("log_file"),
+        )
+    text = (op_dir / RUN_TESTS.ACCURACY_LOG).read_text()
+    assert f"===== {case['case_id']} flagfft =====" in text
+    assert f"===== {case['case_id']} platform =====" in text
+    assert RUN_TESTS.PLAN_BEGIN in text and RUN_TESTS.PLAN_END in text
+    assert PLAN.strip() in text
+    # The scratch copy is consumed, so nothing is left outside the result tree.
+    assert not any(scratch.rglob("*.log"))
 
 
 def accuracy_message(case, record):
@@ -699,102 +746,144 @@ def accuracy_message(case, record):
 
 
 @pytest.mark.parametrize(
-    "platform_status,corrupt",
-    [("Timeout", False), ("Error", False), ("Completed", True)],
+    "hang,platform_mode,platform_status",
+    [(True, "ok", "Timeout"), (False, "error", "Error"), (False, "corrupt", "Failed")],
 )
 def test_platform_failures_do_not_fail_flagfft_acceptance(
-    tmp_path,
-    monkeypatch,
-    operators,
-    matrix,
-    platform_status,
-    corrupt,
+    tmp_path, monkeypatch, operators, matrix, hang, platform_mode, platform_status
 ):
     case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
-    mock_capture(monkeypatch, platform_status, corrupt)
-    record = RUN_TESTS.run_accuracy_case(case, tmp_path / "capture", tmp_path, 0, 10)
+    monkeypatch.setenv("FAKE_CAPTURE_PLATFORM_MODE", platform_mode)
+    if hang:
+        monkeypatch.setenv("FAKE_CAPTURE_HANG", "platform")
+        monkeypatch.setenv("FAKE_CAPTURE_HANG_DIRECTION", case["direction"])
+    record = RUN_TESTS.run_accuracy_case(
+        case, fake_capture(tmp_path), tmp_path / "output", 0, 5, tmp_path / "scratch"
+    )
     assert record["accuracy"]["status"] == "Passed"
-    assert record["accuracy"]["plan"] == PLAN
-    assert record["platform_accuracy"]["status"] != "Passed"
+    assert record["accuracy"]["plan"] == PLAN.strip()
+    assert record["platform_accuracy"]["status"] == platform_status
     results = RUN_TESTS.aggregate_results(
-        [accuracy_message(case, record)],
-        [operators[0]],
-        [case],
-        True,
-        False,
+        [accuracy_message(case, record)], [operators[0]], [case], True, False
     )
     assert results[case["op_id"]]["accuracy"]["status"] == "Passed"
     assert results[case["op_id"]]["platform_accuracy"]["status"] == "Failed"
     assert RUN_TESTS.requested_phases_passed(results, True, False)
 
 
-def test_case_artifacts_are_not_overwritten_for_multiple_scales(
-    tmp_path, monkeypatch, operators, matrix
-):
-    cases = RUN_TESTS.expand_test_cases([operators[0]], matrix, scales="1,2")[:1]
-    case1 = cases[0]
+def test_both_scales_survive_in_the_operator_result(tmp_path, operators, matrix):
+    case1 = RUN_TESTS.expand_test_cases([operators[0]], matrix, scales="1,2")[0]
     case2 = {**case1, "scale": 2.0}
     case2["case_id"] = RUN_TESTS.case_name(case2)
-    mock_capture(monkeypatch)
-    first = RUN_TESTS.run_accuracy_case(
-        case1, tmp_path / "capture", tmp_path, 0, 10, "all"
+    assert case1["case_id"] != case2["case_id"]
+    capture = fake_capture(tmp_path)
+    output = tmp_path / "output"
+    records = [
+        RUN_TESTS.run_accuracy_case(case, capture, output, 0, 60, tmp_path / "scratch")
+        for case in (case1, case2)
+    ]
+    assert records[0]["input_sha256"] != records[1]["input_sha256"]
+    results = RUN_TESTS.aggregate_results(
+        [
+            accuracy_message(case, record)
+            for case, record in zip((case1, case2), records)
+        ],
+        [operators[0]],
+        [case1, case2],
+        True,
+        False,
     )
-    second = RUN_TESTS.run_accuracy_case(
-        case2, tmp_path / "capture", tmp_path, 0, 10, "all"
+    block = results[operators[0]["id"]]["accuracy"]
+    assert set(block["cases"]) == {case1["case_id"], case2["case_id"]}
+    assert block["status"] == "Passed" and block["passed"] == 2
+    RUN_TESTS.write_summary(output / "summary.json", results, {}, 0.0)
+    saved = json.loads(
+        (output / operators[0]["id"] / "accuracy_result.json").read_text()
     )
-    assert first["data_file"] != second["data_file"]
-    assert first["input_sha256"] != second["input_sha256"]
-    for record in (first, second):
-        saved = json.loads((tmp_path / record["data_file"]).read_text())
-        assert saved["scale"] == record["scale"]
-        assert saved["accuracy"]["plan"] == PLAN
+    assert {entry["scale"] for entry in saved["cases"].values()} == {1.0, 2.0}
+    assert all(entry["plan"] == PLAN.strip() for entry in saved["cases"].values())
 
 
-def test_none_artifact_policy_keeps_only_results_and_logs(
-    tmp_path, monkeypatch, operators, matrix
-):
+def test_flaggems_status_follows_the_platform_rule():
+    def shaped(**overrides):
+        block = {
+            "passed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "errors": 0,
+            "missing": 0,
+            "data_file": "op/accuracy_result.json",
+            "cases": {},
+        }
+        block.update(overrides)
+        return RUN_TESTS.flaggems_accuracy_block(block, Path("/run/op/accuracy.log"))
+
+    assert shaped(passed=3)["status"] == "PASS"
+    assert shaped(passed=2, failed=1)["status"] == "FAIL"
+    # A pure execution failure has no cases to count, which the platform reads
+    # as a failure rather than as a vacuous pass.
+    assert shaped(errors=1)["status"] == "FAIL"
+    assert shaped(passed=0, skipped=2)["status"] == "FAIL"
+    assert shaped(passed=1, skipped=1)["status"] == "PASS"
+    assert shaped(passed=1, missing=2)["errors"] == 2
+    for overrides in ({"passed": 3}, {"passed": 2, "failed": 1}, {"errors": 1}):
+        entry = shaped(**overrides)
+        assert entry["total"] == entry["passed"] + entry["failed"] + entry["skipped"]
+        assert entry["exit_code"] == (0 if entry["status"] == "PASS" else 1)
+
+
+def test_summary_json_is_a_flat_flaggems_array(tmp_path, operators, matrix):
     case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
-    mock_capture(monkeypatch)
     record = RUN_TESTS.run_accuracy_case(
-        case, tmp_path / "capture", tmp_path, 0, 10, "none"
+        case, fake_capture(tmp_path), tmp_path, 0, 60, tmp_path / "scratch"
     )
-    case_dir = tmp_path / case["op_id"] / case["case_id"]
-    assert record["accuracy"]["status"] == "Passed"
-    assert record["raw_artifacts_retained"] is False
-    assert "numpy_sha256" not in record
-    assert not any(
-        (case_dir / filename).exists() for filename in RUN_TESTS.RAW_ARTIFACT_FILENAMES
+    results = RUN_TESTS.aggregate_results(
+        [accuracy_message(case, record)], [operators[0]], [case], True, False
     )
-    assert (case_dir / "case.json").is_file()
-    assert (case_dir / "flagfft.stdout").is_file()
+    RUN_TESTS.write_summary(tmp_path / "summary.json", results, {"ops": []}, 1.5)
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    entry = summary_op_entry(summary, operators[0]["id"])
+    assert entry["accuracy"]["status"] == "PASS"
+    assert entry["accuracy"]["passed"] == 1
+    assert Path(entry["accuracy"]["log_path"]).name == RUN_TESTS.ACCURACY_LOG
+    assert Path(entry["perf_log_path"]).name == RUN_TESTS.PERF_LOG
+    assert entry["format_version"] == RUN_TESTS.FORMAT_VERSION
+    assert entry["performance"] == []
+    # The per-case detail lives in the operator file, not in the platform view.
+    assert "result" not in entry and "cases" not in entry["accuracy"]
 
 
-def test_analyze_only_requires_all_artifacts(tmp_path):
-    RUN_TESTS.write_json(
-        tmp_path / "manifest.json",
-        {"config": {"artifact_policy": "failed"}},
-    )
-    with pytest.raises(ValueError, match="--artifacts all"):
-        RUN_TESTS.analyze_only(tmp_path)
+def test_performance_rows_put_speedup_in_the_complex_column():
+    block = {
+        "cases": {
+            "op_n256": {"case_id": "op_n256", "speedup": 3.4123},
+            "op_n512": {"case_id": "op_n512", "speedup": 1.5},
+        }
+    }
+    rows = RUN_TESTS.flaggems_performance_rows(block, 2.2627)
+    assert [row["func_name"] for row in rows] == ["op_n256", "op_n512"]
+    assert rows[0]["cfloat"] == "3.4123"
+    for row in rows:
+        assert row["avg_speedup"] == "2.2627"
+        assert row["float32"] == "" and row["cfloat"] != ""
 
 
-def test_failed_artifact_policy_retains_failed_case_without_npy(
-    tmp_path, monkeypatch, operators, matrix
-):
-    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
-    mock_capture(monkeypatch, platform_corrupt=True)
-    record = RUN_TESTS.run_accuracy_case(
-        case, tmp_path / "capture", tmp_path, 0, 10, "failed"
-    )
-    case_dir = tmp_path / case["op_id"] / case["case_id"]
-    assert record["accuracy"]["status"] == "Passed"
-    assert record["platform_accuracy"]["status"] == "Failed"
-    assert record["raw_artifacts_retained"] is True
-    assert (case_dir / "input.bin").is_file()
-    assert (case_dir / "flagfft.bin").is_file()
-    assert (case_dir / "platform.bin").is_file()
-    assert not (case_dir / "input.npy").exists()
-    assert not (case_dir / "numpy.npy").exists()
+def test_operator_speedup_stats_is_the_geometric_mean():
+    block = {
+        "cases": {
+            "a": {"status": "Passed", "speedup": 2.0, "baseline_valid": True},
+            "b": {"status": "Passed", "speedup": 8.0, "baseline_valid": True},
+            "c": {"status": "Failed", "speedup": 100.0, "baseline_valid": True},
+            "d": {"status": "Passed", "speedup": 100.0, "baseline_valid": False},
+        }
+    }
+    assert RUN_TESTS.operator_speedup_stats(block) == {
+        "count": 2,
+        "geometric_mean_speedup": 4.0,
+        "min_speedup": 2.0,
+        "max_speedup": 8.0,
+    }
+    assert RUN_TESTS.operator_speedup_stats({"cases": {}}) == {"count": 0}
 
 
 def test_missing_case_prevents_operator_pass(operators, matrix):
@@ -912,46 +1001,6 @@ def test_speedup_summary_excludes_incorrect_baseline():
         }
     }
     assert RUN_TESTS.compute_speedup_stats(result)["geometric_mean_speedup"] == 2.0
-
-
-def test_reanalysis_uses_saved_data_without_gpu_execution(
-    tmp_path, monkeypatch, operators, matrix
-):
-    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
-    mock_capture(monkeypatch)
-    record = RUN_TESTS.run_accuracy_case(
-        case, tmp_path / "capture", tmp_path, 0, 10, "all"
-    )
-    RUN_TESTS.write_json(
-        tmp_path / "manifest.json",
-        {
-            "operators": [operators[0]],
-            "cases": [case],
-            "performance_cases": RUN_TESTS.performance_cases([case]),
-            "env": {},
-            "config": {
-                "accuracy_only": True,
-                "performance_only": False,
-                "artifact_policy": "all",
-            },
-        },
-    )
-    case_dir = tmp_path / case["op_id"] / case["case_id"]
-    output = np.fromfile(case_dir / "flagfft.bin", dtype=np.complex64)
-    output[0] += 100
-    output.tofile(case_dir / "flagfft.bin")
-    monkeypatch.setattr(
-        RUN_TESTS,
-        "run_subprocess",
-        lambda *args: pytest.fail("GPU execution in analyze-only"),
-    )
-    assert RUN_TESTS.analyze_only(tmp_path) == 1
-    summary = json.loads((tmp_path / "summary.json").read_text())
-    result = summary["result"][case["op_id"]]
-    assert result["accuracy"]["status"] == "Failed"
-    assert result["platform_accuracy"]["status"] == "Passed"
-    assert result["accuracy"]["cases"][case["case_id"]]["plan"] == PLAN
-    assert (tmp_path / record["data_file"]).is_file()
 
 
 def test_speedup_summary_excludes_incorrect_flagfft_output():
