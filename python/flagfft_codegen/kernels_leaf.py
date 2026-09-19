@@ -27,6 +27,7 @@ from .kernels_common import (
     LeafPlan,
     _is_double_dtype,
     _maca_backend_active,
+    _maca_knob,
     _non_nvidia_backend_active,
     _tl_real_dtype,
     _use_single_smem_buffer,
@@ -1964,7 +1965,7 @@ def _build_leaf_kernel_source_for_io(
     if portable_exchange and len(factors) > 1:
         # Avoid the unsupported warp-shuffle lowering: use ordinary gather
         # from tensors larger than one 64-thread warp, without tl.join.
-        lane_block = max(128, lane_block)
+        lane_block = max(int(_maca_knob("LANE_MIN", "128")), lane_block)
     contiguous_modes = {
         "contiguous",
         "strided",

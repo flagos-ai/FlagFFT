@@ -228,6 +228,27 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
     return tuple(stage_lanes)
 
 
+def _maca_knob(name: str, default: str = "") -> str:
+    """Read a MACA code-generation override (``FLAGFFT_MACA_<NAME>``).
+
+    Every caller's default reproduces the shipped constant, so an environment
+    without these variables keeps today's behaviour exactly.
+    """
+    return os.environ.get(f"FLAGFFT_MACA_{name}", default).strip().lower()
+
+
+def _positive_knob(name: str, value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise ValueError(
+            f"FLAGFFT_MACA_{name} must be an integer, got {value!r}"
+        ) from None
+    if parsed < 1:
+        raise ValueError(f"FLAGFFT_MACA_{name} must be positive, got {parsed}")
+    return parsed
+
+
 def _floor_power_of_two(value: int) -> int:
     power = 1
     while power * 2 <= value:
@@ -264,15 +285,7 @@ def _register_bounded_batch_pack(plan: LeafPlan, pack: int, native_pack: int) ->
     return pack
 
 
-def contiguous_batch_pack_for(plan: LeafPlan) -> int:
-    if _maca_backend_active():
-        lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
-        if len(emitted_leaf_factors(plan)) > 1:
-            return 1
-        return max(
-            1,
-            min(32 if len(plan.factors) == 1 else 4, 64 // lane_block),
-        )
+def _profile_batch_pack_for(plan: LeafPlan) -> int:
     profile = current_profile()
     lane_block = lane_block_for(plan.lanes)
 
@@ -292,6 +305,23 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     return _register_bounded_batch_pack(
         plan, pack_for(profile.leaf_target_threads), pack_for(32)
     )
+
+
+def contiguous_batch_pack_for(plan: LeafPlan) -> int:
+    if _maca_backend_active():
+        override = _maca_knob("BATCH_PACK")
+        if override == "auto":
+            return _profile_batch_pack_for(plan)
+        if override:
+            return _positive_knob("BATCH_PACK", override)
+        lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
+        if len(emitted_leaf_factors(plan)) > 1:
+            return 1
+        return max(
+            1,
+            min(32 if len(plan.factors) == 1 else 4, 64 // lane_block),
+        )
+    return _profile_batch_pack_for(plan)
 
 
 def _mthreads_small_mixed_leaf(plan: LeafPlan) -> bool:
@@ -338,6 +368,21 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     return _floor_power_of_two(max(1, min(max_pack, thread_pack, smem_pack)))
 
 
+def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
+    """Inner transforms packed per four-step row/column block on MACA.
+
+    The bring-up pinned this to one before any C550 measurement.  The override
+    lets the profile-aware derivation (``auto``) and explicit packs be compared
+    against that baseline without rebuilding.
+    """
+    override = _maca_knob("INNER_PACK", "1")
+    if override in {"", "1"}:
+        return 1
+    if override == "auto":
+        return _four_step_resource_inner_pack_for(plan) if plan is not None else 1
+    return _positive_knob("INNER_PACK", override)
+
+
 def _four_step_col_inner_pack_for(
     n1: int,
     n2: int,
@@ -345,7 +390,7 @@ def _four_step_col_inner_pack_for(
     plan: LeafPlan | None = None,
 ) -> int:
     if _maca_backend_active():
-        return 1
+        return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
     if plan is not None and current_profile().policy != "legacy":
@@ -373,7 +418,7 @@ def _four_step_row_inner_pack_for(
     plan: LeafPlan | None = None,
 ) -> int:
     if _maca_backend_active():
-        return 1
+        return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
     if plan is not None and current_profile().policy != "legacy":
@@ -649,6 +694,8 @@ __all__ = [
     "_is_double_dtype",
     "_ix_backend_active",
     "_maca_backend_active",
+    "_maca_four_step_inner_pack",
+    "_maca_knob",
     "_mthreads_backend_active",
     "_next_power_of_two",
     "_non_nvidia_backend_active",
