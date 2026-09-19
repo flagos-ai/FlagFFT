@@ -899,7 +899,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
   return compile_kernel(key);
 }
 
-std::shared_ptr<CompiledRaw3DNode> TritonCompiler::compile_raw_3d_node(
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
@@ -928,6 +928,37 @@ std::shared_ptr<CompiledRaw3DNode> TritonCompiler::compile_raw_3d_node(
   n0_request.input_strides = {n0, 1};
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * n2;
+
+  // Strided fast path: when both non-contiguous axes are plain leaves, run
+  // them directly on the natural layout with their own stride and skip the
+  // three full-cube permutations.  The strided passes coalesce far worse
+  // than a contiguous one (the leaf spreads its lanes along the FFT axis,
+  // which is exactly the strided direction), so this only pays off while
+  // the cube still fits in L2 and the miss cost is absorbed: measured
+  // faster up to 64^3 and slower from 96^3 on.  Above that the permutations
+  // win and the caller falls through to the RTRT path.
+  constexpr int64_t kStridedMaxElements = 64 * 64 * 64;
+  auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
+  auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
+  if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements) {
+    std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
+    std::shared_ptr<CompiledRawNode> n1_fft =
+        compile_raw_strided_leaf(*n1_leaf, request, /*outer_stride=*/n2);
+    std::shared_ptr<CompiledRawNode> n0_fft =
+        compile_raw_strided_leaf(*n0_leaf, request, /*outer_stride=*/n1 * n2);
+
+    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+
+    return std::make_shared<CompiledRaw3DStridedNode>(n0,
+                                                      n1,
+                                                      n2,
+                                                      std::move(n2_fft),
+                                                      std::move(n1_fft),
+                                                      std::move(n0_fft),
+                                                      std::move(temp1),
+                                                      std::move(temp2));
+  }
 
   std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
   std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);

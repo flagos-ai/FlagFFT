@@ -2380,6 +2380,61 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DStridedNode::CompiledRaw3DStridedNode(int64_t n0,
+                                                   int64_t n1,
+                                                   int64_t n2,
+                                                   std::shared_ptr<CompiledRawNode> n2_fft,
+                                                   std::shared_ptr<CompiledRawNode> n1_fft,
+                                                   std::shared_ptr<CompiledRawNode> n0_fft,
+                                                   DeviceAllocation temp1,
+                                                   DeviceAllocation temp2)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      n2_fft(std::move(n2_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw3DStridedNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DStrided(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
+      << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
+      << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DStridedNode::execute(adaptor::DevicePtr input,
+                                                adaptor::DevicePtr output,
+                                                const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+
+    // The cube stays in its natural (n0,n1,n2) layout throughout; each
+    // non-contiguous axis is transformed in place with its own stride.
+    RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
+    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * n2};
+    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * n2};
+
+    flagfftResult result = n2_fft->execute(input, temp1.get(), n2_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+    result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+    return n0_fft->execute(temp2.get(), output, n0_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D strided execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DR2CNode::CompiledRaw3DR2CNode(int64_t n0,
                                            int64_t n1,
                                            int64_t n2,
