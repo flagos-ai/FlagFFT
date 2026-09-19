@@ -492,13 +492,23 @@ def _emit_portable_exchange(
     slot_stride: int,
     pack: int,
     natural_order: bool = False,
+    register_lane_stride: int = 1,
+    register_slot_stride: int | None = None,
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
     Each butterfly runs once; padded lanes/digits never become FFT state.
     The compiler supplies any shared-memory layout conversions, avoiding
     TLE local pointers in the MetaX plugin.
+
+    ``register_lane_stride``/``register_slot_stride`` describe how the register
+    tensors that hold the codelet outputs are laid out.  Contiguous batch
+    packing strides the slot by the lane block, while four-step inner packing
+    interleaves lane and slot, so the gather index has to follow whichever
+    layout produced those tensors.
     """
+    if register_slot_stride is None:
+        register_slot_stride = lane_block
     n = math.prod(factors)
     radix = factors[stage]
     lines = [
@@ -538,7 +548,10 @@ def _emit_portable_exchange(
             ]
             stride *= factors[axis]
         lines.append(f"    exchange_codelet += exchange_next_digit * {stride}")
-    lines.append(f"    exchange_src = exchange_codelet + exchange_slot * {lane_block}")
+    lines.append(
+        f"    exchange_src = exchange_codelet * {register_lane_stride} + "
+        f"exchange_slot * {register_slot_stride}"
+    )
     lines.append("    exchange_src = tl.where(exchange_valid, exchange_src, 0)")
     for component in ("r", "i"):
         lines.append(
@@ -566,6 +579,7 @@ def _emit_stage_block(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
     smem_pack: int = 1,
+    inner_pack: int = 1,
     fuse_twiddle_into_row: bool = False,
     single_smem_buffer: bool = False,
     direction: Literal["forward", "inverse"] = "forward",
@@ -1407,6 +1421,8 @@ def _emit_stage_block(
                     exchange_slot_stride,
                     smem_pack,
                     natural_order=is_last,
+                    register_lane_stride=inner_pack if inner_pack > 1 else 1,
+                    register_slot_stride=1 if inner_pack > 1 else lane_block,
                 )
             )
     elif not is_last:
@@ -2208,6 +2224,7 @@ def _build_leaf_kernel_source_for_io(
                 four_step_n1=four_step_n1,
                 four_step_n2=four_step_n2,
                 smem_pack=smem_pack,
+                inner_pack=inner_pack,
                 fuse_twiddle_into_row=fuse_twiddle_into_row,
                 single_smem_buffer=single_smem_buffer,
                 direction=plan.direction,
@@ -2236,6 +2253,7 @@ def _build_leaf_kernel_source_for_io(
                     four_step_n1=four_step_n1,
                     four_step_n2=four_step_n2,
                     smem_pack=smem_pack,
+                    inner_pack=inner_pack,
                     fuse_twiddle_into_row=fuse_twiddle_into_row,
                     single_smem_buffer=single_smem_buffer,
                     direction=plan.direction,
