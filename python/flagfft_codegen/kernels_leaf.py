@@ -518,7 +518,7 @@ def _portable_exchange_lane_floor(smem_pack: int) -> int:
     so packing raises it without spending lanes.  ``auto`` derives the floor
     from the pack; a number pins it, and 128 reproduces the bring-up constant.
     """
-    override = _maca_knob("LANE_MIN", "128")
+    override = _maca_knob("LANE_MIN", "auto")
     if override == "auto":
         return max(1, _PORTABLE_EXCHANGE_MIN_ELEMENTS // max(smem_pack, 1))
     return int(override)

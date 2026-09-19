@@ -51,6 +51,9 @@ _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 # The MetaX plugin cannot lower maca.shfl.sync, so the portable exchange must
 # gather from a tensor wider than one 64-thread warp.
 _PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
+# Packing past four was measured slower on the 64-point four-step leaf: the
+# wider gather and its register pressure outweigh the extra busy lanes.
+_PORTABLE_EXCHANGE_MAX_PACK = 4
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
     {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}
 )
@@ -318,11 +321,11 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
     block back up to 128, which is what starved the contiguous leaves behind
     2D, 3D and the small batch shapes.
     """
-    if _maca_knob("LANE_MIN", "128") != "auto":
+    if _maca_knob("LANE_MIN", "auto") != "auto":
         return pack
     active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
     needed = max(1, _PORTABLE_EXCHANGE_MIN_ELEMENTS // lane_block_for(active_lanes))
-    return max(pack, _next_power_of_two(needed))
+    return max(pack, min(_PORTABLE_EXCHANGE_MAX_PACK, _next_power_of_two(needed)))
 
 
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
@@ -715,6 +718,7 @@ __all__ = [
     "_floor_power_of_two",
     "_four_step_resource_inner_pack_for",
     "_is_double_dtype",
+    "_PORTABLE_EXCHANGE_MAX_PACK",
     "_PORTABLE_EXCHANGE_MIN_ELEMENTS",
     "_ix_backend_active",
     "_maca_backend_active",
