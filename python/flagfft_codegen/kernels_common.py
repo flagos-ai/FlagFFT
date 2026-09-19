@@ -48,6 +48,9 @@ _COOPERATIVE_STAGE_MAX_BASE_LANES = 32
 _COOPERATIVE_STAGE_MAX_LANES = 128
 _LEAF_PACK_TARGET_THREADS = 32
 _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
+# The MetaX plugin cannot lower maca.shfl.sync, so the portable exchange must
+# gather from a tensor wider than one 64-thread warp.
+_PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
     {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}
 )
@@ -307,6 +310,21 @@ def _profile_batch_pack_for(plan: LeafPlan) -> int:
     )
 
 
+def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
+    """Raise the pack so the portable exchange tensor still spans a warp.
+
+    ``vector_block = lane_block * pack`` is what the gather reads, so packing
+    widens it without idling lanes.  Leaving the pack at one forces the lane
+    block back up to 128, which is what starved the contiguous leaves behind
+    2D, 3D and the small batch shapes.
+    """
+    if _maca_knob("LANE_MIN", "128") != "auto":
+        return pack
+    active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
+    needed = max(1, _PORTABLE_EXCHANGE_MIN_ELEMENTS // lane_block_for(active_lanes))
+    return max(pack, _next_power_of_two(needed))
+
+
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     if _maca_backend_active():
         override = _maca_knob("BATCH_PACK")
@@ -316,7 +334,9 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
             return _positive_knob("BATCH_PACK", override)
         lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
         if len(emitted_leaf_factors(plan)) > 1:
-            return 1
+            return _portable_exchange_pack_floor(plan, 1)
+        # A single codelet runs no exchange, so the tensor-width rule does not
+        # apply and the existing lane-block cap stays.
         return max(
             1,
             min(32 if len(plan.factors) == 1 else 4, 64 // lane_block),
@@ -692,6 +712,7 @@ __all__ = [
     "_floor_power_of_two",
     "_four_step_resource_inner_pack_for",
     "_is_double_dtype",
+    "_PORTABLE_EXCHANGE_MIN_ELEMENTS",
     "_ix_backend_active",
     "_maca_backend_active",
     "_maca_four_step_inner_pack",
@@ -700,6 +721,7 @@ __all__ = [
     "_next_power_of_two",
     "_non_nvidia_backend_active",
     "_npu_backend_active",
+    "_portable_exchange_pack_floor",
     "_ppu_backend_active",
     "_real_element_bytes",
     "_tl_real_dtype",

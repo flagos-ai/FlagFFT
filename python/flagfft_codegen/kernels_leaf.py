@@ -21,6 +21,7 @@ from typing import Literal
 
 from .kernels_common import (
     _NATURAL_ORDER_CODELET_RADICES,
+    _PORTABLE_EXCHANGE_MIN_ELEMENTS,
     _THREAD_LOCAL_MIXED_RADICES,
     _TLE_SMEM_SWIZZLE_SHIFT,
     LeafIoMode,
@@ -508,9 +509,6 @@ def _emit_exchange_store(
         f"{indent}tl.store(tle.gpu.local_ptr({buffer}_r, ({index},)), {real}, mask=lane_mask)",
         f"{indent}tl.store(tle.gpu.local_ptr({buffer}_i, ({index},)), {imag}, mask=lane_mask)",
     ]
-
-
-_PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
 
 
 def _portable_exchange_lane_floor(smem_pack: int) -> int:
