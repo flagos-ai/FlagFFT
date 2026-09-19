@@ -80,7 +80,9 @@ if(TRITON_JIT_USE_EXTERNAL_JSON)
     # its subdirectory. Re-find it here for FlagFFT targets. When JSON is
     # provided through FetchContent, the normal target is already global and
     # must not be looked up as an installed package.
-    find_package(nlohmann_json 3.11.3 REQUIRED)
+    # Only basic JSON (de)serialization is used, so 3.11.2 (the version
+    # shipped by openEuler 24.03 LTS) works, no need to require 3.11.3.
+    find_package(nlohmann_json 3.11.2 REQUIRED)
 endif()
 
 set(FLAGFFT_CORE_SOURCES
