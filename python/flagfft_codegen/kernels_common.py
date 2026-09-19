@@ -55,10 +55,7 @@ _PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
 # MetaX's 64 KiB of shared memory per SM: measured at eight the kernel drops to
 # a tenth of its bandwidth, and at sixteen it fails to compile.
 _PORTABLE_EXCHANGE_MAX_PACK = 4
-# Derived packs stop here.  Measured on the 1D ct four-step leaves, two beats
-# four on every batch shape (1.28x at n=8192, 1.59x at n=46189) because the
-# wider gather costs more than the extra inner columns buy back.
-_PORTABLE_EXCHANGE_PREFERRED_PACK = 2
+
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
     {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}
 )
@@ -411,18 +408,17 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
         return min(_positive_knob("INNER_PACK", override), _PORTABLE_EXCHANGE_MAX_PACK)
     if plan is None:
         return 1
-    pack = (
-        _four_step_resource_inner_pack_for(plan)
-        if override == "auto"
-        else 1
-    )
-    # The exchange tensor is O(lane_block * pack) and MetaX has 64 KiB of
-    # shared memory per SM: measured at 8 the kernel collapses to a tenth of
-    # its bandwidth and at 16 it fails to compile ("memory size or pointer
-    # value too large to fit in 32 bit").  Clamp so no setting can reach it.
-    return min(
-        _portable_exchange_pack_floor(plan, pack), _PORTABLE_EXCHANGE_PREFERRED_PACK
-    )
+    # Derived packs start at the ceiling.  "Just wide enough to span a warp"
+    # is not the right target: on the 390/476-point leaves the lane block is
+    # already 128, so that rule leaves the pack at one and measured 5x slower
+    # than four (27.9 ms against 5.6 ms at n=185640).  The exchange tensor is
+    # O(lane_block * pack) and MetaX has 64 KiB of shared memory per SM --
+    # measured at eight the kernel collapses to a tenth of its bandwidth and at
+    # sixteen it fails to compile -- so the ceiling is what bounds it.
+    pack = _PORTABLE_EXCHANGE_MAX_PACK
+    if override == "auto":
+        pack = min(pack, _four_step_resource_inner_pack_for(plan))
+    return min(_portable_exchange_pack_floor(plan, pack), _PORTABLE_EXCHANGE_MAX_PACK)
 
 
 def _four_step_col_inner_pack_for(
@@ -736,7 +732,6 @@ __all__ = [
     "_is_double_dtype",
     "_PORTABLE_EXCHANGE_MAX_PACK",
     "_PORTABLE_EXCHANGE_MIN_ELEMENTS",
-    "_PORTABLE_EXCHANGE_PREFERRED_PACK",
     "_ix_backend_active",
     "_maca_backend_active",
     "_maca_four_step_inner_pack",
