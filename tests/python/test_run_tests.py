@@ -20,6 +20,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -727,8 +728,8 @@ def test_operator_logs_collect_every_case(tmp_path, operators, matrix):
             (message[field].get("capture") or {}).get("log_file"),
         )
     text = (op_dir / RUN_TESTS.ACCURACY_LOG).read_text()
-    assert f"===== {case['case_id']} flagfft =====" in text
-    assert f"===== {case['case_id']} platform =====" in text
+    assert f"----- {case['case_id']} flagfft -----" in text
+    assert f"----- {case['case_id']} platform -----" in text
     assert RUN_TESTS.PLAN_BEGIN in text and RUN_TESTS.PLAN_END in text
     assert PLAN.strip() in text
     # The scratch copy is consumed, so nothing is left outside the result tree.
@@ -851,6 +852,49 @@ def test_summary_json_is_a_flat_flaggems_array(tmp_path, operators, matrix):
     assert entry["performance"] == []
     # The per-case detail lives in the operator file, not in the platform view.
     assert "result" not in entry and "cases" not in entry["accuracy"]
+
+
+def test_accuracy_log_carries_a_verdict_the_platform_parser_reads(
+    tmp_path, operators, matrix
+):
+    """A reader that only sees the log must reach the same verdict as summary.json.
+
+    This mirrors parse_pytest_summary_from_text in ref/run_flaggems_test_new.py,
+    including its PASS/FAIL rule and its plural "errors" key.
+    """
+    case = RUN_TESTS.expand_all_test_cases(operators, matrix)[0]
+    record = RUN_TESTS.run_accuracy_case(
+        case, fake_capture(tmp_path), tmp_path, 0, 60, tmp_path / "scratch"
+    )
+    results = RUN_TESTS.aggregate_results(
+        [accuracy_message(case, record)], [operators[0]], [case], True, False
+    )
+    RUN_TESTS.write_summary(tmp_path / "summary.json", results, {"ops": []}, 1.5)
+    entry = summary_op_entry(
+        json.loads((tmp_path / "summary.json").read_text()), operators[0]["id"]
+    )
+
+    text = (tmp_path / operators[0]["id"] / RUN_TESTS.ACCURACY_LOG).read_text()
+    counters = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0}
+    for match in re.finditer(r"(\d+)\s+([A-Za-z_]+)", text):
+        key = match.group(2).lower()
+        if key in counters:
+            counters[key] = int(match.group(1))
+    total = counters["passed"] + counters["failed"] + counters["skipped"]
+    if (
+        counters["failed"] > 0
+        or (counters["errors"] > 0 and total == 0)
+        or counters["passed"] == 0
+    ):
+        status = "FAIL"
+    else:
+        status = "PASS"
+
+    assert counters["passed"] == entry["accuracy"]["passed"]
+    assert counters["failed"] == entry["accuracy"]["failed"]
+    assert counters["errors"] == entry["accuracy"]["errors"]
+    assert total == entry["accuracy"]["total"]
+    assert status == entry["accuracy"]["status"]
 
 
 def test_performance_rows_put_speedup_in_the_complex_column():

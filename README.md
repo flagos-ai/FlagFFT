@@ -547,7 +547,7 @@ exact partial selection.
 - `summary.json`: one element per operator, in acceptance order, carrying `accuracy`, `platform_accuracy`, `performance`, `perf_log_path` and the run metadata.
 - `incremental.csv`: case/phase, operator ID, shape, numeric batch, direction, scale, both correctness statuses and errors, policy skip reason, limits, timings and actual plan. CSV quoting preserves multiline plan text.
 - `{op_id}/{accuracy,platform_accuracy,performance}_result.json`: aggregate per-operator results, including the per-case metrics, seeds, hashes and plans. The `accuracy.details` and `performance.data.default` report fields are retained here.
-- `{op_id}/accuracy.log`: the FlagFFT and platform capture console output for every accuracy case of that operator, with each plan between `FLAGFFT PLAN BEGIN/END` delimiters.
+- `{op_id}/accuracy.log`: the FlagFFT and platform capture console output for every accuracy case of that operator, with each plan between `FLAGFFT PLAN BEGIN/END` delimiters and each case introduced by a `----- <case_id> <impl> -----` header. The file closes with a pytest-shaped verdict line, so a platform log parser derives the same counts and status as `summary.json`.
 - `{op_id}/perf.log`: the benchmark console output for every performance case.
 
 The generated input and the captured output never reach the result tree. The

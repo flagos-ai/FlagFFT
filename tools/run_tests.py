@@ -679,11 +679,31 @@ def append_operator_log(
     op_dir.mkdir(parents=True, exist_ok=True)
     text = scratch_log.read_text(errors="replace")
     with (op_dir / log_name).open("a") as out:
-        out.write(f"===== {case_id} {label} =====\n")
+        out.write(f"----- {case_id} {label} -----\n")
         out.write(text)
         if text and not text.endswith("\n"):
             out.write("\n")
     scratch_log.unlink(missing_ok=True)
+
+
+def append_log_verdict(op_dir: Path, log_name: str, block: dict, duration: Any) -> None:
+    """Close an operator's log with a pytest-shaped verdict line.
+
+    The platform parses each operator's execution log with the same pytest
+    summary reader it uses for FlagGems, which keys on the plural "errors";
+    pytest itself prints "error".  Without this line the log holds no counts at
+    all, and a reader that derives status from the log alone would score every
+    operator FAIL while summary.json says PASS.  The log is created when the
+    operator ran nothing to log, so the directory convention always holds.
+    """
+    log_path = op_dir / log_name
+    seconds = duration if isinstance(duration, (int, float)) else 0.0
+    with log_path.open("a") as out:
+        out.write(
+            f"{block['failed']} failed, {block['passed']} passed, "
+            f"{block['skipped']} skipped, {block['errors']} errors "
+            f"in {seconds:.2f}s\n"
+        )
 
 
 def log_scratch(message: dict) -> Any:
@@ -2000,12 +2020,16 @@ def write_summary(
         for phase, details in result.items():
             write_json(op_dir / f"{phase}_result.json", details)
         speedups = operator_speedup_stats(result["performance"])
+        accuracy_block = flaggems_accuracy_block(
+            result["accuracy"], op_dir / ACCURACY_LOG
+        )
+        append_log_verdict(
+            op_dir, ACCURACY_LOG, accuracy_block, result["accuracy"].get("duration")
+        )
         elements.append(
             {
                 "operator": op_id,
-                "accuracy": flaggems_accuracy_block(
-                    result["accuracy"], op_dir / ACCURACY_LOG
-                ),
+                "accuracy": accuracy_block,
                 "performance": flaggems_performance_rows(
                     result["performance"], speedups.get("geometric_mean_speedup")
                 ),
