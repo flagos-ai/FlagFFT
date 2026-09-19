@@ -1219,3 +1219,69 @@ def test_packed_real_codegen_requires_even_length_and_pairs_bins(kernels) -> Non
         kernels._build_r2c_packed_postprocess_kernel_source(17, "complex128")
     with pytest.raises(ValueError, match="even length"):
         kernels._build_c2r_packed_preprocess_kernel_source(17, "complex128")
+
+
+def _maca_profile():
+    from flagfft_codegen.backend_profile import BackendProfile
+
+    return BackendProfile.from_device(
+        {
+            "backend": "maca",
+            "device_arch": "102",
+            "warp_size": 64,
+            "max_threads_per_block": 1024,
+            "max_dynamic_shared_memory": 65536,
+        },
+        "legacy",
+    )
+
+
+@pytest.mark.parametrize("inner_pack", ["1", "4"])
+def test_maca_portable_exchange_indexes_the_register_layout(
+    kernels, monkeypatch, inner_pack
+) -> None:
+    """The gather index must decode to the codelet lane and the inner slot.
+
+    Four-step inner packing interleaves lane and slot in the register tensors
+    while contiguous batch packing strides the slot by the lane block.  Using
+    the wrong stride keeps the index in bounds and compiles, so the transform
+    returns wrong values instead of failing; decode it back and compare.
+    """
+    np = pytest.importorskip("numpy")
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+
+    monkeypatch.setenv("FLAGFFT_MACA_INNER_PACK", inner_pack)
+    token = set_profile(_maca_profile())
+    try:
+        plan = kernels.LeafPlan(
+            length=64,
+            factors=(4, 4, 4),
+            remainder=1,
+            lanes=16,
+            num_warps=2,
+            generic_radices=(),
+            smem_size=64,
+        )
+        _, source = kernels._build_four_step_row_kernel_source(plan, 64, 128)
+    finally:
+        reset_profile(token)
+
+    lines = source.splitlines()
+    start = next(i for i, line in enumerate(lines) if "exchange_pos = tl.arange" in line)
+    end = next(
+        i for i, line in enumerate(lines[start:], start) if "exchange_src = tl.where" in line
+    )
+    block = [line[4:] if line.startswith("    ") else line for line in lines[start : end + 1]]
+
+    class _Tl:
+        arange = staticmethod(np.arange)
+        where = staticmethod(np.where)
+
+    namespace: dict = {"tl": _Tl, "np": np}
+    exec("\n".join(block), namespace)
+
+    lane_pack = int(inner_pack)
+    valid = namespace["exchange_valid"]
+    source_index = namespace["exchange_src"]
+    assert np.array_equal(source_index[valid] // lane_pack, namespace["exchange_codelet"][valid])
+    assert np.array_equal(source_index[valid] % lane_pack, namespace["exchange_slot"][valid])
