@@ -334,9 +334,10 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
             return _positive_knob("BATCH_PACK", override)
         lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
         if len(emitted_leaf_factors(plan)) > 1:
-            return _portable_exchange_pack_floor(plan, 1)
-        # A single codelet runs no exchange, so the tensor-width rule does not
-        # apply and the existing lane-block cap stays.
+            return 1
+        # Raising this pack was measured slower on 2D 64x64: the row pass only
+        # has 64 transforms, so packing eight leaves the grid too small to fill
+        # the device, and the extra occupancy does not pay for it.
         return max(
             1,
             min(32 if len(plan.factors) == 1 else 4, 64 // lane_block),
@@ -396,11 +397,13 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     against that baseline without rebuilding.
     """
     override = _maca_knob("INNER_PACK", "1")
-    if override in {"", "1"}:
-        return 1
     if override == "auto":
-        return _four_step_resource_inner_pack_for(plan) if plan is not None else 1
-    return _positive_knob("INNER_PACK", override)
+        pack = _four_step_resource_inner_pack_for(plan) if plan is not None else 1
+    elif override in {"", "1"}:
+        pack = 1
+    else:
+        pack = _positive_knob("INNER_PACK", override)
+    return _portable_exchange_pack_floor(plan, pack) if plan is not None else pack
 
 
 def _four_step_col_inner_pack_for(

@@ -94,7 +94,7 @@ def _emit_vectorized_complex_load(
     if _portable_complex_vector_io():
         pair = "_pair_" + dest.split(",")[0].strip()
         return [
-            f"{indent}{pair} = tl.load({ptr}[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
+            f"{indent}{pair} = tl.load(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
             f"mask={mask}[:, None], other=0.0)",
             f"{indent}{dest} = tl.split({pair})",
         ]
@@ -126,7 +126,7 @@ def _emit_vectorized_complex_store(
 ) -> list[str]:
     if _portable_complex_vector_io():
         return [
-            f"{indent}tl.store({ptr}[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
+            f"{indent}tl.store(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
             f"tl.join({r_name}, {i_name}), mask={mask}[:, None])",
         ]
     suffix = _vector_asm_suffix(dtype)
