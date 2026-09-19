@@ -47,9 +47,11 @@ pip install .
 python tools/run_tests.py --combination full --gpus 0
 ```
 
-The runner prints a live progress table and writes `summary.json` with
-per-operator accuracy (pass/fail) and performance (geometric mean speedup vs
-the selected backend's reference FFT library) results.
+The runner prints a live progress table and writes `summary.json` as a flat
+array with one element per operator: accuracy (pass/fail), performance
+(geometric mean speedup vs the selected backend's reference FFT library) and
+the path of the operator's console log. The result directory holds nothing but
+JSON and logs.
 
 ### Docker
 
@@ -506,11 +508,9 @@ limits and reject nonfinite values.
 | `--scales` | Matrix scales, or `[1.0]` if omitted | Comma-separated positive input amplitudes, or `all` for `2^-20,1,2^20` |
 | `--shapes` | All configured sizes | Exact shapes, e.g. `256,64x64` |
 | `--max-cases` | — | Select the first N cases for a partial run |
-| `--timeout` | `600` | Independent timeout for each FlagFFT/platform/benchmark process |
+| `--timeout` | `200` | Independent timeout for each FlagFFT/platform/benchmark process |
 | `--warmup` / `--iters` | `10 / 100` | Benchmark warmup and measurement iterations |
-| `--artifacts` | `failed` | Raw correctness artifacts: `none`, `failed`, or `all` |
 | `--dry-run` | — | Print selected cases without execution or result files |
-| `--analyze-only RESULT_DIR` | — | Recompute NumPy comparisons from captured inputs and outputs |
 | `--color` | `auto` | `auto/always/never` |
 
 The old 18 API/rank IDs are replaced by the acceptance IDs above. The old
@@ -534,30 +534,33 @@ python tools/run_tests.py --combination 1d_prime_batch --gpus 0
 
 # All three correctness scales. Benchmark runs once per shape/batch/direction.
 python tools/run_tests.py --scales all --ops 1d_ct_single_c2c
-
-# Reanalyze saved data without executing device kernels.
-python tools/run_tests.py --analyze-only ../results/20260916_120000_acceptance36
-
-# Keep all raw correctness data when offline reanalysis is needed.
-python tools/run_tests.py --artifacts all --accuracy-only --ops 1d_ct_single_c2c
 ```
 
 #### Output
 
-All outputs use format version 3. A full run has 36 keys under
-`summary.json.result`, in acceptance order. Filtered runs contain the
-selected operators, and the manifest records the exact partial selection.
-The existing `accuracy.details` and `performance.data.default` report fields
-are retained alongside the new per-case metrics and plans.
+All outputs use format version 3. `summary.json` is a flat array with one
+element per operator, matching the shape the acceptance platform parses.
+Filtered runs contain the selected operators, and the manifest records the
+exact partial selection.
 
 - `manifest.json`: selected operators, complete expected case lists, parameter matrix and runtime environment.
-- `summary.json`: each operator's `accuracy`, `platform_accuracy` and `performance` results.
+- `summary.json`: one element per operator, in acceptance order, carrying `accuracy`, `platform_accuracy`, `performance`, `perf_log_path` and the run metadata.
 - `incremental.csv`: case/phase, operator ID, shape, numeric batch, direction, scale, both correctness statuses and errors, policy skip reason, limits, timings and actual plan. CSV quoting preserves multiline plan text.
-- `{op_id}/{case_id}/case.json`: correctness metrics, input seed/hashes, independent capture statuses and actual `accuracy.plan`.
-- `{op_id}/{case_id}/`: `case.json`, per-library logs and `flagfft_plan.txt`; raw `bin` files are retained according to `--artifacts` and no `npy` files are generated.
-- `{op_id}/performance/{case_id}/result.json`: timings and the benchmark's own `performance.plan`.
-- `{op_id}/{accuracy,platform_accuracy,performance}_result.json`: aggregate per-operator results.
-- `reanalyzed.csv`: refreshed comparisons produced by `--analyze-only`.
+- `{op_id}/{accuracy,platform_accuracy,performance}_result.json`: aggregate per-operator results, including the per-case metrics, seeds, hashes and plans. The `accuracy.details` and `performance.data.default` report fields are retained here.
+- `{op_id}/accuracy.log`: the FlagFFT and platform capture console output for every accuracy case of that operator, with each plan between `FLAGFFT PLAN BEGIN/END` delimiters.
+- `{op_id}/perf.log`: the benchmark console output for every performance case.
+
+The generated input and the captured output never reach the result tree. The
+input is a transient file in a scratch directory that is removed as soon as the
+case finishes, and the output is streamed back through a pipe and folded into
+the NumPy comparison batch by batch. No `.bin`, `.npy`, `case.json`,
+`flagfft_plan.txt` or per-case directory is produced, so a full run writes
+exactly five files per operator.
+
+In `summary.json`, `accuracy` and `platform_accuracy` carry the counts, the
+`PASS`/`FAIL` status and the log path the platform reads; `performance` is one
+row per case with the measured speedup in the complex column and the operator's
+geometric mean in `avg_speedup`.
 
 Correctness and performance have separate case IDs; scale is omitted from
 performance IDs. A missing result cannot make an operator pass. Numeric
@@ -576,9 +579,6 @@ Exit code is 0 when all requested FlagFFT correctness and/or performance phases
 pass; an explicit backend-policy skip such as IX FP64 is allowed. Exit code 1
 indicates a failure, incomplete phase, or unexpected skip; 2 is a configuration
 error and 130 is interruption. Platform correctness is reported independently.
-`--artifacts failed` preserves raw data only for failed, timed-out, or otherwise
-incomplete correctness cases. `--analyze-only` requires a result created with
-`--artifacts all`; legacy results without an artifact policy remain readable.
 
 ### C++ Tests (ctest/)
 

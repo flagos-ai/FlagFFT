@@ -14,7 +14,6 @@ python tools/run_tests.py --accuracy-only \
   --ops 1d_ct_single_c2c,1d_prime_single_c2r
 python tools/run_tests.py --accuracy-only --combination 2d
 python tools/run_tests.py --scales all --accuracy-only --ops 1d_ct_single_z2d
-python tools/run_tests.py --analyze-only ../results/20260916_120000_acceptance36
 ```
 
 FlagFFT and platform capture run in separate processes with independent
@@ -25,13 +24,14 @@ the NumPy oracle explicitly computes in float64/complex128. Real-inverse inputs
 satisfy multidimensional Hermitian constraints, and inverse normalization
 matches the unnormalized device APIs.
 
-Each correctness case always retains `case.json`, library-specific
-stdout/stderr, and `flagfft_plan.txt`. The native `input.bin`, `flagfft.bin`,
-and `platform.bin` files are temporary by default and are retained according to
-`--artifacts failed|all`; no `npy` files are generated. Use `--artifacts all`
-when `--analyze-only` or raw-data reproduction is needed. The actual plan text
-is also embedded in the final JSON and incremental CSV. A plan is saved before
-execution and updated with compiled details after successful execution.
+The runner passes `--input=-` and `--output-dir=-`, so the capture reads the
+generated input from stdin and writes its result to stdout. Neither side is
+materialized in the result directory, which therefore contains only the
+per-operator JSON and the aggregated `accuracy.log`/`perf.log`. In that mode
+the plan description goes to stderr between `FLAGFFT PLAN BEGIN/END`
+delimiters: the runner lifts it into the JSON, and it also reaches the operator
+log, where it stays readable. The plan is written before execution and
+refreshed with compiled details afterwards.
 
 ## Optional standalone native build
 
@@ -68,4 +68,10 @@ the unified runner keeps `Z2Z`, `Z2D`, and `D2Z` in the manifest but skips them
 under the current IX acceptance policy. Use `tools/probe_capabilities.py` for
 device/toolchain-specific FP64 evidence. The native executable
 supports `--implementation=flagfft|platform|both`; the runner uses the two
-single-library modes. Current rank-3 capture and benchmark require batch 1.
+single-library modes, because stdin holds a single copy of the input and
+cannot be replayed for a second library. Current rank-3 capture and benchmark
+require batch 1.
+
+The named-file form (`--input FILE --output-dir DIR`, which also writes
+`flagfft_plan.txt` into the output directory) remains available and is what
+`tools/benchmark_hardware_profile.py` and `tools/probe_capabilities.py` use.

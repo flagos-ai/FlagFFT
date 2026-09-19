@@ -226,12 +226,13 @@ Its native capture target compares FlagFFT and the platform library independentl
 against NumPy; FlagFFT correctness alone decides acceptance. Performance uses
 `flagfft-cli bench` once per shape/batch/direction, regardless of input scales.
 JSON and incremental CSV retain per-case runtime plans and both correctness
-results. Native correctness `bin` files are retained according to the runner's
-`--artifacts` policy; NumPy arrays are compared in memory and are not persisted.
+results. The generated input stays in a scratch directory outside the result
+tree and the capture's output is streamed back through a pipe, so no raw array
+is ever written into the deliverable: the result directory holds only the
+per-operator JSON files and the aggregated `accuracy.log`/`perf.log`.
 Workspace policy since 2026-09-17 is not to retain raw `.npy`/`.bin` dumps at
-all: keep the CSV/JSON/log evidence and delete the per-case arrays after a run.
-`--analyze-only` recomputes comparisons from captured data without a GPU and
-therefore requires `--artifacts all` on the original run.
+all. `summary.json` is a flat array of operator elements in the shape the
+acceptance platform parses.
 `tests/python/` covers runner behavior and code generation.
 `tools/probe_capabilities.py` records device facts, FP64 support and prototype
 runs per device; `tools/benchmark_hardware_profile.py` runs the paired
