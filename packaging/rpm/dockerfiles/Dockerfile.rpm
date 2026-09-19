@@ -24,6 +24,10 @@ COPY packaging/common/python-build-requirements.txt /tmp/flagfft-requirements.tx
 RUN pip3 install --no-cache-dir \
     -r /tmp/flagfft-requirements.txt
 
+# Separate layer so the (large) requirements layer above stays cached.
+# setuptools >= 70.1 provides bdist_wheel itself (wheel 0.46+ removed it).
+RUN pip3 install --no-cache-dir "setuptools>=70.1" wheel
+
 RUN rpmdev-setuptree
 
 # Copy source code (submodule must already be checked out by caller).
