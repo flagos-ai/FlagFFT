@@ -68,6 +68,21 @@ def _vector_asm_dtype(dtype: str) -> str:
     return "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
 
 
+_COMPLEX_PAIR_OFFSETS = "_fft_pair_offsets"
+
+
+def _portable_complex_vector_io() -> bool:
+    """Whether to vectorize complex IO with a ``[..., 2]`` block.
+
+    The scalar form issues two 4-byte accesses per complex element, which is
+    limited by load/store throughput rather than DRAM.  A block whose
+    innermost dimension has stride 1 lets Triton emit one wide access
+    natively, without the ``ld.global.v2`` inline asm that the MetaX plugin
+    cannot compile.
+    """
+    return _maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"}
+
+
 def _emit_vectorized_complex_load(
     indent: str,
     ptr: str,
@@ -75,6 +90,13 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
+    if _portable_complex_vector_io():
+        pair = "_pair_" + dest.split(",")[0].strip()
+        return [
+            f"{indent}{pair} = tl.load({ptr}[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
+            f"mask={mask}[:, None], other=0.0)",
+            f"{indent}{dest} = tl.split({pair})",
+        ]
     suffix = _vector_asm_suffix(dtype)
     reg = _vector_asm_reg(dtype)
     tl_dtype = _vector_asm_dtype(dtype)
@@ -101,6 +123,11 @@ def _emit_vectorized_complex_store(
     mask: str,
     dtype: str,
 ) -> list[str]:
+    if _portable_complex_vector_io():
+        return [
+            f"{indent}tl.store({ptr}[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
+            f"tl.join({r_name}, {i_name}), mask={mask}[:, None])",
+        ]
     suffix = _vector_asm_suffix(dtype)
     reg = _vector_asm_reg(dtype)
     return [
@@ -629,6 +656,7 @@ def _emit_stage_block(
     lines: list[str] = []
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
+    vector_io_allowed = not _non_nvidia_backend_active() or _portable_complex_vector_io()
     vectorized_four_step_complex_io = (
         io_mode
         in {
@@ -638,11 +666,11 @@ def _emit_stage_block(
             "four_step_c2r_col",
             "four_step_hermitian_row",
         }
-        and not _non_nvidia_backend_active()
+        and vector_io_allowed
     )
     vectorized_complex_io = (
         io_mode in {"contiguous", "contiguous_c2r"} or vectorized_four_step_complex_io
-    ) and not _non_nvidia_backend_active()
+    ) and vector_io_allowed
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
     vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
@@ -686,18 +714,14 @@ def _emit_stage_block(
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             if io_mode == "contiguous":
                 if vectorized_complex_io:
-                    lines.append(
-                        f"{indent}r{j}, i{j} = tl.inline_asm_elementwise("
-                        "'{\\n"
-                        ".reg .pred p;\\n"
-                        "setp.ne.b32 p, $3, 0;\\n"
-                        f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
-                        f"@!p mov.{vector_suffix} $0, 0.0;\\n"
-                        f"@!p mov.{vector_suffix} $1, 0.0;\\n"
-                        "}', \"=" + vector_reg + ",=" + vector_reg + ',l,r", ['
-                        f"tl.cast(in_ptr + (batch_base + in{j}) * 2, tl.uint64), "
-                        "tl.cast(lane_mask, tl.int32)], "
-                        f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                    lines.extend(
+                        _emit_vectorized_complex_load(
+                            indent,
+                            f"in_ptr + (batch_base + in{j}) * 2",
+                            "lane_mask",
+                            f"r{j}, i{j}",
+                            dtype,
+                        )
                     )
                 else:
                     lines.append(
@@ -732,18 +756,10 @@ def _emit_stage_block(
                     f"{indent}src_ptr{j} = in_ptr + (input_batch_base + compact_idx{j}) * 2"
                 )
                 if vectorized_complex_io:
-                    lines.append(
-                        f"{indent}r{j}, i{j} = tl.inline_asm_elementwise("
-                        "'{\\n"
-                        ".reg .pred p;\\n"
-                        "setp.ne.b32 p, $3, 0;\\n"
-                        f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
-                        f"@!p mov.{vector_suffix} $0, 0.0;\\n"
-                        f"@!p mov.{vector_suffix} $1, 0.0;\\n"
-                        "}', \"=" + vector_reg + ",=" + vector_reg + ',l,r", ['
-                        f"tl.cast(src_ptr{j}, tl.uint64), "
-                        "tl.cast(lane_mask, tl.int32)], "
-                        f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                    lines.extend(
+                        _emit_vectorized_complex_load(
+                            indent, f"src_ptr{j}", "lane_mask", f"r{j}, i{j}", dtype
+                        )
                     )
                 else:
                     lines.append(
@@ -1090,17 +1106,15 @@ def _emit_stage_block(
                     )
                 else:
                     if vectorized_complex_io:
-                        lines.append(
-                            f"{indent}tl.inline_asm_elementwise("
-                            "'{\\n"
-                            ".reg .pred p;\\n"
-                            "setp.ne.b32 p, $4, 0;\\n"
-                            f"@p st.global.v2.{vector_suffix} [$1], {{$2, $3}};\\n"
-                            "mov.u32 $0, 0;\\n"
-                            "}', \"=r,l," + vector_reg + "," + vector_reg + ',r", ['
-                            f"tl.cast(out_ptr + (batch_base + out_idx{j}) * 2, tl.uint64), "
-                            f"r{j}, i{j}, tl.cast(lane_mask, tl.int32)], "
-                            "dtype=tl.int32, is_pure=False, pack=1)"
+                        lines.extend(
+                            _emit_vectorized_complex_store(
+                                indent,
+                                f"out_ptr + (batch_base + out_idx{j}) * 2",
+                                f"r{j}",
+                                f"i{j}",
+                                "lane_mask",
+                                dtype,
+                            )
                         )
                     else:
                         lines.append(
@@ -2122,6 +2136,8 @@ def _build_leaf_kernel_source_for_io(
         suffix = "," if idx < len(params) - 1 else ""
         body.append(f"    {param}{suffix}")
     body.append("):")
+    if _portable_complex_vector_io():
+        body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     if io_mode in contiguous_modes:
         body.append("    pid = tl.program_id(0)")
         body.append(f"    batch_id = pid * {batch_pack}")
