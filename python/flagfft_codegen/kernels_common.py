@@ -51,8 +51,9 @@ _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 # The MetaX plugin cannot lower maca.shfl.sync, so the portable exchange must
 # gather from a tensor wider than one 64-thread warp.
 _PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
-# Packing past four was measured slower on the 64-point four-step leaf: the
-# wider gather and its register pressure outweigh the extra busy lanes.
+# Hard ceiling for the exchange pack.  Past four the exchange tensor outgrows
+# MetaX's 64 KiB of shared memory per SM: measured at eight the kernel drops to
+# a tenth of its bandwidth, and at sixteen it fails to compile.
 _PORTABLE_EXCHANGE_MAX_PACK = 4
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
     {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}
@@ -399,14 +400,25 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     lets the profile-aware derivation (``auto``) and explicit packs be compared
     against that baseline without rebuilding.
     """
-    override = _maca_knob("INNER_PACK", "1")
-    if override == "auto":
-        pack = _four_step_resource_inner_pack_for(plan) if plan is not None else 1
-    elif override in {"", "1"}:
-        pack = 1
-    else:
-        pack = _positive_knob("INNER_PACK", override)
-    return _portable_exchange_pack_floor(plan, pack) if plan is not None else pack
+    override = _maca_knob("INNER_PACK", "")
+    # An explicit number is an experiment setting and wins outright; only the
+    # derived packs go through the tensor-width floor.
+    if override not in {"", "auto"}:
+        return min(_positive_knob("INNER_PACK", override), _PORTABLE_EXCHANGE_MAX_PACK)
+    if plan is None:
+        return 1
+    pack = (
+        _four_step_resource_inner_pack_for(plan)
+        if override == "auto"
+        else 1
+    )
+    # The exchange tensor is O(lane_block * pack) and MetaX has 64 KiB of
+    # shared memory per SM: measured at 8 the kernel collapses to a tenth of
+    # its bandwidth and at 16 it fails to compile ("memory size or pointer
+    # value too large to fit in 32 bit").  Clamp so no setting can reach it.
+    return min(
+        _portable_exchange_pack_floor(plan, pack), _PORTABLE_EXCHANGE_MAX_PACK
+    )
 
 
 def _four_step_col_inner_pack_for(
