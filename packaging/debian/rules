@@ -1,0 +1,70 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_BUILD_OPTIONS = parallel=$(shell nproc)
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	# fmt, nlohmann-json, and SQLite come from distro development packages;
+	# Torch, Triton, and pybind11 come from the pinned Python build environment.
+	# Note: no -GNinja — dh-cmake defaults to "Unix Makefiles" and
+	# dh_auto_build expects a Makefile. Passing -GNinja makes configure
+	# emit build.ninja but dh_auto_build still looks for Makefile and
+	# fails with "No targets specified and no makefile found".
+	dh_auto_configure --buildsystem=cmake -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+		-DFETCHCONTENT_QUIET=OFF \
+		-DBACKEND=CUDA \
+		-DFLAGFFT_BUILD_TESTS=OFF \
+		-DFLAGFFT_BUILD_CLI=OFF \
+		-DBUILD_TESTING=OFF \
+		-DTRITON_JIT_USE_EXTERNAL_JSON=ON \
+		-DTRITON_JIT_USE_EXTERNAL_FMTLIB=ON \
+		-DTRITON_JIT_USE_EXTERNAL_PYBIND11=ON \
+		-DTRITON_JIT_BUILD_OPERATORS=OFF \
+		-DFMT_INSTALL=OFF
+
+override_dh_auto_build:
+	dh_auto_build --buildsystem=cmake
+
+override_dh_auto_install:
+	dh_auto_install --buildsystem=cmake
+	# libflagfft invokes `python3 -m flagfft_codegen.jit_source` at plan
+	# creation time; ship the pure-Python codegen package from pyproject.toml
+	# next to the library so an installed build needs no source checkout.
+	python3 -m pip install --no-deps --no-build-isolation --no-compile \
+		--target debian/tmp/usr/lib/python3/dist-packages .
+	rm -rf debian/tmp/usr/lib/python3/dist-packages/flagfft_codegen-*.dist-info/RECORD
+	@flagfft_lib="$$(find debian/tmp/usr/lib -type f -name libflagfft.so -print -quit)"; \
+	helper_lib="$$(find debian/tmp/usr/lib -type f -name libflagfft_triton_jit.so -print -quit)"; \
+	test -n "$$flagfft_lib"; \
+	test -n "$$helper_lib"; \
+	test -f debian/tmp/usr/lib/python3/dist-packages/flagfft_codegen/jit_source.py; \
+	test -f debian/tmp/usr/share/triton_jit/scripts/standalone_compile.py; \
+	test -f packaging/common/flagfft-triton-jit.pth; \
+	readelf -d "$$flagfft_lib" | grep -q '\[libflagfft_triton_jit.so\]'; \
+	! readelf -d "$$flagfft_lib" | grep -q '\[libtriton_jit.so\]'
+
+override_dh_auto_test:
+	# Skip tests during package build (require GPU)
+	@echo "Skipping tests"
+
+override_dh_shlibdeps:
+	# Resolve pip-provided Torch/NVIDIA libraries while deriving system package
+	# dependencies. --ignore-missing-info suppresses package metadata only; a
+	# genuinely missing shared object still fails the build.
+	@torch_lib="$$(python3 -c 'import pathlib, torch; print(pathlib.Path(torch.__file__).parent / "lib")')"; \
+	stub_dir="$$(pwd)/debian/.shlibdeps-stubs"; \
+	trap 'rm -rf "$$stub_dir"' EXIT; \
+	mkdir -p "$$stub_dir"; \
+	ln -s /usr/local/cuda/lib64/stubs/libcuda.so "$$stub_dir/libcuda.so.1"; \
+	search_path="$$torch_lib:/usr/local/cuda/lib64:$$stub_dir"; \
+	for directory in $$(find /usr/local/lib /usr/local/lib64 -type d -path '*/nvidia/*/lib' 2>/dev/null); do \
+		search_path="$$search_path:$$directory"; \
+	done; \
+	dh_shlibdeps -l"$$search_path" -- --ignore-missing-info
