@@ -76,8 +76,11 @@ def _portable_exchange_max_pack() -> int:
 def _cooperative_warp_cap() -> int:
     """Ceiling on the cooperative warp count for a leaf block.
 
-    MetaX allows 1024-thread blocks, but a block that wide halves occupancy, so
-    the cap stays at eight unless a measurement overrides it.
+    Eight is both the measured optimum and the hard limit: launching sixteen
+    warps fails with ``out of resource: threads, Required: 1024, Hardware
+    limit: 512``.  The device profile's ``max_threads_per_block`` of 1024 is a
+    static default -- the driver does not expose the attribute, so nothing
+    queries it -- and Triton's launcher enforces 512 for this target.
     """
     override = _maca_knob("MAX_WARPS")
     if not override:
