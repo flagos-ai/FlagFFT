@@ -1006,8 +1006,8 @@ def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:
 def test_kernel_registry_is_complete_and_consistent() -> None:
     import flagfft_codegen.registry as registry
 
-    assert len(registry.KERNEL_NAMES) == 37
-    assert len(set(registry.KERNEL_NAMES)) == 37
+    assert len(registry.KERNEL_NAMES) == 38
+    assert len(set(registry.KERNEL_NAMES)) == 38
     assert set(registry.KERNEL_SPECS) == set(registry.KERNEL_NAMES)
 
     for name, spec in registry.KERNEL_SPECS.items():
