@@ -156,6 +156,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::LeafStrided:
       kernel_kind = "leaf_strided";
       break;
+    case KernelKind::LeafPermutedStore:
+      kernel_kind = "leaf_permuted_store";
+      break;
     case KernelKind::LeafR2C:
       kernel_kind = "leaf_r2c";
       break;
@@ -274,6 +277,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
               << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());
 #endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
+      key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
       key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafBluesteinPrepare ||
       key.kind == KernelKind::LeafBluesteinFinish || key.kind == KernelKind::BluesteinFourStepPrepareRow ||
@@ -287,6 +291,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --lanes " << key.lanes << " --num-warps " << key.num_warps << " --generic-radices "
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
                 << " --direction " << shell_quote(key.direction);
+  }
+  if (key.kind == KernelKind::LeafPermutedStore) {
+    jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);

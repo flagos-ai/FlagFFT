@@ -61,6 +61,33 @@ KernelKey KernelKey::leaf_strided(std::string target,
   return key;
 }
 
+KernelKey KernelKey::leaf_permuted_store(std::string target,
+                                         std::string direction,
+                                         std::string dtype,
+                                         int64_t length,
+                                         std::vector<int64_t> factors,
+                                         int64_t lanes,
+                                         int64_t num_warps,
+                                         std::vector<int64_t> generic_radices,
+                                         int64_t smem_size,
+                                         std::string perm_form) {
+  KernelKey key = KernelKey::leaf(std::move(target),
+                                  std::move(direction),
+                                  std::move(dtype),
+                                  length,
+                                  std::move(factors),
+                                  lanes,
+                                  num_warps,
+                                  std::move(generic_radices),
+                                  smem_size);
+  key.kind = KernelKind::LeafPermutedStore;
+  // The three fused 3D passes share length/factors/lanes and differ only in
+  // which part of the row index the output address scales, so without this the
+  // key collides and every pass runs the first compiled form.
+  key.perm_form = std::move(perm_form);
+  return key;
+}
+
 KernelKey KernelKey::leaf_r2c(std::string target,
                               std::string direction,
                               std::string dtype,
@@ -569,7 +596,8 @@ bool KernelKey::operator==(const KernelKey &other) const {
          bluestein_m == other.bluestein_m && rader_n == other.rader_n && rader_m == other.rader_m &&
          reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2 &&
          transpose3d_n0 == other.transpose3d_n0 && transpose3d_n1 == other.transpose3d_n1 &&
-         transpose3d_n2 == other.transpose3d_n2 && transpose3d_order == other.transpose3d_order;
+         transpose3d_n2 == other.transpose3d_n2 && transpose3d_order == other.transpose3d_order &&
+         perm_form == other.perm_form;
 }
 
 std::string KernelKey::repr() const {
@@ -587,7 +615,7 @@ std::string KernelKey::repr() const {
       << ";rader_n=" << rader_n << ";rader_m=" << rader_m << ";reshape_n1=" << reshape_n1
       << ";reshape_n2=" << reshape_n2 << ";transpose3d_n0=" << transpose3d_n0
       << ";transpose3d_n1=" << transpose3d_n1 << ";transpose3d_n2=" << transpose3d_n2
-      << ";order=" << transpose3d_order;
+      << ";order=" << transpose3d_order << ";perm_form=" << perm_form;
   return out.str();
 }
 
@@ -615,6 +643,7 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.transpose3d_n1);
   hash_value(seed, key.transpose3d_n2);
   hash_value(seed, key.transpose3d_order);
+  hash_value(seed, key.perm_form);
   return seed;
 }
 

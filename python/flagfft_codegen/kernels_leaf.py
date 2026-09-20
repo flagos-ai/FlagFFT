@@ -38,6 +38,7 @@ from .kernels_common import (
     four_step_col_inner_pack_for,
     four_step_row_inner_pack_for,
     lane_block_for,
+    permuted_store_batch_pack_for,
     use_four_step_row_fused_twiddle,
     use_tle_fused_twiddle,
 )
@@ -400,6 +401,64 @@ def _emit_output_index(
     return [f"{indent}{out_var} = output_base + {offset}"]
 
 
+def _emit_lane_output_base(
+    indent: str,
+    factors: tuple[int, ...],
+    lane_var: str,
+    out_var: str,
+) -> list[str]:
+    """`output_base` restricted to the lane axis.
+
+    The permuted store reshapes the register tile to (batch, lane) and transposes
+    it, so the output index has to be a lane-only vector of width `lane_block`
+    rather than the full `[vector_block]` tensor.  Valid whenever the emitting
+    stage has a single group, which makes the existing `output_base` a function
+    of `lane` alone.
+    """
+    last_stage = len(factors) - 1
+    lines = [f"{indent}rem_lane = {lane_var}", f"{indent}{out_var} = {lane_var} * 0"]
+    stride = 1
+    for axis in range(last_stage):
+        lines.append(f"{indent}digit_lane_{axis} = rem_lane % {factors[axis]}")
+        lines.append(f"{indent}rem_lane = rem_lane // {factors[axis]}")
+        if stride == 1:
+            lines.append(f"{indent}{out_var} += digit_lane_{axis}")
+        else:
+            lines.append(f"{indent}{out_var} += digit_lane_{axis} * {stride}")
+        stride *= factors[axis]
+    return lines
+
+
+def _emit_permuted_store(
+    indent: str,
+    digit: int,
+    factors: tuple[int, ...],
+    pack: int,
+    lane_block: int,
+) -> list[str]:
+    """Store one radix digit with the batch axis made contiguous.
+
+    The register tile is reshaped (batch, lane) and transposed to (lane, batch),
+    so its innermost dimension walks the batch slots and Triton vectorizes the
+    store.  Addressing each element directly instead -- no `tl.trans` -- measured
+    37% *slower* end to end on MUSA (2.25 against 1.64 ms at 256^3) even though a
+    standalone store benchmark preferred it: without the transpose the tensor's
+    fast axis is `lane`, whose elements sit `perm_k_stride` apart, so the store
+    falls back to scalar 8-byte accesses.
+    """
+    offset = digit * math.prod(factors[: len(factors) - 1])
+    base = "output_base_lane" if offset == 0 else f"(output_base_lane + {offset})"
+    return [
+        f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
+        f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
+        f"{indent}perm_addr{digit} = {base}[:, None] * perm_k_stride + perm_gbase[None, :]",
+        f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, zr{digit}, "
+        f"mask=perm_store_mask)",
+        f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, zi{digit}, "
+        f"mask=perm_store_mask)",
+    ]
+
+
 def _emit_route_base(
     indent: str,
     stage: int,
@@ -667,7 +726,8 @@ def _emit_stage_block(
         and vector_io_allowed
     )
     vectorized_complex_io = (
-        io_mode in {"contiguous", "contiguous_c2r"} or vectorized_four_step_complex_io
+        io_mode in {"contiguous", "contiguous_c2r", "permuted_store"}
+        or vectorized_four_step_complex_io
     ) and vector_io_allowed
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
@@ -702,6 +762,21 @@ def _emit_stage_block(
         lines.extend(
             _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
         )
+        if io_mode == "permuted_store":
+            active_lanes = max(stage_lanes) if stage_lanes is not None else lanes
+            lines.append(f"{indent}lane_only = tl.arange(0, {lane_block})")
+            lines.append(f"{indent}perm_lane_mask = lane_only < {active_lanes}")
+            lines.append(
+                f"{indent}lane_only = tl.where(perm_lane_mask, lane_only, 0)"
+            )
+            lines.extend(
+                _emit_lane_output_base(
+                    indent, factors, "lane_only", "output_base_lane"
+                )
+            )
+            lines.append(
+                f"{indent}perm_store_mask = perm_lane_mask[:, None] & perm_mask[None, :]"
+            )
     else:
         lines.extend(
             _emit_route_base(indent, stage, factors, current_lanes, f"group_{stage}")
@@ -710,7 +785,7 @@ def _emit_stage_block(
     for j in range(radix):
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
-            if io_mode == "contiguous":
+            if io_mode in {"contiguous", "permuted_store"}:
                 if vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_load(
@@ -1091,6 +1166,11 @@ def _emit_stage_block(
 
     for j in range(radix):
         if is_last:
+            if io_mode == "permuted_store":
+                lines.extend(
+                    _emit_permuted_store(indent, j, factors, smem_pack, lane_block)
+                )
+                continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
             if io_mode in {"contiguous", "strided", "bluestein_prepare_leaf"}:
                 if io_mode == "strided":
@@ -1487,6 +1567,8 @@ def _leaf_kernel_params_for_io(
     )
     if io_mode == "strided":
         params.append("outer_stride")
+    if io_mode == "permuted_store":
+        params.append("perm_span")
     if io_mode == "bluestein_prepare_leaf":
         params.insert(1, "chirp_ptr")
     elif io_mode == "bluestein_finish_leaf":
@@ -1978,6 +2060,7 @@ def _build_leaf_kernel_source_for_io(
     prime_n: int = 0,
     four_step_n1: int = 0,
     four_step_n2: int = 0,
+    perm_form: str = "outer",
 ) -> tuple[str, str]:
     if _use_thread_local_mixed_leaf(
         plan,
@@ -2009,13 +2092,19 @@ def _build_leaf_kernel_source_for_io(
     contiguous_modes = {
         "contiguous",
         "strided",
+        "permuted_store",
         "contiguous_r2c",
         "contiguous_c2r",
         "bluestein_prepare_leaf",
         "bluestein_finish_leaf",
         "bluestein_full_leaf",
     }
-    batch_pack = contiguous_batch_pack_for(plan) if io_mode in contiguous_modes else 1
+    if io_mode == "permuted_store":
+        batch_pack = permuted_store_batch_pack_for(plan)
+    elif io_mode in contiguous_modes:
+        batch_pack = contiguous_batch_pack_for(plan)
+    else:
+        batch_pack = 1
     row_modes = {
         "four_step_row",
         "four_step_row_strided",
@@ -2120,6 +2209,12 @@ def _build_leaf_kernel_source_for_io(
             f"{io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
             f"_l{plan.lanes}_b{lane_block}"
         )
+    elif io_mode == "permuted_store":
+        kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
+        kernel_name = (
+            f"permuted_store_{perm_form}_{kernel_prefix}_kernel_{suffix}"
+            f"_l{plan.lanes}_b{lane_block}"
+        )
     else:
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = (
@@ -2165,6 +2260,17 @@ def _build_leaf_kernel_source_for_io(
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
             body.append("    current_batch = batch_id + batch_slot")
+            if io_mode == "permuted_store" and perm_form == "inner":
+                # This pass permutes an axis whose output position is scaled by
+                # the *other* cube dimension, so a block has to span that
+                # dimension rather than consecutive rows: its rows are strided
+                # by perm_span in the row index.  That is exactly what makes the
+                # store run contiguous.
+                body.append(
+                    f"    perm_base = (pid // perm_span) * {batch_pack} * perm_span "
+                    "+ (pid % perm_span)"
+                )
+                body.append("    current_batch = perm_base + batch_slot * perm_span")
             body.append(
                 f"    lane_mask = (lane < {active_lanes}) & (current_batch < nbatch)"
             )
@@ -2183,6 +2289,25 @@ def _build_leaf_kernel_source_for_io(
         if io_mode in {"contiguous_r2c", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
             body.append("    output_batch_base = current_batch * output_distance")
+        if io_mode == "permuted_store":
+            # `perm_gbase` is the output address of each batch slot's row start
+            # and `perm_k_stride` the stride of the FFT output index; the store
+            # adds the two.  The two forms differ in which of the row index's
+            # two mixed-radix parts gets scaled by the output layout.
+            body.append(f"    perm_slot = tl.arange(0, {batch_pack})")
+            if perm_form == "inner":
+                body.append("    perm_batch = perm_base + perm_slot * perm_span")
+                body.append("    perm_i0 = perm_batch // perm_span")
+                body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
+                body.append("    perm_gbase = perm_i1 * (nbatch // perm_span) + perm_i0")
+                body.append("    perm_k_stride = nbatch")
+            else:
+                body.append("    perm_batch = batch_id + perm_slot")
+                body.append("    perm_i0 = perm_batch // perm_span")
+                body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
+                body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
+                body.append("    perm_k_stride = perm_span")
+            body.append("    perm_mask = perm_batch < nbatch")
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:
             four_step_inner_count = (

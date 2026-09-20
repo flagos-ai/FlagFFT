@@ -77,6 +77,11 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("leaf", CT_LEAF, io_mode="contiguous", requires=_BASE_LEAF_FLAGS),
     KernelSpec("leaf_strided", CT_LEAF, io_mode="strided", requires=_BASE_LEAF_FLAGS),
     KernelSpec(
+        "leaf_permuted_store",
+        CT_LEAF,
+        io_mode="permuted_store",
+        requires=_BASE_LEAF_FLAGS,
+    ),    KernelSpec(
         "leaf_r2c", CT_LEAF, io_mode="contiguous_r2c", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(
@@ -262,6 +267,7 @@ def module_name_for(
     prime_n: int,
     four_step_n1: int,
     four_step_n2: int,
+    perm_form: str = "outer",
 ) -> str:
     """Build the on-disk generated module name for a kernel spec."""
     if spec.family == STOCKHAM:
@@ -285,6 +291,11 @@ def module_name_for(
     if spec.name == "leaf":
         return (
             f"flagfft_jit_{direction_tag}_{factor_tag}"
+            f"_l{lanes}_b{lane_block}_{dtype_tag}"
+        )
+    if spec.name == "leaf_permuted_store":
+        return (
+            f"flagfft_jit_{spec.name}_{perm_form}_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
         )
     if spec.name in {"leaf_r2c", "leaf_c2r"}:

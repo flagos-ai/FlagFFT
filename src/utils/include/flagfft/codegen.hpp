@@ -869,6 +869,34 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
+// 3D C2C/Z2Z that runs the n1 and n0 axes as strided leaves on the natural
+// layout instead of permuting the cube between passes: three launches and no
+// full-cube transpose traffic.  Used when both non-contiguous axis plans are
+// plain leaves.
+struct CompiledRaw3DStridedNode final : CompiledRawNode {
+  CompiledRaw3DStridedNode(int64_t n0,
+                           int64_t n1,
+                           int64_t n2,
+                           std::shared_ptr<CompiledRawNode> n2_fft,
+                           std::shared_ptr<CompiledRawNode> n1_fft,
+                           std::shared_ptr<CompiledRawNode> n0_fft,
+                           DeviceAllocation temp1,
+                           DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<CompiledRawNode> n2_fft;
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
 struct CompiledRaw3DR2CNode final : CompiledRawNode {
   CompiledRaw3DR2CNode(int64_t n0,
                        int64_t n1,
@@ -963,7 +991,7 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> compile_raw_2d_c2r_node(const std::shared_ptr<TwoDimPlanNode> &node,
                                                            const FFTRequest &request,
                                                            int64_t batch);
-  std::shared_ptr<CompiledRaw3DNode> compile_raw_3d_node(const std::shared_ptr<ThreeDimPlanNode> &node,
+  std::shared_ptr<CompiledRawNode> compile_raw_3d_node(const std::shared_ptr<ThreeDimPlanNode> &node,
                                                          const FFTRequest &request,
                                                          int64_t batch);
   std::shared_ptr<CompiledRawNode> compile_raw_3d_r2c_node(const std::shared_ptr<ThreeDimPlanNode> &node,
@@ -976,6 +1004,10 @@ class TritonCompiler {
 
  private:
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
+  std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
+                                                                   const FFTRequest &request,
+                                                                   int64_t perm_span,
+                                                                   const std::string &perm_form);
   std::shared_ptr<CompiledRawNode> compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t outer_stride);

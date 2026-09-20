@@ -94,7 +94,15 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
 def _arg_signature(name: str, dtype: str) -> str:
     if name == "nbatch":
         return "i32"
-    if name in {"n", "m", "input_distance", "output_distance", "outer_stride", "span"}:
+    if name in {
+        "n",
+        "m",
+        "input_distance",
+        "output_distance",
+        "outer_stride",
+        "perm_span",
+        "span",
+    }:
         return "i64"
     if name == "idx_ptr":
         return "*i32:16"

@@ -188,6 +188,7 @@ class LeafPlan:
 LeafIoMode = Literal[
     "contiguous",
     "strided",
+    "permuted_store",
     "contiguous_r2c",
     "contiguous_c2r",
     "bluestein_prepare_leaf",
@@ -380,6 +381,25 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
             min(32 if len(plan.factors) == 1 else 4, 64 // lane_block),
         )
     return _profile_batch_pack_for(plan)
+
+
+def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
+    """Batch slots per block for the fused permuted store.
+
+    Four is what measured best, not the widest run that fits.  The reasoning
+    that a longer run would vectorize better (16 complex64 fills a cache line)
+    does not survive contact with the measurement: 8 and 16 lose to 4 on both
+    MUSA (0.51 against 0.46 ms at 256^3) and A100 (0.51 against 0.36), because
+    the wider pack costs more in shared memory and register pressure than the
+    longer contiguous run buys back.  Shared memory still caps it for large
+    leaves.
+    """
+    profile = current_profile()
+    bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
+    smem_pack = max(
+        1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
+    )
+    return _floor_power_of_two(max(1, min(4, smem_pack)))
 
 
 def _mthreads_small_mixed_leaf(plan: LeafPlan) -> bool:

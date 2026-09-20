@@ -505,6 +505,7 @@ def emit_jit_kernel(
     prime_n: int,
     four_step_n1: int,
     four_step_n2: int,
+    perm_form: str = "outer",
     out_dir: Path,
 ) -> dict[str, Any]:
     plan = LeafPlan(
@@ -536,6 +537,7 @@ def emit_jit_kernel(
             prime_n=prime_n,
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
+            perm_form=perm_form,
         )
         n1 = four_step_n1 if spec.is_four_step else 0
         n2 = four_step_n2 if spec.is_four_step else 0
@@ -573,6 +575,7 @@ def emit_jit_kernel(
         prime_n=prime_n,
         four_step_n1=n1,
         four_step_n2=n2,
+        perm_form=perm_form,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)

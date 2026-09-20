@@ -92,6 +92,7 @@ struct KernelKey {
   int64_t transpose3d_n1 = 0;
   int64_t transpose3d_n2 = 0;
   std::string transpose3d_order;
+  std::string perm_form = "outer";
 
   static KernelKey leaf(std::string target,
                         std::string direction,
@@ -111,6 +112,16 @@ struct KernelKey {
                                 int64_t num_warps,
                                 std::vector<int64_t> generic_radices,
                                 int64_t smem_size);
+  static KernelKey leaf_permuted_store(std::string target,
+                                       std::string direction,
+                                       std::string dtype,
+                                       int64_t length,
+                                       std::vector<int64_t> factors,
+                                       int64_t lanes,
+                                       int64_t num_warps,
+                                       std::vector<int64_t> generic_radices,
+                                       int64_t smem_size,
+                                       std::string perm_form);
   static KernelKey leaf_r2c(std::string target,
                             std::string direction,
                             std::string dtype,
