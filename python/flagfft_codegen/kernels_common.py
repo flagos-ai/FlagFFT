@@ -56,6 +56,20 @@ _PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
 # a tenth of its bandwidth, and at sixteen it fails to compile.
 _PORTABLE_EXCHANGE_MAX_PACK = 4
 
+
+def _portable_exchange_max_pack() -> int:
+    """Ceiling for the exchange pack, overridable for measurement.
+
+    The shipped default reproduces ``_PORTABLE_EXCHANGE_MAX_PACK``; the knob
+    exists because that ceiling was measured under a sweep that ran
+    concurrently with another one on the same card, so the pack-eight collapse
+    it encodes needs re-checking before it is treated as a hardware limit.
+    """
+    override = _maca_knob("MAX_PACK")
+    if not override:
+        return _PORTABLE_EXCHANGE_MAX_PACK
+    return _positive_knob("MAX_PACK", override)
+
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
     {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}
 )
@@ -327,7 +341,7 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
         return pack
     active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
     needed = max(1, _PORTABLE_EXCHANGE_MIN_ELEMENTS // lane_block_for(active_lanes))
-    return max(pack, min(_PORTABLE_EXCHANGE_MAX_PACK, _next_power_of_two(needed)))
+    return max(pack, min(_portable_exchange_max_pack(), _next_power_of_two(needed)))
 
 
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
@@ -405,7 +419,7 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     # An explicit number is an experiment setting and wins outright; only the
     # derived packs go through the tensor-width floor.
     if override not in {"", "auto"}:
-        return min(_positive_knob("INNER_PACK", override), _PORTABLE_EXCHANGE_MAX_PACK)
+        return min(_positive_knob("INNER_PACK", override), _portable_exchange_max_pack())
     if plan is None:
         return 1
     # Derived packs start at the ceiling.  "Just wide enough to span a warp"
@@ -415,10 +429,10 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     # O(lane_block * pack) and MetaX has 64 KiB of shared memory per SM --
     # measured at eight the kernel collapses to a tenth of its bandwidth and at
     # sixteen it fails to compile -- so the ceiling is what bounds it.
-    pack = _PORTABLE_EXCHANGE_MAX_PACK
+    pack = _portable_exchange_max_pack()
     if override == "auto":
         pack = min(pack, _four_step_resource_inner_pack_for(plan))
-    return min(_portable_exchange_pack_floor(plan, pack), _PORTABLE_EXCHANGE_MAX_PACK)
+    return min(_portable_exchange_pack_floor(plan, pack), _portable_exchange_max_pack())
 
 
 def _four_step_col_inner_pack_for(
