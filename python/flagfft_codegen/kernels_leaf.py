@@ -410,11 +410,12 @@ def _emit_permuted_store(
     """Store one radix digit with the batch axis made contiguous.
 
     The register tile is reshaped (batch, lane) and transposed to (lane, batch),
-    so its innermost dimension walks the batch slots.  The caller arranges for
-    consecutive batch slots to be consecutive in the output layout, which turns
-    what would be a scalar scatter into a vectorized store.  The transpose costs
-    a shared-memory layout conversion, but the alternative -- laying the vector
-    out batch-fast -- just moves the miscoalescing onto the load instead.
+    so its innermost dimension walks the batch slots and Triton vectorizes the
+    store.  Addressing each element directly instead -- no `tl.trans` -- measured
+    37% *slower* end to end on MUSA (2.25 against 1.64 ms at 256^3) even though a
+    standalone store benchmark preferred it: without the transpose the tensor's
+    fast axis is `lane`, whose elements sit `perm_k_stride` apart, so the store
+    falls back to scalar 8-byte accesses.
     """
     offset = digit * math.prod(factors[: len(factors) - 1])
     base = "output_base_lane" if offset == 0 else f"(output_base_lane + {offset})"
