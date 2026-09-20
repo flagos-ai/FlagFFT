@@ -292,6 +292,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
                 << " --direction " << shell_quote(key.direction);
   }
+  if (key.kind == KernelKind::LeafPermutedStore) {
+    jit_command << " --perm-form " << shell_quote(key.perm_form);
+  }
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
   }

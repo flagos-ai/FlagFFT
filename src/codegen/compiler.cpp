@@ -105,6 +105,19 @@ namespace {
     return PackedRealChild {std::move(child_request), std::move(child_plan)};
   }
 
+  // Whether 3D should fuse its axis permutations into the FFT stores.  The
+  // trade depends on the backend: where the standalone transpose is already
+  // vectorized (NVIDIA) the fused store costs more than it saves, so this
+  // defaults to off there.  FLAGFFT_3D_FUSED_STORE=0/1 overrides either way,
+  // which is how the two paths are A/B'd.
+  bool fused_3d_store_enabled() {
+    const char *override_value = std::getenv("FLAGFFT_3D_FUSED_STORE");
+    if (override_value != nullptr && *override_value != '\0') {
+      return std::string(override_value) != "0";
+    }
+    return adaptor::backend_name() != "cuda";
+  }
+
 }  // namespace
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNodePtr &node,
@@ -497,7 +510,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
                                                                                 const FFTRequest &request,
-                                                                                int64_t perm_span) {
+                                                                                int64_t perm_span,
+                                                                                const std::string &perm_form) {
   std::string target = triton_target_for_request(request);
   // The fused store vectorizes along the batch slots, so it wants one element per
   // thread across lane_block * batch_pack of them.  Two warps measured best across
@@ -510,7 +524,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.lanes,
                                                  std::max<int64_t>(2, leaf.num_warps),
                                                  leaf.generic_radices,
-                                                 leaf.smem_size);
+                                                 leaf.smem_size,
+                                                 perm_form);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   // Same argument shape as the strided leaf: the permutation span rides in the
   // slot that carries outer_stride there, so the node is reused unchanged.
@@ -965,6 +980,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   constexpr int64_t kStridedMaxElements = 64 * 64 * 64;
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
+  auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
+
+  // Fused fast path: each axis runs as a leaf whose store also applies the
+  // permutation the next axis wants, so three FFT passes plus three full-cube
+  // transposes collapse into three passes.  Worth it only where the standalone
+  // transpose is expensive next to the FFT pass -- on MUSA it is (490 against
+  // 789 GB/s), on A100 it is not (already vectorized), where the fused store
+  // measured slower than the FFT pass it replaces.  Forward and inverse share
+  // the chain because the per-axis transforms commute and only the final
+  // layout has to be the natural one.  Small cubes keep the strided path
+  // below, whose win there is already established, so the two are disjoint.
+  if (n2_leaf && n1_leaf && n0_leaf && fused_3d_store_enabled() &&
+      batch * n0 * n1 * n2 > kStridedMaxElements) {
+    std::shared_ptr<CompiledRawNode> n2_fft =
+        compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, "outer");
+    std::shared_ptr<CompiledRawNode> n1_fft =
+        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
+    std::shared_ptr<CompiledRawNode> n0_fft =
+        compile_raw_permuted_store_leaf(*n0_leaf, n0_request, /*perm_span=*/n1 * n2, "outer");
+
+    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+
+    return std::make_shared<CompiledRaw3DStridedNode>(n0,
+                                                      n1,
+                                                      n2,
+                                                      std::move(n2_fft),
+                                                      std::move(n1_fft),
+                                                      std::move(n0_fft),
+                                                      std::move(temp1),
+                                                      std::move(temp2));
+  }
+
   if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements) {
     std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
     std::shared_ptr<CompiledRawNode> n1_fft =

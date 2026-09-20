@@ -1006,7 +1006,8 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request,
-                                                                   int64_t perm_span);
+                                                                   int64_t perm_span,
+                                                                   const std::string &perm_form);
   std::shared_ptr<CompiledRawNode> compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t outer_stride);
