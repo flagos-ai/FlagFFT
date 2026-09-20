@@ -597,14 +597,20 @@ def input_batch_groups(batch: int) -> Iterable[tuple[int, int]]:
 
 
 def offer_group(groups: "queue.Queue", item: Any, stop: threading.Event) -> bool:
-    """Hand one group to the reader, giving up if the case is being torn down."""
-    while not stop.is_set():
-        try:
-            groups.put(item, timeout=0.25)
-            return True
-        except queue.Full:
-            continue
-    return False
+    """Hand one group to the reader, giving up if the case is being torn down.
+
+    The queue is deliberately unbounded.  The native capture reads a whole chunk
+    -- the entire batch for small transforms, up to `kMaxChunkBytes` otherwise --
+    before it emits any output, so a writer that waited for the reader to drain
+    would deadlock as soon as that chunk covered more than the groups already in
+    flight.  The backpressure comes from the capture's stdin pipe instead: the
+    writer can only run ahead of the reader by as much input as the pipe and the
+    capture's own chunk absorb.
+    """
+    if stop.is_set():
+        return False
+    groups.put(item)
+    return True
 
 
 def queued_groups(groups: "queue.Queue") -> Iterable[np.ndarray]:
@@ -1277,8 +1283,10 @@ def feed_generated_input(
         # reason, so there is nothing useful to add here.
         pass
     finally:
-        # Always release the reader, even when the pipe broke part way through.
-        offer_group(groups, None, stop)
+        # Always release the reader: the sentinel goes in even when the case is
+        # being torn down, so a reader parked on the queue cannot outlive the
+        # writer.
+        groups.put(None)
 
 
 def read_plan(log_path: Path) -> str | None:
@@ -1352,10 +1360,10 @@ def run_accuracy_capture(
     process = None
     writer = None
     watchdog = None
-    # One group deep.  The writer generates ahead of the reader so the capture
-    # always has input to chew on, while the two of them never hold more than
-    # two groups between them.
-    groups: queue.Queue = queue.Queue(maxsize=1)
+    # Unbounded on purpose -- see offer_group.  Gating the writer on the reader
+    # deadlocks against a capture that reads its whole chunk before emitting any
+    # output; the stdin pipe is what bounds how far ahead the writer may run.
+    groups: queue.Queue = queue.Queue()
     try:
         with log_path.open("wb") as log_stream:
             process = subprocess.Popen(

@@ -702,6 +702,56 @@ def test_feed_generated_input_releases_the_reader_when_the_pipe_breaks(monkeypat
     np.testing.assert_array_equal(drained[0], expected)
 
 
+def test_feed_generated_input_does_not_wait_for_the_reader(monkeypatch):
+    """Filling stdin must not depend on the reader making progress.
+
+    The native capture reads its whole chunk -- the entire batch for a small
+    transform -- before it emits any output, so a writer gated on the reader
+    draining the handoff queue deadlocks as soon as that chunk covers more
+    groups than are already in flight.
+    """
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+    api, shape, batch, scale = "c2c", (16,), 8, 1.0
+    value, _ = RUN_TESTS.make_input(api, shape, batch, scale)
+    stream = io.BytesIO()
+    groups: "queue.Queue" = queue.Queue()
+    writer = threading.Thread(
+        target=RUN_TESTS.feed_generated_input,
+        args=(stream, groups, api, shape, batch, scale, threading.Event()),
+    )
+    writer.start()
+    writer.join(timeout=10)
+    assert not writer.is_alive(), "the writer blocked waiting for the reader"
+    assert stream.getvalue() == value.tobytes()
+    # The reader still finds every group, and the sentinel that ends it.
+    np.testing.assert_array_equal(
+        np.concatenate(list(RUN_TESTS.queued_groups(groups)), axis=0), value
+    )
+
+
+def test_batched_accuracy_case_feeds_a_capture_that_reads_before_it_writes(
+    tmp_path, operators, matrix
+):
+    """The same deadlock, through the real case runner.
+
+    `fake_capture` reads its whole input before writing any output, exactly like
+    the native capture.  Only a batch larger than one handoff group exposes the
+    difference: every batched accuracy case hung until its watchdog fired, with
+    the capture having produced neither a plan nor a byte.
+    """
+    case = next(
+        case
+        for case in RUN_TESTS.expand_all_test_cases(operators, matrix)
+        if case["op_id"] == "1d_ct_batch_c2c"
+    )
+    assert case["batch"] > RUN_TESTS.REFERENCE_BATCH_CHUNK
+    record = RUN_TESTS.run_accuracy_case(
+        case, fake_capture(tmp_path), tmp_path / "output", 0, 20, tmp_path / "scratch"
+    )
+    assert record["accuracy"]["status"] == "Passed"
+    assert record["platform_accuracy"]["status"] == "Passed"
+
+
 def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
     value, _ = RUN_TESTS.make_input("c2c", (23,), 1, 1.0)
     forward = RUN_TESTS.numpy_reference(value, "c2c", (23,), "forward")
