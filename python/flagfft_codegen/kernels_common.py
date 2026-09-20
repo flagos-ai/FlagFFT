@@ -64,12 +64,26 @@ def _portable_exchange_max_pack() -> int:
     The shipped default reproduces ``_PORTABLE_EXCHANGE_MAX_PACK``; the knob
     exists because that ceiling was measured under a sweep that ran
     concurrently with another one on the same card, so the pack-eight collapse
-    it encodes needs re-checking before it is treated as a hardware limit.
+    it used to encode needed re-checking before being treated as a hardware
+    limit.
     """
     override = _maca_knob("MAX_PACK")
     if not override:
         return _PORTABLE_EXCHANGE_MAX_PACK
     return _positive_knob("MAX_PACK", override)
+
+
+def _cooperative_warp_cap() -> int:
+    """Ceiling on the cooperative warp count for a leaf block.
+
+    MetaX allows 1024-thread blocks, but a block that wide halves occupancy, so
+    the cap stays at eight unless a measurement overrides it.
+    """
+    override = _maca_knob("MAX_WARPS")
+    if not override:
+        return 8
+    return _positive_knob("MAX_WARPS", override)
+
 
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
     {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}

@@ -23,6 +23,7 @@ from .backend_profile import current_profile
 from .kernels_common import (
     _CODELET_DIR,
     LeafPlan,
+    _cooperative_warp_cap,
     _dtype_suffix,
     _maca_backend_active,
     _zero_other,
@@ -155,7 +156,8 @@ def _metadata(
             required_warps = profile.warps_for(
                 lane_block_for(max(stage_lanes)) * work_pack
             )
-        while cooperative_warps < required_warps and cooperative_warps < 8:
+        warp_cap = _cooperative_warp_cap()
+        while cooperative_warps < required_warps and cooperative_warps < warp_cap:
             cooperative_warps *= 2
         num_warps = max(num_warps, cooperative_warps)
     if "_thread_local_" in kernel_name:
