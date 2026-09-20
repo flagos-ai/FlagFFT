@@ -51,10 +51,11 @@ _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
 # The MetaX plugin cannot lower maca.shfl.sync, so the portable exchange must
 # gather from a tensor wider than one 64-thread warp.
 _PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
-# Hard ceiling for the exchange pack.  Past four the exchange tensor outgrows
-# MetaX's 64 KiB of shared memory per SM: measured at eight the kernel drops to
-# a tenth of its bandwidth, and at sixteen it fails to compile.
-_PORTABLE_EXCHANGE_MAX_PACK = 4
+# Hard ceiling for the exchange pack.  The collapse this used to encode at
+# eight was measured while two sweeps shared the card; re-measured cleanly,
+# eight is the best configuration on the 209/221-point leaves (2.567 -> 0.941
+# ms at n=46189, correct).  Sixteen is where the generated index overflows.
+_PORTABLE_EXCHANGE_MAX_PACK = 8
 
 
 def _portable_exchange_max_pack() -> int:
@@ -408,6 +409,24 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     return _floor_power_of_two(max(1, min(max_pack, thread_pack, smem_pack)))
 
 
+def _maca_four_step_pack_for(plan: LeafPlan) -> int:
+    """Pack that fills a 256-thread block on MetaX, bounded to [4, 8].
+
+    Measured on the 1D ct four-step leaves at batch 256.  Eight is the best
+    pack when the lane block is 32: the column kernel goes from 2.226 ms at
+    85 GB/s to 0.49 ms at 390 GB/s, taking the plan from 2.567 to 0.941 ms.
+    Four is best when the lane block is 64 or 128, where eight costs 1.09x and
+    1.83x -- a lane block that wide already spans the block, so the extra pack
+    only adds registers.  Filling 256 threads picks eight at 32 lanes and four
+    at 64, and the shipped four is the floor for the leaves the target would
+    push below it.
+    """
+    active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
+    target = _FOUR_STEP_PACK_TARGET_THREADS // lane_block_for(active_lanes)
+    bounded = min(_portable_exchange_max_pack(), max(_FOUR_STEP_LARGE_INNER_PACK, target))
+    return _floor_power_of_two(max(1, bounded))
+
+
 def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     """Inner transforms packed per four-step row/column block on MACA.
 
@@ -422,14 +441,13 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
         return min(_positive_knob("INNER_PACK", override), _portable_exchange_max_pack())
     if plan is None:
         return 1
-    # Derived packs start at the ceiling.  "Just wide enough to span a warp"
-    # is not the right target: on the 390/476-point leaves the lane block is
+    # Derived packs fill a 256-thread block.  "Just wide enough to span a warp"
+    # is not the right target (on the 390/476-point leaves the lane block is
     # already 128, so that rule leaves the pack at one and measured 5x slower
-    # than four (27.9 ms against 5.6 ms at n=185640).  The exchange tensor is
-    # O(lane_block * pack) and MetaX has 64 KiB of shared memory per SM --
-    # measured at eight the kernel collapses to a tenth of its bandwidth and at
-    # sixteen it fails to compile -- so the ceiling is what bounds it.
-    pack = _portable_exchange_max_pack()
+    # than four), and neither is a flat ceiling: the ceiling rule launched 128
+    # threads on the 209/221-point leaves and measured 2.7x slower than the
+    # 256-thread block the same plan gets on a 32-lane backend.
+    pack = _maca_four_step_pack_for(plan)
     if override == "auto":
         pack = min(pack, _four_step_resource_inner_pack_for(plan))
     return min(_portable_exchange_pack_floor(plan, pack), _portable_exchange_max_pack())
