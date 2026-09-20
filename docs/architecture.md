@@ -226,10 +226,11 @@ Its native capture target compares FlagFFT and the platform library independentl
 against NumPy; FlagFFT correctness alone decides acceptance. Performance uses
 `flagfft-cli bench` once per shape/batch/direction, regardless of input scales.
 JSON and incremental CSV retain per-case runtime plans and both correctness
-results. The generated input stays in a scratch directory outside the result
-tree and the capture's output is streamed back through a pipe, so no raw array
-is ever written into the deliverable: the result directory holds only the
-per-operator JSON files and the aggregated `accuracy.log`/`perf.log`.
+results. The generated input is regenerated from its seed a batch group at a
+time and piped into the capture, whose output is streamed back through a pipe,
+so no raw array is ever written to disk at all: the result directory holds only
+the per-operator JSON files and the aggregated `accuracy.log`/`perf.log`, and
+the scratch directory holds only the capture's console logs.
 Workspace policy since 2026-09-17 is not to retain raw `.npy`/`.bin` dumps at
 all. `summary.json` is a flat array of operator elements in the shape the
 acceptance platform parses.

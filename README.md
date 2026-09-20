@@ -550,12 +550,13 @@ exact partial selection.
 - `{op_id}/accuracy.log`: the FlagFFT and platform capture console output for every accuracy case of that operator, with each plan between `FLAGFFT PLAN BEGIN/END` delimiters and each case introduced by a `----- <case_id> <impl> -----` header. The file closes with a pytest-shaped verdict line, so a platform log parser derives the same counts and status as `summary.json`.
 - `{op_id}/perf.log`: the benchmark console output for every performance case.
 
-The generated input and the captured output never reach the result tree. The
-input is a transient file in a scratch directory that is removed as soon as the
-case finishes, and the output is streamed back through a pipe and folded into
-the NumPy comparison batch by batch. No `.bin`, `.npy`, `case.json`,
-`flagfft_plan.txt` or per-case directory is produced, so a full run writes
-exactly five files per operator.
+Neither the generated input nor the captured output ever touches the disk. The
+input is regenerated from its seed one batch group at a time and pushed into the
+capture's stdin as the capture consumes it, and the output is streamed back
+through a pipe and folded into the NumPy comparison batch by batch. The scratch
+directory holds nothing but the capture's own console logs. No `.bin`, `.npy`,
+`case.json`, `flagfft_plan.txt` or per-case directory is produced, so a full run
+writes exactly five files per operator.
 
 In `summary.json`, `accuracy` and `platform_accuracy` carry the counts, the
 `PASS`/`FAIL` status and the log path the platform reads; `performance` is one

@@ -20,10 +20,12 @@ import importlib.util
 import io
 import json
 import os
+import queue
 import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -601,6 +603,105 @@ def test_make_input_preserves_chunked_splitmix_values(monkeypatch):
     np.testing.assert_array_equal(value, expected)
 
 
+def test_input_batch_groups_cover_the_batch_exactly():
+    for batch in (0, 1, 3, 4, 5, 8, 9):
+        groups = list(RUN_TESTS.input_batch_groups(batch))
+        assert [start for start, _ in groups] == sorted(start for start, _ in groups)
+        assert all(count > 0 for _, count in groups)
+        assert sum(count for _, count in groups) == batch
+        # Consecutive and gap-free.
+        cursor = 0
+        for start, count in groups:
+            assert start == cursor
+            cursor += count
+
+
+@pytest.mark.parametrize(
+    "api",
+    ["c2c", "z2z", "c2r", "r2c", "z2d", "d2z"],
+)
+@pytest.mark.parametrize("shape", [(23,), (8, 10), (8, 7), (4, 5, 6)])
+@pytest.mark.parametrize("batch", [1, 3, 4, 5])
+@pytest.mark.parametrize("scale", [1.0, 0.25])
+def test_grouped_input_generation_equals_whole_array_generation(
+    monkeypatch, api, shape, batch, scale
+):
+    """The runner regenerates the input group by group instead of parking it on disk.
+
+    That is only sound if the concatenation of the groups is byte-identical to the
+    single whole-array generation the old file-backed path wrote out.  The Hermitian
+    fix-up for real inverse APIs is the risky part: it reaches across planes, so this
+    also pins down that it never crosses a batch boundary.
+    """
+    # A chunk size that does not divide the group size, so the addressable stream is
+    # exercised mid-group as well as at the seams.
+    monkeypatch.setattr(RUN_TESTS, "INPUT_GENERATION_CHUNK_ELEMENTS", 7)
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 2)
+    whole, seed = RUN_TESTS.make_input(api, shape, batch, scale)
+    groups = [
+        RUN_TESTS.make_input_batches(api, shape, batch, scale, start, count)
+        for start, count in RUN_TESTS.input_batch_groups(batch)
+    ]
+    assert all(group.flags["C_CONTIGUOUS"] for group in groups)
+    assert all(group.dtype == whole.dtype for group in groups)
+    assert all(group.shape[1:] == whole.shape[1:] for group in groups)
+    rebuilt = np.concatenate(groups, axis=0)
+    np.testing.assert_array_equal(rebuilt, whole)
+    assert RUN_TESTS.accuracy_seed(api, RUN_TESTS.product(shape), batch) == seed
+
+
+def test_feed_generated_input_writes_the_whole_input_to_the_stream(monkeypatch):
+    """The writer must hand the capture exactly the bytes the old input file held."""
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 2)
+    api, shape, batch, scale = "z2d", (8, 10), 5, 0.5
+    value, _ = RUN_TESTS.make_input(api, shape, batch, scale)
+    stream = io.BytesIO()
+    stop = threading.Event()
+    groups: "queue.Queue" = queue.Queue(maxsize=1)
+    drained: list[np.ndarray] = []
+
+    def reader() -> None:
+        drained.extend(RUN_TESTS.queued_groups(groups))
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    RUN_TESTS.feed_generated_input(stream, groups, api, shape, batch, scale, stop)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert stream.getvalue() == value.tobytes()
+    np.testing.assert_array_equal(np.concatenate(drained, axis=0), value)
+
+
+def test_feed_generated_input_releases_the_reader_when_the_pipe_breaks(monkeypatch):
+    """A killed capture closes stdin; the writer must still terminate the reader."""
+    monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+
+    class BrokenStream:
+        def write(self, _data) -> int:
+            raise BrokenPipeError("capture exited")
+
+        def flush(self) -> None:
+            raise AssertionError("flush must not run after a broken pipe")
+
+    groups: "queue.Queue" = queue.Queue(maxsize=1)
+    drained: list[np.ndarray] = []
+    thread = threading.Thread(
+        target=lambda: drained.extend(RUN_TESTS.queued_groups(groups))
+    )
+    thread.start()
+    RUN_TESTS.feed_generated_input(
+        BrokenStream(), groups, "c2c", (8,), 4, 1.0, threading.Event()
+    )
+    # The sentinel is queued even though every write failed, so the reader returns
+    # instead of blocking forever on a capture that is already gone.
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    # Only the group that made it into the queue before the pipe broke is seen.
+    expected = RUN_TESTS.make_input_batches("c2c", (8,), 4, 1.0, 0, 1)
+    assert len(drained) == 1
+    np.testing.assert_array_equal(drained[0], expected)
+
+
 def test_numpy_reference_uses_double_precision_and_unnormalized_inverse():
     value, _ = RUN_TESTS.make_input("c2c", (23,), 1, 1.0)
     forward = RUN_TESTS.numpy_reference(value, "c2c", (23,), "forward")
@@ -639,8 +740,12 @@ def test_compare_stream_matches_materialized_reference(monkeypatch, api, directi
     payload = np.ascontiguousarray(reference.astype(output_dtype)).tobytes()
 
     monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
-    streaming, digest = RUN_TESTS.compare_stream(
-        io.BytesIO(payload), value, api, shape, direction, batch
+    groups = [
+        RUN_TESTS.make_input_batches(api, shape, batch, 1.0, start, count)
+        for start, count in RUN_TESTS.input_batch_groups(batch)
+    ]
+    streaming, digest, input_digest = RUN_TESTS.compare_stream(
+        io.BytesIO(payload), groups, api, shape, direction, batch
     )
     elements = RUN_TESTS.product(RUN_TESTS.output_shape(api, shape, batch)[1:])
     materialized = RUN_TESTS.error_stats(
@@ -648,15 +753,20 @@ def test_compare_stream_matches_materialized_reference(monkeypatch, api, directi
     )
     assert streaming == materialized
     assert digest == hashlib.sha256(payload).hexdigest()
+    assert input_digest == hashlib.sha256(value.tobytes()).hexdigest()
 
 
 def test_compare_stream_reports_a_truncated_pipe(monkeypatch):
     shape = (8,)
-    value, _ = RUN_TESTS.make_input("c2c", shape, 2, 1.0)
+    batch = 2
     monkeypatch.setattr(RUN_TESTS, "REFERENCE_BATCH_CHUNK", 1)
+    groups = [
+        RUN_TESTS.make_input_batches("c2c", shape, batch, 1.0, start, count)
+        for start, count in RUN_TESTS.input_batch_groups(batch)
+    ]
     with pytest.raises(ValueError, match="of"):
         RUN_TESTS.compare_stream(
-            io.BytesIO(b"\0" * 8), value, "c2c", shape, "forward", 2
+            io.BytesIO(b"\0" * 8), groups, "c2c", shape, "forward", batch
         )
 
 
@@ -703,12 +813,15 @@ def test_accuracy_case_streams_without_writing_arrays_into_the_result_tree(
     # The streamed bytes are hashed as they arrive, so the digest still covers
     # the whole output even though no output file exists.
     assert len(record["accuracy"]["output_sha256"]) == 64
+    assert len(record["accuracy"]["input_sha256"]) == 64
     op_dir = output / case["op_id"]
     assert list(op_dir.iterdir()) == []
     assert not (op_dir / case["case_id"]).exists()
     assert not any(path.suffix in (".bin", ".npy") for path in output.rglob("*"))
-    # The transient input is deleted as soon as the case finishes.
+    # Nothing but the capture's own console logs ever reaches the scratch dir:
+    # the input is regenerated group by group and the output is compared in memory.
     assert not any(scratch.rglob("input.bin"))
+    assert {path.suffix for path in scratch.rglob("*") if path.is_file()} <= {".log"}
 
 
 def test_operator_logs_collect_every_case(tmp_path, operators, matrix):
@@ -783,7 +896,15 @@ def test_both_scales_survive_in_the_operator_result(tmp_path, operators, matrix)
         RUN_TESTS.run_accuracy_case(case, capture, output, 0, 60, tmp_path / "scratch")
         for case in (case1, case2)
     ]
-    assert records[0]["input_sha256"] != records[1]["input_sha256"]
+    # The two scales really did see different input bytes, and each digest covers
+    # the whole streamed input.
+    digests = [record["accuracy"]["input_sha256"] for record in records]
+    assert all(len(digest) == 64 for digest in digests)
+    assert digests[0] != digests[1]
+    assert (
+        records[0]["accuracy"]["input_sha256"]
+        == records[0]["platform_accuracy"]["input_sha256"]
+    )
     results = RUN_TESTS.aggregate_results(
         [
             accuracy_message(case, record)

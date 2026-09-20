@@ -228,12 +228,17 @@ def splitmix_signed_unit(count: int, seed: int) -> np.ndarray:
     return bits * (2.0 / 9007199254740992.0) - 1.0
 
 
-def fill_splitmix_signed_unit(output: np.ndarray, seed: int) -> None:
-    """Fill native-dtype output without materializing the full float64 stream."""
+def fill_splitmix_signed_unit(output: np.ndarray, seed: int, offset: int = 0) -> None:
+    """Fill native-dtype output without materializing the full float64 stream.
+
+    `offset` is the position of `output`'s first element in the whole stream, so
+    a caller can fill an interior range and still get the values the
+    uninterrupted stream would have placed there.
+    """
     flat = np.asarray(output).reshape(-1)
     for start in range(0, flat.size, INPUT_GENERATION_CHUNK_ELEMENTS):
         stop = min(flat.size, start + INPUT_GENERATION_CHUNK_ELEMENTS)
-        chunk_seed = (int(seed) + start * SPLITMIX_INCREMENT) & MASK64
+        chunk_seed = (int(seed) + (int(offset) + start) * SPLITMIX_INCREMENT) & MASK64
         generated = splitmix_signed_unit(stop - start, chunk_seed)
         flat[start:stop] = generated.astype(flat.dtype, copy=False)
 
@@ -258,17 +263,32 @@ def as_complex_from_interleaved(
     return scalar.view(dtype).reshape(shape)
 
 
-def make_input(
-    api: str, shape: tuple[int, ...], batch: int, scale: float
-) -> tuple[np.ndarray, int]:
-    """Generate deterministic native-dtype input, including valid real half spectra."""
+def make_input_batches(
+    api: str,
+    shape: tuple[int, ...],
+    batch: int,
+    scale: float,
+    batch_start: int,
+    batch_count: int,
+) -> np.ndarray:
+    """Generate `batch_count` consecutive batches of the deterministic input.
+
+    The SplitMix64 stream is addressable and the Hermitian fix-up only ever
+    touches planes inside a single batch, so a group is bit-identical to the
+    matching slice of make_input(...).  The runner relies on that to regenerate
+    the input group by group instead of parking a multi-gigabyte copy on disk.
+    """
     seed = accuracy_seed(api, product(shape), batch)
     target_shape = input_shape(api, shape, batch)
-    count = product(target_shape)
+    per_batch = product(target_shape[1:])
+    group_shape = (batch_count, *target_shape[1:])
+    count = batch_count * per_batch
+    offset = batch_start * per_batch
     if is_complex(api) or is_real_inverse(api):
+        # A complex element is two consecutive scalars in the stream.
         scalar = np.empty(count * 2, dtype=real_dtype(api))
-        fill_splitmix_signed_unit(scalar, seed)
-        result = scalar.view(complex_dtype(api)).reshape(target_shape)
+        fill_splitmix_signed_unit(scalar, seed, offset * 2)
+        result = scalar.view(complex_dtype(api)).reshape(group_shape)
         if is_real_inverse(api):
             # DC/Nyquist planes must be Hermitian across every preceding FFT
             # axis. Merely zeroing their imaginary parts is only valid in 1D.
@@ -282,48 +302,65 @@ def make_input(
                     )
                 result[..., boundary] = (plane + mirrored.conj()) * 0.5
     else:
-        result = np.empty(count, dtype=real_dtype(api)).reshape(target_shape)
-        fill_splitmix_signed_unit(result, seed)
+        result = np.empty(count, dtype=real_dtype(api)).reshape(group_shape)
+        fill_splitmix_signed_unit(result, seed, offset)
     scale_value = np.asarray(scale, dtype=real_dtype(api)).item()
     result *= scale_value
-    return np.ascontiguousarray(result), seed
+    return np.ascontiguousarray(result)
+
+
+def make_input(
+    api: str, shape: tuple[int, ...], batch: int, scale: float
+) -> tuple[np.ndarray, int]:
+    """Generate deterministic native-dtype input, including valid real half spectra."""
+    seed = accuracy_seed(api, product(shape), batch)
+    return make_input_batches(api, shape, batch, scale, 0, batch), seed
+
+
+def numpy_reference_batch(
+    chunk: np.ndarray, api: str, shape: tuple[int, ...], direction: str
+) -> np.ndarray:
+    """The double-precision NumPy oracle for one group of consecutive batches.
+
+    The conversion to double precision happens on the group, never on the whole
+    input: converting a large native input array up front creates another
+    full-size array, which is enough to exceed the MUSA test cgroup for the
+    largest batched cases.
+    """
+    chunk = np.asarray(chunk)
+    input_dtype = np.complex128 if np.iscomplexobj(chunk) else np.float64
+    chunk = np.asarray(chunk, dtype=input_dtype)
+    axes = tuple(range(1, len(shape) + 1))
+    transform_size = product(shape)
+    if is_complex(api):
+        if direction == "forward":
+            transformed = np.fft.fftn(chunk, s=shape, axes=axes)
+        else:
+            transformed = np.fft.ifftn(chunk, s=shape, axes=axes)
+            transformed *= transform_size
+    elif is_real_forward(api):
+        transformed = np.fft.rfftn(chunk, s=shape, axes=axes)
+    elif is_real_inverse(api):
+        # The device APIs intentionally use the unnormalized inverse.
+        transformed = np.fft.irfftn(chunk, s=shape, axes=axes)
+        transformed *= transform_size
+    else:
+        raise ValueError(f"unknown API: {api}")
+    return np.asarray(transformed, dtype=numpy_reference_dtype(api))
 
 
 def numpy_reference_chunks(
     value: np.ndarray, api: str, shape: tuple[int, ...], direction: str
 ) -> Iterable[tuple[int, int, np.ndarray]]:
-    """Yield bounded double-precision NumPy reference batches.
-
-    The input is deliberately converted inside the batch loop.  Converting a
-    large native input array before the loop creates another full-size array,
-    which is enough to exceed the MUSA test cgroup for the largest batched
-    cases.
-    """
+    """Yield bounded double-precision NumPy reference batches."""
     value = np.asarray(value)
-    axes = tuple(range(1, len(shape) + 1))
-    transform_size = product(shape)
-    input_dtype = np.complex128 if np.iscomplexobj(value) else np.float64
     for start in range(0, value.shape[0], REFERENCE_BATCH_CHUNK):
         stop = min(value.shape[0], start + REFERENCE_BATCH_CHUNK)
-        chunk = np.asarray(value[start:stop], dtype=input_dtype)
-        if is_complex(api):
-            if direction == "forward":
-                transformed = np.fft.fftn(chunk, s=shape, axes=axes)
-            else:
-                transformed = np.fft.ifftn(chunk, s=shape, axes=axes)
-                transformed *= transform_size
-        elif is_real_forward(api):
-            transformed = np.fft.rfftn(chunk, s=shape, axes=axes)
-        elif is_real_inverse(api):
-            # The device APIs intentionally use the unnormalized inverse.
-            transformed = np.fft.irfftn(chunk, s=shape, axes=axes)
-            transformed *= transform_size
-        else:
-            raise ValueError(f"unknown API: {api}")
-        yield start, stop, np.asarray(transformed, dtype=numpy_reference_dtype(api))
+        yield start, stop, numpy_reference_batch(
+            value[start:stop], api, shape, direction
+        )
         # The caller has finished comparing this chunk before requesting the
-        # next one.  Drop generator-local references before the next FFT.
-        del chunk, transformed
+        # next one, so only one group is ever resident here.
 
 
 def numpy_reference(
@@ -508,43 +545,75 @@ def kill_process_group(process: subprocess.Popen) -> None:
 
 def compare_stream(
     stream,
-    input_value: np.ndarray,
+    groups: Iterable[np.ndarray],
     api: str,
     shape: tuple[int, ...],
     direction: str,
     batch: int,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, Any], str, str]:
     """Fold a streamed native output into NumPy error statistics.
 
-    The output never reaches the disk.  Each reference batch is read from the
-    pipe, hashed and compared before the next one is requested, so peak memory
-    stays at one bounded group of batches on each side.
+    The output never reaches the disk.  Each reference batch group is read from
+    the pipe, hashed and compared before the next one is requested, so peak
+    memory stays at one bounded group on each side.  Both digests accumulate
+    here: the output one covers the bytes the capture emitted, the input one
+    covers the generated input that produced them.
     """
     dtype = raw_dtype(api, is_input=False)
     elements = product(output_shape(api, shape, batch)[1:])
     bytes_per_batch = elements * dtype.itemsize
-    digest = hashlib.sha256()
+    output_digest = hashlib.sha256()
+    input_digest = hashlib.sha256()
     aggregate = None
-    for start, stop, reference_chunk in numpy_reference_chunks(
-        input_value, api, shape, direction
-    ):
-        buffer = read_exactly(stream, (stop - start) * bytes_per_batch)
-        digest.update(buffer)
-        if aggregate is not None and not aggregate["finite"]:
-            # The comparison already failed.  Keep draining so the child is
-            # not left blocked writing into a full pipe.
-            del reference_chunk
-            continue
-        output = np.frombuffer(buffer, dtype=dtype).reshape(stop - start, elements)
-        aggregate = merge_error_stats(
-            aggregate,
-            error_stats(output, reference_chunk, elements, stop - start),
-            start,
-        )
-        del output, reference_chunk
+    start = 0
+    for group in groups:
+        count = int(group.shape[0])
+        input_digest.update(memoryview(group).cast("B"))
+        reference_chunk = numpy_reference_batch(group, api, shape, direction)
+        buffer = read_exactly(stream, count * bytes_per_batch)
+        output_digest.update(buffer)
+        if aggregate is None or aggregate["finite"]:
+            output = np.frombuffer(buffer, dtype=dtype).reshape(count, elements)
+            aggregate = merge_error_stats(
+                aggregate,
+                error_stats(output, reference_chunk, elements, count),
+                start,
+            )
+            del output
+        # Once the aggregate goes non-finite the verdict is settled.  Keep
+        # draining so the child is not left blocked on a full pipe, but stop
+        # paying for the oracle.
+        del reference_chunk, group
+        start += count
     if aggregate is None:
         raise ValueError("NumPy reference produced no batches")
-    return aggregate, digest.hexdigest()
+    return aggregate, output_digest.hexdigest(), input_digest.hexdigest()
+
+
+def input_batch_groups(batch: int) -> Iterable[tuple[int, int]]:
+    """The batch groups the writer and the reader both walk, in order."""
+    for start in range(0, batch, REFERENCE_BATCH_CHUNK):
+        yield start, min(REFERENCE_BATCH_CHUNK, batch - start)
+
+
+def offer_group(groups: "queue.Queue", item: Any, stop: threading.Event) -> bool:
+    """Hand one group to the reader, giving up if the case is being torn down."""
+    while not stop.is_set():
+        try:
+            groups.put(item, timeout=0.25)
+            return True
+        except queue.Full:
+            continue
+    return False
+
+
+def queued_groups(groups: "queue.Queue") -> Iterable[np.ndarray]:
+    """Yield generated groups until the writer signals that it is done."""
+    while True:
+        group = groups.get()
+        if group is None:
+            return
+        yield group
 
 
 def ceil_log2_covering(value: int) -> int:
@@ -578,14 +647,6 @@ def judged_stats(stats: dict[str, Any], limits: dict[str, float]) -> dict[str, A
         and stats["rel_linf"] <= limits["rel_linf"]
     )
     return result
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def raw_dtype(api: str, *, is_input: bool) -> np.dtype:
@@ -623,21 +684,6 @@ def load_raw(path: Path, api: str, shape: tuple[int, ...], batch: int) -> np.nda
     if data.size != expected:
         raise ValueError(f"{path}: expected {expected} {dtype} values, got {data.size}")
     return data.reshape(expected_shape)
-
-
-def load_raw_memmap(
-    path: Path, api: str, shape: tuple[int, ...], batch: int
-) -> np.ndarray:
-    """Open a raw artifact without allocating a second full-size array."""
-    dtype, expected_shape = raw_spec(path, api, shape, batch)
-    expected_bytes = product(expected_shape) * dtype.itemsize
-    actual_bytes = path.stat().st_size
-    if actual_bytes != expected_bytes:
-        raise ValueError(
-            f"{path}: expected {expected_bytes} bytes for {dtype} {expected_shape}, "
-            f"got {actual_bytes}"
-        )
-    return np.memmap(path, dtype=dtype, mode="r", shape=expected_shape)
 
 
 def json_safe(value: Any) -> Any:
@@ -1204,18 +1250,35 @@ def capture_env(gpu_id: int) -> dict[str, str]:
     return env
 
 
-def feed_capture_input(stream, input_value: np.ndarray) -> None:
-    """Stream the generated input into the capture's stdin in bounded blocks."""
-    flat = np.asarray(input_value).reshape(-1)
+def feed_generated_input(
+    stream,
+    groups: "queue.Queue",
+    api: str,
+    shape: tuple[int, ...],
+    batch: int,
+    scale: float,
+    stop: threading.Event,
+) -> None:
+    """Generate the deterministic input a batch group at a time into stdin.
+
+    The group is regenerated rather than read back from a file, so the input
+    never reaches the disk.  The same object is handed to the reader, which
+    only reads it, so the two threads share one group instead of copying it.
+    """
     try:
-        for start in range(0, flat.size, INPUT_GENERATION_CHUNK_ELEMENTS):
-            stop = min(flat.size, start + INPUT_GENERATION_CHUNK_ELEMENTS)
-            stream.write(np.ascontiguousarray(flat[start:stop]).tobytes())
+        for start, count in input_batch_groups(batch):
+            group = make_input_batches(api, shape, batch, scale, start, count)
+            if not offer_group(groups, group, stop):
+                return
+            stream.write(memoryview(group).cast("B"))
         stream.flush()
     except (BrokenPipeError, OSError, ValueError):
         # The capture exited or was killed.  The reader reports the real
         # reason, so there is nothing useful to add here.
         pass
+    finally:
+        # Always release the reader, even when the pipe broke part way through.
+        offer_group(groups, None, stop)
 
 
 def read_plan(log_path: Path) -> str | None:
@@ -1260,7 +1323,6 @@ def run_accuracy_capture(
     case: dict,
     capture_bin: Path,
     case_scratch: Path,
-    input_value: np.ndarray,
     implementation: str,
     gpu_id: int,
     timeout: int,
@@ -1268,9 +1330,9 @@ def run_accuracy_capture(
     """Run one native capture and judge its streamed output against NumPy.
 
     The input arrives on stdin and the output leaves on stdout, so neither the
-    multi-gigabyte input nor the output is written into the result directory.
-    A watchdog kills the whole process group at the deadline, which also
-    unblocks the reader and the writer thread.
+    multi-gigabyte input nor the output is written anywhere.  A watchdog kills
+    the whole process group at the deadline, which also unblocks the reader and
+    the writer thread.
     """
     limits = accuracy_limit(case["api"], product(case["shape"]))
     case_scratch.mkdir(parents=True, exist_ok=True)
@@ -1286,9 +1348,14 @@ def run_accuracy_capture(
     }
     started = time.monotonic()
     timed_out = threading.Event()
+    stop = threading.Event()
     process = None
     writer = None
     watchdog = None
+    # One group deep.  The writer generates ahead of the reader so the capture
+    # always has input to chew on, while the two of them never hold more than
+    # two groups between them.
+    groups: queue.Queue = queue.Queue(maxsize=1)
     try:
         with log_path.open("wb") as log_stream:
             process = subprocess.Popen(
@@ -1306,21 +1373,30 @@ def run_accuracy_capture(
             watchdog.daemon = True
             watchdog.start()
             writer = threading.Thread(
-                target=feed_capture_input,
-                args=(process.stdin, input_value),
+                target=feed_generated_input,
+                args=(
+                    process.stdin,
+                    groups,
+                    case["api"],
+                    tuple(case["shape"]),
+                    case["batch"],
+                    case["scale"],
+                    stop,
+                ),
                 daemon=True,
             )
             writer.start()
             try:
-                stats, output_sha256 = compare_stream(
+                stats, output_sha256, input_sha256 = compare_stream(
                     process.stdout,
-                    input_value,
+                    queued_groups(groups),
                     case["api"],
                     tuple(case["shape"]),
                     case["direction"],
                     case["batch"],
                 )
             finally:
+                stop.set()
                 close_quietly(process.stdout)
             returncode = process.wait()
             metric = judged_stats(stats, limits)
@@ -1339,6 +1415,7 @@ def run_accuracy_capture(
                     "returncode": returncode,
                     "metric": metric,
                     "output_sha256": output_sha256,
+                    "input_sha256": input_sha256,
                 }
             )
             if returncode != 0:
@@ -1358,6 +1435,7 @@ def run_accuracy_capture(
             process.wait()
         raise
     finally:
+        stop.set()
         if watchdog is not None:
             watchdog.cancel()
         if writer is not None:
@@ -1391,17 +1469,17 @@ def run_accuracy_case(
     scratch_dir: Path,
     backend: str = "cuda",
 ) -> dict:
-    """Run one accuracy case without writing raw arrays into the result tree.
+    """Run one accuracy case without materializing its input or output.
 
-    The generated input is a transient memmap under `scratch_dir`; the native
-    output is streamed back and compared batch by batch.  Only the JSON results
-    and the per-operator log survive in `output_dir`.
+    The input is regenerated batch group by batch group as the capture consumes
+    it, and the native output is streamed back and compared group by group.
+    Only the JSON results and the per-operator log survive in `output_dir`;
+    `scratch_dir` holds nothing but the capture's own console logs.
     """
     op_dir = output_dir / case["op_id"]
     op_dir.mkdir(parents=True, exist_ok=True)
-    case_scratch = scratch_dir / "input" / case["op_id"] / case["case_id"]
+    case_scratch = scratch_dir / "accuracy" / case["op_id"] / case["case_id"]
     case_scratch.mkdir(parents=True, exist_ok=True)
-    input_path = case_scratch / "input.bin"
     reference_skip_reason = case.get("skip_reason") if backend == "npu" else None
     record = {
         "format_version": FORMAT_VERSION,
@@ -1420,27 +1498,18 @@ def run_accuracy_case(
         ),
     }
     started = time.monotonic()
-    reference_input = None
     try:
-        value, seed = make_input(
-            case["api"], tuple(case["shape"]), case["batch"], case["scale"]
-        )
-        value.tofile(input_path)
+        # The input is a pure function of these, so recording the seed and the
+        # dtype is enough to reproduce it byte for byte.
         record.update(
             {
-                "seed": seed,
-                "input_dtype": str(value.dtype),
-                "input_sha256": sha256(input_path),
+                "seed": accuracy_seed(
+                    case["api"], product(tuple(case["shape"])), case["batch"]
+                ),
+                "input_dtype": str(raw_dtype(case["api"], is_input=True)),
+                "numpy_dtype": str(numpy_reference_dtype(case["api"])),
             }
         )
-        # The native capture is a separate process.  Drop the generated array
-        # and map the scratch file instead, so the worker does not retain a
-        # full-size input alongside the capture process and its buffers.
-        del value
-        reference_input = load_raw_memmap(
-            input_path, case["api"], tuple(case["shape"]), case["batch"]
-        )
-        record["numpy_dtype"] = str(numpy_reference_dtype(case["api"]))
 
         implementations = [("flagfft", "accuracy")]
         if not reference_skip_reason:
@@ -1450,7 +1519,6 @@ def run_accuracy_case(
                 case,
                 capture_bin,
                 case_scratch,
-                reference_input,
                 implementation,
                 gpu_id,
                 timeout,
@@ -1460,9 +1528,7 @@ def run_accuracy_case(
             if record[field]["status"] == "NotFound":
                 record[field] = {"status": "Error", "error": repr(error), "plan": None}
     finally:
-        del reference_input
         record["duration"] = time.monotonic() - started
-        input_path.unlink(missing_ok=True)
     return record
 
 

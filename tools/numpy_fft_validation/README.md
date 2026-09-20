@@ -2,9 +2,9 @@
 
 `capture.cpp` executes FlagFFT and the platform FFT library on identical
 input bytes. It is built as `build/ctest/numpy_fft_capture` by
-`-DFLAGFFT_BUILD_TESTS=ON`. Python input generation, NumPy comparisons,
-matrix expansion and reanalysis are integrated into `tools/run_tests.py`;
-the separate `validate.py` entry point has been removed.
+`-DFLAGFFT_BUILD_TESTS=ON`. Python input generation, NumPy comparisons and
+matrix expansion are integrated into `tools/run_tests.py`; the separate
+`validate.py` entry point has been removed.
 
 Install dependencies with `pip install -e '.[test]'`. Run from the repository
 or its sibling worktree:
@@ -25,13 +25,15 @@ satisfy multidimensional Hermitian constraints, and inverse normalization
 matches the unnormalized device APIs.
 
 The runner passes `--input=-` and `--output-dir=-`, so the capture reads the
-generated input from stdin and writes its result to stdout. Neither side is
-materialized in the result directory, which therefore contains only the
-per-operator JSON and the aggregated `accuracy.log`/`perf.log`. In that mode
-the plan description goes to stderr between `FLAGFFT PLAN BEGIN/END`
-delimiters: the runner lifts it into the JSON, and it also reaches the operator
-log, where it stays readable. The plan is written before execution and
-refreshed with compiled details afterwards.
+generated input from stdin and writes its result to stdout. The input is not
+read back from a file either: its SplitMix64 stream is addressable, so the
+runner regenerates one batch group at a time and pushes it into stdin as the
+capture consumes it. Nothing large is materialized on disk, and the result
+directory therefore contains only the per-operator JSON and the aggregated
+`accuracy.log`/`perf.log`. In that mode the plan description goes to stderr
+between `FLAGFFT PLAN BEGIN/END` delimiters: the runner lifts it into the JSON,
+and it also reaches the operator log, where it stays readable. The plan is
+written before execution and refreshed with compiled details afterwards.
 
 ## Optional standalone native build
 
