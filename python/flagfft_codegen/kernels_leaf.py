@@ -416,7 +416,11 @@ def _emit_lane_output_base(
     of `lane` alone.
     """
     last_stage = len(factors) - 1
-    lines = [f"{indent}rem_lane = {lane_var}", f"{indent}{out_var} = {lane_var} * 0"]
+    # Keep the accumulator independent of the expression used to decode the
+    # lane.  `lane_var` may include the stage group offset; interpolating it
+    # into `lane_var * 0` without parentheses would leave a term such as
+    # `lane_only + group * 0`, corrupting every group after the first.
+    lines = [f"{indent}rem_lane = {lane_var}", f"{indent}{out_var} = 0"]
     stride = 1
     for axis in range(last_stage):
         lines.append(f"{indent}digit_lane_{axis} = rem_lane % {factors[axis]}")
@@ -448,14 +452,30 @@ def _emit_permuted_store(
     """
     offset = digit * math.prod(factors[: len(factors) - 1])
     base = "output_base_lane" if offset == 0 else f"(output_base_lane + {offset})"
+    if pack == 1:
+        # A one-slot tile has no real batch dimension.  Avoid materializing a
+        # degenerate (lane, 1) transpose: MUSA's legacy lowering can associate
+        # that singleton layout with the wrong pointer lanes.  The ordinary
+        # one-dimensional tensor is both semantically exact and cheaper.
+        address = f"{base} * perm_k_stride + perm_gbase_scalar"
+        return [
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, "
+            f"mask=lane_mask)",
+            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
+            f"mask=lane_mask)",
+        ]
+    else:
+        address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
+        mask = "perm_store_mask"
     return [
         f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
         f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
-        f"{indent}perm_addr{digit} = {base}[:, None] * perm_k_stride + perm_gbase[None, :]",
+        f"{indent}perm_addr{digit} = {address}",
         f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, zr{digit}, "
-        f"mask=perm_store_mask)",
+        f"mask={mask})",
         f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, zi{digit}, "
-        f"mask=perm_store_mask)",
+        f"mask={mask})",
     ]
 
 
@@ -771,12 +791,20 @@ def _emit_stage_block(
             )
             lines.extend(
                 _emit_lane_output_base(
-                    indent, factors, "lane_only", "output_base_lane"
+                    indent,
+                    factors,
+                    f"lane_only + {current_lanes} * group_{stage}",
+                    "output_base_lane",
                 )
             )
-            lines.append(
-                f"{indent}perm_store_mask = perm_lane_mask[:, None] & perm_mask[None, :]"
-            )
+            if smem_pack == 1:
+                lines.append(
+                    f"{indent}perm_store_mask = perm_lane_mask[:, None]"
+                )
+            else:
+                lines.append(
+                    f"{indent}perm_store_mask = perm_lane_mask[:, None] & perm_mask[None, :]"
+                )
     else:
         lines.extend(
             _emit_route_base(indent, stage, factors, current_lanes, f"group_{stage}")
@@ -2313,6 +2341,29 @@ def _build_leaf_kernel_source_for_io(
                 body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
+            if batch_pack == 1:
+                # Keep the singleton row address scalar.  On MUSA this avoids
+                # a degenerate [1] tensor layout being broadcast into the
+                # lane-shaped store pointer.
+                if perm_form == "inner":
+                    body.append("    perm_batch_scalar = perm_base")
+                else:
+                    body.append("    perm_batch_scalar = batch_id")
+                body.append("    perm_i0_scalar = perm_batch_scalar // perm_span")
+                body.append(
+                    "    perm_i1_scalar = perm_batch_scalar - "
+                    "perm_i0_scalar * perm_span"
+                )
+                if perm_form == "inner":
+                    body.append(
+                        "    perm_gbase_scalar = perm_i1_scalar * "
+                        "(nbatch // perm_span) + perm_i0_scalar"
+                    )
+                else:
+                    body.append(
+                        f"    perm_gbase_scalar = perm_i0_scalar * "
+                        f"({n} * perm_span) + perm_i1_scalar"
+                    )
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:
             four_step_inner_count = (
