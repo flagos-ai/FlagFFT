@@ -96,6 +96,12 @@ def main() -> None:
     )
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
+    parser.add_argument(
+        "--perm-form",
+        choices=("outer", "inner"),
+        default="outer",
+        help="axis placement for the permuted store's fused permutation",
+    )
     parser.add_argument("--bluestein-n", type=int)
     parser.add_argument("--bluestein-m", type=int)
     parser.add_argument("--rader-n", type=int)
@@ -260,6 +266,7 @@ def main() -> None:
             prime_n=args.bluestein_n or 0,
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,
+            perm_form=args.perm_form,
             out_dir=args.out_dir,
         )
     else:

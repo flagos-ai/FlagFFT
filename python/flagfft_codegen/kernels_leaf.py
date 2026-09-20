@@ -421,7 +421,7 @@ def _emit_permuted_store(
     return [
         f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
         f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
-        f"{indent}perm_addr{digit} = {base}[:, None] * perm_span + perm_gbase[None, :]",
+        f"{indent}perm_addr{digit} = {base}[:, None] * perm_k_stride + perm_gbase[None, :]",
         f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, zr{digit}, "
         f"mask=perm_store_mask)",
         f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, zi{digit}, "
@@ -2014,6 +2014,7 @@ def _build_leaf_kernel_source_for_io(
     prime_n: int = 0,
     four_step_n1: int = 0,
     four_step_n2: int = 0,
+    perm_form: str = "outer",
 ) -> tuple[str, str]:
     if _use_thread_local_mixed_leaf(
         plan,
@@ -2159,6 +2160,12 @@ def _build_leaf_kernel_source_for_io(
             f"{io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
             f"_l{plan.lanes}_b{lane_block}"
         )
+    elif io_mode == "permuted_store":
+        kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
+        kernel_name = (
+            f"permuted_store_{perm_form}_{kernel_prefix}_kernel_{suffix}"
+            f"_l{plan.lanes}_b{lane_block}"
+        )
     else:
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = (
@@ -2202,6 +2209,17 @@ def _build_leaf_kernel_source_for_io(
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
             body.append("    current_batch = batch_id + batch_slot")
+            if io_mode == "permuted_store" and perm_form == "inner":
+                # This pass permutes an axis whose output position is scaled by
+                # the *other* cube dimension, so a block has to span that
+                # dimension rather than consecutive rows: its rows are strided
+                # by perm_span in the row index.  That is exactly what makes the
+                # store run contiguous.
+                body.append(
+                    f"    perm_base = (pid // perm_span) * {batch_pack} * perm_span "
+                    "+ (pid % perm_span)"
+                )
+                body.append("    current_batch = perm_base + batch_slot * perm_span")
             body.append(
                 f"    lane_mask = (lane < {active_lanes}) & (current_batch < nbatch)"
             )
@@ -2221,15 +2239,23 @@ def _build_leaf_kernel_source_for_io(
             body.append("    input_batch_base = current_batch * input_distance")
             body.append("    output_batch_base = current_batch * output_distance")
         if io_mode == "permuted_store":
-            # The batch slots of one block are made consecutive in the output
-            # layout, so the transposed store can vectorize along them.  `gbase`
-            # is the output address of each slot's row start; the FFT output
-            # index is added by the store, scaled by `perm_span`.
+            # `perm_gbase` is the output address of each batch slot's row start
+            # and `perm_k_stride` the stride of the FFT output index; the store
+            # adds the two.  The two forms differ in which of the row index's
+            # two mixed-radix parts gets scaled by the output layout.
             body.append(f"    perm_slot = tl.arange(0, {batch_pack})")
-            body.append("    perm_batch = batch_id + perm_slot")
-            body.append("    perm_i0 = perm_batch // perm_span")
-            body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
-            body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
+            if perm_form == "inner":
+                body.append("    perm_batch = perm_base + perm_slot * perm_span")
+                body.append("    perm_i0 = perm_batch // perm_span")
+                body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
+                body.append("    perm_gbase = perm_i1 * (nbatch // perm_span) + perm_i0")
+                body.append("    perm_k_stride = nbatch")
+            else:
+                body.append("    perm_batch = batch_id + perm_slot")
+                body.append("    perm_i0 = perm_batch // perm_span")
+                body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
+                body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
+                body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:
