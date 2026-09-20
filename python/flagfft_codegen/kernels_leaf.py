@@ -21,12 +21,14 @@ from typing import Literal
 
 from .kernels_common import (
     _NATURAL_ORDER_CODELET_RADICES,
+    _PORTABLE_EXCHANGE_MIN_ELEMENTS,
     _THREAD_LOCAL_MIXED_RADICES,
     _TLE_SMEM_SWIZZLE_SHIFT,
     LeafIoMode,
     LeafPlan,
     _is_double_dtype,
     _maca_backend_active,
+    _maca_knob,
     _non_nvidia_backend_active,
     _tl_real_dtype,
     _use_single_smem_buffer,
@@ -67,6 +69,21 @@ def _vector_asm_dtype(dtype: str) -> str:
     return "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
 
 
+_COMPLEX_PAIR_OFFSETS = "_fft_pair_offsets"
+
+
+def _portable_complex_vector_io() -> bool:
+    """Whether to vectorize complex IO with a ``[..., 2]`` block.
+
+    The scalar form issues two 4-byte accesses per complex element, which is
+    limited by load/store throughput rather than DRAM.  A block whose
+    innermost dimension has stride 1 lets Triton emit one wide access
+    natively, without the ``ld.global.v2`` inline asm that the MetaX plugin
+    cannot compile.
+    """
+    return _maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"}
+
+
 def _emit_vectorized_complex_load(
     indent: str,
     ptr: str,
@@ -74,6 +91,13 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
+    if _portable_complex_vector_io():
+        pair = "_pair_" + dest.split(",")[0].strip()
+        return [
+            f"{indent}{pair} = tl.load(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
+            f"mask={mask}[:, None], other=0.0)",
+            f"{indent}{dest} = tl.split({pair})",
+        ]
     suffix = _vector_asm_suffix(dtype)
     reg = _vector_asm_reg(dtype)
     tl_dtype = _vector_asm_dtype(dtype)
@@ -100,6 +124,11 @@ def _emit_vectorized_complex_store(
     mask: str,
     dtype: str,
 ) -> list[str]:
+    if _portable_complex_vector_io():
+        return [
+            f"{indent}tl.store(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
+            f"tl.join({r_name}, {i_name}), mask={mask}[:, None])",
+        ]
     suffix = _vector_asm_suffix(dtype)
     reg = _vector_asm_reg(dtype)
     return [
@@ -482,6 +511,19 @@ def _emit_exchange_store(
     ]
 
 
+def _portable_exchange_lane_floor(smem_pack: int) -> int:
+    """Lane block needed for the exchange tensor to span more than one warp.
+
+    ``vector_block = lane_block * smem_pack`` is the tensor the gather reads,
+    so packing raises it without spending lanes.  ``auto`` derives the floor
+    from the pack; a number pins it, and 128 reproduces the bring-up constant.
+    """
+    override = _maca_knob("LANE_MIN", "auto")
+    if override == "auto":
+        return max(1, _PORTABLE_EXCHANGE_MIN_ELEMENTS // max(smem_pack, 1))
+    return int(override)
+
+
 def _emit_portable_exchange(
     buffer: str,
     stage: int,
@@ -491,13 +533,23 @@ def _emit_portable_exchange(
     slot_stride: int,
     pack: int,
     natural_order: bool = False,
+    register_lane_stride: int = 1,
+    register_slot_stride: int | None = None,
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
     Each butterfly runs once; padded lanes/digits never become FFT state.
     The compiler supplies any shared-memory layout conversions, avoiding
     TLE local pointers in the MetaX plugin.
+
+    ``register_lane_stride``/``register_slot_stride`` describe how the register
+    tensors that hold the codelet outputs are laid out.  Contiguous batch
+    packing strides the slot by the lane block, while four-step inner packing
+    interleaves lane and slot, so the gather index has to follow whichever
+    layout produced those tensors.
     """
+    if register_slot_stride is None:
+        register_slot_stride = lane_block
     n = math.prod(factors)
     radix = factors[stage]
     lines = [
@@ -537,7 +589,10 @@ def _emit_portable_exchange(
             ]
             stride *= factors[axis]
         lines.append(f"    exchange_codelet += exchange_next_digit * {stride}")
-    lines.append(f"    exchange_src = exchange_codelet + exchange_slot * {lane_block}")
+    lines.append(
+        f"    exchange_src = exchange_codelet * {register_lane_stride} + "
+        f"exchange_slot * {register_slot_stride}"
+    )
     lines.append("    exchange_src = tl.where(exchange_valid, exchange_src, 0)")
     for component in ("r", "i"):
         lines.append(
@@ -565,6 +620,7 @@ def _emit_stage_block(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
     smem_pack: int = 1,
+    inner_pack: int = 1,
     fuse_twiddle_into_row: bool = False,
     single_smem_buffer: bool = False,
     direction: Literal["forward", "inverse"] = "forward",
@@ -598,6 +654,7 @@ def _emit_stage_block(
     lines: list[str] = []
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
+    vector_io_allowed = not _non_nvidia_backend_active() or _portable_complex_vector_io()
     vectorized_four_step_complex_io = (
         io_mode
         in {
@@ -607,11 +664,11 @@ def _emit_stage_block(
             "four_step_c2r_col",
             "four_step_hermitian_row",
         }
-        and not _non_nvidia_backend_active()
+        and vector_io_allowed
     )
     vectorized_complex_io = (
         io_mode in {"contiguous", "contiguous_c2r"} or vectorized_four_step_complex_io
-    ) and not _non_nvidia_backend_active()
+    ) and vector_io_allowed
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
     vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
@@ -655,18 +712,14 @@ def _emit_stage_block(
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             if io_mode == "contiguous":
                 if vectorized_complex_io:
-                    lines.append(
-                        f"{indent}r{j}, i{j} = tl.inline_asm_elementwise("
-                        "'{\\n"
-                        ".reg .pred p;\\n"
-                        "setp.ne.b32 p, $3, 0;\\n"
-                        f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
-                        f"@!p mov.{vector_suffix} $0, 0.0;\\n"
-                        f"@!p mov.{vector_suffix} $1, 0.0;\\n"
-                        "}', \"=" + vector_reg + ",=" + vector_reg + ',l,r", ['
-                        f"tl.cast(in_ptr + (batch_base + in{j}) * 2, tl.uint64), "
-                        "tl.cast(lane_mask, tl.int32)], "
-                        f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                    lines.extend(
+                        _emit_vectorized_complex_load(
+                            indent,
+                            f"in_ptr + (batch_base + in{j}) * 2",
+                            "lane_mask",
+                            f"r{j}, i{j}",
+                            dtype,
+                        )
                     )
                 else:
                     lines.append(
@@ -701,18 +754,10 @@ def _emit_stage_block(
                     f"{indent}src_ptr{j} = in_ptr + (input_batch_base + compact_idx{j}) * 2"
                 )
                 if vectorized_complex_io:
-                    lines.append(
-                        f"{indent}r{j}, i{j} = tl.inline_asm_elementwise("
-                        "'{\\n"
-                        ".reg .pred p;\\n"
-                        "setp.ne.b32 p, $3, 0;\\n"
-                        f"@p ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];\\n"
-                        f"@!p mov.{vector_suffix} $0, 0.0;\\n"
-                        f"@!p mov.{vector_suffix} $1, 0.0;\\n"
-                        "}', \"=" + vector_reg + ",=" + vector_reg + ',l,r", ['
-                        f"tl.cast(src_ptr{j}, tl.uint64), "
-                        "tl.cast(lane_mask, tl.int32)], "
-                        f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                    lines.extend(
+                        _emit_vectorized_complex_load(
+                            indent, f"src_ptr{j}", "lane_mask", f"r{j}, i{j}", dtype
+                        )
                     )
                 else:
                     lines.append(
@@ -1059,17 +1104,15 @@ def _emit_stage_block(
                     )
                 else:
                     if vectorized_complex_io:
-                        lines.append(
-                            f"{indent}tl.inline_asm_elementwise("
-                            "'{\\n"
-                            ".reg .pred p;\\n"
-                            "setp.ne.b32 p, $4, 0;\\n"
-                            f"@p st.global.v2.{vector_suffix} [$1], {{$2, $3}};\\n"
-                            "mov.u32 $0, 0;\\n"
-                            "}', \"=r,l," + vector_reg + "," + vector_reg + ',r", ['
-                            f"tl.cast(out_ptr + (batch_base + out_idx{j}) * 2, tl.uint64), "
-                            f"r{j}, i{j}, tl.cast(lane_mask, tl.int32)], "
-                            "dtype=tl.int32, is_pure=False, pack=1)"
+                        lines.extend(
+                            _emit_vectorized_complex_store(
+                                indent,
+                                f"out_ptr + (batch_base + out_idx{j}) * 2",
+                                f"r{j}",
+                                f"i{j}",
+                                "lane_mask",
+                                dtype,
+                            )
                         )
                     else:
                         lines.append(
@@ -1406,6 +1449,8 @@ def _emit_stage_block(
                     exchange_slot_stride,
                     smem_pack,
                     natural_order=is_last,
+                    register_lane_stride=inner_pack if inner_pack > 1 else 1,
+                    register_slot_stride=1 if inner_pack > 1 else lane_block,
                 )
             )
     elif not is_last:
@@ -1961,10 +2006,6 @@ def _build_leaf_kernel_source_for_io(
     )
     active_lanes = max(stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
-    if portable_exchange and len(factors) > 1:
-        # Avoid the unsupported warp-shuffle lowering: use ordinary gather
-        # from tensors larger than one 64-thread warp, without tl.join.
-        lane_block = max(128, lane_block)
     contiguous_modes = {
         "contiguous",
         "strided",
@@ -2021,6 +2062,13 @@ def _build_leaf_kernel_source_for_io(
         four_step_n2=four_step_n2,
     )
     smem_pack = max(batch_pack, inner_pack)
+    if portable_exchange and len(factors) > 1:
+        # The MetaX plugin cannot lower the warp-shuffle path, so the exchange
+        # must gather from a tensor wider than one 64-thread warp.  Packing
+        # widens that tensor for free, whereas raising the lane block idles
+        # most lanes on a small leaf -- which is what starved the throughput
+        # bound batch and 3D shapes.
+        lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
     smem_n = lane_block_for(smem_slot_stride * smem_pack)
@@ -2086,6 +2134,8 @@ def _build_leaf_kernel_source_for_io(
         suffix = "," if idx < len(params) - 1 else ""
         body.append(f"    {param}{suffix}")
     body.append("):")
+    if _portable_complex_vector_io():
+        body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     if io_mode in contiguous_modes:
         body.append("    pid = tl.program_id(0)")
         body.append(f"    batch_id = pid * {batch_pack}")
@@ -2207,6 +2257,7 @@ def _build_leaf_kernel_source_for_io(
                 four_step_n1=four_step_n1,
                 four_step_n2=four_step_n2,
                 smem_pack=smem_pack,
+                inner_pack=inner_pack,
                 fuse_twiddle_into_row=fuse_twiddle_into_row,
                 single_smem_buffer=single_smem_buffer,
                 direction=plan.direction,
@@ -2235,6 +2286,7 @@ def _build_leaf_kernel_source_for_io(
                     four_step_n1=four_step_n1,
                     four_step_n2=four_step_n2,
                     smem_pack=smem_pack,
+                    inner_pack=inner_pack,
                     fuse_twiddle_into_row=fuse_twiddle_into_row,
                     single_smem_buffer=single_smem_buffer,
                     direction=plan.direction,

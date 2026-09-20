@@ -48,6 +48,46 @@ _COOPERATIVE_STAGE_MAX_BASE_LANES = 32
 _COOPERATIVE_STAGE_MAX_LANES = 128
 _LEAF_PACK_TARGET_THREADS = 32
 _LEAF_PACK_SMEM_BUDGET_BYTES = 48 * 1024
+# The MetaX plugin cannot lower maca.shfl.sync, so the portable exchange must
+# gather from a tensor wider than one 64-thread warp.
+_PORTABLE_EXCHANGE_MIN_ELEMENTS = 128
+# Hard ceiling for the exchange pack.  The collapse this used to encode at
+# eight was measured while two sweeps shared the card; re-measured cleanly,
+# eight is the best configuration on the 209/221-point leaves (2.567 -> 0.941
+# ms at n=46189, correct).  Sixteen is where the generated index overflows.
+_PORTABLE_EXCHANGE_MAX_PACK = 8
+
+
+def _portable_exchange_max_pack() -> int:
+    """Ceiling for the exchange pack, overridable for measurement.
+
+    The shipped default reproduces ``_PORTABLE_EXCHANGE_MAX_PACK``; the knob
+    exists because that ceiling was measured under a sweep that ran
+    concurrently with another one on the same card, so the pack-eight collapse
+    it used to encode needed re-checking before being treated as a hardware
+    limit.
+    """
+    override = _maca_knob("MAX_PACK")
+    if not override:
+        return _PORTABLE_EXCHANGE_MAX_PACK
+    return _positive_knob("MAX_PACK", override)
+
+
+def _cooperative_warp_cap() -> int:
+    """Ceiling on the cooperative warp count for a leaf block.
+
+    Eight is both the measured optimum and the hard limit: launching sixteen
+    warps fails with ``out of resource: threads, Required: 1024, Hardware
+    limit: 512``.  The device profile's ``max_threads_per_block`` of 1024 is a
+    static default -- the driver does not expose the attribute, so nothing
+    queries it -- and Triton's launcher enforces 512 for this target.
+    """
+    override = _maca_knob("MAX_WARPS")
+    if not override:
+        return 8
+    return _positive_knob("MAX_WARPS", override)
+
+
 _NATURAL_ORDER_CODELET_RADICES = frozenset(
     {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 17, 19}
 )
@@ -228,6 +268,27 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
     return tuple(stage_lanes)
 
 
+def _maca_knob(name: str, default: str = "") -> str:
+    """Read a MACA code-generation override (``FLAGFFT_MACA_<NAME>``).
+
+    Every caller's default reproduces the shipped constant, so an environment
+    without these variables keeps today's behaviour exactly.
+    """
+    return os.environ.get(f"FLAGFFT_MACA_{name}", default).strip().lower()
+
+
+def _positive_knob(name: str, value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise ValueError(
+            f"FLAGFFT_MACA_{name} must be an integer, got {value!r}"
+        ) from None
+    if parsed < 1:
+        raise ValueError(f"FLAGFFT_MACA_{name} must be positive, got {parsed}")
+    return parsed
+
+
 def _floor_power_of_two(value: int) -> int:
     power = 1
     while power * 2 <= value:
@@ -264,15 +325,7 @@ def _register_bounded_batch_pack(plan: LeafPlan, pack: int, native_pack: int) ->
     return pack
 
 
-def contiguous_batch_pack_for(plan: LeafPlan) -> int:
-    if _maca_backend_active():
-        lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
-        if len(emitted_leaf_factors(plan)) > 1:
-            return 1
-        return max(
-            1,
-            min(32 if len(plan.factors) == 1 else 4, 64 // lane_block),
-        )
+def _profile_batch_pack_for(plan: LeafPlan) -> int:
     profile = current_profile()
     lane_block = lane_block_for(plan.lanes)
 
@@ -292,6 +345,41 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     return _register_bounded_batch_pack(
         plan, pack_for(profile.leaf_target_threads), pack_for(32)
     )
+
+
+def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
+    """Raise the pack so the portable exchange tensor still spans a warp.
+
+    ``vector_block = lane_block * pack`` is what the gather reads, so packing
+    widens it without idling lanes.  Leaving the pack at one forces the lane
+    block back up to 128, which is what starved the contiguous leaves behind
+    2D, 3D and the small batch shapes.
+    """
+    if _maca_knob("LANE_MIN", "auto") != "auto":
+        return pack
+    active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
+    needed = max(1, _PORTABLE_EXCHANGE_MIN_ELEMENTS // lane_block_for(active_lanes))
+    return max(pack, min(_portable_exchange_max_pack(), _next_power_of_two(needed)))
+
+
+def contiguous_batch_pack_for(plan: LeafPlan) -> int:
+    if _maca_backend_active():
+        override = _maca_knob("BATCH_PACK")
+        if override == "auto":
+            return _profile_batch_pack_for(plan)
+        if override:
+            return _positive_knob("BATCH_PACK", override)
+        lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
+        if len(emitted_leaf_factors(plan)) > 1:
+            return 1
+        # Raising this pack was measured slower on 2D 64x64: the row pass only
+        # has 64 transforms, so packing eight leaves the grid too small to fill
+        # the device, and the extra occupancy does not pay for it.
+        return max(
+            1,
+            min(32 if len(plan.factors) == 1 else 4, 64 // lane_block),
+        )
+    return _profile_batch_pack_for(plan)
 
 
 def _mthreads_small_mixed_leaf(plan: LeafPlan) -> bool:
@@ -338,6 +426,50 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     return _floor_power_of_two(max(1, min(max_pack, thread_pack, smem_pack)))
 
 
+def _maca_four_step_pack_for(plan: LeafPlan) -> int:
+    """Pack that fills a 256-thread block on MetaX, bounded to [4, 8].
+
+    Measured on the 1D ct four-step leaves at batch 256.  Eight is the best
+    pack when the lane block is 32: the column kernel goes from 2.226 ms at
+    85 GB/s to 0.49 ms at 390 GB/s, taking the plan from 2.567 to 0.941 ms.
+    Four is best when the lane block is 64 or 128, where eight costs 1.09x and
+    1.83x -- a lane block that wide already spans the block, so the extra pack
+    only adds registers.  Filling 256 threads picks eight at 32 lanes and four
+    at 64, and the shipped four is the floor for the leaves the target would
+    push below it.
+    """
+    active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
+    target = _FOUR_STEP_PACK_TARGET_THREADS // lane_block_for(active_lanes)
+    bounded = min(_portable_exchange_max_pack(), max(_FOUR_STEP_LARGE_INNER_PACK, target))
+    return _floor_power_of_two(max(1, bounded))
+
+
+def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
+    """Inner transforms packed per four-step row/column block on MACA.
+
+    The bring-up pinned this to one before any C550 measurement.  The override
+    lets the profile-aware derivation (``auto``) and explicit packs be compared
+    against that baseline without rebuilding.
+    """
+    override = _maca_knob("INNER_PACK", "")
+    # An explicit number is an experiment setting and wins outright; only the
+    # derived packs go through the tensor-width floor.
+    if override not in {"", "auto"}:
+        return min(_positive_knob("INNER_PACK", override), _portable_exchange_max_pack())
+    if plan is None:
+        return 1
+    # Derived packs fill a 256-thread block.  "Just wide enough to span a warp"
+    # is not the right target (on the 390/476-point leaves the lane block is
+    # already 128, so that rule leaves the pack at one and measured 5x slower
+    # than four), and neither is a flat ceiling: the ceiling rule launched 128
+    # threads on the 209/221-point leaves and measured 2.7x slower than the
+    # 256-thread block the same plan gets on a 32-lane backend.
+    pack = _maca_four_step_pack_for(plan)
+    if override == "auto":
+        pack = min(pack, _four_step_resource_inner_pack_for(plan))
+    return min(_portable_exchange_pack_floor(plan, pack), _portable_exchange_max_pack())
+
+
 def _four_step_col_inner_pack_for(
     n1: int,
     n2: int,
@@ -345,7 +477,7 @@ def _four_step_col_inner_pack_for(
     plan: LeafPlan | None = None,
 ) -> int:
     if _maca_backend_active():
-        return 1
+        return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
     if plan is not None and current_profile().policy != "legacy":
@@ -373,7 +505,7 @@ def _four_step_row_inner_pack_for(
     plan: LeafPlan | None = None,
 ) -> int:
     if _maca_backend_active():
-        return 1
+        return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
     if plan is not None and current_profile().policy != "legacy":
@@ -647,12 +779,17 @@ __all__ = [
     "_floor_power_of_two",
     "_four_step_resource_inner_pack_for",
     "_is_double_dtype",
+    "_PORTABLE_EXCHANGE_MAX_PACK",
+    "_PORTABLE_EXCHANGE_MIN_ELEMENTS",
     "_ix_backend_active",
     "_maca_backend_active",
+    "_maca_four_step_inner_pack",
+    "_maca_knob",
     "_mthreads_backend_active",
     "_next_power_of_two",
     "_non_nvidia_backend_active",
     "_npu_backend_active",
+    "_portable_exchange_pack_floor",
     "_ppu_backend_active",
     "_real_element_bytes",
     "_tl_real_dtype",
