@@ -148,6 +148,7 @@ class LeafPlan:
 LeafIoMode = Literal[
     "contiguous",
     "strided",
+    "permuted_store",
     "contiguous_r2c",
     "contiguous_c2r",
     "bluestein_prepare_leaf",
@@ -292,6 +293,24 @@ def contiguous_batch_pack_for(plan: LeafPlan) -> int:
     return _register_bounded_batch_pack(
         plan, pack_for(profile.leaf_target_threads), pack_for(32)
     )
+
+
+def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
+    """Batch slots per block for the fused permuted store.
+
+    The transposed store hands each lane `batch_pack` consecutive complex values,
+    so the run has to be long enough to vectorize.  Unlike the contiguous path,
+    a longer run costs nothing in coalescing -- it is the same bytes either way --
+    so this targets a full 128-byte cache line (16 complex64) rather than the
+    register-bounded pack the plain leaf uses.  Shared memory still caps it: the
+    leaf's staging grows linearly with the pack.
+    """
+    profile = current_profile()
+    bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
+    smem_pack = max(
+        1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
+    )
+    return _floor_power_of_two(max(1, min(16, smem_pack)))
 
 
 def _mthreads_small_mixed_leaf(plan: LeafPlan) -> bool:

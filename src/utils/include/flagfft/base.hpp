@@ -117,6 +117,7 @@ enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Blueste
 enum class KernelKind {
   Leaf,
   LeafStrided,
+  LeafPermutedStore,
   LeafR2C,
   LeafC2R,
   LeafBluestein,

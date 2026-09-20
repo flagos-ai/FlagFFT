@@ -495,6 +495,31 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                                build_raw_leaf_tables(leaf, request));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
+                                                                                const FFTRequest &request,
+                                                                                int64_t perm_span) {
+  std::string target = triton_target_for_request(request);
+  // The fused store vectorizes along the batch slots, so it wants one element per
+  // thread across lane_block * batch_pack of them.  Two warps measured best across
+  // n=64/128/256 on MUSA; the planner's hint for a rank-1 axis request is one.
+  KernelKey key = KernelKey::leaf_permuted_store(target,
+                                                 request.direction,
+                                                 request.input_dtype,
+                                                 leaf.length,
+                                                 leaf.factors,
+                                                 leaf.lanes,
+                                                 std::max<int64_t>(2, leaf.num_warps),
+                                                 leaf.generic_radices,
+                                                 leaf.smem_size);
+  std::shared_ptr<JitKernel> kernel = compile_kernel(key);
+  // Same argument shape as the strided leaf: the permutation span rides in the
+  // slot that carries outer_stride there, so the node is reused unchanged.
+  return std::make_shared<CompiledRawStridedLeafNode>(leaf.length,
+                                                      perm_span,
+                                                      std::move(kernel),
+                                                      build_raw_leaf_tables(leaf, request));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                                           const FFTRequest &request,
                                                                           int64_t outer_stride) {
