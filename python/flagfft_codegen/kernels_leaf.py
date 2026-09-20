@@ -2250,6 +2250,11 @@ def _build_leaf_kernel_source_for_io(
             body.append("    current_batch = batch_id")
             body.append("    lane = lane_vec")
             body.append(f"    lane_mask = lane < {active_lanes}")
+            if io_mode == "permuted_store" and perm_form == "inner":
+                # The packed path derives perm_base from pid below.  With one
+                # batch slot, pid already is the row index, but the common
+                # inner-form address equations still consume this name.
+                body.append("    perm_base = batch_id")
             if io_mode == "strided":
                 body.append("    batch_index = current_batch // outer_stride")
                 body.append(
