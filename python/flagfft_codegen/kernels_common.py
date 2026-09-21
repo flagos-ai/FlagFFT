@@ -502,10 +502,7 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
     direct_register_exchange = (
         _maca_knob("EXCHANGE") in {"direct", "direct_all"}
         and len(plan.factors) > 1
-        and (
-            not _is_double_dtype(plan.dtype)
-            or _maca_knob("FP64_DIRECT", "0") in {"1", "true", "on"}
-        )
+        and not _is_double_dtype(plan.dtype)
         and all(radix & (radix - 1) == 0 for radix in plan.factors)
     )
 

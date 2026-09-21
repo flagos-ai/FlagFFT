@@ -295,25 +295,6 @@ class ProfileTest(unittest.TestCase):
                     ),
                     1,
                 )
-
-            # Keep the FP64 register route opt-in while measuring it.  Pack
-            # four is the first candidate that can fit the 64 KiB C550
-            # launch limit for this leaf; pack eight is intentionally not
-            # enabled by this test.
-            with patch.dict(
-                "os.environ",
-                {
-                    "FLAGFFT_MACA_EXCHANGE": "direct",
-                    "FLAGFFT_MACA_FP64_DIRECT": "1",
-                    "FLAGFFT_MACA_INNER_PACK": "4",
-                },
-            ):
-                self.assertEqual(
-                    four_step_col_inner_pack_for(
-                        512, 2048, "complex128", double_plan
-                    ),
-                    4,
-                )
         finally:
             reset_profile(token)
 
