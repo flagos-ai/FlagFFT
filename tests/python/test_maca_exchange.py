@@ -23,6 +23,7 @@ class TensorLanguage:
     reshape = staticmethod(np.reshape)
     gather = staticmethod(np.take)
     trans = staticmethod(np.transpose)
+    zeros_like = staticmethod(np.zeros_like)
 
     @staticmethod
     def join(a, b):
@@ -48,7 +49,7 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
             for component in ("r", "i") for digit in range(radix)
         }
         outputs = []
-        for method in ("", "join", "transpose"):
+        for method in ("", "join", "transpose", "direct"):
             monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", method)
             lines = _emit_portable_exchange(
                 "smem", stage, factors, lanes, size, slot_stride, pack,
@@ -61,10 +62,50 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
             outputs.append((scope["smem_r"], scope["smem_i"]))
             if method == "join" and radix & (radix - 1) == 0:
                 assert sum("tl.gather" in line for line in lines) == 2
-            if method == "transpose" and not padded and n & (n - 1) == 0:
+            if method in {"transpose", "direct"} and not padded and n & (n - 1) == 0:
                 assert not any("tl.gather" in line for line in lines)
+                if method == "direct" and stage < len(factors) - 1:
+                    next_radix = factors[stage + 1]
+                    next_lanes = n // next_radix
+                    for component in ("r", "i"):
+                        routed = scope[f"smem_{component}"].reshape(pack, next_radix, next_lanes)
+                        for digit in range(next_radix):
+                            expected = np.zeros((pack, lanes), dtype=dtype)
+                            expected[:, :next_lanes] = routed[:, digit, :]
+                            if inner:
+                                expected = expected.T
+                            np.testing.assert_array_equal(
+                                scope[f"smem_register_{component}{digit}"], expected.reshape(-1)
+                            )
             if radix & (radix - 1):
                 assert not any("exchange_joined" in line for line in lines)
         for result in outputs[1:]:
             for old, new in zip(outputs[0], result):
                 np.testing.assert_array_equal(old, new)
+
+
+@pytest.mark.parametrize("n,factors", [(1024, (16, 8, 8)), (2048, (16, 16, 8))])
+def test_direct_leaf_eliminates_all_gathers(monkeypatch, n, factors):
+    import ast
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source
+
+    profile = BackendProfile.from_device(
+        {"backend": "maca", "warp_size": 64, "device_arch": "102"}, "legacy"
+    )
+    token = set_profile(profile)
+    monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", "direct")
+    try:
+        plan = LeafPlan(n, factors, 1, n // factors[0], 2, (), n)
+        _, source = _build_leaf_kernel_source(plan)
+        ast.parse(source)
+        assert "tl.gather" not in source
+        assert "smem_b_register_r0" in source
+        single = LeafPlan(16, (16,), 1, 1, 2, (), 16)
+        _, direct_single = _build_leaf_kernel_source(single)
+        monkeypatch.delenv("FLAGFFT_MACA_EXCHANGE")
+        _, original_single = _build_leaf_kernel_source(single)
+        assert direct_single == original_single
+    finally:
+        reset_profile(token)

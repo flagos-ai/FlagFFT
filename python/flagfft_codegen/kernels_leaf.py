@@ -557,8 +557,14 @@ def _emit_route_index(
 
 
 def _emit_exchange_load(
-    indent: str, buffer: str, index: str, digit: int, portable: bool
+    indent: str, buffer: str, index: str, digit: int, portable: bool,
+    direct: bool = False,
 ) -> list[str]:
+    if direct:
+        return [
+            f"{indent}r{digit} = {buffer}_register_r{digit}",
+            f"{indent}i{digit} = {buffer}_register_i{digit}",
+        ]
     if portable:
         return [
             f"{indent}r{digit} = tl.where(lane_mask, tl.gather({buffer}_r, {index}, 0), 0.0)",
@@ -650,6 +656,51 @@ def _emit_structured_portable_exchange(
     return lines
 
 
+def _structured_exchange_supported(
+    factors: tuple[int, ...], size: int, slot_stride: int, pack: int
+) -> bool:
+    n = math.prod(factors)
+    return (
+        all(factor & (factor - 1) == 0 for factor in factors)
+        and slot_stride == n
+        and size == n * pack
+    )
+
+
+def _emit_direct_exchange_registers(
+    buffer: str,
+    radix: int,
+    n: int,
+    lane_block: int,
+    pack: int,
+    interleaved: bool,
+) -> list[str]:
+    """Split the routed tensor directly into the next stage's registers."""
+    lanes = n // radix
+    split_shape = (pack, lanes, *((2,) * (radix.bit_length() - 1)))
+    lines = []
+    for component in ("r", "i"):
+        prefix = f"{buffer}_register_{component}"
+        lines.append(f"    {prefix} = tl.reshape({buffer}_{component}, ({pack}, {radix}, {lanes}))")
+        lines.append(f"    {prefix} = tl.trans({prefix}, (0, 2, 1))")
+        lines.append(f"    {prefix} = tl.reshape({prefix}, {split_shape})")
+        lines.extend(_emit_distributed_split_tree(
+            "    ", prefix, [f"{prefix}{digit}" for digit in range(radix)], prefix,
+        ))
+        for digit in range(radix):
+            name = f"{prefix}{digit}"
+            padded_lanes = lanes
+            while padded_lanes < lane_block:
+                lines.append(f"    {name} = tl.join({name}, tl.zeros_like({name}))")
+                lines.append(f"    {name} = tl.trans({name}, (0, 2, 1))")
+                padded_lanes *= 2
+                lines.append(f"    {name} = tl.reshape({name}, ({pack}, {padded_lanes}))")
+            if interleaved:
+                lines.append(f"    {name} = tl.trans({name}, (1, 0))")
+            lines.append(f"    {name} = tl.reshape({name}, ({pack * lane_block},))")
+    return lines
+
+
 def _emit_portable_exchange(
     buffer: str,
     stage: int,
@@ -679,16 +730,20 @@ def _emit_portable_exchange(
     n = math.prod(factors)
     radix = factors[stage]
     if (
-        _maca_knob("EXCHANGE") == "transpose"
-        and all(factor & (factor - 1) == 0 for factor in factors)
-        and slot_stride == n
-        and size == n * pack
+        _maca_knob("EXCHANGE") in {"transpose", "direct"}
+        and _structured_exchange_supported(factors, size, slot_stride, pack)
         and lane_block >= n // radix
     ):
-        return _emit_structured_portable_exchange(
+        lines = _emit_structured_portable_exchange(
             buffer, stage, factors, lane_block, pack, natural_order,
             interleaved=register_lane_stride > 1,
         )
+        if _maca_knob("EXCHANGE") == "direct" and not natural_order:
+            lines.extend(_emit_direct_exchange_registers(
+                buffer, factors[stage + 1], n, lane_block, pack,
+                interleaved=register_lane_stride > 1,
+            ))
+        return lines
     lines = [
         f"    exchange_pos = tl.arange(0, {size})",
         f"    exchange_slot = exchange_pos // {slot_stride}",
@@ -736,7 +791,7 @@ def _emit_portable_exchange(
     # one of them at each element.  A joined tensor permits one gather per
     # component, while retaining the same route and padded-lane semantics.
     # Keep this experimental until MACA compilation and timing are validated.
-    if _maca_knob("EXCHANGE") in {"join", "transpose"} and radix & (radix - 1) == 0:
+    if _maca_knob("EXCHANGE") in {"join", "transpose", "direct"} and radix & (radix - 1) == 0:
         vector_block = lane_block * pack
         lines.append(
             f"    exchange_joined_index = tl.where(exchange_valid, "
@@ -1250,7 +1305,14 @@ def _emit_stage_block(
             load_index = f"smem_phys{j}" if fuse_twiddle_into_row else f"phys{j}"
             lines.extend(
                 _emit_exchange_load(
-                    indent, source_buffer, load_index, j, portable_exchange
+                    indent, source_buffer, load_index, j, portable_exchange,
+                    direct=(
+                        portable_exchange
+                        and _maca_knob("EXCHANGE") == "direct"
+                        and _structured_exchange_supported(
+                            factors, exchange_size, exchange_slot_stride, smem_pack
+                        )
+                    ),
                 )
             )
             lines.append(
