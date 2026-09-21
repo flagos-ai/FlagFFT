@@ -1,3 +1,6 @@
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """CPU semantic checks for alternative MACA register exchange expressions."""
 from __future__ import annotations
 
@@ -30,9 +33,10 @@ class TensorLanguage:
         return a[..., 0], a[..., 1]
 
 
-@pytest.mark.parametrize("factors", [(16, 8, 8), (16, 16, 8), (8, 8), (19, 16)])
+@pytest.mark.parametrize("factors", [(16,), (16, 8, 8), (16, 16, 8), (2,) * 10, (8, 8), (19, 16), (19, 11)])
 @pytest.mark.parametrize("pack,inner,padded", [(1, False, False), (4, False, True), (4, True, False)])
-def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, padded):
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, padded, dtype):
     n = math.prod(factors)
     lanes = max(128, 1 << (max(n // r for r in factors) - 1).bit_length())
     slot_stride = (1 << (n - 1).bit_length()) + int(padded)
@@ -40,7 +44,7 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
     rng = np.random.default_rng(731)
     for stage, radix in enumerate(factors):
         registers = {
-            f"exchange_{component}{digit}": rng.normal(size=lanes * pack).astype(np.float32)
+            f"exchange_{component}{digit}": rng.normal(size=lanes * pack).astype(dtype)
             for component in ("r", "i") for digit in range(radix)
         }
         outputs = []
