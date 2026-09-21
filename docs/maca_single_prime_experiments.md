@@ -87,12 +87,12 @@ A的2048 FFT fatbin SHA256 `17d00d72a30ed5565549d15d0a80c9641739143d7b3a3a6a844f
 FLAGFFT_MACA_EXCHANGE=direct FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION=1 \
   "$FFT_CLI" tune --api z2z --shape 997 --batch 1 \
   --max-candidates 3 --finalists 3 --screen-warmup 200 --screen-iters 100 \
-  --final-warmup 500 --final-iters 100 --no-save --json
+  --final-warmup 2000 --final-iters 100 --no-save --json
 
 FLAGFFT_MACA_EXCHANGE=direct FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION=1 \
   "$FFT_CLI" tune --api z2z --shape 524287 --batch 1 \
   --max-candidates 2 --finalists 2 --screen-warmup 200 --screen-iters 100 \
-  --final-warmup 500 --final-iters 100 --no-save --json
+  --final-warmup 2000 --final-iters 100 --no-save --json
 ```
 
 997 FP64候选顺序为BS2000、Rader996、BS2048；524287 FP64为BS1048576(512×2048)、BS1048576(1024×1024)。每条命令的双方向均由tuner内部正确性门控，但其计时不采用bench的交错次序，选择winner后仍需标准bench与NumPy验收。大prime命令同时比较分解和融合是否可用；若要单独归因分解，应先将four-step融合开关设0，再测开启后的winner，不能直接把两候选差额全部归因给分解。
