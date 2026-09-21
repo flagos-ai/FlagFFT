@@ -34,7 +34,11 @@ class TensorLanguage:
         return a[..., 0], a[..., 1]
 
 
-@pytest.mark.parametrize("factors", [(16,), (16, 8, 8), (16, 16, 8), (2,) * 10, (8, 8), (19, 16), (19, 11)])
+@pytest.mark.parametrize("factors", [
+    (16,), (16, 8, 8), (16, 16, 8), (2,) * 10, (8, 8), (19, 16), (19, 11),
+    (13, 6, 5), (17, 7, 4), (10, 9, 5), (9, 9, 9), (7, 6, 3, 3),
+    (10, 10, 9), (5, 5, 5, 3), (17, 13, 8), (7, 6, 6, 4),
+])
 @pytest.mark.parametrize("pack,inner,padded", [(1, False, False), (4, False, True), (4, True, False)])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, padded, dtype):
@@ -49,7 +53,7 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
             for component in ("r", "i") for digit in range(radix)
         }
         outputs = []
-        for method in ("", "join", "transpose", "direct"):
+        for method in ("", "join", "transpose", "direct", "direct_all"):
             monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", method)
             lines = _emit_portable_exchange(
                 "smem", stage, factors, lanes, size, slot_stride, pack,
@@ -62,9 +66,9 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
             outputs.append((scope["smem_r"], scope["smem_i"]))
             if method == "join" and radix & (radix - 1) == 0:
                 assert sum("tl.gather" in line for line in lines) == 2
-            if method in {"transpose", "direct"} and not padded and n & (n - 1) == 0:
+            if method in {"transpose", "direct", "direct_all"} and not padded and n & (n - 1) == 0:
                 assert not any("tl.gather" in line for line in lines)
-                if method == "direct" and stage < len(factors) - 1:
+                if method in {"direct", "direct_all"} and stage < len(factors) - 1:
                     next_radix = factors[stage + 1]
                     next_lanes = n // next_radix
                     for component in ("r", "i"):
@@ -77,7 +81,9 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
                             np.testing.assert_array_equal(
                                 scope[f"smem_register_{component}{digit}"], expected.reshape(-1)
                             )
-            if radix & (radix - 1):
+            if method == "direct_all" and (padded or n & (n - 1)):
+                assert sum("tl.gather" in line for line in lines) == 2
+            if radix & (radix - 1) and method != "direct_all":
                 assert not any("exchange_joined" in line for line in lines)
         for result in outputs[1:]:
             for old, new in zip(outputs[0], result):

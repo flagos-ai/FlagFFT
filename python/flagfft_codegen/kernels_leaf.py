@@ -730,7 +730,7 @@ def _emit_portable_exchange(
     n = math.prod(factors)
     radix = factors[stage]
     if (
-        _maca_knob("EXCHANGE") in {"transpose", "direct"}
+        _maca_knob("EXCHANGE") in {"transpose", "direct", "direct_all"}
         and _structured_exchange_supported(factors, size, slot_stride, pack)
         and lane_block >= n // radix
     ):
@@ -738,7 +738,7 @@ def _emit_portable_exchange(
             buffer, stage, factors, lane_block, pack, natural_order,
             interleaved=register_lane_stride > 1,
         )
-        if _maca_knob("EXCHANGE") == "direct" and not natural_order:
+        if _maca_knob("EXCHANGE") in {"direct", "direct_all"} and not natural_order:
             lines.extend(_emit_direct_exchange_registers(
                 buffer, factors[stage + 1], n, lane_block, pack,
                 interleaved=register_lane_stride > 1,
@@ -791,19 +791,24 @@ def _emit_portable_exchange(
     # one of them at each element.  A joined tensor permits one gather per
     # component, while retaining the same route and padded-lane semantics.
     # Keep this experimental until MACA compilation and timing are validated.
-    if _maca_knob("EXCHANGE") in {"join", "transpose", "direct"} and radix & (radix - 1) == 0:
+    method = _maca_knob("EXCHANGE")
+    if method == "direct_all" or (
+        method in {"join", "transpose", "direct"} and radix & (radix - 1) == 0
+    ):
         vector_block = lane_block * pack
+        joined_radix = 1 << (radix - 1).bit_length()
         lines.append(
             f"    exchange_joined_index = tl.where(exchange_valid, "
-            f"exchange_src * {radix} + exchange_digit, 0)"
+            f"exchange_src * {joined_radix} + exchange_digit, 0)"
         )
         for component in ("r", "i"):
             joined = _distributed_join_tree(
                 [f"exchange_{component}{digit}" for digit in range(radix)]
+                + [f"tl.zeros_like(exchange_{component}0)"] * (joined_radix - radix)
             )
             lines.append(
                 f"    exchange_joined_{component} = tl.reshape({joined}, "
-                f"({vector_block * radix},))"
+                f"({vector_block * joined_radix},))"
             )
             lines.append(
                 f"    {buffer}_{component} = tl.where(exchange_valid, "
@@ -1308,7 +1313,7 @@ def _emit_stage_block(
                     indent, source_buffer, load_index, j, portable_exchange,
                     direct=(
                         portable_exchange
-                        and _maca_knob("EXCHANGE") == "direct"
+                        and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
                         and _structured_exchange_supported(
                             factors, exchange_size, exchange_slot_stride, smem_pack
                         )
