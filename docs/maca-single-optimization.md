@@ -40,3 +40,25 @@
 - 检查共享代码影响的 batch、2D、3D 代表形状及 CPU/codegen 测试；开关关闭时保持原语义。
 - 只有证据充分的配置才考虑默认启用；未通过完整验收的原型保持 opt-in。
 - 目标未达到时明确报告实际水平与剩余瓶颈，不把原型交付等同于达成 0.8。
+
+## 第一轮设备证据（1024 C2C forward）
+
+以下是单轮 5 warmup / 50 iterations 的筛选结果，NumPy 与 mcFFT 正确性均通过；仍需重复 A/B、inverse 和完整矩阵验收。设备为 C550，Torch 2.8.0+metax3.7.2.0、Triton 3.6.0。
+
+| 表达方式 | FlagFFT / μs | mcFFT / μs | speedup | LLVM IR barrier call | 动态 shared / B |
+|---|---:|---:|---:|---:|---:|
+| 基线 gather+where | 66.048 | 29.696 | 0.4496 | 159 | 4096 |
+| join 后 gather | 47.872 | 29.952 | 0.6257 | 71 | 8192 |
+| 静态 transpose，保留下一 stage gather | 47.872 | 29.952 | 0.6257 | 67 | 8192 |
+| direct：静态置换并直接 split 到下一 stage 寄存器 | 27.648 | 29.696 | 1.0741 | 7 | 8192 |
+
+direct 的 TTGIR gather 从 80 降为 0。最终 ELF 报告 private memory=0；基线与 direct 均没有 spill 证据。barrier 数来自 LLVM IR，不能冒称最终 ISA 动态执行计数。单点数据与编译产物共同支持继续优化级间交换；尚不能外推所有尺寸或将默认策略替换。
+
+原始结果位于工作区根 `results/`：
+
+- `20260921_143430_maca_single_baseline_focus`（基线为保留的 partial suite，已完成结果有效）
+- `20260921_143720_maca_single_exchange_join`（同样为 partial suite）
+- `20260921_144215_maca_single_transpose_1024`（完整单 case）
+- `20260921_144503_maca_single_direct_1024`（完整单 case）
+
+当前集成原型 `1fff722` 的容器 CPU/codegen 回归为 109 passed、8 subtests passed；GPU 验收继续由 validation 串行推进。
