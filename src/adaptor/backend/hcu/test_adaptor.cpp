@@ -34,10 +34,10 @@ namespace flagfft::test_adaptor {
 // =========================================================================
 
 static hipfftHandle to_hipfft(std::uintptr_t v) {
-  return static_cast<hipfftHandle>(static_cast<std::intptr_t>(v));
+  return reinterpret_cast<hipfftHandle>(v);
 }
 static std::uintptr_t from_hipfft(hipfftHandle h) {
-  return static_cast<std::uintptr_t>(static_cast<std::intptr_t>(h));
+  return reinterpret_cast<std::uintptr_t>(h);
 }
 
 RefPlanHandle::RefPlanHandle() : impl_(0) {
