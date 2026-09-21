@@ -133,20 +133,27 @@ def test_bluestein_boundary_leaf_matches_numpy(runtime, dtype, direction):
     np, torch = runtime
     from flagfft_codegen.kernels_common import LeafPlan, codelet_radices_for
     from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
-    from flagfft_codegen.metadata import _module_source
+    from flagfft_codegen.metadata import _metadata, _module_source
 
     n, m = 997, 2048
     factors = (16, 16, 8)
     plan = LeafPlan(m, factors, 1, 128, 2, (), m, "forward", dtype)
     kernels = []
-    for mode in ("bluestein_prepare_leaf", "bluestein_finish_leaf"):
+    for mode, kind in (
+        ("bluestein_prepare_leaf", "leaf_bluestein_prepare"),
+        ("bluestein_finish_leaf", "leaf_bluestein_finish"),
+    ):
         name, source = _build_leaf_kernel_source_for_io(plan, io_mode=mode, prime_n=n)
         module = _module_source(source, tuple(sorted(codelet_radices_for(factors))))
         filename = f"<maca_{mode}_{dtype}>"
         linecache.cache[filename] = (len(module), None, module.splitlines(True), filename)
         scope = {"__name__": __name__}
         exec(compile(module, filename, "exec"), scope)
-        kernels.append(scope[name])
+        metadata = _metadata(
+            module_path=Path(filename), kernel_name=name, arg_names=[],
+            plan=plan, kernel_type=kind, n1=0, n2=0, dtype=dtype,
+        )
+        kernels.append((scope[name], metadata["num_warps"]))
 
     real_dtype = torch.float64 if dtype == "complex128" else torch.float32
     tables = []
@@ -185,8 +192,10 @@ def test_bluestein_boundary_leaf_matches_numpy(runtime, dtype, direction):
     for values in inputs:
         x = np.asarray(values, dtype=dtype)
         source = device_complex(x)
-        kernels[0][(1,)](source, chirp_tensor, work, *tables, 1, num_warps=2)
-        kernels[1][(1,)](work, b_fft, chirp_tensor, output, *tables, 1, num_warps=2)
+        prepare, prepare_warps = kernels[0]
+        finish, finish_warps = kernels[1]
+        prepare[(1,)](source, chirp_tensor, work, *tables, 1, num_warps=prepare_warps)
+        finish[(1,)](work, b_fft, chirp_tensor, output, *tables, 1, num_warps=finish_warps)
         actual = torch.view_as_complex(output).cpu().numpy()
         expected = np.fft.fft(x) if direction == "forward" else np.fft.ifft(x) * n
         relative_error = np.linalg.norm(actual - expected) / np.linalg.norm(expected)
