@@ -253,3 +253,37 @@ P8、VEC_IO=0作为大CT主线。
 
 产物：`20260921_155000_maca_single_pack4_vec_warm/artifacts/` 中的
 `pack4_vec_static_summary.json` 和 `pack4_vec_global_access.json`。
+
+
+## Mixed 185640 实机产物补充
+
+`direct_all`、P4、8 warps 的 390×476 four-step，NumPy 正确性通过。
+200/100 初筛64.256µs / mcFFT53.248µs =0.82869，前后半稳定。这只验收本例，
+不代表1768/209等含大radix的叶已经通过资源与正确性验证。
+
+| forward 产物 | row390 [13,6,5] | col476 [17,7,4] |
+|---|---:|---:|
+| TTGIR gather | 26 | 26 |
+| LLIR barrier | 51 | 51 |
+| dynamic shared | 32KiB | 64KiB |
+| ELF mtreg / streg | 60 / 26 | 78 / 52 |
+| ELF private memory | 0 | 0 |
+| LLIR shared loads / stores | 38 / 136 | 38 / 168 |
+
+inverse 相同，唯 row mtreg58。未获取同协议旧mixed产物前，不推断shared或寄存器
+相对增量，也不把64KiB解释成某个已知occupancy阈值。已确认本例P4编译运行成功。
+
+col forward LLIR 第38行 `%32 = sdiv i32 %30, 4` 对应lane索引，第45行
+`%39 = icmp slt i32 %32, 28` 限定radix17输入有效lane。该mask用于地址与
+`ldg.predicator.f32`，随后第444行起为对称配对的普通fadd/fsub，第492行起
+出现常数系数 `llvm.fma.f32` 链。整kernel只有第17行batch越界的一个branch；
+浮点算术intrinsic没有lane谓词参数，也没有按有效lane包围算术的控制流。
+这在LLIR层支持“有效lane仅28/128，算术仍为全lane表达”的候选瓶颈；row13
+对应30/128。尚未获得最终ISA反汇编，不能宣称硬件发射指令数或耗时占比。
+
+后续可证伪方向保留两项：减少剩余mixed load-side gather/barrier，以及独立
+每stage lane向量以减少大radix阶段无效lane算术。当前没有证据要求立即替换成
+Rader codelet；还应分别验证资源变化与端到端时间，不能混成一个新算法实验。
+
+产物：`20260921_155300_maca_single_mixed185640/artifacts/` 下
+`direct_all_static_summary.json`、`mixed_arithmetic_predication.json` 和原始cache。
