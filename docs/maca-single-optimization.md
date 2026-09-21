@@ -3,6 +3,21 @@
 基线：`45eb2a8`，single 指 batch=1；目标 speedup = mcFFT median / FlagFFT median >= 0.8。
 历史 2026-09-18 验收仅用于定位问题，不能替代当前提交基线。
 
+当前已完成小尺寸 FP32 C2C 的正式验收：1024/2048 使用 direct，997 使用
+direct+leaf fusion；NumPy/mcFFT 双向正确性通过，三轮独立进程双向性能共
+18/18 个结果均 >=0.8，最小 0.8110。每轮 warmup=2000、iters=100，不删样本。
+这不等同于 12 个算子的完整矩阵通过，也没有默认启用优化。
+
+| 已验尺寸 | forward 三轮 speedup 范围 | inverse 三轮 speedup 范围 |
+|---|---:|---:|
+| 1024 | 1.0351–1.0536 | 1.0000–1.0175 |
+| 2048 | 0.8919–0.8933 | 0.8800–0.8933 |
+| 997 | 0.8110–0.8175 | 0.8189–0.8268 |
+
+证据：`results/20260921_160430_maca_single_final_small` 的原始 6 个 JSON、
+`final_summary.json` 与主 agent 独立复核的 `root_independent_review.json`。
+大 CT、mixed 和大 prime 的正式复测仍在进行。
+
 ## 分工与边界
 
 - `maca_validation`：环境核验、当前基线、唯一 GPU 测量调度者、候选独立验收。
