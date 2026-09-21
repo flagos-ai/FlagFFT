@@ -44,6 +44,11 @@ elseif(BACKEND STREQUAL "MACA")
         ${CMAKE_CURRENT_LIST_DIR}/backend/maca/adaptor.cpp
     )
     target_link_libraries(flagfft PRIVATE MACA::mcruntime)
+elseif(BACKEND STREQUAL "HCU")
+    target_sources(flagfft PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/backend/hcu/adaptor.cpp
+    )
+    target_link_libraries(flagfft PRIVATE hip::host)
 else()
-    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, BACKEND=MACA, or BACKEND=NPU")
+    message(FATAL_ERROR "FlagFFT adaptor currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, BACKEND=MACA, BACKEND=NPU, or BACKEND=HCU")
 endif()

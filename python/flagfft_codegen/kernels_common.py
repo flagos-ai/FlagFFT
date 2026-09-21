@@ -807,6 +807,18 @@ def _npu_backend_active() -> bool:
     )
 
 
+def _hcu_backend_active() -> bool:
+    """Whether the installed Triton targets Hygon BW1000/HCU."""
+    backend = _declared_backend()
+    if backend:
+        return backend in {"hcu", "hygon"}
+    return (
+        os.environ.get("TRITON_JIT_BACKEND", "").lower() in {"hcu", "hygon"}
+        or os.environ.get("FLAGTREE_BACKEND", "").lower() in {"hcu", "hygon"}
+        or _triton_plugin_present("hcu")
+    )
+
+
 def _ix_backend_active() -> bool:
     """Whether the installed Triton targets Iluvatar (Tianshu/CoreX)."""
     backend = _declared_backend()
@@ -816,13 +828,14 @@ def _ix_backend_active() -> bool:
 
 
 def _non_nvidia_backend_active() -> bool:
-    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU/IX/NPU/MACA).
+    """Whether the installed Triton is a non-NVIDIA port (MThreads/PPU/IX/NPU/MACA/HCU).
 
     The thread-local mixed-radix four-step kernels and the vectorized 3D
     transpose variants rely on register/asm patterns that the MThreads
     MTGPU LLVM backend cannot compile (llc register allocation failure)
     and that the PPU/IX/NPU toolchains do not support, so they are disabled on
-    these backends.
+    these backends. HCU also uses a non-PTX HIP code-generation path, so it
+    must not receive the NVIDIA inline-assembly variants by default.
     """
     return (
         _mthreads_backend_active()
@@ -830,6 +843,7 @@ def _non_nvidia_backend_active() -> bool:
         or _ix_backend_active()
         or _maca_backend_active()
         or _npu_backend_active()
+        or _hcu_backend_active()
     )
 
 
@@ -867,6 +881,7 @@ __all__ = [
     "_PORTABLE_EXCHANGE_MAX_PACK",
     "_PORTABLE_EXCHANGE_MIN_ELEMENTS",
     "_ix_backend_active",
+    "_hcu_backend_active",
     "_maca_backend_active",
     "_maca_four_step_inner_pack",
     "_maca_knob",

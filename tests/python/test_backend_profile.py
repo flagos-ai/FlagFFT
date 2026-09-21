@@ -106,6 +106,33 @@ class ProfileTest(unittest.TestCase):
         finally:
             reset_profile(token)
 
+    def test_hcu_profile_uses_wavefront_and_portable_codegen_policy(self):
+        from flagfft_codegen.kernels_common import (
+            _hcu_backend_active,
+            _non_nvidia_backend_active,
+        )
+        from flagfft_codegen.target import set_codegen_target, warp_size
+
+        profile = BackendProfile.from_device(
+            {
+                "backend": "hcu",
+                "device_arch": "gfx936",
+                "warp_size": 64,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 49152,
+            }
+        )
+        token = set_profile(profile)
+        set_codegen_target("hcu:gfx936:64")
+        try:
+            self.assertEqual(profile.warp_size, 64)
+            self.assertTrue(_hcu_backend_active())
+            self.assertTrue(_non_nvidia_backend_active())
+            self.assertEqual(warp_size(), 64)
+        finally:
+            set_codegen_target("")
+            reset_profile(token)
+
     def test_metadata_native_warps(self):
         from pathlib import Path
 

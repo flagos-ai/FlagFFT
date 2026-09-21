@@ -5,7 +5,8 @@ kernels at runtime via [Triton/TLE](https://github.com/FlagTree/flagtree) and
 [libtriton_jit](https://github.com/Artlesbol/libtriton_jit), targeting
 arbitrary-length transforms that vendor FFT libraries may not optimally
 support. The current CMake build supports CUDA, MUSA, PPU, IX
-(Iluvatar/Tianshu), MACA (MetaX), and NPU (Ascend) backends.
+(Iluvatar/Tianshu), MACA (MetaX), NPU (Ascend), and HCU (Hygon BW1000)
+backends.
 
 ---
 
@@ -63,10 +64,10 @@ docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
 # Inside the container, run steps 3-5 from above.
 ```
 
-The Docker image and CI configuration use Python 3.12. MUSA, PPU, IX, MACA, and
-NPU builds require their corresponding vendor SDK/runtime environment and should
-be configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`,
-`-DBACKEND=MACA`, or `-DBACKEND=NPU`.
+The Docker image and CI configuration use Python 3.12. MUSA, PPU, IX, MACA,
+NPU, and HCU builds require their corresponding vendor SDK/runtime environment
+and should be configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`,
+`-DBACKEND=IX`, `-DBACKEND=MACA`, `-DBACKEND=NPU`, or `-DBACKEND=HCU`.
 
 ---
 
@@ -81,7 +82,7 @@ be configured with `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`,
 | Python | 3.10 | JIT codegen + test runner; the provided CUDA Docker/CI environments use 3.12 |
 | flagtree | 0.5.0 | triton TLE support |
 | SQLite3 | — | Tuning database |
-| Backend SDK | — | CUDA Toolkit, MUSA SDK, PPU SDK, CoreX CUDA-compatible SDK for IX, MACA SDK, or CANN/Ascend runtime for NPU |
+| Backend SDK | — | CUDA Toolkit, MUSA SDK, PPU SDK, CoreX CUDA-compatible SDK for IX, MACA SDK, CANN/Ascend runtime for NPU, or DTK 26.04/HIP + hipFFT for HCU |
 | libtriton_jit | submodule | Triton JIT compiler (`deps/libtriton_jit`) |
 | PyYAML | — | Test runner (`pip install pyyaml`) |
 
@@ -123,7 +124,7 @@ This produces `build/libflagfft.so`.
 |---|---|---|
 | `FLAGFFT_BUILD_CLI` | `OFF` | Build the `flagfft-cli` benchmark/verification tool |
 | `FLAGFFT_BUILD_TESTS` | `OFF` | Build the C++ test suite (requires Google Test; NPU also builds the NumPy capture target, other backends also require a reference FFT library) |
-| `BACKEND` | `CUDA` | Backend selector: `CUDA`, `MUSA`, `PPU`, `IX`, `MACA`, or `NPU` |
+| `BACKEND` | `CUDA` | Backend selector: `CUDA`, `MUSA`, `PPU`, `IX`, `MACA`, `NPU`, or `HCU` |
 | `CMAKE_BUILD_TYPE` | — | `Release`, `Debug`, `RelWithDebInfo` |
 
 ### Full Build (library + CLI + tests)
@@ -137,7 +138,7 @@ cmake --build build -j$(nproc)
 
 The default backend is CUDA. Select another supported backend at configure
 time, for example `-DBACKEND=MUSA`, `-DBACKEND=PPU`, `-DBACKEND=IX`,
-`-DBACKEND=MACA`, or `-DBACKEND=NPU`; the
+`-DBACKEND=MACA`, `-DBACKEND=NPU`, or `-DBACKEND=HCU`; the
 corresponding SDK and runtime libraries must be installed.
 
 ### Iluvatar/Tianshu (IX) Build
@@ -193,6 +194,24 @@ tree. Its current 910B reference is FP32-only: horizontal 1D
 when each dimension is 32, 64, or 128. It has no 2D real or 3D plans. The
 runner still checks FlagFFT against NumPy for those cases and marks only the
 unavailable platform/performance rows as `Skipped` with the ops-fft reason.
+
+### Hygon BW1000 (HCU) Build
+
+Use the HCU 3.6 DTK 26.04 image from the
+[FlagTree HCU user manual](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-hcu).
+The FlagFFT HCU adaptor uses HIP for device memory, streams, events, and
+graphs, and hipFFT as the correctness/performance reference. BW1000 reports
+`gfx936` with 64-thread wavefronts, so the generated target is
+`hcu:gfx936:64`. Set `HIP_VISIBLE_DEVICES` to the physical BW1000 IDs under
+test; the acceptance runner sets it per worker when `--gpus` is used:
+
+```bash
+export FLAGTREE_BACKEND=hcu
+export HIP_VISIBLE_DEVICES=6,7
+cmake -S . -B build-hcu -DCMAKE_BUILD_TYPE=Release \
+      -DBACKEND=HCU -DFLAGFFT_BUILD_CLI=ON -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build-hcu -j$(nproc)
+```
 
 ### Environment Variables
 
