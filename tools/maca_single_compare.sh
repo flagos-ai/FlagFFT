@@ -38,6 +38,12 @@ for round in ${FLAGFFT_COMPARE_ROUNDS:-1 2 3}; do
       export FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION=1
       shapes=997
     fi
+    # Repeated shapes share the in-process kernel cache, but retain independent
+    # plans, warmup and timing loops. These are labelled steady-state repeats.
+    base_shapes=$shapes
+    for (( repeat=1; repeat<${FLAGFFT_COMPARE_REPEATS:-1}; ++repeat )); do
+      shapes="$shapes,$base_shapes"
+    done
     for direction in ${FLAGFFT_COMPARE_DIRECTIONS:-forward inverse}; do
       stem="$out/round${round}_${variant}_${direction}"
       /usr/bin/mx-smi -i 4 --show-clock --show-dpm cur > "$stem.clock-before.txt"
