@@ -55,7 +55,7 @@ for round in ${FLAGFFT_COMPARE_ROUNDS:-1 2 3}; do
       stem="$out/round${round}_${variant}_${direction}"
       /usr/bin/mx-smi -i 4 --show-clock --show-dpm cur > "$stem.clock-before.txt"
       "$build/flagfft-cli" bench --api c2c --rank 1 --shape "$shapes" --batch 1 \
-        --direction "$direction" --warmup "${FLAGFFT_COMPARE_WARMUP:-200}" --iters 100 --json --print-path \
+        --direction "$direction" --warmup "${FLAGFFT_COMPARE_WARMUP:-2000}" --iters 100 --json --print-path \
         > "$stem.json" 2> "$stem.stderr"
       /usr/bin/mx-smi -i 4 --show-clock --show-dpm cur > "$stem.clock-after.txt"
     done
