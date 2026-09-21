@@ -677,24 +677,27 @@ def _emit_direct_exchange_registers(
 ) -> list[str]:
     """Split the routed tensor directly into the next stage's registers."""
     lanes = n // radix
-    split_shape = (pack, lanes, *((2,) * (radix.bit_length() - 1)))
+    split_shape = (pack, lane_block, *((2,) * (radix.bit_length() - 1)))
     lines = []
     for component in ("r", "i"):
         prefix = f"{buffer}_register_{component}"
         lines.append(f"    {prefix} = tl.reshape({buffer}_{component}, ({pack}, {radix}, {lanes}))")
         lines.append(f"    {prefix} = tl.trans({prefix}, (0, 2, 1))")
+        # Pad the whole register bank before splitting.  Padding each register
+        # separately makes the MACA backend emit two barriers per component
+        # and radix output (64 extra barriers on the 2048-point radix-16 stage).
+        padded_lanes = lanes
+        while padded_lanes < lane_block:
+            lines.append(f"    {prefix} = tl.join({prefix}, tl.zeros_like({prefix}))")
+            lines.append(f"    {prefix} = tl.trans({prefix}, (0, 3, 1, 2))")
+            padded_lanes *= 2
+            lines.append(f"    {prefix} = tl.reshape({prefix}, ({pack}, {padded_lanes}, {radix}))")
         lines.append(f"    {prefix} = tl.reshape({prefix}, {split_shape})")
         lines.extend(_emit_distributed_split_tree(
             "    ", prefix, [f"{prefix}{digit}" for digit in range(radix)], prefix,
         ))
         for digit in range(radix):
             name = f"{prefix}{digit}"
-            padded_lanes = lanes
-            while padded_lanes < lane_block:
-                lines.append(f"    {name} = tl.join({name}, tl.zeros_like({name}))")
-                lines.append(f"    {name} = tl.trans({name}, (0, 2, 1))")
-                padded_lanes *= 2
-                lines.append(f"    {name} = tl.reshape({name}, ({pack}, {padded_lanes}))")
             if interleaved:
                 lines.append(f"    {name} = tl.trans({name}, (1, 0))")
             lines.append(f"    {name} = tl.reshape({name}, ({pack * lane_block},))")
