@@ -269,6 +269,32 @@ class ProfileTest(unittest.TestCase):
                     four_step_col_inner_pack_for(1024, 1024, "complex64", safe),
                     8,
                 )
+
+            # The same bypass is not safe for FP64: an 8-slot [16,16,8]
+            # column leaf requests 128 KiB on C550 and must remain capped.
+            double_plan = LeafPlan(
+                2048,
+                (16, 16, 8),
+                1,
+                128,
+                4,
+                (),
+                2048,
+                dtype="complex128",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_MACA_EXCHANGE": "direct",
+                    "FLAGFFT_MACA_INNER_PACK": "8",
+                },
+            ):
+                self.assertEqual(
+                    four_step_col_inner_pack_for(
+                        512, 2048, "complex128", double_plan
+                    ),
+                    1,
+                )
         finally:
             reset_profile(token)
 
