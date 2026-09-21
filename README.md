@@ -220,7 +220,7 @@ cmake --build build-hcu -j$(nproc)
 | `FLAGFFT_PYTHON` | Path to the Python interpreter used by JIT codegen (default: `python3` from PATH); keep its Python minor version aligned with the CMake build interpreter |
 | `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `.flagfft/tuned_plans.sqlite` beside the executable) |
 | `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
-| `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `balanced` (IX default), `legacy` (other backends' default/comparison), `native` (device warp only), or `packed` (experimental wider leaf packing) |
+| `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `balanced` (IX default), `native` (HCU default; device warp with queried resource caps), `legacy` (other backends' default/comparison), or `packed` (experimental wider leaf packing) |
 
 ### Hardware profiles and IX experiments
 

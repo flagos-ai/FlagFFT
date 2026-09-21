@@ -133,6 +133,30 @@ class ProfileTest(unittest.TestCase):
             set_codegen_target("")
             reset_profile(token)
 
+    def test_hcu_default_policy_caps_fp64_four_step_shared_memory(self):
+        from flagfft_codegen.kernels_common import four_step_col_inner_pack_for
+
+        profile = BackendProfile.from_device(
+            {
+                "backend": "hcu",
+                "device_arch": "gfx936",
+                "warp_size": 64,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 65536,
+            }
+        )
+        self.assertEqual(profile.policy, "native")
+        self.assertEqual(profile.shared_budget(128 * 1024), 65536)
+
+        plan = LeafPlan(1560, (24, 13, 5), 1, 1, 4, (), 2048, dtype="complex128")
+        token = set_profile(profile)
+        try:
+            self.assertEqual(
+                four_step_col_inner_pack_for(425, 1560, "complex128", plan), 1
+            )
+        finally:
+            reset_profile(token)
+
     def test_metadata_native_warps(self):
         from pathlib import Path
 

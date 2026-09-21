@@ -56,7 +56,7 @@ backend's static defaults apply and the profile records the fallback.
 | Policy | Warp heuristic | Leaf packing | Shared-memory budget | Default |
 |---|---|---|---|---|
 | `legacy` | 32-lane hint | 32 logical lanes | existing heuristic budgets | CUDA, MUSA, PPU, MACA |
-| `native` | queried device width | 32 logical lanes | capped by the queried limit | — |
+| `native` | queried device width | 32 logical lanes | capped by the queried limit | HCU |
 | `packed` | queried device width | one device warp | capped by the queried limit | — |
 | `balanced` | queried device width | one device warp, bounded by a live-value budget | capped by the queried limit | IX |
 
