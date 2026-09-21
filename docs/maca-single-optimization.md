@@ -118,8 +118,9 @@ A 的实际 plan 是五 kernel generic Bluestein，B 为两 kernel boundary leaf
 
 主 agent 独立读取并检查全部有序样本，摘要在同目录 `root_control_review.json`。
 C1024 首个 case 前后半存在轻微继续变快，后续重复稳定；最终跨进程复测将提高
-warmup 至 2000，并保留所有样本。C997 的 NumPy gate 当时尚未补齐，故此格只是
-性能诊断；先前 D997 已通过 NumPy。双方向与 dtype/API 覆盖仍不完整。
+warmup 至 2000，并保留所有样本。随后补齐 C997 双向、C1024/2048 inverse 和
+D997 inverse 的 NumPy/mcFFT 正确性，均通过；C1024/2048 与 D997 forward
+沿用先前同语义原型的 NumPy 证据。双向性能及 dtype/API 覆盖仍不完整。
 
 ### 大 CT 的负实验
 
@@ -127,6 +128,29 @@ warmup 至 2000，并保留所有样本。C997 的 NumPy gate 当时尚未补齐
 direct + inner pack=2，NumPy 与平台正确性通过，200/100 下
 391.168 μs / 112.640 μs = 0.288×。实际 4 warps / 256 threads。
 与 pack4 相同的 7 barrier、0 gather、private memory=0，shared 从 32 KiB 减至
-16 KiB，故不能把回退归因于新增同步或 spill。pack2 淘汰；pack8 和 pack4 同协议
-复测继续。IO 分段模型、作用域检查与 mixed codelet 算术限制见
+16 KiB，故不能把回退归因于新增同步或 spill。pack2 淘汰。IO 分段模型、作用域
+检查与 mixed codelet 算术限制见
 [`maca_exchange_audit.md`](maca_exchange_audit.md)。
+
+### 大 CT 的 pack8 候选
+
+1048576 C2C forward 使用相同 200/100 协议：
+
+| pack | FlagFFT / μs | mcFFT / μs | speedup | 实际 shared | ELF private |
+|---:|---:|---:|---:|---:|---:|
+| 2 | 391.168 | 112.640 | 0.2880 | 16 KiB | 0 |
+| 4 | 217.856 | 112.640 | 0.5170 | 32 KiB | 0 |
+| 8 | 128.768 | 112.640 | 0.8748 | 32 KiB | 0 |
+
+pack8 通过 NumPy 与平台正确性，实际 8 warps / 512 threads；相对 pack4 再快
+1.692×。pack8 前后半样本接近，pack4 仍有小幅抖动（前后半 214.656/222.464 μs），
+参考库中位数相同。还须补跨进程和 inverse，不外推 FP64 或 batch。
+
+pack8 未增加 barrier，也未 spill；每线程寄存器上升，LLIR 同时出现 packed FMA。
+global 访问仍为 scalar f32，故不能把总收益归因于宽访存或仅归因于 coalescing。
+这些资源变化说明原 gather 实现的 pack 调优结论需要在新交换方式下重新测量。
+
+结果：`20260921_153000_maca_single_pack8_warm`、
+`20260921_154730_maca_single_pack4_warm`。统一 runner 的方向筛选回归
+`tests/python/test_run_tests.py` 为 273 passed；正式 MACA 验收脚本默认改为
+2000/100，诊断用的低预热对照仍保留。
