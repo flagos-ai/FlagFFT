@@ -557,7 +557,11 @@ def _emit_route_index(
 
 
 def _emit_exchange_load(
-    indent: str, buffer: str, index: str, digit: int, portable: bool,
+    indent: str,
+    buffer: str,
+    index: str,
+    digit: int,
+    portable: bool,
     direct: bool = False,
 ) -> list[str]:
     if direct:
@@ -629,7 +633,11 @@ def _emit_structured_portable_exchange(
     if natural_order:
         output_axes = [stage, *range(stage - 1, -1, -1)]
     else:
-        output_axes = [*range(stage + 1, len(factors)), stage, *range(stage - 1, -1, -1)]
+        output_axes = [
+            *range(stage + 1, len(factors)),
+            stage,
+            *range(stage - 1, -1, -1),
+        ]
     shape = (pack, *(factors[axis] for axis in source_axes))
     permutation = (0, *(source_axes.index(axis) + 1 for axis in output_axes))
     lines = []
@@ -639,12 +647,18 @@ def _emit_structured_portable_exchange(
             [f"exchange_{component}{digit}" for digit in range(radix)]
         )
         if interleaved:
-            lines.append(f"    {name} = tl.reshape({joined}, ({lane_block}, {pack}, {radix}))")
+            lines.append(
+                f"    {name} = tl.reshape({joined}, ({lane_block}, {pack}, {radix}))"
+            )
             lines.append(f"    {name} = tl.trans({name}, (1, 0, 2))")
         else:
-            lines.append(f"    {name} = tl.reshape({joined}, ({pack}, {lane_block}, {radix}))")
+            lines.append(
+                f"    {name} = tl.reshape({joined}, ({pack}, {lane_block}, {radix}))"
+            )
         if padding > 1:
-            lines.append(f"    {name} = tl.reshape({name}, ({pack}, {padding}, {lanes}, {radix}))")
+            lines.append(
+                f"    {name} = tl.reshape({name}, ({pack}, {padding}, {lanes}, {radix}))"
+            )
             lines.append(f"    {name} = tl.trans({name}, (0, 2, 3, 1))")
             trim_shape = (pack, lanes, radix, *((2,) * (padding.bit_length() - 1)))
             lines.append(f"    {name} = tl.reshape({name}, {trim_shape})")
@@ -682,7 +696,9 @@ def _emit_direct_exchange_registers(
     lines = []
     for component in ("r", "i"):
         prefix = f"{buffer}_register_{component}"
-        lines.append(f"    {prefix} = tl.reshape({buffer}_{component}, ({pack}, {radix}, {lanes}))")
+        lines.append(
+            f"    {prefix} = tl.reshape({buffer}_{component}, ({pack}, {radix}, {lanes}))"
+        )
         lines.append(f"    {prefix} = tl.trans({prefix}, (0, 2, 1))")
         # Pad the whole register bank before splitting.  Padding each register
         # separately makes the MACA backend emit two barriers per component
@@ -692,7 +708,9 @@ def _emit_direct_exchange_registers(
             lines.append(f"    {prefix} = tl.join({prefix}, tl.zeros_like({prefix}))")
             lines.append(f"    {prefix} = tl.trans({prefix}, (0, 3, 1, 2))")
             padded_lanes *= 2
-            lines.append(f"    {prefix} = tl.reshape({prefix}, ({pack}, {padded_lanes}, {radix}))")
+            lines.append(
+                f"    {prefix} = tl.reshape({prefix}, ({pack}, {padded_lanes}, {radix}))"
+            )
         lines.append(f"    {prefix} = tl.reshape({prefix}, {split_shape})")
         if highest_first:
             # A cross-lane radix bit can otherwise remain until the last
@@ -700,10 +718,15 @@ def _emit_direct_exchange_registers(
             # separately.  Split that high bit while the bank is still whole.
             permutation = (0, 1, *range(len(split_shape) - 1, 1, -1))
             lines.append(f"    {prefix} = tl.trans({prefix}, {permutation})")
-        lines.extend(_emit_distributed_split_tree(
-            "    ", prefix, [f"{prefix}{digit}" for digit in range(radix)], prefix,
-            highest_first=highest_first,
-        ))
+        lines.extend(
+            _emit_distributed_split_tree(
+                "    ",
+                prefix,
+                [f"{prefix}{digit}" for digit in range(radix)],
+                prefix,
+                highest_first=highest_first,
+            )
+        )
         for digit in range(radix):
             name = f"{prefix}{digit}"
             if interleaved:
@@ -746,14 +769,25 @@ def _emit_portable_exchange(
         and lane_block >= n // radix
     ):
         lines = _emit_structured_portable_exchange(
-            buffer, stage, factors, lane_block, pack, natural_order,
+            buffer,
+            stage,
+            factors,
+            lane_block,
+            pack,
+            natural_order,
             interleaved=register_lane_stride > 1,
         )
         if _maca_knob("EXCHANGE") in {"direct", "direct_all"} and not natural_order:
-            lines.extend(_emit_direct_exchange_registers(
-                buffer, factors[stage + 1], n, lane_block, pack,
-                interleaved=register_lane_stride > 1,
-            ))
+            lines.extend(
+                _emit_direct_exchange_registers(
+                    buffer,
+                    factors[stage + 1],
+                    n,
+                    lane_block,
+                    pack,
+                    interleaved=register_lane_stride > 1,
+                )
+            )
         return lines
     lines = [
         f"    exchange_pos = tl.arange(0, {size})",
@@ -1854,8 +1888,8 @@ def _emit_distributed_split_tree(
     if len(names) == 1:
         return [f"{indent}{names[0]} = {source}"]
 
-    even_names = names[:len(names) // 2] if highest_first else names[0::2]
-    odd_names = names[len(names) // 2:] if highest_first else names[1::2]
+    even_names = names[: len(names) // 2] if highest_first else names[0::2]
+    odd_names = names[len(names) // 2 :] if highest_first else names[1::2]
     even_source = (
         even_names[0] if len(even_names) == 1 else f"{prefix}_even{len(names)}"
     )
@@ -1864,14 +1898,20 @@ def _emit_distributed_split_tree(
     if len(even_names) > 1:
         lines.extend(
             _emit_distributed_split_tree(
-                indent, even_source, even_names, f"{prefix}_e",
+                indent,
+                even_source,
+                even_names,
+                f"{prefix}_e",
                 highest_first=highest_first,
             )
         )
     if len(odd_names) > 1:
         lines.extend(
             _emit_distributed_split_tree(
-                indent, odd_source, odd_names, f"{prefix}_o",
+                indent,
+                odd_source,
+                odd_names,
+                f"{prefix}_o",
                 highest_first=highest_first,
             )
         )

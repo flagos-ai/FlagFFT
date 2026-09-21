@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """CPU semantic checks for alternative MACA register exchange expressions."""
+
 from __future__ import annotations
 
 import math
@@ -34,16 +35,37 @@ class TensorLanguage:
         return a[..., 0], a[..., 1]
 
 
-@pytest.mark.parametrize("factors", [
-    (16,), (16, 8, 8), (16, 16, 8), (8, 32, 8), (16, 32, 4),
-    (2,) * 10, (8, 8), (19, 16), (19, 11),
-    (13, 6, 5), (17, 7, 4), (10, 9, 5), (9, 9, 9), (7, 6, 3, 3),
-    (10, 10, 9), (5, 5, 5, 3), (17, 13, 8), (7, 6, 6, 4),
-])
-@pytest.mark.parametrize("pack,inner,padded", [(1, False, False), (4, False, True), (4, True, False)])
+@pytest.mark.parametrize(
+    "factors",
+    [
+        (16,),
+        (16, 8, 8),
+        (16, 16, 8),
+        (8, 32, 8),
+        (16, 32, 4),
+        (2,) * 10,
+        (8, 8),
+        (19, 16),
+        (19, 11),
+        (13, 6, 5),
+        (17, 7, 4),
+        (10, 9, 5),
+        (9, 9, 9),
+        (7, 6, 3, 3),
+        (10, 10, 9),
+        (5, 5, 5, 3),
+        (17, 13, 8),
+        (7, 6, 6, 4),
+    ],
+)
+@pytest.mark.parametrize(
+    "pack,inner,padded", [(1, False, False), (4, False, True), (4, True, False)]
+)
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 @pytest.mark.parametrize("split_order", ["lsb", "msb"])
-def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, padded, dtype, split_order):
+def test_joined_exchange_matches_original(
+    monkeypatch, factors, pack, inner, padded, dtype, split_order
+):
     monkeypatch.setenv("FLAGFFT_MACA_SPLIT_ORDER", split_order)
     n = math.prod(factors)
     lanes = max(128, 1 << (max(n // r for r in factors) - 1).bit_length())
@@ -53,13 +75,20 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
     for stage, radix in enumerate(factors):
         registers = {
             f"exchange_{component}{digit}": rng.normal(size=lanes * pack).astype(dtype)
-            for component in ("r", "i") for digit in range(radix)
+            for component in ("r", "i")
+            for digit in range(radix)
         }
         outputs = []
         for method in ("", "join", "transpose", "direct", "direct_all"):
             monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", method)
             lines = _emit_portable_exchange(
-                "smem", stage, factors, lanes, size, slot_stride, pack,
+                "smem",
+                stage,
+                factors,
+                lanes,
+                size,
+                slot_stride,
+                pack,
                 natural_order=stage == len(factors) - 1,
                 register_lane_stride=pack if inner else 1,
                 register_slot_stride=1 if inner else lanes,
@@ -69,20 +98,27 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
             outputs.append((scope["smem_r"], scope["smem_i"]))
             if method == "join" and radix & (radix - 1) == 0:
                 assert sum("tl.gather" in line for line in lines) == 2
-            if method in {"transpose", "direct", "direct_all"} and not padded and n & (n - 1) == 0:
+            if (
+                method in {"transpose", "direct", "direct_all"}
+                and not padded
+                and n & (n - 1) == 0
+            ):
                 assert not any("tl.gather" in line for line in lines)
                 if method in {"direct", "direct_all"} and stage < len(factors) - 1:
                     next_radix = factors[stage + 1]
                     next_lanes = n // next_radix
                     for component in ("r", "i"):
-                        routed = scope[f"smem_{component}"].reshape(pack, next_radix, next_lanes)
+                        routed = scope[f"smem_{component}"].reshape(
+                            pack, next_radix, next_lanes
+                        )
                         for digit in range(next_radix):
                             expected = np.zeros((pack, lanes), dtype=dtype)
                             expected[:, :next_lanes] = routed[:, digit, :]
                             if inner:
                                 expected = expected.T
                             np.testing.assert_array_equal(
-                                scope[f"smem_register_{component}{digit}"], expected.reshape(-1)
+                                scope[f"smem_register_{component}{digit}"],
+                                expected.reshape(-1),
                             )
             if method == "direct_all" and (padded or n & (n - 1)):
                 assert sum("tl.gather" in line for line in lines) == 2
@@ -96,7 +132,11 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
 @pytest.mark.parametrize("n,factors", [(1024, (16, 8, 8)), (2048, (16, 16, 8))])
 def test_direct_leaf_eliminates_all_gathers(monkeypatch, n, factors):
     import ast
-    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.backend_profile import (
+        BackendProfile,
+        reset_profile,
+        set_profile,
+    )
     from flagfft_codegen.kernels_common import LeafPlan
     from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source
 
