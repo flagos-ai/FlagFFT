@@ -131,14 +131,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
     std::vector<std::shared_ptr<JitKernel>> kernels;
+    int64_t stage_span = 1;
     for (int64_t radix : stockham->factors) {
       KernelKey key = KernelKey::direct_dft(triton_target_for_request(request),
                                             request.direction,
                                             request.input_dtype,
                                             stockham->length);
       key.kind = KernelKind::StockhamStage;
-      key.factors = {radix};
+      // Stockham kernel identity includes the stage span; the plan factors
+      // remain the radix sequence. This removes dynamic integer division and
+      // lets the first stage omit all unit twiddle loads and multiplies.
+      key.factors = {radix, stage_span};
       kernels.push_back(compile_kernel(key));
+      stage_span *= radix;
     }
     const int64_t n = stockham->length;
     std::vector<double> values(static_cast<std::size_t>(2 * n));
