@@ -33,6 +33,21 @@ if(NOT TARGET gtest)
     find_package(GTest REQUIRED)
 endif()
 
+# Exercise MACA candidate enumeration with fixed C550 capabilities on the CPU.
+# Link planner sources directly so the test needs no device runtime or JIT.
+add_executable(test_maca_prime_tune
+    test_maca_prime_tune.cpp
+    ../src/utils/base.cpp ../src/utils/plan_key.cpp
+    ../src/plan/nodes.cpp ../src/plan/builder_context.cpp
+    ../src/plan/factorization.cpp ../src/plan/rader_utils.cpp
+    ../src/plan/cost_model.cpp ../src/plan/auto_candidates.cpp
+    ../src/plan/tune_candidates.cpp)
+target_compile_features(test_maca_prime_tune PRIVATE cxx_std_20)
+target_include_directories(test_maca_prime_tune PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/utils/include)
+target_link_libraries(test_maca_prime_tune PRIVATE gtest_main)
+add_test(NAME test_maca_prime_tune COMMAND test_maca_prime_tune)
+
 set(TEST_TARGETS
     test_plan
     test_kernel_key

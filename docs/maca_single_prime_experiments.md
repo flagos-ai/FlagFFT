@@ -74,3 +74,27 @@ A的2048 FFT fatbin SHA256 `17d00d72a30ed5565549d15d0a80c9641739143d7b3a3a6a844f
 5. 1009/8191/16381先用现有tuner无保存地比较Rader/Bluestein，再将胜出的确切plan放进NumPy验收；不全局改prefer_bluestein。
 
 默认关闭条件已审阅：两个新gate只在MACA、实际compile batch=1、对应leaf结构以及精确环境值1时打开；real wrappers的外层转换保持原执行语义，内部complex dtype正规化后可进入gate；non-MACA、batch>1及超界four-step保持原路线。没有增加仅复制条件表达式的测试。唯一发现并修复的既有一致性问题是prepare/finish leaf未列入CONTIGUOUS_BATCH_PACK_KERNELS；CPU测试比较真实生成batch stride与metadata，在16/32/256/2048上覆盖该问题。
+
+## MACA single prime tuner 的卷积候选扩展
+
+旧 `tune` 对prime只比较默认Bluestein与Rader；Bluestein的长度和child分解仍由静态成本选一个。因此997 FP64不会产生BS2048，524287 FP64不会产生1024×1024。单独tune1048576的DB结果也不会被Bluestein child自动继承。
+
+新增候选仅限显式 `tune`、MACA、batch=1：先保留automatic及既有算法候选，再追加 `ceil_pow2(2n-1)` 的自动child；若child为four-step，则追加最平衡且两子节点均为leaf的分解。所有候选按完整PlanKey去重并遵守max-candidates，默认planner与融合gate不变。单精度已用相同幂次/平衡分解时不会重复。新入口在调用signed power helper前拒绝无法表示卷积幂次的极端长度。
+
+下面由validation在独立cache、稳定warmup条件下串行执行；命令中的CLI须包含候选扩展，codegen须使用已验收direct v2，结果写入独立套件目录。997用3个finalists是为了让两个Bluestein方案都进入长测，而不会被短测先筛掉：
+
+```sh
+FLAGFFT_MACA_EXCHANGE=direct FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION=1 \
+  "$FFT_CLI" tune --api z2z --shape 997 --batch 1 \
+  --max-candidates 3 --finalists 3 --screen-warmup 200 --screen-iters 100 \
+  --final-warmup 500 --final-iters 100 --no-save --json
+
+FLAGFFT_MACA_EXCHANGE=direct FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION=1 \
+  "$FFT_CLI" tune --api z2z --shape 524287 --batch 1 \
+  --max-candidates 2 --finalists 2 --screen-warmup 200 --screen-iters 100 \
+  --final-warmup 500 --final-iters 100 --no-save --json
+```
+
+997 FP64候选顺序为BS2000、Rader996、BS2048；524287 FP64为BS1048576(512×2048)、BS1048576(1024×1024)。每条命令的双方向均由tuner内部正确性门控，但其计时不采用bench的交错次序，选择winner后仍需标准bench与NumPy验收。大prime命令同时比较分解和融合是否可用；若要单独归因分解，应先将four-step融合开关设0，再测开启后的winner，不能直接把两候选差额全部归因给分解。
+
+CPU验证：独立 `test_maca_prime_tune` 直接链接planner源码与C550能力stub（64 KiB，来自本轮manifest），不链接GPU runtime或JIT。4个测试通过，覆盖上述真实候选、顺序/限额、默认plan前后不变、non-MACA与batch>1原算法候选、FP32去重与非法长度。日志/XML：`results/20260921_155300_maca_single_prime_tuner_cpu/`。此验证只证明候选生成，新增FP64路由的GPU正确性与速度尚待validation验收。

@@ -170,6 +170,12 @@ std::vector<PlanCandidate> PlanBuilder::build_decomposition_tune_candidates(int6
   if (limit <= 0) {
     throw std::runtime_error("decomposition tune candidate limit must be positive");
   }
+  const bool tune_maca_single = request.device_type == "maca" && request.batch == 1;
+  // ceil_power_of_two uses signed int64_t. Bound 2*n-1 before either the
+  // automatic prime plan or the extra power-of-two convolution is built.
+  if (tune_maca_single && n > (int64_t {1} << 61)) {
+    throw std::runtime_error("MACA single tune length exceeds the convolution length range");
+  }
   set_request_context(request);
 
   std::vector<PlanCandidate> result;
@@ -195,6 +201,40 @@ std::vector<PlanCandidate> PlanBuilder::build_decomposition_tune_candidates(int6
     if (n <= 16384 && static_cast<int64_t>(result.size()) < limit) {
       auto rader = make_rader_plan(n);
       append_unique({rader, rader_cost(n), priority(rader)});
+    }
+    if (tune_maca_single && static_cast<int64_t>(result.size()) < limit) {
+      // Keep the automatic and existing algorithm alternatives first. Static
+      // costs predate MACA's direct exchange, so measure a power-of-two child
+      // even when a shorter mixed-radix convolution wins that cost model.
+      const int64_t power = ceil_power_of_two(n + (n - 1));
+      auto child = build_auto_node(power, false);
+      auto bs = std::make_shared<BluesteinPlanNode>(n, power, child);
+      append_unique({bs, bluestein_cost(n, power), priority(bs)});
+
+      // The closest divisor pair is a bounded alternative to a full child
+      // search. A leaf child needs no split; non-leaf children qualify only
+      // when both balanced children are supported leaves.
+      if (static_cast<int64_t>(result.size()) < limit &&
+          std::dynamic_pointer_cast<FourStepPlanNode>(child) != nullptr) {
+        int64_t n1 = 1;
+        for (int64_t divisor : enumerate_divisors(power)) {
+          if (divisor > power / divisor) {
+            break;
+          }
+          n1 = divisor;
+        }
+        const int64_t n2 = power / n1;
+        auto row = build_auto_node(n1, false);
+        auto col = build_auto_node(n2, false);
+        if (n1 > 1 && std::dynamic_pointer_cast<LeafPlanNode>(row) != nullptr &&
+            std::dynamic_pointer_cast<LeafPlanNode>(col) != nullptr) {
+          auto balanced = std::make_shared<FourStepPlanNode>(power, n1, n2, row, col);
+          auto alternative = std::make_shared<BluesteinPlanNode>(n, power, balanced);
+          append_unique({alternative,
+                         3.0 * four_step_cost(n1, n2) + static_cast<double>(n + power),
+                         priority(alternative)});
+        }
+      }
     }
     return result;
   }
