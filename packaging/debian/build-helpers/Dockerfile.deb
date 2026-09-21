@@ -1,0 +1,90 @@
+# Multi-stage Dockerfile to build Debian packages for FlagFFT (nvidia backend).
+#
+# Build environment = FlagOS NVIDIA DEB ABI matrix (FEP-0019):
+#   ubuntu22.04 + cuda12.8 + python3.12 + torch2.10 + triton3.6 + pybind11 3.0
+# Building on 22.04 keeps the package installable on 22.04 and 24.04; a 24.04
+# build would require GLIBC_2.38 and fail to install on 22.04.
+ARG BASE_IMAGE=nvidia/cuda:12.8.0-devel-ubuntu22.04
+FROM ${BASE_IMAGE} AS builder
+ARG PYTHON_VERSION=3.12
+ARG TORCH_INDEX=https://resource.flagos.net/repository/flagos-pypi-nvidia/simple
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Debian packaging tools and the system build dependencies declared in
+# debian/control. Ubuntu 22.04 provides libfmt-dev 8.1.1, nlohmann-json3-dev
+# 3.10.5, sqlite3 and ninja; python3.12 comes from the deadsnakes PPA and
+# becomes the default python3 (debian/rules and the codegen package use it).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common curl ca-certificates git \
+    build-essential \
+    binutils \
+    debhelper \
+    devscripts \
+    dpkg-dev \
+    fakeroot \
+    libfmt-dev \
+    libsqlite3-dev \
+    ninja-build \
+    nlohmann-json3-dev \
+    && add-apt-repository -y ppa:deadsnakes/ppa && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 \
+    && update-alternatives --install /usr/bin/python  python  /usr/bin/python${PYTHON_VERSION} 1 \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The bundled libtriton_jit needs CMake >= 3.25 (22.04 ships 3.22); pip's
+# cmake lands in /usr/local/bin ahead of /usr/bin. setuptools >= 68 builds the
+# flagfft_codegen package (pyproject.toml) inside debian/rules.
+RUN python3 -m pip install --no-cache-dir "cmake>=3.25,<4.0" "setuptools>=68" wheel
+
+# Torch/Triton/pybind11 pinned to the DEB ABI matrix; torch+cu128 comes from
+# the FlagOS index, everything else falls back to PyPI.
+COPY packaging/debian/build-helpers/python-build-requirements.txt /tmp/flagfft-requirements.txt
+RUN python3 -m pip install --no-cache-dir \
+    --index-url ${TORCH_INDEX} --extra-index-url https://pypi.org/simple \
+    -r /tmp/flagfft-requirements.txt
+
+# The bundled libtriton_jit revision pinned by FlagFFT still requires
+# nlohmann_json >= 3.11.3 (the relax to 3.10.5 lives in flagos-ai/libtriton_jit#64
+# and is not in the fork yet), while Ubuntu 22.04 ships 3.10.5. nlohmann-json3-dev
+# is a header-only, dependency-free arch:all package, so install the 24.04 build
+# of it into the build image. It only affects compilation; the resulting
+# libflagfft-nvidia has no runtime dependency on it.
+ARG NLOHMANN_JSON_DEB=nlohmann-json3-dev_3.11.3-2_all.deb
+ARG NLOHMANN_JSON_POOL=https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/n/nlohmann-json3
+RUN curl -fsSL -o /tmp/${NLOHMANN_JSON_DEB} ${NLOHMANN_JSON_POOL}/${NLOHMANN_JSON_DEB} \
+    && dpkg -i /tmp/${NLOHMANN_JSON_DEB} && rm -f /tmp/${NLOHMANN_JSON_DEB} \
+    && test "$(dpkg-query -W -f='${Version}' nlohmann-json3-dev)" = "3.11.3-2"
+
+# Copy source code (the submodule deps/libtriton_jit must already be
+# checked out by the caller, since we're a single-shot Dockerfile).
+COPY . /workspace/flagfft
+WORKDIR /workspace/flagfft
+
+# Sanity check: the libtriton_jit submodule is required.
+RUN test -f deps/libtriton_jit/CMakeLists.txt || { \
+        echo "ERROR: deps/libtriton_jit/CMakeLists.txt missing; run git submodule update --init --recursive before docker build"; \
+        exit 1; \
+    }
+
+# Place debian/ at the source root where dpkg-buildpackage expects it.
+RUN if [ -d "packaging/debian" ]; then \
+        cp -r packaging/debian debian; \
+    fi
+
+# Build (-d to skip dep checks, deps are container-provided).
+RUN dpkg-buildpackage -us -uc -b -d || \
+    { echo "Build failed, checking logs..."; \
+      find /workspace -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true; \
+      exit 1; }
+
+# Collect built .deb files.
+RUN mkdir -p /output && \
+    find /workspace -maxdepth 1 -name "*.deb" -exec cp {} /output/ \; && \
+    ls -lh /output/
+
+# Output stage: no userspace is needed to export package artifacts.
+FROM scratch AS output
+COPY --from=builder /output/*.deb /output/
