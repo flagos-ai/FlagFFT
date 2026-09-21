@@ -42,10 +42,16 @@ namespace {
     // Resource bounds remain target-local; batching itself is implemented
     // by the shared packed-real kernels with a distance-aware fallback.
     const bool is_musa_s5000_fp64_target = request.device_type == "musa" && request.device_arch == "31";
-    if (!force && (!is_a100_fp64_target && !is_musa_s5000_fp64_target)) {
+    // Ascend's single FP32 Stockham transforms avoid a full-length complex
+    // expansion and halve the stage traffic. Keep small transforms and batch
+    // layouts on their existing paths until they are qualified independently;
+    // 2^20 is the upper end of the single-transform qualification range.
+    const bool is_npu_single_fp32_target = request.device_type == "npu" &&
+        request.input_dtype == "complex64" && batch == 1 && n >= 1024 && n <= 1048576;
+    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target) {
       return std::nullopt;
     }
-    if (!force && (request.input_dtype != "complex128" || n < 65536 ||
+    if (!force && !is_npu_single_fp32_target && (request.input_dtype != "complex128" || n < 65536 ||
                    (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
     }
@@ -64,6 +70,16 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    if (!force && is_npu_single_fp32_target) {
+      // Do not implicitly enable unmeasured Bluestein children or GPU tuning
+      // cache entries. New radices qualify naturally when the NPU planner
+      // supplies a Stockham plan for both the original and half length.
+      if (!std::dynamic_pointer_cast<StockhamPlanNode>(original_plan) ||
+          !std::dynamic_pointer_cast<StockhamPlanNode>(child_plan)) {
+        return std::nullopt;
+      }
+      return PackedRealChild {std::move(child_request), std::move(child_plan)};
+    }
     // A measured complex plan is also valid for this dense half-length
     // child. Keep the same exact-batch, direction and fingerprint lookup.
     if (auto tuned = lookup_tuned_plan_json(child_request)) {
