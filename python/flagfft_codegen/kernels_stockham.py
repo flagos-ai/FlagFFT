@@ -1,7 +1,5 @@
 """Global-memory Stockham mapping of the shared register radix codelets."""
 
-import os
-
 from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix
 from .kernels_leaf import _emit_natural_order_codelet_call
 
@@ -11,8 +9,8 @@ def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_s
         raise ValueError(f"unsupported Stockham stage n={n}, radix={radix}")
     if stage_span < 0 or (stage_span and n % (radix * stage_span)):
         raise ValueError(f"invalid Stockham span {stage_span} for n={n}, radix={radix}")
-    if radix in (13, 17, 19) and os.environ.get("FLAGFFT_NPU_STOCKHAM_PRIME") == "loop":
-        return _build_loop_stage(n, radix, direction, dtype, stage_span)
+    if radix in (13, 17, 19):
+        return _build_vector_stage(n, radix, direction, dtype, stage_span)
     name = f"stockham_{direction}_n{n}_r{radix}_s{stage_span}_{_dtype_suffix(dtype)}"
     body = [
         "@triton.jit",
@@ -53,13 +51,13 @@ def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_s
     return name, "\n".join(body) + "\n"
 
 
-def _build_loop_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int):
+def _build_vector_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int):
     """Vectorize output digits while keeping a small compiler scheduling DAG.
 
     Reuse the direction-specific N-point table for both the stage twiddle
     and radix roots, vectorizing each input across all output digits.
     """
-    name = f"stockham_loop_{direction}_n{n}_r{radix}_s{stage_span}_{_dtype_suffix(dtype)}"
+    name = f"stockham_vector_{direction}_n{n}_r{radix}_s{stage_span}_{_dtype_suffix(dtype)}"
     width = 1 << (radix - 1).bit_length()
     source = f'''@triton.jit
 def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):

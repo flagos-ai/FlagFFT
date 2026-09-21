@@ -577,6 +577,9 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
+    if spec.family == STOCKHAM:
+        # Include the lowering and span in the generated-module identity.
+        module_name = f"flagfft_jit_{kernel_name}"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"

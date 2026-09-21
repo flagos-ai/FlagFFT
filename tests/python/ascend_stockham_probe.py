@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--length", type=int, default=46189)
     parser.add_argument("--span", type=int, default=1)
     parser.add_argument("--inverse", action="store_true")
+    parser.add_argument("--specialize-span", action="store_true")
+    parser.add_argument("--compile-only", action="store_true")
     args = parser.parse_args()
     import torch
     import torch_npu  # noqa: F401
@@ -47,7 +49,8 @@ def main():
     for digit in range(radix):
         expected[radix * k - (radix - 1) * j + digit * span] = transformed[digit]
     with tempfile.TemporaryDirectory(prefix="flagfft-stockham-") as tmp:
-        meta = emit_jit_kernel(kernel="stockham_stage", length=n, factors=(radix,),
+        factors = (radix, span) if args.specialize_span else (radix,)
+        meta = emit_jit_kernel(kernel="stockham_stage", length=n, factors=factors,
             lanes=1, num_warps=4, generic_radices=(), smem_size=0,
             direction="inverse" if args.inverse else "forward", dtype="complex64",
             prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=Path(tmp))
@@ -61,6 +64,10 @@ def main():
         run = lambda: kernel[(triton.cdiv(n // radix, 128),)](x, y, tw, span, 1, num_warps=4)
         started = time.perf_counter()
         print(json.dumps({"phase": "compile", "radix": radix}), flush=True)
+        if args.compile_only:
+            kernel.warmup(x, y, tw, span, 1, grid=(triton.cdiv(n // radix, 128),), num_warps=4)
+            print(json.dumps({**vars(args), "compile_s": time.perf_counter() - started}), flush=True)
+            return
         run()
         torch.npu.synchronize()
         compile_s = time.perf_counter() - started
