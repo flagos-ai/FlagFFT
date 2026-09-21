@@ -139,6 +139,10 @@ elseif(BACKEND STREQUAL "HCU")
     set(REFERENCE_SOURCE "${FLAGFFT_SOURCE_DIR}/src/adaptor/backend/hcu/test_adaptor.cpp")
     target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
     target_link_libraries(numpy_fft_capture PRIVATE hip::hipfft hip::host)
+    # PyTorch's HIP wheel carries hashed libibverbs/libxml2 dependencies in
+    # torch.libs.  They are resolved by the wheel RPATH at runtime, but are
+    # intentionally not all visible to the standalone link editor.
+    target_link_options(numpy_fft_capture PRIVATE -Wl,--allow-shlib-undefined)
 else()
     message(FATAL_ERROR "Unsupported BACKEND=${BACKEND}; expected CUDA, MUSA, PPU, IX, MACA, NPU, or HCU")
 endif()
