@@ -234,10 +234,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_musa_fp64_four_step = request.device_type == "musa" && request.device_arch == "31" &&
                                          request.input_dtype == "complex128" && batch >= 16 &&
                                          batch == chunk_batch;
-    const bool use_four_step = allow_bluestein_fusion &&
+    const bool use_default_four_step = allow_bluestein_fusion &&
                                (request.input_dtype == "complex64" || use_musa_fp64_four_step) &&
                                four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
                                row_leaf->length < 512 && col_leaf->length < 512;
+    // Separate from the two-kernel leaf experiment: large convolutions retain
+    // one FFT per boundary kernel and execute four kernels in total. Bound
+    // each child to the existing 1024-point four-step leaf family.
+    const char *maca_four_step_fusion = std::getenv("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION");
+    const bool use_maca_four_step =
+        request.device_type == "maca" && batch == 1 && four_step != nullptr &&
+        row_leaf != nullptr && col_leaf != nullptr &&
+        row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
+        maca_four_step_fusion != nullptr && std::string(maca_four_step_fusion) == "1";
+    const bool use_four_step = use_default_four_step || use_maca_four_step;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
@@ -279,9 +289,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           std::move(b_fft_buf));
     }
     if (use_four_step) {
-      auto make_boundary_leaf = [](const LeafPlanNode &source) {
+      auto make_boundary_leaf = [use_maca_four_step](const LeafPlanNode &source) {
         std::vector<int64_t> factors = source.factors;
-        if (factors.size() == 2 && factors.front() > factors.back()) {
+        if (!use_maca_four_step && factors.size() == 2 && factors.front() > factors.back()) {
           std::reverse(factors.begin(), factors.end());
         }
         return LeafPlanNode(source.length,
