@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
 from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
@@ -252,6 +253,78 @@ class ProfileTest(unittest.TestCase):
             self.assertEqual(
                 four_step_col_inner_pack_for(1024, 1024, "complex64", safe), 4
             )
+        finally:
+            reset_profile(token)
+
+    def test_maca_direct_all_mixed_fp64_pack_respects_padded_radix(self):
+        from flagfft_codegen.kernels_common import four_step_col_inner_pack_for
+
+        profile = BackendProfile.from_device(
+            {
+                "backend": "maca",
+                "device_arch": "102",
+                "warp_size": 64,
+                "max_threads_per_block": 1024,
+                # Keep the test independent of the optimistic device report.
+                "max_dynamic_shared_memory": 131072,
+            },
+            "legacy",
+        )
+        token = set_profile(profile)
+        try:
+            # 185640 = 390 * 476; the column leaf is [17, 7, 4]. With
+            # direct_all, radix 17 is joined as radix 32. FP64 P4 therefore
+            # requests 128 KiB (128 lanes * 4 slots * 32 * 8 bytes), while P2
+            # fits the 64 KiB C550 launch limit.
+            plan = LeafPlan(
+                476,
+                (17, 7, 4),
+                1,
+                1,
+                2,
+                (),
+                512,
+                dtype="complex128",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_MACA_EXCHANGE": "direct_all",
+                    "FLAGFFT_MACA_INNER_PACK": "4",
+                },
+            ):
+                self.assertEqual(
+                    four_step_col_inner_pack_for(
+                        390, 476, "complex128", plan
+                    ),
+                    2,
+                )
+
+            # The same layout is exactly 64 KiB per joined component in FP32,
+            # so the adaptive path should retain P4 there.
+            fp32_plan = LeafPlan(
+                476,
+                (17, 7, 4),
+                1,
+                1,
+                2,
+                (),
+                512,
+                dtype="complex64",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_MACA_EXCHANGE": "direct_all",
+                    "FLAGFFT_MACA_INNER_PACK": "4",
+                },
+            ):
+                self.assertEqual(
+                    four_step_col_inner_pack_for(
+                        390, 476, "complex64", fp32_plan
+                    ),
+                    4,
+                )
         finally:
             reset_profile(token)
 
