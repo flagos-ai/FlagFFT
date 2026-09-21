@@ -132,8 +132,9 @@ def main() -> None:
     set_codegen_target(args.target)
     if args.device_profile:
         device = json.loads(args.device_profile)
-        policy = args.execution_policy or (
-            "balanced" if device.get("backend") == "ix" else "legacy"
+        default_policies = {"ix": "balanced", "hcu": "native"}
+        policy = args.execution_policy or default_policies.get(
+            device.get("backend"), "legacy"
         )
         set_profile(BackendProfile.from_device(device, policy))
     source_hash = hashlib.sha256()

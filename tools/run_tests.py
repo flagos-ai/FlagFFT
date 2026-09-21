@@ -1038,10 +1038,18 @@ def detect_backend(build_dir: Path) -> str:
             return "maca"
         if hasattr(libtriton, "iluvatar"):
             return "ix"
+        if hasattr(libtriton, "hcu"):
+            return "hcu"
         if hasattr(libtriton, "cuda"):
             return "cuda"
     except ImportError:
         pass
+    declared = (
+        os.environ.get("TRITON_JIT_BACKEND", "")
+        or os.environ.get("FLAGTREE_BACKEND", "")
+    ).lower()
+    if declared in {"hcu", "hygon"}:
+        return "hcu"
     return "unknown"
 
 
@@ -1172,6 +1180,7 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
         "ix": "ixfft (CoreX cuFFT-compatible FFT)",
         "maca": "mcFFT",
         "npu": "ops-fft (CANN)",
+        "hcu": "hipFFT (DTK 26.04)",
     }.get(ENV_INFO["backend"], "unknown")
     try:
         import torch
@@ -1225,6 +1234,7 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
                 "ASCEND_VISIBLE_DEVICES",
                 "ASCEND_RT_VISIBLE_DEVICES",
                 "NPU_VISIBLE_DEVICES",
+                "HIP_VISIBLE_DEVICES",
             ):
                 query_env[variable] = str(gpu_id)
         probe = subprocess.run(
@@ -1253,6 +1263,7 @@ def capture_env(gpu_id: int) -> dict[str, str]:
         "ASCEND_VISIBLE_DEVICES",
         "ASCEND_RT_VISIBLE_DEVICES",
         "NPU_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
     ):
         env[variable] = str(gpu_id)
     env["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + env.get("PYTHONPATH", "")

@@ -36,9 +36,22 @@ def warp_size() -> int:
     target = _target.get()
     if target:
         return int(target.rsplit(":", 1)[1])
+    # HCU exposes a HIP-compatible runtime but uses 64-lane wavefronts.
+    # Keep direct codegen invocations correct even before a device profile has
+    # been installed in the context.
+    import os
+
+    declared = (
+        os.environ.get("TRITON_JIT_BACKEND", "")
+        or os.environ.get("FLAGTREE_BACKEND", "")
+    ).lower()
+    if declared in {"hcu", "hygon"}:
+        return 64
     try:
         from triton._C import libtriton
 
+        if hasattr(libtriton, "hcu"):
+            return 64
         if hasattr(libtriton, "metax"):
             return 64
     except ImportError:

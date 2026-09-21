@@ -14,6 +14,10 @@ _BACKEND_FACT_DEFAULTS = {
     "ppu": {"warp_size": 32, "max_threads_per_block": 1024},
     "ix": {"warp_size": 64, "max_threads_per_block": 4096},
     "maca": {"warp_size": 64, "max_threads_per_block": 1024},
+    # BW1000/HCU follows the HIP/GCN execution model.  The runtime reports
+    # these values on DTK, but keep the same facts available for driver-light
+    # environments and serialized-plan code generation.
+    "hcu": {"warp_size": 64, "max_threads_per_block": 1024},
     # libtriton_jit's NPU backend reports WARP_SIZE = 1 and launches num_warps
     # as the literal block dimension, so a warp width of 1 is the device fact
     # there rather than a missing attribute.

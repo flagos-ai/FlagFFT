@@ -6,8 +6,8 @@ set(FLAGFFT_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." CACHE PATH
     "FlagFFT source tree containing include/ and src/")
 set(FLAGFFT_BUILD_DIR "" CACHE PATH
     "Existing FlagFFT build directory containing libflagfft.so")
-set(BACKEND "CUDA" CACHE STRING "FlagFFT backend: CUDA, MUSA, PPU, IX, MACA, or NPU")
-set_property(CACHE BACKEND PROPERTY STRINGS CUDA MUSA PPU IX MACA NPU)
+set(BACKEND "CUDA" CACHE STRING "FlagFFT backend: CUDA, MUSA, PPU, IX, MACA, NPU, or HCU")
+set_property(CACHE BACKEND PROPERTY STRINGS CUDA MUSA PPU IX MACA NPU HCU)
 
 if(FLAGFFT_BUILD_DIR STREQUAL "")
     message(FATAL_ERROR "-DFLAGFFT_BUILD_DIR=/path/to/FlagFFT/build is required")
@@ -122,8 +122,29 @@ elseif(BACKEND STREQUAL "NPU")
         # the toolkit and pkg_inc include directories needed to compile it.
         Ascend::ascendcl
         Ascend::runtime)
+elseif(BACKEND STREQUAL "HCU")
+    list(APPEND CMAKE_PREFIX_PATH
+        "$ENV{ROCM_PATH}"
+        "$ENV{HIP_PATH}"
+        "$ENV{ROCM_PATH}/hipfft"
+        "$ENV{HIP_PATH}/hipfft"
+        "/opt/dtk"
+        "/opt/dtk/hip"
+        "/opt/dtk/hipfft"
+        "/opt/dtk-26.04"
+        "/opt/dtk-26.04/hip"
+        "/opt/dtk-26.04/hipfft")
+    find_package(hip REQUIRED)
+    find_package(hipfft CONFIG REQUIRED)
+    set(REFERENCE_SOURCE "${FLAGFFT_SOURCE_DIR}/src/adaptor/backend/hcu/test_adaptor.cpp")
+    target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
+    target_link_libraries(numpy_fft_capture PRIVATE hip::hipfft hip::host)
+    # PyTorch's HIP wheel carries hashed libibverbs/libxml2 dependencies in
+    # torch.libs.  They are resolved by the wheel RPATH at runtime, but are
+    # intentionally not all visible to the standalone link editor.
+    target_link_options(numpy_fft_capture PRIVATE -Wl,--allow-shlib-undefined)
 else()
-    message(FATAL_ERROR "Unsupported BACKEND=${BACKEND}; expected CUDA, MUSA, PPU, IX, MACA, or NPU")
+    message(FATAL_ERROR "Unsupported BACKEND=${BACKEND}; expected CUDA, MUSA, PPU, IX, MACA, NPU, or HCU")
 endif()
 
 # libflagfft.so's build-tree RPATH is not guaranteed to be present in a
@@ -150,6 +171,17 @@ elseif(BACKEND STREQUAL "NPU")
         "${ASCEND_OPS_FFT_ROOT}/lib64"
         "${ASCEND_OPS_FFT_ROOT}/build/lib"
         "${ASCEND_OPS_FFT_ROOT}/build")
+elseif(BACKEND STREQUAL "HCU")
+    list(APPEND _tool_rpath
+        "$ENV{ROCM_PATH}/lib"
+        "$ENV{ROCM_PATH}/lib64"
+        "$ENV{HIP_PATH}/lib"
+        "/opt/dtk/lib"
+        "/opt/dtk/lib64"
+        "/opt/dtk/hip/lib"
+        "/opt/dtk-26.04/lib"
+        "/opt/dtk-26.04/lib64"
+        "/opt/dtk-26.04/hip/lib")
 endif()
 set_target_properties(numpy_fft_capture PROPERTIES
     BUILD_RPATH "${_tool_rpath}"

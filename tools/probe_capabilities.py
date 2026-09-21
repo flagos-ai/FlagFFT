@@ -153,6 +153,7 @@ def main():
             "git_commit": acceptance.git_commit(Path(__file__).resolve().parents[1]),
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
             "ix_visible_devices": os.environ.get("IX_VISIBLE_DEVICES"),
+            "hip_visible_devices": os.environ.get("HIP_VISIBLE_DEVICES"),
         },
         "acceptance_policy": "unchanged; IX FP64 remains skipped",
     }

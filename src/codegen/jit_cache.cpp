@@ -134,8 +134,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   reject_legacy_backend_env();
   const auto device_profile = adaptor::device_capabilities_json();
   const char *policy_env = std::getenv("FLAGFFT_EXECUTION_POLICY");
-  const std::string policy =
-      policy_env ? policy_env : (adaptor::backend_name() == "ix" ? "balanced" : "legacy");
+  const std::string default_policy = adaptor::backend_name() == "ix"
+                                         ? "balanced"
+                                         : (adaptor::backend_name() == "hcu" ? "native" : "legacy");
+  const std::string policy = policy_env ? policy_env : default_policy;
   const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1";
   KernelCacheState &state = kernel_cache_state();
   {

@@ -19,10 +19,10 @@ project(flagfft LANGUAGES CXX)
 option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning CLI" OFF)
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
-set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX" "MACA" "NPU")
+set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX" "MACA" "NPU" "HCU")
 
-if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX" OR BACKEND STREQUAL "MACA" OR BACKEND STREQUAL "NPU"))
-    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, BACKEND=MACA, or BACKEND=NPU")
+if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX" OR BACKEND STREQUAL "MACA" OR BACKEND STREQUAL "NPU" OR BACKEND STREQUAL "HCU"))
+    message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, BACKEND=MACA, BACKEND=NPU, or BACKEND=HCU")
 endif()
 
 find_package(Python 3.10 REQUIRED COMPONENTS Interpreter)
@@ -58,6 +58,24 @@ if(NOT EXISTS "${FLAGFFT_TRITON_JIT_SOURCE_DIR}/CMakeLists.txt")
 endif()
 add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
                  "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
+
+if(BACKEND STREQUAL "HCU")
+    # The HCU Triton backend discovers HIP in the dependency subdirectory. Keep
+    # the matching hipFFT package discoverable for FlagFFT's reference adaptor
+    # as well; DTK images use either /opt/dtk or a versioned /opt/dtk-* root.
+    list(APPEND CMAKE_PREFIX_PATH
+        "$ENV{ROCM_PATH}"
+        "$ENV{HIP_PATH}"
+        "$ENV{ROCM_PATH}/hipfft"
+        "$ENV{HIP_PATH}/hipfft"
+        "/opt/dtk"
+        "/opt/dtk/hip"
+        "/opt/dtk/hipfft"
+        "/opt/dtk-26.04"
+        "/opt/dtk-26.04/hip"
+        "/opt/dtk-26.04/hipfft")
+    find_package(hipfft CONFIG REQUIRED)
+endif()
 
 # libtorch's ARM OpenBLAS build has a private libgfortran dependency in
 # torch.libs.  libtriton_jit discovers this directory in its subdirectory,
@@ -237,6 +255,12 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             # tree (including pkg_inc) to this object target.
             Ascend::ascendcl
             Ascend::runtime)
+    elseif(BACKEND STREQUAL "HCU")
+        add_library(flagfft_test_adaptor OBJECT
+            src/adaptor/backend/hcu/test_adaptor.cpp)
+        target_link_libraries(flagfft_test_adaptor PUBLIC
+            hip::hipfft
+            hip::host)
     endif()
     target_compile_features(flagfft_test_adaptor PUBLIC cxx_std_20)
     target_include_directories(flagfft_test_adaptor PUBLIC
