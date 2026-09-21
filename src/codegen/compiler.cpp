@@ -217,6 +217,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // MACA's portable register exchange is compiled separately for each FFT.
     // Combining both FFTs makes this plugin's optimization prohibitively slow.
     const bool allow_bluestein_fusion = request.device_type != "maca";
+    // Keep each MACA FFT in its own kernel while folding the surrounding
+    // elementwise work into its loads/stores. This opt-in experiment does not
+    // enable the full-leaf (two FFTs in one kernel) or four-step paths.
+    const char *maca_boundary_fusion = std::getenv("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION");
+    const bool use_maca_boundary_leaf =
+        request.device_type == "maca" && batch == 1 && leaf != nullptr &&
+        maca_boundary_fusion != nullptr && std::string(maca_boundary_fusion) == "1";
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf) &&
@@ -234,6 +241,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
+    if (use_maca_boundary_leaf) {
+      DeviceAllocation work_buf =
+          adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
+      return std::make_shared<CompiledRawBluesteinLeafNode>(
+          bluestein->length,
+          bluestein->conv_length,
+          std::move(fft),
+          compile_leaf_bluestein_prepare_kernel(*leaf, child_request, bluestein->length),
+          compile_leaf_bluestein_finish_kernel(*leaf, child_request, bluestein->length),
+          build_raw_leaf_tables(*leaf, child_request),
+          std::move(chirp),
+          std::move(b_time),
+          std::move(work_buf),
+          std::move(b_fft_buf));
+    }
     if (use_full_leaf) {
       std::vector<int64_t> fused_factors = leaf->factors;
       if (fused_factors.size() >= 3) {
