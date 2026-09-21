@@ -222,6 +222,8 @@ CONTIGUOUS_BATCH_PACK_KERNELS = frozenset(
         "leaf_r2c",
         "leaf_c2r",
         "leaf_bluestein",
+        "leaf_bluestein_prepare",
+        "leaf_bluestein_finish",
     }
 )
 INNER_PACK_ROW_KERNELS = frozenset(
