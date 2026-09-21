@@ -678,6 +678,7 @@ def _emit_direct_exchange_registers(
     """Split the routed tensor directly into the next stage's registers."""
     lanes = n // radix
     split_shape = (pack, lane_block, *((2,) * (radix.bit_length() - 1)))
+    highest_first = _maca_knob("SPLIT_ORDER", "lsb") == "msb"
     lines = []
     for component in ("r", "i"):
         prefix = f"{buffer}_register_{component}"
@@ -693,8 +694,15 @@ def _emit_direct_exchange_registers(
             padded_lanes *= 2
             lines.append(f"    {prefix} = tl.reshape({prefix}, ({pack}, {padded_lanes}, {radix}))")
         lines.append(f"    {prefix} = tl.reshape({prefix}, {split_shape})")
+        if highest_first:
+            # A cross-lane radix bit can otherwise remain until the last
+            # split, causing the compiler to convert each two-register pair
+            # separately.  Split that high bit while the bank is still whole.
+            permutation = (0, 1, *range(len(split_shape) - 1, 1, -1))
+            lines.append(f"    {prefix} = tl.trans({prefix}, {permutation})")
         lines.extend(_emit_distributed_split_tree(
             "    ", prefix, [f"{prefix}{digit}" for digit in range(radix)], prefix,
+            highest_first=highest_first,
         ))
         for digit in range(radix):
             name = f"{prefix}{digit}"
@@ -1840,12 +1848,14 @@ def _emit_distributed_split_tree(
     source: str,
     names: list[str],
     prefix: str,
+    *,
+    highest_first: bool = False,
 ) -> list[str]:
     if len(names) == 1:
         return [f"{indent}{names[0]} = {source}"]
 
-    even_names = names[0::2]
-    odd_names = names[1::2]
+    even_names = names[:len(names) // 2] if highest_first else names[0::2]
+    odd_names = names[len(names) // 2:] if highest_first else names[1::2]
     even_source = (
         even_names[0] if len(even_names) == 1 else f"{prefix}_even{len(names)}"
     )
@@ -1853,11 +1863,17 @@ def _emit_distributed_split_tree(
     lines = [f"{indent}{even_source}, {odd_source} = tl.split({source})"]
     if len(even_names) > 1:
         lines.extend(
-            _emit_distributed_split_tree(indent, even_source, even_names, f"{prefix}_e")
+            _emit_distributed_split_tree(
+                indent, even_source, even_names, f"{prefix}_e",
+                highest_first=highest_first,
+            )
         )
     if len(odd_names) > 1:
         lines.extend(
-            _emit_distributed_split_tree(indent, odd_source, odd_names, f"{prefix}_o")
+            _emit_distributed_split_tree(
+                indent, odd_source, odd_names, f"{prefix}_o",
+                highest_first=highest_first,
+            )
         )
     return lines
 

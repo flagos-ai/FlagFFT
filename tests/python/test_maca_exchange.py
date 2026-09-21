@@ -42,7 +42,9 @@ class TensorLanguage:
 ])
 @pytest.mark.parametrize("pack,inner,padded", [(1, False, False), (4, False, True), (4, True, False)])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
-def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, padded, dtype):
+@pytest.mark.parametrize("split_order", ["lsb", "msb"])
+def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, padded, dtype, split_order):
+    monkeypatch.setenv("FLAGFFT_MACA_SPLIT_ORDER", split_order)
     n = math.prod(factors)
     lanes = max(128, 1 << (max(n // r for r in factors) - 1).bit_length())
     slot_stride = (1 << (n - 1).bit_length()) + int(padded)
