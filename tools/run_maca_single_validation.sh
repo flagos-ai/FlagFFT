@@ -15,6 +15,7 @@ export TORCH_CUDA_ARCH_LIST=8.0 MACA_PATH=/opt/maca MACA_HOME=/opt/maca
 export PYTHONPATH="$src/python${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_VISIBLE_DEVICES=4 MACA_VISIBLE_DEVICES=4 MC_VISIBLE_DEVICES=4
 export TRITON_CACHE_DIR="$build/triton-cache"
+export FLAGFFT_TUNE_DISABLE=1
 export LD_LIBRARY_PATH="/opt/maca/lib:/opt/conda/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 if [[ $mode == build ]]; then
   cmake_maca -S "$src" -B "$build" -DBACKEND=MACA \
