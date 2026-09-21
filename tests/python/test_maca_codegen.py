@@ -124,3 +124,70 @@ def test_leaf_matches_numpy(runtime, n, factors, lanes, dtype, direction, batch)
         (output.cpu().numpy() - expected).ravel()
     ) / np.linalg.norm(expected.ravel())
     assert relative_error < (2e-6 if dtype == "complex64" else 2e-12)
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("direction", ["forward", "inverse"])
+def test_bluestein_boundary_leaf_matches_numpy(runtime, dtype, direction):
+    """Exercise chirp signs, zero padding and inverse convolution scaling."""
+    np, torch = runtime
+    from flagfft_codegen.kernels_common import LeafPlan, codelet_radices_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _module_source
+
+    n, m = 997, 2048
+    factors = (16, 16, 8)
+    plan = LeafPlan(m, factors, 1, 128, 2, (), m, "forward", dtype)
+    kernels = []
+    for mode in ("bluestein_prepare_leaf", "bluestein_finish_leaf"):
+        name, source = _build_leaf_kernel_source_for_io(plan, io_mode=mode, prime_n=n)
+        module = _module_source(source, tuple(sorted(codelet_radices_for(factors))))
+        filename = f"<maca_{mode}_{dtype}>"
+        linecache.cache[filename] = (len(module), None, module.splitlines(True), filename)
+        scope = {"__name__": __name__}
+        exec(compile(module, filename, "exec"), scope)
+        kernels.append(scope[name])
+
+    real_dtype = torch.float64 if dtype == "complex128" else torch.float32
+    tables = []
+    for stage in range(1, len(factors)):
+        prefix = math.prod(factors[:stage])
+        angle = (
+            -2 * np.pi * np.arange(factors[stage])[:, None]
+            * (np.arange(m // factors[stage])[None, :] % prefix)
+            / (prefix * factors[stage])
+        )
+        for table in (np.cos(angle), np.sin(angle)):
+            tables.append(torch.tensor(table.reshape(-1), dtype=real_dtype, device="cuda"))
+
+    sign = 1 if direction == "inverse" else -1
+    chirp = np.exp(sign * 1j * np.pi * np.arange(n, dtype=np.float64) ** 2 / n)
+    b = np.zeros(m, dtype=np.complex128)
+    b[:n] = np.conj(chirp)
+    b[m - n + 1:] = np.conj(chirp[1:][::-1])
+
+    def device_complex(values):
+        return torch.view_as_real(torch.from_numpy(np.asarray(values, dtype=dtype)).cuda())
+
+    chirp_tensor = device_complex(chirp)
+    b_fft = device_complex(np.fft.fft(b))
+    work = device_complex(np.zeros(m))
+    output = device_complex(np.zeros(n))
+    rng = np.random.default_rng(997)
+    impulse = np.zeros(n, dtype=dtype)
+    impulse[n - 1] = 1 + 2j
+    inputs = [
+        rng.normal(size=n) + 1j * rng.normal(size=n),
+        rng.normal(size=n),
+        1j * rng.normal(size=n),
+        impulse,
+    ]
+    for values in inputs:
+        x = np.asarray(values, dtype=dtype)
+        source = device_complex(x)
+        kernels[0][(1,)](source, chirp_tensor, work, *tables, 1, num_warps=2)
+        kernels[1][(1,)](work, b_fft, chirp_tensor, output, *tables, 1, num_warps=2)
+        actual = torch.view_as_complex(output).cpu().numpy()
+        expected = np.fft.fft(x) if direction == "forward" else np.fft.ifft(x) * n
+        relative_error = np.linalg.norm(actual - expected) / np.linalg.norm(expected)
+        assert relative_error < (2e-6 if dtype == "complex64" else 2e-12)
