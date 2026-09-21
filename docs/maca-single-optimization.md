@@ -17,7 +17,7 @@
 1. MACA 容器 `flagfft-maca-card4-adapt`，仅用物理 GPU 4。所有 GPU 测量由 validation 串行执行，容器锁 `/tmp/flagfft-maca-gpu4.lock`；运行前检查其他占用，不能仅依赖团队锁。
 2. 每次运行记录 commit、源码校验、git status、import 路径、SDK/Triton/mcFFT/设备环境与实际 launch metadata。
 3. 开关改变 codegen 时明确隔离生成模块、JIT cache 和 plan/tune cache；同一代码缓存不可混用为不同变体。
-4. correctness 先于 performance；统一 acceptance runner 对 NumPy 校验。新测量 warmup >= 3、iters >= 30，建议 5/50；候选交错 A/B 至少三轮。
+4. correctness 先于 performance；统一 acceptance runner 对 NumPy 校验。当前设备已经复现 5/50 预热不足，后续从 warmup=200、iters=100 开始，检查逐次样本是否稳定；候选交错 A/B 至少三轮。不能事后裁剪慢样本以通过阈值。
 5. 结果统一存放根 `results/<YYYYMMDD_HHMMSS>_maca_single_*`，远端记录回传同一结果目录，保留原始结果与失败证据。
 6. 正常 event 计时保留作为验收口径。kernel 诊断、连续提交等额外计时分开报告，不能混用或替代原口径。
 
@@ -61,4 +61,39 @@ direct 的 TTGIR gather 从 80 降为 0。最终 ELF 报告 private memory=0；�
 - `20260921_144215_maca_single_transpose_1024`（完整单 case）
 - `20260921_144503_maca_single_direct_1024`（完整单 case）
 
-当前集成原型 `1fff722` 的容器 CPU/codegen 回归为 109 passed、8 subtests passed；GPU 验收继续由 validation 串行推进。
+集成原型 `6ee6f03` 的容器 CPU/codegen 回归为 283 passed、8 subtests passed；GPU 验收继续由 validation 串行推进。
+
+## 第二轮筛选与计时审计
+
+下表仍是 5/50 单轮筛选，不能据此宣布达到目标。后续发现的预热不足使跨轮性能归因尤其不可靠；编译资源和正确性记录仍可独立使用。
+
+| case / 候选 | FlagFFT / μs | mcFFT / μs | speedup | 设备正确性 |
+|---|---:|---:|---:|---|
+| 2048 / direct v1 | 45.824 | 35.072 | 0.7654 | forward PASS |
+| 2048 / direct v2，先 pad 整个寄存器组 | 41.216 | 35.072 | 0.8509 | forward PASS |
+| 997 / direct v2 + 两段融合 | 76.800 | 60.416 | 0.7867 | forward PASS |
+| 1048576 / direct，inner pack=4 | 219.904 | 112.896 | 0.5134 | forward PASS |
+
+- 2048 v2 的 LLVM IR barrier 从 71 降至 39，shared=16 KiB，mtreg=90，private memory=0。剩余 32 个 barrier 与拆分后的 layout conversion 对应。
+- 997 prepare/finish 各为 39 barrier、16 KiB shared、mtreg=88、private memory=0；融合边界没有新增这些 barrier。
+- MSB-first split 的两个融合 kernel 资源与 v2 完全相同，未得到支持继续投入的证据，默认仍为 LSB。
+- 1048576 的四类 row/column 正反向 kernel 都没有 gather，均为 7 barrier、32 KiB shared、private memory=0。下一步测 inner pack 和复数向量化访存；不能继续把此 case 的差距归因于原 gather 链。
+
+对应结果目录：`20260921_144955_maca_single_direct_2048`、`20260921_145420_maca_single_direct_v2_2048`、`20260921_145420_maca_single_direct_fused_v2_997`、`20260921_144955_maca_single_direct_1048576`。
+
+### 预热不足的直接证据
+
+`results/20260921_151240_maca_single_timing_stability/round1_w5_i50.json` 保存了同一个纯 fusion 997 程序的有序样本：前约 18 次 FlagFFT≈192 μs、mcFFT≈62 μs；随后两库共同下降，后半段分别稳定在约 73.5 μs、26.6 μs。奇偶迭代交换执行顺序仍出现同样趋势。前后设备时钟快照不足以判断瞬时原因，当前仅确认存在慢热/状态变化。
+
+`FLAGFFT_BENCH_SAMPLES=1` 可选导出 `timing.flagfft_samples_ms` 和 `timing.ref_samples_ms`，两数组按原迭代顺序保存；偶数迭代先 reference，奇数迭代先 FlagFFT。导出不改变计时循环或默认 JSON。所有后续阈值验收必须先检查样本稳定性，再比较相同协议下的完整采样统计。
+
+## 原型开关与尚未完成的验收
+
+- `FLAGFFT_MACA_EXCHANGE=direct`：power-of-two leaf 的静态交换和直接寄存器拆分；mixed leaf 仅部分 join fallback。
+- `FLAGFFT_MACA_EXCHANGE=direct_all`：mixed radix 的寄存器维补齐后 join/gather，尚未通过设备验收。
+- `FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION=1`：batch=1 的两段 leaf 边界融合。
+- `FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION=1`：batch=1、两个 child leaf <=1024 的 four-step 边界融合，尚未通过设备验收。
+
+这些开关仍全部默认关闭。环境开关不进入所有持久化 codegen/cache key，实验必须隔离生成目录和 cache；不能把当前实验接口当成可安全并发切换的发布配置。
+
+尚欠稳定协议复测、双方向和 FP64/real 全矩阵、mixed、大 prime、batch/2D/3D 回归。当前交付状态是有正确性和编译证据的优化原型，不是整个 1D single 达成 0.8×。
