@@ -149,3 +149,58 @@ complex payload 32B。如果 VEC_IO 形成每线程 64-bit 访问，可减少两
   和 Triton cache，并检查实际生成源码及 metadata。
 - 记录中的 barrier/load/store 数取自 lowered LLIR，不冒称最终 ISA 指令数；
   mtreg/streg/private 来自最终 ELF note，动态 shared 来自 Triton metadata。
+
+## Mixed radix 的算术与 join 资源（只读分析）
+
+17/19 是已注册的常量专用 codelet，不进入 `_emit_table_codelet` 的矩阵表加载
+分支；但 `codelet/radix17.py` 和 `radix19.py` 使用对称配对的直接 DFT，其算术
+仍为 O(r²)，不是 Rader/Winograd 分解。radix13 也采用此结构。
+
+用 Python AST 统计 BinOp（并递归计入 `_cmul`、小 radix helper）得到：
+
+| codelet | 实数乘法 | 加减 | FMA 合并前总 BinOp |
+|---:|---:|---:|---:|
+| 13 | 144 | 192 | 336 |
+| 17 | 256 | 320 | 576 |
+| 19 | 324 | 396 | 720 |
+
+| leaf factors | 每个向量 lane 的各 stage BinOp | 主要大 radix 源算术占比 |
+|---|---|---:|
+| 476: [17,7,4] | 576 / 88 / 16 | radix17: 84.7% |
+| 1768: [17,13,8] | 576 / 336 / 66 | radix17+13: 93.3% |
+| 209: [19,11] | 720 / 240 | radix19: 75.0% |
+| 390: [13,6,5] | 336 / 92 / 120 | radix13: 61.3% |
+| 1008: [7,6,6,4] | 88 / 92 / 92 / 16 | 两个 radix6: 63.9% |
+
+**这些比例不是设备周期、指令数或性能瓶颈占比。** FMA 合并、常量化简、
+编译调度、twiddle、地址计算、交换、有效 lane 比例均未包括。若按每 stage
+实际有效蝶形数 `n/radix` 加权，476 的 radix17 占比变为67.2%，不能混用两种口径。
+
+当前 stage 共用最大 lane_block；476 的 radix17 仅需要28个codelet lanes，
+但 lane_block=128。源代码主要将 lane_mask 用于 load/store，并未显式包围
+蝶形算术。**load/store mask 不代表算术 predication。** 无效 lanes 是否仍对零
+执行大量算术，必须检查该 mixed kernel 的 lowered LLIR/最终产物；目前不能仅凭
+源码推断硬件浪费比例。
+
+`direct_all` 仍有下一 stage 读取侧的多次 gather。仅按源 gather 数预测：
+
+| leaf | 原表达 gather 数 | direct_all gather 数 |
+|---:|---:|---:|
+| 390 | 60 | 26 |
+| 476 | 70 | 26 |
+| 1768 | 102 | 46 |
+| 209 | 60 | 24 |
+
+上表是普通 leaf 的源表达计数，不保证编译产物 barrier 按比例减少。mixed 不能
+沿用 pow2 direct 的“0 gather / 7 barrier”结论。
+
+join 的输入形状为 `lane_block * pack * ceil_pow2(radix)`。FP32 下，476 的
+radix17 在 P4 时逻辑张量为64KiB/实虚component；1768 在 P4 时为128KiB/component
+（P2为64KiB）。这是张量域大小，不是已测 dynamic shared；编译器是否完整物化
+需看 metadata/ELF。其余 component 可能复用同一 shared buffer，不能简单再乘2。
+FP64 字节量再翻倍；padding 常量为零也不保证编译器删除其资源需求。
+
+本轮 mixed 产物到达后的判断顺序：先查实际 shared/private、寄存器与barrier，
+再看17/19算术映射、predication和每 pass 时间。若交换降低但无spill、资源未恶化
+仍慢，才考虑改大质数codelet或每stage lane向量；若shared膨胀/occupancy下降，
+先处理join资源。当前没有据此新增算法实现或生产 gate。
