@@ -152,16 +152,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // NPU programs. Smaller tiles distribute them across the vector cores.
     int64_t butterfly_block =
         batch == 1 && (stockham->length == 1024 || stockham->length == 2048) ? 16 : 128;
-    if (stockham->length <= 2048) {
-      const char *block_override = std::getenv("FLAGFFT_NPU_STOCKHAM_BLOCK");
-      if (block_override != nullptr) {
-        const std::string value(block_override);
-        if (value != "8" && value != "16" && value != "32" && value != "64" && value != "128") {
-          throw std::runtime_error("FLAGFFT_NPU_STOCKHAM_BLOCK must be 8, 16, 32, 64 or 128");
-        }
-        butterfly_block = std::stoll(value);
+    auto block_override = [](const char *name, int64_t fallback) {
+      const char *raw = std::getenv(name);
+      if (raw == nullptr) return fallback;
+      const std::string value(raw);
+      if (value != "8" && value != "16" && value != "32" && value != "64" && value != "128") {
+        throw std::runtime_error(std::string(name) + " must be 8, 16, 32, 64 or 128");
       }
+      return static_cast<int64_t>(std::stoll(value));
+    };
+    if (stockham->length <= 2048) {
+      butterfly_block = block_override("FLAGFFT_NPU_STOCKHAM_BLOCK", butterfly_block);
     }
+    const int64_t prime_block = block_override("FLAGFFT_NPU_PRIME_BLOCK", 128);
     for (int64_t radix : stockham->factors) {
       KernelKey key = KernelKey::direct_dft(triton_target_for_request(request),
                                             request.direction,
@@ -171,7 +174,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       // Stockham kernel identity includes the stage span; the plan factors
       // remain the radix sequence. This removes dynamic integer division and
       // lets the first stage omit all unit twiddle loads and multiplies.
-      key.factors = {radix, stage_span, butterfly_block};
+      const bool vector_prime = radix == 13 || radix == 17 || radix == 19;
+      key.factors = {radix, stage_span, vector_prime ? prime_block : butterfly_block};
       kernels.push_back(compile_kernel(key));
       stage_span *= radix;
     }
