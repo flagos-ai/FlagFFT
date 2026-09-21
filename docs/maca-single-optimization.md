@@ -97,3 +97,36 @@ direct 的 TTGIR gather 从 80 降为 0。最终 ELF 报告 private memory=0；�
 这些开关仍全部默认关闭。环境开关不进入所有持久化 codegen/cache key，实验必须隔离生成目录和 cache；不能把当前实验接口当成可安全并发切换的发布配置。
 
 尚欠稳定协议复测、双方向和 FP64/real 全矩阵、mixed、大 prime、batch/2D/3D 回归。当前交付状态是有正确性和编译证据的优化原型，不是整个 1D single 达成 0.8×。
+
+## 充分预热后的同环境归因
+
+`results/20260921_152650_maca_single_control_round1_repeat` 使用同 source
+`6ee6f03`、相同 SHA256 的 CLI，按 A→C→D 顺序运行，各自隔离生成目录与 Triton
+cache；每 case warmup=200、iters=100。下表为每个变体单进程内三次完整 case
+重复，不等同于三个独立进程的交错验收。D 不重复测试不受融合开关影响的 CT。
+
+| case | A 原路径 / μs | C direct / μs | D direct+fusion / μs | 候选 / mcFFT 性能比 |
+|---|---:|---:|---:|---:|
+| 1024 | 28.928–29.184 | 14.336–14.592 | — | C: 1.035–1.053 |
+| 2048 | 40.704–40.960 | 18.944–19.200 | — | C: 0.892–0.893 |
+| 997 | 73.472 | 34.048 | 32.512 | C: 0.774–0.782；D: 0.819–0.827 |
+
+纯融合 B 在独立稳定性诊断中的三轮为 72.960–73.472 μs，速度比 0.354–0.362。
+A 的实际 plan 是五 kernel generic Bluestein，B 为两 kernel boundary leaf；A 的
+2048 FFT 最终 fatbin 与初始基线相同，排除了把融合缓存误认成原路径的疑点。
+交换优化是主要收益，997 上 C→D 的融合增益约 1.047×。
+
+主 agent 独立读取并检查全部有序样本，摘要在同目录 `root_control_review.json`。
+C1024 首个 case 前后半存在轻微继续变快，后续重复稳定；最终跨进程复测将提高
+warmup 至 2000，并保留所有样本。C997 的 NumPy gate 当时尚未补齐，故此格只是
+性能诊断；先前 D997 已通过 NumPy。双方向与 dtype/API 覆盖仍不完整。
+
+### 大 CT 的负实验
+
+`results/20260921_152150_maca_single_pack2_warm`：1048576 C2C forward，
+direct + inner pack=2，NumPy 与平台正确性通过，200/100 下
+391.168 μs / 112.640 μs = 0.288×。实际 4 warps / 256 threads。
+与 pack4 相同的 7 barrier、0 gather、private memory=0，shared 从 32 KiB 减至
+16 KiB，故不能把回退归因于新增同步或 spill。pack2 淘汰；pack8 和 pack4 同协议
+复测继续。IO 分段模型、作用域检查与 mixed codelet 算术限制见
+[`maca_exchange_audit.md`](maca_exchange_audit.md)。
