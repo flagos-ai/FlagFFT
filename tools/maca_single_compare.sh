@@ -7,6 +7,13 @@ if (( $# != 3 )); then
 fi
 src=$(realpath "$1"); parent=$(realpath "$2"); out=$(realpath -m "$3")
 mkdir -p "$out"
+# Validate isolated runtime directories before taking the GPU lock.
+for variant in A C D; do
+  runtime="$parent/maca-single-control-$variant-6ee6f03"
+  test -x "$runtime/flagfft-cli"
+  mkdir -p "$runtime/ctest/.flagfft" "$runtime/triton-cache"
+  test -d "$runtime/.flagfft" && test -w "$runtime/.flagfft"
+done
 export PYTHONPATH="$src/python${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_VISIBLE_DEVICES=4 MACA_VISIBLE_DEVICES=4 MC_VISIBLE_DEVICES=4
 export FLAGFFT_TUNE_DISABLE=1 FLAGFFT_BENCH_SAMPLES=1
