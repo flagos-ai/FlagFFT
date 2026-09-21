@@ -42,10 +42,16 @@ namespace {
     // Resource bounds remain target-local; batching itself is implemented
     // by the shared packed-real kernels with a distance-aware fallback.
     const bool is_musa_s5000_fp64_target = request.device_type == "musa" && request.device_arch == "31";
-    if (!force && (!is_a100_fp64_target && !is_musa_s5000_fp64_target)) {
+    // Ascend's single FP32 Stockham transforms avoid a full-length complex
+    // expansion and halve the stage traffic. Keep small transforms and batch
+    // layouts on their existing paths until they are qualified independently;
+    // 2^20 is the upper end of the single-transform qualification range.
+    const bool is_npu_single_fp32_target = request.device_type == "npu" &&
+        request.input_dtype == "complex64" && batch == 1 && n >= 1024 && n <= 1048576;
+    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target) {
       return std::nullopt;
     }
-    if (!force && (request.input_dtype != "complex128" || n < 65536 ||
+    if (!force && !is_npu_single_fp32_target && (request.input_dtype != "complex128" || n < 65536 ||
                    (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
     }
@@ -64,6 +70,16 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    if (!force && is_npu_single_fp32_target) {
+      // Do not implicitly enable unmeasured Bluestein children or GPU tuning
+      // cache entries. New radices qualify naturally when the NPU planner
+      // supplies a Stockham plan for both the original and half length.
+      if (!std::dynamic_pointer_cast<StockhamPlanNode>(original_plan) ||
+          !std::dynamic_pointer_cast<StockhamPlanNode>(child_plan)) {
+        return std::nullopt;
+      }
+      return PackedRealChild {std::move(child_request), std::move(child_plan)};
+    }
     // A measured complex plan is also valid for this dense half-length
     // child. Keep the same exact-batch, direction and fingerprint lookup.
     if (auto tuned = lookup_tuned_plan_json(child_request)) {
@@ -131,14 +147,37 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
     std::vector<std::shared_ptr<JitKernel>> kernels;
+    int64_t stage_span = 1;
+    // A 128-butterfly tile leaves these single transforms on only one or two
+    // NPU programs. Smaller tiles distribute them across the vector cores.
+    int64_t butterfly_block =
+        batch == 1 && (stockham->length == 1024 || stockham->length == 2048) ? 16 : 128;
+    auto block_override = [](const char *name, int64_t fallback) {
+      const char *raw = std::getenv(name);
+      if (raw == nullptr) return fallback;
+      const std::string value(raw);
+      if (value != "8" && value != "16" && value != "32" && value != "64" && value != "128") {
+        throw std::runtime_error(std::string(name) + " must be 8, 16, 32, 64 or 128");
+      }
+      return static_cast<int64_t>(std::stoll(value));
+    };
+    if (stockham->length <= 2048) {
+      butterfly_block = block_override("FLAGFFT_NPU_STOCKHAM_BLOCK", butterfly_block);
+    }
+    const int64_t prime_block = block_override("FLAGFFT_NPU_PRIME_BLOCK", 128);
     for (int64_t radix : stockham->factors) {
       KernelKey key = KernelKey::direct_dft(triton_target_for_request(request),
                                             request.direction,
                                             request.input_dtype,
                                             stockham->length);
       key.kind = KernelKind::StockhamStage;
-      key.factors = {radix};
+      // Stockham kernel identity includes the stage span; the plan factors
+      // remain the radix sequence. This removes dynamic integer division and
+      // lets the first stage omit all unit twiddle loads and multiplies.
+      const bool vector_prime = radix == 13 || radix == 17 || radix == 19;
+      key.factors = {radix, stage_span, vector_prime ? prime_block : butterfly_block};
       kernels.push_back(compile_kernel(key));
+      stage_span *= radix;
     }
     const int64_t n = stockham->length;
     std::vector<double> values(static_cast<std::size_t>(2 * n));

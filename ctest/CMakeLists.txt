@@ -26,6 +26,11 @@ target_link_libraries(numpy_fft_capture PRIVATE flagfft flagfft_test_adaptor)
 # below assume a device-pointer reference API, so they are not built on NPU;
 # numpy_fft_capture remains the native NPU test entry point.
 if(BACKEND STREQUAL "NPU")
+    add_executable(test_npu_real_edges test_npu_real_edges.cpp)
+    target_compile_features(test_npu_real_edges PRIVATE cxx_std_20)
+    target_include_directories(test_npu_real_edges PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_npu_real_edges PRIVATE flagfft)
+    add_test(NAME test_npu_real_edges COMMAND test_npu_real_edges)
     return()
 endif()
 

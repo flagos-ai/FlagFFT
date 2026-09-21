@@ -130,7 +130,9 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     // Large prime codelets produce expensive compiler scheduling on CANN 9
     // (radix 13 exceeded several minutes). Keep 13/17/19 on the existing DFT
     // or Bluestein route until their vector lowering is qualified separately.
-    const bool small_radices = n % 13 != 0 && n % 17 != 0 && n % 19 != 0;
+    const char *prime_mode = std::getenv("FLAGFFT_NPU_STOCKHAM_PRIME");
+    const bool small_radices = (prime_mode != nullptr && std::string(prime_mode) != "0") ||
+                               (n % 13 != 0 && n % 17 != 0 && n % 19 != 0);
     if (n > 1 && factorization.remainder == 1 && small_radices) {
       std::vector<int64_t> factors;
       for (int64_t factor : factorization.factors) {

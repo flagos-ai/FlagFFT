@@ -542,10 +542,12 @@ def emit_jit_kernel(
         n1 = four_step_n1 if spec.is_four_step else 0
         n2 = four_step_n2 if spec.is_four_step else 0
     elif spec.family == STOCKHAM:
-        if len(factors) != 1:
-            raise ValueError("a Stockham stage needs exactly one radix")
+        if len(factors) not in (1, 2, 3):
+            raise ValueError("a Stockham stage needs a radix and optional span/block")
+        stockham_block = factors[2] if len(factors) == 3 else 128
         kernel_name, kernel_source = build_stockham_stage(
-            length, factors[0], direction, dtype
+            length, factors[0], direction, dtype, factors[1] if len(factors) >= 2 else 0,
+            stockham_block
         )
         n1 = n2 = 0
     elif spec.family == DIRECT_DFT:
@@ -577,6 +579,9 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
+    if spec.family == STOCKHAM:
+        # Include the lowering and span in the generated-module identity.
+        module_name = f"flagfft_jit_{kernel_name}"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
@@ -588,7 +593,7 @@ def emit_jit_kernel(
             )
         )
     elif spec.family == STOCKHAM:
-        radices = tuple(sorted(codelet_radices_for(factors)))
+        radices = tuple(sorted(codelet_radices_for(factors[:1])))
     else:
         radices = ()
     module_path.write_text(_module_source(kernel_source, radices))
@@ -611,6 +616,8 @@ def emit_jit_kernel(
         n2=n2,
         dtype=dtype,
     )
+    if spec.family == STOCKHAM:
+        metadata["butterflies_per_block"] = stockham_block
     (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
     return metadata
 
