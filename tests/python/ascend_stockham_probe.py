@@ -55,6 +55,9 @@ def main():
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         kernel = getattr(module, meta["kernel_name"])
+        # Match the C++ raw signature: Python otherwise specializes nbatch=1
+        # to a constexpr and the generated scalar .to() is no longer valid.
+        kernel = triton.jit(kernel.fn, do_not_specialize=["span", "nbatch"])
         run = lambda: kernel[(triton.cdiv(n // radix, 128),)](x, y, tw, span, 1, num_warps=4)
         started = time.perf_counter()
         print(json.dumps({"phase": "compile", "radix": radix}), flush=True)
