@@ -24,6 +24,12 @@
 namespace flagfft::adaptor {
 namespace {
 
+// C550 reports a 128 KiB opt-in value in mcDeviceProp_t, but the MACA
+// runtime rejects module launches that request more than 64 KiB of user
+// shared memory. Keep planning and code generation below the launchable
+// limit rather than the optimistic property value.
+constexpr int64_t kMacaMaxDynamicSharedMemoryBytes = 64 * 1024;
+
   void check(mcError_t result, const std::string &context) {
     if (result == mcSuccess) {
       return;
@@ -313,7 +319,9 @@ std::string device_architecture(int device_index) {
 int64_t max_dynamic_smem_bytes(int device_index) {
   mcDeviceProp_t properties {};
   check(mcGetDeviceProperties(&properties, device_index), "mcGetDeviceProperties");
-  return static_cast<int64_t>(std::max(properties.sharedMemPerBlock, properties.sharedMemPerBlockOptin));
+  const int64_t reported = static_cast<int64_t>(
+      std::max(properties.sharedMemPerBlock, properties.sharedMemPerBlockOptin));
+  return std::min(reported, kMacaMaxDynamicSharedMemoryBytes);
 }
 
 int64_t max_launch_blocks() {
@@ -326,8 +334,8 @@ std::string device_capabilities_json() {
   std::string arch;
   if (ensure_device(index, arch) != FLAGFFT_SUCCESS) throw std::runtime_error("cannot query current device");
   // The MACA compiler target pins the warp size (64) and the runtime accepts
-  // at most 1024 threads per block; the shared-memory limits come from the
-  // device properties already queried above.
+  // at most 1024 threads per block; the shared-memory limit is clamped to the
+  // amount that mcModuleLaunchKernel actually accepts.
   nlohmann::json result = {
       {           "schema_version",                                                   1},
       {                   "source",                                   "backend_default"},

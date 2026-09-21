@@ -211,6 +211,7 @@ class ProfileTest(unittest.TestCase):
             )
         finally:
             reset_profile(token)
+
         token = set_profile(profiled)
         try:
             self.assertGreater(
@@ -218,6 +219,38 @@ class ProfileTest(unittest.TestCase):
             )
             self.assertGreater(
                 four_step_col_inner_pack_for(1024, 1024, "complex64", plan), 1
+            )
+        finally:
+            reset_profile(token)
+
+    def test_maca_four_step_packing_respects_runtime_smem_limit(self):
+        from flagfft_codegen.kernels_common import four_step_col_inner_pack_for
+
+        profile = BackendProfile.from_device(
+            {
+                "backend": "maca",
+                "device_arch": "102",
+                "warp_size": 64,
+                "max_threads_per_block": 1024,
+                # The driver-reported opt-in value is intentionally not enough
+                # to make this kernel launchable on C550.
+                "max_dynamic_shared_memory": 131072,
+            },
+            "legacy",
+        )
+        token = set_profile(profile)
+        try:
+            # n=663000 selects a 1768-point column leaf. Pack four allocates
+            # 4 * 8192 float32 values = 128 KiB; pack two is the largest safe
+            # choice at the 64 KiB runtime limit.
+            oversized = LeafPlan(1768, (17, 13, 8), 1, 1, 4, (), 2048)
+            self.assertEqual(
+                four_step_col_inner_pack_for(375, 1768, "complex64", oversized), 2
+            )
+
+            safe = LeafPlan(1024, (16, 8, 8), 1, 64, 2, (), 1024)
+            self.assertEqual(
+                four_step_col_inner_pack_for(1024, 1024, "complex64", safe), 4
             )
         finally:
             reset_profile(token)
