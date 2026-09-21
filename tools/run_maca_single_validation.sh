@@ -43,7 +43,7 @@ elif [[ $mode == run ]]; then
     /usr/bin/mx-smi
   } > "$out/environment.txt" 2>&1
   set +e
-  python3 "$src/tools/run_tests.py" --gpus 4 --build-dir "$build" \
+  python3 "${FLAGFFT_VALIDATION_RUNNER:-$src/tools/run_tests.py}" --gpus 4 --build-dir "$build" \
     --output-dir "$out/acceptance" --warmup 5 --iters 50 --timeout 600 --color never "$@" \
     > "$out/runner.log" 2>&1
   result=$?

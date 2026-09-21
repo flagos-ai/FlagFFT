@@ -888,6 +888,7 @@ def expand_test_cases(
     combination: str = "full",
     scales: str | None = None,
     shapes: set[tuple[int, ...]] | None = None,
+    directions: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     groups = set(resolve_combination_names(combination))
     scale_values = parse_scales(scales, matrix.get("scales", [1.0]))
@@ -915,6 +916,8 @@ def expand_test_cases(
             for batch in batches:
                 for scale in scale_values:
                     for direction in DIRECTIONS[op["api"]]:
+                        if directions is not None and direction not in directions:
+                            continue
                         case = {
                             "op_id": op["id"],
                             "api": op["api"],
@@ -2308,6 +2311,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--shapes", help="Exact configured shapes, comma-separated, e.g. 256,64x64"
     )
     parser.add_argument(
+        "--directions", help="Comma-separated forward,inverse; only legal API directions are selected"
+    )
+    parser.add_argument(
         "--max-cases",
         type=int,
         help="Select only the first N correctness cases (partial run)",
@@ -2367,9 +2373,16 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(f"start operator not selected: {args.start}")
         ops = ops[ids.index(args.start) :]
     combinations = resolve_combination_names(args.combination)
+    directions = None
+    if args.directions is not None:
+        directions = {part.strip() for part in args.directions.split(",") if part.strip()}
+        if not directions or directions - {"forward", "inverse"}:
+            raise ValueError("--directions must select forward and/or inverse")
     expanded_cases = expand_test_cases(
-        ops, matrix, args.combination, args.scales, parse_shape_filter(args.shapes)
+        ops, matrix, args.combination, args.scales, parse_shape_filter(args.shapes), directions
     )
+    if directions is not None and not expanded_cases:
+        raise ValueError("no cases match the selected operators, shapes, scales and directions")
     skip_reasons = {
         op["id"]: reason
         for op in ops
@@ -2509,6 +2522,7 @@ def main(argv: list[str] | None = None) -> int:
         "performance_only": args.performance_only,
         "scales": parse_scales(args.scales, matrix.get("scales", [1.0])),
         "shapes": args.shapes,
+        "directions": sorted(directions) if directions is not None else None,
         "max_cases": args.max_cases,
         "timeout": args.timeout,
         "warmup": args.warmup,
