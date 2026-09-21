@@ -287,3 +287,10 @@ Rader codelet；还应分别验证资源变化与端到端时间，不能混成�
 
 产物：`20260921_155300_maca_single_mixed185640/artifacts/` 下
 `direct_all_static_summary.json`、`mixed_arithmetic_predication.json` 和原始cache。
+
+
+## 当前小幂次验收计时口径
+
+同环境200 warmup / 100 iterations复核的 mcFFT/FlagFFT 比值：1024为
+1.035–1.053，2048为0.892–0.893。应以该复核区间描述当前验收结果；早期5/50
+筛选中的1024约1.074、2048约0.851仅保留为历史实验，不能与200/100结果混用。
