@@ -14,7 +14,6 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
-from flagfft_codegen.kernels_leaf import _emit_portable_exchange
 
 
 class TensorLanguage:
@@ -66,6 +65,8 @@ class TensorLanguage:
 def test_joined_exchange_matches_original(
     monkeypatch, factors, pack, inner, padded, dtype, split_order
 ):
+    from flagfft_codegen.kernels_leaf import _emit_portable_exchange
+
     monkeypatch.setenv("FLAGFFT_MACA_SPLIT_ORDER", split_order)
     n = math.prod(factors)
     lanes = max(128, 1 << (max(n // r for r in factors) - 1).bit_length())
