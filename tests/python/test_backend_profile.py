@@ -5,6 +5,44 @@ from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
 
 
 class ProfileTest(unittest.TestCase):
+    def test_bluestein_boundary_packing_matches_generated_batch_stride(self):
+        from pathlib import Path
+
+        from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+        from flagfft_codegen.metadata import _metadata
+        from flagfft_codegen.target import set_codegen_target
+
+        set_codegen_target("maca:80:64")
+        try:
+            for n, factors, lanes in (
+                (16, (16,), 1),
+                (32, (32,), 1),
+                (256, (16, 16), 16),
+                (2048, (16, 16, 8), 128),
+            ):
+                plan = LeafPlan(n, factors, 1, lanes, 2, (), n)
+                for kind, mode in (
+                    ("leaf_bluestein_prepare", "bluestein_prepare_leaf"),
+                    ("leaf_bluestein_finish", "bluestein_finish_leaf"),
+                ):
+                    with self.subTest(n=n, kind=kind):
+                        name, source = _build_leaf_kernel_source_for_io(
+                            plan, io_mode=mode, prime_n=n // 2 - 1
+                        )
+                        metadata = _metadata(
+                            module_path=Path("unused.py"), kernel_name=name,
+                            arg_names=[], plan=plan, kernel_type=kind,
+                            n1=0, n2=0, dtype=plan.dtype,
+                        )
+                        self.assertIn(
+                            f"batch_id = pid * {metadata['batch_per_block']}", source
+                        )
+                        self.assertEqual(
+                            metadata["batch_per_block"], contiguous_batch_pack_for(plan)
+                        )
+        finally:
+            set_codegen_target("")
+
     def profile(self, **overrides):
         device = dict(
             backend="ix",
