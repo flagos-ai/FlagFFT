@@ -14,6 +14,7 @@
 
 #include "cli_tools/bench/report.hpp"
 
+#include <cstdlib>
 #include <iomanip>
 #include <sstream>
 
@@ -67,15 +68,19 @@ nlohmann::json format_json(const std::vector<CaseSpec>& cases,
     entry["timing"] = {
         {  "flagfft_median_ms",                                                 r.flagfft.median_ms},
         {     "flagfft_p90_ms",                                                    r.flagfft.p90_ms},
-        {"flagfft_samples_ms",                                                  r.flagfft.samples},
         {      "ref_median_ms", r.reference_available ? json(r.reference.median_ms) : json(nullptr)},
         {         "ref_p90_ms",    r.reference_available ? json(r.reference.p90_ms) : json(nullptr)},
-        {     "ref_samples_ms",   r.reference_available ? json(r.reference.samples) : json(nullptr)},
         {            "speedup",             r.reference_available ? json(r.speedup) : json(nullptr)},
         {"reference_available",                                               r.reference_available},
         {             "warmup",                                                              warmup},
         {              "iters",                                                               iters},
     };
+    const char* samples = std::getenv("FLAGFFT_BENCH_SAMPLES");
+    if (samples && std::string(samples) == "1") {
+      entry["timing"]["flagfft_samples_ms"] = r.flagfft.samples;
+      entry["timing"]["ref_samples_ms"] =
+          r.reference_available ? json(r.reference.samples) : json(nullptr);
+    }
     if (!r.plan_description.empty()) {
       entry["plan_description"] = r.plan_description;
     }
