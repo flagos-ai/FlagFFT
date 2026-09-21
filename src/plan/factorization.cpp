@@ -86,7 +86,11 @@ int64_t PlanBuilder::choose_lanes(int64_t n, const std::vector<int64_t> &factors
   for (std::size_t i = 1; i < factors.size(); ++i) {
     gcd_all = std::gcd(gcd_all, n / factors[i]);
   }
-  int64_t upper = std::min(gcd_all, kMaxLanes);
+  const bool ix_wide_4096 =
+      request_context_.has_value() && request_context_->device_type == "ix" &&
+      request_context_->batch == 1 && request_context_->input_dtype == "complex64" &&
+      request_context_->output_dtype == "complex64" && n == 4096;
+  int64_t upper = std::min(gcd_all, ix_wide_4096 ? int64_t{256} : kMaxLanes);
   for (int64_t candidate = upper; candidate > 0; --candidate) {
     if (gcd_all % candidate == 0) {
       return candidate;
