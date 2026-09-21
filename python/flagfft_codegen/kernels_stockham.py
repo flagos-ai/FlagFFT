@@ -1,5 +1,7 @@
 """Global-memory Stockham mapping of the shared register radix codelets."""
 
+import os
+
 from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix
 from .kernels_leaf import _emit_natural_order_codelet_call
 
@@ -7,6 +9,8 @@ from .kernels_leaf import _emit_natural_order_codelet_call
 def build_stockham_stage(n: int, radix: int, direction: str, dtype: str):
     if radix not in _NATURAL_ORDER_CODELET_RADICES or n % radix:
         raise ValueError(f"unsupported Stockham stage n={n}, radix={radix}")
+    if radix in (13, 17, 19) and os.environ.get("FLAGFFT_NPU_STOCKHAM_PRIME") == "loop":
+        return _build_loop_stage(n, radix, direction, dtype)
     name = f"stockham_{direction}_n{n}_r{radix}_{_dtype_suffix(dtype)}"
     body = [
         "@triton.jit",
@@ -44,3 +48,42 @@ def build_stockham_stage(n: int, radix: int, direction: str, dtype: str):
             ]
         )
     return name, "\n".join(body) + "\n"
+
+
+def _build_loop_stage(n: int, radix: int, direction: str, dtype: str):
+    """Vectorize output digits while keeping a small compiler scheduling DAG.
+
+    Reuse the direction-specific N-point table for both the stage twiddle
+    and radix roots. The input loop is deliberately not statically unrolled.
+    """
+    name = f"stockham_loop_{direction}_n{n}_r{radix}_{_dtype_suffix(dtype)}"
+    width = 1 << (radix - 1).bit_length()
+    source = f'''@triton.jit
+def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):
+    index = tl.program_id(0).to(tl.int64) * 128 + tl.arange(0, 128)
+    mask = index < nbatch.to(tl.int64) * {n // radix}
+    batch = index // {n // radix}
+    k = index % {n // radix}
+    j = k % span
+    output = tl.arange(0, {width})
+    real = tl.full(({width}, 128), 0, tl.float32)
+    imag = tl.full(({width}, 128), 0, tl.float32)
+    for digit in range({radix}):
+        src = (batch * {n} + k + digit * {n // radix}) * 2
+        xr = tl.load(in_ptr + src, mask, 0)
+        xi = tl.load(in_ptr + src + 1, mask, 0)
+        tw = digit * j * ({n} // ({radix} * span)) * 2
+        wr = tl.load(twiddle_ptr + tw, mask, 0)
+        wi = tl.load(twiddle_ptr + tw + 1, mask, 0)
+        xr, xi = _cmul(xr, xi, wr, wi)
+        root = ((output * digit) % {radix}) * {n // radix} * 2
+        cr = tl.load(twiddle_ptr + root)
+        ci = tl.load(twiddle_ptr + root + 1)
+        real = real + xr[None, :] * cr[:, None] - xi[None, :] * ci[:, None]
+        imag = imag + xi[None, :] * cr[:, None] + xr[None, :] * ci[:, None]
+    dst = batch[None, :] * {n} + {radix} * k[None, :] - {radix - 1} * j[None, :] + output[:, None] * span
+    valid = mask[None, :] & (output[:, None] < {radix})
+    tl.store(out_ptr + dst * 2, real, valid)
+    tl.store(out_ptr + dst * 2 + 1, imag, valid)
+'''
+    return name, source
