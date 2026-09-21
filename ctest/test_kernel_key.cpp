@@ -58,10 +58,11 @@ flagfft::KernelKey stockham_stage(const std::string &target,
                                   const std::string &direction,
                                   int64_t length,
                                   int64_t radix,
-                                  int64_t span = 1) {
+                                  int64_t span = 1,
+                                  int64_t block = 128) {
   auto key = flagfft::KernelKey::direct_dft(target, direction, "complex64", length);
   key.kind = flagfft::KernelKind::StockhamStage;
-  key.factors = {radix, span};
+  key.factors = {radix, span, block};
   return key;
 }
 
@@ -79,4 +80,6 @@ TEST(KernelKeyRepr, StockhamStageDistinguishesStages) {
             stockham_stage(target, "forward", 16384, 8, 8).repr());
   EXPECT_NE(stockham_stage(target, "forward", 16384, 8, 8).repr(),
             stockham_stage(target, "forward", 16384, 8, 64).repr());
+  EXPECT_NE(stockham_stage(target, "forward", 1024, 8, 8, 16).repr(),
+            stockham_stage(target, "forward", 1024, 8, 8, 128).repr());
 }

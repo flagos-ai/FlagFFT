@@ -132,6 +132,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
     std::vector<std::shared_ptr<JitKernel>> kernels;
     int64_t stage_span = 1;
+    int64_t butterfly_block = 128;
+    if (stockham->length <= 2048) {
+      const char *block_override = std::getenv("FLAGFFT_NPU_STOCKHAM_BLOCK");
+      if (block_override != nullptr) {
+        const std::string value(block_override);
+        if (value != "8" && value != "16" && value != "32" && value != "64" && value != "128") {
+          throw std::runtime_error("FLAGFFT_NPU_STOCKHAM_BLOCK must be 8, 16, 32, 64 or 128");
+        }
+        butterfly_block = std::stoll(value);
+      }
+    }
     for (int64_t radix : stockham->factors) {
       KernelKey key = KernelKey::direct_dft(triton_target_for_request(request),
                                             request.direction,
@@ -141,7 +152,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       // Stockham kernel identity includes the stage span; the plan factors
       // remain the radix sequence. This removes dynamic integer division and
       // lets the first stage omit all unit twiddle loads and multiplies.
-      key.factors = {radix, stage_span};
+      key.factors = {radix, stage_span, butterfly_block};
       kernels.push_back(compile_kernel(key));
       stage_span *= radix;
     }

@@ -345,13 +345,14 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
     adaptor::DevicePtr current = input;
     int64_t span = 1;
     const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
-    // One stage launch covers ceil(batch * length / factor / 128) blocks, which
+    // One stage launch covers ceil(batch * length / factor / block) blocks, which
     // exceeds the NPU launch limit for large batched transforms. Batches are
     // independent, so a stage is split into batch chunks with pointer offsets.
     const int64_t block_limit = block_limit_per_launch();
     for (std::size_t stage = 0; stage < factors.size(); ++stage) {
       const int64_t factor = factors[stage];
-      const int64_t programs_per_batch = (length / factor + 127) / 128;
+      const int64_t block = kernels[stage]->butterflies_per_block;
+      const int64_t programs_per_batch = (length / factor + block - 1) / block;
       const int64_t batch_chunk = std::max<int64_t>(
           1,
           std::min<int64_t>(context.batch, block_limit / std::max<int64_t>(1, programs_per_batch)));
@@ -367,7 +368,7 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
                                           JitKernelArg::i64(span),
                                           JitKernelArg::i32(static_cast<int32_t>(count))};
         const int64_t butterflies = count * (length / factor);
-        kernels[stage]->launch(context.stream, args, (butterflies + 127) / 128, 1, 1);
+        kernels[stage]->launch(context.stream, args, (butterflies + block - 1) / block, 1, 1);
       }
       current = dst;
       span *= factor;

@@ -4,19 +4,22 @@ from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix
 from .kernels_leaf import _emit_natural_order_codelet_call
 
 
-def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int = 0):
+def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int = 0,
+                        block: int = 128):
     if radix not in _NATURAL_ORDER_CODELET_RADICES or n % radix:
         raise ValueError(f"unsupported Stockham stage n={n}, radix={radix}")
     if stage_span < 0 or (stage_span and n % (radix * stage_span)):
         raise ValueError(f"invalid Stockham span {stage_span} for n={n}, radix={radix}")
+    if block < 1 or block > 128 or block & (block - 1):
+        raise ValueError(f"invalid Stockham butterfly block {block}")
     if radix in (13, 17, 19):
-        return _build_vector_stage(n, radix, direction, dtype, stage_span)
-    name = f"stockham_{direction}_n{n}_r{radix}_s{stage_span}_{_dtype_suffix(dtype)}"
+        return _build_vector_stage(n, radix, direction, dtype, stage_span, block)
+    name = f"stockham_{direction}_n{n}_r{radix}_s{stage_span}_b{block}_{_dtype_suffix(dtype)}"
     body = [
         "@triton.jit",
         f"def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):",
         *([f"    span = {stage_span}"] if stage_span else []),
-        "    index = tl.program_id(0).to(tl.int64) * 128 + tl.arange(0, 128)",
+        f"    index = tl.program_id(0).to(tl.int64) * {block} + tl.arange(0, {block})",
         f"    mask = index < nbatch.to(tl.int64) * {n // radix}",
         f"    batch = index // {n // radix}",
         f"    k = index % {n // radix}",
@@ -51,24 +54,24 @@ def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_s
     return name, "\n".join(body) + "\n"
 
 
-def _build_vector_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int):
+def _build_vector_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int, block: int):
     """Vectorize output digits while keeping a small compiler scheduling DAG.
 
     Reuse the direction-specific N-point table for both the stage twiddle
     and radix roots, vectorizing each input across all output digits.
     """
-    name = f"stockham_vector_{direction}_n{n}_r{radix}_s{stage_span}_{_dtype_suffix(dtype)}"
+    name = f"stockham_vector_{direction}_n{n}_r{radix}_s{stage_span}_b{block}_{_dtype_suffix(dtype)}"
     width = 1 << (radix - 1).bit_length()
     source = f'''@triton.jit
 def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):
-    index = tl.program_id(0).to(tl.int64) * 128 + tl.arange(0, 128)
+    index = tl.program_id(0).to(tl.int64) * {block} + tl.arange(0, {block})
     mask = index < nbatch.to(tl.int64) * {n // radix}
     batch = index // {n // radix}
     k = index % {n // radix}
     j = k % span
     output = tl.arange(0, {width})
-    real = tl.full(({width}, 128), 0, tl.float32)
-    imag = tl.full(({width}, 128), 0, tl.float32)
+    real = tl.full(({width}, {block}), 0, tl.float32)
+    imag = tl.full(({width}, {block}), 0, tl.float32)
     for digit in tl.static_range({radix}):
         src = (batch * {n} + k + digit * {n // radix}) * 2
         xr = tl.load(in_ptr + src, mask, 0)
