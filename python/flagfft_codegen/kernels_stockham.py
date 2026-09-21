@@ -68,7 +68,7 @@ def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):
     output = tl.arange(0, {width})
     real = tl.full(({width}, 128), 0, tl.float32)
     imag = tl.full(({width}, 128), 0, tl.float32)
-    for digit in range({radix}):
+    for digit in tl.static_range({radix}):
         src = (batch * {n} + k + digit * {n // radix}) * 2
         xr = tl.load(in_ptr + src, mask, 0)
         xi = tl.load(in_ptr + src + 1, mask, 0)
