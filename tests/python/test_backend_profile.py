@@ -370,6 +370,60 @@ class ProfileTest(unittest.TestCase):
         finally:
             reset_profile(token)
 
+    def test_maca_global_p8_is_limited_to_large_fp32_power_of_two_leaves(self):
+        from flagfft_codegen.kernels_common import four_step_col_inner_pack_for
+
+        profile = BackendProfile.from_device(
+            {
+                "backend": "maca",
+                "device_arch": "102",
+                "warp_size": 64,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 131072,
+            },
+            "legacy",
+        )
+        token = set_profile(profile)
+        try:
+            env = {
+                "FLAGFFT_MACA_EXCHANGE": "direct_all",
+                "FLAGFFT_MACA_INNER_PACK": "8",
+            }
+            with patch.dict("os.environ", env):
+                large_power2 = LeafPlan(
+                    1024, (16, 8, 8), 1, 64, 2, (), 1024, dtype="complex64"
+                )
+                self.assertEqual(
+                    four_step_col_inner_pack_for(
+                        1024, 1024, "complex64", large_power2
+                    ),
+                    8,
+                )
+
+                # The mixed 476-point leaf is part of the 185640/large
+                # mixed-radix routes.  P8 must not force its padded radix-32
+                # join; the derived policy selects P2 here because the
+                # padded radix-32 allocation is the limiting resource.
+                mixed = LeafPlan(
+                    476, (17, 7, 4), 1, 1, 2, (), 512, dtype="complex64"
+                )
+                self.assertEqual(
+                    four_step_col_inner_pack_for(390, 476, "complex64", mixed),
+                    2,
+                )
+
+                # A short power-of-two leaf has no work to amortize P8's
+                # register pressure and should also use the derived pack.
+                short = LeafPlan(
+                    128, (8, 4, 4), 1, 16, 1, (), 128, dtype="complex64"
+                )
+                self.assertEqual(
+                    four_step_col_inner_pack_for(128, 128, "complex64", short),
+                    4,
+                )
+        finally:
+            reset_profile(token)
+
 
 if __name__ == "__main__":
     unittest.main()

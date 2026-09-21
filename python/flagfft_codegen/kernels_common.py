@@ -468,6 +468,24 @@ def _maca_four_step_pack_for(plan: LeafPlan) -> int:
     return _floor_power_of_two(max(1, bounded))
 
 
+def _maca_p8_register_leaf_supported(plan: LeafPlan) -> bool:
+    """Whether the C550 register-routed P8 experiment is a safe choice.
+
+    P8 removes the conservative shared-memory estimate only for the layouts
+    that were measured as register-routed.  Mixed-radix joins still materialize
+    padded radix tensors, and short leaves do not have enough work to amortize
+    the extra register/warp pressure.  Keep both cases on the derived policy
+    even when a caller requests P8 globally.
+    """
+    return (
+        _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+        and plan.length >= 512
+        and not _is_double_dtype(plan.dtype)
+        and len(plan.factors) > 1
+        and all(radix & (radix - 1) == 0 for radix in plan.factors)
+    )
+
+
 def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
     """Return the largest inner pack that fits MACA's launchable SMEM limit."""
     profile_limit = current_profile().max_dynamic_shared_memory
@@ -549,6 +567,18 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     # the hard launchable shared-memory limit.
     if override not in {"", "auto"}:
         pack = min(_positive_knob("INNER_PACK", override), _portable_exchange_max_pack())
+        if pack >= 8 and plan is not None and not _maca_p8_register_leaf_supported(plan):
+            # A global P8 request is useful for screening, but it must not
+            # force mixed-radix or short leaves into the register experiment.
+            # Reuse the normal resource-derived choice for those plans.
+            pack = min(
+                _maca_four_step_pack_for(plan),
+                _four_step_resource_inner_pack_for(plan),
+            )
+            pack = min(
+                _portable_exchange_pack_floor(plan, pack),
+                _portable_exchange_max_pack(),
+            )
         return min(pack, _maca_four_step_smem_pack_limit(plan)) if plan is not None else pack
     if plan is None:
         return 1
