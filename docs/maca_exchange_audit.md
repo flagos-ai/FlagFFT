@@ -236,3 +236,20 @@ P8 的 shared 实际保持32KiB，并未按逻辑张量域翻至64KiB。每线�
 - `20260921_144955_maca_single_direct_1048576/artifacts/direct_static_summary.json`
 - `20260921_153000_maca_single_pack8_warm/artifacts/pack8_static_summary.json`
 - `20260921_153000_maca_single_pack8_warm/artifacts/pack_global_arithmetic_comparison.json`
+
+## VEC_IO 的负实验
+
+P4 direct + `FLAGFFT_MACA_VEC_IO=1` 的 NumPy 验证通过，200/100 初筛
+238.336µs / mcFFT112.128µs =0.47046；同协议无 VEC_IO 的 P4 为
+217.856µs / mcFFT112.640µs =0.51704。FlagFFT 时间约增加9.4%，没有采用该配置。
+
+宽访存本身确实生成成功：row 为16次 `ldg.predicator.v2f32` +32次 scalar
+内部twiddle load、8次 `stg.predicator.v2f32`；col 为32次 v2f32 load +32次
+scalar内部twiddle load、8次 v2f32 store。原 P4 为row64/col96次scalar load和
+各16次scalar store。两种配置均7 barrier、32KiB shared、private0；mtreg row54
+不变，col54→70。没有新增同步或private spill证据，但不能因此把回退直接归因于
+寄存器数量。结果说明更宽访存与更少访存指令不足以保证这个kernel加速；当前保留
+P8、VEC_IO=0作为大CT主线。
+
+产物：`20260921_155000_maca_single_pack4_vec_warm/artifacts/` 中的
+`pack4_vec_static_summary.json` 和 `pack4_vec_global_access.json`。
