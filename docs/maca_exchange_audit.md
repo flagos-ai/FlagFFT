@@ -204,3 +204,35 @@ FP64 字节量再翻倍；padding 常量为零也不保证编译器删除其资�
 再看17/19算术映射、predication和每 pass 时间。若交换降低但无spill、资源未恶化
 仍慢，才考虑改大质数codelet或每stage lane向量；若shared膨胀/occupancy下降，
 先处理join资源。当前没有据此新增算法实现或生产 gate。
+
+## P8 实机产物补充
+
+C550 本轮 1048576 的 FP32 complex forward：P8 正确性通过，200 warmup / 100
+iterations 初筛为128.768µs，mcFFT112.640µs，比值0.87475；仍由验证任务执行
+交错复测后给最终统计。P4 当时只有较早协议结果，不能把其单轮时间当同协议对照。
+
+| row / col 产物 | P2 | P4 | P8 |
+|---|---:|---:|---:|
+| dynamic shared（两 pass 相同） | 16KiB | 32KiB | **32KiB** |
+| LLIR barrier（两 pass 相同） | 7 | 7 | 7 |
+| ELF mtreg | 52 / 54 | 54 / 54 | 102 / 116 |
+| ELF streg | 24 / 28 | 24 / 28 | 44 / 52 |
+| ELF private memory | 0 / 0 | 0 / 0 | 0 / 0 |
+| LLIR shared loads/stores | 32/48 | 32/48 | 40/40 |
+| row scalar f32 global ldg/stg | 64/16 | 64/16 | 128/32 |
+| col scalar f32 global ldg/stg | 96/16 | 96/16 | 192/32 |
+
+P8 的 shared 实际保持32KiB，并未按逻辑张量域翻至64KiB。每线程处理两个逻辑
+元素，寄存器增加但 private 为零。global 访问仍是 scalar f32，并无宽访存证据。
+另一方面，P8 LLIR 出现 `<2 x float> llvm.mxc.pk.fma.f32`，row/col 分别340/420
+次调用；P2/P4 是 scalar `llvm.fma.f32`，148/180次调用。两类 intrinsic 语义与
+打包宽度不同，不能只比较条数，也不能据此定量分摊性能收益。
+
+这证明新 exchange 下 pack 会同时改变数据布局与算术 lowering；旧 gather 路径
+下的 pack8 回退不能外推。尚不能把新收益完全归因于 coalescing 或 packed FMA。
+产物见工作区统一 results 下：
+
+- `20260921_152150_maca_single_pack2_warm/artifacts/pack2_static_summary.json`
+- `20260921_144955_maca_single_direct_1048576/artifacts/direct_static_summary.json`
+- `20260921_153000_maca_single_pack8_warm/artifacts/pack8_static_summary.json`
+- `20260921_153000_maca_single_pack8_warm/artifacts/pack_global_arithmetic_comparison.json`
