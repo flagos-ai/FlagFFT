@@ -673,6 +673,31 @@ def _emit_portable_exchange(
         f"exchange_slot * {register_slot_stride}"
     )
     lines.append("    exchange_src = tl.where(exchange_valid, exchange_src, 0)")
+    # Join the register dimension before routing.  The original expression
+    # gathers every radix output into an entire leaf-sized vector and selects
+    # one of them at each element.  A joined tensor permits one gather per
+    # component, while retaining the same route and padded-lane semantics.
+    # Keep this experimental until MACA compilation and timing are validated.
+    if _maca_knob("EXCHANGE") == "join" and radix & (radix - 1) == 0:
+        vector_block = lane_block * pack
+        lines.append(
+            f"    exchange_joined_index = tl.where(exchange_valid, "
+            f"exchange_src * {radix} + exchange_digit, 0)"
+        )
+        for component in ("r", "i"):
+            joined = _distributed_join_tree(
+                [f"exchange_{component}{digit}" for digit in range(radix)]
+            )
+            lines.append(
+                f"    exchange_joined_{component} = tl.reshape({joined}, "
+                f"({vector_block * radix},))"
+            )
+            lines.append(
+                f"    {buffer}_{component} = tl.where(exchange_valid, "
+                f"tl.gather(exchange_joined_{component}, "
+                "exchange_joined_index, 0), 0.0)"
+            )
+        return lines
     for component in ("r", "i"):
         lines.append(
             f"    {buffer}_{component} = tl.full(({size},), 0, exchange_{component}0.dtype)"
