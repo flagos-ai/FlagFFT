@@ -19,10 +19,15 @@ class TensorLanguage:
     full = staticmethod(np.full)
     reshape = staticmethod(np.reshape)
     gather = staticmethod(np.take)
+    trans = staticmethod(np.transpose)
 
     @staticmethod
     def join(a, b):
         return np.stack((a, b), axis=-1)
+
+    @staticmethod
+    def split(a):
+        return a[..., 0], a[..., 1]
 
 
 @pytest.mark.parametrize("factors", [(16, 8, 8), (16, 16, 8), (8, 8), (19, 16)])
@@ -39,7 +44,7 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
             for component in ("r", "i") for digit in range(radix)
         }
         outputs = []
-        for method in ("", "join"):
+        for method in ("", "join", "transpose"):
             monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", method)
             lines = _emit_portable_exchange(
                 "smem", stage, factors, lanes, size, slot_stride, pack,
@@ -52,7 +57,10 @@ def test_joined_exchange_matches_original(monkeypatch, factors, pack, inner, pad
             outputs.append((scope["smem_r"], scope["smem_i"]))
             if method == "join" and radix & (radix - 1) == 0:
                 assert sum("tl.gather" in line for line in lines) == 2
+            if method == "transpose" and not padded and n & (n - 1) == 0:
+                assert not any("tl.gather" in line for line in lines)
             if radix & (radix - 1):
                 assert not any("exchange_joined" in line for line in lines)
-        for old, new in zip(*outputs):
-            np.testing.assert_array_equal(old, new)
+        for result in outputs[1:]:
+            for old, new in zip(outputs[0], result):
+                np.testing.assert_array_equal(old, new)

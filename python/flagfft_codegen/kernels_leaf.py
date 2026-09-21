@@ -603,6 +603,53 @@ def _portable_exchange_lane_floor(smem_pack: int) -> int:
     return int(override)
 
 
+def _emit_structured_portable_exchange(
+    buffer: str,
+    stage: int,
+    factors: tuple[int, ...],
+    lane_block: int,
+    pack: int,
+    natural_order: bool,
+    interleaved: bool,
+) -> list[str]:
+    """Express a power-of-two stage route as a static axis permutation."""
+    n = math.prod(factors)
+    radix = factors[stage]
+    lanes = n // radix
+    padding = lane_block // lanes
+    # Codelet indices consume earlier digits low-to-high, then later digits
+    # high-to-low.  Tensor axes list those digits in descending significance.
+    source_axes = [*range(stage + 1, len(factors)), *range(stage - 1, -1, -1), stage]
+    if natural_order:
+        output_axes = [stage, *range(stage - 1, -1, -1)]
+    else:
+        output_axes = [*range(stage + 1, len(factors)), stage, *range(stage - 1, -1, -1)]
+    shape = (pack, *(factors[axis] for axis in source_axes))
+    permutation = (0, *(source_axes.index(axis) + 1 for axis in output_axes))
+    lines = []
+    for component in ("r", "i"):
+        name = f"exchange_structured_{component}"
+        joined = _distributed_join_tree(
+            [f"exchange_{component}{digit}" for digit in range(radix)]
+        )
+        if interleaved:
+            lines.append(f"    {name} = tl.reshape({joined}, ({lane_block}, {pack}, {radix}))")
+            lines.append(f"    {name} = tl.trans({name}, (1, 0, 2))")
+        else:
+            lines.append(f"    {name} = tl.reshape({joined}, ({pack}, {lane_block}, {radix}))")
+        if padding > 1:
+            lines.append(f"    {name} = tl.reshape({name}, ({pack}, {padding}, {lanes}, {radix}))")
+            lines.append(f"    {name} = tl.trans({name}, (0, 2, 3, 1))")
+            trim_shape = (pack, lanes, radix, *((2,) * (padding.bit_length() - 1)))
+            lines.append(f"    {name} = tl.reshape({name}, {trim_shape})")
+            for _ in range(padding.bit_length() - 1):
+                lines.append(f"    {name}, exchange_discard = tl.split({name})")
+        lines.append(f"    {name} = tl.reshape({name}, {shape})")
+        lines.append(f"    {name} = tl.trans({name}, {permutation})")
+        lines.append(f"    {buffer}_{component} = tl.reshape({name}, ({n * pack},))")
+    return lines
+
+
 def _emit_portable_exchange(
     buffer: str,
     stage: int,
@@ -631,6 +678,17 @@ def _emit_portable_exchange(
         register_slot_stride = lane_block
     n = math.prod(factors)
     radix = factors[stage]
+    if (
+        _maca_knob("EXCHANGE") == "transpose"
+        and all(factor & (factor - 1) == 0 for factor in factors)
+        and slot_stride == n
+        and size == n * pack
+        and lane_block >= n // radix
+    ):
+        return _emit_structured_portable_exchange(
+            buffer, stage, factors, lane_block, pack, natural_order,
+            interleaved=register_lane_stride > 1,
+        )
     lines = [
         f"    exchange_pos = tl.arange(0, {size})",
         f"    exchange_slot = exchange_pos // {slot_stride}",
@@ -678,7 +736,7 @@ def _emit_portable_exchange(
     # one of them at each element.  A joined tensor permits one gather per
     # component, while retaining the same route and padded-lane semantics.
     # Keep this experimental until MACA compilation and timing are validated.
-    if _maca_knob("EXCHANGE") == "join" and radix & (radix - 1) == 0:
+    if _maca_knob("EXCHANGE") in {"join", "transpose"} and radix & (radix - 1) == 0:
         vector_block = lane_block * pack
         lines.append(
             f"    exchange_joined_index = tl.where(exchange_valid, "
