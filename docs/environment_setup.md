@@ -91,7 +91,7 @@ apt-get install -y \
 
 要求：
 
-- CMake >= 3.18
+- CMake >= 3.25（`deps/libtriton_jit` 的最低版本要求）
 - 支持 C++20 的 GCC 11+ 或 Clang 14+
 - SQLite3 开发库（`libsqlite3-dev`）
 
@@ -179,13 +179,21 @@ nvidia-smi
 
 ### IX
 
-IX 的 CMake 复用 CUDA-compatible 的 CoreX SDK，配置时指定 CoreX 路径：
+IX 的 CMake 复用 CUDA-compatible 的 CoreX SDK。先配置运行时、工具链和
+Python 包路径；`COREX_HOME` 只保留一个实际路径，不能连续导出两个路径让前一个
+被覆盖：
 
 ```bash
-export COREX_HOME=/usr/local/corex
+# 如果 /usr/local/corex 是指向版本化目录的软链接，也可以使用这个路径。
+# 本环境实际使用版本化目录：
+# export COREX_HOME=/usr/local/corex
+export COREX_HOME=/usr/local/corex-4.4.0
+export PATH="$COREX_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$COREX_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH="$COREX_HOME/lib64/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-例如：
+配置时 `CUDAToolkit_ROOT` 必须与 `COREX_HOME` 指向同一套 SDK：
 
 ```text
 -DCUDAToolkit_ROOT=/usr/local/corex-4.4.0
@@ -211,10 +219,18 @@ $MUSA_HOME/lib64/libmufft.so    # 或 $MUSA_HOME/lib/libmufft.so
 
 ### MACA
 
-默认按项目验证环境使用 `/opt/maca`：
+默认按项目验证环境使用 `/opt/maca`。除了 `MACA_PATH`，MACA 的 cu-bridge、
+编译架构、动态库和公共头文件路径也需要显式配置：
 
 ```bash
+export CUCC_PATH=/opt/maca/tools/cu-bridge
+export CUCC_CMAKE_ENTRY=2
+export PATH="$CUCC_PATH/tools:$PATH"
 export MACA_PATH=/opt/maca
+export MACA_HOME=/opt/maca
+export TORCH_CUDA_ARCH_LIST=8.0
+export LD_LIBRARY_PATH="/opt/maca/lib:/opt/conda/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export CPATH="/opt/maca/include/common${CPATH:+:$CPATH}"
 ```
 
 测试需要：
@@ -232,7 +248,40 @@ MACA 构建和运行应使用 MetaX 提供的 `cmake_maca` / `make_maca` 包装�
 必须使用 CANN 9.0 环境，并加载 CANN 环境变量：
 
 ```bash
-source /usr/local/Ascend/cann-9.0.0/set_env.sh
+export CANN_HOME=/usr/local/Ascend/cann-9.0.0
+source "$CANN_HOME/set_env.sh"
+```
+
+本项目的 NPU CMake 会从 `ASCEND_TOOLKIT_HOME` 查找 `include/`、
+`lib64/libascendcl.so` 和 `lib64/libruntime.so`，并从 `CANN_HOME` 查找
+架构相关的 `pkg_inc`。在当前验证用 CANN 9.0 容器中，这两个变量都指向
+`/usr/local/Ascend/cann-9.0.0`；如果某台机器将 Toolkit 和 CANN 拆成了不同
+目录，应分别填写实际路径：
+
+```bash
+export ASCEND_TOOLKIT_HOME="${ASCEND_TOOLKIT_HOME:-$CANN_HOME}"
+test -f "$ASCEND_TOOLKIT_HOME/lib64/libascendcl.so"
+test -f "$ASCEND_TOOLKIT_HOME/lib64/libruntime.so"
+test -d "$CANN_HOME"
+```
+
+`ASCEND_HOME_PATH` 不是 FlagFFT 或 `libtriton_jit` CMake 使用的变量，不需要
+依赖它完成构建。`set_env.sh` 设置的其他变量应保留，不要用 CUDA 版环境覆盖。
+
+910B CANN 容器运行 FlagTree/Triton 和测试时，使用下面的运行时配置；其中
+`TRITON_NPU_COMPILER_PATH` 必须对应同一套 CANN：
+
+```bash
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+export TRITON_BACKEND=torch_npu
+export FLAGTREE_BACKEND=ascend
+export TRITON_JIT_BACKEND=NPU
+export TRITON_ASCEND_ARCH=Ascend910B4
+export TRITON_NPU_COMPILER_PATH="$ASCEND_TOOLKIT_HOME/tools/bishengir/bin"
+export PYTHONNOUSERSITE=1
+# 当前 Python 找不到 torch_npu 时，再显式指定其包目录；CMake 默认会从
+# 当前 Python 的 site-packages 自动探测它。
+# export TORCH_NPU_PATH=/path/to/site-packages/torch_npu
 ```
 
 FlagFFT 的 CLI 和测试还需要编译好的 CANN `ops-fft` 参考库：
@@ -262,15 +311,21 @@ cmake --build build-cuda -j"$(nproc)"
 
 ### IX
 
+确保已经执行上一节的 IX 环境变量配置，并使用同一个 `COREX_HOME`：
+
 ```bash
-cmake -B build-ix \
+cmake -S . -B build-ix \
   -DCMAKE_BUILD_TYPE=Release \
   -DBACKEND=IX \
-  -DCUDAToolkit_ROOT=/usr/local/corex-4.4.0 \
+  -DCUDAToolkit_ROOT="$COREX_HOME" \
   -DFLAGFFT_BUILD_CLI=ON \
-  -DFLAGFFT_BUILD_TESTS=ON
+  -DFLAGFFT_BUILD_TESTS=ON \
+  -DBUILD_TESTING=OFF
 cmake --build build-ix -j"$(nproc)"
 ```
+
+这里的 `BUILD_TESTING=OFF` 只关闭 `libtriton_jit` 自身的测试；
+`FLAGFFT_BUILD_TESTS=ON` 仍然会构建 FlagFFT 的测试目标。
 
 ### MUSA
 
@@ -287,36 +342,71 @@ cmake --build build-musa -j"$(nproc)"
 ### MACA
 
 ```bash
-cmake_maca -B build-maca \
+cmake_maca -S . -B build-maca \
   -DCMAKE_BUILD_TYPE=Release \
   -DBACKEND=MACA \
-  -DMACA_PATH="${MACA_PATH:-/opt/maca}" \
   -DFLAGFFT_BUILD_CLI=ON \
-  -DFLAGFFT_BUILD_TESTS=ON
+  -DFLAGFFT_BUILD_TESTS=ON \
+  -DCMAKE_CUDA_STANDARD=17 \
+  -DCMAKE_CUDA_ARCHITECTURES=80 \
+  -DMCFFT_INCLUDE_DIR=/opt/maca/include/mcfft \
+  -DMCFFT_LIB=/opt/maca/lib/libmcfft.so \
+  -DMACA_PATH=/opt/maca
 make_maca -C build-maca -j"$(nproc)"
 ```
 
+如果 MACA SDK 不在 `/opt/maca`，需要同时修改前面的环境变量和这里的
+`MCFFT_INCLUDE_DIR`、`MCFFT_LIB`、`MACA_PATH`；不要只修改其中一项。
+
 ### Ascend/NPU
 
-```bash
-source /usr/local/Ascend/cann-9.0.0/set_env.sh
-export ASCEND_OPS_FFT_ROOT=/path/to/ops-fft
+编译命令默认复用上一节已加载的 CANN 环境。若从本节开始执行，先运行：
 
-cmake -B build-npu \
+```bash
+export CANN_HOME=/usr/local/Ascend/cann-9.0.0
+source "$CANN_HOME/set_env.sh"
+export ASCEND_TOOLKIT_HOME="${ASCEND_TOOLKIT_HOME:-$CANN_HOME}"
+```
+
+如果 CANN 和 Toolkit 是分开安装的，把 `ASCEND_TOOLKIT_HOME` 改为实际包含
+`lib64/libascendcl.so` 的 Toolkit 根目录，`CANN_HOME` 仍指向包含
+`set_env.sh` 和架构目录的 CANN 根目录。
+
+`ASCEND_OPS_FFT_ROOT` 可以指向已安装的 ops-fft 根目录，也可以指向源码构建
+目录。项目 CMake 会在以下位置查找头文件和库：
+
+```bash
+test -f "$ASCEND_OPS_FFT_ROOT/include/cann_ops_fft.h" || \
+test -f "$ASCEND_OPS_FFT_ROOT/include/math_libs/cann_ops_fft.h" || \
+test -f "$ASCEND_OPS_FFT_ROOT/src/include/cann_ops_fft.h"
+find "$ASCEND_OPS_FFT_ROOT" \( -name 'libcann_ops_fft.so' -o \
+  -name 'libcann_ops_fft.a' \) -print
+```
+
+构建命令如下：
+
+```bash
+cmake -S . -B build-npu \
   -DCMAKE_BUILD_TYPE=Release \
   -DBACKEND=NPU \
+  -DASCEND_TOOLKIT_HOME="$ASCEND_TOOLKIT_HOME" \
   -DASCEND_OPS_FFT_ROOT="$ASCEND_OPS_FFT_ROOT" \
+  -DFLAGFFT_TRITON_JIT_SOURCE_DIR="$FLAGFFT_TRITON_JIT_SOURCE_DIR" \
   -DFLAGFFT_BUILD_CLI=ON \
-  -DFLAGFFT_BUILD_TESTS=ON
+  -DFLAGFFT_BUILD_TESTS=ON \
+  -DBUILD_TESTING=OFF
 cmake --build build-npu -j"$(nproc)"
 ```
 
-如果 MetaX 镜像仍使用普通 CMake/Make 包装方式，则将最后两条替换为：
+`BUILD_TESTING=OFF` 同样只关闭 `libtriton_jit` 的内部测试，不会关闭
+FlagFFT 的 `ctest`/capture 目标。NPU 的统一验收入口仍然是
+`tools/run_tests.py`；`ops-fft` 不支持的 API 或形状会被记录为 `Skipped`。
 
-```bash
-cmake -B build-maca ...
-cmake --build build-maca -j"$(nproc)"
-```
+<!--
+The NPU section above intentionally mirrors the repository's CMake discovery
+rules. Keep the explicit libtriton_jit source option: the default submodule is
+not a guarantee that the container has the Ascend-enabled Triton checkout.
+-->
 
 ## 7. 运行测试
 
