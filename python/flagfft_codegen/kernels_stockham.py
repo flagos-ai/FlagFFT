@@ -55,45 +55,66 @@ def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_s
 
 
 def _build_vector_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int, block: int):
-    """Vectorize output digits while keeping a small compiler scheduling DAG.
+    """Pair both input and output digits to bound the NPU scheduling DAG.
 
-    Reuse the direction-specific N-point table for both the stage twiddle
-    and radix roots, vectorizing each input across all output digits.
+    For complex inputs, sum/difference pairs share their cosine/sine terms.
+    Four half-width accumulators then produce both k and radix-k outputs.
+    The direction-specific N-point roots preserve the inverse sign convention.
     """
-    name = f"stockham_vector_{direction}_n{n}_r{radix}_s{stage_span}_b{block}_{_dtype_suffix(dtype)}"
-    width = 1 << (radix - 1).bit_length()
+    name = f"stockham_paired_vector_{direction}_n{n}_r{radix}_s{stage_span}_b{block}_{_dtype_suffix(dtype)}"
+    half = radix // 2
+    width = 1 << half.bit_length()
+    span_line = f"    span = {stage_span}\n" if stage_span else ""
+    twiddle_lines = ""
+    if stage_span != 1:
+        twiddle_lines = f"""        tw = digit * j * ({n} // ({radix} * span)) * 2
+        wr = tl.load(twiddle_ptr + tw, mask, 0)
+        wi = tl.load(twiddle_ptr + tw + 1, mask, 0)
+        xr, xi = _cmul(xr, xi, wr, wi)
+        tw_pair = ({radix} - digit) * j * ({n} // ({radix} * span)) * 2
+        vr = tl.load(twiddle_ptr + tw_pair, mask, 0)
+        vi = tl.load(twiddle_ptr + tw_pair + 1, mask, 0)
+        yr, yi = _cmul(yr, yi, vr, vi)
+"""
     source = f'''@triton.jit
 def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):
-    index = tl.program_id(0).to(tl.int64) * {block} + tl.arange(0, {block})
+{span_line}    index = tl.program_id(0).to(tl.int64) * {block} + tl.arange(0, {block})
     mask = index < nbatch.to(tl.int64) * {n // radix}
     batch = index // {n // radix}
     k = index % {n // radix}
     j = k % span
     output = tl.arange(0, {width})
-    real = tl.full(({width}, {block}), 0, tl.float32)
-    imag = tl.full(({width}, {block}), 0, tl.float32)
-    for digit in tl.static_range({radix}):
+    src0 = (batch * {n} + k) * 2
+    x0r = tl.load(in_ptr + src0, mask, 0)
+    x0i = tl.load(in_ptr + src0 + 1, mask, 0)
+    cosine_r = tl.full(({width}, {block}), 0, tl.float32) + x0r[None, :]
+    cosine_i = tl.full(({width}, {block}), 0, tl.float32) + x0i[None, :]
+    sine_r = tl.full(({width}, {block}), 0, tl.float32)
+    sine_i = tl.full(({width}, {block}), 0, tl.float32)
+    for digit in tl.static_range(1, {half + 1}):
         src = (batch * {n} + k + digit * {n // radix}) * 2
+        src_pair = (batch * {n} + k + ({radix} - digit) * {n // radix}) * 2
         xr = tl.load(in_ptr + src, mask, 0)
         xi = tl.load(in_ptr + src + 1, mask, 0)
-        tw = digit * j * ({n} // ({radix} * span)) * 2
-        wr = tl.load(twiddle_ptr + tw, mask, 0)
-        wi = tl.load(twiddle_ptr + tw + 1, mask, 0)
-        xr, xi = _cmul(xr, xi, wr, wi)
+        yr = tl.load(in_ptr + src_pair, mask, 0)
+        yi = tl.load(in_ptr + src_pair + 1, mask, 0)
+{twiddle_lines}        pr, pi = xr + yr, xi + yi
+        mr, mi = xr - yr, xi - yi
         root = ((output * digit) % {radix}) * {n // radix} * 2
         cr = tl.load(twiddle_ptr + root)
         ci = tl.load(twiddle_ptr + root + 1)
-        real = real + xr[None, :] * cr[:, None] - xi[None, :] * ci[:, None]
-        imag = imag + xi[None, :] * cr[:, None] + xr[None, :] * ci[:, None]
-    dst = batch[None, :] * {n} + {radix} * k[None, :] - {radix - 1} * j[None, :] + output[:, None] * span
-    valid = mask[None, :] & (output[:, None] < {radix})
-    tl.store(out_ptr + dst * 2, real, valid)
-    tl.store(out_ptr + dst * 2 + 1, imag, valid)
+        cosine_r = cosine_r + pr[None, :] * cr[:, None]
+        cosine_i = cosine_i + pi[None, :] * cr[:, None]
+        sine_r = sine_r + mr[None, :] * ci[:, None]
+        sine_i = sine_i + mi[None, :] * ci[:, None]
+    base = batch[None, :] * {n} + {radix} * k[None, :] - {radix - 1} * j[None, :]
+    dst = base + output[:, None] * span
+    valid = mask[None, :] & (output[:, None] <= {half})
+    tl.store(out_ptr + dst * 2, cosine_r - sine_i, valid)
+    tl.store(out_ptr + dst * 2 + 1, cosine_i + sine_r, valid)
+    mirror = base + ({radix} - output[:, None]) * span
+    mirror_valid = valid & (output[:, None] > 0)
+    tl.store(out_ptr + mirror * 2, cosine_r + sine_i, mirror_valid)
+    tl.store(out_ptr + mirror * 2 + 1, cosine_i - sine_r, mirror_valid)
 '''
-    if stage_span:
-        source = source.replace("    index =", f"    span = {stage_span}\n    index =", 1)
-    if stage_span == 1:
-        start = source.index("        tw =")
-        end = source.index("        root =")
-        source = source[:start] + source[end:]
     return name, source
