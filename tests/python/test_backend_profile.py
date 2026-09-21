@@ -253,6 +253,22 @@ class ProfileTest(unittest.TestCase):
             self.assertEqual(
                 four_step_col_inner_pack_for(1024, 1024, "complex64", safe), 4
             )
+
+            # All-power-of-two direct exchange is register-routed.  Its
+            # generated C550 kernel remains launchable at pack eight even
+            # though the conservative generic four-buffer estimate would
+            # reject that pack at the 64 KiB runtime limit.
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_MACA_EXCHANGE": "direct_all",
+                    "FLAGFFT_MACA_INNER_PACK": "8",
+                },
+            ):
+                self.assertEqual(
+                    four_step_col_inner_pack_for(1024, 1024, "complex64", safe),
+                    8,
+                )
         finally:
             reset_profile(token)
 

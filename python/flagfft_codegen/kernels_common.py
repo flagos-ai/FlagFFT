@@ -475,6 +475,18 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
     if profile_limit is not None:
         budget = min(budget, profile_limit)
 
+    # The structured direct exchange for an all-power-of-two leaf stays in
+    # registers.  The generic four-buffer estimate below is for the portable
+    # gather/layout path and incorrectly rejects pack=8 for this case: the
+    # generated C550 kernel is only 32 KiB shared at pack=8.  Keep the hard
+    # budget for mixed-radix direct_all joins, whose padded register tensors
+    # are lowered through shared memory on MACA.
+    direct_register_exchange = (
+        _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+        and len(plan.factors) > 1
+        and all(radix & (radix - 1) == 0 for radix in plan.factors)
+    )
+
     # Four real-valued shared buffers back the complex exchange. Match the
     # codegen's lane-block rounding so a pack that looks legal algebraically
     # cannot become an oversized allocation after padding.
@@ -513,7 +525,7 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
 
     def fits(pack: int) -> bool:
         return (
-            shared_bytes(pack) <= budget
+            (direct_register_exchange or shared_bytes(pack) <= budget)
             and direct_all_join_bytes(pack) <= budget
         )
 
