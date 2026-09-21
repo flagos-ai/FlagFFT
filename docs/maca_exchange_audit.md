@@ -294,3 +294,25 @@ Rader codelet；还应分别验证资源变化与端到端时间，不能混成�
 同环境200 warmup / 100 iterations复核的 mcFFT/FlagFFT 比值：1024为
 1.035–1.053，2048为0.892–0.893。应以该复核区间描述当前验收结果；早期5/50
 筛选中的1024约1.074、2048约0.851仅保留为历史实验，不能与200/100结果混用。
+
+
+## 大 prime 524287 的 P8 融合资源
+
+P8、direct 与四步 Bluestein 边界融合的5个已编译kernel，均为0 gather、
+7 barrier、32KiB dynamic shared、40 shared loads / 40 stores，ELF private为0。
+
+| kernel | mtreg | streg | scalar f32 global ldg/stg | packed FMA调用 |
+|---|---:|---:|---:|---:|
+| 普通 row | 102 | 44 | 128/32 | 340 |
+| 普通 col | 116 | 52 | 192/32 | 420 |
+| prepare row | 108 | 52 | 192/32 | 420 |
+| pointwise row | 108 | 52 | 192/32 | 420 |
+| finish col | 134 | 52 | 224/32 | 460 |
+
+边界融合没有新增exchange同步或private spill；finish寄存器数较普通col增加，
+不能据此推断occupancy或耗时。所有packed FMA列是LLIR的静态intrinsic调用数，
+不是实际执行次数或硬件吞吐。这里仅记录资源，正确性与端到端速度以验证任务的
+完整结果为准。
+
+产物：`20260921_155410_maca_single_bigprime_pack8_fused/artifacts/` 下
+`pack8_fused_static_summary.json`、`pack8_fused_arithmetic_io.json` 和原始cache。
