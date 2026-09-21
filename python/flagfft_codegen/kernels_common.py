@@ -38,6 +38,10 @@ _FOUR_STEP_ROW_INNER_PACK_MAX_N1 = 512
 _FOUR_STEP_PACKED_COL_LEAF_MAX_N2 = 1024
 _FOUR_STEP_PACK_TARGET_THREADS = 256
 _FOUR_STEP_PACK_SMEM_BUDGET_BYTES = 128 * 1024
+# MACA's C550 runtime rejects four-step kernels above 64 KiB of dynamic
+# shared memory even though the device properties advertise a 128 KiB opt-in
+# value. This is a hard launch limit for the portable exchange path.
+_MACA_FOUR_STEP_PACK_SMEM_BUDGET_BYTES = 64 * 1024
 _TLE_FUSED_TWIDDLE_MIN_LENGTH = 1 << 18
 _TLE_FUSED_TWIDDLE_MAX_LEAF = 1024
 _TLE_SMEM_SWIZZLE_SHIFT = 5
@@ -464,18 +468,40 @@ def _maca_four_step_pack_for(plan: LeafPlan) -> int:
     return _floor_power_of_two(max(1, bounded))
 
 
+def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
+    """Return the largest inner pack that fits MACA's launchable SMEM limit."""
+    profile_limit = current_profile().max_dynamic_shared_memory
+    budget = _MACA_FOUR_STEP_PACK_SMEM_BUDGET_BYTES
+    if profile_limit is not None:
+        budget = min(budget, profile_limit)
+
+    # Four real-valued shared buffers back the complex exchange. Match the
+    # codegen's lane-block rounding so a pack that looks legal algebraically
+    # cannot become an oversized allocation after padding.
+    def shared_bytes(pack: int) -> int:
+        smem_elements = lane_block_for(plan.smem_size * pack)
+        return 4 * smem_elements * _real_element_bytes(plan.dtype)
+
+    limit = 1
+    while limit < _portable_exchange_max_pack() and shared_bytes(limit * 2) <= budget:
+        limit *= 2
+    return limit
+
+
 def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     """Inner transforms packed per four-step row/column block on MACA.
 
-    The bring-up pinned this to one before any C550 measurement.  The override
+    The bring-up pinned this to one before any C550 measurement. The override
     lets the profile-aware derivation (``auto``) and explicit packs be compared
-    against that baseline without rebuilding.
+    against that baseline without rebuilding; neither path may exceed the
+    launchable shared-memory limit.
     """
     override = _maca_knob("INNER_PACK", "")
-    # An explicit number is an experiment setting and wins outright; only the
-    # derived packs go through the tensor-width floor.
+    # An explicit number is an experiment setting, but it still goes through
+    # the hard launchable shared-memory limit.
     if override not in {"", "auto"}:
-        return min(_positive_knob("INNER_PACK", override), _portable_exchange_max_pack())
+        pack = min(_positive_knob("INNER_PACK", override), _portable_exchange_max_pack())
+        return min(pack, _maca_four_step_smem_pack_limit(plan)) if plan is not None else pack
     if plan is None:
         return 1
     # Derived packs fill a 256-thread block.  "Just wide enough to span a warp"
@@ -487,7 +513,11 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     pack = _maca_four_step_pack_for(plan)
     if override == "auto":
         pack = min(pack, _four_step_resource_inner_pack_for(plan))
-    return min(_portable_exchange_pack_floor(plan, pack), _portable_exchange_max_pack())
+    pack = min(
+        _portable_exchange_pack_floor(plan, pack),
+        _portable_exchange_max_pack(),
+    )
+    return min(pack, _maca_four_step_smem_pack_limit(plan))
 
 
 def _four_step_col_inner_pack_for(
