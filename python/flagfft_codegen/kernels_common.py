@@ -482,8 +482,43 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
         smem_elements = lane_block_for(plan.smem_size * pack)
         return 4 * smem_elements * _real_element_bytes(plan.dtype)
 
+    def direct_all_join_bytes(pack: int) -> int:
+        if _maca_knob("EXCHANGE") != "direct_all" or len(plan.factors) <= 1:
+            return 0
+
+        active_lanes = max(
+            cooperative_stage_lanes_for(plan), default=plan.lanes
+        )
+        lane_min = _maca_knob("LANE_MIN", "auto")
+        if lane_min == "auto":
+            exchange_lane_floor = max(
+                1, _PORTABLE_EXCHANGE_MIN_ELEMENTS // max(pack, 1)
+            )
+        else:
+            exchange_lane_floor = _positive_knob("LANE_MIN", lane_min)
+        exchange_lane_block = max(
+            lane_block_for(active_lanes), exchange_lane_floor
+        )
+
+        # direct_all joins every radix digit into a power-of-two padded tensor.
+        # For mixed radix this padding, rather than the base exchange buffer,
+        # is the launch-sized allocation (e.g. radix 17 -> 32).
+        joined_radix = max(_next_power_of_two(radix) for radix in plan.factors)
+        return (
+            exchange_lane_block
+            * pack
+            * joined_radix
+            * _real_element_bytes(plan.dtype)
+        )
+
+    def fits(pack: int) -> bool:
+        return (
+            shared_bytes(pack) <= budget
+            and direct_all_join_bytes(pack) <= budget
+        )
+
     limit = 1
-    while limit < _portable_exchange_max_pack() and shared_bytes(limit * 2) <= budget:
+    while limit < _portable_exchange_max_pack() and fits(limit * 2):
         limit *= 2
     return limit
 
