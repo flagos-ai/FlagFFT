@@ -52,15 +52,16 @@ TEST(KernelKeyRepr, DistinctKindsWithSameValuesDiffer) {
 namespace {
 
 // Plans feed one StockhamStage key per radix through compile_kernel(); every
-// stage of a plan shares target/dtype/length and differs only in the radix, so
-// the cache key has to separate them.
+// stage of a plan shares target/dtype/length; repeated radices still have
+// different spans, so the cache key has to separate both properties.
 flagfft::KernelKey stockham_stage(const std::string &target,
                                   const std::string &direction,
                                   int64_t length,
-                                  int64_t radix) {
+                                  int64_t radix,
+                                  int64_t span = 1) {
   auto key = flagfft::KernelKey::direct_dft(target, direction, "complex64", length);
   key.kind = flagfft::KernelKind::StockhamStage;
-  key.factors = {radix};
+  key.factors = {radix, span};
   return key;
 }
 
@@ -74,4 +75,8 @@ TEST(KernelKeyRepr, StockhamStageDistinguishesStages) {
             stockham_stage(target, "forward", 32768, 8).repr());
   EXPECT_NE(stockham_stage(target, "forward", 16384, 8).repr(),
             stockham_stage(target, "inverse", 16384, 8).repr());
+  EXPECT_NE(stockham_stage(target, "forward", 16384, 8, 1).repr(),
+            stockham_stage(target, "forward", 16384, 8, 8).repr());
+  EXPECT_NE(stockham_stage(target, "forward", 16384, 8, 8).repr(),
+            stockham_stage(target, "forward", 16384, 8, 64).repr());
 }

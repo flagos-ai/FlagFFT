@@ -36,9 +36,12 @@ def main():
     host = (rng.normal(size=n) + 1j * rng.normal(size=n)).astype(np.complex64)
     sign = 1 if args.inverse else -1
     twiddle = np.exp(sign * 2j * np.pi * np.arange(n) / n).astype(np.complex64)
-    x = torch.from_numpy(host.view(np.float32)).npu()
-    tw = torch.from_numpy(twiddle.view(np.float32)).npu()
-    y = torch.empty_like(x)
+    if args.compile_only:
+        x = y = tw = torch.float32
+    else:
+        x = torch.from_numpy(host.view(np.float32)).npu()
+        tw = torch.from_numpy(twiddle.view(np.float32)).npu()
+        y = torch.empty_like(x)
     k = np.arange(n // radix)
     j = k % span
     samples = host.reshape(radix, -1) * twiddle[
