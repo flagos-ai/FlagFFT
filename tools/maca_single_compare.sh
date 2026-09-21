@@ -25,7 +25,7 @@ flock -x 9
   done
   env | sort | grep -E '^(FLAGFFT_|CUDA_VISIBLE|MACA_|MC_VISIBLE|PYTHONPATH)'
 } > "$out/environment.txt"
-for round in 1 2 3; do
+for round in ${FLAGFFT_COMPARE_ROUNDS:-1 2 3}; do
   variants="A C D"
   if (( round == 2 )); then variants="D C A"; fi
   for variant in $variants; do
@@ -38,7 +38,7 @@ for round in 1 2 3; do
       export FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION=1
       shapes=997
     fi
-    for direction in forward inverse; do
+    for direction in ${FLAGFFT_COMPARE_DIRECTIONS:-forward inverse}; do
       stem="$out/round${round}_${variant}_${direction}"
       /usr/bin/mx-smi -i 4 --show-clock --show-dpm cur > "$stem.clock-before.txt"
       "$build/flagfft-cli" bench --api c2c --rank 1 --shape "$shapes" --batch 1 \
