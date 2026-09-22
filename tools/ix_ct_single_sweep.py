@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Isolated IX CT-single screening; acceptance accuracy is a separate gate."""
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--binary', required=True)
+    p.add_argument('--output-dir', required=True)
+    p.add_argument('--shapes', default='2048,1048576')
+    p.add_argument('--apis', default='c2c')
+    p.add_argument('--variants', default='baseline,p1w4,p2w4,p4w4,p4w8,p8w8')
+    p.add_argument('--repeats', type=int, default=1)
+    a = p.parse_args()
+    out = Path(a.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for repeat in range(a.repeats):
+        for variant in a.variants.split(','):
+            env = {k: v for k, v in os.environ.items() if not k.startswith('FLAGFFT_IX_')}
+            env.update(CUDA_VISIBLE_DEVICES='2', IX_VISIBLE_DEVICES='2', FLAGFFT_TUNE_DISABLE='1')
+            if variant != 'baseline':
+                pack, warps = variant.removeprefix('p').split('w')
+                env.update(FLAGFFT_IX_PORTABLE_LEAF='1', FLAGFFT_IX_INNER_PACK=pack,
+                           FLAGFFT_IX_MAX_WARPS=warps)
+            for n in a.shapes.split(','):
+                for api in a.apis.split(','):
+                    name = f'{variant}_{n}_{api}_{repeat}'
+                    cmd = [a.binary, 'bench', '--api', api, '--rank', '1', '--shape', n,
+                           '--batch', '1', '--warmup', '20', '--iters', '200', '--json']
+                    proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=600)
+                    (out / f'{name}.json').write_text(proc.stdout)
+                    (out / f'{name}.err').write_text(proc.stderr)
+                    row = dict(variant=variant, n=int(n), api=api, repeat=repeat, exit_code=proc.returncode)
+                    if proc.returncode == 0:
+                        row.update(json.loads(proc.stdout)['cases'][0]['timing'])
+                    rows.append(row)
+                    print(json.dumps(row), flush=True)
+                    (out / 'sweep.json').write_text(json.dumps(rows, indent=2))
+
+
+if __name__ == '__main__':
+    main()
