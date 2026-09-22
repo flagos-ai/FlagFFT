@@ -107,6 +107,7 @@ TEST(Plan2D, RcPreservesOnlySmallMixedBatchedRows) {
   EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(row));
   EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, leaf(128, {8, 4, 4}))));
   EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, leaf(273, {21, 13}))));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, leaf(221, {221}))));
   EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(leaf(209, {19, 11}, 2), col)));
   EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(
       pair(row, std::make_shared<flagfft::DirectDFTPlanNode>(23))));

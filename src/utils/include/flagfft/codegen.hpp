@@ -40,10 +40,10 @@ inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
          n1 > 1 && (n1 % 2) == 0;
 }
 
-// In the RC schedule these small mixed-radix leaves already use the measured
-// batched MACA policy (P8/256 threads). The single-transform register policy
-// reduces them to P4/128 threads and regresses the row transform. Preserve the
-// existing child policy, without disabling graph/column choices at the root.
+// In the RC schedule retain the existing batched policy for small mixed leaves.
+// For the measured 209/221 pair the single-transform register policy reduces
+// P8/256 threads to P4/128 threads and regresses the row transform. This does
+// not disable graph/column choices at the root or alter other schedules.
 inline bool maca_2d_rc_preserve_batched_row(const PlanNodePtr &node) {
   const auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);
   if (four_step == nullptr) return false;

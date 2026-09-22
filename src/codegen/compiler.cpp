@@ -1412,10 +1412,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // Large column lengths that decompose into a four-step leaf pair can also
   // run without transposes through the strided four-step kernels.
   if (auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan); rc_eligible && col_four) {
-    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft =
         compile_raw_four_step_strided_node(*col_four, request, batch * n1, n1);
     if (col_fft != nullptr) {
+      std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
       DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
       return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                    n1,
