@@ -123,7 +123,7 @@ def main() -> None:
         action="store_true",
         help="enable the measured MACA rank-1 batch-1 code-generation defaults",
     )
-    parser.add_argument("--maca-tail-mode", choices=("off", "p4w4", "real23"), default="off")
+    parser.add_argument("--maca-tail-mode", choices=("off", "p4w4", "real-direct"), default="off")
     parser.add_argument(
         "--compile-script",
         type=Path,

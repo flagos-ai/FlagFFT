@@ -104,6 +104,9 @@ struct FFTRequest {
   // Zero means a request constructed directly, whose raw_dim is authoritative.
   int64_t origin_rank = 0;
   bool real_transform = false;
+  // Public real-transform kind, retained while the real request is lowered
+  // through complex children. Empty for C2C/Z2Z.
+  std::string real_transform_kind;
   int64_t normalized_dim = -1;
   std::string norm = "backward";
   std::string input_dtype;

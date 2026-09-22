@@ -88,11 +88,11 @@ def test_unmeasured_dimensions_are_excluded(dtype, n1, n2, length):
 
 
 @pytest.mark.parametrize("kernel", ["direct_dft_r2c", "direct_dft_c2r"])
-def test_real23_tree_and_legacy_toggle_are_isolated(tmp_path, monkeypatch, kernel):
+def test_real_direct_tree_and_legacy_toggle_are_isolated(tmp_path, monkeypatch, kernel):
     kw = dict(kernel=kernel, length=23, n1=0, n2=0)
     kahan = emit(tmp_path, **kw)
     kahan_source = Path(kahan["module_path"]).read_text()
-    set_maca_tail_mode("real23")
+    set_maca_tail_mode("real-direct")
     tree = emit(tmp_path, **kw)
     assert tree["kernel_name"].endswith("_tree")
     monkeypatch.setenv("FLAGFFT_MACA_REAL_DFT_REDUCTION", "kahan")
@@ -111,8 +111,8 @@ def test_real23_tree_and_legacy_toggle_are_isolated(tmp_path, monkeypatch, kerne
 
 
 @pytest.mark.parametrize("n", [22, 24, 29, 32, 33, 128])
-def test_real23_does_not_expand_lengths(tmp_path, n):
-    set_maca_tail_mode("real23")
+def test_real_direct_tree_does_not_expand_lengths(tmp_path, n):
+    set_maca_tail_mode("real-direct")
     meta = emit(tmp_path, kernel="direct_dft_r2c", length=n, n1=0, n2=0)
     assert not meta["kernel_name"].endswith("_tree")
 
@@ -157,7 +157,7 @@ def test_cli_same_process_switches_filesystem_and_module_identity(tmp_path, monk
         main()
         return json.loads(capsys.readouterr().out)
     baseline = invoke("off")
-    tree = invoke("real23")
+    tree = invoke("real-direct")
     assert tree["kernel_name"].endswith("_tree")
     assert Path(tree["module_path"]).parent != Path(baseline["module_path"]).parent
     assert invoke("off")["module_path"] == baseline["module_path"]

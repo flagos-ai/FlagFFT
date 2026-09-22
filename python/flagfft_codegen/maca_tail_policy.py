@@ -20,7 +20,7 @@ ENV_NAMES = (
 
 
 def set_maca_tail_mode(mode):
-    if mode not in {"off", "p4w4", "real23"}:
+    if mode not in {"off", "p4w4", "real-direct"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
 
@@ -36,10 +36,10 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
             and length == n1 == n2 == 1024
             and kernel in {"four_step_row", "four_step_col"}):
         return "p4w4"
-    if (_root_mode.get() == "real23" and length == 23
+    if (_root_mode.get() == "real-direct" and length in {23, 29, 31, 37}
             and dtype in {"complex64", "complex128"}
             and kernel in {"direct_dft_r2c", "direct_dft_c2r"}):
-        return "real23"
+        return "real-direct"
     return "off"
 
 
@@ -59,7 +59,7 @@ def resource_default(name):
 
 
 def real_tree_default(n):
-    return backend_name() == "maca" and n == 23 and _kernel_mode.get() == "real23"
+    return backend_name() == "maca" and n == 23 and _kernel_mode.get() == "real-direct"
 
 
 def variant_suffix(*, root=False):

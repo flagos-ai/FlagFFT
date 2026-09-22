@@ -154,7 +154,7 @@ namespace {
            direct->length == request.requested_n && direct->length > 0 &&
            direct->length <= kDirectDftMaxN &&
            (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
-           maca_flag_or_default("FLAGFFT_MACA_REAL_DIRECT_DFT", maca_tail_real23(request));
+           maca_flag_or_default("FLAGFFT_MACA_REAL_DIRECT_DFT", maca_tail_real_direct_dft(request));
   }
 
 }  // namespace

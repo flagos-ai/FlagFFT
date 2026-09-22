@@ -32,14 +32,23 @@ inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
   return {};
 }
 
-inline bool maca_tail_real23(const FFTRequest& request) {
-  return maca_tail_policy_enabled(request) && request.requested_n == 23 &&
-         request.real_transform &&
-         (request.input_dtype == "complex64" || request.input_dtype == "complex128");
+inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
+  if (!maca_tail_policy_enabled(request) || !request.real_transform ||
+      (request.input_dtype != "complex64" && request.input_dtype != "complex128")) {
+    return false;
+  }
+  // Device data supports all four APIs at 23. At 29/31/37 only R2C/C2R
+  // crossed the useful gate; D2Z/Z2D remains on the production path.
+  if (request.requested_n == 23) return true;
+  if ((request.requested_n == 29 || request.requested_n == 31 || request.requested_n == 37) &&
+      (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r")) {
+    return true;
+  }
+  return false;
 }
 
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
-  if (maca_tail_real23(request)) return "real23";
+  if (maca_tail_real_direct_dft(request)) return "real-direct";
   if (maca_tail_automatic_plan(request) == "ct1024x1024") return "p4w4";
   return "off";
 }
@@ -50,8 +59,9 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
   if (root == "p4w4" && dtype == "complex128" && length == 1024 &&
       n1 == 1024 && n2 == 1024 &&
       (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol)) return "p4w4";
-  if (root == "real23" && length == 23 &&
-      (kind == KernelKind::DirectDftR2C || kind == KernelKind::DirectDftC2R)) return "real23";
+  if (root == "real-direct" &&
+      (length == 23 || length == 29 || length == 31 || length == 37) &&
+      (kind == KernelKind::DirectDftR2C || kind == KernelKind::DirectDftC2R)) return "real-direct";
   return "off";
 }
 

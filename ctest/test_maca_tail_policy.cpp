@@ -80,11 +80,14 @@ TEST_F(TailPolicy, ScopeExclusionsAndOverride) {
   EXPECT_TRUE(flagfft::maca_tail_automatic_plan(base).empty());
   unsetenv("FLAGFFT_MACA_TAIL_PLAN");
   auto real = request(23, "complex128");
-  EXPECT_FALSE(flagfft::maca_tail_real23(real));
+  EXPECT_FALSE(flagfft::maca_tail_real_direct_dft(real));
   real.real_transform = true;
-  EXPECT_TRUE(flagfft::maca_tail_real23(real));
+  real.real_transform_kind = "d2z";
+  EXPECT_TRUE(flagfft::maca_tail_real_direct_dft(real));
   real.requested_n = 29;
-  EXPECT_FALSE(flagfft::maca_tail_real23(real));
+  EXPECT_FALSE(flagfft::maca_tail_real_direct_dft(real));
+  real.real_transform_kind = "r2c";
+  EXPECT_TRUE(flagfft::maca_tail_real_direct_dft(real));
   setenv("FLAGFFT_MACA_TAIL_POLICY", "yes", 1);
   EXPECT_THROW(flagfft::maca_tail_automatic_plan(base), std::runtime_error);
 }
@@ -100,14 +103,15 @@ TEST_F(TailPolicy, NativeDescriptorKeepsOriginalApiAndRank) {
   EXPECT_EQ(r.input_dtype, "complex128");
   EXPECT_EQ(r.output_dtype, "complex128");
   EXPECT_TRUE(r.real_transform);
-  EXPECT_TRUE(flagfft::maca_tail_real23(r));
+  EXPECT_EQ(r.real_transform_kind, "d2z");
+  EXPECT_TRUE(flagfft::maca_tail_real_direct_dft(r));
   for (int rank : {2, 3}) {
     desc.type = FLAGFFT_D2Z;
     desc.n = {23};
     r = flagfft::request_from_desc(desc, "forward", rank);
     EXPECT_EQ(r.raw_dim, 1);
     EXPECT_EQ(r.batch, 1);
-    EXPECT_FALSE(flagfft::maca_tail_real23(r));
+    EXPECT_FALSE(flagfft::maca_tail_real_direct_dft(r));
     desc.type = FLAGFFT_Z2Z;
     desc.n = {1048576};
     r = flagfft::request_from_desc(desc, "inverse", rank);
@@ -125,8 +129,8 @@ TEST_F(TailPolicy, KernelModeIsNarrowAndCacheSeparatesLegacyTree) {
                     KernelKind::BluesteinFourStepPointwiseRow, KernelKind::Leaf}) {
     EXPECT_EQ(maca_tail_kernel_mode("p4w4", kind, "complex128", 1024, 1024, 1024), "off");
   }
-  EXPECT_EQ(maca_tail_kernel_mode("real23", KernelKind::DirectDft, "complex128", 23, 0, 0), "off");
-  EXPECT_EQ(maca_tail_kernel_mode("real23", KernelKind::DirectDftR2C, "complex128", 23, 0, 0), "real23");
+  EXPECT_EQ(maca_tail_kernel_mode("real-direct", KernelKind::DirectDft, "complex128", 23, 0, 0), "off");
+  EXPECT_EQ(maca_tail_kernel_mode("real-direct", KernelKind::DirectDftR2C, "complex128", 23, 0, 0), "real-direct");
   const auto baseline = flagfft::maca_tail_codegen_identity("off");
   EXPECT_NE(baseline, flagfft::maca_tail_codegen_identity("p4w4"));
   setenv("FLAGFFT_MACA_REAL_DFT_REDUCTION", "tree", 1);
