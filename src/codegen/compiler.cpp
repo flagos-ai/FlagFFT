@@ -1300,7 +1300,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // On MUSA S5000, replaying the short batch-1 complex 2D graph adds
   // about 0.1 ms versus direct launches (both RC and transpose paths).
   // Keep other devices and unmeasured batch sizes on the existing policy.
-  const bool enable_graph = !(request.device_type == "musa" && request.device_arch == "31" && batch == 1);
+  // Per-kernel event timing synchronizes launches, which is invalid during
+  // stream capture. Keep diagnostic runs on the direct sequence.
+  const bool enable_graph =
+      !env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS")) &&
+      !(request.device_type == "musa" && request.device_arch == "31" && batch == 1) &&
+      (request.device_type != "maca" || maca_flag_or_default("FLAGFFT_MACA_2D_GRAPH", true));
 
   // Build row FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
