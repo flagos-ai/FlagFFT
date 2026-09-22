@@ -15,6 +15,10 @@ def main():
     p.add_argument('--apis', default='c2c')
     p.add_argument('--variants', default='baseline,p1w4,p2w4,p4w4,p4w8,p8w8')
     p.add_argument('--repeats', type=int, default=1)
+    p.add_argument('--leaf-factors', action='append', default=[], help='length=radix,radix,...')
+    p.add_argument('--timeout', type=int, default=120)
+    p.add_argument('--exchange', default='direct_all')
+    p.add_argument('--direction', default='forward')
     a = p.parse_args()
     out = Path(a.output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -27,13 +31,25 @@ def main():
             if variant != 'baseline':
                 pack, warps = variant.removeprefix('p').split('w')
                 env.update(FLAGFFT_IX_PORTABLE_LEAF='1', FLAGFFT_IX_INNER_PACK=pack,
-                           FLAGFFT_IX_MAX_WARPS=warps)
+                           FLAGFFT_IX_MAX_WARPS=warps, FLAGFFT_IX_EXCHANGE=a.exchange)
+            for setting in a.leaf_factors:
+                length, factors = setting.split('=', 1)
+                env['FLAGFFT_IX_LEAF_FACTORS_' + length] = factors
             for n in a.shapes.split(','):
                 for api in a.apis.split(','):
                     name = f'{variant}_{n}_{api}_{repeat}'
                     cmd = [a.binary, 'bench', '--api', api, '--rank', '1', '--shape', n,
                            '--batch', '1', '--warmup', '20', '--iters', '200', '--json']
-                    proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=600)
+                    if api == 'c2c':
+                        cmd += ['--direction', a.direction]
+                    try:
+                        proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=a.timeout)
+                    except subprocess.TimeoutExpired:
+                        row = dict(variant=variant, n=int(n), api=api, repeat=repeat, timeout=a.timeout)
+                        rows.append(row)
+                        print(json.dumps(row), flush=True)
+                        (out / 'sweep.json').write_text(json.dumps(rows, indent=2))
+                        continue
                     (out / f'{name}.json').write_text(proc.stdout)
                     (out / f'{name}.err').write_text(proc.stderr)
                     row = dict(variant=variant, n=int(n), api=api, repeat=repeat, exit_code=proc.returncode)
