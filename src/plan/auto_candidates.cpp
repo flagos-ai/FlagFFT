@@ -178,8 +178,12 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     const int64_t n1 = n / kThreadLocalColLength;
     const int64_t register_radix = n1 / kThreadLocalCrossRadix;
     if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix)) {
-      auto make_thread_local_leaf = [](int64_t local_register_radix) -> PlanNodePtr {
+      auto make_thread_local_leaf = [this, &context](int64_t local_register_radix) -> PlanNodePtr {
         const int64_t length = local_register_radix * kThreadLocalCrossRadix;
+        if (context.device_type == "ix" && context.batch == 1 &&
+            std::getenv(("FLAGFFT_IX_LEAF_FACTORS_" + std::to_string(length)).c_str())) {
+          return make_leaf_plan(length, select_leaf_factors(length));
+        }
         const int64_t num_warps = local_register_radix == 32 ? 2 : 1;
         const std::vector<int64_t> generic_radices =
             local_register_radix == 32 ? std::vector<int64_t> {32} : std::vector<int64_t> {};
