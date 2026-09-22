@@ -59,6 +59,7 @@ set(TEST_TARGETS
     test_packed_real_batch
     test_rader_dc
     test_2d_correctness
+    test_maca_2d_real_rows
     test_3d_correctness
     test_exec_c2c_2p20_tle
     test_exec_c2c_fwd_ct_s   test_exec_c2c_fwd_ct_b
