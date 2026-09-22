@@ -1834,7 +1834,9 @@ def _use_thread_local_mixed_leaf(
     four_step_n1: int,
     four_step_n2: int,
 ) -> bool:
-    if _non_nvidia_backend_active():
+    ix_experiment = (_ix_backend_active() and _maca_knob("THREAD_LOCAL") == "1"
+                     and four_step_n1 == four_step_n2 == 1024 and plan.dtype == "complex64")
+    if _non_nvidia_backend_active() and not ix_experiment:
         return False
     if io_mode.endswith("_strided"):
         return False

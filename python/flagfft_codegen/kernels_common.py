@@ -740,6 +740,9 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     loading the precomputed twiddle table in the row pass instead of issuing
     the same reads with the strided column access pattern.
     """
+    if (_ix_backend_active() and _maca_knob("THREAD_LOCAL") == "1"
+            and n1 == n2 == 1024 and dtype == "complex64"):
+        return True
     if _portable_leaf_backend_active():
         return False
     return use_tle_fused_twiddle(n1, n2, dtype) or (
