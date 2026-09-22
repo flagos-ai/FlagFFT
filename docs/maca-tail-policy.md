@@ -51,3 +51,10 @@ CPU tests cover exact guards, original rank/API preservation, repeated planner
 toggle, legacy tree/cache identity, CLI same-process emission, scoped source and
 metadata equivalence to the manual P4W4 experiment. Device validation of this
 automatic integration is still required; CPU/source checks are not MACA runs.
+
+Validation of code `f50973b`: 1299 Python tests and 8 subtests passed; independent
+CPU planner suite 13/13 passed; full local CUDA-backend native library compiled
+and linked with no visible devices. Evidence is under
+`results/20260922_162559_maca_tail_policy_cpu/` in the workspace root.
+Rebuild the native library and CLI before device testing; do not combine the
+new request/compiler definitions with an older experiment executable.
