@@ -47,7 +47,7 @@ from .registry import (
     TRANSPOSE3D,
     kernel_spec,
 )
-from .target import set_codegen_target
+from .target import set_codegen_target, set_maca_1d_single_default
 
 
 def _toolchain_version() -> str:
@@ -118,6 +118,11 @@ def main() -> None:
         "--target", default="", help="Triton backend:architecture:warp_size"
     )
     parser.add_argument(
+        "--maca-1d-single",
+        action="store_true",
+        help="enable the measured MACA rank-1 batch-1 code-generation defaults",
+    )
+    parser.add_argument(
         "--compile-script",
         type=Path,
         help="Compile in this process using libtriton_jit's standalone helper",
@@ -130,6 +135,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     set_codegen_target(args.target)
+    set_maca_1d_single_default(args.maca_1d_single)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}
@@ -149,7 +155,15 @@ def main() -> None:
         source_fingerprint=source_hash.hexdigest(),
     )
     set_profile(profile)
-    args.out_dir = args.out_dir / profile.fingerprint
+    profile_dir = profile.fingerprint
+    if profile.backend == "maca":
+        # Keep default-on and explicit opt-out artifacts separate.  The native
+        # compiler also includes this bit in its in-process cache key, but the
+        # filesystem cache must not let one policy overwrite the other.
+        profile_dir += (
+            "-maca-1d-single" if args.maca_1d_single else "-maca-1d-single-off"
+        )
+    args.out_dir = args.out_dir / profile_dir
 
     spec = kernel_spec(args.kernel)
     missing = [flag for flag in spec.requires if getattr(args, flag) is None]
@@ -313,6 +327,7 @@ def main() -> None:
         {
             "hardware_profile": asdict(profile),
             "profile_id": profile.fingerprint,
+            "maca_1d_single_default": args.maca_1d_single,
             "warp_size": profile.warp_size,
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }

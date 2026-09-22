@@ -3,10 +3,27 @@
 基线：`45eb2a8`，single 指 batch=1；目标 speedup = mcFFT median / FlagFFT median >= 0.8。
 历史 2026-09-18 验收仅用于定位问题，不能替代当前提交基线。
 
+## 当前默认策略（本分支）
+
+经完整 opt-in 1D single 矩阵验证后，MACA 的 `rank=1 && batch=1` 请求默认采用
+以下已验证配置：`EXCHANGE=direct_all`、`MAX_WARPS=8`、`INNER_PACK=8`（仍受
+FP64、mixed-radix、shared-memory 和寄存器安全门控约束）、`SPLIT_ORDER=lsb`，并
+默认启用适用的 Bluestein boundary/four-step fusion。R2C/C2R 也属于这个作用域。
+
+该策略不会作用于 MACA batch>1、2D 或 3D；其他后端保持原行为。设置
+`FLAGFFT_MACA_1D_SINGLE=0` 可回退到旧默认，单项 `FLAGFFT_MACA_*` 变量仍优先，
+便于 A/B 和紧急回滚。默认与 opt-out 生成物使用独立的 JIT cache 子目录和进程内
+cache key，避免两种 codegen 互相覆盖。
+
+完整 opt-in 1D single 验收（5 warmup / 30 iterations）中，136/136 个正确性 case
+通过，全部 1D single case 几何平均为 `0.8224x`；该结果是开启本策略的性能依据，
+不是对每个尺寸都达到 0.8x 的承诺。原始结果：
+`results/20260922_081717_maca_1d_single_optin_dev637_4gpu`。
+
 当前已完成小尺寸 FP32 C2C 的正式验收：1024/2048 使用 direct，997 使用
 direct+leaf fusion；NumPy/mcFFT 双向正确性通过，三轮独立进程双向性能共
 18/18 个结果均 >=0.8，最小 0.8110。每轮 warmup=2000、iters=100，不删样本。
-这不等同于 12 个算子的完整矩阵通过，也没有默认启用优化。
+这不等同于 12 个算子的每个尺寸都通过 0.8x；完整矩阵的汇总见上面的当前策略记录。
 
 | 已验尺寸 | forward 三轮 speedup 范围 | inverse 三轮 speedup 范围 |
 |---|---:|---:|
@@ -109,7 +126,10 @@ direct 的 TTGIR gather 从 80 降为 0。最终 ELF 报告 private memory=0；�
 - `FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION=1`：batch=1 的两段 leaf 边界融合。
 - `FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION=1`：batch=1、两个 child leaf <=1024 的 four-step 边界融合，尚未通过设备验收。
 
-这些开关仍全部默认关闭。环境开关不进入所有持久化 codegen/cache key，实验必须隔离生成目录和 cache；不能把当前实验接口当成可安全并发切换的发布配置。
+上述开关在原型提交时默认关闭；当前分支只在 MACA 1D single 作用域默认采用它们。
+显式环境变量仍可覆盖。除 `FLAGFFT_MACA_1D_SINGLE` 这一策略位外，单项环境开关
+不进入所有持久化 codegen/cache key，独立 A/B 实验仍必须隔离生成目录和 cache；
+不能把单项实验接口当成可安全并发切换的发布配置。
 
 尚欠稳定协议复测、双方向和 FP64/real 全矩阵、mixed、大 prime、batch/2D/3D 回归。当前交付状态是有正确性和编译证据的优化原型，不是整个 1D single 达成 0.8×。
 

@@ -17,6 +17,7 @@
 from contextvars import ContextVar
 
 _target = ContextVar("flagfft_codegen_target", default="")
+_MACA_1D_SINGLE_DEFAULT = ContextVar("flagfft_maca_1d_single_default", default=False)
 
 
 def set_codegen_target(target: str) -> None:
@@ -25,6 +26,20 @@ def set_codegen_target(target: str) -> None:
     if target and int(target.rsplit(":", 1)[1]) <= 0:
         raise ValueError(f"Invalid warp size in target: {target!r}")
     _target.set(target)
+
+
+def set_maca_1d_single_default(enabled: bool):
+    """Set the scoped MACA 1D single-transform code-generation policy."""
+    return _MACA_1D_SINGLE_DEFAULT.set(bool(enabled))
+
+
+def reset_maca_1d_single_default(token) -> None:
+    _MACA_1D_SINGLE_DEFAULT.reset(token)
+
+
+def maca_1d_single_default_enabled() -> bool:
+    """Whether the native compiler requested the MACA 1D single defaults."""
+    return _MACA_1D_SINGLE_DEFAULT.get()
 
 
 def backend_name() -> str:

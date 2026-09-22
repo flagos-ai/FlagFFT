@@ -134,11 +134,36 @@ namespace {
     return adaptor::backend_name() != "cuda";
   }
 
+  bool maca_flag_or_default(const char *name, bool default_value) {
+    const char *value = std::getenv(name);
+    if (value == nullptr) {
+      return default_value;
+    }
+    return std::string(value) == "1";
+  }
+
 }  // namespace
+
+void TritonCompiler::configure_maca_1d_single_policy(const FFTRequest &request) {
+  maca_1d_single_policy_ = request.device_type == "maca" && request.raw_dim == 1 && request.batch == 1;
+  if (!maca_1d_single_policy_) {
+    return;
+  }
+  const char *override_value = std::getenv("FLAGFFT_MACA_1D_SINGLE");
+  if (override_value == nullptr || *override_value == '\0') {
+    return;
+  }
+  if (std::string(override_value) == "0") {
+    maca_1d_single_policy_ = false;
+  } else if (std::string(override_value) != "1") {
+    throw std::runtime_error("FLAGFFT_MACA_1D_SINGLE must be 0 or 1");
+  }
+}
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNodePtr &node,
                                                                   const FFTRequest &request,
                                                                   int64_t batch) {
+  configure_maca_1d_single_policy(request);
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
     return compile_raw_leaf(*leaf, request);
   }
@@ -257,12 +282,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // Combining both FFTs makes this plugin's optimization prohibitively slow.
     const bool allow_bluestein_fusion = request.device_type != "maca";
     // Keep each MACA FFT in its own kernel while folding the surrounding
-    // elementwise work into its loads/stores. This opt-in experiment does not
-    // enable the full-leaf (two FFTs in one kernel) or four-step paths.
-    const char *maca_boundary_fusion = std::getenv("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION");
+    // elementwise work into its loads/stores. The measured boundary path is
+    // the default for MACA 1D single transforms; the named environment
+    // variable remains an explicit A/B override.
     const bool use_maca_boundary_leaf =
         request.device_type == "maca" && batch == 1 && leaf != nullptr &&
-        maca_boundary_fusion != nullptr && std::string(maca_boundary_fusion) == "1";
+        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION", maca_1d_single_policy_);
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf) &&
@@ -280,12 +305,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // Separate from the two-kernel leaf experiment: large convolutions retain
     // one FFT per boundary kernel and execute four kernels in total. Bound
     // each child to the existing 1024-point four-step leaf family.
-    const char *maca_four_step_fusion = std::getenv("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION");
     const bool use_maca_four_step =
         request.device_type == "maca" && batch == 1 && four_step != nullptr &&
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
-        maca_four_step_fusion != nullptr && std::string(maca_four_step_fusion) == "1";
+        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
     const bool use_four_step = use_default_four_step || use_maca_four_step;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
@@ -454,6 +478,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
                                                                       bool allow_packed) {
+  configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
   if (auto packed_child =
@@ -510,6 +535,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
                                                                       bool allow_packed) {
+  configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
   if (auto packed_child =
@@ -1012,6 +1038,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1138,6 +1165,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1201,6 +1229,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1263,6 +1292,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1373,6 +1403,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1462,6 +1493,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
