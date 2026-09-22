@@ -81,3 +81,37 @@ and linked with no visible devices. Evidence is under
 `results/20260922_162559_maca_tail_policy_cpu/` in the workspace root.
 Rebuild the native library and CLI before device testing; do not combine the
 new request/compiler definitions with an older experiment executable.
+
+## GPU verification on the merged dev base (2026-09-22)
+
+The merged branch `perf/maca-tail-on-dev` (`a4ad593`, current `dev` plus the
+tail policy) was built for MACA and verified with paired same-card A/B runs:
+baseline leaves `FLAGFFT_MACA_TAIL_POLICY` unset, candidate sets it to `1`;
+everything else (source, binary, cache isolation, 5 warmup / 30 iterations)
+is identical. C550, one physical card per pair.
+
+Accuracy passed for every case in both variants (10/10 performance cases,
+`Passed`).
+
+| Case | Direction | baseline | candidate | selected plan change |
+| --- | --- | ---: | ---: | --- |
+| Z2Z 1048576 (FP64) | forward | 0.260 | 0.811 | `inner_pack` 1/2 -> 4 |
+| Z2Z 1048576 (FP64) | inverse | 0.317 | 0.800 | `inner_pack` 1/2 -> 4 |
+| Z2Z 997 (FP64) | forward | 0.437 | 0.893 | BS `20x10x10` m2000 -> `16x16x8` m2048 |
+| Z2Z 997 (FP64) | inverse | 0.439 | 0.792 | same |
+| D2Z 997 (FP64) | forward | 0.468 | 0.899 | same |
+| C2C 1009 (FP32) | forward | 0.562 | 0.797 | Rader `n=1008 [7,6,6,4]` -> BS2048 |
+| C2C 1009 (FP32) | inverse | 0.572 | 0.800 | same |
+| C2R 1009 (FP32) | inverse | 0.636 | 0.854 | same |
+| R2C 23 (FP32) | forward | 0.684 | 1.071 | `real_to_complex`+`direct_dft_kernel`+`half_pack` -> single `direct_dft_r2c_kernel` |
+
+The selected plan was read back from each run rather than inferred from the
+speedup, so the gains are attributable to the intended algorithm family.
+
+Two points sit marginally below the 0.8 gate (`Z2Z 997` inverse 0.792,
+`C2C 1009` forward 0.797). Both measured above 0.8 in the earlier manual
+experiments; the 5 warmup / 30 iteration protocol is known to show an
+in-run timing step change on this device, so these are not treated as
+steady-state regressions or as proof of passing.
+
+Results: `results/20260922_213500_maca_tail_policy_ab/`.
