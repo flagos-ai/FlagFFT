@@ -158,6 +158,18 @@ namespace {
     Maca2dPolicyScope &operator=(const Maca2dPolicyScope &) = delete;
   };
 
+  bool has_real_boundary_row_plan(const PlanNodePtr &node) {
+    if (std::dynamic_pointer_cast<LeafPlanNode>(node) != nullptr) {
+      return true;
+    }
+    auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);
+    if (four_step == nullptr) {
+      return false;
+    }
+    return std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
+           std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
+  }
+
 }  // namespace
 
 void TritonCompiler::configure_maca_1d_single_policy(const FFTRequest &request) {
@@ -1449,6 +1461,40 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_r2c_node(node->row_plan, row_request, batch),
                                                    batch);
   }
+
+  // Opt-in MACA FP32 path: compile the innermost real boundary directly so
+  // the 2D schedule does not materialize a full complex row matrix merely to
+  // discard its Hermitian half.  Restrict this to row plans that the existing
+  // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.  Packed
+  // real is deliberately disabled here until it is qualified for this layout.
+  if (maca_2d_real_rows_enabled(request, batch, n0, n1) && has_real_boundary_row_plan(node->row_plan)) {
+    std::shared_ptr<CompiledRawNode> row_r2c =
+        compile_raw_r2c_node(node->row_plan, row_request, batch * n0, false);
+
+    FFTRequest col_request = request;
+    col_request.fft_length = n0;
+    col_request.input_shape = {batch * half_n1, n0};
+    col_request.input_strides = {n0, 1};
+    col_request.requested_n = n0;
+    col_request.batch = batch * half_n1;
+    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
+
+    auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
+    auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+    const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
+
+    return std::make_shared<CompiledRaw2DR2CRowNode>(n0,
+                                                     n1,
+                                                     std::move(row_r2c),
+                                                     std::move(col_fft),
+                                                     std::move(transpose_fwd),
+                                                     std::move(transpose_inv),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+  }
+
   // RC fast path for real transforms: pack the half spectrum, then run the
   // column FFT directly on the strided half-packed matrix.
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
@@ -1556,6 +1602,38 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_c2r_node(node->row_plan, row_request, batch),
                                                    batch);
   }
+
+  // Symmetric opt-in MACA FP32 path.  The column inverse and compact-layout
+  // transposes run first; the existing 1D C2R boundary node then consumes the
+  // compact rows directly and writes real output.  Keep packed-real disabled
+  // until its 2D row layout has a separate qualification.
+  if (maca_2d_real_rows_enabled(request, batch, n0, n1) && has_real_boundary_row_plan(node->row_plan)) {
+    FFTRequest col_request = request;
+    col_request.fft_length = n0;
+    col_request.input_shape = {batch * half_n1, n0};
+    col_request.input_strides = {n0, 1};
+    col_request.requested_n = n0;
+    col_request.batch = batch * half_n1;
+    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
+
+    std::shared_ptr<CompiledRawNode> row_c2r =
+        compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
+    auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
+    auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+    const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
+
+    return std::make_shared<CompiledRaw2DC2RRowNode>(n0,
+                                                     n1,
+                                                     std::move(col_fft),
+                                                     std::move(row_c2r),
+                                                     std::move(transpose_fwd),
+                                                     std::move(transpose_inv),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+  }
+
   // RC fast path for inverse real transforms: column IFFT first, then expand,
   // row IFFT, and real pack -- no transposes.
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);

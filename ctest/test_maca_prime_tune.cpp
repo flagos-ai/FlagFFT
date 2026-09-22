@@ -16,7 +16,9 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
 #include <set>
+#include <string>
 
 // CPU-only planner target: supply the C550 capabilities recorded in the
 // acceptance manifest, without linking or initializing a device runtime.
@@ -24,6 +26,68 @@ namespace flagfft::adaptor {
 std::string backend_name() { return "maca"; }
 int64_t max_dynamic_smem_bytes(int) { return 64 * 1024; }
 }  // namespace flagfft::adaptor
+
+namespace {
+
+class ScopedEnv {
+ public:
+  ScopedEnv(const char *name, const char *value) : name_(name), existed_(std::getenv(name) != nullptr) {
+    if (existed_) previous_ = std::getenv(name);
+    if (value != nullptr) {
+      setenv(name, value, 1);
+    } else {
+      unsetenv(name);
+    }
+  }
+
+  ~ScopedEnv() {
+    if (existed_) {
+      setenv(name_.c_str(), previous_.c_str(), 1);
+    } else {
+      unsetenv(name_.c_str());
+    }
+  }
+
+ private:
+  std::string name_;
+  bool existed_ = false;
+  std::string previous_;
+};
+
+}  // namespace
+
+TEST(Plan2D, MacaRealRowsPolicyIsOptInAndNarrow) {
+  flagfft::FFTRequest request;
+  request.device_type = "maca";
+  request.raw_dim = 2;
+  request.batch = 1;
+  request.input_dtype = request.output_dtype = "complex64";
+  request.input_layout = "contiguous";
+  request.requires_contiguous_copy = false;
+
+  ScopedEnv gate("FLAGFFT_MACA_2D_REAL_ROWS", "0");
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "1", 1);
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 256, 2048));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 1025));
+
+  request.device_type = "cuda";
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  request.device_type = "maca";
+  request.input_dtype = request.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  request.input_dtype = request.output_dtype = "complex64";
+  request.batch = 2;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 2, 2048, 2048));
+  request.batch = 1;
+  request.raw_dim = 1;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  request.raw_dim = 2;
+  request.requires_contiguous_copy = true;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+}
 
 TEST(Plan1D, MacaSinglePrimeTuneAddsPowerOfTwoConvolution) {
   flagfft::FFTRequest request;
@@ -126,4 +190,3 @@ TEST(Plan1D, MacaSinglePrimeTuneDeduplicatesAndBoundsLengths) {
   EXPECT_THROW(builder.build_decomposition_tune_candidates((int64_t {1} << 61) + 1, request, 8),
                std::runtime_error);
 }
-
