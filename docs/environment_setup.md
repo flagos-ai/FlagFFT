@@ -3,6 +3,9 @@
 本文以已经准备好的 FlagTree 后端镜像为起点，说明 CUDA、IX、MUSA、MACA、
 Ascend/NPU 和海光 BW1000/HCU 环境的依赖安装、编译和测试流程。
 
+Ascend/CANN 9.0 的独立可执行流程见
+[ascend_environment_setup_complete.md](ascend_environment_setup_complete.md)。
+
 ## 约定
 
 - 以下命令中的镜像名使用占位符，例如 `<flagtree-cuda-image>`，替换成实际的 FlagTree 镜像名。
