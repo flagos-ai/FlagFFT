@@ -16,9 +16,10 @@ from __future__ import annotations
 
 """Real-transform pointwise kernels, including packed even-length transforms."""
 
+import os
 from textwrap import dedent
 
-from .kernels_common import _dtype_suffix, _next_power_of_two, _zero_other
+from .kernels_common import _dtype_suffix, _maca_backend_active, _next_power_of_two, _zero_other
 
 
 def _build_real_direct_dft_kernel_source(
@@ -29,6 +30,7 @@ def _build_real_direct_dft_kernel_source(
     Like the complex DirectDFT, FP32 reduces 32 input rows at once and FP64
     uses compensated accumulation. Tables carry the transform sign; C2R is
     unnormalised, matching the public C API for every input magnitude.
+    MACA FP64 lengths <=32 can opt into an explicit balanced addition tree.
     """
     if not 1 <= n <= 128:
         raise ValueError("real DirectDFT requires 1 <= length <= 128")
@@ -40,6 +42,13 @@ def _build_real_direct_dft_kernel_source(
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     kind = "c2r" if inverse else "r2c"
     name = f"direct_dft_{kind}_kernel_n{n}_{_dtype_suffix(dtype)}_b{block}"
+    tree = (
+        dtype == "complex128" and n <= 32
+        and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION") == "tree"
+        and _maca_backend_active()
+    )
+    if tree:
+        name += "_tree"
     # Scalar FP64 loads and vector FP32 loads share the same boundary rules.
     if inverse:
         nyquist = f" | (j == {n // 2})" if n % 2 == 0 else ""
@@ -58,7 +67,39 @@ def _build_real_direct_dft_kernel_source(
         """
         term_r = "xr * wr"
     init_i = "" if inverse else f"acc_i = tl.zeros(({block},), dtype={acc_dtype})"
-    if dtype == "complex128":
+    if tree:
+        init = ""
+        lines = []
+        # Each output lane computes independent FP64 terms from the existing
+        # FP64 input/table ABI. DFT[j,k] == DFT[k,j] exactly: the table builder
+        # forms the integer product before the angle. Read contiguous k lanes.
+        # Explicit additions avoid the serial Kahan chain and cross-lane sums.
+        for j in range(n):
+            lines.extend([f"j = {j}", f"j_mask = j < {n}"])
+            lines.extend(dedent(loads).strip().splitlines())
+            lines.extend([
+                f"wr = tl.load(dft_r_ptr + j * {n} + k, mask=mask, other=0.0)",
+                f"wi = tl.load(dft_i_ptr + j * {n} + k, mask=mask, other=0.0)",
+                f"tree_r_0_{j} = {term_r}",
+            ])
+            if not inverse:
+                lines.append(f"tree_i_0_{j} = xr * wi")
+        for component in ("r",) if inverse else ("r", "i"):
+            terms = [f"tree_{component}_0_{j}" for j in range(n)]
+            level = 0
+            while len(terms) > 1:
+                level += 1
+                parents = []
+                for j in range(0, len(terms) - 1, 2):
+                    parent = f"tree_{component}_{level}_{j // 2}"
+                    lines.append(f"{parent} = {terms[j]} + {terms[j + 1]}")
+                    parents.append(parent)
+                if len(terms) % 2:
+                    parents.append(terms[-1])
+                terms = parents
+            lines.append(f"acc_{component} = {terms[0]}")
+        loop = "\n            ".join(lines)
+    elif dtype == "complex128":
         init = f"comp_r = tl.zeros(({block},), dtype={acc_dtype})"
         if not inverse:
             init += f"\n            comp_i = tl.zeros(({block},), dtype={acc_dtype})"

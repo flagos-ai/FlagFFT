@@ -18,6 +18,55 @@ unnormalised, as in the C API. FP64 retains compensated summation. Out-of-place
 execution launches one compute kernel; in-place execution also retains the
 existing device copy for alias protection, sized to the actual input extent.
 
+## Optional FP64 tree reduction
+
+For MACA FP64 lengths 1 through 32, opt into the tree variant with both:
+
+```sh
+export FLAGFFT_MACA_REAL_DIRECT_DFT=1
+export FLAGFFT_MACA_REAL_DFT_REDUCTION=tree
+```
+
+The reduction switch is read at code generation. Only the exact value `tree`
+enables it; unset it or use `kahan` for the original compensated accumulation.
+FP32, lengths above 32, and non-MACA targets keep their original source and
+kernel names. The small-real runtime gate still applies, so this does not
+force a planner algorithm or affect C2C.
+
+The tree computes independent products using the existing FP64 input and DFT
+tables, then emits explicit adjacent pair additions, carrying an unmatched
+last term to the next level. N=23 has at most five addition levels. Every
+product and addition remains FP64; there is no TF32, dot product, or precision
+conversion. Real/Hermitian boundary rules and the launch ABI are unchanged.
+Tree kernel names end in `_tree`, for example
+`direct_dft_c2r_kernel_n23_f64_b32_tree`.
+
+Only the tree variant reads table entries at `j*N+k`, making accesses along
+output lane `k` contiguous. The production DFT-table builder forms the integer
+product `j*k` before evaluating the angle, so its FP64 real and imaginary
+tables are bitwise symmetric. This preserves the coefficients while changing
+their access pattern; the frozen Kahan indexing remains `k*N+j`.
+
+Tree summation is not compensated and need not match Kahan bit for bit.
+Cancellation and mixed-magnitude inputs can lose more low-order bits. CPU
+oracle tests check these cases as well as DC/Hermitian, odd/even endpoints,
+and input scales; they do not establish MACA numerical or performance results.
+
+C++ is unchanged: the in-process cache key does not include this switch,
+and the generated module basename is shared by the variants. Use separate
+processes, executable/cache directories, and codegen output directories for
+Kahan/tree A/B, and verify the `_tree` name in recorded plans. Do not switch
+the variable on an existing plan or reuse one variant's generated files for
+the other. No GPU tests were run for this optional change.
+
+Tree handoff validation: 260 Python tests and 8 subtests passed, including
+the original regression suites. The tree tests verify addition depth,
+FP64 output, cancellation error against `math.fsum` of rounded terms, table
+symmetry, contiguous table addresses, metadata, and opt-in scope. Default and
+fallback source/name/ABI also matched commit `6383e0f` byte for byte across
+202 combinations. Results are in the parent workspace's
+`results/20260922_150928_maca_real_tree/`.
+
 ## Local CPU and source checks
 
 Always pin the worktree package; the container's installed package may point

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,13 @@ ABI = ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
 # sizes, so a missing j_base or partial final tile cannot pass unnoticed.
 LENGTHS = [1, 2, 22, 23, 24, 33, 128]
 DTYPES = ["complex64", "complex128"]
+TREE_LENGTHS = [1, 2, 22, 23, 24, 31, 32]
+REDUCTION_ENV = "FLAGFFT_MACA_REAL_DFT_REDUCTION"
+
+
+@pytest.fixture(autouse=True)
+def clean_reduction_env(monkeypatch):
+    monkeypatch.delenv(REDUCTION_ENV, raising=False)
 
 
 class Pointer:
@@ -78,6 +86,22 @@ class TensorLanguage:
         np.add.at(pointer.writes, selected, 1)
 
 
+def dft_tables(n, dtype, *, inverse=False):
+    # Match tables.cpp: integer products precede the floating-point angle;
+    # FP64 uses long-double pi/trig before the final cast to device FP64.
+    indices = np.arange(n, dtype=np.int64)
+    products = indices[:, None] * indices[None, :]
+    sign = 1 if inverse else -1
+    if dtype == "complex128":
+        pi = np.longdouble("3.141592653589793238462643383279502884")
+        angle = np.longdouble(sign) * 2 * pi * products.astype(np.longdouble) / n
+        real_dtype = np.float64
+    else:
+        angle = sign * 2.0 * np.pi * products.astype(np.float64) / n
+        real_dtype = np.float32
+    return tuple(np.asarray(fn(angle), dtype=real_dtype) for fn in (np.cos, np.sin))
+
+
 def execute_source(values, n, dtype, *, inverse=False, tables=None):
     from flagfft_codegen.kernels_real import _build_real_direct_dft_kernel_source
 
@@ -95,9 +119,7 @@ def execute_source(values, n, dtype, *, inverse=False, tables=None):
     inputs = inputs.view(real_dtype).reshape(-1)
     if tables is None:
         # Runtime uploads two full n*n real tables with the transform sign.
-        indices = np.arange(n, dtype=np.float64)
-        angle = (2 if inverse else -2) * np.pi * indices[:, None] * indices / n
-        tables = (np.cos(angle), np.sin(angle))
+        tables = dft_tables(n, dtype, inverse=inverse)
     table_r, table_i = [np.asarray(table, dtype=real_dtype).reshape(-1) for table in tables]
     assert table_r.size == table_i.size == n * n
     size = batch * (n if inverse else 2 * (n // 2 + 1))
@@ -289,3 +311,180 @@ def test_real_direct_dft_rejects_unsupported_input(n, dtype):
 
     with pytest.raises(ValueError):
         _build_real_direct_dft_kernel_source(n, dtype)
+
+
+@pytest.fixture
+def tree_profile(maca_profile, clean_reduction_env, monkeypatch):
+    monkeypatch.setenv(REDUCTION_ENV, "tree")
+
+
+@pytest.mark.parametrize("n", TREE_LENGTHS)
+@pytest.mark.parametrize("scale", [1e-6, 1.0, 1e6])
+def test_tree_numerical_oracles(tree_profile, n, scale):
+    # Reuse the same random/DC/impulse/Hermitian and exact endpoint checks as
+    # the default path, including active-address and one-write-per-lane checks.
+    test_r2c_matches_numpy_and_has_exact_real_endpoints(n, "complex128", scale)
+    test_c2r_matches_unnormalized_numpy_and_restores_hermitian(n, "complex128", scale)
+
+
+@pytest.mark.parametrize("n", TREE_LENGTHS)
+def test_tree_endpoint_nonfinite_and_roundtrip(tree_profile, n):
+    test_c2r_ignores_endpoint_imaginary_even_when_nonfinite(n, "complex128")
+    test_single_batch_roundtrip_has_no_inverse_normalization(n, "complex128")
+
+
+@pytest.mark.parametrize("inverse", [False, True])
+@pytest.mark.parametrize("n", TREE_LENGTHS)
+def test_tree_is_explicit_adjacent_balanced_addition(tree_profile, n, inverse):
+    from flagfft_codegen.kernels_real import _build_real_direct_dft_kernel_source
+
+    name, source, args = _build_real_direct_dft_kernel_source(n, "complex128", inverse=inverse)
+    assert name.endswith("_tree")
+    assert args == ABI
+    assert "tl.sum" not in source and "tl.range" not in source
+    assert "tl.float32" not in source and "comp_r" not in source
+    function = ast.parse(source).body[0]
+    assert not any(isinstance(node, (ast.For, ast.While, ast.AugAssign)) for node in ast.walk(function))
+    assignments = {
+        node.targets[0].id: node.value
+        for node in function.body
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+    for component in ("r",) if inverse else ("r", "i"):
+        leaves = [f"tree_{component}_0_{j}" for j in range(n)]
+        assert all(leaf in assignments for leaf in leaves)
+        level = 0
+        while len(leaves) > 1:
+            level += 1
+            parents = []
+            for j in range(0, len(leaves) - 1, 2):
+                parent = f"tree_{component}_{level}_{j // 2}"
+                expression = assignments[parent]
+                assert isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.Add)
+                assert isinstance(expression.left, ast.Name) and expression.left.id == leaves[j]
+                assert isinstance(expression.right, ast.Name) and expression.right.id == leaves[j + 1]
+                parents.append(parent)
+            leaves = parents + (leaves[-1:] if len(leaves) % 2 else [])
+        assert level == (n - 1).bit_length()
+        assert sum(key.startswith(f"tree_{component}_") for key in assignments) == 2 * n - 1
+        # R2C acc_i is subsequently replaced by the endpoint-zeroing where.
+        assert any(
+            isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == f"acc_{component}"
+            and isinstance(node.value, ast.Name) and node.value.id == leaves[0]
+            for node in function.body
+        )
+
+
+@pytest.mark.parametrize("inverse", [False, True])
+@pytest.mark.parametrize("dtype,n", [("complex128", 23), ("complex128", 33), ("complex64", 23)])
+@pytest.mark.parametrize("backend", ["maca", "cuda"])
+def test_reduction_opt_in_scope_and_unchanged_fallback(monkeypatch, maca_profile, inverse, dtype, n, backend):
+    from flagfft_codegen import target
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.kernels_real import _build_real_direct_dft_kernel_source
+
+    profile_token = set_profile(BackendProfile(backend=backend, device_arch="source-contract"))
+    token = target._target.set(f"{backend}:80:{64 if backend == 'maca' else 32}")
+    try:
+        baseline = _build_real_direct_dft_kernel_source(n, dtype, inverse=inverse)
+        for mode in ("", "kahan", "TREE", "unknown", "tree "):
+            monkeypatch.setenv(REDUCTION_ENV, mode)
+            assert _build_real_direct_dft_kernel_source(n, dtype, inverse=inverse) == baseline
+        monkeypatch.setenv(REDUCTION_ENV, "tree")
+        result = _build_real_direct_dft_kernel_source(n, dtype, inverse=inverse)
+        if backend == "maca" and dtype == "complex128" and n <= 32:
+            assert result[0] == baseline[0] + "_tree"
+            assert result[1] != baseline[1]
+            assert result[2] == baseline[2]
+        else:
+            assert result == baseline
+    finally:
+        target._target.reset(token)
+        reset_profile(profile_token)
+
+
+@pytest.mark.parametrize("inverse", [False, True])
+@pytest.mark.parametrize("n", [22, 23, 31, 32])
+def test_tree_fp64_cancellation_error_bound(tree_profile, monkeypatch, n, inverse):
+    # Bound only reduction error: fsum receives the already rounded FP64
+    # products/differences, independent of trig-table approximation accuracy.
+    tables = dft_tables(n, "complex128", inverse=inverse)
+    rng = np.random.default_rng(n)
+    count = n // 2 + 1 if inverse else n
+    real = rng.choice([-1., 1.], (2, count)) * np.exp2(rng.integers(-40, 41, (2, count)))
+    real[0, :3] = [1e16, 1., -1e16]
+    if inverse:
+        values = real.astype(np.complex128)
+        values.imag = rng.normal(size=(2, count))
+        values[:, 0].imag = 0
+        if n % 2 == 0:
+            values[:, -1].imag = 0
+        tail = values[:, 1:-1] if n % 2 == 0 else values[:, 1:]
+        full = np.concatenate([values, tail[:, ::-1].conj()], axis=1)
+        terms = [full.real[:, None, :] * tables[0] - full.imag[:, None, :] * tables[1]]
+    else:
+        values = real
+        terms = [real[:, None, :] * table[:n // 2 + 1] for table in tables]
+        terms[1][:, 0] = 0
+        if n % 2 == 0:
+            terms[1][:, -1] = 0
+
+    original_store = TensorLanguage.store
+
+    def fp64_store(pointer, value, mask=True):
+        assert np.asarray(value).dtype == np.float64
+        return original_store(pointer, value, mask)
+
+    monkeypatch.setattr(TensorLanguage, "store", staticmethod(fp64_store))
+    actual = execute_source(values, n, "complex128", inverse=inverse, tables=tables)
+    components = [actual] if inverse else [actual.real, actual.imag]
+    unit_roundoff = np.finfo(np.float64).eps / 2
+    depth = (n - 1).bit_length()
+    gamma = depth * unit_roundoff / (1 - depth * unit_roundoff)
+    for component, rounded_terms in zip(components, terms):
+        for row in range(component.shape[0]):
+            for k in range(component.shape[1]):
+                summands = rounded_terms[row, k]
+                reference = math.fsum(summands)
+                bound = gamma * math.fsum(abs(value) for value in summands) + abs(np.spacing(reference))
+                assert abs(component[row, k] - reference) <= bound
+
+
+@pytest.mark.parametrize("kind,direction", [("direct_dft_r2c", "forward"), ("direct_dft_c2r", "inverse")])
+def test_tree_metadata_keeps_module_path_but_changes_kernel_name(tmp_path, maca_profile, monkeypatch, kind, direction):
+    baseline = emit_generated_kernel(tmp_path, kind, direction, "complex128")
+    monkeypatch.setenv(REDUCTION_ENV, "tree")
+    tree = emit_generated_kernel(tmp_path, kind, direction, "complex128")
+    assert tree == {**baseline, "kernel_name": baseline["kernel_name"] + "_tree"}
+    source = Path(tree["module_path"]).read_text()
+    assert f'def {tree["kernel_name"]}(' in source
+    assert json.loads(Path(tree["module_path"]).with_suffix(".json").read_text()) == tree
+    # The unchanged module/cache identity requires isolated caches and fresh
+    # native processes for Kahan/tree A/B; this test only checks source emission.
+
+
+@pytest.mark.parametrize("n", [23, 32])
+@pytest.mark.parametrize("inverse", [False, True])
+def test_tree_uses_contiguous_k_loads_of_bitwise_symmetric_fp64_tables(tree_profile, n, inverse):
+    from flagfft_codegen.kernels_real import _build_real_direct_dft_kernel_source
+
+    # Mirror tables.cpp's FP64 formula: integer k*j, long-double angle/trig,
+    # then rounding to double. Transposing indices preserves even signed zero.
+    tables = dft_tables(n, "complex128", inverse=inverse)
+    for table in tables:
+        np.testing.assert_array_equal(table.view(np.uint64), table.T.copy().view(np.uint64))
+    _, source, _ = _build_real_direct_dft_kernel_source(n, "complex128", inverse=inverse)
+    for component in ("r", "i"):
+        assert source.count(f"tl.load(dft_{component}_ptr + j * {n} + k,") == n
+        assert f"dft_{component}_ptr + k * {n} + j" not in source
+    rng = np.random.default_rng(n)
+    if inverse:
+        values = rng.normal(size=(2, n // 2 + 1)) + 1j * rng.normal(size=(2, n // 2 + 1))
+        expected = np.fft.irfft(values, n=n) * n
+    else:
+        values = rng.normal(size=(2, n))
+        expected = np.fft.rfft(values)
+    actual = execute_source(values, n, "complex128", inverse=inverse, tables=tables)
+    assert_fft_close(actual, expected, "complex128")
