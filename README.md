@@ -224,6 +224,30 @@ cmake --build build-hcu -j$(nproc)
 
 ### Hardware profiles and IX experiments
 
+On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
+
+| Length | Complex FFT policy | Real FFT policy |
+|---|---|---|
+| 1024 | `[16,8,8]`, tensor exchange, one physical warp | Same leaf with real input/output |
+| 2048 | Tensor exchange, two physical warps | Same leaf with real input/output |
+| 16384 | Tensor exchange, inner pack 4, two physical warps | Same Four-Step with real input/output |
+| 328050, 340200 | Interleaved shared exchange and twiddle recurrence | Half-length complex FFT plus pre/postprocess |
+| 663000 | Unchanged | Half-length complex FFT plus pre/postprocess |
+| 1048576 | Interleaved/swizzled exchange, inner pack 8, four physical warps | Half-length complex FFT plus pre/postprocess |
+
+Other lengths, batches, ranks, architectures and FP64 retain their existing
+paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to compare
+against the original implementation. `FLAGFFT_PACKED_REAL=0` can separately
+disable the half-length real path. The policies select matching stage-twiddle
+tables and have separate in-process and filesystem kernel cache entries.
+
+Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --output-dir
+<workspace>/results/<timestamp>_ix_ct_single` for serial, alternating
+baseline/default measurements on physical GPU 2 (`--gpu` selects another card).
+Accuracy validation remains
+the responsibility of `tools/run_tests.py`; screening timings alone are not
+acceptance results.
+
 `flagfft-cli device-info --json` reports the current device's driver-queried
 warp size, thread-block limit and shared-memory limits. Code generation receives
 these facts explicitly. `balanced` uses the device warp width for leaf launch

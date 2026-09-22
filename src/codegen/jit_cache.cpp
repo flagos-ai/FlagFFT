@@ -139,7 +139,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                          : (adaptor::backend_name() == "hcu" ? "native" : "legacy");
   const std::string policy = policy_env ? policy_env : default_policy;
   const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
-                                (maca_1d_single_policy_ ? "1" : "0");
+                                (maca_1d_single_policy_ ? "1" : "0") + ";ix-ct-single=" +
+                                (ix_ct_single_policy_ ? "1" : "0") + ";ix-ct-single-tle=" +
+                                std::to_string(ix_ct_single_tle_policy_);
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -275,6 +277,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
               << kernel_kind << " --out-dir " << shell_quote(out_dir().string()) << " --dtype "
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "
               << shell_quote(device_profile) << " --execution-policy " << shell_quote(policy);
+  if (ix_ct_single_policy_) jit_command << " --ix-ct-single";
+  if (ix_ct_single_tle_policy_) jit_command << " --ix-ct-single-tle " << ix_ct_single_tle_policy_;
 #if defined(BACKEND_MACA)
   jit_command << " --compile-script "
               << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());

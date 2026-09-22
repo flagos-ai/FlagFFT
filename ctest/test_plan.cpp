@@ -36,6 +36,99 @@ void ExpectPlanContains(flagfftHandle plan, const std::string& expected) {
 // 1D plan tests
 // =========================================================================
 
+TEST(Plan1D, IxCtSinglePolicyScope) {
+  const char* original = std::getenv("FLAGFFT_IX_CT_SINGLE");
+  const std::optional<std::string> saved = original ? std::optional<std::string>(original) : std::nullopt;
+  struct Restore {
+    std::optional<std::string> value;
+    ~Restore() {
+      if (value) setenv("FLAGFFT_IX_CT_SINGLE", value->c_str(), 1);
+      else unsetenv("FLAGFFT_IX_CT_SINGLE");
+    }
+  } restore{saved};
+  unsetenv("FLAGFFT_IX_CT_SINGLE");
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.raw_dim = 1;
+  request.batch = 1;
+  request.fft_length = request.requested_n = 2048;
+  request.input_dtype = request.output_dtype = "complex64";
+  request.input_strides = {2048, 1};
+  EXPECT_TRUE(flagfft::ix_ct_single_policy_enabled(request));
+  for (int64_t n : {1024, 2048, 16384}) {
+    auto small = request;
+    small.fft_length = small.requested_n = n;
+    EXPECT_TRUE(flagfft::ix_ct_single_policy_enabled(small));
+    EXPECT_EQ(flagfft::ix_ct_single_tle_policy(small), 0);
+  }
+  auto changed = request;
+  changed.batch = 2;
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.raw_dim = 2;
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.fft_length = changed.requested_n = 1048576;
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.input_dtype = changed.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.device_arch = "other";
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.input_strides.back() = 2;
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  auto packed = request;
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed));
+  for (int64_t n : {328050, 340200, 663000, 1048576}) {
+    packed.fft_length = packed.requested_n = n;
+    EXPECT_TRUE(flagfft::ix_packed_real_policy_enabled(packed));
+    EXPECT_EQ(flagfft::ix_ct_single_tle_policy(packed), n == 1048576 ? 2 : (n == 663000 ? 0 : 1));
+  }
+  auto packed_changed = packed;
+  packed_changed.batch = 2;
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  EXPECT_EQ(flagfft::ix_ct_single_tle_policy(packed_changed), 0);
+  packed_changed = packed;
+  packed_changed.raw_dim = 2;
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  packed_changed = packed;
+  packed_changed.input_dtype = packed_changed.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  packed_changed = packed;
+  packed_changed.device_arch = "other";
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  packed_changed = packed;
+  packed_changed.input_strides.back() = 2;
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  setenv("FLAGFFT_IX_CT_SINGLE", "0", 1);
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(request));
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed));
+  EXPECT_EQ(flagfft::ix_ct_single_tle_policy(packed), 0);
+  setenv("FLAGFFT_IX_CT_SINGLE", "1", 1);
+  EXPECT_TRUE(flagfft::ix_ct_single_policy_enabled(request));
+  flagfft::PlanBuilder builder;
+  auto small_request = request;
+  small_request.n = small_request.fft_length = small_request.requested_n = 1024;
+  auto optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
+  ASSERT_NE(optimized, nullptr);
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{16, 8, 8}));
+  setenv("FLAGFFT_IX_CT_SINGLE", "0", 1);
+  auto baseline = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
+  ASSERT_NE(baseline, nullptr);
+  EXPECT_EQ(baseline->factors, (std::vector<int64_t>{8, 8, 4, 4}));
+  setenv("FLAGFFT_IX_CT_SINGLE", "1", 1);
+  optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
+  ASSERT_NE(optimized, nullptr);
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{16, 8, 8}));
+  setenv("FLAGFFT_IX_CT_SINGLE", "invalid", 1);
+  EXPECT_THROW(flagfft::ix_ct_single_policy_enabled(request), std::runtime_error);
+  EXPECT_THROW(flagfft::ix_packed_real_policy_enabled(packed), std::runtime_error);
+  EXPECT_THROW(flagfft::ix_ct_single_tle_policy(packed), std::runtime_error);
+}
+
 TEST(Plan1D, CreateDestroyAllTypes) {
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {

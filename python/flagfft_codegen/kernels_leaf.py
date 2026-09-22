@@ -28,6 +28,8 @@ from .kernels_common import (
     LeafPlan,
     _is_double_dtype,
     _maca_backend_active,
+    _ix_backend_active,
+    _portable_leaf_backend_active,
     _maca_knob,
     _non_nvidia_backend_active,
     _tl_real_dtype,
@@ -905,6 +907,20 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
+    smem_swizzle = fuse_twiddle_into_row or (
+        _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
+        and _maca_knob("SMEM_SWIZZLE", "0") == "1"
+    )
+    smem_interleave = (
+        _ix_backend_active() and not portable_exchange and inner_pack > 1
+        and io_mode.startswith("four_step_")
+        and _maca_knob("SMEM_INTERLEAVE", "0") == "1"
+    )
+    swizzle_shift = _TLE_SMEM_SWIZZLE_SHIFT
+    if _ix_backend_active() and smem_swizzle:
+        swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
+        if not 1 <= swizzle_shift <= 8:
+            raise ValueError("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
     is_last = stage == len(factors) - 1
     source_buffer = (
         None
@@ -953,16 +969,20 @@ def _emit_stage_block(
             f"{indent}logical_phys{j} = tl.where(lane_mask, lane + "
             f"{current_lanes} * (group_{stage} * {radix} + {j}), 0)"
         )
-        if smem_pack > 1:
+        if smem_interleave:
+            lines.append(f"{indent}phys{j} = logical_phys{j} * {smem_pack} + inner_slot")
+        elif smem_pack > 1:
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
             lines.append(f"{indent}phys{j} = logical_phys{j}")
-        if fuse_twiddle_into_row and stage > 0:
+        if smem_swizzle and stage > 0:
             lines.append(
                 f"{indent}smem_phys{j} = logical_phys{j} ^ "
-                f"(logical_phys{j} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+                f"(logical_phys{j} >> {swizzle_shift})"
             )
-            if smem_pack > 1:
+            if smem_interleave:
+                lines.append(f"{indent}smem_phys{j} = smem_phys{j} * {smem_pack} + inner_slot")
+            elif smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
         lines.extend(_emit_input_base(indent, factors, current_lanes, f"group_{stage}"))
@@ -1352,7 +1372,7 @@ def _emit_stage_block(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
         else:
-            load_index = f"smem_phys{j}" if fuse_twiddle_into_row else f"phys{j}"
+            load_index = f"smem_phys{j}" if smem_swizzle else f"phys{j}"
             lines.extend(
                 _emit_exchange_load(
                     indent, source_buffer, load_index, j, portable_exchange,
@@ -1365,13 +1385,32 @@ def _emit_stage_block(
                     ),
                 )
             )
-            lines.append(
-                f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+            recurrence = (
+                _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
+                and dtype == "complex64"
             )
-            lines.append(
-                f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
-            )
-            lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
+            if recurrence:
+                # Each butterfly consumes powers of the digit-one root. The
+                # digit-zero root is exactly one, so it needs neither a load
+                # nor a multiply. Keep the recurrence scoped to measured FP32.
+                if j == 1:
+                    lines += [
+                        f"{indent}tw_step_r = tl.load(tw{stage}_r_ptr + logical_phys1, lane_mask, 0.0)",
+                        f"{indent}tw_step_i = tl.load(tw{stage}_i_ptr + logical_phys1, lane_mask, 0.0)",
+                        f"{indent}twr = tw_step_r", f"{indent}twi = tw_step_i",
+                    ]
+                elif j > 1:
+                    lines.append(f"{indent}twr, twi = _cmul(twr, twi, tw_step_r, tw_step_i)")
+                if j:
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
+            else:
+                lines.append(
+                    f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+                )
+                lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if single_smem_buffer and stage > 0 and not is_last:
         lines.append(f"{indent}tl.debug_barrier()")
@@ -1712,13 +1751,18 @@ def _emit_stage_block(
                 _emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j)
             )
             store_index = f"dst{j}"
-            if fuse_twiddle_into_row:
+            if smem_swizzle:
                 lines.append(
                     f"{indent}smem_dst{j} = dst{j} ^ "
-                    f"(dst{j} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+                    f"(dst{j} >> {swizzle_shift})"
                 )
-                if smem_pack > 1:
+                if smem_interleave:
+                    lines.append(f"{indent}smem_dst{j} = smem_dst{j} * {smem_pack} + inner_slot")
+                elif smem_pack > 1:
                     lines.append(f"{indent}smem_dst{j} += smem_offset")
+                store_index = f"smem_dst{j}"
+            elif smem_interleave:
+                lines.append(f"{indent}smem_dst{j} = dst{j} * {smem_pack} + inner_slot")
                 store_index = f"smem_dst{j}"
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
@@ -2312,7 +2356,7 @@ def _build_leaf_kernel_source_for_io(
             four_step_n2=four_step_n2,
         )
 
-    portable_exchange = _maca_backend_active()
+    portable_exchange = _portable_leaf_backend_active()
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
     smem_n = plan.smem_size

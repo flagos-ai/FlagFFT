@@ -48,10 +48,12 @@ namespace {
     // 2^20 is the upper end of the single-transform qualification range.
     const bool is_npu_single_fp32_target = request.device_type == "npu" &&
         request.input_dtype == "complex64" && batch == 1 && n >= 1024 && n <= 1048576;
-    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target) {
+    const bool is_ix_single_fp32_target = batch == 1 && ix_packed_real_policy_enabled(request);
+    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target &&
+        !is_ix_single_fp32_target) {
       return std::nullopt;
     }
-    if (!force && !is_npu_single_fp32_target && (request.input_dtype != "complex128" || n < 65536 ||
+    if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target && (request.input_dtype != "complex128" || n < 65536 ||
                    (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
     }
@@ -98,6 +100,10 @@ namespace {
     const bool child_is_leaf_pair = four_step != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
+    if (!force && is_ix_single_fp32_target) {
+      if (!child_is_leaf_pair) return std::nullopt;
+      return PackedRealChild {std::move(child_request), std::move(child_plan)};
+    }
     // A half-length transform wins only while both generated leaf kernels stay
     // below the high-register large-leaf regime.  The MUSA S5000 threshold is
     // wider than A100's based on the validated grid, but remains target-local.
@@ -144,7 +150,58 @@ namespace {
 
 }  // namespace
 
-void TritonCompiler::configure_maca_1d_single_policy(const FFTRequest &request) {
+bool ix_ct_single_policy_enabled(const FFTRequest &request) {
+  if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
+      request.batch != 1 || request.fft_length != request.requested_n ||
+      (request.requested_n != 1024 && request.requested_n != 2048 && request.requested_n != 16384) ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_strides.empty() || request.input_strides.back() != 1) {
+    return false;
+  }
+  const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
+  if (!setting || std::string(setting) == "1") return true;
+  if (std::string(setting) == "0") return false;
+  throw std::runtime_error("FLAGFFT_IX_CT_SINGLE must be 0 or 1");
+}
+
+bool ix_packed_real_policy_enabled(const FFTRequest &request) {
+  if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
+      request.batch != 1 || request.fft_length != request.requested_n ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_strides.empty() || request.input_strides.back() != 1) return false;
+  switch (request.requested_n) {
+    case 328050:
+    case 340200:
+    case 663000:
+    case 1048576:
+      break;
+    default:
+      return false;
+  }
+  const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
+  if (!setting || std::string(setting) == "1") return true;
+  if (std::string(setting) == "0") return false;
+  throw std::runtime_error("FLAGFFT_IX_CT_SINGLE must be 0 or 1");
+}
+
+int ix_ct_single_tle_policy(const FFTRequest &request) {
+  if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
+      request.batch != 1 || request.fft_length != request.requested_n ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_strides.empty() || request.input_strides.back() != 1) return 0;
+  int policy = 0;
+  if (request.requested_n == 328050 || request.requested_n == 340200) policy = 1;
+  if (request.requested_n == 1048576) policy = 2;
+  if (!policy) return 0;
+  const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
+  if (!setting || std::string(setting) == "1") return policy;
+  if (std::string(setting) == "0") return 0;
+  throw std::runtime_error("FLAGFFT_IX_CT_SINGLE must be 0 or 1");
+}
+
+void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
+  ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
+  ix_ct_single_tle_policy_ = ix_ct_single_tle_policy(request);
   maca_1d_single_policy_ = request.device_type == "maca" && request.raw_dim == 1 && request.batch == 1;
   if (!maca_1d_single_policy_) {
     return;
@@ -163,7 +220,7 @@ void TritonCompiler::configure_maca_1d_single_policy(const FFTRequest &request) 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNodePtr &node,
                                                                   const FFTRequest &request,
                                                                   int64_t batch) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
     return compile_raw_leaf(*leaf, request);
   }
@@ -478,7 +535,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
                                                                       bool allow_packed) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
   if (auto packed_child =
@@ -535,7 +592,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
                                                                       bool allow_packed) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
   if (auto packed_child =
@@ -1038,7 +1095,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1165,7 +1222,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1229,7 +1286,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1292,7 +1349,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1403,7 +1460,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1493,7 +1550,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  configure_maca_1d_single_policy(request);
+  configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;

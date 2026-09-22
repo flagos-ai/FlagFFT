@@ -160,6 +160,7 @@ class PlanBuilder {
     int64_t device_index = -1;
     std::string device_arch;
     int64_t batch = 1;
+    bool ix_short_single = false;
     int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
 
     bool operator==(const RequestContext& other) const;

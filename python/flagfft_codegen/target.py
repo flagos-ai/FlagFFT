@@ -18,6 +18,34 @@ from contextvars import ContextVar
 
 _target = ContextVar("flagfft_codegen_target", default="")
 _MACA_1D_SINGLE_DEFAULT = ContextVar("flagfft_maca_1d_single_default", default=False)
+_IX_CT_SINGLE_DEFAULT = ContextVar("flagfft_ix_ct_single_default", default=False)
+_IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
+
+
+def set_ix_ct_single_tle_default(policy: int):
+    if policy not in (0, 1, 2):
+        raise ValueError("IX TLE single policy must be 0, 1 or 2")
+    return _IX_CT_SINGLE_TLE_DEFAULT.set(policy)
+
+
+def reset_ix_ct_single_tle_default(token):
+    _IX_CT_SINGLE_TLE_DEFAULT.reset(token)
+
+
+def ix_ct_single_tle_default() -> int:
+    return _IX_CT_SINGLE_TLE_DEFAULT.get()
+
+
+def set_ix_ct_single_default(enabled: bool):
+    return _IX_CT_SINGLE_DEFAULT.set(bool(enabled))
+
+
+def reset_ix_ct_single_default(token):
+    _IX_CT_SINGLE_DEFAULT.reset(token)
+
+
+def ix_ct_single_default_enabled() -> bool:
+    return _IX_CT_SINGLE_DEFAULT.get()
 
 
 def set_codegen_target(target: str) -> None:

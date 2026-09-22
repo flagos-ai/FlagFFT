@@ -120,12 +120,13 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 }
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
+  const RequestContext &context = request_context();
+  if (context.ix_short_single && n == 1024) return {16, 8, 8};
   auto it = best_leaf_factors_cache_.find(n);
   if (it != best_leaf_factors_cache_.end()) {
     return it->second;
   }
 
-  const RequestContext &context = request_context();
   if (context.device_type == "maca" && contains(kSupportedRadices, n)) {
     // Codegen already emits one natural-order codelet for these lengths.
     best_leaf_factors_cache_[n] = {n};

@@ -17,15 +17,19 @@ from __future__ import annotations
 """Generated-module assembly: signatures, module source wrapping and JIT metadata."""
 
 from pathlib import Path
+import os
 from typing import Any
 
 from .backend_profile import current_profile
+from .target import ix_ct_single_default_enabled
 from .kernels_common import (
     _CODELET_DIR,
     LeafPlan,
     _cooperative_warp_cap,
     _dtype_suffix,
-    _maca_backend_active,
+    _maca_knob,
+    _portable_leaf_backend_active,
+    _ix_backend_active,
     _zero_other,
     contiguous_batch_pack_for,
     cooperative_stage_lanes_for,
@@ -84,7 +88,7 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
             helpers += codelet_path.read_text() + "\n\n"
 
     source = helpers + "\n\n" + kernel_source + "\n"
-    if _maca_backend_active():
+    if _portable_leaf_backend_active():
         # Portable MACA kernels do not use TLE. Keep their modules independent
         # of the backend-specific TLE extensions during isolated compilation.
         source = source.replace("import triton.experimental.tle.language as tle\n", "")
@@ -148,7 +152,7 @@ def _metadata(
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)
-    maca_backend = _maca_backend_active()
+    maca_backend = _portable_leaf_backend_active()
     if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):
         cooperative_warps = 1
         # MACA is validated against its plugin's 64-thread warp; the other
@@ -173,6 +177,12 @@ def _metadata(
     if maca_backend:
         # One warp triggers unsupported shuffle lowering in multi-stage leaves.
         num_warps = max(2, num_warps)
+    if _ix_backend_active() and _maca_knob("WARPS"):
+        num_warps = int(_maca_knob("WARPS"))
+        if (ix_ct_single_default_enabled() and plan.length == 1024 and not n1 and not n2
+                and "FLAGFFT_IX_WARPS" not in os.environ):
+            num_warps = 1
+        profile.validate(num_warps)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
