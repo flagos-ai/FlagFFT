@@ -911,6 +911,11 @@ def _emit_stage_block(
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
+    smem_interleave = (
+        _ix_backend_active() and not portable_exchange and inner_pack > 1
+        and io_mode.startswith("four_step_")
+        and _maca_knob("SMEM_INTERLEAVE", "0") == "1"
+    )
     swizzle_shift = _TLE_SMEM_SWIZZLE_SHIFT
     if _ix_backend_active() and smem_swizzle:
         swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
@@ -964,7 +969,9 @@ def _emit_stage_block(
             f"{indent}logical_phys{j} = tl.where(lane_mask, lane + "
             f"{current_lanes} * (group_{stage} * {radix} + {j}), 0)"
         )
-        if smem_pack > 1:
+        if smem_interleave:
+            lines.append(f"{indent}phys{j} = logical_phys{j} * {smem_pack} + inner_slot")
+        elif smem_pack > 1:
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
             lines.append(f"{indent}phys{j} = logical_phys{j}")
@@ -973,7 +980,9 @@ def _emit_stage_block(
                 f"{indent}smem_phys{j} = logical_phys{j} ^ "
                 f"(logical_phys{j} >> {swizzle_shift})"
             )
-            if smem_pack > 1:
+            if smem_interleave:
+                lines.append(f"{indent}smem_phys{j} = smem_phys{j} * {smem_pack} + inner_slot")
+            elif smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
         lines.extend(_emit_input_base(indent, factors, current_lanes, f"group_{stage}"))
@@ -1747,8 +1756,13 @@ def _emit_stage_block(
                     f"{indent}smem_dst{j} = dst{j} ^ "
                     f"(dst{j} >> {swizzle_shift})"
                 )
-                if smem_pack > 1:
+                if smem_interleave:
+                    lines.append(f"{indent}smem_dst{j} = smem_dst{j} * {smem_pack} + inner_slot")
+                elif smem_pack > 1:
                     lines.append(f"{indent}smem_dst{j} += smem_offset")
+                store_index = f"smem_dst{j}"
+            elif smem_interleave:
+                lines.append(f"{indent}smem_dst{j} = dst{j} * {smem_pack} + inner_slot")
                 store_index = f"smem_dst{j}"
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")

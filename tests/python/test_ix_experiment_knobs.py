@@ -51,3 +51,17 @@ def test_ix_swizzle_changes_both_exchange_sides(ix_profile, monkeypatch):
     assert "smem_dst0 = dst0 ^ (dst0 >> 3)" in source
     assert "smem_phys0 = logical_phys0 ^ (logical_phys0 >> 3)" in source
     compile(source, "<ix-swizzle>", "exec")
+
+
+def test_ix_four_step_interleave_is_symmetric(ix_profile, monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_four_step_row_kernel_source
+    monkeypatch.setenv("FLAGFFT_IX_PORTABLE_LEAF", "0")
+    monkeypatch.setenv("FLAGFFT_IX_SMEM_INTERLEAVE", "1")
+    monkeypatch.setenv("FLAGFFT_IX_TLE_INNER_PACK", "8")
+    plan = LeafPlan(1024, (32, 32), 1, 32, 2, (32,), 1024, "forward", "complex64")
+    assert four_step_row_inner_pack_for(1024, 1024, plan=plan) == 8
+    _, source = _build_four_step_row_kernel_source(plan, 1024, 1024)
+    assert "phys0 = logical_phys0 * 8 + inner_slot" in source
+    assert "smem_dst0 = dst0 * 8 + inner_slot" in source
+    compile(source, "<ix-interleave>", "exec")

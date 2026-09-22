@@ -700,7 +700,15 @@ def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
         or profile.max_dynamic_shared_memory is None
     ):
         return pack
-    bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
+    # A two-stage TLE leaf writes only smem_b; smem_a is unused. Keep this
+    # tighter bound opt-in until the wider packs have been measured on IX.
+    buffers = 4
+    padded_elements = plan.smem_size + 1
+    if (_ix_backend_active() and _maca_knob("TLE_INNER_PACK")
+            and not _portable_leaf_backend_active() and len(plan.factors) == 2):
+        buffers = 2
+        padded_elements = lane_block_for(plan.smem_size)
+    bytes_per_fft = buffers * padded_elements * _real_element_bytes(plan.dtype)
     return _floor_power_of_two(
         max(1, min(pack, profile.max_dynamic_shared_memory // bytes_per_fft))
     )
