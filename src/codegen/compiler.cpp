@@ -150,7 +150,8 @@ namespace {
     bool previous;
     Maca2dPolicyScope(bool &state, const FFTRequest &request, int64_t batch)
         : state(state), previous(state) {
-      state = request.device_type == "maca" && request.input_dtype == "complex64" && batch == 1 &&
+      state = request.device_type == "maca" && request.raw_dim == 2 && request.batch == 1 &&
+              request.input_dtype == "complex64" && request.output_dtype == "complex64" && batch == 1 &&
               maca_flag_or_default("FLAGFFT_MACA_2D_SINGLE", false);
     }
     ~Maca2dPolicyScope() { state = previous; }
