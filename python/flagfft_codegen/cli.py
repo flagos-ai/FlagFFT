@@ -48,6 +48,7 @@ from .registry import (
     kernel_spec,
 )
 from .target import set_codegen_target, set_maca_1d_single_default
+from .maca_tail_policy import set_maca_tail_mode, variant_suffix
 
 
 def _toolchain_version() -> str:
@@ -122,6 +123,7 @@ def main() -> None:
         action="store_true",
         help="enable the measured MACA rank-1 batch-1 code-generation defaults",
     )
+    parser.add_argument("--maca-tail-mode", choices=("off", "p4w4", "real23"), default="off")
     parser.add_argument(
         "--compile-script",
         type=Path,
@@ -136,6 +138,7 @@ def main() -> None:
     args = parser.parse_args()
     set_codegen_target(args.target)
     set_maca_1d_single_default(args.maca_1d_single)
+    set_maca_tail_mode(args.maca_tail_mode)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}
@@ -164,6 +167,10 @@ def main() -> None:
             "-maca-1d-single" if args.maca_1d_single else "-maca-1d-single-off"
         )
     args.out_dir = args.out_dir / profile_dir
+    # Legacy tree and explicit resource overrides must not overwrite a module
+    # emitted earlier by the same executable, even when tail mode is off.
+    if variant_suffix(root=True):
+        args.out_dir = args.out_dir / variant_suffix(root=True)
 
     spec = kernel_spec(args.kernel)
     missing = [flag for flag in spec.requires if getattr(args, flag) is None]
@@ -328,6 +335,7 @@ def main() -> None:
             "hardware_profile": asdict(profile),
             "profile_id": profile.fingerprint,
             "maca_1d_single_default": args.maca_1d_single,
+            "maca_tail_mode": args.maca_tail_mode,
             "warp_size": profile.warp_size,
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }

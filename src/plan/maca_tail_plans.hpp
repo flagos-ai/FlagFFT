@@ -4,6 +4,7 @@
 #pragma once
 
 #include "flagfft/core.hpp"
+#include "flagfft/maca_tail_policy.hpp"
 #include "rader_utils.hpp"
 
 namespace flagfft::detail {
@@ -18,6 +19,12 @@ struct MacaTailPlan {
 inline std::vector<MacaTailPlan> maca_tail_plans(int64_t n, const FFTRequest& request,
                                                bool tuning) {
   const char* value = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  const auto automatic = maca_tail_automatic_plan(request);
+  if (n == request.requested_n && !automatic.empty()) {
+    if (automatic == "bs2048") return {{automatic, 2048}};
+    if (automatic == "ct1024x1024") return {{automatic, 1024, 1024}};
+    if (automatic == "ct405x810") return {{automatic, 405, 810}};
+  }
   if (value == nullptr || *value == '\0' || request.device_type != "maca" ||
       request.raw_dim != 1 || request.batch != 1 || n != request.requested_n) {
     return {};

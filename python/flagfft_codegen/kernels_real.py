@@ -20,6 +20,7 @@ import os
 from textwrap import dedent
 
 from .kernels_common import _dtype_suffix, _maca_backend_active, _next_power_of_two, _zero_other
+from .maca_tail_policy import real_tree_default
 
 
 def _build_real_direct_dft_kernel_source(
@@ -44,7 +45,7 @@ def _build_real_direct_dft_kernel_source(
     name = f"direct_dft_{kind}_kernel_n{n}_{_dtype_suffix(dtype)}_b{block}"
     tree = (
         dtype == "complex128" and n <= 32
-        and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION") == "tree"
+        and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION", "tree" if real_tree_default(n) else "kahan") == "tree"
         and _maca_backend_active()
     )
     if tree:

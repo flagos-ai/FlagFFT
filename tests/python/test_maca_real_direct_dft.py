@@ -453,16 +453,17 @@ def test_tree_fp64_cancellation_error_bound(tree_profile, monkeypatch, n, invers
 
 
 @pytest.mark.parametrize("kind,direction", [("direct_dft_r2c", "forward"), ("direct_dft_c2r", "inverse")])
-def test_tree_metadata_keeps_module_path_but_changes_kernel_name(tmp_path, maca_profile, monkeypatch, kind, direction):
+def test_tree_metadata_isolates_module_path_and_kernel_name(tmp_path, maca_profile, monkeypatch, kind, direction):
     baseline = emit_generated_kernel(tmp_path, kind, direction, "complex128")
     monkeypatch.setenv(REDUCTION_ENV, "tree")
     tree = emit_generated_kernel(tmp_path, kind, direction, "complex128")
-    assert tree == {**baseline, "kernel_name": baseline["kernel_name"] + "_tree"}
+    assert tree["module_path"] != baseline["module_path"]
+    assert tree == {**baseline, "kernel_name": baseline["kernel_name"] + "_tree",
+                    "module_path": tree["module_path"]}
     source = Path(tree["module_path"]).read_text()
     assert f'def {tree["kernel_name"]}(' in source
     assert json.loads(Path(tree["module_path"]).with_suffix(".json").read_text()) == tree
-    # The unchanged module/cache identity requires isolated caches and fresh
-    # native processes for Kahan/tree A/B; this test only checks source emission.
+    assert "_tree(" not in Path(baseline["module_path"]).read_text()
 
 
 @pytest.mark.parametrize("n", [23, 32])

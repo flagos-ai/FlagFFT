@@ -193,8 +193,12 @@ bool raw_supported_node(const PlanNodePtr &node) {
   return false;
 }
 
-FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction) {
+FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction,
+                             int64_t origin_rank) {
   FFTRequest request;
+  request.origin_rank = origin_rank ? origin_rank : desc.rank;
+  request.real_transform = desc.type == FLAGFFT_R2C || desc.type == FLAGFFT_C2R ||
+                           desc.type == FLAGFFT_D2Z || desc.type == FLAGFFT_Z2D;
   const int64_t logical_size = product(desc.n);
   request.fft_length = desc.rank == 1 ? desc.n[0] : logical_size;
   if (desc.rank == 1) {

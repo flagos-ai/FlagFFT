@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
+from functools import wraps
+from .maca_tail_policy import maca_tail_kernel_scope, variant_suffix
 
 from .kernels_common import (
     LeafPlan,
@@ -492,6 +494,18 @@ def _emit_r2c_pointwise_jit_kernel(
     return metadata
 
 
+def _scoped_maca_tail(fn):
+    @wraps(fn)
+    def scoped(**kwargs):
+        with maca_tail_kernel_scope(
+            kwargs["kernel"], kwargs["length"], kwargs["dtype"],
+            kwargs["four_step_n1"], kwargs["four_step_n2"],
+        ):
+            return fn(**kwargs)
+    return scoped
+
+
+@_scoped_maca_tail
 def emit_jit_kernel(
     *,
     kernel: str,
@@ -591,6 +605,7 @@ def emit_jit_kernel(
     if spec.family == STOCKHAM:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
+    module_name += variant_suffix()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"

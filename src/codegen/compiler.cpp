@@ -14,6 +14,7 @@
 
 #include "flagfft/core.hpp"
 #include "flagfft/tune_json.hpp"
+#include "flagfft/maca_tail_policy.hpp"
 
 #include <cstdlib>
 #include <optional>
@@ -153,12 +154,13 @@ namespace {
            direct->length == request.requested_n && direct->length > 0 &&
            direct->length <= kDirectDftMaxN &&
            (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
-           maca_flag_or_default("FLAGFFT_MACA_REAL_DIRECT_DFT", false);
+           maca_flag_or_default("FLAGFFT_MACA_REAL_DIRECT_DFT", maca_tail_real23(request));
   }
 
 }  // namespace
 
 void TritonCompiler::configure_maca_1d_single_policy(const FFTRequest &request) {
+  maca_tail_policy_ = maca_tail_codegen_root(request);
   maca_1d_single_policy_ = request.device_type == "maca" && request.raw_dim == 1 && request.batch == 1;
   if (!maca_1d_single_policy_) {
     return;

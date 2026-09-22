@@ -16,6 +16,7 @@
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
 #include "flagfft/tune_json.hpp"
+#include "flagfft/maca_tail_policy.hpp"
 #include "plan/rader_utils.hpp"
 
 namespace flagfft {
@@ -40,7 +41,7 @@ namespace {
   }
 
   PlanNodePtr lookup_or_build_root(PlanBuilder &builder, const FFTRequest &request) {
-    if (request.device_type == "npu") {
+    if (request.device_type == "npu" || !maca_tail_automatic_plan(request).empty()) {
       return builder.build(request.requested_n, request);
     }
     auto tuned = lookup_tuned_plan_json(request);
@@ -136,10 +137,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         row_desc.batch = batch * n0;
       }
 
-      FFTRequest row_forward_request = request_from_desc(row_desc, "forward");
+      FFTRequest row_forward_request = request_from_desc(row_desc, "forward", plan->desc.rank);
       PlanNodePtr row_plan = lookup_or_build_root(builder, row_forward_request);
       if (!raw_supported_node(row_plan)) {
-        row_plan = lookup_or_build_root(builder, request_from_desc(row_desc, "inverse"));
+        row_plan = lookup_or_build_root(builder, request_from_desc(row_desc, "inverse", plan->desc.rank));
       }
       if (!raw_supported_node(row_plan)) {
         row_plan = raw_compatible_rader_plan(n1, builder, row_forward_request);
@@ -167,12 +168,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       // For C2R/Z2D, column FFT should be inverse (IFFT)
       // For R2C/D2Z or C2C/Z2Z, column FFT should be forward
       const std::string col_direction = real_inverse ? "inverse" : "forward";
-      FFTRequest col_request = request_from_desc(col_desc, col_direction);
+      FFTRequest col_request = request_from_desc(col_desc, col_direction, plan->desc.rank);
       PlanNodePtr col_plan = lookup_or_build_root(builder, col_request);
       if (!raw_supported_node(col_plan)) {
         col_plan = lookup_or_build_root(
             builder,
-            request_from_desc(col_desc, col_direction == "forward" ? "inverse" : "forward"));
+            request_from_desc(col_desc, col_direction == "forward" ? "inverse" : "forward", plan->desc.rank));
       }
       if (!raw_supported_node(col_plan)) {
         col_plan = raw_compatible_rader_plan(n0, builder, col_request);
@@ -220,12 +221,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         axis_desc.idist = length;
         axis_desc.odist = length;
         axis_desc.batch = axis_batch;
-        FFTRequest axis_request = request_from_desc(axis_desc, direction);
+        FFTRequest axis_request = request_from_desc(axis_desc, direction, plan->desc.rank);
         PlanNodePtr axis_plan = lookup_or_build_root(builder, axis_request);
         if (!raw_supported_node(axis_plan)) {
           axis_plan = lookup_or_build_root(
               builder,
-              request_from_desc(axis_desc, direction == "forward" ? "inverse" : "forward"));
+              request_from_desc(axis_desc, direction == "forward" ? "inverse" : "forward", plan->desc.rank));
         }
         if (!raw_supported_node(axis_plan)) {
           axis_plan = raw_compatible_rader_plan(length, builder, axis_request);

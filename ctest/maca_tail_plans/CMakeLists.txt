@@ -11,6 +11,7 @@ endif()
 get_filename_component(FFT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 add_executable(test_maca_tail_plans
   ../test_maca_tail_plans.cpp ../test_maca_prime_tune.cpp
+  ../test_maca_tail_policy.cpp
   ${FFT_ROOT}/src/utils/base.cpp ${FFT_ROOT}/src/utils/plan_key.cpp
   ${FFT_ROOT}/src/plan/nodes.cpp ${FFT_ROOT}/src/plan/builder_context.cpp
   ${FFT_ROOT}/src/plan/factorization.cpp ${FFT_ROOT}/src/plan/rader_utils.cpp

@@ -100,6 +100,10 @@ struct FFTRequest {
   std::optional<int64_t> n;
   int64_t requested_n = 0;
   int64_t raw_dim = -1;
+  // Preserve the public transform boundary when planning/compiling children.
+  // Zero means a request constructed directly, whose raw_dim is authoritative.
+  int64_t origin_rank = 0;
+  bool real_transform = false;
   int64_t normalized_dim = -1;
   std::string norm = "backward";
   std::string input_dtype;
