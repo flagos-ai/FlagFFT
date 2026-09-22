@@ -662,6 +662,13 @@ export FLAGFFT_EXECUTION_POLICY=native
 `/opt/dtk/.hyhal/rocm_smi/lib` 位于 `/opt/hyhal/lib` 之前，避免混用两套
 `rocm_smi` 运行库。
 
+在 HCU 3.6 / DTK 26.04 镜像中，仅执行 `source /opt/dtk/env.sh` 可能使
+`/opt/dtk/.hyhal/rocm_smi/lib` 排在 `/opt/hyhal/lib` 之后。此时进程退出阶段
+可能从 `/opt/hyhal/lib/librocm_smi64.so.2` 的全局对象析构触发
+`double free or corruption (!prev)`；这是两套 `rocm_smi` 动态库混用导致的运行时
+问题，不是 FlagFFT 或 `libtriton_jit` 的 plan destroy 问题。按上面的库顺序启动后，
+`main@3896d8e2` 的 HCU CTest smoke 已验证 53/53 通过。
+
 ### IX 误用了 CUDA 环境
 
 IX 必须使用 CoreX SDK 和 Iluvatar 适配版 FlagTree/Triton。不要只把
