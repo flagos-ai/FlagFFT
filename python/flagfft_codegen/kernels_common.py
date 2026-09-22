@@ -707,10 +707,14 @@ def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
 
 
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
+    if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
+        return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
     return _bounded_inner_pack(_four_step_col_inner_pack_for(n1, n2, dtype, plan), plan)
 
 
 def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
+    if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
+        return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
     return _bounded_inner_pack(_four_step_row_inner_pack_for(n1, n2, dtype, plan), plan)
 
 
