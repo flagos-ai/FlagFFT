@@ -4,6 +4,7 @@
 Run on one visible MACA GPU. The caller redirects JSON-lines to a results
 directory. Kernels are generated in memory from the production builders.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,30 +45,51 @@ def main():
         # Integer payload covers arbitrary float bit patterns and checks that
         # NaNs, signed zero and infinities survive without numeric conversion.
         torch.manual_seed(20260922)
-        x = torch.randint(-(2**31), 2**31 - 1, (args.batch, n0, n1, 2),
-                          device="cuda", dtype=torch.int32)
+        x = torch.randint(
+            -(2**31),
+            2**31 - 1,
+            (args.batch, n0, n1, 2),
+            device="cuda",
+            dtype=torch.int32,
+        )
         y = torch.empty((args.batch, n1, n0, 2), device="cuda", dtype=torch.int32)
         expected = x.permute(0, 2, 1, 3).contiguous()
         for tile in map(int, args.tiles.split(",")):
             for variant in args.variants.split(","):
                 if variant == "packed":
-                    name, source, _ = _build_packed_transpose_kernel_source(n0, n1, tile)
+                    name, source, _ = _build_packed_transpose_kernel_source(
+                        n0, n1, tile
+                    )
                 else:
                     assert variant in {"legacy", "register"}
                     name, source, _ = _build_tiled_transpose_kernel_source(
-                        n0, n1, "complex64", tile,
+                        n0,
+                        n1,
+                        "complex64",
+                        tile,
                         register_transpose=True if variant == "register" else None,
                     )
                 module = _module_source(source)
                 filename = f"<transpose_{shape}_{tile}_{variant}>"
-                linecache.cache[filename] = (len(module), None, module.splitlines(True), filename)
+                linecache.cache[filename] = (
+                    len(module),
+                    None,
+                    module.splitlines(True),
+                    filename,
+                )
                 scope = {"__name__": "maca_2d_transpose_probe"}
                 exec(compile(module, filename, "exec"), scope)
                 grid = (math.ceil(n1 / tile), math.ceil(n0 / tile), args.batch)
                 for warps in map(int, args.warps.split(",")):
+
                     def launch():
-                        return scope[name][grid](x.view(torch.float32), y.view(torch.float32),
-                                                 args.batch, num_warps=warps)
+                        return scope[name][grid](
+                            x.view(torch.float32),
+                            y.view(torch.float32),
+                            args.batch,
+                            num_warps=warps,
+                        )
+
                     kernel = launch()
                     torch.cuda.synchronize()
                     assert torch.equal(y, expected), (shape, tile, variant, warps)
@@ -83,20 +105,31 @@ def main():
                         end.record()
                         end.synchronize()
                         samples.append(start.elapsed_time(end))
-                    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(
+                        enable_timing=True
+                    )
                     start.record()
                     for _ in range(args.iters):
                         launch()
                     end.record()
                     end.synchronize()
-                    print(json.dumps({
-                        "shape": shape, "batch": args.batch, "tile": tile,
-                        "variant": variant, "warps": warps, "correct": True,
-                        "shared": kernel.metadata.shared,
-                        "median_ms": statistics.median(samples),
-                        "queued_ms": start.elapsed_time(end) / args.iters,
-                        "samples_ms": samples,
-                    }), flush=True)
+                    print(
+                        json.dumps(
+                            {
+                                "shape": shape,
+                                "batch": args.batch,
+                                "tile": tile,
+                                "variant": variant,
+                                "warps": warps,
+                                "correct": True,
+                                "shared": kernel.metadata.shared,
+                                "median_ms": statistics.median(samples),
+                                "queued_ms": start.elapsed_time(end) / args.iters,
+                                "samples_ms": samples,
+                            }
+                        ),
+                        flush=True,
+                    )
 
 
 if __name__ == "__main__":
