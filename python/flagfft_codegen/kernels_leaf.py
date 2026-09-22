@@ -1399,16 +1399,26 @@ def _emit_stage_block(
     if single_smem_buffer and stage > 0 and not is_last:
         lines.append(f"{indent}tl.debug_barrier()")
 
+    swap_inverse = (_ix_backend_active() and direction == "inverse"
+                    and _maca_knob("SWAP_INVERSE") == "1"
+                    and radix in _NATURAL_ORDER_CODELET_RADICES | {16, 32})
+    if swap_inverse:
+        normal = ', '.join([f'r{j}' for j in range(radix)] + [f'i{j}' for j in range(radix)])
+        swapped = ', '.join([f'i{j}' for j in range(radix)] + [f'r{j}' for j in range(radix)])
+        lines.append(f"{indent}{normal} = {swapped}")
+    codelet_direction = "forward" if swap_inverse else direction
     if radix == 16:
-        lines.extend(_emit_radix16_codelet_call(indent, direction))
+        lines.extend(_emit_radix16_codelet_call(indent, codelet_direction))
     elif radix == 32:
-        lines.extend(_emit_natural_order_radix32_codelet_call(indent, direction))
+        lines.extend(_emit_natural_order_radix32_codelet_call(indent, codelet_direction))
     elif radix in _THREAD_LOCAL_MIXED_RADICES:
         lines.extend(_emit_local_mixed_codelet_call(indent, radix, direction))
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
-        lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
+        lines.extend(_emit_natural_order_codelet_call(indent, radix, codelet_direction))
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
+    if swap_inverse:
+        lines.append(f"{indent}{normal} = {swapped}")
 
     for j in range(radix):
         if is_last:

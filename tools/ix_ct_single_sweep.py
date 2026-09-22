@@ -26,6 +26,7 @@ def main():
     p.add_argument('--thread-local', action='store_true')
     p.add_argument('--recurrence', action='store_true')
     p.add_argument('--recurrence-tree', action='store_true')
+    p.add_argument('--swap-inverse', action='store_true')
     a = p.parse_args()
     out = Path(a.output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -56,6 +57,8 @@ def main():
                 env['FLAGFFT_IX_RECURRENCE'] = '1'
             if a.recurrence_tree:
                 env['FLAGFFT_IX_RECURRENCE'] = 'tree'
+            if a.swap_inverse:
+                env['FLAGFFT_IX_SWAP_INVERSE'] = '1'
             for n in a.shapes.split(','):
                 for api in a.apis.split(','):
                     name = f'{variant}_{n}_{api}_{repeat}'
