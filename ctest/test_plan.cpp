@@ -109,9 +109,24 @@ TEST(Plan1D, IxCtSinglePolicyScope) {
   EXPECT_EQ(flagfft::ix_ct_single_tle_policy(packed), 0);
   setenv("FLAGFFT_IX_CT_SINGLE", "1", 1);
   EXPECT_TRUE(flagfft::ix_ct_single_policy_enabled(request));
+  flagfft::PlanBuilder builder;
+  auto small_request = request;
+  small_request.n = small_request.fft_length = small_request.requested_n = 1024;
+  auto optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
+  ASSERT_NE(optimized, nullptr);
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{16, 8, 8}));
+  setenv("FLAGFFT_IX_CT_SINGLE", "0", 1);
+  auto baseline = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
+  ASSERT_NE(baseline, nullptr);
+  EXPECT_EQ(baseline->factors, (std::vector<int64_t>{8, 8, 4, 4}));
+  setenv("FLAGFFT_IX_CT_SINGLE", "1", 1);
+  optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
+  ASSERT_NE(optimized, nullptr);
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{16, 8, 8}));
   setenv("FLAGFFT_IX_CT_SINGLE", "invalid", 1);
   EXPECT_THROW(flagfft::ix_ct_single_policy_enabled(request), std::runtime_error);
   EXPECT_THROW(flagfft::ix_packed_real_policy_enabled(packed), std::runtime_error);
+  EXPECT_THROW(flagfft::ix_ct_single_tle_policy(packed), std::runtime_error);
 }
 
 TEST(Plan1D, CreateDestroyAllTypes) {

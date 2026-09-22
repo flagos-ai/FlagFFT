@@ -84,7 +84,7 @@ def _portable_complex_vector_io() -> bool:
     natively, without the ``ld.global.v2`` inline asm that the MetaX plugin
     cannot compile.
     """
-    return (_maca_backend_active() or _ix_backend_active()) and _maca_knob("VEC_IO", "0") not in {"", "0"}
+    return _maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"}
 
 
 def _emit_vectorized_complex_load(

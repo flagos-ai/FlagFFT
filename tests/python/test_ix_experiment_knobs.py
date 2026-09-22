@@ -18,11 +18,11 @@ def ix_profile():
     reset_profile(token)
 
 
-def test_ix_vector_io_is_opt_in(ix_profile, monkeypatch):
+def test_ix_vector_io_experiment_is_not_enabled(ix_profile, monkeypatch):
     monkeypatch.delenv("FLAGFFT_IX_VEC_IO", raising=False)
     assert not _portable_complex_vector_io()
     monkeypatch.setenv("FLAGFFT_IX_VEC_IO", "1")
-    assert _portable_complex_vector_io()
+    assert not _portable_complex_vector_io()
 
 
 @pytest.mark.parametrize("pack", [1, 2, 4, 8])

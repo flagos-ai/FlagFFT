@@ -341,6 +341,8 @@ def main() -> None:
             "hardware_profile": asdict(profile),
             "profile_id": profile.fingerprint,
             "maca_1d_single_default": args.maca_1d_single,
+            "ix_ct_single_default": args.ix_ct_single,
+            "ix_ct_single_tle_default": args.ix_ct_single_tle,
             "warp_size": profile.warp_size,
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }

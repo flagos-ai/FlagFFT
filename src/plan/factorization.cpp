@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "flagfft/core.hpp"
-#include <cstdlib>
 
 namespace flagfft {
 
@@ -128,13 +127,6 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     return it->second;
   }
 
-  const char *ix_short_factors = std::getenv("FLAGFFT_IX_SHORT_FACTORS");
-  if (context.device_type == "ix" && context.batch == 1 &&
-      context.input_dtype == "complex64" && ix_short_factors && std::string(ix_short_factors) == "1") {
-    if (n == 64) return {8, 8};
-    if (n == 128) return {16, 8};
-    if (n == 1024) return {16, 8, 8};
-  }
   if (context.device_type == "maca" && contains(kSupportedRadices, n)) {
     // Codegen already emits one natural-order codelet for these lengths.
     best_leaf_factors_cache_[n] = {n};
