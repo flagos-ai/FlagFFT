@@ -63,6 +63,8 @@ def main():
                            '--batch', '1', '--warmup', '20', '--iters', '200', '--json']
                     if api == 'c2c':
                         cmd += ['--direction', a.direction]
+                    elif api == 'c2r':
+                        cmd += ['--direction', 'inverse']
                     try:
                         proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=a.timeout)
                     except subprocess.TimeoutExpired:
