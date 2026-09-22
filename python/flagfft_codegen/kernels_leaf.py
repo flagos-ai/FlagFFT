@@ -907,6 +907,15 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
+    smem_swizzle = fuse_twiddle_into_row or (
+        _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
+        and _maca_knob("SMEM_SWIZZLE", "0") == "1"
+    )
+    swizzle_shift = _TLE_SMEM_SWIZZLE_SHIFT
+    if _ix_backend_active() and smem_swizzle:
+        swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
+        if not 1 <= swizzle_shift <= 8:
+            raise ValueError("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
     is_last = stage == len(factors) - 1
     source_buffer = (
         None
@@ -959,10 +968,10 @@ def _emit_stage_block(
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
             lines.append(f"{indent}phys{j} = logical_phys{j}")
-        if fuse_twiddle_into_row and stage > 0:
+        if smem_swizzle and stage > 0:
             lines.append(
                 f"{indent}smem_phys{j} = logical_phys{j} ^ "
-                f"(logical_phys{j} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+                f"(logical_phys{j} >> {swizzle_shift})"
             )
             if smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
@@ -1354,7 +1363,7 @@ def _emit_stage_block(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
         else:
-            load_index = f"smem_phys{j}" if fuse_twiddle_into_row else f"phys{j}"
+            load_index = f"smem_phys{j}" if smem_swizzle else f"phys{j}"
             lines.extend(
                 _emit_exchange_load(
                     indent, source_buffer, load_index, j, portable_exchange,
@@ -1733,10 +1742,10 @@ def _emit_stage_block(
                 _emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j)
             )
             store_index = f"dst{j}"
-            if fuse_twiddle_into_row:
+            if smem_swizzle:
                 lines.append(
                     f"{indent}smem_dst{j} = dst{j} ^ "
-                    f"(dst{j} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
+                    f"(dst{j} >> {swizzle_shift})"
                 )
                 if smem_pack > 1:
                     lines.append(f"{indent}smem_dst{j} += smem_offset")

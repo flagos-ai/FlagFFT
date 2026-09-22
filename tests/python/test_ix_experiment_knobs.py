@@ -38,3 +38,16 @@ def test_ix_tle_pack_rejects_zero(ix_profile, monkeypatch):
     monkeypatch.setenv("FLAGFFT_IX_TLE_INNER_PACK", "0")
     with pytest.raises(ValueError):
         four_step_row_inner_pack_for(1024, 1024)
+
+
+def test_ix_swizzle_changes_both_exchange_sides(ix_profile, monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source
+    monkeypatch.setenv("FLAGFFT_IX_PORTABLE_LEAF", "0")
+    monkeypatch.setenv("FLAGFFT_IX_SMEM_SWIZZLE", "1")
+    monkeypatch.setenv("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT", "3")
+    plan = LeafPlan(1024, (8, 8, 4, 4), 1, 128, 4, (), 1024, "forward", "complex64")
+    _, source = _build_leaf_kernel_source(plan)
+    assert "smem_dst0 = dst0 ^ (dst0 >> 3)" in source
+    assert "smem_phys0 = logical_phys0 ^ (logical_phys0 >> 3)" in source
+    compile(source, "<ix-swizzle>", "exec")
