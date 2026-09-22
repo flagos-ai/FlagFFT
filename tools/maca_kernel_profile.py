@@ -123,9 +123,13 @@ def main():
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--policy", default="legacy")
     parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--iters", type=int, default=20)
+    parser.add_argument("--iters", type=int, default=30)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--compile-only", action="store_true",
+                        help="compile and report resources without launching the kernel")
     args = parser.parse_args()
+    if args.warmup < 0 or args.iters < 1:
+        parser.error("warmup must be nonnegative and iters must be positive")
 
     import torch
 
@@ -143,14 +147,31 @@ def main():
     tensors = [torch.zeros(table_elems, dtype=real_dtype, device=dev) for _ in params]
     scalars = [args.batch for _ in params]
 
+    argv = [
+        x if name.endswith("in_ptr") else
+        y if name.endswith("out_ptr") else
+        tensors[i] if name.endswith("_ptr") else
+        scalars[i]
+        for i, name in enumerate(params)
+    ]
+    compiled = kernel.warmup(*argv, grid=grid, num_warps=num_warps)
+    shared = int(compiled.metadata.shared)
+    launchable = shared <= 65536 and num_warps * 64 <= 512
+    resources = {
+        "shared_bytes": shared,
+        "num_warps": num_warps,
+        "inner_pack": inner_pack,
+        "kernel_hash": getattr(compiled, "hash", None),
+        "launchable_c550": launchable,
+        "correctness_checked": False,
+    }
+    if args.compile_only:
+        print(json.dumps(resources))
+        return
+    if not launchable:
+        raise RuntimeError(f"Refusing oversized C550 launch: {resources}")
+
     def launch():
-        argv = [
-            x if name.endswith("in_ptr") else
-            y if name.endswith("out_ptr") else
-            tensors[i] if name.endswith("_ptr") else
-            scalars[i]
-            for i, name in enumerate(params)
-        ]
         kernel[grid](*argv, num_warps=num_warps)
 
     launch()
@@ -167,8 +188,9 @@ def main():
     torch.cuda.synchronize()
     ms = start.elapsed_time(end) / args.iters
 
-    moved = total * 8 * 2 / 1e9
+    moved = total * (16 if args.dtype == "complex128" else 8) * 2 / 1e9
     report = {
+        **resources,
         "kernel": args.kernel,
         "n1": args.n1,
         "n2": args.n2,
@@ -180,7 +202,7 @@ def main():
         "blocks": grid[0] * grid[1],
         "ms": round(ms, 6),
         "gb_per_s": round(moved / ms * 1e3, 1),
-        "active_lanes": max(n // r for r in parse_factors(args.factors))
+        "active_lanes": max(args.n1 // r for r in parse_factors(args.factors))
         if args.kernel == "four_step_row"
         else max(args.n2 // r for r in parse_factors(args.factors)),
     }
