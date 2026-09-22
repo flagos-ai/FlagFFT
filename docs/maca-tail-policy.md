@@ -12,14 +12,17 @@ covered for complex transforms. The native request retains `origin_rank` and
 | C2C | 1009 | Bluestein 2048 |
 | Z2Z | 1048576 | 1024×1024, plain row/col FP64 kernels use bounded P4W4 |
 | C2C | 328050 | 405×810 |
+| D2Z/Z2D | 997 | Bluestein 2048 |
+| R2C/C2R | 1009 | Bluestein 2048 |
 | R2C/C2R/D2Z/Z2D | 23 | Fuse boundaries **only if the existing root is DirectDFT**; FP64 uses tree |
 | R2C/C2R | 29/31/37 | Fuse DirectDFT boundary only; D2Z/Z2D remain on the production path |
 
 The general rule is therefore: choose a candidate only when the measured
 algorithm family, precision, public API and length all match; never infer a
 candidate from length alone. All other combinations retain their existing path.
-In particular no automatic real 997/1009/1M, FP64 328050, mixed-exchange,
-batch or multidimensional changes are included. A 2D/3D axis cannot qualify
+In particular no automatic real 997/1009 combinations outside the API pairs
+listed above, no real 1M, FP64 328050, mixed-exchange, batch or multidimensional
+changes are included. A 2D/3D axis cannot qualify
 merely by having rank-1/batch-1 shape.
 The P4W4 resource scope additionally requires plain `FourStepRow/Col`, complex128,
 1024-point leaf and 1024×1024 dimensions; real, strided and Bluestein kernels
@@ -28,7 +31,8 @@ cannot inherit it. Existing shared-memory bounds remain enforced.
 ## Strategy classes
 
 - `prime-convolution`: only the measured FP64 997 and FP32 1009 roots use
-  Bluestein 2048.
+  Bluestein 2048. The public API is part of the predicate: 997 is D2Z/Z2D,
+  while 1009 is R2C/C2R.
 - `balanced-fp64-four-step`: only FP64 1048576 uses 1024x1024, and P4W4 is
   attached to its plain row/column 1024 leaves.
 - `real-direct`: only measured DirectDFT real roots use boundary fusion. The

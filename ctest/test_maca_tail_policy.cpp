@@ -59,6 +59,18 @@ TEST_F(TailPolicy, ExactWhitelistAndSameBuilderToggle) {
     setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
     EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(n, r)).repr(), original);
   }
+  for (auto [n, dtype, kind] : {
+      std::tuple<int64_t, std::string, std::string>{997, "complex128", "d2z"},
+      {997, "complex128", "z2d"}, {1009, "complex64", "r2c"},
+      {1009, "complex64", "c2r"}}) {
+    auto r = request(n, dtype);
+    r.real_transform = true;
+    r.real_transform_kind = kind;
+    unsetenv("FLAGFFT_MACA_TAIL_POLICY");
+    EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "");
+    setenv("FLAGFFT_MACA_TAIL_POLICY", "1", 1);
+    EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "bs2048");
+  }
 }
 
 TEST_F(TailPolicy, ScopeExclusionsAndOverride) {
@@ -88,6 +100,8 @@ TEST_F(TailPolicy, ScopeExclusionsAndOverride) {
   EXPECT_FALSE(flagfft::maca_tail_real_direct_dft(real));
   real.real_transform_kind = "r2c";
   EXPECT_TRUE(flagfft::maca_tail_real_direct_dft(real));
+  real.real_transform_kind = "d2z";
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(real), "");
   setenv("FLAGFFT_MACA_TAIL_POLICY", "yes", 1);
   EXPECT_THROW(flagfft::maca_tail_automatic_plan(base), std::runtime_error);
 }

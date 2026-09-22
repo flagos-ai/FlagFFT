@@ -19,9 +19,21 @@ inline bool maca_tail_policy_enabled(const FFTRequest& request) {
 // An explicit old root experiment, including 'default', wins over the policy.
 inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
   const char* old = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  if (!maca_tail_policy_enabled(request) || (old && *old) || request.real_transform ||
-      request.input_dtype != request.output_dtype) return {};
+  if (!maca_tail_policy_enabled(request) || (old && *old)) return {};
   const auto n = request.requested_n;
+  if (request.real_transform) {
+    // Only these real-prime/API pairs have paired device evidence.
+    if (request.input_dtype == "complex128" && n == 997 &&
+        (request.real_transform_kind == "d2z" || request.real_transform_kind == "z2d")) {
+      return "bs2048";
+    }
+    if (request.input_dtype == "complex64" && n == 1009 &&
+        (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r")) {
+      return "bs2048";
+    }
+    return {};
+  }
+  if (request.input_dtype != request.output_dtype) return {};
   if (request.input_dtype == "complex128") {
     if (n == 997) return "bs2048";
     if (n == 1048576) return "ct1024x1024";
