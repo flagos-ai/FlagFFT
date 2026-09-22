@@ -143,7 +143,7 @@ def _metadata(
         inner_pack = 1
     profile = current_profile()
     num_warps = profile.planner_warps(int(plan.num_warps))
-    if kernel_type == "direct_dft" and dtype == "complex64":
+    if kernel_type in {"direct_dft", "direct_dft_r2c", "direct_dft_c2r"} and dtype == "complex64":
         num_warps = 4
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)

@@ -128,6 +128,8 @@ enum class KernelKind {
   BluesteinFourStepFinishCol,
   DirectDft,
   DirectDftStrided,
+  DirectDftR2C,
+  DirectDftC2R,
   StockhamStage,
   FourStepRow,
   FourStepRowStrided,

@@ -21,6 +21,107 @@ from textwrap import dedent
 from .kernels_common import _dtype_suffix, _next_power_of_two, _zero_other
 
 
+def _build_real_direct_dft_kernel_source(
+    n: int, dtype: str, *, inverse: bool = False
+) -> tuple[str, str, list[str]]:
+    """Direct DFT with real/compact boundaries and the existing DFT-table ABI.
+
+    Like the complex DirectDFT, FP32 reduces 32 input rows at once and FP64
+    uses compensated accumulation. Tables carry the transform sign; C2R is
+    unnormalised, matching the public C API for every input magnitude.
+    """
+    if not 1 <= n <= 128:
+        raise ValueError("real DirectDFT requires 1 <= length <= 128")
+    if dtype not in {"complex64", "complex128"}:
+        raise ValueError("real DirectDFT requires complex64 or complex128")
+    half = n // 2 + 1
+    outputs = n if inverse else half
+    block = _next_power_of_two(outputs)
+    acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
+    kind = "c2r" if inverse else "r2c"
+    name = f"direct_dft_{kind}_kernel_n{n}_{_dtype_suffix(dtype)}_b{block}"
+    # Scalar FP64 loads and vector FP32 loads share the same boundary rules.
+    if inverse:
+        nyquist = f" | (j == {n // 2})" if n % 2 == 0 else ""
+        loads = f"""
+                source_j = tl.where(j < {half}, j, {n} - j)
+                src = in_ptr + (pid_batch * {half} + source_j) * 2
+                xr = tl.load(src, mask=j_mask, other=0.0)
+                xi = tl.load(src + 1, mask=j_mask, other=0.0)
+                xi = tl.where(j < {half}, xi, -xi)
+                xi = tl.where((j == 0){nyquist}, 0.0, xi)
+        """
+        term_r = "xr * wr - xi * wi"
+    else:
+        loads = f"""
+                xr = tl.load(in_ptr + pid_batch * {n} + j, mask=j_mask, other=0.0)
+        """
+        term_r = "xr * wr"
+    init_i = "" if inverse else f"acc_i = tl.zeros(({block},), dtype={acc_dtype})"
+    if dtype == "complex128":
+        init = f"comp_r = tl.zeros(({block},), dtype={acc_dtype})"
+        if not inverse:
+            init += f"\n            comp_i = tl.zeros(({block},), dtype={acc_dtype})"
+        imag = "" if inverse else """
+                corrected_i = xr * wi - comp_i
+                next_i = acc_i + corrected_i
+                comp_i = (next_i - acc_i) - corrected_i
+                acc_i = next_i
+        """
+        loop = f"""
+            for j in tl.range(0, {n}):
+                j_mask = j < {n}
+                {loads}
+                wr = tl.load(dft_r_ptr + k * {n} + j, mask=mask, other=0.0)
+                wi = tl.load(dft_i_ptr + k * {n} + j, mask=mask, other=0.0)
+                corrected_r = {term_r} - comp_r
+                next_r = acc_r + corrected_r
+                comp_r = (next_r - acc_r) - corrected_r
+                acc_r = next_r
+                {imag}
+        """
+    else:
+        init = ""
+        imag = "" if inverse else "acc_i += tl.sum(xr * wi, axis=0)"
+        loop = f"""
+            for j_base in tl.static_range(0, {n}, 32):
+                j = j_base + tl.arange(0, 32)[:, None]
+                j_mask = j < {n}
+                {loads}
+                matrix_mask = j_mask & mask[None, :]
+                matrix_offsets = j * {n} + k[None, :]
+                wr = tl.load(dft_r_ptr + matrix_offsets, mask=matrix_mask, other=0.0)
+                wi = tl.load(dft_i_ptr + matrix_offsets, mask=matrix_mask, other=0.0)
+                acc_r += tl.sum({term_r}, axis=0)
+                {imag}
+        """
+    if inverse:
+        stores = f"tl.store(out_ptr + pid_batch * {n} + k, acc_r, mask=mask)"
+    else:
+        nyquist = f" | (k == {n // 2})" if n % 2 == 0 else ""
+        stores = f"""
+            dst = out_ptr + (pid_batch * {half} + k) * 2
+            tl.store(dst, acc_r, mask=mask)
+            acc_i = tl.where((k == 0){nyquist}, 0.0, acc_i)
+            tl.store(dst + 1, acc_i, mask=mask)
+        """
+    source = dedent(f"""
+        @triton.jit
+        def {name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
+            pid_batch = tl.program_id(0)
+            if pid_batch >= nbatch:
+                return
+            k = tl.arange(0, {block})
+            mask = k < {outputs}
+            acc_r = tl.zeros(({block},), dtype={acc_dtype})
+            {init_i}
+            {init}
+            {loop}
+            {stores}
+    """)
+    return name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+
+
 def _packed_layout(n_cols: int, block: int = 256) -> tuple[int, int]:
     """Choose a (columns, rows-per-block) tile for tiny row-wise kernels.
 
@@ -319,6 +420,7 @@ def _build_complex_to_real_kernel_source(
 
 
 __all__ = [
+    "_build_real_direct_dft_kernel_source",
     "_build_c2r_packed_preprocess_kernel_source",
     "_build_compact_to_hermitian_full_kernel_source",
     "_build_complex_to_real_kernel_source",

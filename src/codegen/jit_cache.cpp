@@ -192,6 +192,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::DirectDftStrided:
       kernel_kind = "direct_dft_strided";
       break;
+    case KernelKind::DirectDftR2C:
+      kernel_kind = "direct_dft_r2c";
+      break;
+    case KernelKind::DirectDftC2R:
+      kernel_kind = "direct_dft_c2r";
+      break;
     case KernelKind::StockhamStage:
       kernel_kind = "stockham_stage";
       break;
@@ -301,7 +307,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::LeafPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
-  if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided) {
+  if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
+      key.kind == KernelKind::DirectDftR2C || key.kind == KernelKind::DirectDftC2R) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::StockhamStage) {

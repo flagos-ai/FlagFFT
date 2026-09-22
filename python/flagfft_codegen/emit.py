@@ -50,6 +50,7 @@ from .kernels_real import (
     _build_real_to_complex_kernel_source,
 )
 from .kernels_special import _build_direct_dft_kernel_source
+from .kernels_real import _build_real_direct_dft_kernel_source
 from .kernels_stockham import build_stockham_stage
 from .metadata import _metadata, _module_source, _signature
 from .registry import (
@@ -551,12 +552,20 @@ def emit_jit_kernel(
         )
         n1 = n2 = 0
     elif spec.family == DIRECT_DFT:
-        kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
-            length,
-            direction,
-            dtype,
-            strided=(kernel == "direct_dft_strided"),
-        )
+        if kernel in {"direct_dft_r2c", "direct_dft_c2r"}:
+            expected_direction = "inverse" if kernel == "direct_dft_c2r" else "forward"
+            if direction != expected_direction:
+                raise ValueError(f"{kernel} requires direction={expected_direction}")
+            kernel_name, kernel_source, _ = _build_real_direct_dft_kernel_source(
+                length, dtype, inverse=(kernel == "direct_dft_c2r")
+            )
+        else:
+            kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
+                length,
+                direction,
+                dtype,
+                strided=(kernel == "direct_dft_strided"),
+            )
         n1 = 0
         n2 = 0
     else:
