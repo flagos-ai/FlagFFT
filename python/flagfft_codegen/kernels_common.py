@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Literal
 
 from .backend_profile import current_profile
-from .target import maca_1d_single_default_enabled, ix_ct_single_default_enabled
+from .target import maca_1d_single_default_enabled, ix_ct_single_default_enabled, ix_ct_single_tle_default
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _MODULE_DIR.parents[1]
@@ -285,7 +285,11 @@ def _maca_knob(name: str, default: str = "") -> str:
     if _ix_backend_active():
         defaults = {"EXCHANGE": "direct_all", "SPLIT_ORDER": "lsb"}
         if ix_ct_single_default_enabled():
-            defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="2")
+            defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="2", INNER_PACK="4", LANE_MIN="1")
+        if ix_ct_single_tle_default():
+            defaults.update(SMEM_INTERLEAVE="1", RECURRENCE="1")
+        if ix_ct_single_tle_default() == 2:
+            defaults.update(SMEM_SWIZZLE="1", SMEM_SWIZZLE_SHIFT="5", TLE_INNER_PACK="8", WARPS="4")
         return os.environ.get(f"FLAGFFT_IX_{name}", defaults.get(name, default)).strip().lower()
     env_name = f"FLAGFFT_MACA_{name}"
     if env_name in os.environ:
