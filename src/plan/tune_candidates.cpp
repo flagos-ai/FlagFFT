@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flagfft/core.hpp"
+#include "maca_tail_plans.hpp"
 #include "rader_utils.hpp"
 
 namespace flagfft {
@@ -177,6 +178,32 @@ std::vector<PlanCandidate> PlanBuilder::build_decomposition_tune_candidates(int6
     throw std::runtime_error("MACA single tune length exceeds the convolution length range");
   }
   set_request_context(request);
+
+  const auto experiments = detail::maca_tail_plans(n, request, true);
+  if (!experiments.empty()) {
+    // Never silently truncate a requested comparison or add unrelated plans.
+    if (limit < static_cast<int64_t>(experiments.size())) {
+      throw std::runtime_error("MACA tail comparison requires --max-candidates >= " +
+                               std::to_string(experiments.size()));
+    }
+    std::vector<PlanCandidate> candidates;
+    for (const auto& experiment : experiments) {
+      auto node = detail::build_maca_tail_plan(n, experiment,
+                                              [&](int64_t length, bool heuristic) {
+                                                return build_auto_node(length, heuristic);
+                                              });
+      double cost = 0;
+      if (auto bs = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
+        cost = bluestein_cost(n, bs->conv_length);
+      } else if (auto ct = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+        cost = four_step_cost(ct->n1, ct->n2);
+      } else if (std::dynamic_pointer_cast<RaderPlanNode>(node)) {
+        cost = rader_cost(n);
+      }
+      candidates.push_back({node, cost, priority(node)});
+    }
+    return candidates;
+  }
 
   std::vector<PlanCandidate> result;
   std::vector<std::string> seen;
