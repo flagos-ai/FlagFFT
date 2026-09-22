@@ -156,6 +156,9 @@ def main() -> None:
     )
     set_profile(profile)
     profile_dir = profile.fingerprint
+    if profile.backend == "ix":
+        overrides = {k: v for k, v in os.environ.items() if k.startswith("FLAGFFT_IX_")}
+        profile_dir += "-" + hashlib.sha256(json.dumps(overrides, sort_keys=True).encode()).hexdigest()[:12]
     if profile.backend == "maca":
         # Keep default-on and explicit opt-out artifacts separate.  The native
         # compiler also includes this bit in its in-process cache key, but the

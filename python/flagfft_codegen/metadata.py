@@ -26,6 +26,7 @@ from .kernels_common import (
     _cooperative_warp_cap,
     _dtype_suffix,
     _maca_backend_active,
+    _portable_leaf_backend_active,
     _zero_other,
     contiguous_batch_pack_for,
     cooperative_stage_lanes_for,
@@ -84,7 +85,7 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
             helpers += codelet_path.read_text() + "\n\n"
 
     source = helpers + "\n\n" + kernel_source + "\n"
-    if _maca_backend_active():
+    if _portable_leaf_backend_active():
         # Portable MACA kernels do not use TLE. Keep their modules independent
         # of the backend-specific TLE extensions during isolated compilation.
         source = source.replace("import triton.experimental.tle.language as tle\n", "")
@@ -148,7 +149,7 @@ def _metadata(
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)
-    maca_backend = _maca_backend_active()
+    maca_backend = _portable_leaf_backend_active()
     if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):
         cooperative_warps = 1
         # MACA is validated against its plugin's 64-thread warp; the other

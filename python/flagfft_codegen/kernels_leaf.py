@@ -28,6 +28,7 @@ from .kernels_common import (
     LeafPlan,
     _is_double_dtype,
     _maca_backend_active,
+    _portable_leaf_backend_active,
     _maca_knob,
     _non_nvidia_backend_active,
     _tl_real_dtype,
@@ -2312,7 +2313,7 @@ def _build_leaf_kernel_source_for_io(
             four_step_n2=four_step_n2,
         )
 
-    portable_exchange = _maca_backend_active()
+    portable_exchange = _portable_leaf_backend_active()
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
     smem_n = plan.smem_size

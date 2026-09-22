@@ -226,7 +226,7 @@ def emitted_leaf_factors(
     plan: LeafPlan, io_mode: str = "contiguous"
 ) -> tuple[int, ...]:
     if (
-        _maca_backend_active()
+        _portable_leaf_backend_active()
         and io_mode != "bluestein_full_leaf"
         and plan.length
         in _NATURAL_ORDER_CODELET_RADICES | _THREAD_LOCAL_MIXED_RADICES | {16}
@@ -238,7 +238,7 @@ def emitted_leaf_factors(
 
 
 def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
-    if _maca_backend_active():
+    if _portable_leaf_backend_active():
         # The portable exchange evaluates every butterfly in one tensor.
         return tuple(plan.length // radix for radix in plan.factors)
     fixed_lanes_are_compatible = all(
@@ -282,6 +282,9 @@ def _maca_knob(name: str, default: str = "") -> str:
     preserving an explicit environment override for A/B testing and rollback.
     Direct Python code-generation calls remain on the historical defaults.
     """
+    if _ix_backend_active():
+        defaults = {"EXCHANGE": "direct_all", "SPLIT_ORDER": "lsb"}
+        return os.environ.get(f"FLAGFFT_IX_{name}", defaults.get(name, default)).strip().lower()
     env_name = f"FLAGFFT_MACA_{name}"
     if env_name in os.environ:
         return os.environ[env_name].strip().lower()
@@ -384,7 +387,7 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 
 
 def contiguous_batch_pack_for(plan: LeafPlan) -> int:
-    if _maca_backend_active():
+    if _portable_leaf_backend_active():
         override = _maca_knob("BATCH_PACK")
         if override == "auto":
             return _profile_batch_pack_for(plan)
@@ -624,7 +627,7 @@ def _four_step_col_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
-    if _maca_backend_active():
+    if _portable_leaf_backend_active():
         return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
@@ -652,7 +655,7 @@ def _four_step_row_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
-    if _maca_backend_active():
+    if _portable_leaf_backend_active():
         return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
@@ -737,7 +740,7 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     loading the precomputed twiddle table in the row pass instead of issuing
     the same reads with the strided column access pattern.
     """
-    if _maca_backend_active():
+    if _portable_leaf_backend_active():
         return False
     return use_tle_fused_twiddle(n1, n2, dtype) or (
         _is_double_dtype(dtype) and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
@@ -852,6 +855,13 @@ def _maca_backend_active() -> bool:
     if backend:
         return backend in {"maca", "metax"}
     return _triton_plugin_present("metax")
+
+
+def _portable_leaf_backend_active() -> bool:
+    """Select the tensor-exchange leaf implementation for IX experiments."""
+    return _maca_backend_active() or (
+        _ix_backend_active() and os.environ.get("FLAGFFT_IX_PORTABLE_LEAF") == "1"
+    )
 
 
 def _npu_backend_active() -> bool:
