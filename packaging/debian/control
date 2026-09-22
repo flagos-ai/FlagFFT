@@ -1,0 +1,61 @@
+Source: libflagfft
+Section: libs
+Priority: optional
+Maintainer: FlagOS Contributors <contact@flagos.io>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.18),
+               binutils,
+               ninja-build,
+               python3-dev,
+               python3-pip,
+               python3-setuptools (>= 68),
+               libfmt-dev (>= 8.1.1),
+               libsqlite3-dev,
+               nlohmann-json3-dev (>= 3.10.5)
+Standards-Version: 4.6.2
+Homepage: https://github.com/flagos-ai/FlagFFT
+Vcs-Browser: https://github.com/flagos-ai/FlagFFT
+Vcs-Git: https://github.com/flagos-ai/FlagFFT.git
+Rules-Requires-Root: no
+X-Build-Environment: This package is designed to be built in a CUDA container
+ environment that provides the necessary SDK and Python packages:
+ .
+ - Ubuntu 22.04 + CUDA 12.8 (nvidia/cuda:12.8.0-devel-ubuntu22.04), the
+   FlagOS NVIDIA DEB ABI matrix (FEP-0019)
+ - Python 3.12 (deadsnakes) with PyTorch 2.10.0+cu128, Triton 3.6.0 and
+   pybind11 3.0.3 via pip (pinned in
+   packaging/debian/build-helpers/python-build-requirements.txt)
+ - fmt (>= 8.1.1), SQLite3 via system packages; nlohmann-json 3.11.3 (the
+   pinned libtriton_jit revision requires >= 3.11.3, Ubuntu 22.04 ships 3.10.5)
+   installed from the Ubuntu 24.04 header-only package at image build time
+ .
+ The Build-Depends listed above are for the Debian packaging tools only.
+ CUDA and Python deps are provided by the container environment.
+
+Package: libflagfft-nvidia
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3.12
+Description: FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
+ FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation,
+ targeting FlagOS multi-vendor accelerators. The NVIDIA backend uses
+ CUDA + Triton-JIT for kernel generation.
+ .
+ This package contains libflagfft.so, its private
+ libflagfft_triton_jit.so dependency, and the flagfft_codegen Python package
+ invoked at plan creation time.
+ .
+ The JIT code generator requires Python 3.12 (the interpreter libflagfft
+ embeds). On Ubuntu 22.04, where the default python3 is 3.10, install
+ python3.12 (e.g. from the deadsnakes PPA) and set FLAGFFT_PYTHON=python3.12;
+ on Ubuntu 24.04 the default python3 already is 3.12. It does not require the separately packaged
+ libtriton-jit runtime.
+
+Package: libflagfft-nvidia-dev
+Section: libdevel
+Architecture: amd64
+Depends: libflagfft-nvidia (= ${binary:Version}), ${misc:Depends}
+Description: FlagFFT development files (NVIDIA backend)
+ FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation.
+ .
+ This package contains the header files for building applications against
+ libflagfft-nvidia.
