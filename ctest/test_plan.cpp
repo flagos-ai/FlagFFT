@@ -74,12 +74,35 @@ TEST(Plan1D, IxCtSinglePolicyScope) {
   changed = request;
   changed.input_strides.back() = 2;
   EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  auto packed = request;
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed));
+  for (int64_t n : {328050, 340200, 663000, 1048576}) {
+    packed.fft_length = packed.requested_n = n;
+    EXPECT_TRUE(flagfft::ix_packed_real_policy_enabled(packed));
+  }
+  auto packed_changed = packed;
+  packed_changed.batch = 2;
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  packed_changed = packed;
+  packed_changed.raw_dim = 2;
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  packed_changed = packed;
+  packed_changed.input_dtype = packed_changed.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  packed_changed = packed;
+  packed_changed.device_arch = "other";
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
+  packed_changed = packed;
+  packed_changed.input_strides.back() = 2;
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed_changed));
   setenv("FLAGFFT_IX_CT_SINGLE", "0", 1);
   EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(request));
+  EXPECT_FALSE(flagfft::ix_packed_real_policy_enabled(packed));
   setenv("FLAGFFT_IX_CT_SINGLE", "1", 1);
   EXPECT_TRUE(flagfft::ix_ct_single_policy_enabled(request));
   setenv("FLAGFFT_IX_CT_SINGLE", "invalid", 1);
   EXPECT_THROW(flagfft::ix_ct_single_policy_enabled(request), std::runtime_error);
+  EXPECT_THROW(flagfft::ix_packed_real_policy_enabled(packed), std::runtime_error);
 }
 
 TEST(Plan1D, CreateDestroyAllTypes) {

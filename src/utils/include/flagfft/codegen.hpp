@@ -1119,6 +1119,7 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
                                              const std::vector<int64_t> &idx);
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request);
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
+bool ix_packed_real_policy_enabled(const FFTRequest &request);
 std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request);
 
 }  // namespace flagfft

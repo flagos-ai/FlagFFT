@@ -48,10 +48,12 @@ namespace {
     // 2^20 is the upper end of the single-transform qualification range.
     const bool is_npu_single_fp32_target = request.device_type == "npu" &&
         request.input_dtype == "complex64" && batch == 1 && n >= 1024 && n <= 1048576;
-    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target) {
+    const bool is_ix_single_fp32_target = batch == 1 && ix_packed_real_policy_enabled(request);
+    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target &&
+        !is_ix_single_fp32_target) {
       return std::nullopt;
     }
-    if (!force && !is_npu_single_fp32_target && (request.input_dtype != "complex128" || n < 65536 ||
+    if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target && (request.input_dtype != "complex128" || n < 65536 ||
                    (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
     }
@@ -98,6 +100,10 @@ namespace {
     const bool child_is_leaf_pair = four_step != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
+    if (!force && is_ix_single_fp32_target) {
+      if (!child_is_leaf_pair) return std::nullopt;
+      return PackedRealChild {std::move(child_request), std::move(child_plan)};
+    }
     // A half-length transform wins only while both generated leaf kernels stay
     // below the high-register large-leaf regime.  The MUSA S5000 threshold is
     // wider than A100's based on the validated grid, but remains target-local.
@@ -150,6 +156,26 @@ bool ix_ct_single_policy_enabled(const FFTRequest &request) {
       request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
       request.input_strides.empty() || request.input_strides.back() != 1) {
     return false;
+  }
+  const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
+  if (!setting || std::string(setting) == "1") return true;
+  if (std::string(setting) == "0") return false;
+  throw std::runtime_error("FLAGFFT_IX_CT_SINGLE must be 0 or 1");
+}
+
+bool ix_packed_real_policy_enabled(const FFTRequest &request) {
+  if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
+      request.batch != 1 || request.fft_length != request.requested_n ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_strides.empty() || request.input_strides.back() != 1) return false;
+  switch (request.requested_n) {
+    case 328050:
+    case 340200:
+    case 663000:
+    case 1048576:
+      break;
+    default:
+      return false;
   }
   const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
   if (!setting || std::string(setting) == "1") return true;
