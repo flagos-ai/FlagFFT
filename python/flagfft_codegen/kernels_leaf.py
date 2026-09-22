@@ -1367,10 +1367,19 @@ def _emit_stage_block(
                     ),
                 )
             )
-            recurrence = (_ix_backend_active() and _maca_knob("RECURRENCE") == "1"
+            recurrence = (_ix_backend_active() and _maca_knob("RECURRENCE") in {"1", "tree"}
                           and dtype == "complex64")
             if recurrence:
-                if j == 1:
+                if _maca_knob("RECURRENCE") == "tree" and j:
+                    if j == 1:
+                        lines += [f"{indent}tw_recur_r1 = tl.load(tw{stage}_r_ptr + logical_phys1, lane_mask, 0.0)",
+                                  f"{indent}tw_recur_i1 = tl.load(tw{stage}_i_ptr + logical_phys1, lane_mask, 0.0)"]
+                    else:
+                        low = j & -j
+                        left, right = (j // 2, j // 2) if low == j else (j - low, low)
+                        lines.append(f"{indent}tw_recur_r{j}, tw_recur_i{j} = _cmul(tw_recur_r{left}, tw_recur_i{left}, tw_recur_r{right}, tw_recur_i{right})")
+                    lines += [f"{indent}twr = tw_recur_r{j}", f"{indent}twi = tw_recur_i{j}"]
+                elif j == 1:
                     lines += [f"{indent}tw_step_r = tl.load(tw{stage}_r_ptr + logical_phys1, lane_mask, 0.0)",
                               f"{indent}tw_step_i = tl.load(tw{stage}_i_ptr + logical_phys1, lane_mask, 0.0)",
                               f"{indent}twr = tw_step_r", f"{indent}twi = tw_step_i"]
