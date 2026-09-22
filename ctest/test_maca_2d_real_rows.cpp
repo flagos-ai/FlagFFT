@@ -47,15 +47,6 @@ bool IsUsableMaca() {
   }
 }
 
-void SkipUnlessUsableMaca() {
-  if (flagfft::adaptor::backend_name() != "maca") {
-    GTEST_SKIP() << "MACA-only real-row C API test";
-  }
-  if (!IsUsableMaca()) {
-    GTEST_SKIP() << "no usable MACA device";
-  }
-}
-
 std::vector<flagfftReal> BoundaryInput(const Dense2DShape& shape) {
   const int64_t total = static_cast<int64_t>(shape.n0) * shape.n1;
   constexpr double dc = 1.25;
@@ -80,6 +71,24 @@ void AssertRowBoundaryDescription(flagfftHandle forward, flagfftHandle inverse, 
       << forward_description;
   EXPECT_NE(std::string(inverse_description).find("CompiledRaw2DC2RRow("), std::string::npos)
       << inverse_description;
+}
+
+void AssertShortRealBoundaryPack4Description(flagfftHandle forward,
+                                             flagfftHandle inverse,
+                                             const Dense2DShape& shape) {
+  const char* forward_description = flagfftGetPlanDescription(forward);
+  const char* inverse_description = flagfftGetPlanDescription(inverse);
+  ASSERT_NE(forward_description, nullptr);
+  ASSERT_NE(inverse_description, nullptr);
+
+  const std::string forward_text(forward_description);
+  const std::string inverse_text(inverse_description);
+  EXPECT_NE(forward_text.find("CompiledRawR2CLeaf(n=" + std::to_string(shape.n1)), std::string::npos)
+      << forward_text;
+  EXPECT_NE(inverse_text.find("CompiledRawC2RLeaf(n=" + std::to_string(shape.n1)), std::string::npos)
+      << inverse_text;
+  EXPECT_NE(forward_text.find("batch_per_block=4"), std::string::npos) << forward_text;
+  EXPECT_NE(inverse_text.find("batch_per_block=4"), std::string::npos) << inverse_text;
 }
 
 void AssertR2CBoundaries(const std::vector<flagfftComplex>& spectrum,
@@ -163,6 +172,9 @@ void RunOutOfPlace(const Dense2DShape& shape) {
   PlanGuard inverse;
   MakeRealPlans(shape, 1, forward, inverse);
   AssertRowBoundaryDescription(forward.plan, inverse.plan, shape);
+  if (shape.n1 >= 16 && shape.n1 <= 128) {
+    AssertShortRealBoundaryPack4Description(forward.plan, inverse.plan, shape);
+  }
 
   flagfft::adaptor::Memory real_mem(static_cast<std::size_t>(total) * sizeof(flagfftReal));
   flagfft::adaptor::Memory spectrum_mem(static_cast<std::size_t>(half) * sizeof(flagfftComplex));
@@ -196,6 +208,9 @@ void RunInPlace(const Dense2DShape& shape) {
   PlanGuard inverse;
   MakeRealPlans(shape, 1, forward, inverse);
   AssertRowBoundaryDescription(forward.plan, inverse.plan, shape);
+  if (shape.n1 >= 16 && shape.n1 <= 128) {
+    AssertShortRealBoundaryPack4Description(forward.plan, inverse.plan, shape);
+  }
 
   const std::size_t real_bytes = static_cast<std::size_t>(total) * sizeof(flagfftReal);
   const std::size_t compact_bytes = static_cast<std::size_t>(half) * sizeof(flagfftComplex);
@@ -245,13 +260,16 @@ void ExpectFallbackDescription(flagfftType type,
   ASSERT_NE(raw_description, nullptr);
   const std::string description(raw_description);
   EXPECT_NE(description.find(node_name), std::string::npos) << description;
-  EXPECT_EQ(description.find(std::string(node_name) + "Row"), std::string::npos) << description;
+  EXPECT_EQ(description.find("CompiledRaw2DR2CRow("), std::string::npos) << description;
+  EXPECT_EQ(description.find("CompiledRaw2DC2RRow("), std::string::npos) << description;
 }
 
 class Maca2DRealRows : public ::testing::TestWithParam<Dense2DShape> {
  protected:
   void SetUp() override {
-    SkipUnlessUsableMaca();
+    if (!IsUsableMaca()) {
+      GTEST_SKIP() << "MACA-only real-row C API test requires a usable MACA device";
+    }
   }
 };
 
@@ -265,13 +283,44 @@ TEST_P(Maca2DRealRows, DenseInPlaceBoundaryAndRoundtrip) {
 
 INSTANTIATE_TEST_SUITE_P(Dense,
                          Maca2DRealRows,
-                         ::testing::Values(Dense2DShape {512, 1024}, Dense2DShape {512, 64}),
+                         ::testing::Values(Dense2DShape {512, 1024},
+                                           Dense2DShape {512, 128},
+                                           Dense2DShape {512, 64}),
                          [](const auto& info) {
                            return std::to_string(info.param.n0) + "x" + std::to_string(info.param.n1);
                          });
 
+void ExpectUnitAxisDescription(flagfftType type,
+                               const Dense2DShape& shape,
+                               int idist,
+                               int odist,
+                               const char* forbidden_row_node) {
+  int n[2] = {shape.n0, shape.n1};
+  PlanGuard plan;
+  ASSERT_EQ(flagfftPlanMany(&plan.plan,
+                            2,
+                            n,
+                            nullptr,
+                            1,
+                            idist,
+                            nullptr,
+                            1,
+                            odist,
+                            type,
+                            1),
+            FLAGFFT_SUCCESS);
+  const char* raw_description = flagfftGetPlanDescription(plan.plan);
+  ASSERT_NE(raw_description, nullptr);
+  const std::string description(raw_description);
+  EXPECT_NE(description.find("CompiledRaw1DAs2D("), std::string::npos) << description;
+  EXPECT_EQ(description.find(forbidden_row_node), std::string::npos) << description;
+  EXPECT_EQ(description.find("batch_per_block=4"), std::string::npos) << description;
+}
+
 TEST(Maca2DRealRowsFallback, FP64AndBatch2KeepTheExistingNodes) {
-  SkipUnlessUsableMaca();
+  if (!IsUsableMaca()) {
+    GTEST_SKIP() << "MACA-only real-row C API test requires a usable MACA device";
+  }
   const Dense2DShape shape {512, 64};
   const int total = shape.n0 * shape.n1;
   const int half = shape.n0 * (shape.n1 / 2 + 1);
@@ -280,6 +329,30 @@ TEST(Maca2DRealRowsFallback, FP64AndBatch2KeepTheExistingNodes) {
   ExpectFallbackDescription(FLAGFFT_Z2D, shape, 1, "CompiledRaw2DC2R(", half, total);
   ExpectFallbackDescription(FLAGFFT_R2C, shape, 2, "CompiledRaw2DR2C(", total, half);
   ExpectFallbackDescription(FLAGFFT_C2R, shape, 2, "CompiledRaw2DC2R(", half, total);
+}
+
+TEST(Maca2DRealRowsFallback, UnitAxisAndOddWidthDoNotUseRealRows) {
+  if (!IsUsableMaca()) {
+    GTEST_SKIP() << "MACA-only real-row C API test requires a usable MACA device";
+  }
+
+  const Dense2DShape unit_axis {1, 64};
+  ExpectUnitAxisDescription(FLAGFFT_R2C,
+                            unit_axis,
+                            unit_axis.n0 * unit_axis.n1,
+                            unit_axis.n0 * (unit_axis.n1 / 2 + 1),
+                            "CompiledRaw2DR2CRow(");
+  ExpectUnitAxisDescription(FLAGFFT_C2R,
+                            unit_axis,
+                            unit_axis.n0 * (unit_axis.n1 / 2 + 1),
+                            unit_axis.n0 * unit_axis.n1,
+                            "CompiledRaw2DC2RRow(");
+
+  const Dense2DShape odd_width {512, 65};
+  const int total = odd_width.n0 * odd_width.n1;
+  const int half = odd_width.n0 * (odd_width.n1 / 2 + 1);
+  ExpectFallbackDescription(FLAGFFT_R2C, odd_width, 1, "CompiledRaw2DR2C(", total, half);
+  ExpectFallbackDescription(FLAGFFT_C2R, odd_width, 1, "CompiledRaw2DC2R(", half, total);
 }
 
 }  // namespace
