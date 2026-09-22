@@ -68,17 +68,58 @@ docker run --ipc=host --network=host \
 按 MetaX 镜像说明添加设备映射。本文假设 MACA SDK 安装在
 `/opt/maca`，并且镜像提供 `cmake_maca` / `make_maca` 包装命令。
 
-### Ascend/NPU
+### Ascend/NPU（baai-ascend，CANN 9.0）
 
-```bash
-docker run --ipc=host --network=host \
-  -v /rjs/llb/fft-dev:/workspace \
-  -w /workspace/FlagFFT-dev \
-  -it <flagtree-ascend-image> bash
+`baai-ascend` 当前使用的 910B 镜像是：
+
+```text
+harbor.baai.ac.cn/flagtree/flagtree-ascend3.5-910b-py311-cann9.0.0-ubuntu22.04-aarch64:202606-torch2.9.0-base
 ```
 
-按 Ascend 镜像说明添加 `/dev/davinci*` 等设备映射。镜像需要包含 CANN
-9.0 工具链、Ascend runtime，以及 Ascend 适配版 FlagTree/Triton。
+该基础镜像提供 CANN 9.0、PyTorch、`torch_npu` 和构建工具，但不保证已经安装
+FlagTree/Triton。FlagTree 必须按其官方 Ascend 3.5 指南从
+[`triton_v3.5.x`](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x)
+源码安装，不能用普通 CUDA 版 `triton` 覆盖它。
+
+下面的命令在 `baai-ascend` 宿主机执行。源码、构建目录、FlagTree 源码和结果均
+放在宿主机；容器只负责安装依赖、编译和运行。首次创建源码工作区和 FlagTree
+源码的方法见[Ascend 专用流程](ascend_environment_setup_complete.md)。
+
+```bash
+HOST_ROOT=/root/gcx
+SRC_HOST="$HOST_ROOT/FlagFFT-dev-ascend"
+BUILD_HOST="$HOST_ROOT/FlagFFT-build-ascend"
+FLAGTREE_HOST="$HOST_ROOT/FlagTree-ascend"
+mkdir -p "$BUILD_HOST" "$HOST_ROOT/results" "$FLAGTREE_HOST"
+
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-ascend3.5-910b-py311-cann9.0.0-ubuntu22.04-aarch64:202606-torch2.9.0-base
+docker run -dit -u 0 --user=root \
+  --network=host --pid=host --ipc=host --privileged \
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+  -v /usr/local/Ascend/add-ons:/usr/local/Ascend/add-ons \
+  -v /usr/local/sbin:/usr/local/sbin \
+  -v /etc/ascend_install.info:/etc/ascend_install.info \
+  --device=/dev/davinci0 --device=/dev/davinci1 \
+  --device=/dev/davinci2 --device=/dev/davinci3 \
+  --device=/dev/davinci4 --device=/dev/davinci5 \
+  --device=/dev/davinci6 --device=/dev/davinci7 \
+  --device=/dev/davinci_manager --device=/dev/devmm_svm \
+  --device=/dev/hisi_hdc \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /data:/data \
+  -v "$SRC_HOST:/home/FlagFFT-dev-ascend" \
+  -v "$BUILD_HOST:/home/FlagFFT-build-ascend" \
+  -v "$FLAGTREE_HOST:/home/FlagTree-ascend" \
+  -v "$HOST_ROOT/results:/home/results" \
+  -w /home/FlagFFT-dev-ascend \
+  --name flagfft-ascend "$IMAGE" bash
+
+docker exec -it flagfft-ascend bash
+```
+
+容器内必须先执行 FlagTree 的源代码安装，再执行 FlagFFT 的 Python 依赖、
+`ops-fft`、CMake 和测试。完整命令、固定路径和设备选择见
+[ascend_environment_setup_complete.md](ascend_environment_setup_complete.md)。
 
 ### Hygon BW1000（HCU）
 
