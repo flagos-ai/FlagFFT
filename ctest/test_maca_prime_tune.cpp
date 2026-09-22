@@ -93,6 +93,25 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
 }
 
+TEST(Plan2D, RcPreservesOnlySmallMixedBatchedRows) {
+  const auto leaf = [](int64_t n, std::vector<int64_t> factors, int64_t lanes = 1) {
+    return std::make_shared<flagfft::LeafPlanNode>(n, std::move(factors), 1, lanes, 2,
+                                                   std::vector<int64_t> {}, 256);
+  };
+  const auto row = leaf(209, {19, 11});
+  const auto col = leaf(221, {17, 13});
+  const auto pair = [](const flagfft::PlanNodePtr &a, const flagfft::PlanNodePtr &b) {
+    return std::make_shared<flagfft::FourStepPlanNode>(a->length * b->length, a->length, b->length, a, b);
+  };
+  EXPECT_TRUE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, col)));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(row));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, leaf(128, {8, 4, 4}))));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, leaf(273, {21, 13}))));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(leaf(209, {19, 11}, 2), col)));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(
+      pair(row, std::make_shared<flagfft::DirectDFTPlanNode>(23))));
+}
+
 TEST(Plan1D, MacaSinglePrimeTuneAddsPowerOfTwoConvolution) {
   flagfft::FFTRequest request;
   request.fft_length = request.requested_n = 997;

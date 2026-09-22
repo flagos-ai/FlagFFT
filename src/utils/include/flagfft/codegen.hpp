@@ -40,6 +40,22 @@ inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
          n1 > 1 && (n1 % 2) == 0;
 }
 
+// In the RC schedule these small mixed-radix leaves already use the measured
+// batched MACA policy (P8/256 threads). The single-transform register policy
+// reduces them to P4/128 threads and regresses the row transform. Preserve the
+// existing child policy, without disabling graph/column choices at the root.
+inline bool maca_2d_rc_preserve_batched_row(const PlanNodePtr &node) {
+  const auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);
+  if (four_step == nullptr) return false;
+  const auto small_mixed_leaf = [](const PlanNodePtr &child) {
+    const auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(child);
+    return leaf != nullptr && leaf->length > 1 && leaf->length <= 256 &&
+           (leaf->length & (leaf->length - 1)) != 0 && leaf->lanes == 1 &&
+           leaf->factors.size() > 1;
+  };
+  return small_mixed_leaf(four_step->row_plan) && small_mixed_leaf(four_step->col_plan);
+}
+
 std::pair<std::vector<int64_t>, std::vector<int64_t>> decode_stage_codelet(
     int64_t codelet, const std::vector<int64_t> &radices, int64_t stage);
 int64_t mixed_radix_value(const std::vector<int64_t> &digits,
@@ -1076,6 +1092,9 @@ class TritonCompiler {
 
  private:
   void configure_maca_1d_single_policy(const FFTRequest &request);
+  std::shared_ptr<CompiledRawNode> compile_raw_2d_rc_row(const PlanNodePtr &node,
+                                                        const FFTRequest &request,
+                                                        int64_t batch);
 
   bool maca_1d_single_policy_ = false;
   bool maca_2d_single_policy_ = false;
