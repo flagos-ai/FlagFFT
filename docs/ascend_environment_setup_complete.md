@@ -146,6 +146,29 @@ git status --short --branch
 python3 -m pip install -r python/requirements.txt
 
 export FLAGTREE_BACKEND=ascend
+# baai-ascend 上 GitHub 访问不稳定时，使用宿主机预先放入 FlagTree
+# 工作区的源码依赖；没有该目录时，删除这个 if 块，setup_helper 会按
+# 官方源码中的版本约束从 GitHub 获取依赖。
+if test -d "$FLAGTREE/offline-deps"; then
+  git config --global "url.${FLAGTREE}/offline-deps/flir.insteadOf" \
+    https://github.com/flagos-ai/flir.git
+  git config --global "url.${FLAGTREE}/offline-deps/FlagPrism.insteadOf" \
+    https://github.com/flagos-ai/FlagPrism.git
+  git config --global "url.${FLAGTREE}/offline-deps/AscendNPU-IR.insteadOf" \
+    https://github.com/flagos-ai/FlagTree-AscendNPU-IR.git
+fi
+
+# setup_helper 会准备 Ascend LLVM 缓存和第三方源码。必须先让它执行，
+# 再把该缓存中的 clang/clang++ 放到 PATH；否则 CMake 可能报找不到 clang。
+python3 -c 'import python.setup_tools.setup_helper'
+LLVM_ROOT="$(find /root/.flagtree/ascend -mindepth 1 -maxdepth 1 \
+  -type d -name "llvm-*" -print -quit)"
+test -n "$LLVM_ROOT" && test -x "$LLVM_ROOT/bin/clang"
+test -x "$LLVM_ROOT/bin/clang++"
+export PATH="$LLVM_ROOT/bin:$PATH"
+export CC="$LLVM_ROOT/bin/clang"
+export CXX="$LLVM_ROOT/bin/clang++"
+
 MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
 python3 -m pip show flagtree
@@ -153,19 +176,22 @@ cd /tmp
 python3 -c 'import triton; print("triton:", triton.__path__)'
 ```
 
-如果 FlagTree 构建提示缺少仓库内的外部组件，按官方版本要求补齐：
+当前实测的源码依赖版本如下；如果没有使用 `offline-deps`，则让
+`setup_helper` 从官方仓库自动拉取，不要随意替换为其他分支：
 
 ```bash
-cd "$FLAGTREE/third_party"
-test -d flir || git clone https://github.com/flagos-ai/flir.git flir
-test -d FlagPrism || git clone https://github.com/flagos-ai/FlagPrism.git FlagPrism
-
-cd ascend
-test -d FlagTree-AscendNPU-IR || \
-  git clone https://github.com/flagos-ai/FlagTree-AscendNPU-IR.git FlagTree-AscendNPU-IR
+if test -d "$FLAGTREE/offline-deps"; then
+  git -C "$FLAGTREE/offline-deps/flir" rev-parse HEAD
+  # 516ad3110cbf6112bbed8f927ae606c627a193f2
+  git -C "$FLAGTREE/offline-deps/FlagPrism" rev-parse HEAD
+  # 8541d6761805bd9d3c54d1bc53da4a1939ffd6c2
+  git -C "$FLAGTREE/offline-deps/AscendNPU-IR" rev-parse HEAD
+  # a205c9574907907d608da6029403415ca2f98d3c
+fi
 ```
 
-然后回到 `$FLAGTREE` 重跑 `MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v`。
+如果构建中途失败，修正依赖或 LLVM 环境后，回到 `$FLAGTREE` 重跑
+`MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v`。
 不要执行 `pip install triton`；它会覆盖 Ascend 适配版 Triton。
 
 ## 5. 安装 FlagFFT 的 Python 依赖
@@ -174,7 +200,9 @@ test -d FlagTree-AscendNPU-IR || \
 cd "$SRC"
 git submodule update --init --recursive
 test -f "$TRITON_JIT/CMakeLists.txt"
-python3 -m pip install -e "$SRC[test]"
+# 基础镜像已经带有 numpy/PyYAML/pytest；关闭 build isolation，避免 pip
+# 为 setuptools 创建临时环境时访问外部 PyPI。
+python3 -m pip install --no-index --no-build-isolation -e "${SRC}[test]"
 python3 - <<'PY'
 import torch
 import torch_npu
@@ -202,17 +230,18 @@ mkdir -p "$SRC/deps"
 if test ! -d "$OPSFFT/.git"; then
   git clone https://gitcode.com/cann/ops-fft.git "$OPSFFT"
 else
-  git -C "$OPSFFT" fetch --all
-  git -C "$OPSFFT" pull --ff-only
+  git -C "$OPSFFT" fetch --all --prune
 fi
+OPSFFT_COMMIT=f2ed13ec7dc9a5ee1d60bc307daf0b92062d7309
+git -C "$OPSFFT" checkout --detach "$OPSFFT_COMMIT"
 
 cd "$OPSFFT"
-bash build.sh --soc=Ascend910B -j"$(nproc)"
+bash build.sh --soc=Ascend910B -j16
+cmake --install build --prefix build_out
 
-export ASCEND_OPS_FFT_ROOT="$OPSFFT"
-test -f "$ASCEND_OPS_FFT_ROOT/include/cann_ops_fft.h" || \
-  test -f "$ASCEND_OPS_FFT_ROOT/include/math_libs/cann_ops_fft.h" || \
-  test -f "$ASCEND_OPS_FFT_ROOT/src/include/cann_ops_fft.h"
+export ASCEND_OPS_FFT_ROOT="$OPSFFT/build_out/ops_fft"
+test -f "$ASCEND_OPS_FFT_ROOT/include/cann_ops_fft.h"
+test -f "$ASCEND_OPS_FFT_ROOT/lib64/libcann_ops_fft.so"
 find "$ASCEND_OPS_FFT_ROOT" \( -name 'libcann_ops_fft.so' -o \
   -name 'libcann_ops_fft.a' \) -print
 ```
@@ -308,9 +337,30 @@ python3 "$SRC/tools/run_tests.py" \
   `ASCEND_TOOLKIT_HOME` 是否为 `/usr/local/Ascend/cann-9.0.0`。
 - 找不到 `triton` 或导入循环：确认从官方 FlagTree `triton_v3.5.x` 源码安装，
   设置 `TORCH_DEVICE_BACKEND_AUTOLOAD=0`，不要安装普通 `triton`。
-- FlagTree 构建缺少依赖：先确认网络可用；按官方指南准备
-  `~/.flagtree/ascend` 和 `~/.triton` 的预下载包后再重试。
+- FlagTree 构建找不到 `clang`：重新执行
+  `python3 -c 'import python.setup_tools.setup_helper'`，从
+  `/root/.flagtree/ascend/llvm-*` 找到 LLVM，并重新设置 `PATH`、`CC`、`CXX` 后再重试。
+- FlagTree 构建缺少 GitHub 依赖：确认 `$FLAGTREE/offline-deps` 中的三个源码仓库
+  存在，或恢复网络后删除本节的 Git URL 映射，让官方 `setup_helper` 自动获取。
 - 找不到 `cann_ops_fft.h` 或 `libcann_ops_fft`：确认 `ops-fft` 已在
   `$SRC/deps/ops-fft` 中以 `Ascend910B` 构建，并重新设置
   `ASCEND_OPS_FFT_ROOT`。
 - 结果目录非空：每次使用新的秒级时间戳目录；不要覆盖以前的结果。
+
+## 11. 本次实测记录（2026-09-22）
+
+本流程在 `baai-ascend` 的 `flagfft-ascend` 容器中完成验证。FlagTree 使用官方
+仓库的 `triton_v3.5.x` 分支（提交 `7aa36854464b719cb3c8f097e8e9810fe9be4d0a`），
+通过源码安装得到 `flagtree 0.7.0+ascend.git7aa36854`、Triton 3.5.1；没有安装
+普通 Triton wheel。`ops-fft` 使用提交 `f2ed13ec7dc9a5ee1d60bc307daf0b92062d7309`，
+安装根目录为 `$SRC/deps/ops-fft/build_out/ops_fft`。
+
+验证结果：
+
+- CMake Release 构建成功，`libflagfft.so`、CLI 和 NPU 测试目标均生成。
+- `ctest --test-dir "$BUILD" --output-on-failure`：1/1 通过。
+- 三个 Python 测试文件：53 passed。
+- `1d_ct_single_c2c` Ascend smoke：精度 1/1、性能 1/1 通过，speedup 3.1468。
+
+smoke 结果保存在宿主机 `/root/gcx/results/20260922_115027_ascend_smoke_c2c`，
+不要把结果目录放入 FlagFFT worktree。
