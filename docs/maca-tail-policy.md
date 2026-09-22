@@ -13,8 +13,8 @@ covered for complex transforms. The native request retains `origin_rank` and
 | Z2Z | 1048576 | 1024×1024, plain row/col FP64 kernels use bounded P4W4 |
 | D2Z/Z2D | 997 | Bluestein 2048 |
 | R2C/C2R | 1009 | Bluestein 2048 |
-| R2C/C2R/D2Z/Z2D | 23 | Fuse boundaries **only if the existing root is DirectDFT**; FP64 uses tree |
-| R2C/C2R | 29/31/37 | Fuse DirectDFT boundary only; D2Z/Z2D remain on the production path |
+| R2C/C2R/D2Z/Z2D | 2≤N≤23 | Fuse boundaries only when the root is DirectDFT; FP64 tree only at N=23 |
+| R2C/C2R | 24≤N≤37 | Fuse DirectDFT boundary only; D2Z/Z2D remain on the production path |
 
 The general rule is therefore: choose a candidate only when the measured
 algorithm family, precision, public API and length all match; never infer a
@@ -36,9 +36,10 @@ cannot inherit it. Existing shared-memory bounds remain enforced.
   attached to its plain row/column 1024 leaves.
 - The measured 328050 405x810 candidate is intentionally not automatic: it
   improves relative to baseline but remains below the 0.8 acceptance gate.
-- `real-direct`: only measured DirectDFT real roots use boundary fusion. The
-  FP64 balanced reduction is selected only for N=23; N=29/31/37 use the tested
-  Kahan fallback. Public API is part of the predicate.
+- `real-direct`: a small DirectDFT root with `2≤N≤23` accepts all four real
+  APIs; `24≤N≤37` accepts only R2C/C2R. The FP64 balanced reduction is
+  selected only for N=23; other lengths use the Kahan fallback. Public API and
+  the actual DirectDFT root are both part of the predicate.
 
 These are strategy predicates, not a global “fast mode”: a request receives at
 most one matching class, and an unmatched request receives `off`.

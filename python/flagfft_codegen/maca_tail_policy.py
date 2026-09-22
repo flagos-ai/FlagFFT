@@ -36,7 +36,7 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
             and length == n1 == n2 == 1024
             and kernel in {"four_step_row", "four_step_col"}):
         return "p4w4"
-    if (_root_mode.get() == "real-direct" and length in {23, 29, 31, 37}
+    if (_root_mode.get() == "real-direct" and 2 <= length <= 37
             and dtype in {"complex64", "complex128"}
             and kernel in {"direct_dft_r2c", "direct_dft_c2r"}):
         return "real-direct"
