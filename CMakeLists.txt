@@ -136,6 +136,7 @@ set(FLAGFFT_CORE_SOURCES
     src/codegen/jit_cache.cpp
     src/codegen/plan_kernel_keys.cpp
     src/codegen/tables.cpp
+    src/codegen/request_policy.cpp
     src/codegen/compiler.cpp
     src/exec/tuned_plan.cpp
     src/exec/raw_nodes.cpp

@@ -163,56 +163,40 @@ namespace {
            maca_flag_or_default("FLAGFFT_MACA_REAL_DIRECT_DFT", maca_tail_real_direct_dft(request));
   }
 
-}  // namespace
+  // Row/column requests replace batch with the number of axis transforms.
+  // Carry the root 2D policy through that recursion, then restore it so a
+  // compiler reused for an unrelated plan cannot leak the defaults.
+  struct Maca2dPolicyScope {
+    bool &state;
+    bool previous;
+    Maca2dPolicyScope(bool &state, bool enabled) : state(state), previous(state) {
+      state = enabled;
+    }
+    Maca2dPolicyScope(bool &state, const FFTRequest &request, int64_t batch, int64_t n0, int64_t n1)
+        : Maca2dPolicyScope(state,
+              request.device_type == "maca" && request.raw_dim == 2 && request.batch == 1 &&
+              request.input_dtype == "complex64" && request.output_dtype == "complex64" && batch == 1 &&
+              request.input_layout == "contiguous" && !request.requires_contiguous_copy && n0 > 1 && n1 > 1 &&
+              maca_flag_or_default("FLAGFFT_MACA_2D_SINGLE", true)) {
+    }
+    ~Maca2dPolicyScope() { state = previous; }
+    Maca2dPolicyScope(const Maca2dPolicyScope &) = delete;
+    Maca2dPolicyScope &operator=(const Maca2dPolicyScope &) = delete;
+  };
 
-bool ix_ct_single_policy_enabled(const FFTRequest &request) {
-  if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
-      request.batch != 1 || request.fft_length != request.requested_n ||
-      (request.requested_n != 1024 && request.requested_n != 2048 && request.requested_n != 16384) ||
-      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
-      request.input_strides.empty() || request.input_strides.back() != 1) {
-    return false;
-  }
-  const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
-  if (!setting || std::string(setting) == "1") return true;
-  if (std::string(setting) == "0") return false;
-  throw std::runtime_error("FLAGFFT_IX_CT_SINGLE must be 0 or 1");
-}
-
-bool ix_packed_real_policy_enabled(const FFTRequest &request) {
-  if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
-      request.batch != 1 || request.fft_length != request.requested_n ||
-      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
-      request.input_strides.empty() || request.input_strides.back() != 1) return false;
-  switch (request.requested_n) {
-    case 328050:
-    case 340200:
-    case 663000:
-    case 1048576:
-      break;
-    default:
+  bool has_real_boundary_row_plan(const PlanNodePtr &node) {
+    if (std::dynamic_pointer_cast<LeafPlanNode>(node) != nullptr) {
+      return true;
+    }
+    auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);
+    if (four_step == nullptr) {
       return false;
+    }
+    return std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
+           std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
   }
-  const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
-  if (!setting || std::string(setting) == "1") return true;
-  if (std::string(setting) == "0") return false;
-  throw std::runtime_error("FLAGFFT_IX_CT_SINGLE must be 0 or 1");
-}
 
-int ix_ct_single_tle_policy(const FFTRequest &request) {
-  if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
-      request.batch != 1 || request.fft_length != request.requested_n ||
-      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
-      request.input_strides.empty() || request.input_strides.back() != 1) return 0;
-  int policy = 0;
-  if (request.requested_n == 328050 || request.requested_n == 340200) policy = 1;
-  if (request.requested_n == 1048576) policy = 2;
-  if (!policy) return 0;
-  const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
-  if (!setting || std::string(setting) == "1") return policy;
-  if (std::string(setting) == "0") return 0;
-  throw std::runtime_error("FLAGFFT_IX_CT_SINGLE must be 0 or 1");
-}
+}  // namespace
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
   ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
@@ -1386,8 +1370,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
                                                 std::move(full_buf));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_rc_row(
+    const PlanNodePtr &node, const FFTRequest &request, int64_t batch) {
+  const Maca2dPolicyScope child_scope(
+      maca_2d_single_policy_,
+      maca_2d_single_policy_ && !(batch > 1 && maca_2d_rc_preserve_batched_row(node)));
+  return compile_raw_node(node, request, batch);
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
@@ -1396,7 +1389,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // On MUSA S5000, replaying the short batch-1 complex 2D graph adds
   // about 0.1 ms versus direct launches (both RC and transpose paths).
   // Keep other devices and unmeasured batch sizes on the existing policy.
-  const bool enable_graph = !(request.device_type == "musa" && request.device_arch == "31" && batch == 1);
+  // Per-kernel event timing synchronizes launches, which is invalid during
+  // stream capture. Keep diagnostic runs on the direct sequence.
+  const bool enable_graph =
+      !env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS")) &&
+      !(request.device_type == "musa" && request.device_arch == "31" && batch == 1) &&
+      (request.device_type != "maca" ||
+       maca_flag_or_default("FLAGFFT_MACA_2D_GRAPH", !maca_2d_single_policy_));
 
   // Build row FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -1432,7 +1431,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // RC fast path: when the column FFT is a plain leaf transform, run it
   // directly on the strided matrix columns and skip both transposes.
   if (auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan); rc_eligible && col_leaf) {
-    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft = compile_raw_strided_leaf(*col_leaf, request, n1);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
@@ -1446,7 +1445,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // Small odd column lengths use DirectDFT; keep the same RC structure.
   if (auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
       rc_eligible && col_direct) {
-    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft = compile_raw_strided_direct_dft(*col_direct, request, n1);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
@@ -1460,10 +1459,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // Large column lengths that decompose into a four-step leaf pair can also
   // run without transposes through the strided four-step kernels.
   if (auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan); rc_eligible && col_four) {
-    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft =
         compile_raw_four_step_strided_node(*col_four, request, batch * n1, n1);
     if (col_fft != nullptr) {
+      std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
       DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
       return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                    n1,
@@ -1499,6 +1498,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
@@ -1521,6 +1521,41 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_r2c_node(node->row_plan, row_request, batch),
                                                    batch);
   }
+
+  // MACA FP32 path: compile the innermost real boundary directly so
+  // the 2D schedule does not materialize a full complex row matrix merely to
+  // discard its Hermitian half.  Restrict this to row plans that the existing
+  // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.  Packed
+  // real is deliberately disabled here until it is qualified for this layout.
+  if (maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) &&
+      has_real_boundary_row_plan(node->row_plan)) {
+    std::shared_ptr<CompiledRawNode> row_r2c =
+        compile_raw_r2c_node(node->row_plan, row_request, batch * n0, false);
+
+    FFTRequest col_request = request;
+    col_request.fft_length = n0;
+    col_request.input_shape = {batch * half_n1, n0};
+    col_request.input_strides = {n0, 1};
+    col_request.requested_n = n0;
+    col_request.batch = batch * half_n1;
+    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
+
+    auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
+    auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+    const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
+
+    return std::make_shared<CompiledRaw2DR2CRowNode>(n0,
+                                                     n1,
+                                                     std::move(row_r2c),
+                                                     std::move(col_fft),
+                                                     std::move(transpose_fwd),
+                                                     std::move(transpose_inv),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+  }
+
   // RC fast path for real transforms: pack the half spectrum, then run the
   // column FFT directly on the strided half-packed matrix.
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
@@ -1536,7 +1571,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   }
   if (rc_col_fft != nullptr) {
     auto expand_kernel = compile_real_to_complex_kernel(request, n1);
-    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     auto pack_kernel = compile_r2c_half_pack_kernel(request, n1);
     DeviceAllocation row_fft_buf = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DR2CRCNode>(n0,
@@ -1589,6 +1624,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
@@ -1627,6 +1663,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_c2r_node(node->row_plan, row_request, batch),
                                                    batch);
   }
+
+  // Symmetric MACA FP32 path.  The column inverse and compact-layout
+  // transposes run first; the existing 1D C2R boundary node then consumes the
+  // compact rows directly and writes real output.  Keep packed-real disabled
+  // until its 2D row layout has a separate qualification.
+  if (maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) &&
+      has_real_boundary_row_plan(node->row_plan)) {
+    FFTRequest col_request = request;
+    col_request.fft_length = n0;
+    col_request.input_shape = {batch * half_n1, n0};
+    col_request.input_strides = {n0, 1};
+    col_request.requested_n = n0;
+    col_request.batch = batch * half_n1;
+    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
+
+    std::shared_ptr<CompiledRawNode> row_c2r =
+        compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
+    auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
+    auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+    const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
+
+    return std::make_shared<CompiledRaw2DC2RRowNode>(n0,
+                                                     n1,
+                                                     std::move(col_fft),
+                                                     std::move(row_c2r),
+                                                     std::move(transpose_fwd),
+                                                     std::move(transpose_inv),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+  }
+
   // RC fast path for inverse real transforms: column IFFT first, then expand,
   // row IFFT, and real pack -- no transposes.
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
@@ -1642,7 +1711,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   }
   if (rc_col_fft != nullptr) {
     auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n1);
-    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     auto pack_kernel = compile_complex_to_real_kernel(request, n1);
     DeviceAllocation temp_half =
         adaptor::Memory(static_cast<std::size_t>(batch * half_n1 * n0 * element_bytes));

@@ -2526,7 +2526,9 @@ def _build_leaf_kernel_source_for_io(
     if io_mode == "permuted_store":
         batch_pack = permuted_store_batch_pack_for(plan)
     elif io_mode in contiguous_modes:
-        batch_pack = contiguous_batch_pack_for(plan)
+        batch_pack = contiguous_batch_pack_for(
+            plan, real_boundary=io_mode in {"contiguous_r2c", "contiguous_c2r"}
+        )
     else:
         batch_pack = 1
     row_modes = {

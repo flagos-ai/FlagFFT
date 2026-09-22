@@ -1727,6 +1727,161 @@ flagfftResult CompiledRawC2RLeafNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw2DR2CRowNode::CompiledRaw2DR2CRowNode(int64_t n0,
+                                                 int64_t n1,
+                                                 std::shared_ptr<CompiledRawNode> row_r2c,
+                                                 std::shared_ptr<CompiledRawNode> col_fft,
+                                                 std::shared_ptr<JitKernel> transpose_fwd,
+                                                 std::shared_ptr<JitKernel> transpose_inv,
+                                                 DeviceAllocation temp1,
+                                                 DeviceAllocation temp2)
+    : n0(n0),
+      n1(n1),
+      row_r2c(std::move(row_r2c)),
+      col_fft(std::move(col_fft)),
+      transpose_fwd(std::move(transpose_fwd)),
+      transpose_inv(std::move(transpose_inv)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw2DR2CRowNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DR2CRow(n0=" << n0 << ", n1=" << n1
+      << ", row_r2c=" << (row_r2c ? row_r2c->describe() : "null")
+      << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
+      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
+      << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DR2CRowNode::execute(adaptor::DevicePtr input,
+                                               adaptor::DevicePtr output,
+                                               const RawExecutionContext &context) const {
+  try {
+    constexpr int64_t tile_size = 32;
+    const int64_t batch = context.batch;
+    const int64_t half_n1 = n1 / 2 + 1;
+
+    // The row child writes to scratch rather than directly to the user output.
+    // This preserves exact in-place safety: all real input is consumed before
+    // the final transpose writes the compact output back to `output`.
+    RawExecutionContext row_context {context.request, context.stream, batch * n0, n1, half_n1};
+    flagfftResult result = row_r2c->execute(input, temp1.get(), row_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    std::vector<JitKernelArg> transpose_fwd_args = {
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::device(temp2.get()),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_fwd->launch(context.stream,
+                          transpose_fwd_args,
+                          ceil_div(half_n1, tile_size),
+                          ceil_div(n0, tile_size),
+                          batch);
+
+    RawExecutionContext col_context {context.request, context.stream, batch * half_n1, n0, n0};
+    result = col_fft->execute(temp2.get(), temp1.get(), col_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    std::vector<JitKernelArg> transpose_inv_args = {
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_inv->launch(context.stream,
+                          transpose_inv_args,
+                          ceil_div(n0, tile_size),
+                          ceil_div(half_n1, tile_size),
+                          batch);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 2D R2C row-boundary execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw2DC2RRowNode::CompiledRaw2DC2RRowNode(int64_t n0,
+                                                 int64_t n1,
+                                                 std::shared_ptr<CompiledRawNode> col_fft,
+                                                 std::shared_ptr<CompiledRawNode> row_c2r,
+                                                 std::shared_ptr<JitKernel> transpose_fwd,
+                                                 std::shared_ptr<JitKernel> transpose_inv,
+                                                 DeviceAllocation temp1,
+                                                 DeviceAllocation temp2)
+    : n0(n0),
+      n1(n1),
+      col_fft(std::move(col_fft)),
+      row_c2r(std::move(row_c2r)),
+      transpose_fwd(std::move(transpose_fwd)),
+      transpose_inv(std::move(transpose_inv)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw2DC2RRowNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DC2RRow(n0=" << n0 << ", n1=" << n1
+      << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
+      << ", row_c2r=" << (row_c2r ? row_c2r->describe() : "null")
+      << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
+      << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DC2RRowNode::execute(adaptor::DevicePtr input,
+                                               adaptor::DevicePtr output,
+                                               const RawExecutionContext &context) const {
+  try {
+    constexpr int64_t tile_size = 32;
+    const int64_t batch = context.batch;
+    const int64_t half_n1 = n1 / 2 + 1;
+
+    std::vector<JitKernelArg> transpose_fwd_args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_fwd->launch(context.stream,
+                          transpose_fwd_args,
+                          ceil_div(half_n1, tile_size),
+                          ceil_div(n0, tile_size),
+                          batch);
+
+    RawExecutionContext col_context {context.request, context.stream, batch * half_n1, n0, n0};
+    flagfftResult result = col_fft->execute(temp1.get(), temp2.get(), col_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    std::vector<JitKernelArg> transpose_inv_args = {
+        JitKernelArg::device(temp2.get()),
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::i32(static_cast<int32_t>(batch)),
+    };
+    transpose_inv->launch(context.stream,
+                          transpose_inv_args,
+                          ceil_div(n0, tile_size),
+                          ceil_div(half_n1, tile_size),
+                          batch);
+
+    // The row child is the final stage and writes real output only after the
+    // compact input has been consumed, so exact in-place C2R is safe here.
+    RawExecutionContext row_context {context.request, context.stream, batch * n0, half_n1, n1};
+    return row_c2r->execute(temp1.get(), output, row_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 2D C2R row-boundary execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw2DR2CNode::CompiledRaw2DR2CNode(int64_t n0,
                                            int64_t n1,
                                            std::shared_ptr<JitKernel> expand_kernel,

@@ -16,7 +16,9 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
 #include <set>
+#include <string>
 
 // CPU-only planner target: supply the C550 capabilities recorded in the
 // acceptance manifest, without linking or initializing a device runtime.
@@ -24,6 +26,92 @@ namespace flagfft::adaptor {
 std::string backend_name() { return "maca"; }
 int64_t max_dynamic_smem_bytes(int) { return 64 * 1024; }
 }  // namespace flagfft::adaptor
+
+namespace {
+
+class ScopedEnv {
+ public:
+  ScopedEnv(const char *name, const char *value) : name_(name), existed_(std::getenv(name) != nullptr) {
+    if (existed_) previous_ = std::getenv(name);
+    if (value != nullptr) {
+      setenv(name, value, 1);
+    } else {
+      unsetenv(name);
+    }
+  }
+
+  ~ScopedEnv() {
+    if (existed_) {
+      setenv(name_.c_str(), previous_.c_str(), 1);
+    } else {
+      unsetenv(name_.c_str());
+    }
+  }
+
+ private:
+  std::string name_;
+  bool existed_ = false;
+  std::string previous_;
+};
+
+}  // namespace
+
+TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
+  flagfft::FFTRequest request;
+  request.device_type = "maca";
+  request.raw_dim = 2;
+  request.batch = 1;
+  request.input_dtype = request.output_dtype = "complex64";
+  request.input_layout = "contiguous";
+  request.requires_contiguous_copy = false;
+
+  ScopedEnv gate("FLAGFFT_MACA_2D_REAL_ROWS", nullptr);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048, true));
+
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048, true));
+
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "1", 1);
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 256, 2048));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 1025));
+
+  request.device_type = "cuda";
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  request.device_type = "maca";
+  request.input_dtype = request.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  request.input_dtype = request.output_dtype = "complex64";
+  request.batch = 2;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 2, 2048, 2048));
+  request.batch = 1;
+  request.raw_dim = 1;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  request.raw_dim = 2;
+  request.requires_contiguous_copy = true;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+}
+
+TEST(Plan2D, RcPreservesOnlySmallMixedBatchedRows) {
+  const auto leaf = [](int64_t n, std::vector<int64_t> factors, int64_t lanes = 1) {
+    return std::make_shared<flagfft::LeafPlanNode>(n, std::move(factors), 1, lanes, 2,
+                                                   std::vector<int64_t> {}, 256);
+  };
+  const auto row = leaf(209, {19, 11});
+  const auto col = leaf(221, {17, 13});
+  const auto pair = [](const flagfft::PlanNodePtr &a, const flagfft::PlanNodePtr &b) {
+    return std::make_shared<flagfft::FourStepPlanNode>(a->length * b->length, a->length, b->length, a, b);
+  };
+  EXPECT_TRUE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, col)));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(row));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, leaf(128, {8, 4, 4}))));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, leaf(273, {21, 13}))));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(row, leaf(221, {221}))));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(pair(leaf(209, {19, 11}, 2), col)));
+  EXPECT_FALSE(flagfft::maca_2d_rc_preserve_batched_row(
+      pair(row, std::make_shared<flagfft::DirectDFTPlanNode>(23))));
+}
 
 TEST(Plan1D, MacaSinglePrimeTuneAddsPowerOfTwoConvolution) {
   flagfft::FFTRequest request;
@@ -126,4 +214,3 @@ TEST(Plan1D, MacaSinglePrimeTuneDeduplicatesAndBoundsLengths) {
   EXPECT_THROW(builder.build_decomposition_tune_candidates((int64_t {1} << 61) + 1, request, 8),
                std::runtime_error);
 }
-

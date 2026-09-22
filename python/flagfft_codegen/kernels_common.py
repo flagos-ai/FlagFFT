@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import Literal
 
 from .backend_profile import current_profile
-from .target import maca_1d_single_default_enabled, ix_ct_single_default_enabled, ix_ct_single_tle_default
+from .target import (
+    ix_ct_single_default_enabled,
+    ix_ct_single_tle_default,
+    maca_1d_single_default_enabled,
+    maca_2d_single_default_enabled,
+)
 from .maca_tail_policy import resource_default
 
 _MODULE_DIR = Path(__file__).resolve().parent
@@ -278,8 +283,8 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
 def _maca_knob(name: str, default: str = "") -> str:
     """Read a MACA code-generation override.
 
-    The native compiler marks only MACA rank-1, batch-1 requests with the
-    single-transform policy.  The policy supplies the measured defaults while
+    The native compiler scopes the measured 1D and 2D single policies. The
+    2D scope also covers batched row/column kernels. These supply defaults while
     preserving an explicit environment override for A/B testing and rollback.
     Direct Python code-generation calls remain on the historical defaults.
     """
@@ -298,7 +303,9 @@ def _maca_knob(name: str, default: str = "") -> str:
     tail_default = resource_default(name)
     if tail_default is not None:
         return tail_default
-    if maca_1d_single_default_enabled():
+    if maca_2d_single_default_enabled() and name == "2D_TRANSPOSE":
+        return "packed"
+    if maca_1d_single_default_enabled() or maca_2d_single_default_enabled():
         defaults = {
             "EXCHANGE": "direct_all",
             "INNER_PACK": "8",
@@ -396,13 +403,24 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
     return max(pack, min(_portable_exchange_max_pack(), _next_power_of_two(needed)))
 
 
-def contiguous_batch_pack_for(plan: LeafPlan) -> int:
+def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
     if _portable_leaf_backend_active():
         override = _maca_knob("BATCH_PACK")
         if override == "auto":
             return _profile_batch_pack_for(plan)
         if override:
             return _positive_knob("BATCH_PACK", override)
+        # Native 2D only emits these fused real boundary leaves when n0 > 256.
+        # Group short rows to avoid tens of thousands of underfilled blocks.
+        # Small 2D RC plans use ordinary complex leaves and stay at pack=1;
+        # degenerate unit-axis plans are outside the native 2D policy scope.
+        if (
+            maca_2d_single_default_enabled()
+            and real_boundary
+            and plan.dtype == "complex64"
+            and 16 <= plan.length <= 128
+        ):
+            return 4
         lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=1))
         if len(emitted_leaf_factors(plan)) > 1:
             return 1

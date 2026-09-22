@@ -242,7 +242,9 @@ def test_leaf_producer_consumer_and_source_size(
 ):
     # Keep resource policy out of this prototype; force each supported packing
     # through the real builder independently of current plan heuristics.
-    monkeypatch.setattr(leaf, "contiguous_batch_pack_for", lambda plan: pack)
+    monkeypatch.setattr(
+        leaf, "contiguous_batch_pack_for", lambda plan, **kwargs: pack
+    )
     monkeypatch.setattr(leaf, "permuted_store_batch_pack_for", lambda plan: pack)
     monkeypatch.setattr(leaf, "four_step_row_inner_pack_for", lambda *args: pack)
     monkeypatch.setattr(leaf, "four_step_col_inner_pack_for", lambda *args: pack)

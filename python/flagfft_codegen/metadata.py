@@ -129,7 +129,7 @@ def _metadata(
     dtype: str,
 ) -> dict[str, Any]:
     batch_per_block = (
-        contiguous_batch_pack_for(plan)
+        contiguous_batch_pack_for(plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_c2r"})
         if kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS
         else 1
     )

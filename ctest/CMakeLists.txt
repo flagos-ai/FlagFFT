@@ -48,7 +48,8 @@ add_executable(test_maca_prime_tune
     ../src/plan/nodes.cpp ../src/plan/builder_context.cpp
     ../src/plan/factorization.cpp ../src/plan/rader_utils.cpp
     ../src/plan/cost_model.cpp ../src/plan/auto_candidates.cpp
-    ../src/plan/tune_candidates.cpp)
+    ../src/plan/tune_candidates.cpp
+    ../src/codegen/request_policy.cpp)
 target_compile_features(test_maca_prime_tune PRIVATE cxx_std_20)
 target_include_directories(test_maca_prime_tune PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/utils/include)
@@ -61,6 +62,7 @@ set(TEST_TARGETS
     test_packed_real_batch
     test_rader_dc
     test_2d_correctness
+    test_maca_2d_real_rows
     test_3d_correctness
     test_exec_c2c_2p20_tle
     test_exec_c2c_fwd_ct_s   test_exec_c2c_fwd_ct_b

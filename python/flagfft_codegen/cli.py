@@ -47,7 +47,11 @@ from .registry import (
     TRANSPOSE3D,
     kernel_spec,
 )
-from .target import set_codegen_target, set_maca_1d_single_default
+from .target import (
+    set_codegen_target,
+    set_maca_1d_single_default,
+    set_maca_2d_single_default,
+)
 from .maca_tail_policy import set_maca_tail_mode, variant_suffix
 
 
@@ -129,6 +133,11 @@ def main() -> None:
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
     parser.add_argument("--maca-tail-mode", choices=("off", "p4w4", "real-direct"), default="off")
     parser.add_argument(
+        "--maca-2d-single",
+        action="store_true",
+        help="enable the MACA rank-2 FP32 batch-1 code-generation policy",
+    )
+    parser.add_argument(
         "--compile-script",
         type=Path,
         help="Compile in this process using libtriton_jit's standalone helper",
@@ -146,6 +155,7 @@ def main() -> None:
     set_ix_ct_single_default(args.ix_ct_single)
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
+    set_maca_2d_single_default(args.maca_2d_single)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}
@@ -178,6 +188,9 @@ def main() -> None:
         # filesystem cache must not let one policy overwrite the other.
         profile_dir += (
             "-maca-1d-single" if args.maca_1d_single else "-maca-1d-single-off"
+        )
+        profile_dir += (
+            "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
@@ -351,6 +364,7 @@ def main() -> None:
             "ix_ct_single_default": args.ix_ct_single,
             "ix_ct_single_tle_default": args.ix_ct_single_tle,
             "maca_tail_mode": args.maca_tail_mode,
+            "maca_2d_single_default": args.maca_2d_single,
             "warp_size": profile.warp_size,
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }

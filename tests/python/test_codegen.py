@@ -712,6 +712,25 @@ def test_tiled_transpose_uses_register_transpose(kernels) -> None:
     assert "safe_col[:, None] * 64 + safe_row[None, :]" in source
 
 
+@pytest.mark.parametrize("backend,dtype,packed", [
+    ("maca", "complex64", True),
+    ("maca", "complex128", False),
+    ("cuda", "complex64", False),
+])
+def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, packed):
+    from flagfft_codegen import emit
+
+    monkeypatch.setattr(emit, "_maca_backend_active", lambda: backend == "maca")
+    monkeypatch.setenv("FLAGFFT_MACA_2D_TRANSPOSE", "packed")
+    metadata = emit._emit_tiled_transpose_jit_kernel(
+        n0=2048, n1=1025, dtype=dtype, out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+    assert ("tl.pointer_type(tl.uint64)" in source) == packed
+    assert metadata["tile_size"] == 32
+    assert metadata["num_warps"] == 4
+
+
 def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> None:
     (
         kernel_name,

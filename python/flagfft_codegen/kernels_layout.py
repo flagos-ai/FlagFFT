@@ -383,7 +383,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
 
 
 def _build_tiled_transpose_kernel_source(
-    n0: int, n1: int, dtype: str, tile_size: int = 32
+    n0: int, n1: int, dtype: str, tile_size: int = 32,
+    *, register_transpose: bool | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Emit a tiled (batch, M=n0, N=n1) -> (batch, N, M) transpose kernel.
 
@@ -396,7 +397,10 @@ def _build_tiled_transpose_kernel_source(
     total_complex = n0 * n1
     total_float = total_complex * 2  # interleaved complex: 2 floats per element
     kernel_name = f"_tiled_transpose_kernel_n{n0}_{n1}_{suffix}"
-    use_register_transpose = total_complex <= 128 * 1024
+    use_register_transpose = (
+        total_complex <= 128 * 1024
+        if register_transpose is None else register_transpose
+    )
     if use_register_transpose:
         transpose_lines = (
             "\n            # Transpose the register tile so the flattened store axis is the\n"
@@ -456,6 +460,40 @@ def _build_tiled_transpose_kernel_source(
             # Store to destination (transposed)
             tl.store(out_ptr + dst_elem_offsets, src_real, mask=mask)
             tl.store(out_ptr + dst_elem_offsets + 1, src_imag, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
+def _build_packed_transpose_kernel_source(
+    n0: int, n1: int, tile_size: int = 32
+) -> tuple[str, str, list[str]]:
+    """Transpose complex64 bitwise with one 64-bit load/store per element.
+
+    No arithmetic is performed on the payload. Explicit masks preserve tails
+    without duplicate stores, including an odd half-spectrum row pitch.
+    """
+    kernel_name = f"_packed_transpose_kernel_n{n0}_{n1}_t{tile_size}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, nbatch):
+            row = tl.program_id(1) * {tile_size} + tl.arange(0, {tile_size})
+            col = tl.program_id(0) * {tile_size} + tl.arange(0, {tile_size})
+            batch = tl.program_id(2)
+            src = in_ptr.to(tl.pointer_type(tl.uint64))
+            dst = out_ptr.to(tl.pointer_type(tl.uint64))
+            value = tl.load(
+                src + batch * {n0 * n1} + row[:, None] * {n1} + col[None, :],
+                mask=(row[:, None] < {n0}) & (col[None, :] < {n1}) & (batch < nbatch),
+                other=0,
+            )
+            value = tl.trans(value)
+            tl.store(
+                dst + batch * {n0 * n1} + col[:, None] * {n0} + row[None, :],
+                value,
+                mask=(col[:, None] < {n1}) & (row[None, :] < {n0}) & (batch < nbatch),
+            )
         """
     )
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]

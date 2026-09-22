@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #pragma once
+#include <cstdlib>
 #include <functional>
 
 #include <string>
@@ -21,6 +22,39 @@
 #include "flagfft/plan.hpp"
 
 namespace flagfft {
+
+// The 2D real-row path is intentionally a narrow MACA policy.  Keep
+// the predicate inline so planner-only CPU tests can exercise the contract
+// without constructing a device-backed TritonCompiler.
+inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
+                                      int64_t batch,
+                                      int64_t n0,
+                                      int64_t n1,
+                                      bool default_enabled = false) {
+  const char *setting = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
+  const bool enabled = setting == nullptr ? default_enabled : std::string(setting) == "1";
+  return enabled && request.device_type == "maca" &&
+         request.raw_dim == 2 && request.batch == 1 && batch == 1 &&
+         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+         request.input_layout == "contiguous" && !request.requires_contiguous_copy && n0 > 256 &&
+         n1 > 1 && (n1 % 2) == 0;
+}
+
+// In the RC schedule retain the existing batched policy for small mixed leaves.
+// For the measured 209/221 pair the single-transform register policy reduces
+// P8/256 threads to P4/128 threads and regresses the row transform. This does
+// not disable graph/column choices at the root or alter other schedules.
+inline bool maca_2d_rc_preserve_batched_row(const PlanNodePtr &node) {
+  const auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);
+  if (four_step == nullptr) return false;
+  const auto small_mixed_leaf = [](const PlanNodePtr &child) {
+    const auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(child);
+    return leaf != nullptr && leaf->length > 1 && leaf->length <= 256 &&
+           (leaf->length & (leaf->length - 1)) != 0 && leaf->lanes == 1 &&
+           leaf->factors.size() > 1;
+  };
+  return small_mixed_leaf(four_step->row_plan) && small_mixed_leaf(four_step->col_plan);
+}
 
 std::pair<std::vector<int64_t>, std::vector<int64_t>> decode_stage_codelet(
     int64_t codelet, const std::vector<int64_t> &radices, int64_t stage);
@@ -728,6 +762,59 @@ struct CompiledRaw1DAs2DNode final : CompiledRawNode {
   int64_t batch;
 };
 
+// Dense 2D real transforms with a real boundary on the innermost axis.  The
+// row child writes compact rows into temp1; the two compact scratch buffers
+// are then reused around the column FFT.  Keeping the row child separate lets
+// the compiler select the existing leaf/FourStep real boundary implementations
+// without introducing a new kernel family.
+struct CompiledRaw2DR2CRowNode final : CompiledRawNode {
+  CompiledRaw2DR2CRowNode(int64_t n0,
+                          int64_t n1,
+                          std::shared_ptr<CompiledRawNode> row_r2c,
+                          std::shared_ptr<CompiledRawNode> col_fft,
+                          std::shared_ptr<JitKernel> transpose_fwd,
+                          std::shared_ptr<JitKernel> transpose_inv,
+                          DeviceAllocation temp1,
+                          DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  std::shared_ptr<CompiledRawNode> row_r2c;
+  std::shared_ptr<CompiledRawNode> col_fft;
+  std::shared_ptr<JitKernel> transpose_fwd;
+  std::shared_ptr<JitKernel> transpose_inv;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
+struct CompiledRaw2DC2RRowNode final : CompiledRawNode {
+  CompiledRaw2DC2RRowNode(int64_t n0,
+                          int64_t n1,
+                          std::shared_ptr<CompiledRawNode> col_fft,
+                          std::shared_ptr<CompiledRawNode> row_c2r,
+                          std::shared_ptr<JitKernel> transpose_fwd,
+                          std::shared_ptr<JitKernel> transpose_inv,
+                          DeviceAllocation temp1,
+                          DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  std::shared_ptr<CompiledRawNode> col_fft;
+  std::shared_ptr<CompiledRawNode> row_c2r;
+  std::shared_ptr<JitKernel> transpose_fwd;
+  std::shared_ptr<JitKernel> transpose_inv;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
 struct CompiledRaw2DR2CNode final : CompiledRawNode {
   CompiledRaw2DR2CNode(int64_t n0,
                        int64_t n1,
@@ -1005,8 +1092,12 @@ class TritonCompiler {
 
  private:
   void configure_single_transform_policies(const FFTRequest &request);
+  std::shared_ptr<CompiledRawNode> compile_raw_2d_rc_row(const PlanNodePtr &node,
+                                                        const FFTRequest &request,
+                                                        int64_t batch);
 
   bool maca_1d_single_policy_ = false;
+  bool maca_2d_single_policy_ = false;
   bool ix_ct_single_policy_ = false;
   int ix_ct_single_tle_policy_ = 0;
   std::string maca_tail_policy_ = "off";
