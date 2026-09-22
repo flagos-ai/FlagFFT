@@ -1957,6 +1957,17 @@ def _build_thread_local_mixed_four_step_kernel_source(
     vector_dtype = "tl.float64" if _is_double_dtype(plan.dtype) else "tl.float32"
     asm_load_constraints = f'"={vector_reg},={vector_reg},l"'
     asm_store_constraints = f'"=r,l,{vector_reg},{vector_reg}"'
+    def load_complex(idx):
+        if _ix_backend_active():
+            return [f"    r{idx} = tl.load(in_ptr + input_offset{idx})",
+                    f"    i{idx} = tl.load(in_ptr + input_offset{idx} + 1)"]
+        return [
+            f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+            f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+            f"{asm_load_constraints}, "
+            f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+            f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+        ]
     row_modes = {
         "four_step_row",
         "four_step_real_row",
@@ -2044,13 +2055,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    input_offset{idx} = "
                 f"(four_step_batch * input_distance + compact_idx{idx}) * 2"
             )
-            body.append(
-                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
-                f"{asm_load_constraints}, "
-                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
-            )
+            body.extend(load_complex(idx))
             body.append(
                 f"    i{idx} = tl.where(src_idx{idx} < {half_n}, i{idx}, -i{idx})"
             )
@@ -2062,14 +2067,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
             body.append(
                 f"    input_offset{idx} = " f"(four_step_batch_base + src_idx{idx}) * 2"
             )
-            body.append(
-                # The selected leaves and pack=4 cover every input lane exactly.
-                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
-                f"{asm_load_constraints}, "
-                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
-            )
+            body.extend(load_complex(idx))
 
     body.extend(_emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
 
@@ -2277,7 +2275,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    tl.store(out_ptr + output_offset{idx}, r{idx}, "
                 "mask=output_lane_mask)"
             )
-        elif register_radix == 32:
+        elif register_radix == 32 and not _ix_backend_active():
             body.append(
                 f"    output_offset{idx} = "
                 f"(four_step_batch_base + dst_idx{idx}) * 2"
