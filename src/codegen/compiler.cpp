@@ -238,6 +238,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                      adaptor::Memory(bytes));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+    // Diagnostic alternative: make the input transpose explicit so each
+    // child reads a contiguous FFT. Off by default until measured on IX.
+    if (request.device_type == "ix" &&
+        maca_flag_or_default("FLAGFFT_IX_FOUR_STEP_GENERIC", false)) {
+      return compile_raw_four_step_generic(*four_step, request, batch);
+    }
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
