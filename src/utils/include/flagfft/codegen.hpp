@@ -23,15 +23,17 @@
 
 namespace flagfft {
 
-// The 2D real-row path is intentionally a narrow, opt-in MACA policy.  Keep
+// The 2D real-row path is intentionally a narrow MACA policy.  Keep
 // the predicate inline so planner-only CPU tests can exercise the contract
 // without constructing a device-backed TritonCompiler.
 inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
                                       int64_t batch,
                                       int64_t n0,
-                                      int64_t n1) {
+                                      int64_t n1,
+                                      bool default_enabled = false) {
   const char *setting = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
-  return setting != nullptr && std::string(setting) == "1" && request.device_type == "maca" &&
+  const bool enabled = setting == nullptr ? default_enabled : std::string(setting) == "1";
+  return enabled && request.device_type == "maca" &&
          request.raw_dim == 2 && request.batch == 1 && batch == 1 &&
          request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
          request.input_layout == "contiguous" && !request.requires_contiguous_copy && n0 > 256 &&

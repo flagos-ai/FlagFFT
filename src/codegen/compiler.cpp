@@ -152,7 +152,8 @@ namespace {
         : state(state), previous(state) {
       state = request.device_type == "maca" && request.raw_dim == 2 && request.batch == 1 &&
               request.input_dtype == "complex64" && request.output_dtype == "complex64" && batch == 1 &&
-              maca_flag_or_default("FLAGFFT_MACA_2D_SINGLE", false);
+              request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+              maca_flag_or_default("FLAGFFT_MACA_2D_SINGLE", true);
     }
     ~Maca2dPolicyScope() { state = previous; }
     Maca2dPolicyScope(const Maca2dPolicyScope &) = delete;
@@ -1463,12 +1464,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                                    batch);
   }
 
-  // Opt-in MACA FP32 path: compile the innermost real boundary directly so
+  // MACA FP32 path: compile the innermost real boundary directly so
   // the 2D schedule does not materialize a full complex row matrix merely to
   // discard its Hermitian half.  Restrict this to row plans that the existing
   // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.  Packed
   // real is deliberately disabled here until it is qualified for this layout.
-  if (maca_2d_real_rows_enabled(request, batch, n0, n1) && has_real_boundary_row_plan(node->row_plan)) {
+  if (maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) &&
+      has_real_boundary_row_plan(node->row_plan)) {
     std::shared_ptr<CompiledRawNode> row_r2c =
         compile_raw_r2c_node(node->row_plan, row_request, batch * n0, false);
 
@@ -1604,11 +1606,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
                                                    batch);
   }
 
-  // Symmetric opt-in MACA FP32 path.  The column inverse and compact-layout
+  // Symmetric MACA FP32 path.  The column inverse and compact-layout
   // transposes run first; the existing 1D C2R boundary node then consumes the
   // compact rows directly and writes real output.  Keep packed-real disabled
   // until its 2D row layout has a separate qualification.
-  if (maca_2d_real_rows_enabled(request, batch, n0, n1) && has_real_boundary_row_plan(node->row_plan)) {
+  if (maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) &&
+      has_real_boundary_row_plan(node->row_plan)) {
     FFTRequest col_request = request;
     col_request.fft_length = n0;
     col_request.input_shape = {batch * half_n1, n0};

@@ -56,7 +56,7 @@ class ScopedEnv {
 
 }  // namespace
 
-TEST(Plan2D, MacaRealRowsPolicyIsOptInAndNarrow) {
+TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   flagfft::FFTRequest request;
   request.device_type = "maca";
   request.raw_dim = 2;
@@ -65,8 +65,12 @@ TEST(Plan2D, MacaRealRowsPolicyIsOptInAndNarrow) {
   request.input_layout = "contiguous";
   request.requires_contiguous_copy = false;
 
-  ScopedEnv gate("FLAGFFT_MACA_2D_REAL_ROWS", "0");
+  ScopedEnv gate("FLAGFFT_MACA_2D_REAL_ROWS", nullptr);
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048, true));
+
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048, true));
 
   setenv("FLAGFFT_MACA_2D_REAL_ROWS", "1", 1);
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
