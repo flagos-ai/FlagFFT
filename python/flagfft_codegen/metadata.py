@@ -25,8 +25,9 @@ from .kernels_common import (
     LeafPlan,
     _cooperative_warp_cap,
     _dtype_suffix,
-    _maca_backend_active,
+    _maca_knob,
     _portable_leaf_backend_active,
+    _ix_backend_active,
     _zero_other,
     contiguous_batch_pack_for,
     cooperative_stage_lanes_for,
@@ -174,6 +175,9 @@ def _metadata(
     if maca_backend:
         # One warp triggers unsupported shuffle lowering in multi-stage leaves.
         num_warps = max(2, num_warps)
+    if _ix_backend_active() and _maca_knob("WARPS"):
+        num_warps = int(_maca_knob("WARPS"))
+        profile.validate(num_warps)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

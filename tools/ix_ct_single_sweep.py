@@ -19,6 +19,7 @@ def main():
     p.add_argument('--timeout', type=int, default=120)
     p.add_argument('--exchange', default='direct_all')
     p.add_argument('--direction', default='forward')
+    p.add_argument('--warps', choices=('1', '2', '4', '8'))
     a = p.parse_args()
     out = Path(a.output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -35,6 +36,8 @@ def main():
             for setting in a.leaf_factors:
                 length, factors = setting.split('=', 1)
                 env['FLAGFFT_IX_LEAF_FACTORS_' + length] = factors
+            if a.warps:
+                env['FLAGFFT_IX_WARPS'] = a.warps
             for n in a.shapes.split(','):
                 for api in a.apis.split(','):
                     name = f'{variant}_{n}_{api}_{repeat}'
