@@ -28,6 +28,7 @@ from .kernels_common import (
     LeafPlan,
     _is_double_dtype,
     _maca_backend_active,
+    _ix_backend_active,
     _portable_leaf_backend_active,
     _maca_knob,
     _non_nvidia_backend_active,
@@ -2291,6 +2292,57 @@ def _build_thread_local_mixed_four_step_kernel_source(
     return kernel_name, "\n".join(body)
 
 
+def _build_ix_vector_leaf(plan: LeafPlan, io_mode: str) -> tuple[str, str]:
+    """Experimental XOR-routed radix-2 leaf; no explicit shared buffers."""
+    n = plan.length
+    bits = n.bit_length() - 1
+    name = f"ix_vector_{io_mode}_{plan.direction}_{n}"
+    params = _leaf_kernel_params_for_io(plan, io_mode=io_mode)
+    lines = ["@triton.jit", f"def {name}({', '.join(params)}):",
+             "    batch = tl.program_id(0)", f"    x = tl.arange(0, {n})"]
+    reverse = " | ".join(f"((x >> {i}) & 1) << {bits - 1 - i}" for i in range(bits))
+    lines.append(f"    src = {reverse}")
+    if io_mode == "contiguous_r2c":
+        lines += ["    r = tl.load(in_ptr + batch * input_distance + src, batch < nbatch, 0)",
+                  "    im = tl.zeros_like(r)"]
+    elif io_mode == "contiguous_c2r":
+        lines += [f"    compact = tl.minimum(src, {n} - src)",
+                  "    offset = (batch * input_distance + compact) * 2",
+                  "    r = tl.load(in_ptr + offset, batch < nbatch, 0)",
+                  "    im = tl.load(in_ptr + offset + 1, batch < nbatch, 0)",
+                  f"    im = tl.where(src > {n // 2}, -im, im)",
+                  f"    im = tl.where((src == 0) | (src == {n // 2}), 0.0, im)"]
+    else:
+        lines += [f"    offset = (batch * {n} + src) * 2",
+                  "    r = tl.load(in_ptr + offset, batch < nbatch, 0)",
+                  "    im = tl.load(in_ptr + offset + 1, batch < nbatch, 0)"]
+    sign = _direction_sign(plan.direction)
+    for s in range(bits):
+        half = 1 << s
+        lines += [f"    partner_r = tl.gather(r, x ^ {half}, 0)",
+                  f"    partner_i = tl.gather(im, x ^ {half}, 0)",
+                  f"    upper = (x & {half}) != 0",
+                  "    ar = tl.where(upper, partner_r, r)",
+                  "    ai = tl.where(upper, partner_i, im)",
+                  "    br = tl.where(upper, r, partner_r)",
+                  "    bi = tl.where(upper, im, partner_i)"]
+        if s:
+            lines += [f"    angle = (x % {half}).to(tl.float32) * {sign * math.pi / half}",
+                      "    wr = tl.cos(angle)", "    wi = tl.sin(angle)",
+                      "    br, bi = _cmul(br, bi, wr, wi)"]
+        lines += ["    r = ar + tl.where(upper, -br, br)",
+                  "    im = ai + tl.where(upper, -bi, bi)"]
+    if io_mode == "contiguous_c2r":
+        lines.append("    tl.store(out_ptr + batch * output_distance + x, r, batch < nbatch)")
+    else:
+        base = "batch * output_distance" if io_mode == "contiguous_r2c" else f"batch * {n}"
+        mask = f"(batch < nbatch) & (x <= {n // 2})" if io_mode == "contiguous_r2c" else "batch < nbatch"
+        lines += [f"    offset = ({base} + x) * 2",
+                  f"    tl.store(out_ptr + offset, r, {mask})",
+                  f"    tl.store(out_ptr + offset + 1, im, {mask})"]
+    return name, "\n".join(lines) + "\n"
+
+
 def _build_leaf_kernel_source_for_io(
     plan: LeafPlan,
     *,
@@ -2300,6 +2352,10 @@ def _build_leaf_kernel_source_for_io(
     four_step_n2: int = 0,
     perm_form: str = "outer",
 ) -> tuple[str, str]:
+    if (_ix_backend_active() and _maca_knob("VECTOR_LEAF") == "1"
+            and plan.length == 2048 and plan.dtype == "complex64"
+            and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"}):
+        return _build_ix_vector_leaf(plan, io_mode)
     if _use_thread_local_mixed_leaf(
         plan,
         io_mode=io_mode,
