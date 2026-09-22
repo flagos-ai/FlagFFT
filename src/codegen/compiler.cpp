@@ -190,6 +190,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       butterfly_block = block_override("FLAGFFT_NPU_STOCKHAM_BLOCK", butterfly_block);
     }
     const int64_t prime_block = block_override("FLAGFFT_NPU_PRIME_BLOCK", 128);
+    if (request.device_type == "ix") {
+      butterfly_block = block_override("FLAGFFT_IX_STOCKHAM_BLOCK", 128);
+    }
     for (int64_t radix : stockham->factors) {
       KernelKey key = KernelKey::direct_dft(triton_target_for_request(request),
                                             request.direction,

@@ -20,6 +20,7 @@ def main():
     p.add_argument('--exchange', default='direct_all')
     p.add_argument('--direction', default='forward')
     p.add_argument('--warps', choices=('1', '2', '4', '8'))
+    p.add_argument('--stockham-radix', choices=('8', '16', '32'))
     a = p.parse_args()
     out = Path(a.output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -38,6 +39,8 @@ def main():
                 env['FLAGFFT_IX_LEAF_FACTORS_' + length] = factors
             if a.warps:
                 env['FLAGFFT_IX_WARPS'] = a.warps
+            if a.stockham_radix:
+                env['FLAGFFT_IX_STOCKHAM_RADIX'] = a.stockham_radix
             for n in a.shapes.split(','):
                 for api in a.apis.split(','):
                     name = f'{variant}_{n}_{api}_{repeat}'

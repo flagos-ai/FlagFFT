@@ -123,6 +123,25 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }
+  if (request_context().device_type == "ix" && request_context().batch == 1 &&
+      request_context().input_dtype == "complex64" && n >= 4096 && (n & (n - 1)) == 0) {
+    if (const char *raw = std::getenv("FLAGFFT_IX_STOCKHAM_RADIX")) {
+      const std::string value(raw);
+      if (value != "8" && value != "16" && value != "32") {
+        throw std::runtime_error("FLAGFFT_IX_STOCKHAM_RADIX must be 8, 16 or 32");
+      }
+      const int64_t radix = std::stoll(value);
+      int64_t remaining = n;
+      std::vector<int64_t> factors;
+      while (remaining > 1) {
+        const int64_t factor = std::min(radix, remaining);
+        factors.push_back(factor);
+        remaining /= factor;
+      }
+      PlanNodePtr node = std::make_shared<StockhamPlanNode>(n, factors);
+      return {{node, static_cast<double>(n * factors.size()), priority(node)}};
+    }
+  }
   // Reuse the radix codelets through the GM Stockham mapping on Ascend.
   // CUDA shared-memory leaf layouts are not used on this path.
   if (request_context().device_type == "npu") {

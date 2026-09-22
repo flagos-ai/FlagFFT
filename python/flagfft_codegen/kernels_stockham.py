@@ -1,12 +1,15 @@
 """Global-memory Stockham mapping of the shared register radix codelets."""
 
 from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix
-from .kernels_leaf import _emit_natural_order_codelet_call
+from .kernels_leaf import (
+    _emit_natural_order_codelet_call, _emit_radix16_codelet_call,
+    _emit_natural_order_radix32_codelet_call,
+)
 
 
 def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int = 0,
                         block: int = 128):
-    if radix not in _NATURAL_ORDER_CODELET_RADICES or n % radix:
+    if radix not in _NATURAL_ORDER_CODELET_RADICES | {16, 32} or n % radix:
         raise ValueError(f"unsupported Stockham stage n={n}, radix={radix}")
     if stage_span < 0 or (stage_span and n % (radix * stage_span)):
         raise ValueError(f"invalid Stockham span {stage_span} for n={n}, radix={radix}")
@@ -42,7 +45,12 @@ def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_s
                     f"    r{digit}, i{digit} = _cmul(r{digit}, i{digit}, wr{digit}, wi{digit})",
                 ]
             )
-    body.extend(_emit_natural_order_codelet_call("    ", radix, direction))
+    if radix == 16:
+        body.extend(_emit_radix16_codelet_call("    ", direction))
+    elif radix == 32:
+        body.extend(_emit_natural_order_radix32_codelet_call("    ", direction))
+    else:
+        body.extend(_emit_natural_order_codelet_call("    ", radix, direction))
     body.append(f"    dst = batch * {n} + {radix} * k - {radix - 1} * j")
     for digit in range(radix):
         body.extend(
