@@ -1,8 +1,41 @@
 # Ascend/CANN 9.0 构建与测试环境
 
-本文给出 FlagFFT 在 Ascend 910B、CANN 9.0 容器中的完整流程，覆盖进入容器、依赖准备、CANN/torch_npu/Triton 环境、ops-fft、CMake 构建、边界测试和完整验收。
+本文给出 FlagFFT 在 Ascend 910B、CANN 9.0 容器中的逐步流程，覆盖主机拉代码、进入 FlagTree 容器、安装依赖、CANN/torch_npu/Triton 环境、ops-fft、CMake 构建、边界测试和完整验收。
 
-## 1. 环境边界和路径
+## 1. 在主机准备并拉取代码
+
+代码在主机 worktree 维护，容器只负责编译和运行。首次准备可以执行：
+
+```bash
+mkdir -p /rjs/llb/fft-dev
+cd /rjs/llb/fft-dev
+git clone --recurse-submodules https://github.com/flagos-ai/FlagFFT.git FlagFFT-dev
+cd FlagFFT-dev
+git switch dev
+git submodule update --init --recursive
+```
+
+如果代码已经存在，不要重复 clone：
+
+```bash
+cd /rjs/llb/fft-dev/FlagFFT-dev
+git fetch origin
+git switch dev
+git pull --ff-only origin dev
+git submodule update --init --recursive
+```
+
+确认源码版本和工作区状态：
+
+```bash
+git rev-parse --short HEAD
+git status --short
+test -f deps/libtriton_jit/CMakeLists.txt
+```
+
+如果使用内部代码源，把上面的 GitHub URL 换成内部仓库地址；不要在容器内直接修改源码。
+
+## 2. 环境边界和路径
 
 Ascend kernel 必须在 CANN 9.0 容器中编译和验证。主机上的 CANN 8.x 只用于诊断，不能作为 kernel 验证基准。容器需要包含 CANN 9.0、torch_npu 和 Ascend 适配的 Triton/libtriton_jit，并能访问 `/dev/davinci*`。
 
@@ -25,7 +58,7 @@ libtriton_jit：/home/flagfft-npu/deps/libtriton_jit
 ops-fft：/tmp/ops-fft
 ```
 
-## 2. 进入容器
+## 3. 进入容器
 
 实际验证流程从已经准备好的 **FlagTree Ascend 镜像**开始，不是从裸 CANN 容器重新安装 FlagTree、PyTorch 或 Triton。我们使用的是 `baai-ascend` 主机上由平台启动的 `flagsparse` 容器；镜像内已提供 CANN 9.0、torch、torch_npu、FlagTree/Triton 和编译工具链。
 
@@ -41,6 +74,8 @@ docker exec -it flagsparse bash
 自行启动时应使用包含 CANN9、torch_npu 和 Ascend Triton 的镜像，并映射 Ascend 设备；镜像名和设备节点按服务器实际情况替换：
 
 ```bash
+docker login <registry>                 # 私有镜像仓库按需执行
+docker pull <flagtree-ascend-cann9-image>
 docker run --rm -it --ipc=host --network=host --privileged \
   --device=/dev/davinci0 \
   --device=/dev/davinci_manager \
@@ -59,10 +94,25 @@ python3 --version
 npu-smi info
 ```
 
-## 3. 源码和 Python 依赖
+进入容器后重新设置容器内路径变量（主机 shell 中的环境变量不会自动传入 `docker exec`）：
+
+```bash
+export SRC=/workspace/FlagFFT-dev
+export BUILD=/workspace/FlagFFT-build-ascend
+export TRITON_JIT=$SRC/deps/libtriton_jit
+export OPSFFT=/tmp/ops-fft
+export RESULTS=/workspace/results/$(date +%Y%m%d_%H%M%S)_ascend
+```
+
+## 4. 在容器内安装系统和 Python 依赖
 
 ```bash
 cd "$SRC"
+apt-get update
+apt-get install -y git cmake ninja-build build-essential sqlite3 libsqlite3-dev pkg-config ca-certificates
+cmake --version
+python3 --version
+python3 -m pip --version
 git submodule update --init --recursive
 test -f "$TRITON_JIT/CMakeLists.txt"
 python3 -m pip install -e '.[test]'   # 仅在镜像没有项目测试依赖时执行
@@ -70,7 +120,7 @@ python3 -m pip install -e '.[test]'   # 仅在镜像没有项目测试依赖时�
 
 PyTorch、torch_npu、Triton 和 FlagTree 应由镜像提供。不要用普通 CUDA wheel 覆盖 NPU 镜像中的运行时。
 
-## 4. CANN9、torch_npu 和 Triton 环境
+## 5. CANN9、torch_npu 和 Triton 环境
 
 以下是实际使用的环境变量：
 
@@ -110,9 +160,27 @@ PY
 
 CANN9 镜像中的 Python 测试按 `torch -> torch_npu -> triton` 顺序导入，避免首次 pytest 导入时的循环初始化问题。
 
-## 5. 准备独立的 ops-fft
+## 6. 准备独立的 ops-fft
 
-ops-fft 是 CANN 的独立参考库，不包含在 FlagFFT 源码中，也不是通过 pip 安装。它需要单独准备或由验证镜像提供，并使用与 CANN9 兼容的构建版本。
+ops-fft 是 CANN 的独立参考库，不包含在 FlagFFT 源码中，也不是通过 pip 安装。需要在已经加载 CANN9 环境的容器中单独拉取并编译。首次安装执行：
+
+```bash
+cd /tmp
+git clone https://gitcode.com/cann/ops-fft.git ops-fft
+cd /tmp/ops-fft
+bash build.sh --soc=Ascend910B -j16
+```
+
+如果 `/tmp/ops-fft` 已经存在，更新源码后重新构建：
+
+```bash
+git -C /tmp/ops-fft fetch --all
+git -C /tmp/ops-fft pull --ff-only
+cd /tmp/ops-fft
+bash build.sh --soc=Ascend910B -j16
+```
+
+构建完成后确认头文件和库，并设置 FlagFFT 使用的根目录：
 
 ```bash
 export ASCEND_OPS_FFT_ROOT=/tmp/ops-fft
@@ -122,9 +190,9 @@ test -f "$ASCEND_OPS_FFT_ROOT/src/include/cann_ops_fft.h"
 find "$ASCEND_OPS_FFT_ROOT" \( -name 'libcann_ops_fft.so' -o -name 'libcann_ops_fft.a' \) -print
 ```
 
-如果目录不存在，先按 `cann/ops-fft` 项目的 CANN9 构建说明完成它，再继续。没有 ops-fft 可以编译部分 FlagFFT 目标，但不能运行本项目的 Ascend 平台对标性能测试。
+`build.sh` 应在已执行 `source /usr/local/Ascend/cann-9.0.0/set_env.sh` 的 FlagTree 容器中运行，并使用 `Ascend910B` 目标。也可以使用验证镜像预先提供的已构建 `/tmp/ops-fft`，但仍必须通过上面的检查。没有 ops-fft 可以编译部分 FlagFFT 目标，但不能运行本项目的 Ascend 平台对标性能测试。
 
-## 6. CMake 配置和编译
+## 7. CMake 配置和编译
 
 这是实际成功执行的配置。注意 `ASCEND_TOOLKIT_HOME` 通过环境变量提供，实际命令没有把它作为 `-D` 参数传入：
 
@@ -159,7 +227,7 @@ test -x "$BUILD/ctest/numpy_fft_capture"
 test -x "$BUILD/ctest/test_npu_real_edges"
 ```
 
-## 7. 运行基础测试
+## 8. 运行基础测试
 
 ```bash
 ctest --test-dir "$BUILD" --output-on-failure
@@ -181,7 +249,7 @@ raise SystemExit(pytest.main(["-q", "tests/python/test_stockham_codegen.py",
 PY
 ```
 
-## 8. 运行 Ascend 对标
+## 9. 运行 Ascend 对标
 
 每次使用新的空结果目录。单卡示例：
 
@@ -216,7 +284,7 @@ python3 "$SRC/tools/run_tests.py" \
 
 多卡运行前必须用 `npu-smi info` 确认每张卡为空闲。不要使用 `--gpus all` 绕过设备检查；性能结果会受同卡任务、主机负载和 Triton cache 状态影响。
 
-## 9. 结果和常见问题
+## 10. 结果和常见问题
 
 结果写入工作区父目录的 `results/<timestamp>_...`，不要写入源码 worktree 内。重点文件是 `manifest.json`、`incremental.csv`、`summary.json`、`runner.log` 和设备监控日志。
 
