@@ -100,6 +100,13 @@ struct FFTRequest {
   std::optional<int64_t> n;
   int64_t requested_n = 0;
   int64_t raw_dim = -1;
+  // Preserve the public transform boundary when planning/compiling children.
+  // Zero means a request constructed directly, whose raw_dim is authoritative.
+  int64_t origin_rank = 0;
+  bool real_transform = false;
+  // Public real-transform kind, retained while the real request is lowered
+  // through complex children. Empty for C2C/Z2Z.
+  std::string real_transform_kind;
   int64_t normalized_dim = -1;
   std::string norm = "backward";
   std::string input_dtype;
@@ -128,6 +135,8 @@ enum class KernelKind {
   BluesteinFourStepFinishCol,
   DirectDft,
   DirectDftStrided,
+  DirectDftR2C,
+  DirectDftC2R,
   StockhamStage,
   FourStepRow,
   FourStepRowStrided,

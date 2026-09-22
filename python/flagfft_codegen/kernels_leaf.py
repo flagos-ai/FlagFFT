@@ -565,7 +565,13 @@ def _emit_exchange_load(
     digit: int,
     portable: bool,
     direct: bool = False,
+    mixed_direct: bool = False,
 ) -> list[str]:
+    if mixed_direct:
+        return [
+            f"{indent}r{digit} = tl.where(lane_mask, {buffer}_register_r{digit}, 0.0)",
+            f"{indent}i{digit} = tl.where(lane_mask, {buffer}_register_i{digit}, 0.0)",
+        ]
     if direct:
         return [
             f"{indent}r{digit} = {buffer}_register_r{digit}",
@@ -737,6 +743,114 @@ def _emit_direct_exchange_registers(
     return lines
 
 
+def _mixed_direct_exchange_supported(
+    stage: int,
+    factors: tuple[int, ...],
+    lane_block: int,
+    size: int,
+    slot_stride: int,
+    pack: int,
+    register_lane_stride: int,
+    register_slot_stride: int,
+) -> bool:
+    """Opt in only at complete, unswizzled MACA mixed-stage boundaries.
+
+    Producer and consumer must use this same predicate.  Slot padding belongs
+    to the discarded leaf buffer; register packing must still be canonical.
+    Unknown knob values deliberately retain the existing exchange.
+    """
+    n = math.prod(factors)
+    return (
+        _maca_backend_active()
+        and _maca_knob("MIXED_EXCHANGE") == "direct"
+        and 0 <= stage < len(factors) - 1
+        and any(factor & (factor - 1) for factor in factors)
+        and all(factor > 0 for factor in factors)
+        and pack > 0 and pack & (pack - 1) == 0
+        and lane_block > 0 and lane_block & (lane_block - 1) == 0
+        and lane_block >= max(n // factors[stage], n // factors[stage + 1])
+        and slot_stride >= n
+        and size >= slot_stride * pack and size & (size - 1) == 0
+        and (register_lane_stride, register_slot_stride)
+        in {(1, lane_block), (pack, 1)}
+    )
+
+
+def _emit_mixed_direct_exchange_registers(
+    buffer: str,
+    stage: int,
+    factors: tuple[int, ...],
+    lane_block: int,
+    pack: int,
+    register_lane_stride: int,
+    register_slot_stride: int,
+) -> list[str]:
+    """Compose next-stage loads with the inverse route before gathering.
+
+    Decode the next codelet's lane once.  Only an affine offset depends on
+    its radix digit, keeping source growth linear in the two stage radices.
+    No full-leaf routed tensor or per-digit reconstruction of the join is
+    needed.  Padded output lanes gather index zero and are explicitly zeroed.
+    """
+    radix = factors[stage]
+    next_radix = factors[stage + 1]
+    next_lanes = math.prod(factors) // next_radix
+    joined_radix = 1 << (radix - 1).bit_length()
+    vector_block = lane_block * pack
+    interleaved = register_lane_stride > 1
+    lines = [
+        f"    exchange_target = tl.arange(0, {vector_block})",
+        f"    exchange_slot = exchange_target {'%' if interleaved else '//'} "
+        f"{pack if interleaved else lane_block}",
+        f"    exchange_rem = exchange_target {'//' if interleaved else '%'} "
+        f"{pack if interleaved else lane_block}",
+        f"    exchange_valid = exchange_rem < {next_lanes}",
+        "    exchange_codelet = exchange_rem * 0",
+    ]
+    stride = 1
+    for axis in range(stage):
+        lines += [
+            f"    exchange_codelet += (exchange_rem % {factors[axis]}) * {stride}",
+            f"    exchange_rem = exchange_rem // {factors[axis]}",
+        ]
+        stride *= factors[axis]
+    lines += [
+        f"    exchange_digit = exchange_rem % {radix}",
+        f"    exchange_rem = exchange_rem // {radix}",
+    ]
+    for axis in range(len(factors) - 1, stage + 1, -1):
+        lines += [
+            f"    exchange_codelet += (exchange_rem % {factors[axis]}) * {stride}",
+            f"    exchange_rem = exchange_rem // {factors[axis]}",
+        ]
+        stride *= factors[axis]
+    lines.append(
+        f"    exchange_joined_base = (exchange_codelet * {register_lane_stride} + "
+        f"exchange_slot * {register_slot_stride}) * {joined_radix} + exchange_digit"
+    )
+    for component in ("r", "i"):
+        joined = _distributed_join_tree(
+            [f"exchange_{component}{digit}" for digit in range(radix)]
+            + [f"tl.zeros_like(exchange_{component}0)"] * (joined_radix - radix)
+        )
+        lines.append(
+            f"    exchange_joined_{component} = tl.reshape({joined}, "
+            f"({vector_block * joined_radix},))"
+        )
+    for digit in range(next_radix):
+        offset = digit * stride * register_lane_stride * joined_radix
+        lines.append(
+            f"    exchange_joined_index = tl.where(exchange_valid, "
+            f"exchange_joined_base + {offset}, 0)"
+        )
+        for component in ("r", "i"):
+            lines.append(
+                f"    {buffer}_register_{component}{digit} = tl.where(exchange_valid, "
+                f"tl.gather(exchange_joined_{component}, exchange_joined_index, 0), 0.0)"
+            )
+    return lines
+
+
 def _emit_portable_exchange(
     buffer: str,
     stage: int,
@@ -748,6 +862,7 @@ def _emit_portable_exchange(
     natural_order: bool = False,
     register_lane_stride: int = 1,
     register_slot_stride: int | None = None,
+    allow_mixed_direct: bool = True,
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
@@ -765,6 +880,18 @@ def _emit_portable_exchange(
         register_slot_stride = lane_block
     n = math.prod(factors)
     radix = factors[stage]
+    if (
+        allow_mixed_direct
+        and not natural_order
+        and _mixed_direct_exchange_supported(
+            stage, factors, lane_block, size, slot_stride, pack,
+            register_lane_stride, register_slot_stride,
+        )
+    ):
+        return _emit_mixed_direct_exchange_registers(
+            buffer, stage, factors, lane_block, pack,
+            register_lane_stride, register_slot_stride,
+        )
     if (
         _maca_knob("EXCHANGE") in {"transpose", "direct", "direct_all"}
         and _structured_exchange_supported(factors, size, slot_stride, pack)
@@ -933,6 +1060,20 @@ def _emit_stage_block(
         else ("smem_b" if single_smem_buffer or stage % 2 == 0 else "smem_a")
     )
     zero = "0.0"
+
+    # Swizzled/fixed-lane layouts do not have the canonical inverse route.
+    # Gate both sides identically so fallback never reads undefined registers.
+    mixed_direct_layout = (
+        portable_exchange
+        and not fuse_twiddle_into_row
+        and tuple(stage_lanes or (lanes,) * len(factors))
+        == tuple(n // factor for factor in factors)
+    )
+    mixed_direct_load = mixed_direct_layout and _mixed_direct_exchange_supported(
+        stage - 1, factors, lane_block, exchange_size, exchange_slot_stride,
+        smem_pack, inner_pack if inner_pack > 1 else 1,
+        1 if inner_pack > 1 else lane_block,
+    )
 
     lines: list[str] = []
     if stage_lanes is not None:
@@ -1376,6 +1517,7 @@ def _emit_stage_block(
             lines.extend(
                 _emit_exchange_load(
                     indent, source_buffer, load_index, j, portable_exchange,
+                    mixed_direct=mixed_direct_load,
                     direct=(
                         portable_exchange
                         and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
@@ -1798,6 +1940,7 @@ def _emit_stage_block(
                     natural_order=is_last,
                     register_lane_stride=inner_pack if inner_pack > 1 else 1,
                     register_slot_stride=1 if inner_pack > 1 else lane_block,
+                    allow_mixed_direct=mixed_direct_layout,
                 )
             )
     elif not is_last:

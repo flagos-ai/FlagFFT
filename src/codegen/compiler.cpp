@@ -14,6 +14,7 @@
 
 #include "flagfft/core.hpp"
 #include "flagfft/tune_json.hpp"
+#include "flagfft/maca_tail_policy.hpp"
 
 #include <cstdlib>
 #include <optional>
@@ -148,6 +149,20 @@ namespace {
     return std::string(value) == "1";
   }
 
+  bool maca_real_direct_dft_enabled(const PlanNodePtr &node,
+                                    const FFTRequest &request,
+                                    int64_t batch) {
+    // This is an independent, default-off experiment. In particular it must
+    // not change multidimensional subplans, packed-real children or C2C.
+    auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node);
+    return request.device_type == "maca" && request.raw_dim == 1 &&
+           request.batch == 1 && batch == 1 && direct != nullptr &&
+           direct->length == request.requested_n && direct->length > 0 &&
+           direct->length <= kDirectDftMaxN &&
+           (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+           maca_flag_or_default("FLAGFFT_MACA_REAL_DIRECT_DFT", maca_tail_real_direct_dft(request));
+  }
+
 }  // namespace
 
 bool ix_ct_single_policy_enabled(const FFTRequest &request) {
@@ -202,6 +217,7 @@ int ix_ct_single_tle_policy(const FFTRequest &request) {
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
   ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
   ix_ct_single_tle_policy_ = ix_ct_single_tle_policy(request);
+  maca_tail_policy_ = maca_tail_codegen_root(request);
   maca_1d_single_policy_ = request.device_type == "maca" && request.raw_dim == 1 && request.batch == 1;
   if (!maca_1d_single_policy_) {
     return;
@@ -538,6 +554,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (maca_real_direct_dft_enabled(node, request, batch)) {
+    return compile_raw_real_direct_dft(request, false);
+  }
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;
@@ -595,6 +614,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (maca_real_direct_dft_enabled(node, request, batch)) {
+    return compile_raw_real_direct_dft(request, true);
+  }
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
     const int64_t packed = n / 2;
@@ -731,6 +753,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const Di
                                                     compile_direct_dft_kernel(request, node.length),
                                                     build_raw_direct_dft_tables(node.length, request),
                                                     std::move(input_copy));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_direct_dft(
+    const FFTRequest &request, bool inverse) {
+  FFTRequest real_request = request;
+  real_request.direction = inverse ? "inverse" : "forward";
+  const int64_t n = request.requested_n;
+  KernelKey key = KernelKey::direct_dft(triton_target_for_request(real_request),
+                                       real_request.direction, request.input_dtype, n);
+  key.kind = inverse ? KernelKind::DirectDftC2R : KernelKind::DirectDftR2C;
+  // Reuse DirectDFT's table/launch ABI and alias protection, copying only the
+  // actual input extent (real N scalars or compact N/2+1 complex values).
+  const int64_t complex_bytes = complex_element_bytes(request.input_dtype);
+  const int64_t input_bytes = inverse ? (n / 2 + 1) * complex_bytes : n * (complex_bytes / 2);
+  return std::make_shared<CompiledRawDirectDftNode>(
+      n, compile_kernel(key), build_raw_direct_dft_tables(n, real_request),
+      adaptor::Memory(static_cast<std::size_t>(input_bytes)));
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPlanNode &leaf,

@@ -42,6 +42,8 @@ endif()
 # Link planner sources directly so the test needs no device runtime or JIT.
 add_executable(test_maca_prime_tune
     test_maca_prime_tune.cpp
+    test_maca_tail_policy.cpp
+    ../src/exec/c_api_internal.cpp
     ../src/utils/base.cpp ../src/utils/plan_key.cpp
     ../src/plan/nodes.cpp ../src/plan/builder_context.cpp
     ../src/plan/factorization.cpp ../src/plan/rader_utils.cpp

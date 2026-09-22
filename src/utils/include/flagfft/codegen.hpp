@@ -1009,6 +1009,7 @@ class TritonCompiler {
   bool maca_1d_single_policy_ = false;
   bool ix_ct_single_policy_ = false;
   int ix_ct_single_tle_policy_ = 0;
+  std::string maca_tail_policy_ = "off";
 
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
@@ -1025,6 +1026,8 @@ class TritonCompiler {
                                                           const FFTRequest &request,
                                                           int64_t batch);
   std::shared_ptr<JitKernel> compile_direct_dft_kernel(const FFTRequest &request, int64_t n);
+  std::shared_ptr<CompiledRawNode> compile_raw_real_direct_dft(const FFTRequest &request,
+                                                            bool inverse);
   std::shared_ptr<CompiledRawNode> compile_raw_four_step_generic(const FourStepPlanNode &node,
                                                                  const FFTRequest &request,
                                                                  int64_t batch);

@@ -49,6 +49,24 @@ TEST(KernelKeyRepr, DistinctKindsWithSameValuesDiffer) {
   EXPECT_NE(reshape, transpose);
 }
 
+TEST(KernelKeyRepr, RealDirectDftSeparatesBoundaryModesAndPrecision) {
+  for (const auto *dtype : {"complex64", "complex128"}) {
+    auto complex = flagfft::KernelKey::direct_dft("maca:80:64", "forward", dtype, 23);
+    auto r2c = complex;
+    r2c.kind = flagfft::KernelKind::DirectDftR2C;
+    auto c2r = complex;
+    c2r.kind = flagfft::KernelKind::DirectDftC2R;
+    EXPECT_NE(complex.repr(), r2c.repr());
+    EXPECT_NE(complex.repr(), c2r.repr());
+    EXPECT_NE(r2c.repr(), c2r.repr());
+    EXPECT_NE(r2c.repr().find("direct_dft_r2c"), std::string::npos);
+    EXPECT_NE(c2r.repr().find("direct_dft_c2r"), std::string::npos);
+    auto other_dtype = r2c;
+    other_dtype.dtype = std::string(dtype) == "complex64" ? "complex128" : "complex64";
+    EXPECT_NE(r2c.repr(), other_dtype.repr());
+  }
+}
+
 namespace {
 
 // Plans feed one StockhamStage key per radix through compile_kernel(); every

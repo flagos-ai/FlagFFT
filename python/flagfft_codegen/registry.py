@@ -125,6 +125,8 @@ _SPECS: tuple[KernelSpec, ...] = (
     ),
     KernelSpec("direct_dft", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_strided", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_r2c", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_c2r", DIRECT_DFT, requires=("length",)),
     KernelSpec(
         "four_step_row",
         FOUR_STEP,
@@ -290,6 +292,8 @@ def module_name_for(
         return f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "direct_dft_strided":
         return f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
+    if spec.name in {"direct_dft_r2c", "direct_dft_c2r"}:
+        return f"flagfft_jit_{spec.name}_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "leaf":
         return (
             f"flagfft_jit_{direction_tag}_{factor_tag}"

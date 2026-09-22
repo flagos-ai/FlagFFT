@@ -23,6 +23,8 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
+from functools import wraps
+from .maca_tail_policy import maca_tail_kernel_scope, variant_suffix
 
 from .kernels_common import (
     LeafPlan,
@@ -50,6 +52,7 @@ from .kernels_real import (
     _build_real_to_complex_kernel_source,
 )
 from .kernels_special import _build_direct_dft_kernel_source
+from .kernels_real import _build_real_direct_dft_kernel_source
 from .kernels_stockham import build_stockham_stage
 from .metadata import _metadata, _module_source, _signature
 from .registry import (
@@ -491,6 +494,18 @@ def _emit_r2c_pointwise_jit_kernel(
     return metadata
 
 
+def _scoped_maca_tail(fn):
+    @wraps(fn)
+    def scoped(**kwargs):
+        with maca_tail_kernel_scope(
+            kwargs["kernel"], kwargs["length"], kwargs["dtype"],
+            kwargs["four_step_n1"], kwargs["four_step_n2"],
+        ):
+            return fn(**kwargs)
+    return scoped
+
+
+@_scoped_maca_tail
 def emit_jit_kernel(
     *,
     kernel: str,
@@ -551,12 +566,20 @@ def emit_jit_kernel(
         )
         n1 = n2 = 0
     elif spec.family == DIRECT_DFT:
-        kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
-            length,
-            direction,
-            dtype,
-            strided=(kernel == "direct_dft_strided"),
-        )
+        if kernel in {"direct_dft_r2c", "direct_dft_c2r"}:
+            expected_direction = "inverse" if kernel == "direct_dft_c2r" else "forward"
+            if direction != expected_direction:
+                raise ValueError(f"{kernel} requires direction={expected_direction}")
+            kernel_name, kernel_source, _ = _build_real_direct_dft_kernel_source(
+                length, dtype, inverse=(kernel == "direct_dft_c2r")
+            )
+        else:
+            kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
+                length,
+                direction,
+                dtype,
+                strided=(kernel == "direct_dft_strided"),
+            )
         n1 = 0
         n2 = 0
     else:
@@ -582,6 +605,7 @@ def emit_jit_kernel(
     if spec.family == STOCKHAM:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
+    module_name += variant_suffix()
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"

@@ -14,6 +14,7 @@
 
 #include "adaptor/adaptor.h"
 #include "flagfft/core.hpp"
+#include "maca_tail_plans.hpp"
 
 namespace flagfft {
 
@@ -61,6 +62,13 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   set_request_context(request);
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
+  }
+  const auto experiments = detail::maca_tail_plans(n, request, false);
+  if (!experiments.empty()) {
+    return detail::build_maca_tail_plan(n, experiments.front(),
+                                        [&](int64_t length, bool heuristic) {
+                                          return build_auto_node(length, heuristic);
+                                        });
   }
   return build_auto_node(n, true);
 }

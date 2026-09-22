@@ -48,6 +48,7 @@ from .registry import (
     kernel_spec,
 )
 from .target import set_codegen_target, set_maca_1d_single_default
+from .maca_tail_policy import set_maca_tail_mode, variant_suffix
 
 
 def _toolchain_version() -> str:
@@ -126,6 +127,7 @@ def main() -> None:
                         help="enable the scoped IX FP32 portable single policy")
     parser.add_argument("--ix-ct-single-tle", type=int, choices=(0, 1, 2), default=0,
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
+    parser.add_argument("--maca-tail-mode", choices=("off", "p4w4", "real-direct"), default="off")
     parser.add_argument(
         "--compile-script",
         type=Path,
@@ -143,6 +145,7 @@ def main() -> None:
     from .target import set_ix_ct_single_default, set_ix_ct_single_tle_default
     set_ix_ct_single_default(args.ix_ct_single)
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
+    set_maca_tail_mode(args.maca_tail_mode)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}
@@ -177,6 +180,10 @@ def main() -> None:
             "-maca-1d-single" if args.maca_1d_single else "-maca-1d-single-off"
         )
     args.out_dir = args.out_dir / profile_dir
+    # Legacy tree and explicit resource overrides must not overwrite a module
+    # emitted earlier by the same executable, even when tail mode is off.
+    if variant_suffix(root=True):
+        args.out_dir = args.out_dir / variant_suffix(root=True)
 
     spec = kernel_spec(args.kernel)
     missing = [flag for flag in spec.requires if getattr(args, flag) is None]
@@ -343,6 +350,7 @@ def main() -> None:
             "maca_1d_single_default": args.maca_1d_single,
             "ix_ct_single_default": args.ix_ct_single,
             "ix_ct_single_tle_default": args.ix_ct_single_tle,
+            "maca_tail_mode": args.maca_tail_mode,
             "warp_size": profile.warp_size,
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }

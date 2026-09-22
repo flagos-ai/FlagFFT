@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flagfft/core.hpp"
+#include "flagfft/maca_tail_policy.hpp"
 
 #if defined(BACKEND_MACA)
 #include "triton_jit/jit_utils.h"
@@ -138,10 +139,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                          ? "balanced"
                                          : (adaptor::backend_name() == "hcu" ? "native" : "legacy");
   const std::string policy = policy_env ? policy_env : default_policy;
+  const auto tail_mode = maca_tail_kernel_mode(maca_tail_policy_, key.kind, key.dtype,
+                                               key.length, key.four_step_n1, key.four_step_n2);
   const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
                                 (maca_1d_single_policy_ ? "1" : "0") + ";ix-ct-single=" +
                                 (ix_ct_single_policy_ ? "1" : "0") + ";ix-ct-single-tle=" +
-                                std::to_string(ix_ct_single_tle_policy_);
+                                std::to_string(ix_ct_single_tle_policy_) +
+                                (adaptor::backend_name() == "maca"
+                                     ? maca_tail_codegen_identity(tail_mode) : "");
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -193,6 +198,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       break;
     case KernelKind::DirectDftStrided:
       kernel_kind = "direct_dft_strided";
+      break;
+    case KernelKind::DirectDftR2C:
+      kernel_kind = "direct_dft_r2c";
+      break;
+    case KernelKind::DirectDftC2R:
+      kernel_kind = "direct_dft_c2r";
       break;
     case KernelKind::StockhamStage:
       kernel_kind = "stockham_stage";
@@ -285,6 +296,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (maca_1d_single_policy_) {
     jit_command << " --maca-1d-single";
   }
+  jit_command << " --maca-tail-mode " << shell_quote(tail_mode);
 #endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafPermutedStore ||
@@ -305,7 +317,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::LeafPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
-  if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided) {
+  if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
+      key.kind == KernelKind::DirectDftR2C || key.kind == KernelKind::DirectDftC2R) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::StockhamStage) {
