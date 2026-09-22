@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Isolated IX CT-single screening; acceptance accuracy is a separate gate."""
+"""Serial IX CT-single baseline/default comparison on physical GPU 2.
+
+This is performance screening only. Use run_tests.py for the accuracy gate.
+Environment overrides are fixed at process startup; each trial gets a fresh
+process so native and filesystem kernel caches cannot cross policy settings.
+"""
 import argparse
 import json
 import os
@@ -12,78 +17,50 @@ def main():
     p.add_argument('--binary', required=True)
     p.add_argument('--output-dir', required=True)
     p.add_argument('--shapes', default='2048,1048576')
-    p.add_argument('--apis', default='c2c')
-    p.add_argument('--variants', default='baseline,p1w4,p2w4,p4w4,p4w8,p8w8')
-    p.add_argument('--repeats', type=int, default=1)
-    p.add_argument('--leaf-factors', action='append', default=[], help='length=radix,radix,...')
-    p.add_argument('--timeout', type=int, default=120)
-    p.add_argument('--exchange', default='direct_all')
-    p.add_argument('--direction', default='forward')
-    p.add_argument('--warps', choices=('1', '2', '4', '8'))
-    p.add_argument('--stockham-radix', choices=('8', '16', '32'))
-    p.add_argument('--vector-leaf', action='store_true')
-    p.add_argument('--stockham-store-join', action='store_true')
-    p.add_argument('--thread-local', action='store_true')
-    p.add_argument('--recurrence', action='store_true')
-    p.add_argument('--recurrence-tree', action='store_true')
-    p.add_argument('--swap-inverse', action='store_true')
+    p.add_argument('--apis', default='c2c,c2r,r2c')
+    p.add_argument('--variants', default='baseline,default')
+    p.add_argument('--repeats', type=int, default=3)
+    p.add_argument('--timeout', type=int, default=240)
+    p.add_argument('--directions', default='forward,inverse')
     a = p.parse_args()
+    variants = a.variants.split(',')
+    if any(v not in {'baseline', 'default'} for v in variants):
+        p.error('--variants accepts baseline,default')
     out = Path(a.output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    root = Path(__file__).resolve().parents[1]
+    commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
     rows = []
     for repeat in range(a.repeats):
-        for variant in a.variants.split(','):
+        # Alternate order across repetitions to expose temporal drift.
+        for variant in variants if repeat % 2 == 0 else variants[::-1]:
             env = {k: v for k, v in os.environ.items() if not k.startswith('FLAGFFT_IX_')}
-            env.update(CUDA_VISIBLE_DEVICES='2', IX_VISIBLE_DEVICES='2', FLAGFFT_TUNE_DISABLE='1')
-            env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1] / 'python') + os.pathsep + env.get('PYTHONPATH', '')
-            if variant != 'baseline':
-                pack, warps = variant.removeprefix('p').split('w')
-                env.update(FLAGFFT_IX_PORTABLE_LEAF='1', FLAGFFT_IX_INNER_PACK=pack,
-                           FLAGFFT_IX_MAX_WARPS=warps, FLAGFFT_IX_EXCHANGE=a.exchange)
-            for setting in a.leaf_factors:
-                length, factors = setting.split('=', 1)
-                env['FLAGFFT_IX_LEAF_FACTORS_' + length] = factors
-            if a.warps:
-                env['FLAGFFT_IX_WARPS'] = a.warps
-            if a.stockham_radix:
-                env['FLAGFFT_IX_STOCKHAM_RADIX'] = a.stockham_radix
-            if a.vector_leaf:
-                env['FLAGFFT_IX_VECTOR_LEAF'] = '1'
-            if a.stockham_store_join:
-                env['FLAGFFT_IX_STOCKHAM_STORE_JOIN'] = '1'
-            if a.thread_local:
-                env['FLAGFFT_IX_THREAD_LOCAL'] = '1'
-            if a.recurrence:
-                env['FLAGFFT_IX_RECURRENCE'] = '1'
-            if a.recurrence_tree:
-                env['FLAGFFT_IX_RECURRENCE'] = 'tree'
-            if a.swap_inverse:
-                env['FLAGFFT_IX_SWAP_INVERSE'] = '1'
+            env.update(CUDA_VISIBLE_DEVICES='2', IX_VISIBLE_DEVICES='2', FLAGFFT_TUNE_DISABLE='1',
+                       FLAGFFT_IX_CT_SINGLE='0' if variant == 'baseline' else '1')
+            env['PYTHONPATH'] = str(root / 'python') + os.pathsep + env.get('PYTHONPATH', '')
             for n in a.shapes.split(','):
                 for api in a.apis.split(','):
-                    name = f'{variant}_{n}_{api}_{repeat}'
-                    cmd = [a.binary, 'bench', '--api', api, '--rank', '1', '--shape', n,
-                           '--batch', '1', '--warmup', '20', '--iters', '200', '--json']
-                    if api == 'c2c':
-                        cmd += ['--direction', a.direction]
-                    elif api == 'c2r':
-                        cmd += ['--direction', 'inverse']
-                    try:
-                        proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=a.timeout)
-                    except subprocess.TimeoutExpired:
-                        row = dict(variant=variant, n=int(n), api=api, repeat=repeat, timeout=a.timeout)
+                    directions = a.directions.split(',') if api == 'c2c' else ['inverse' if api == 'c2r' else 'forward']
+                    for direction in directions:
+                        name = f'{variant}_{n}_{api}_{direction}_{repeat}'
+                        cmd = [a.binary, 'bench', '--api', api, '--rank', '1', '--shape', n,
+                               '--batch', '1', '--direction', direction, '--warmup', '30',
+                               '--iters', '300', '--json', '--print-path']
+                        row = dict(variant=variant, n=int(n), api=api, direction=direction,
+                                   repeat=repeat, git_commit=commit, command=cmd)
+                        try:
+                            proc = subprocess.run(cmd, env=env, text=True, capture_output=True,
+                                                  timeout=a.timeout)
+                            (out / f'{name}.json').write_text(proc.stdout)
+                            (out / f'{name}.err').write_text(proc.stderr)
+                            row['exit_code'] = proc.returncode
+                            if proc.returncode == 0:
+                                row.update(json.loads(proc.stdout)['cases'][0]['timing'])
+                        except subprocess.TimeoutExpired:
+                            row['timeout'] = a.timeout
                         rows.append(row)
                         print(json.dumps(row), flush=True)
                         (out / 'sweep.json').write_text(json.dumps(rows, indent=2))
-                        continue
-                    (out / f'{name}.json').write_text(proc.stdout)
-                    (out / f'{name}.err').write_text(proc.stderr)
-                    row = dict(variant=variant, n=int(n), api=api, repeat=repeat, exit_code=proc.returncode)
-                    if proc.returncode == 0:
-                        row.update(json.loads(proc.stdout)['cases'][0]['timing'])
-                    rows.append(row)
-                    print(json.dumps(row), flush=True)
-                    (out / 'sweep.json').write_text(json.dumps(rows, indent=2))
 
 
 if __name__ == '__main__':

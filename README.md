@@ -224,6 +224,20 @@ cmake --build build-hcu -j$(nproc)
 
 ### Hardware profiles and IX experiments
 
+On IX arch `71`, contiguous FP32 1D single transforms of length `2048`
+use the measured tensor-exchange leaf with two physical warps and a
+per-butterfly twiddle recurrence. The native compiler scopes this policy to
+that request; other lengths, batches, ranks, architectures and FP64 retain
+their existing paths. Set `FLAGFFT_IX_CT_SINGLE=0` before starting the process
+to compare against the original implementation. The policy also selects the
+matching stage-twiddle table layout and has separate kernel cache entries.
+
+Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --output-dir
+<workspace>/results/<timestamp>_ix_ct_single` for serial, alternating
+baseline/default measurements on physical GPU 2. Accuracy validation remains
+the responsibility of `tools/run_tests.py`; screening timings alone are not
+acceptance results.
+
 `flagfft-cli device-info --json` reports the current device's driver-queried
 warp size, thread-block limit and shared-memory limits. Code generation receives
 these facts explicitly. `balanced` uses the device warp width for leaf launch

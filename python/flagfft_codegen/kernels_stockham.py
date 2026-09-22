@@ -1,16 +1,12 @@
 """Global-memory Stockham mapping of the shared register radix codelets."""
 
-from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix, _ix_backend_active, _maca_knob
-from .kernels_leaf import (
-    _emit_natural_order_codelet_call, _emit_radix16_codelet_call,
-    _emit_natural_order_radix32_codelet_call,
-    _distributed_join_tree,
-)
+from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix
+from .kernels_leaf import _emit_natural_order_codelet_call
 
 
 def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int = 0,
                         block: int = 128):
-    if radix not in _NATURAL_ORDER_CODELET_RADICES | {16, 32} or n % radix:
+    if radix not in _NATURAL_ORDER_CODELET_RADICES or n % radix:
         raise ValueError(f"unsupported Stockham stage n={n}, radix={radix}")
     if stage_span < 0 or (stage_span and n % (radix * stage_span)):
         raise ValueError(f"invalid Stockham span {stage_span} for n={n}, radix={radix}")
@@ -46,23 +42,8 @@ def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_s
                     f"    r{digit}, i{digit} = _cmul(r{digit}, i{digit}, wr{digit}, wi{digit})",
                 ]
             )
-    if radix == 16:
-        body.extend(_emit_radix16_codelet_call("    ", direction))
-    elif radix == 32:
-        body.extend(_emit_natural_order_radix32_codelet_call("    ", direction))
-    else:
-        body.extend(_emit_natural_order_codelet_call("    ", radix, direction))
+    body.extend(_emit_natural_order_codelet_call("    ", radix, direction))
     body.append(f"    dst = batch * {n} + {radix} * k - {radix - 1} * j")
-    if (_ix_backend_active() and _maca_knob("STOCKHAM_STORE_JOIN") == "1"
-            and stage_span and stage_span < block and radix & (radix - 1) == 0):
-        for component in ('r', 'i'):
-            joined = _distributed_join_tree([f'{component}{digit}' for digit in range(radix)])
-            body.append(f"    result_{component} = tl.reshape({joined}, ({block}, {radix}))")
-        body += [f"    digit = tl.arange(0, {radix})",
-                 "    offset = (dst[:, None] + digit[None, :] * span) * 2",
-                 "    tl.store(out_ptr + offset, result_r, mask[:, None])",
-                 "    tl.store(out_ptr + offset + 1, result_i, mask[:, None])"]
-        return name, "\n".join(body) + "\n"
     for digit in range(radix):
         body.extend(
             [

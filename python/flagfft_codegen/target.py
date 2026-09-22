@@ -18,6 +18,19 @@ from contextvars import ContextVar
 
 _target = ContextVar("flagfft_codegen_target", default="")
 _MACA_1D_SINGLE_DEFAULT = ContextVar("flagfft_maca_1d_single_default", default=False)
+_IX_CT_SINGLE_DEFAULT = ContextVar("flagfft_ix_ct_single_default", default=False)
+
+
+def set_ix_ct_single_default(enabled: bool):
+    return _IX_CT_SINGLE_DEFAULT.set(bool(enabled))
+
+
+def reset_ix_ct_single_default(token):
+    _IX_CT_SINGLE_DEFAULT.reset(token)
+
+
+def ix_ct_single_default_enabled() -> bool:
+    return _IX_CT_SINGLE_DEFAULT.get()
 
 
 def set_codegen_target(target: str) -> None:

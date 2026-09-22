@@ -36,6 +36,52 @@ void ExpectPlanContains(flagfftHandle plan, const std::string& expected) {
 // 1D plan tests
 // =========================================================================
 
+TEST(Plan1D, IxCtSinglePolicyScope) {
+  const char* original = std::getenv("FLAGFFT_IX_CT_SINGLE");
+  const std::optional<std::string> saved = original ? std::optional<std::string>(original) : std::nullopt;
+  struct Restore {
+    std::optional<std::string> value;
+    ~Restore() {
+      if (value) setenv("FLAGFFT_IX_CT_SINGLE", value->c_str(), 1);
+      else unsetenv("FLAGFFT_IX_CT_SINGLE");
+    }
+  } restore{saved};
+  unsetenv("FLAGFFT_IX_CT_SINGLE");
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.raw_dim = 1;
+  request.batch = 1;
+  request.fft_length = request.requested_n = 2048;
+  request.input_dtype = request.output_dtype = "complex64";
+  request.input_strides = {2048, 1};
+  EXPECT_TRUE(flagfft::ix_ct_single_policy_enabled(request));
+  auto changed = request;
+  changed.batch = 2;
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.raw_dim = 2;
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.fft_length = changed.requested_n = 1048576;
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.input_dtype = changed.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.device_arch = "other";
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  changed = request;
+  changed.input_strides.back() = 2;
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(changed));
+  setenv("FLAGFFT_IX_CT_SINGLE", "0", 1);
+  EXPECT_FALSE(flagfft::ix_ct_single_policy_enabled(request));
+  setenv("FLAGFFT_IX_CT_SINGLE", "1", 1);
+  EXPECT_TRUE(flagfft::ix_ct_single_policy_enabled(request));
+  setenv("FLAGFFT_IX_CT_SINGLE", "invalid", 1);
+  EXPECT_THROW(flagfft::ix_ct_single_policy_enabled(request), std::runtime_error);
+}
+
 TEST(Plan1D, CreateDestroyAllTypes) {
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {

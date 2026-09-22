@@ -122,6 +122,8 @@ def main() -> None:
         action="store_true",
         help="enable the measured MACA rank-1 batch-1 code-generation defaults",
     )
+    parser.add_argument("--ix-ct-single", action="store_true",
+                        help="enable the measured IX 2048-point FP32 single policy")
     parser.add_argument(
         "--compile-script",
         type=Path,
@@ -136,6 +138,8 @@ def main() -> None:
     args = parser.parse_args()
     set_codegen_target(args.target)
     set_maca_1d_single_default(args.maca_1d_single)
+    from .target import set_ix_ct_single_default
+    set_ix_ct_single_default(args.ix_ct_single)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}
@@ -159,6 +163,7 @@ def main() -> None:
     if profile.backend == "ix":
         overrides = {k: v for k, v in os.environ.items() if k.startswith("FLAGFFT_IX_")}
         profile_dir += "-" + hashlib.sha256(json.dumps(overrides, sort_keys=True).encode()).hexdigest()[:12]
+        profile_dir += "-ct-single" if args.ix_ct_single else "-ct-single-off"
     if profile.backend == "maca":
         # Keep default-on and explicit opt-out artifacts separate.  The native
         # compiler also includes this bit in its in-process cache key, but the

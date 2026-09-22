@@ -1367,22 +1367,20 @@ def _emit_stage_block(
                     ),
                 )
             )
-            recurrence = (_ix_backend_active() and _maca_knob("RECURRENCE") in {"1", "tree"}
-                          and dtype == "complex64")
+            recurrence = (
+                _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
+                and dtype == "complex64"
+            )
             if recurrence:
-                if _maca_knob("RECURRENCE") == "tree" and j:
-                    if j == 1:
-                        lines += [f"{indent}tw_recur_r1 = tl.load(tw{stage}_r_ptr + logical_phys1, lane_mask, 0.0)",
-                                  f"{indent}tw_recur_i1 = tl.load(tw{stage}_i_ptr + logical_phys1, lane_mask, 0.0)"]
-                    else:
-                        low = j & -j
-                        left, right = (j // 2, j // 2) if low == j else (j - low, low)
-                        lines.append(f"{indent}tw_recur_r{j}, tw_recur_i{j} = _cmul(tw_recur_r{left}, tw_recur_i{left}, tw_recur_r{right}, tw_recur_i{right})")
-                    lines += [f"{indent}twr = tw_recur_r{j}", f"{indent}twi = tw_recur_i{j}"]
-                elif j == 1:
-                    lines += [f"{indent}tw_step_r = tl.load(tw{stage}_r_ptr + logical_phys1, lane_mask, 0.0)",
-                              f"{indent}tw_step_i = tl.load(tw{stage}_i_ptr + logical_phys1, lane_mask, 0.0)",
-                              f"{indent}twr = tw_step_r", f"{indent}twi = tw_step_i"]
+                # Each butterfly consumes powers of the digit-one root. The
+                # digit-zero root is exactly one, so it needs neither a load
+                # nor a multiply. Keep the recurrence scoped to measured FP32.
+                if j == 1:
+                    lines += [
+                        f"{indent}tw_step_r = tl.load(tw{stage}_r_ptr + logical_phys1, lane_mask, 0.0)",
+                        f"{indent}tw_step_i = tl.load(tw{stage}_i_ptr + logical_phys1, lane_mask, 0.0)",
+                        f"{indent}twr = tw_step_r", f"{indent}twi = tw_step_i",
+                    ]
                 elif j > 1:
                     lines.append(f"{indent}twr, twi = _cmul(twr, twi, tw_step_r, tw_step_i)")
                 if j:
@@ -1399,26 +1397,16 @@ def _emit_stage_block(
     if single_smem_buffer and stage > 0 and not is_last:
         lines.append(f"{indent}tl.debug_barrier()")
 
-    swap_inverse = (_ix_backend_active() and direction == "inverse"
-                    and _maca_knob("SWAP_INVERSE") == "1"
-                    and radix in _NATURAL_ORDER_CODELET_RADICES | {16, 32})
-    if swap_inverse:
-        normal = ', '.join([f'r{j}' for j in range(radix)] + [f'i{j}' for j in range(radix)])
-        swapped = ', '.join([f'i{j}' for j in range(radix)] + [f'r{j}' for j in range(radix)])
-        lines.append(f"{indent}{normal} = {swapped}")
-    codelet_direction = "forward" if swap_inverse else direction
     if radix == 16:
-        lines.extend(_emit_radix16_codelet_call(indent, codelet_direction))
+        lines.extend(_emit_radix16_codelet_call(indent, direction))
     elif radix == 32:
-        lines.extend(_emit_natural_order_radix32_codelet_call(indent, codelet_direction))
+        lines.extend(_emit_natural_order_radix32_codelet_call(indent, direction))
     elif radix in _THREAD_LOCAL_MIXED_RADICES:
         lines.extend(_emit_local_mixed_codelet_call(indent, radix, direction))
     elif radix in _NATURAL_ORDER_CODELET_RADICES:
-        lines.extend(_emit_natural_order_codelet_call(indent, radix, codelet_direction))
+        lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
-    if swap_inverse:
-        lines.append(f"{indent}{normal} = {swapped}")
 
     for j in range(radix):
         if is_last:
@@ -1865,9 +1853,7 @@ def _use_thread_local_mixed_leaf(
     four_step_n1: int,
     four_step_n2: int,
 ) -> bool:
-    ix_experiment = (_ix_backend_active() and _maca_knob("THREAD_LOCAL") == "1"
-                     and four_step_n1 == four_step_n2 == 1024 and plan.dtype == "complex64")
-    if _non_nvidia_backend_active() and not ix_experiment:
+    if _non_nvidia_backend_active():
         return False
     if io_mode.endswith("_strided"):
         return False
@@ -1976,17 +1962,6 @@ def _build_thread_local_mixed_four_step_kernel_source(
     vector_dtype = "tl.float64" if _is_double_dtype(plan.dtype) else "tl.float32"
     asm_load_constraints = f'"={vector_reg},={vector_reg},l"'
     asm_store_constraints = f'"=r,l,{vector_reg},{vector_reg}"'
-    def load_complex(idx):
-        if _ix_backend_active():
-            return [f"    r{idx} = tl.load(in_ptr + input_offset{idx})",
-                    f"    i{idx} = tl.load(in_ptr + input_offset{idx} + 1)"]
-        return [
-            f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-            f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
-            f"{asm_load_constraints}, "
-            f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-            f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
-        ]
     row_modes = {
         "four_step_row",
         "four_step_real_row",
@@ -2074,7 +2049,13 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    input_offset{idx} = "
                 f"(four_step_batch * input_distance + compact_idx{idx}) * 2"
             )
-            body.extend(load_complex(idx))
+            body.append(
+                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                f"{asm_load_constraints}, "
+                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+            )
             body.append(
                 f"    i{idx} = tl.where(src_idx{idx} < {half_n}, i{idx}, -i{idx})"
             )
@@ -2086,7 +2067,14 @@ def _build_thread_local_mixed_four_step_kernel_source(
             body.append(
                 f"    input_offset{idx} = " f"(four_step_batch_base + src_idx{idx}) * 2"
             )
-            body.extend(load_complex(idx))
+            body.append(
+                # The selected leaves and pack=4 cover every input lane exactly.
+                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                f"{asm_load_constraints}, "
+                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+            )
 
     body.extend(_emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
 
@@ -2294,7 +2282,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    tl.store(out_ptr + output_offset{idx}, r{idx}, "
                 "mask=output_lane_mask)"
             )
-        elif register_radix == 32 and not _ix_backend_active():
+        elif register_radix == 32:
             body.append(
                 f"    output_offset{idx} = "
                 f"(four_step_batch_base + dst_idx{idx}) * 2"
@@ -2323,57 +2311,6 @@ def _build_thread_local_mixed_four_step_kernel_source(
     return kernel_name, "\n".join(body)
 
 
-def _build_ix_vector_leaf(plan: LeafPlan, io_mode: str) -> tuple[str, str]:
-    """Experimental XOR-routed radix-2 leaf; no explicit shared buffers."""
-    n = plan.length
-    bits = n.bit_length() - 1
-    name = f"ix_vector_{io_mode}_{plan.direction}_{n}"
-    params = _leaf_kernel_params_for_io(plan, io_mode=io_mode)
-    lines = ["@triton.jit", f"def {name}({', '.join(params)}):",
-             "    batch = tl.program_id(0)", f"    x = tl.arange(0, {n})"]
-    reverse = " | ".join(f"((x >> {i}) & 1) << {bits - 1 - i}" for i in range(bits))
-    lines.append(f"    src = {reverse}")
-    if io_mode == "contiguous_r2c":
-        lines += ["    r = tl.load(in_ptr + batch * input_distance + src, batch < nbatch, 0)",
-                  "    im = tl.zeros_like(r)"]
-    elif io_mode == "contiguous_c2r":
-        lines += [f"    compact = tl.minimum(src, {n} - src)",
-                  "    offset = (batch * input_distance + compact) * 2",
-                  "    r = tl.load(in_ptr + offset, batch < nbatch, 0)",
-                  "    im = tl.load(in_ptr + offset + 1, batch < nbatch, 0)",
-                  f"    im = tl.where(src > {n // 2}, -im, im)",
-                  f"    im = tl.where((src == 0) | (src == {n // 2}), 0.0, im)"]
-    else:
-        lines += [f"    offset = (batch * {n} + src) * 2",
-                  "    r = tl.load(in_ptr + offset, batch < nbatch, 0)",
-                  "    im = tl.load(in_ptr + offset + 1, batch < nbatch, 0)"]
-    sign = _direction_sign(plan.direction)
-    for s in range(bits):
-        half = 1 << s
-        lines += [f"    partner_r = tl.gather(r, x ^ {half}, 0)",
-                  f"    partner_i = tl.gather(im, x ^ {half}, 0)",
-                  f"    upper = (x & {half}) != 0",
-                  "    ar = tl.where(upper, partner_r, r)",
-                  "    ai = tl.where(upper, partner_i, im)",
-                  "    br = tl.where(upper, r, partner_r)",
-                  "    bi = tl.where(upper, im, partner_i)"]
-        if s:
-            lines += [f"    angle = (x % {half}).to(tl.float32) * {sign * math.pi / half}",
-                      "    wr = tl.cos(angle)", "    wi = tl.sin(angle)",
-                      "    br, bi = _cmul(br, bi, wr, wi)"]
-        lines += ["    r = ar + tl.where(upper, -br, br)",
-                  "    im = ai + tl.where(upper, -bi, bi)"]
-    if io_mode == "contiguous_c2r":
-        lines.append("    tl.store(out_ptr + batch * output_distance + x, r, batch < nbatch)")
-    else:
-        base = "batch * output_distance" if io_mode == "contiguous_r2c" else f"batch * {n}"
-        mask = f"(batch < nbatch) & (x <= {n // 2})" if io_mode == "contiguous_r2c" else "batch < nbatch"
-        lines += [f"    offset = ({base} + x) * 2",
-                  f"    tl.store(out_ptr + offset, r, {mask})",
-                  f"    tl.store(out_ptr + offset + 1, im, {mask})"]
-    return name, "\n".join(lines) + "\n"
-
-
 def _build_leaf_kernel_source_for_io(
     plan: LeafPlan,
     *,
@@ -2383,10 +2320,6 @@ def _build_leaf_kernel_source_for_io(
     four_step_n2: int = 0,
     perm_form: str = "outer",
 ) -> tuple[str, str]:
-    if (_ix_backend_active() and _maca_knob("VECTOR_LEAF") == "1"
-            and plan.length == 2048 and plan.dtype == "complex64"
-            and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"}):
-        return _build_ix_vector_leaf(plan, io_mode)
     if _use_thread_local_mixed_leaf(
         plan,
         io_mode=io_mode,
