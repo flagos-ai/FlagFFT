@@ -6,6 +6,37 @@ from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
 
 
 class ProfileTest(unittest.TestCase):
+    def test_ix_portable_exchange_is_opt_in_and_keeps_device_identity(self):
+        from pathlib import Path
+        from flagfft_codegen.kernels_common import (
+            _ix_backend_active, _maca_backend_active, _portable_leaf_backend_active,
+        )
+        from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+        from flagfft_codegen.metadata import _metadata
+        from flagfft_codegen.target import set_codegen_target
+
+        token = set_profile(self.profile())
+        set_codegen_target("ix:71:64")
+        try:
+            plan = LeafPlan(2048, (16, 16, 8), 1, 128, 4, (), 2048)
+            with patch.dict("os.environ", {"FLAGFFT_IX_PORTABLE_LEAF": "0"}):
+                self.assertFalse(_portable_leaf_backend_active())
+                _, baseline = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+                self.assertIn("tle.gpu", baseline)
+            with patch.dict("os.environ", {"FLAGFFT_IX_PORTABLE_LEAF": "1"}):
+                self.assertTrue(_ix_backend_active())
+                self.assertFalse(_maca_backend_active())
+                name, source = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+                self.assertNotIn("tle.", source)
+                meta = _metadata(module_path=Path("unused.py"), kernel_name=name,
+                                 arg_names=[], plan=plan, kernel_type="leaf",
+                                 n1=0, n2=0, dtype=plan.dtype)
+                self.assertEqual(meta["batch_per_block"], 1)
+                self.assertEqual(meta["num_warps"], 4)
+        finally:
+            reset_profile(token)
+            set_codegen_target("")
+
     def test_bluestein_boundary_packing_matches_generated_batch_stride(self):
         from pathlib import Path
 

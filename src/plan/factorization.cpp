@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flagfft/core.hpp"
+#include <cstdlib>
 
 namespace flagfft {
 
@@ -126,6 +127,29 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   }
 
   const RequestContext &context = request_context();
+  if (context.device_type == "ix" && context.input_dtype == "complex64" && context.batch == 1) {
+    const std::string key = "FLAGFFT_IX_LEAF_FACTORS_" + std::to_string(n);
+    if (const char *setting = std::getenv(key.c_str())) {
+      std::istringstream input(setting);
+      std::string item;
+      std::vector<int64_t> factors;
+      int64_t remaining = n;
+      while (std::getline(input, item, ',')) {
+        size_t used = 0;
+        const int64_t radix = std::stoll(item, &used);
+        if (used != item.size() || !contains(kSupportedRadices, radix) || remaining % radix != 0) {
+          throw std::runtime_error("invalid " + key);
+        }
+        remaining /= radix;
+        factors.push_back(radix);
+      }
+      if (factors.empty() || remaining != 1) {
+        throw std::runtime_error("incomplete " + key);
+      }
+      best_leaf_factors_cache_[n] = factors;
+      return factors;
+    }
+  }
   if (context.device_type == "maca" && contains(kSupportedRadices, n)) {
     // Codegen already emits one natural-order codelet for these lengths.
     best_leaf_factors_cache_[n] = {n};
