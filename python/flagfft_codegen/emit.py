@@ -27,12 +27,15 @@ from typing import Any
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
+    _maca_backend_active,
+    _maca_knob,
     _zero_other,
     codelet_radices_for,
     emitted_leaf_factors,
     lane_block_for,
 )
 from .kernels_layout import (
+    _build_packed_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
     _build_tiled_transpose3d_tile_kernel_source,
@@ -630,9 +633,18 @@ def _emit_tiled_transpose_jit_kernel(
     tile_size: int = 32,  # must match constexpr tile_size in raw_nodes.cpp CompiledRaw2DNode::execute()
     out_dir: Path,
 ) -> dict[str, Any]:
-    kernel_name, kernel_source, arg_names = _build_tiled_transpose_kernel_source(
-        n0, n1, dtype, tile_size
-    )
+    if (
+        _maca_backend_active()
+        and dtype == "complex64"
+        and _maca_knob("2D_TRANSPOSE") == "packed"
+    ):
+        kernel_name, kernel_source, arg_names = _build_packed_transpose_kernel_source(
+            n0, n1, tile_size
+        )
+    else:
+        kernel_name, kernel_source, arg_names = _build_tiled_transpose_kernel_source(
+            n0, n1, dtype, tile_size
+        )
     suffix = _dtype_suffix(dtype)
     module_name = f"flagfft_jit_tiled_transpose_n{n0}_{n1}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
