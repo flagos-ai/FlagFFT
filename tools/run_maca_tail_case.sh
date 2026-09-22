@@ -29,7 +29,7 @@ export PYTHONPATH="$src/python"
 export TRITON_CACHE_DIR="$build/triton-cache"
 export FLAGFFT_TUNE_DISABLE=1 FLAGFFT_BENCH_SAMPLES=1
 export MACA_PATH=/opt/maca MACA_HOME=/opt/maca
-export LD_LIBRARY_PATH="/opt/maca/lib:/opt/conda/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$build:/opt/maca/lib:/opt/conda/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 finish() {
   local result=$?
   printf 'VALIDATION_EXIT=%s\n' "$result" > "$out/completion.txt"
@@ -41,6 +41,7 @@ trap finish EXIT
   git -C "$src" status --short
   sha256sum "$build/flagfft-cli" "$build/ctest/numpy_fft_capture"
   if [[ -f "$build/libflagfft.so" ]]; then sha256sum "$build/libflagfft.so"; fi
+  ldd "$build/flagfft-cli"
   env | sort | grep -E '^(FLAGFFT_|TRITON_|CUDA_VISIBLE|MACA_|MC_VISIBLE|PYTHONPATH|LD_LIBRARY_PATH)'
   printf 'GPU=%s OP=%s SHAPE=%s WARMUP=5 ITERS=30\n' "$gpu" "$op" "$shape"
 } > "$out/environment.txt"
