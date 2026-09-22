@@ -23,6 +23,7 @@ def main():
         for variant in a.variants.split(','):
             env = {k: v for k, v in os.environ.items() if not k.startswith('FLAGFFT_IX_')}
             env.update(CUDA_VISIBLE_DEVICES='2', IX_VISIBLE_DEVICES='2', FLAGFFT_TUNE_DISABLE='1')
+            env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1] / 'python') + os.pathsep + env.get('PYTHONPATH', '')
             if variant != 'baseline':
                 pack, warps = variant.removeprefix('p').split('w')
                 env.update(FLAGFFT_IX_PORTABLE_LEAF='1', FLAGFFT_IX_INNER_PACK=pack,
