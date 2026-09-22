@@ -6,13 +6,19 @@
 
 namespace flagfft {
 
+// On by default for a genuine rank-1 batch-1 MACA request.  `origin_rank`
+// carries the public descriptor's rank, so the row/column sub-requests a 2D or
+// 3D transform builds internally cannot inherit this: they keep the original
+// rank and are rejected here.  Set FLAGFFT_MACA_TAIL_POLICY=0 to opt out.
 inline bool maca_tail_policy_enabled(const FFTRequest& request) {
   const char* value = std::getenv("FLAGFFT_MACA_TAIL_POLICY");
   if (request.device_type != "maca" || request.raw_dim != 1 || request.batch != 1 ||
       (request.origin_rank != 0 && request.origin_rank != 1)) return false;
-  if (!value || !*value || std::string(value) == "0") return false;
-  if (std::string(value) != "1")
-    throw std::runtime_error("FLAGFFT_MACA_TAIL_POLICY must be 0 or 1");
+  if (value && *value) {
+    if (std::string(value) == "0") return false;
+    if (std::string(value) != "1")
+      throw std::runtime_error("FLAGFFT_MACA_TAIL_POLICY must be 0 or 1");
+  }
   return true;
 }
 

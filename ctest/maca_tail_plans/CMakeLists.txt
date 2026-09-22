@@ -16,7 +16,8 @@ add_executable(test_maca_tail_plans
   ${FFT_ROOT}/src/plan/nodes.cpp ${FFT_ROOT}/src/plan/builder_context.cpp
   ${FFT_ROOT}/src/plan/factorization.cpp ${FFT_ROOT}/src/plan/rader_utils.cpp
   ${FFT_ROOT}/src/plan/cost_model.cpp ${FFT_ROOT}/src/plan/auto_candidates.cpp
-  ${FFT_ROOT}/src/plan/tune_candidates.cpp ${FFT_ROOT}/src/exec/c_api_internal.cpp)
+  ${FFT_ROOT}/src/plan/tune_candidates.cpp ${FFT_ROOT}/src/exec/c_api_internal.cpp
+  ${FFT_ROOT}/src/codegen/request_policy.cpp)
 target_compile_features(test_maca_tail_plans PRIVATE cxx_std_20)
 target_include_directories(test_maca_tail_plans PRIVATE
   ${FFT_ROOT}/include ${FFT_ROOT}/src ${FFT_ROOT}/src/utils/include)

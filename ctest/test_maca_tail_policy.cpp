@@ -42,10 +42,10 @@ TEST_F(TailPolicy, ExactWhitelistAndSameBuilderToggle) {
       {1009, "complex64", "bs2048"}, {1048576, "complex128", "ct1024x1024"},
       }) {
     auto r = request(n, dtype);
-    unsetenv("FLAGFFT_MACA_TAIL_POLICY");
+    setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
     const auto original = flagfft::PlanKey::from_node(builder.build(n, r)).repr();
     EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
-    setenv("FLAGFFT_MACA_TAIL_POLICY", "1", 1);
+    unsetenv("FLAGFFT_MACA_TAIL_POLICY");
     EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), expected);
     const auto node = builder.build(n, r);
     if (auto bs = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(node)) {
@@ -56,6 +56,8 @@ TEST_F(TailPolicy, ExactWhitelistAndSameBuilderToggle) {
       EXPECT_EQ(ct->n1, 1024);
       EXPECT_EQ(ct->n2, 1024);
     }
+    setenv("FLAGFFT_MACA_TAIL_POLICY", "1", 1);
+    EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), expected);
     setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
     EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(n, r)).repr(), original);
   }
@@ -67,6 +69,8 @@ TEST_F(TailPolicy, ExactWhitelistAndSameBuilderToggle) {
     r.real_transform = true;
     r.real_transform_kind = kind;
     unsetenv("FLAGFFT_MACA_TAIL_POLICY");
+    EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "bs2048");
+    setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
     EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "");
     setenv("FLAGFFT_MACA_TAIL_POLICY", "1", 1);
     EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "bs2048");

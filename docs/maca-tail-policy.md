@@ -1,8 +1,9 @@
 # MACA tail candidate policy
 
-`FLAGFFT_MACA_TAIL_POLICY=1` enables a **default-off** closed candidate policy.
-It does not promote an unmeasured size/API/dtype and does not change dev.
-Eligibility requires MACA, public rank 1, and batch 1. Both directions are
+This closed candidate policy is **on by default** for a genuine rank-1
+batch-1 MACA request. Set `FLAGFFT_MACA_TAIL_POLICY=0` to opt out.
+It does not promote an unmeasured size/API/dtype. Eligibility requires MACA,
+public rank 1, and batch 1. Both directions are
 covered for complex transforms. The native request retains `origin_rank` and
 `real_transform`, because C API kernel requests normalize real dtypes to complex.
 
@@ -55,7 +56,8 @@ most one matching class, and an unmatched request receives `off`.
 
 An automatic whitelisted **complex** root bypasses tuned-plan DB lookup, so an
 old DB entry cannot silently defeat the experiment. Nonwhitelisted requests
-retain DB behavior. `FLAGFFT_MACA_TAIL_POLICY=0` (or unset) restores that behavior.
+retain DB behavior. `FLAGFFT_MACA_TAIL_POLICY=0` restores that behavior and is
+the supported rollback; any other non-empty value is rejected.
 The policy does not set process environment variables. `FLAGFFT_MACA_1D_SINGLE=0`
 still disables the older single defaults; do not combine that rollback switch
 with the candidate policy when comparing the measured configuration.

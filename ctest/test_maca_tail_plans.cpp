@@ -33,10 +33,14 @@ class Env {
 class MacaTailPlans : public ::testing::Test {
  protected:
   Env setting{"FLAGFFT_MACA_TAIL_PLAN"};
+  Env policy{"FLAGFFT_MACA_TAIL_POLICY"};
   Env db{"FLAGFFT_TUNE_DISABLE"};
   Env packed{"FLAGFFT_PACKED_REAL"};
   void SetUp() override {
     setting.set(nullptr);
+    // These tests describe the tuner candidate matrix and the unmodified
+    // planner default, so the automatic tail policy is switched off here.
+    policy.set("0");
     db.set("1");
     packed.set("0");
   }
@@ -111,6 +115,27 @@ const std::vector<Experiment> experiments = {
   {328050, false, {"ct450x729", "ct486x675", "ct405x810"}},
   {328050, true, {"ct450x729", "ct486x675", "ct405x810"}},
 };
+
+TEST_F(MacaTailPlans, AutomaticPolicyIsOnByDefaultForWhitelistedRoots) {
+  for (const auto& experiment : experiments) {
+    SCOPED_TRACE(std::to_string(experiment.n) + (experiment.fp64 ? " FP64" : " FP32"));
+    auto request = request_for(experiment.n, experiment.fp64);
+    PlanBuilder builder;
+    policy.set("0");
+    const auto planner_default = label(builder.build(experiment.n, request));
+    EXPECT_EQ(planner_default, experiment.names.front());
+    policy.set(nullptr);
+    const auto automatic = label(builder.build(experiment.n, request));
+    const bool whitelisted = (experiment.n == 997 && experiment.fp64) ||
+                             (experiment.n == 1009 && !experiment.fp64) ||
+                             (experiment.n == 1048576 && experiment.fp64);
+    if (whitelisted) {
+      EXPECT_EQ(automatic, experiment.names.back());
+    } else {
+      EXPECT_EQ(automatic, planner_default);
+    }
+  }
+}
 
 TEST_F(MacaTailPlans, ExactBoundedMatrixAndForcedRootsMatchTuner) {
   for (const auto& experiment : experiments) {
