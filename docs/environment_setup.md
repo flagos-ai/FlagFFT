@@ -1,7 +1,7 @@
 # FlagFFT 测试环境搭建
 
-本文以已经准备好的 FlagTree 后端镜像为起点，说明 CUDA、IX、MUSA、MACA
-和 Ascend/NPU 环境的依赖安装、编译和测试流程。
+本文以已经准备好的 FlagTree 后端镜像为起点，说明 CUDA、IX、MUSA、MACA、
+Ascend/NPU 和海光 BW1000/HCU 环境的依赖安装、编译和测试流程。
 
 ## 约定
 
@@ -77,6 +77,36 @@ docker run --ipc=host --network=host \
 按 Ascend 镜像说明添加 `/dev/davinci*` 等设备映射。镜像需要包含 CANN
 9.0 工具链、Ascend runtime，以及 Ascend 适配版 FlagTree/Triton。
 
+### Hygon BW1000（HCU）
+
+使用 [FlagTree HCU 使用手册](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-hcu)
+中的 HCU 3.6、DTK 26.04 镜像。宿主机需要加载 `hycu` 驱动，并将
+`/dev/kfd`、`/dev/mkfd`、`/dev/dri` 和 `/opt/hyhal` 提供给容器：
+
+```bash
+docker pull harbor.baai.ac.cn/flagtree/flagtree-hcu-py310-torch2.10.0-dtk26.04-ubuntu22.04:202608-3.6-vllm0.24.0
+
+docker run -dit --network=host --ipc=host --privileged=true \
+  --group-add video --cap-add=SYS_PTRACE \
+  --security-opt seccomp=unconfined \
+  --device=/dev/kfd --device=/dev/mkfd --device=/dev/dri \
+  -v /opt/hyhal:/opt/hyhal \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /rjs/llb/fft-dev:/workspace \
+  -w /workspace/FlagFFT-dev \
+  --name flagtree-dev-hcu \
+  harbor.baai.ac.cn/flagtree/flagtree-hcu-py310-torch2.10.0-dtk26.04-ubuntu22.04:202608-3.6-vllm0.24.0 \
+  bash
+```
+
+如果 registry 直拉受代理影响，可以按 HCU 使用手册下载同版本 tar 包后执行
+`docker load -i <image-tar>`。不要用宿主机裸环境替代该容器作为 HCU 的编译或
+验收环境。
+
+本项目已验证的海光主机为 8 张 BW1000，PCI ID 为 `1d94:6320`，宿主机驱动为
+`hycu`，DTK 目录为 `/opt/dtk-26.04`。当前验收使用物理卡 6、7；设置
+`HIP_VISIBLE_DEVICES=6,7` 后，它们在容器内对应逻辑卡 0、1。
+
 ## 2. 安装系统依赖
 
 在容器内执行：
@@ -136,11 +166,21 @@ python3 -m pip install ninja cmake nanobind pybind11
 ### 各后端的 Python 运行时
 
 PyTorch 和 FlagTree/Triton 已由各后端 FlagTree 基础镜像预装，不需要再次
-通过 pip 安装。尤其不要用 CUDA 版本的 wheel 覆盖 IX、MUSA 或 MACA 镜像中
+通过 pip 安装。尤其不要用 CUDA 版本的 wheel 覆盖 IX、MUSA、MACA、NPU 或 HCU 镜像中
 已经适配硬件的运行时。
 
 不同镜像应分别提供对应版本，例如 CUDA 镜像提供 CUDA 版运行时，IX 镜像提供
 Iluvatar 版运行时（项目曾使用 `flagtree==0.5.1+iluvatar3.1`）。
+
+HCU 镜像需要安装与 Triton 版本匹配的 FlagTree HCU wheel；不要安装普通 CUDA
+版 FlagTree 覆盖它：
+
+```bash
+python3 -m pip install \
+  'flagtree===0.7.0rc2+hcu3.6' \
+  --index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple
+python3 -m pip install -e '.[test]' --no-build-isolation
+```
 
 检查 Python 依赖：
 
@@ -296,6 +336,55 @@ find "$ASCEND_OPS_FFT_ROOT" -name 'libcann_ops_fft.so' -o \
 `ASCEND_OPS_FFT_ROOT` 必须指向包含 `cann_ops_fft.h` 和
 `libcann_ops_fft` 的已构建 `ops-fft` 目录。
 
+### Hygon BW1000（HCU）
+
+在 HCU 容器中加载 DTK 26.04 环境。下面的路径对应 HCU 3.6 官方镜像；如果
+镜像把 DTK 安装到 `/opt/dtk-26.04`，将 `/opt/dtk` 和 `/opt/dtk/hip` 一并替换
+为对应版本化路径：
+
+```bash
+source /opt/dtk/env.sh
+
+export FLAGTREE_BACKEND=hcu
+export HIP_VISIBLE_DEVICES=6,7       # 示例：使用物理卡 6、7
+export FLAGFFT_EXECUTION_POLICY=native
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export ROCM_PATH=/opt/dtk
+export HIP_PATH=/opt/dtk/hip
+export PATH=/opt/dtk/bin:/opt/dtk/hip/bin:/opt/hyhal/bin:$PATH
+
+# DTK 自带的 rocm_smi 必须排在宿主机 /opt/hyhal 库之前。
+export LD_LIBRARY_PATH=/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:${LD_LIBRARY_PATH:-}
+```
+
+检查设备、HIP/hipFFT 和 Python 运行时：
+
+```bash
+/opt/hyhal/bin/hy-smi || /opt/dtk/.hyhal/bin/hy-smi
+command -v hipcc
+hipcc --version
+command -v rocminfo
+rocminfo | grep -m4 -E 'Name:|gfx936'
+
+python3 - <<'PY'
+import importlib.metadata
+import torch
+import triton
+
+print("torch:", torch.__version__)
+print("triton:", triton.__version__)
+print("flagtree:", importlib.metadata.version("flagtree"))
+print("device_count:", torch.cuda.device_count())
+for i in range(torch.cuda.device_count()):
+    print(i, torch.cuda.get_device_name(i))
+PY
+```
+
+BW1000 的运行时目标通常显示为 `gfx936:sramecc+:xnack-`，FlagFFT 归一化为
+`hcu:gfx936:64`；`64` 是 HCU 的 wavefront 宽度。验收时应使用实际物理卡号，
+不要把 `HIP_VISIBLE_DEVICES` 设置成容器内重新编号后的逻辑卡号。
+
 ## 6. 编译
 
 ### CUDA
@@ -402,6 +491,36 @@ cmake --build build-npu -j"$(nproc)"
 FlagFFT 的 `ctest`/capture 目标。NPU 的统一验收入口仍然是
 `tools/run_tests.py`；`ops-fft` 不支持的 API 或形状会被记录为 `Skipped`。
 
+### Hygon BW1000（HCU）
+
+HCU 的主构建依赖 DTK 提供的 HIP 和 hipFFT。下面的最小构建关闭需要额外下载
+GoogleTest 的 C++ 测试；`flagfft-cli` 和统一 `tools/run_tests.py` 验收不依赖
+这些 GTest 目标：
+
+```bash
+cmake -S . -B build-hcu \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBACKEND=HCU \
+  -DFLAGFFT_BUILD_CLI=ON \
+  -DFLAGFFT_BUILD_TESTS=OFF
+cmake --build build-hcu -j"$(nproc)"
+
+build-hcu/flagfft-cli device-info --json
+```
+
+如需构建 GTest 目标，确认容器可以访问 GoogleTest 源码后改用
+`-DFLAGFFT_BUILD_TESTS=ON`。统一 NumPy accuracy/performance runner 使用的
+HCU native capture 需要单独构建：
+
+```bash
+cmake -S tools/numpy_fft_validation -B build-hcu-capture \
+  -DFLAGFFT_SOURCE_DIR="$PWD" \
+  -DFLAGFFT_BUILD_DIR="$PWD/build-hcu" \
+  -DBACKEND=HCU \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-hcu-capture -j"$(nproc)"
+```
+
 <!--
 The NPU section above intentionally mirrors the repository's CMake discovery
 rules. Keep the explicit libtriton_jit source option: the default submodule is
@@ -433,7 +552,18 @@ python3 tools/run_tests.py --build-dir build-maca --gpus 0 \
 
 python3 tools/run_tests.py --build-dir build-npu --gpus 0 \
   --output-dir ../results/$(date +%Y%m%d_%H%M%S)_npu_acceptance
+
+python3 tools/run_tests.py --combination full --gpus 6,7 \
+  --build-dir build-hcu \
+  --capture-bin build-hcu-capture/numpy_fft_capture \
+  --output-dir ../results/$(date +%Y%m%d_%H%M%S)_hcu_acceptance \
+  --timeout 600 --warmup 3 --iters 30 --color never -v
 ```
+
+HCU 的 `--gpus` 使用宿主机物理卡号；runner 会为每个 worker 设置单卡
+`HIP_VISIBLE_DEVICES`。结果必须写入当前工作区父目录的 `results/` 时间戳目录，
+不要写入 `FlagFFT-dev/results/`。如果使用远端 staging，完成后再将结果回收到
+主机侧约定目录。
 
 Python codegen 测试：
 
@@ -444,9 +574,12 @@ pytest tests/python/ -v
 C++ 测试：
 
 ```bash
-cd build-cuda       # 或 build-ix/build-musa/build-maca/build-npu
+cd build-cuda       # 或 build-ix/build-musa/build-maca/build-npu/build-hcu
 ctest --output-on-failure
 ```
+
+HCU 的 `build-hcu` 只有在用 `-DFLAGFFT_BUILD_TESTS=ON` 构建时才包含上述
+GTest 目标；完整工具验收使用上一节的 `numpy_fft_capture`，不依赖 GTest。
 
 ## 8. 常见问题
 
@@ -484,6 +617,36 @@ cmake -B build -DPython_EXECUTABLE="$(which python3)" ...
 Ascend 910B 当前验收支持 FP32 的 C2C、R2C、C2R；FP64 的 Z2Z、Z2D、D2Z
 会按平台策略跳过。ops-fft 对 1D、2D 和 3D 的支持范围也不是完整矩阵，
 测试报告会将不支持的参考库阶段标记为 `Skipped`。
+
+### HCU 找不到 hip/hipFFT 或设备
+
+确认已经在 HCU 容器内执行 `source /opt/dtk/env.sh`，并设置了
+`ROCM_PATH=/opt/dtk`、`HIP_PATH=/opt/dtk/hip`；同时检查容器具有
+`/dev/kfd`、`/dev/mkfd`、`/dev/dri` 和 `/opt/hyhal`。宿主机的 CANN 8.2 或裸
+HIP runtime 不能作为 HCU 验收基准。
+
+### HCU 出现 UnicodeDecodeError
+
+HCU Triton driver 读取生成文件时依赖 UTF-8 locale。补上以下变量后重新启动
+相关进程：
+
+```bash
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+```
+
+### HCU 出现 shared-memory 超限或退出时 rocm-smi 崩溃
+
+BW1000 的 dynamic shared memory 上限为 64 KiB，保持：
+
+```bash
+export FLAGFFT_EXECUTION_POLICY=native
+```
+
+不要用 `legacy` 作为 BW1000 的默认验收策略；它可能为 FP64 四步 kernel 选择
+超过设备上限的 pack。若出现 `librocm_smi64.so` 冲突，确保
+`/opt/dtk/.hyhal/rocm_smi/lib` 位于 `/opt/hyhal/lib` 之前，避免混用两套
+`rocm_smi` 运行库。
 
 ### IX 误用了 CUDA 环境
 
