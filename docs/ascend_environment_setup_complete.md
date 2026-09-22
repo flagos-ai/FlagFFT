@@ -27,11 +27,16 @@ ops-fft：/tmp/ops-fft
 
 ## 2. 进入容器
 
-已有平台容器可直接进入：
+实际验证流程从已经准备好的 **FlagTree Ascend 镜像**开始，不是从裸 CANN 容器重新安装 FlagTree、PyTorch 或 Triton。我们使用的是 `baai-ascend` 主机上由平台启动的 `flagsparse` 容器；镜像内已提供 CANN 9.0、torch、torch_npu、FlagTree/Triton 和编译工具链。
+
+进入实际验证容器的命令是：
 
 ```bash
+ssh baai-ascend
 docker exec -it flagsparse bash
 ```
+
+如果平台尚未启动容器，才需要使用下面的占位镜像启动方式；`<flagtree-ascend-cann9-image>` 必须替换成实际的 FlagTree Ascend 镜像，不能替换成只含 CANN 的普通镜像。
 
 自行启动时应使用包含 CANN9、torch_npu 和 Ascend Triton 的镜像，并映射 Ascend 设备；镜像名和设备节点按服务器实际情况替换：
 
@@ -223,4 +228,3 @@ python3 "$SRC/tools/run_tests.py" \
 - CMake 下载依赖失败：准备 JSON、fmt、pybind11 离线缓存，或删除对应缓存参数并确保网络可用。
 - 大 batch 超时：保留 Timeout 记录，不把未完成性能项当作通过。
 - 结果目录非空：每次创建新的时间戳目录。
-
