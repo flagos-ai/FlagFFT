@@ -24,6 +24,9 @@ separated, with scales also accepting "all". Defaults are the configured 1D
 single CT/prime cases, all six APIs, their legal directions and matrix scales.
 FLAGFFT_TEST_MACA_RESULTS_ROOT defaults to the workspace results/ directory;
 set it to /workspace/FlagFFT-results for the remote validation mount.
+FLAGFFT_TEST_MACA_INPLACE=1 tests exact input/output aliasing for batch 1;
+otherwise execution stays out-of-place. Use a fresh results directory and
+isolated executable/cache for each mode; existing manifests cannot be reused.
 
 This is correctness only. The validation coordinator must hold the GPU slot;
 do not run pytest-xdist or change a variant's environment within the process.
@@ -106,7 +109,8 @@ def variant_environment():
                 or key in {"CUDA_VISIBLE_DEVICES", "MACA_VISIBLE_DEVICES",
                            "MC_VISIBLE_DEVICES", "PYTHONHOME", "PYTHONPATH",
                            "FLAGFFT_EXECUTION_POLICY", "FLAGFFT_PYTHON",
-                           "FLAGFFT_PACKED_REAL", "FLAGFFT_TUNE_DISABLE", "FLAGFFT_TUNE_DB"})}
+                           "FLAGFFT_PACKED_REAL", "FLAGFFT_TUNE_DISABLE", "FLAGFFT_TUNE_DB",
+                           "FLAGFFT_TEST_MACA_INPLACE"})}
 
 
 def bind_api(library):
@@ -232,8 +236,17 @@ def test_production_c_api(runtime, case):
     expected = RUNNER.numpy_reference(source, operation, shape, case["direction"])
     limits = RUNNER.accuracy_limit(operation, RUNNER.product(shape))
     raw = np.ascontiguousarray(source).view(np.uint8).reshape(-1)
+    inplace = os.environ.get("FLAGFFT_TEST_MACA_INPLACE") == "1"
+    if inplace:
+        assert case["batch"] == 1, "in-place acceptance supports batch 1 only"
+    dtype = RUNNER.raw_dtype(operation, is_input=False)
+    output_bytes = expected.size * dtype.itemsize
+    capacity = max(raw.nbytes, output_bytes) if inplace else output_bytes
     record = dict(case, seed=seed, status="Running", plan=None, metric=None, limits=limits,
                   input_dtype=str(source.dtype), numpy_dtype=str(expected.dtype),
+                  inplace=inplace, input_bytes=raw.nbytes, output_bytes=output_bytes,
+                  input_extent=[0, raw.nbytes], output_extent=[0, output_bytes],
+                  output_allocation_bytes=capacity,
                   input_sha256=hashlib.sha256(raw).hexdigest())
     path = runtime.output / (case["case_id"] + ".json")
     assert not path.exists(), f"refusing to overwrite {path}"
@@ -250,18 +263,21 @@ def test_production_c_api(runtime, case):
         assert runtime.api.flagfftSetStream(handle, runtime.stream.cuda_stream) == 0
         torch = runtime.torch
         source_device = torch.from_numpy(raw.copy()).cuda()
-        dtype = RUNNER.raw_dtype(operation, is_input=False)
-        output_bytes = expected.size * dtype.itemsize
-        storage = torch.full((output_bytes + 128,), 0xA5, dtype=torch.uint8, device="cuda")
+        storage = torch.full((capacity + 128,), 0xA5, dtype=torch.uint8, device="cuda")
         output_device = storage[64:-64]
-        output_device.fill_(0xFF)  # NaNs detect missing output stores.
+        if inplace:
+            output_device[:raw.nbytes].copy_(source_device)
+            source_device = output_device
+        else:
+            output_device.fill_(0xFF)  # NaNs detect missing output stores.
         torch.cuda.synchronize()
+        assert (source_device.data_ptr() == output_device.data_ptr()) == inplace
         args = [handle, source_device.data_ptr(), output_device.data_ptr()]
         if operation in {"c2c", "z2z"}:
             args.append(-1 if case["direction"] == "forward" else 1)
         assert getattr(runtime.api, "flagfftExec" + operation.upper())(*args) == 0
         runtime.stream.synchronize()
-        actual = output_device.cpu().numpy().copy().view(dtype).reshape(expected.shape)
+        actual = output_device[:output_bytes].cpu().numpy().copy().view(dtype).reshape(expected.shape)
         guard = storage.cpu().numpy()
         record["guards_ok"] = bool(np.all(guard[:64] == 0xA5) and np.all(guard[-64:] == 0xA5))
         record["plan"] = runtime.api.flagfftGetPlanDescription(handle).decode()
