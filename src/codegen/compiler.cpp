@@ -142,6 +142,22 @@ namespace {
     return std::string(value) == "1";
   }
 
+  // Row/column requests replace batch with the number of axis transforms.
+  // Carry the root 2D policy through that recursion, then restore it so a
+  // compiler reused for an unrelated plan cannot leak the defaults.
+  struct Maca2dPolicyScope {
+    bool &state;
+    bool previous;
+    Maca2dPolicyScope(bool &state, const FFTRequest &request, int64_t batch)
+        : state(state), previous(state) {
+      state = request.device_type == "maca" && request.input_dtype == "complex64" && batch == 1 &&
+              maca_flag_or_default("FLAGFFT_MACA_2D_SINGLE", false);
+    }
+    ~Maca2dPolicyScope() { state = previous; }
+    Maca2dPolicyScope(const Maca2dPolicyScope &) = delete;
+    Maca2dPolicyScope &operator=(const Maca2dPolicyScope &) = delete;
+  };
+
 }  // namespace
 
 void TritonCompiler::configure_maca_1d_single_policy(const FFTRequest &request) {
@@ -1292,6 +1308,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch);
   configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
@@ -1305,7 +1322,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const bool enable_graph =
       !env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS")) &&
       !(request.device_type == "musa" && request.device_arch == "31" && batch == 1) &&
-      (request.device_type != "maca" || maca_flag_or_default("FLAGFFT_MACA_2D_GRAPH", true));
+      (request.device_type != "maca" ||
+       maca_flag_or_default("FLAGFFT_MACA_2D_GRAPH", !maca_2d_single_policy_));
 
   // Build row FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -1408,6 +1426,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch);
   configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
@@ -1498,6 +1517,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch);
   configure_maca_1d_single_policy(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;

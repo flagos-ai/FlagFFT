@@ -1007,6 +1007,7 @@ class TritonCompiler {
   void configure_maca_1d_single_policy(const FFTRequest &request);
 
   bool maca_1d_single_policy_ = false;
+  bool maca_2d_single_policy_ = false;
 
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,

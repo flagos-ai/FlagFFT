@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Literal
 
 from .backend_profile import current_profile
-from .target import maca_1d_single_default_enabled
+from .target import maca_1d_single_default_enabled, maca_2d_single_default_enabled
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _MODULE_DIR.parents[1]
@@ -277,15 +277,17 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
 def _maca_knob(name: str, default: str = "") -> str:
     """Read a MACA code-generation override.
 
-    The native compiler marks only MACA rank-1, batch-1 requests with the
-    single-transform policy.  The policy supplies the measured defaults while
+    The native compiler scopes the measured 1D and 2D single policies. The
+    2D scope also covers batched row/column kernels. These supply defaults while
     preserving an explicit environment override for A/B testing and rollback.
     Direct Python code-generation calls remain on the historical defaults.
     """
     env_name = f"FLAGFFT_MACA_{name}"
     if env_name in os.environ:
         return os.environ[env_name].strip().lower()
-    if maca_1d_single_default_enabled():
+    if maca_2d_single_default_enabled() and name == "2D_TRANSPOSE":
+        return "packed"
+    if maca_1d_single_default_enabled() or maca_2d_single_default_enabled():
         defaults = {
             "EXCHANGE": "direct_all",
             "INNER_PACK": "8",

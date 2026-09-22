@@ -47,7 +47,7 @@ from .registry import (
     TRANSPOSE3D,
     kernel_spec,
 )
-from .target import set_codegen_target, set_maca_1d_single_default
+from .target import set_codegen_target, set_maca_1d_single_default, set_maca_2d_single_default
 
 
 def _toolchain_version() -> str:
@@ -123,6 +123,11 @@ def main() -> None:
         help="enable the measured MACA rank-1 batch-1 code-generation defaults",
     )
     parser.add_argument(
+        "--maca-2d-single",
+        action="store_true",
+        help="enable the MACA rank-2 FP32 batch-1 code-generation policy",
+    )
+    parser.add_argument(
         "--compile-script",
         type=Path,
         help="Compile in this process using libtriton_jit's standalone helper",
@@ -136,6 +141,7 @@ def main() -> None:
     args = parser.parse_args()
     set_codegen_target(args.target)
     set_maca_1d_single_default(args.maca_1d_single)
+    set_maca_2d_single_default(args.maca_2d_single)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}
@@ -162,6 +168,9 @@ def main() -> None:
         # filesystem cache must not let one policy overwrite the other.
         profile_dir += (
             "-maca-1d-single" if args.maca_1d_single else "-maca-1d-single-off"
+        )
+        profile_dir += (
+            "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
     args.out_dir = args.out_dir / profile_dir
 
@@ -328,6 +337,7 @@ def main() -> None:
             "hardware_profile": asdict(profile),
             "profile_id": profile.fingerprint,
             "maca_1d_single_default": args.maca_1d_single,
+            "maca_2d_single_default": args.maca_2d_single,
             "warp_size": profile.warp_size,
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }
