@@ -1296,7 +1296,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
-  const bool rc_eligible = n0 <= 256;
+  // The strided-column path was historically restricted to short columns.
+  // On MACA, the 2048x2048 transpose path spends more time moving the matrix
+  // than doing either 2048-point FFT.  Keep the historical rule everywhere
+  // else, but expose the already-tested strided leaf node for a bounded
+  // power-of-two MACA probe.  The opt-in is deliberately separate from the
+  // 1D single-transform policy because this changes the 2D plan topology.
+  const bool maca_large_strided_probe =
+      request.device_type == "maca" && batch == 1 && n0 <= 2048 && n0 >= 512 &&
+      (n0 & (n0 - 1)) == 0 && maca_flag_or_default("FLAGFFT_MACA_2D_LARGE_STRIDED", false);
+  const bool rc_eligible = n0 <= 256 || maca_large_strided_probe;
   // On MUSA S5000, replaying the short batch-1 complex 2D graph adds
   // about 0.1 ms versus direct launches (both RC and transpose paths).
   // Keep other devices and unmeasured batch sizes on the existing policy.
@@ -1408,7 +1417,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const int64_t half_n1 = n1 / 2 + 1;
-  const bool rc_eligible = n0 <= 256;
+  const bool maca_large_strided_probe =
+      request.device_type == "maca" && batch == 1 && n0 <= 2048 && n0 >= 512 &&
+      (n0 & (n0 - 1)) == 0 && maca_flag_or_default("FLAGFFT_MACA_2D_LARGE_STRIDED", false);
+  const bool rc_eligible = n0 <= 256 || maca_large_strided_probe;
 
   // Build row C2C FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -1498,7 +1510,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const int64_t half_n1 = n1 / 2 + 1;
-  const bool rc_eligible = n0 <= 256;
+  const bool maca_large_strided_probe =
+      request.device_type == "maca" && batch == 1 && n0 <= 2048 && n0 >= 512 &&
+      (n0 & (n0 - 1)) == 0 && maca_flag_or_default("FLAGFFT_MACA_2D_LARGE_STRIDED", false);
+  const bool rc_eligible = n0 <= 256 || maca_large_strided_probe;
 
   // C2R is the reverse of R2C:
   // 1. Transpose (n0, half_n1) -> (half_n1, n0)
