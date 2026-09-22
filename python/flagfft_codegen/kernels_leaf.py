@@ -1367,13 +1367,25 @@ def _emit_stage_block(
                     ),
                 )
             )
-            lines.append(
-                f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
-            )
-            lines.append(
-                f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
-            )
-            lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
+            recurrence = (_ix_backend_active() and _maca_knob("RECURRENCE") == "1"
+                          and dtype == "complex64")
+            if recurrence:
+                if j == 1:
+                    lines += [f"{indent}tw_step_r = tl.load(tw{stage}_r_ptr + logical_phys1, lane_mask, 0.0)",
+                              f"{indent}tw_step_i = tl.load(tw{stage}_i_ptr + logical_phys1, lane_mask, 0.0)",
+                              f"{indent}twr = tw_step_r", f"{indent}twi = tw_step_i"]
+                elif j > 1:
+                    lines.append(f"{indent}twr, twi = _cmul(twr, twi, tw_step_r, tw_step_i)")
+                if j:
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
+            else:
+                lines.append(
+                    f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+                )
+                lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if single_smem_buffer and stage > 0 and not is_last:
         lines.append(f"{indent}tl.debug_barrier()")
