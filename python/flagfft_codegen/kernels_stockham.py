@@ -1,9 +1,10 @@
 """Global-memory Stockham mapping of the shared register radix codelets."""
 
-from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix
+from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix, _ix_backend_active, _maca_knob
 from .kernels_leaf import (
     _emit_natural_order_codelet_call, _emit_radix16_codelet_call,
     _emit_natural_order_radix32_codelet_call,
+    _distributed_join_tree,
 )
 
 
@@ -52,6 +53,16 @@ def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_s
     else:
         body.extend(_emit_natural_order_codelet_call("    ", radix, direction))
     body.append(f"    dst = batch * {n} + {radix} * k - {radix - 1} * j")
+    if (_ix_backend_active() and _maca_knob("STOCKHAM_STORE_JOIN") == "1"
+            and stage_span and stage_span < block and radix & (radix - 1) == 0):
+        for component in ('r', 'i'):
+            joined = _distributed_join_tree([f'{component}{digit}' for digit in range(radix)])
+            body.append(f"    result_{component} = tl.reshape({joined}, ({block}, {radix}))")
+        body += [f"    digit = tl.arange(0, {radix})",
+                 "    offset = (dst[:, None] + digit[None, :] * span) * 2",
+                 "    tl.store(out_ptr + offset, result_r, mask[:, None])",
+                 "    tl.store(out_ptr + offset + 1, result_i, mask[:, None])"]
+        return name, "\n".join(body) + "\n"
     for digit in range(radix):
         body.extend(
             [
