@@ -48,9 +48,31 @@ FP64、batch>1、3D 和其他后端不扩大默认策略。
 2D policy 与 1D policy 分别进入进程内 kernel key 和持久化 codegen 目录；
 单项覆盖的 A/B 仍须使用不同 executable/cache 目录，不在同一进程切换环境变量。
 
-## 验证记录
+## 验收结果
 
-统一结果位于工作区根目录 `results/`，不写入 worktree。
+最终提交 `ba114a5`，无 opt-in 环境变量，`--scales all --warmup 5 --iters 30`，
+独立构建目录 `maca-2d-qualified-ba114a5`。
+
+`20260922_173600_maca_2d_qualified_matrix`：3 个 op，60 accuracy / 20 performance，
+accuracy 与平台库交叉正确性 3/3 通过。
+
+| op | cases | 几何平均 | 最低 | 最高 |
+|---|---:|---:|---:|---:|
+| 2d_c2c | 10 | 1.030 | 0.833 | 1.898 |
+| 2d_c2r | 5 | 1.091 | 0.875 | 1.862 |
+| 2d_r2c | 5 | 1.079 | 0.841 | 1.965 |
+| 合计 | 20 | 1.057 | 0.833 | 1.965 |
+
+`32×46189` 的 RC 快路径保护经 `20260922_173600_maca_2d_qualified_rc` 三轮独立进程
+复测（200 warmup / 100 iterations）：C2C 1.900–1.911 / 1.882–1.890，
+R2C 2.003–2.014，C2R 1.907–1.916。
+
+作用域回归：关闭新 2D 策略后抽查 172 份 kernel 源码与 launch metadata，与 dev
+完全一致，覆盖 FP32/FP64、1D 策略开关、实数与跨步 leaf。
+C API 边界测试 8/8 通过：512×64/128/1024 异位与原位、DC/Nyquist、往返，
+以及 FP64、batch=2、单轴、奇数宽度回退。
+
+## 过程记录
 
 - `20260922_161100_maca_2d_profile`：graph A/B 与逐 kernel 归因。
 - `20260922_161400_maca_transpose_micro`：位级转置正确性和计时。
@@ -58,10 +80,12 @@ FP64、batch>1、3D 和其他后端不扩大默认策略。
 - `20260922_161700_maca_2d_packed_screen`：C2C/real 初筛；其中 GPU5 有外部任务，不能单独作为最终性能证据。
 - `20260922_163200_maca_2d_real_rows`：4 个 real case 的 NumPy/mcFFT 正确性与性能。
 - `20260922_164400_maca_2d_rowpack4`：短行 P4 对照，2 个 case 正确性通过。
-- `20260922_164100_maca_2d_default_full`：未加入短行 P4 的默认策略完整矩阵、三档幅度；运行中，不能当作最终验收。
+- `20260922_164100_maca_2d_default_full`：未加入短行 P4 的默认策略完整矩阵、三档幅度。
+- `20260922_170000_maca_2d_repeat`：回退/候选独立进程对照。
+- `20260922_171600_maca_2d_rc_guard`：RC 行子图策略保留对照。
+- `20260922_173600_maca_2d_qualified_matrix`、`20260922_173600_maca_2d_qualified_rc`：最终验收。
 
-最终版本还需完成无 opt-in 矩阵、充分预热的独立进程重复、C API 边界/原位与
-作用域回归。不要用上述初筛数值替代最终结果。
+初筛目录仅作归因证据，不作为验收数值。
 
 复现矩阵：
 
