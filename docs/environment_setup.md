@@ -493,9 +493,27 @@ FlagFFT 的 `ctest`/capture 目标。NPU 的统一验收入口仍然是
 
 ### Hygon BW1000（HCU）
 
-HCU 的主构建依赖 DTK 提供的 HIP 和 hipFFT。下面的最小构建关闭需要额外下载
-GoogleTest 的 C++ 测试；`flagfft-cli` 和统一 `tools/run_tests.py` 验收不依赖
-这些 GTest 目标：
+HCU 的主构建依赖 DTK 提供的 HIP 和 hipFFT。容器可以访问 GoogleTest 源码时，
+和其他后端一样直接打开 `FLAGFFT_BUILD_TESTS`；一次主构建会同时生成
+`flagfft-cli`、GTest 目标和 `numpy_fft_capture`：
+
+```bash
+cmake -S . -B build-hcu \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBACKEND=HCU \
+  -DFLAGFFT_BUILD_CLI=ON \
+  -DFLAGFFT_BUILD_TESTS=ON
+cmake --build build-hcu -j"$(nproc)"
+
+build-hcu/flagfft-cli device-info --json
+# tools/run_tests.py 使用这个 capture：
+test -x build-hcu/ctest/numpy_fft_capture
+```
+
+如果 GoogleTest 下载受网络限制，才使用下面的 fallback：主构建关闭 GTest，
+再用独立的 CMake 工程构建同一个 HCU native capture。这个 fallback 不会生成
+GTest 目标，但不影响 `flagfft-cli` 或 `tools/run_tests.py` 的 accuracy/performance
+验收：
 
 ```bash
 cmake -S . -B build-hcu \
@@ -505,14 +523,6 @@ cmake -S . -B build-hcu \
   -DFLAGFFT_BUILD_TESTS=OFF
 cmake --build build-hcu -j"$(nproc)"
 
-build-hcu/flagfft-cli device-info --json
-```
-
-如需构建 GTest 目标，确认容器可以访问 GoogleTest 源码后改用
-`-DFLAGFFT_BUILD_TESTS=ON`。统一 NumPy accuracy/performance runner 使用的
-HCU native capture 需要单独构建：
-
-```bash
 cmake -S tools/numpy_fft_validation -B build-hcu-capture \
   -DFLAGFFT_SOURCE_DIR="$PWD" \
   -DFLAGFFT_BUILD_DIR="$PWD/build-hcu" \
@@ -555,7 +565,7 @@ python3 tools/run_tests.py --build-dir build-npu --gpus 0 \
 
 python3 tools/run_tests.py --combination full --gpus 6,7 \
   --build-dir build-hcu \
-  --capture-bin build-hcu-capture/numpy_fft_capture \
+  --capture-bin build-hcu/ctest/numpy_fft_capture \
   --output-dir ../results/$(date +%Y%m%d_%H%M%S)_hcu_acceptance \
   --timeout 600 --warmup 3 --iters 30 --color never -v
 ```
@@ -578,8 +588,9 @@ cd build-cuda       # 或 build-ix/build-musa/build-maca/build-npu/build-hcu
 ctest --output-on-failure
 ```
 
-HCU 的 `build-hcu` 只有在用 `-DFLAGFFT_BUILD_TESTS=ON` 构建时才包含上述
-GTest 目标；完整工具验收使用上一节的 `numpy_fft_capture`，不依赖 GTest。
+如果采用网络受限的 fallback，上面的 `--capture-bin` 改为
+`build-hcu-capture/numpy_fft_capture`。HCU 的完整工具验收本身不依赖 GTest；
+GTest 只负责 C++ 单元/集成测试。
 
 ## 8. 常见问题
 
