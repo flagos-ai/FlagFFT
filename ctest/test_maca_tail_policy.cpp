@@ -40,7 +40,7 @@ TEST_F(TailPolicy, ExactWhitelistAndSameBuilderToggle) {
   for (auto [n, dtype, expected] : {
       std::tuple<int64_t, std::string, std::string>{997, "complex128", "bs2048"},
       {1009, "complex64", "bs2048"}, {1048576, "complex128", "ct1024x1024"},
-      {328050, "complex64", "ct405x810"}}) {
+      }) {
     auto r = request(n, dtype);
     unsetenv("FLAGFFT_MACA_TAIL_POLICY");
     const auto original = flagfft::PlanKey::from_node(builder.build(n, r)).repr();
@@ -53,8 +53,8 @@ TEST_F(TailPolicy, ExactWhitelistAndSameBuilderToggle) {
     } else {
       auto ct = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(node);
       ASSERT_NE(ct, nullptr);
-      EXPECT_EQ(ct->n1, n == 1048576 ? 1024 : 405);
-      EXPECT_EQ(ct->n2, n == 1048576 ? 1024 : 810);
+      EXPECT_EQ(ct->n1, 1024);
+      EXPECT_EQ(ct->n2, 1024);
     }
     setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
     EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(n, r)).repr(), original);

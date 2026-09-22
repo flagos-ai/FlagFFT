@@ -39,7 +39,6 @@ inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
     if (n == 1048576) return "ct1024x1024";
   } else if (request.input_dtype == "complex64") {
     if (n == 1009) return "bs2048";
-    if (n == 328050) return "ct405x810";
   }
   return {};
 }
