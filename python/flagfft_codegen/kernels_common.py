@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Literal
 
 from .backend_profile import current_profile
+from .target import maca_1d_single_default_enabled
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _MODULE_DIR.parents[1]
@@ -274,12 +275,27 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
 
 
 def _maca_knob(name: str, default: str = "") -> str:
-    """Read a MACA code-generation override (``FLAGFFT_MACA_<NAME>``).
+    """Read a MACA code-generation override.
 
-    Every caller's default reproduces the shipped constant, so an environment
-    without these variables keeps today's behaviour exactly.
+    The native compiler marks only MACA rank-1, batch-1 requests with the
+    single-transform policy.  The policy supplies the measured defaults while
+    preserving an explicit environment override for A/B testing and rollback.
+    Direct Python code-generation calls remain on the historical defaults.
     """
-    return os.environ.get(f"FLAGFFT_MACA_{name}", default).strip().lower()
+    env_name = f"FLAGFFT_MACA_{name}"
+    if env_name in os.environ:
+        return os.environ[env_name].strip().lower()
+    if maca_1d_single_default_enabled():
+        defaults = {
+            "EXCHANGE": "direct_all",
+            "INNER_PACK": "8",
+            "MAX_WARPS": "8",
+            "SPLIT_ORDER": "lsb",
+            "VEC_IO": "0",
+        }
+        if name in defaults:
+            return defaults[name]
+    return default.strip().lower()
 
 
 def _positive_knob(name: str, value: str) -> int:
@@ -464,7 +480,9 @@ def _maca_four_step_pack_for(plan: LeafPlan) -> int:
     """
     active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
     target = _FOUR_STEP_PACK_TARGET_THREADS // lane_block_for(active_lanes)
-    bounded = min(_portable_exchange_max_pack(), max(_FOUR_STEP_LARGE_INNER_PACK, target))
+    bounded = min(
+        _portable_exchange_max_pack(), max(_FOUR_STEP_LARGE_INNER_PACK, target)
+    )
     return _floor_power_of_two(max(1, bounded))
 
 
@@ -517,9 +535,7 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
         if _maca_knob("EXCHANGE") != "direct_all" or len(plan.factors) <= 1:
             return 0
 
-        active_lanes = max(
-            cooperative_stage_lanes_for(plan), default=plan.lanes
-        )
+        active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
         lane_min = _maca_knob("LANE_MIN", "auto")
         if lane_min == "auto":
             exchange_lane_floor = max(
@@ -527,26 +543,20 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
             )
         else:
             exchange_lane_floor = _positive_knob("LANE_MIN", lane_min)
-        exchange_lane_block = max(
-            lane_block_for(active_lanes), exchange_lane_floor
-        )
+        exchange_lane_block = max(lane_block_for(active_lanes), exchange_lane_floor)
 
         # direct_all joins every radix digit into a power-of-two padded tensor.
         # For mixed radix this padding, rather than the base exchange buffer,
         # is the launch-sized allocation (e.g. radix 17 -> 32).
         joined_radix = max(_next_power_of_two(radix) for radix in plan.factors)
         return (
-            exchange_lane_block
-            * pack
-            * joined_radix
-            * _real_element_bytes(plan.dtype)
+            exchange_lane_block * pack * joined_radix * _real_element_bytes(plan.dtype)
         )
 
     def fits(pack: int) -> bool:
         return (
-            (direct_register_exchange or shared_bytes(pack) <= budget)
-            and direct_all_join_bytes(pack) <= budget
-        )
+            direct_register_exchange or shared_bytes(pack) <= budget
+        ) and direct_all_join_bytes(pack) <= budget
 
     limit = 1
     while limit < _portable_exchange_max_pack() and fits(limit * 2):
@@ -566,8 +576,14 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     # An explicit number is an experiment setting, but it still goes through
     # the hard launchable shared-memory limit.
     if override not in {"", "auto"}:
-        pack = min(_positive_knob("INNER_PACK", override), _portable_exchange_max_pack())
-        if pack >= 8 and plan is not None and not _maca_p8_register_leaf_supported(plan):
+        pack = min(
+            _positive_knob("INNER_PACK", override), _portable_exchange_max_pack()
+        )
+        if (
+            pack >= 8
+            and plan is not None
+            and not _maca_p8_register_leaf_supported(plan)
+        ):
             # A global P8 request is useful for screening, but it must not
             # force mixed-radix or short leaves into the register experiment.
             # Reuse the normal resource-derived choice for those plans.
@@ -579,7 +595,11 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
                 _portable_exchange_pack_floor(plan, pack),
                 _portable_exchange_max_pack(),
             )
-        return min(pack, _maca_four_step_smem_pack_limit(plan)) if plan is not None else pack
+        return (
+            min(pack, _maca_four_step_smem_pack_limit(plan))
+            if plan is not None
+            else pack
+        )
     if plan is None:
         return 1
     # Derived packs fill a 256-thread block.  "Just wide enough to span a warp"
