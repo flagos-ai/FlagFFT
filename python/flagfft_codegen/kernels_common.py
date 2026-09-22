@@ -523,6 +523,19 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
         and not _is_double_dtype(plan.dtype)
         and all(radix & (radix - 1) == 0 for radix in plan.factors)
     )
+    # Opt-in resource experiment for the balanced FP64 four-step candidate.
+    # Do not lift the 2048-point guard: its measured P8 allocation is 128 KiB.
+    # Keep the padded tensor bound below and cap the trial at four slots;
+    # compiled resource metadata must still be checked before qualification.
+    fp64_register_trial = (
+        _maca_knob("FP64_REGISTER_PACK") == "1"
+        and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+        and _is_double_dtype(plan.dtype)
+        and plan.length in {512, 1024}
+        and plan.smem_size == plan.length
+        and len(plan.factors) > 1
+        and all(radix & (radix - 1) == 0 for radix in plan.factors)
+    )
 
     # Four real-valued shared buffers back the complex exchange. Match the
     # codegen's lane-block rounding so a pack that looks legal algebraically
@@ -532,7 +545,9 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
         return 4 * smem_elements * _real_element_bytes(plan.dtype)
 
     def direct_all_join_bytes(pack: int) -> int:
-        if _maca_knob("EXCHANGE") != "direct_all" or len(plan.factors) <= 1:
+        if (
+            _maca_knob("EXCHANGE") != "direct_all" and not fp64_register_trial
+        ) or len(plan.factors) <= 1:
             return 0
 
         active_lanes = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
@@ -555,7 +570,9 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
 
     def fits(pack: int) -> bool:
         return (
-            direct_register_exchange or shared_bytes(pack) <= budget
+            direct_register_exchange
+            or (fp64_register_trial and pack <= 4)
+            or shared_bytes(pack) <= budget
         ) and direct_all_join_bytes(pack) <= budget
 
     limit = 1
