@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unified 36-operator acceptance runner: FlagFFT/platform FFT vs NumPy."""
+"""Unified 30-operator acceptance runner: FlagFFT/platform FFT vs NumPy."""
 
 from __future__ import annotations
 
@@ -42,28 +42,34 @@ import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 ENV_INFO: dict[str, Any] = {}
 WORKER_PROCESSES: list[multiprocessing.Process] = []
 INTERRUPTED = False
 GROUPS = (
     "1d_ct_single",
-    "1d_prime_single",
     "1d_ct_batch",
+    "1d_fourstep_single",
+    "1d_fourstep_batch",
+    "1d_prime_single",
     "1d_prime_batch",
     "2d",
     "3d",
+    "2d_batch",
+    "3d_batch",
 )
-# The acceptance manifest always keeps all 36 operator definitions.  Backend
-# limitations are represented as policy skips in the manifest/summary instead
-# of silently removing operators from the acceptance surface.
-UNSUPPORTED_APIS_BY_BACKEND: dict[str, frozenset[str]] = {
-    "ix": frozenset({"z2z", "z2d", "d2z"}),
-    "npu": frozenset({"z2z", "z2d", "d2z"}),
+OP_APIS = ("c2c", "c2r", "r2c")
+FLAGGEMS_DTYPES = ("torch.float32", "torch.float64")
+API_BY_PRECISION = {
+    "c2c": {"torch.float32": "c2c", "torch.float64": "z2z"},
+    "c2r": {"torch.float32": "c2r", "torch.float64": "z2d"},
+    "r2c": {"torch.float32": "r2c", "torch.float64": "d2z"},
 }
-BACKEND_SKIP_REASONS = {
-    "ix": "Current IX acceptance policy disables FP64; use probe_capabilities.py for device-specific evidence.",
-    "npu": "Ascend 910B does not support FP64; Z2Z, Z2D and D2Z are excluded from execution.",
+# These backends are known to have no native FP64 implementation.  Their
+# FP64 cases are omitted before aggregation so they do not enter any totals.
+UNSUPPORTED_FP64_BACKENDS: dict[str, str] = {
+    "ix": "Current IX acceptance policy disables native FP64.",
+    "npu": "Ascend 910B does not support native FP64.",
 }
 DIRECTIONS = {
     "c2c": ("forward", "inverse"),
@@ -140,6 +146,7 @@ PERF_LOG = "perf.log"
 FLAGFFT_PERFORMANCE_COLUMNS = (
     "float16",
     "float32",
+    "float64",
     "bfloat16",
     "int16",
     "int32",
@@ -772,32 +779,34 @@ def load_operators(path: Path) -> list[dict[str, Any]]:
         if op_id in seen:
             raise ValueError(f"duplicate operator ID: {op_id}")
         seen.add(op_id)
-        if (
-            op.get("api") not in DIRECTIONS
-            or type(op.get("rank")) is not int
-            or op["rank"] not in (1, 2, 3)
-        ):
-            raise ValueError(f"{op_id}: invalid api or rank")
+        if (op.get("api") not in OP_APIS or type(op.get("rank")) is not int or
+                op["rank"] not in (1, 2, 3)):
+            raise ValueError(f"{op_id}: invalid logical api or rank")
+        dtypes = op.get("dtypes")
+        if not isinstance(dtypes, list) or tuple(dtypes) != FLAGGEMS_DTYPES:
+            raise ValueError(f"{op_id}: dtypes must be {list(FLAGGEMS_DTYPES)}")
         if op["rank"] == 1:
-            if op.get("algorithm") not in ("ct", "prime") or op.get("batch") not in (
-                "single",
-                "batch",
-            ):
+            if op.get("algorithm") not in ("ct", "fourstep", "prime") or op.get("batch") not in ("single", "batch"):
                 raise ValueError(
-                    f"{op_id}: 1D requires algorithm ct/prime and batch single/batch"
+                    f"{op_id}: 1D requires algorithm ct/fourstep/prime and batch single/batch"
                 )
             expected = f"1d_{op['algorithm']}_{op['batch']}_{op['api']}"
         else:
-            expected = f"{op['rank']}d_{op['api']}"
+            if op.get("batch") not in ("single", "batch") or "algorithm" in op:
+                raise ValueError(f"{op_id}: multidimensional ops require batch single/batch")
+            batch_suffix = "" if op["batch"] == "single" else "_batch"
+            expected = f"{op['rank']}d{batch_suffix}_{op['api']}"
         if op_id != expected or not isinstance(op.get("sizes"), str):
             raise ValueError(
                 f"{op_id}: expected ID {expected} and a size-set reference"
             )
-    expected_ids = {f"{group}_{api}" for group in GROUPS for api in DIRECTIONS}
+    expected_ids = set()
+    for group in GROUPS:
+        expected_ids.update(f"{group}_{api}" for api in OP_APIS)
     if seen != expected_ids:
         missing = ", ".join(sorted(expected_ids - seen))
         raise ValueError(
-            f"operators.yaml must define all 36 acceptance operators; missing: {missing}"
+            f"operators.yaml must define all 30 acceptance operators; missing: {missing}"
         )
     return ops
 
@@ -826,10 +835,14 @@ def load_test_matrix(path: Path) -> dict[str, Any]:
             set(values)
         ) != len(values):
             raise ValueError(f"batches.{mode} must contain distinct positive integers")
-        if mode in ("single", "3d") and values != [1]:
+        if mode in ("single", "2d", "3d") and values != [1]:
             raise ValueError(f"batches.{mode} must be [1]")
         if mode == "batch" and any(value <= 1 for value in values):
             raise ValueError("batches.batch values must be greater than 1")
+        if mode in ("2d_batch", "3d_batch") and values != [4]:
+            raise ValueError(f"batches.{mode} must be [4]")
+    if matrix.get("batches", {}).get("batch") != [64]:
+        raise ValueError("batches.batch must be [64]")
     parse_scales(None, matrix.get("scales", [1.0]))
     return matrix
 
@@ -837,7 +850,8 @@ def load_test_matrix(path: Path) -> dict[str, Any]:
 def operator_group(op: dict) -> str:
     if op["rank"] == 1:
         return f"1d_{op['algorithm']}_{op['batch']}"
-    return f"{op['rank']}d"
+    suffix = "" if op["batch"] == "single" else "_batch"
+    return f"{op['rank']}d{suffix}"
 
 
 def resolve_combination_names(value: str, matrix: dict | None = None) -> list[str]:
@@ -871,7 +885,12 @@ def parse_shape_filter(raw: str | None) -> set[tuple[int, ...]] | None:
 
 def case_name(case: dict, performance: bool = False) -> str:
     shape = "x".join(str(value) for value in case["shape"])
-    name = f"{case['op_id']}__n{shape}__b{case['batch']}__{case['direction']}"
+    dtype_suffix = "fp32" if case["dtype"] == "torch.float32" else "fp64"
+    placement = case["placement"].replace("-", "")
+    name = (
+        f"{case['op_id']}__{dtype_suffix}__n{shape}__b{case['batch']}"
+        f"__{case['direction']}__{placement}"
+    )
     if not performance:
         scale = (
             f"{case['scale']:.17g}".replace("-", "m")
@@ -901,7 +920,12 @@ def expand_test_cases(
         sizes = matrix.get(op["sizes"])
         if not isinstance(sizes, list) or not sizes:
             raise ValueError(f"{op['id']}: missing or empty size set {op['sizes']}")
-        batch_key = op["batch"] if op["rank"] == 1 else f"{op['rank']}d"
+        if op["rank"] == 1:
+            batch_key = op["batch"]
+        elif op["batch"] == "single":
+            batch_key = f"{op['rank']}d"
+        else:
+            batch_key = f"{op['rank']}d_batch"
         batches = matrix.get("batches", {}).get(batch_key)
         if not batches:
             raise ValueError(f"{op['id']}: missing batches.{batch_key}")
@@ -914,26 +938,37 @@ def expand_test_cases(
             if shapes is not None and tuple(shape) not in shapes:
                 continue
             for batch in batches:
-                for scale in scale_values:
-                    for direction in DIRECTIONS[op["api"]]:
-                        if directions is not None and direction not in directions:
-                            continue
-                        case = {
-                            "op_id": op["id"],
-                            "api": op["api"],
-                            "rank": op["rank"],
-                            "algorithm": op.get("algorithm", f"{op['rank']}d"),
-                            "batch_mode": op.get("batch"),
-                            "shape": list(shape),
-                            "batch": batch,
-                            "scale": scale,
-                            "direction": direction,
-                        }
-                        case["case_id"] = case_name(case)
-                        if case["case_id"] in seen:
-                            raise ValueError(f"duplicate case: {case['case_id']}")
-                        seen.add(case["case_id"])
-                        cases.append(case)
+                placements = (
+                    ("in-place", "out-of-place")
+                    if op["rank"] > 1 and op["batch"] == "batch"
+                    else ("out-of-place",)
+                )
+                for dtype in op["dtypes"]:
+                    api = API_BY_PRECISION[op["api"]][dtype]
+                    for placement in placements:
+                        for scale in scale_values:
+                            for direction in DIRECTIONS[api]:
+                                if directions is not None and direction not in directions:
+                                    continue
+                                case = {
+                                    "op_id": op["id"],
+                                    "op_api": op["api"],
+                                    "api": api,
+                                    "dtype": dtype,
+                                    "rank": op["rank"],
+                                    "algorithm": op.get("algorithm", f"{op['rank']}d"),
+                                    "batch_mode": op["batch"],
+                                    "shape": list(shape),
+                                    "batch": batch,
+                                    "placement": placement,
+                                    "scale": scale,
+                                    "direction": direction,
+                                }
+                                case["case_id"] = case_name(case)
+                                if case["case_id"] in seen:
+                                    raise ValueError(f"duplicate case: {case['case_id']}")
+                                seen.add(case["case_id"])
+                                cases.append(case)
     return cases
 
 
@@ -965,6 +1000,7 @@ def build_accuracy_cmd(
         f"--shape={'x'.join(str(value) for value in case['shape'])}",
         f"--batch={case['batch']}",
         f"--direction={case['direction']}",
+        f"--placement={case['placement']}",
         f"--input={case_dir / 'input.bin'}",
         f"--output-dir={case_dir}",
         f"--implementation={implementation}",
@@ -985,6 +1021,7 @@ def build_stream_accuracy_cmd(
         f"--shape={'x'.join(str(value) for value in case['shape'])}",
         f"--batch={case['batch']}",
         f"--direction={case['direction']}",
+        f"--placement={case['placement']}",
         "--input=-",
         "--output-dir=-",
         f"--implementation={implementation}",
@@ -1005,6 +1042,8 @@ def build_perf_cmd(case: dict, build_dir: Path, warmup: int, iters: int) -> list
         str(case["batch"]),
         "--direction",
         case["direction"],
+        "--placement",
+        case["placement"],
         "--warmup",
         str(warmup),
         "--iters",
@@ -1053,12 +1092,27 @@ def detect_backend(build_dir: Path) -> str:
     return "unknown"
 
 
-def operator_skip_reason(op: dict, backend: str) -> str | None:
-    if op.get("api") not in UNSUPPORTED_APIS_BY_BACKEND.get(backend, frozenset()):
-        return None
-    return BACKEND_SKIP_REASONS.get(
-        backend, f"backend {backend.upper()} does not support API {op['api'].upper()}."
-    )
+def dtype_skip_reason(dtype: str, backend: str) -> str | None:
+    if dtype == "torch.float64":
+        return UNSUPPORTED_FP64_BACKENDS.get(backend)
+    return None
+
+
+def filter_unsupported_dtypes(
+    ops: list[dict], cases: list[dict], backend: str
+) -> tuple[list[dict], dict[str, dict[str, str]]]:
+    omitted = {
+        op["id"]: {dtype: reason}
+        for op in ops
+        for dtype in FLAGGEMS_DTYPES
+        if (reason := dtype_skip_reason(dtype, backend)) is not None
+    }
+    runnable = [
+        case
+        for case in cases
+        if case["dtype"] not in omitted.get(case["op_id"], {})
+    ]
+    return runnable, omitted
 
 
 def _prime_factors(value: int) -> list[int]:
@@ -1084,9 +1138,7 @@ def case_skip_reason(case: dict, backend: str) -> str | None:
     still run and unsupported entries are visible policy skips.
     """
     if backend != "npu":
-        return operator_skip_reason(case, backend)
-    if is_double(case["api"]):
-        return BACKEND_SKIP_REASONS["npu"]
+        return None
     rank = int(case["rank"])
     shape = tuple(int(n) for n in case["shape"])
     if rank == 3:
@@ -1324,6 +1376,12 @@ def read_plan(log_path: Path) -> str | None:
     return text[begin:end].strip("\n") or None
 
 
+def fourstep_path_error(case: dict, plan: str | None) -> str | None:
+    if case.get("algorithm") == "fourstep" and (not plan or "FourStep(n=" not in plan):
+        return "four-step operator selected a plan without a FourStep node"
+    return None
+
+
 def tail_text(path: Path, limit: int = 4000) -> str:
     try:
         with path.open("rb") as stream:
@@ -1471,6 +1529,9 @@ def run_accuracy_capture(
         result["duration"] = time.monotonic() - started
     if implementation == "flagfft":
         result["plan"] = read_plan(log_path)
+        if path_error := fourstep_path_error(case, result["plan"]):
+            result["status"] = "Failed"
+            result["error"] = path_error
     if result["status"] in ("Error", "Timeout"):
         detail = tail_text(log_path)
         if detail:
@@ -1665,6 +1726,8 @@ def run_performance_case(
     stage = run_logged_command(command, timeout, gpu_id, case_scratch, log_path)
     if stage["status"] == "Completed":
         result = parse_perf_result(log_path.read_text(errors="replace"), case, backend)
+        if path_error := fourstep_path_error(case, result.get("plan")):
+            result.update({"status": "Failed", "error": path_error})
     else:
         result = {"status": stage["status"], "error": stage.get("error"), "plan": None}
     result.update(
@@ -1883,12 +1946,15 @@ def aggregate_results(
                 for key in (
                     "case_id",
                     "op_id",
+                    "op_api",
                     "api",
+                    "dtype",
                     "rank",
                     "algorithm",
                     "batch_mode",
                     "shape",
                     "batch",
+                    "placement",
                     "direction",
                     "scale",
                     "skip_reason",
@@ -2039,20 +2105,18 @@ def flaggems_accuracy_block(block: dict, log_path: Path) -> dict:
 
 
 def flaggems_performance_rows(block: dict, average: float | None) -> list[dict]:
-    """One platform row per performance case.
-
-    The platform keys its columns by dtype, but an FFT operator's dtype is part
-    of its name (c2c/r2c/z2z/...), so the measured speedup goes in the complex
-    column and the remaining dtype columns stay empty rather than being
-    mislabelled.  `avg_speedup` repeats the operator's geometric mean on every
-    row, which is the number the acceptance bar is judged on.
-    """
+    """One platform row per performance case, keyed by FlagGems dtype."""
     rows = []
     for case in block["cases"].values():
-        row = {"func_name": case["case_id"]}
+        row = {
+            "func_name": case["case_id"],
+            "dtype": case["dtype"],
+            "placement": case["placement"],
+        }
         row.update({column: "" for column in FLAGFFT_PERFORMANCE_COLUMNS})
         speedup = case.get("speedup")
-        row["cfloat"] = "" if speedup is None else f"{speedup:.6g}"
+        dtype_column = case["dtype"].removeprefix("torch.")
+        row[dtype_column] = "" if speedup is None else f"{speedup:.6g}"
         row["avg_speedup"] = "" if average is None else f"{average:.6g}"
         rows.append(row)
     return rows
@@ -2157,12 +2221,15 @@ INC_COLUMNS = [
     "phase",
     "case_id",
     "op_id",
+    "op_api",
     "api",
+    "dtype",
     "rank",
     "algorithm",
     "batch_mode",
     "shape",
     "batch",
+    "placement",
     "direction",
     "scale",
     "status",
@@ -2203,11 +2270,14 @@ def incremental_row(message: dict) -> dict:
                 "phase",
                 "case_id",
                 "op_id",
+                "op_api",
                 "api",
+                "dtype",
                 "rank",
                 "algorithm",
                 "batch_mode",
                 "batch",
+                "placement",
                 "direction",
                 "scale",
             )
@@ -2283,7 +2353,7 @@ def read_op_list_file(path: str) -> list[str]:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--ops", help="Comma-separated IDs from the 36-operator acceptance list"
+        "--ops", help="Comma-separated IDs from the 30-operator acceptance list"
     )
     parser.add_argument(
         "--op-list-file", help="One operator ID per line; # starts a comment"
@@ -2309,7 +2379,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        help="Result directory; default workspace results/<timestamp>_acceptance36",
+        help="Result directory; default workspace results/<timestamp>_acceptance30",
     )
     parser.add_argument(
         "--incremental-csv", help="CSV path; default <output-dir>/incremental.csv"
@@ -2394,25 +2464,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     if directions is not None and not expanded_cases:
         raise ValueError("no cases match the selected operators, shapes, scales and directions")
-    skip_reasons = {
-        op["id"]: reason
-        for op in ops
-        if (reason := operator_skip_reason(op, backend)) is not None
-    }
-    skipped_ids = set(skip_reasons)
+    expanded_cases, omitted_dtypes = filter_unsupported_dtypes(ops, expanded_cases, backend)
     case_reasons = {
         case["case_id"]: case_skip_reason(case, backend)
         for case in expanded_cases
-        if case["op_id"] not in skipped_ids
-        and (case_skip_reason(case, backend) is not None)
+        if case_skip_reason(case, backend) is not None
     }
     # Reference-library limits do not prevent FlagFFT itself from being
     # checked against NumPy.  They suppress only the platform comparison and
-    # the corresponding performance row.  Whole-operator skips (FP64 on
-    # NPU/IX) remain excluded from execution below.
-    runnable_cases = [
-        case for case in expanded_cases if case["op_id"] not in skipped_ids
-    ]
+    # the corresponding performance row. Unsupported precision cases were
+    # removed above and are not represented as skipped tests or totals.
+    runnable_cases = list(expanded_cases)
     if args.max_cases is not None:
         runnable_case_ids = {
             case["case_id"] for case in runnable_cases[: args.max_cases]
@@ -2421,20 +2483,17 @@ def main(argv: list[str] | None = None) -> int:
         runnable_case_ids = {case["case_id"] for case in runnable_cases}
     all_cases = []
     for case in expanded_cases:
-        if case["op_id"] in skipped_ids:
-            all_cases.append({**case, "skip_reason": skip_reasons[case["op_id"]]})
-        elif case["case_id"] in runnable_case_ids:
+        if case["case_id"] in runnable_case_ids:
             if case["case_id"] in case_reasons:
                 all_cases.append({**case, "skip_reason": case_reasons[case["case_id"]]})
             else:
                 all_cases.append(case)
-    cases = [case for case in all_cases if case["op_id"] not in skipped_ids]
-    skipped_cases = [case for case in all_cases if case["op_id"] in skipped_ids]
+    cases = list(all_cases)
+    skipped_cases = []
     reference_skipped_cases = [case for case in cases if case.get("skip_reason")]
     active_ids = {case["op_id"] for case in all_cases}
     ops = [op for op in ops if op["id"] in active_ids]
-    skipped_ids &= active_ids
-    skip_reasons = {op_id: skip_reasons[op_id] for op_id in skipped_ids}
+    omitted_dtypes = {op_id: reason for op_id, reason in omitted_dtypes.items() if op_id in active_ids}
     if not all_cases:
         raise ValueError("no test cases selected")
     perf_cases = performance_cases(all_cases)
@@ -2442,11 +2501,8 @@ def main(argv: list[str] | None = None) -> int:
         f"Expanded {len(all_cases)} accuracy cases and {len(perf_cases)} performance cases "
         f"from {len(ops)} operators"
     )
-    if skipped_cases:
-        pwarn(
-            f"Backend {backend} policy skipped {len(skipped_cases)} cases "
-            f"across {len(skipped_ids)} operators"
-        )
+    if omitted_dtypes:
+        pwarn(f"Backend {backend} omitted FP64 from {len(omitted_dtypes)} operators; it is not counted")
     if reference_skipped_cases:
         pwarn(
             f"Reference library policy skipped {len(reference_skipped_cases)} "
@@ -2458,7 +2514,7 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "backend": backend,
                     "operators": [op["id"] for op in ops],
-                    "skipped_operators": skip_reasons,
+                    "omitted_dtypes": omitted_dtypes,
                     "cases": all_cases,
                     "performance_cases": perf_cases,
                 },
@@ -2510,7 +2566,7 @@ def main(argv: list[str] | None = None) -> int:
         else (
             ROOT.parent
             / "results"
-            / (datetime.now().astimezone().strftime("%Y%m%d_%H%M%S") + "_acceptance36")
+            / (datetime.now().astimezone().strftime("%Y%m%d_%H%M%S") + "_acceptance30")
         )
     )
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -2525,8 +2581,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(f"incremental CSV already exists: {csv_path}")
     config = {
         "ops": [op["id"] for op in ops],
-        "skipped_ops": sorted(skipped_ids),
-        "skip_reasons": skip_reasons,
+        "omitted_dtypes": omitted_dtypes,
         "combinations": combinations,
         "gpus": gpu_ids,
         "accuracy_only": args.accuracy_only,
@@ -2692,8 +2747,6 @@ def main(argv: list[str] | None = None) -> int:
         all_cases,
         not args.performance_only,
         not args.accuracy_only,
-        skipped_ids,
-        skip_reasons,
     )
     config["interrupted"] = INTERRUPTED
     config["worker_exitcodes"] = [worker.exitcode for worker in WORKER_PROCESSES]

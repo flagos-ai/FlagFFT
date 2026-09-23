@@ -17,7 +17,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <numeric>
 #include <vector>
 
 #include "adaptor/adaptor.h"
@@ -97,6 +99,18 @@ namespace {
       for (std::size_t i = 0; i < count; ++i) {
         host[i] = std::sin(static_cast<float>(i + 1) * 0.173f);
       }
+      if (spec.placement == Placement::InPlace && is_real_forward_api(spec.api) && spec.rank > 1) {
+        const int rows = layout.outer_count;
+        for (int row = rows - 1; row >= 0; --row) {
+          for (int col = 0; col < n; ++col) {
+            host[static_cast<std::size_t>(row * layout.padded + col)] =
+                std::sin(static_cast<float>(row * n + col + 1) * 0.173f);
+          }
+          std::fill(host + static_cast<std::size_t>(row * layout.padded + n),
+                    host + static_cast<std::size_t>((row + 1) * layout.padded),
+                    0.0f);
+        }
+      }
       if (is_real_inverse_api(spec.api)) {
         for (int row = 0; row < layout.outer_count; ++row) {
           host[static_cast<std::size_t>(row * layout.padded + 1)] = 0.0f;
@@ -134,19 +148,48 @@ namespace {
       const int half_total = n[0] * (n[1] / 2 + 1);
       const int input_dist = is_real_inverse_api(spec.api) ? half_total : total;
       const int output_dist = is_real_forward_api(spec.api) ? half_total : total;
+      const int padded = n[0] * 2 * (n[1] / 2 + 1);
+      const int plan_input_dist = spec.placement == Placement::InPlace && is_real_forward_api(spec.api)
+                                      ? padded
+                                      : input_dist;
+      const int plan_output_dist = spec.placement == Placement::InPlace && is_real_inverse_api(spec.api)
+                                       ? padded
+                                       : output_dist;
       result = flagfftPlanMany(&raw,
                                2,
                                n,
                                nullptr,
                                1,
-                               input_dist,
+                               plan_input_dist,
                                nullptr,
                                1,
-                               output_dist,
+                               plan_output_dist,
                                flagfft_type(spec.api),
                                spec.batch);
     } else if (spec.rank == 3) {
-      result = flagfftPlan3d(&raw, spec.shape[0], spec.shape[1], spec.shape[2], flagfft_type(spec.api));
+      int n[3] = {spec.shape[0], spec.shape[1], spec.shape[2]};
+      const int total = n[0] * n[1] * n[2];
+      const int half_total = n[0] * n[1] * (n[2] / 2 + 1);
+      const int input_dist = is_real_inverse_api(spec.api) ? half_total : total;
+      const int output_dist = is_real_forward_api(spec.api) ? half_total : total;
+      const int padded = n[0] * n[1] * 2 * (n[2] / 2 + 1);
+      const int plan_input_dist = spec.placement == Placement::InPlace && is_real_forward_api(spec.api)
+                                      ? padded
+                                      : input_dist;
+      const int plan_output_dist = spec.placement == Placement::InPlace && is_real_inverse_api(spec.api)
+                                       ? padded
+                                       : output_dist;
+      result = flagfftPlanMany(&raw,
+                               3,
+                               n,
+                               nullptr,
+                               1,
+                               plan_input_dist,
+                               nullptr,
+                               1,
+                               plan_output_dist,
+                               flagfft_type(spec.api),
+                               spec.batch);
     }
     check_flagfft(result, "create FlagFFT plan");
     return FlagfftPlanHandle(raw);
@@ -243,30 +286,39 @@ namespace {
   }
 
   void exec_ref(test_adaptor::RefPlanHandle& plan, const CaseSpec& spec, void* input, void* output) {
-    if (spec.rank != 2 || spec.batch == 1) {
+    if (spec.rank == 1 || spec.batch == 1) {
       exec_ref_one(plan, spec, input, output);
       return;
     }
-
-    const int elements_per_batch = spec.shape[0] * spec.shape[1];
-    if (spec.api == FftApi::C2C) {
-      auto* in = static_cast<flagfftComplex*>(input);
-      auto* out = static_cast<flagfftComplex*>(output);
-      for (int b = 0; b < spec.batch; ++b) {
-        exec_ref_one(plan, spec, in + b * elements_per_batch, out + b * elements_per_batch);
+    const std::size_t elements = std::accumulate(spec.shape.begin(), spec.shape.end(), std::size_t{1},
+                                                 [](std::size_t a, int b) { return a * b; });
+    const std::size_t half = elements / static_cast<std::size_t>(spec.shape.back()) *
+                             static_cast<std::size_t>(spec.shape.back() / 2 + 1);
+    const std::size_t scalar_bytes = is_double_api(spec.api) ? sizeof(double) : sizeof(float);
+    const bool input_complex = is_complex_api(spec.api) || is_real_inverse_api(spec.api);
+    const bool output_complex = is_complex_api(spec.api) || is_real_forward_api(spec.api);
+    const std::size_t input_scalars = is_real_inverse_api(spec.api)
+                                          ? half * 2
+                                          : (input_complex ? elements * 2 : elements);
+    const std::size_t output_scalars = is_real_forward_api(spec.api)
+                                           ? half * 2
+                                           : (output_complex ? elements * 2 : elements);
+    const std::size_t input_stride = input_scalars * scalar_bytes;
+    const std::size_t output_stride = output_scalars * scalar_bytes;
+    const std::size_t in_place_stride = layout_for(spec).allocation_bytes / static_cast<std::size_t>(spec.batch);
+    for (int b = 0; b < spec.batch; ++b) {
+      void* batch_input;
+      void* batch_output;
+      if (spec.placement == Placement::InPlace) {
+        auto* batch = static_cast<std::uint8_t*>(input) + static_cast<std::size_t>(b) * in_place_stride;
+        batch_input = batch;
+        batch_output = batch;
+      } else {
+        batch_input = static_cast<std::uint8_t*>(input) + static_cast<std::size_t>(b) * input_stride;
+        batch_output = static_cast<std::uint8_t*>(output) + static_cast<std::size_t>(b) * output_stride;
       }
-      return;
+      exec_ref_one(plan, spec, batch_input, batch_output);
     }
-    if (spec.api == FftApi::Z2Z) {
-      auto* in = static_cast<flagfftDoubleComplex*>(input);
-      auto* out = static_cast<flagfftDoubleComplex*>(output);
-      for (int b = 0; b < spec.batch; ++b) {
-        exec_ref_one(plan, spec, in + b * elements_per_batch, out + b * elements_per_batch);
-      }
-      return;
-    }
-
-    throw AssertionFailure("rank 2 reference batch execution supports only c2c and z2z");
   }
 
 }  // namespace
@@ -279,6 +331,7 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
   DeviceMemory ff_in(layout.allocation_bytes);
   DeviceMemory ref_in;
   HostBuffer ref_host_in;
+  HostBuffer ref_host_seed;
   HostBuffer ref_host_out;
   if (has_reference && !reference_uses_host_memory) {
     ref_in.allocate(layout.allocation_bytes);
@@ -297,6 +350,7 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
   if (has_reference) {
     if (reference_uses_host_memory) {
       ref_host_in = make_host_input(layout, spec);
+      if (spec.placement == Placement::InPlace) ref_host_seed = ref_host_in;
       if (spec.placement == Placement::OutOfPlace) {
         ref_host_out.resize(layout.allocation_bytes);
       }
@@ -322,6 +376,17 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
   };
 
   auto ref_input = [&]() -> void* { return reference_uses_host_memory ? ref_host_in.data() : ref_in.get(); };
+  auto reset_flagfft_input = [&]() {
+    if (spec.placement == Placement::InPlace) seed_input(ff_in, layout, spec);
+  };
+  auto reset_reference_input = [&]() {
+    if (spec.placement != Placement::InPlace) return;
+    if (reference_uses_host_memory) {
+      ref_host_in = ref_host_seed;
+    } else {
+      seed_input(ref_in, layout, spec);
+    }
+  };
 
   Stream stream;
   check_flagfft(flagfftSetStream(ff_plan.get(), stream.get()), "flagfftSetStream");
@@ -332,8 +397,10 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
 
   // Warmup
   for (int i = 0; i < warmup; ++i) {
+    reset_flagfft_input();
     exec_flagfft(ff_plan.get(), spec, ff_in.get(), ff_output());
     if (has_reference) {
+      reset_reference_input();
       exec_ref(*ref_plan, spec, ref_input(), ref_output());
     }
   }
@@ -347,26 +414,31 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
 
   for (int i = 0; i < iters; ++i) {
     if (has_reference && (i & 1) == 0) {
+      reset_reference_input();
       timer.start(stream.get());
       exec_ref(*ref_plan, spec, ref_input(), ref_output());
       timer.stop(stream.get());
       ref_times.push_back(timer.elapsed_ms());
 
+      reset_flagfft_input();
       timer.start(stream.get());
       exec_flagfft(ff_plan.get(), spec, ff_in.get(), ff_output());
       timer.stop(stream.get());
       ff_times.push_back(timer.elapsed_ms());
     } else if (has_reference) {
+      reset_flagfft_input();
       timer.start(stream.get());
       exec_flagfft(ff_plan.get(), spec, ff_in.get(), ff_output());
       timer.stop(stream.get());
       ff_times.push_back(timer.elapsed_ms());
 
+      reset_reference_input();
       timer.start(stream.get());
       exec_ref(*ref_plan, spec, ref_input(), ref_output());
       timer.stop(stream.get());
       ref_times.push_back(timer.elapsed_ms());
     } else {
+      reset_flagfft_input();
       timer.start(stream.get());
       exec_flagfft(ff_plan.get(), spec, ff_in.get(), ff_output());
       timer.stop(stream.get());
