@@ -227,7 +227,7 @@ SQLite tuning database. Runtime plan lookup consumes that database when
 ## Tests
 
 `ctest/` contains Google Test based accuracy tests for all operators.
-`tools/run_tests.py` expands 36 acceptance operators from `conf/operators.yaml`
+`tools/run_tests.py` expands 30 acceptance operators from `conf/operators.yaml`
 using the dimensions, numeric batches and scales in `conf/test_matrix.yaml`.
 Its native capture target compares FlagFFT and the platform library independently
 against NumPy; FlagFFT correctness alone decides acceptance. Performance uses
@@ -246,12 +246,11 @@ acceptance platform parses.
 runs per device; `tools/benchmark_hardware_profile.py` runs the paired
 policy A/B comparisons.
 
-On IX the acceptance policy currently disables FP64 — that is a policy choice,
-not a hardware verdict: `tools/probe_capabilities.py` records the
-device-specific evidence. `run_tests.py` keeps the corresponding `Z2Z`, `Z2D`,
-and `D2Z` operators in the 36-operator report, marks their cases as
-policy-skipped, and does not launch them; the remaining 18 operators are
-executed normally. The skip reason is retained in JSON and incremental CSV.
+Each logical acceptance operator has `torch.float32` and `torch.float64` cases.
+On IX, unsupported FP64 cases are omitted before aggregation, so they do not
+contribute to accuracy or performance totals. The 2D/3D batch groups use
+batch 4 and test both in-place and out-of-place execution through contiguous
+`flagfftPlanMany` layouts, including padded rows for in-place real transforms.
 
 On Ascend 910B, FP64 is unavailable and `ops-fft` is FP32-only. FlagFFT's
 FP32 path covers contiguous 1D, 2D, and 3D C2C/R2C/C2R plans. The current

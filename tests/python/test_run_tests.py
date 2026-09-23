@@ -134,39 +134,65 @@ def summary_op_entry(summary, op_id):
     return next(entry for entry in summary if entry["operator"] == op_id)
 
 
-def test_acceptance_has_36_ordered_operators_and_distinct_cases(operators, matrix):
-    apis = ("c2c", "c2r", "r2c", "z2z", "z2d", "d2z")
+def test_acceptance_has_30_ordered_operators_and_distinct_cases(operators, matrix):
+    apis = RUN_TESTS.OP_APIS
     expected_ids = [f"{group}_{api}" for group in RUN_TESTS.GROUPS for api in apis]
     assert [op["id"] for op in operators] == expected_ids
     assert "combinations" not in matrix
     cases = RUN_TESTS.expand_all_test_cases(operators, matrix)
-    ct_ref = next(op["sizes"] for op in operators if op.get("algorithm") == "ct")
-    prime_ref = next(op["sizes"] for op in operators if op.get("algorithm") == "prime")
-    expected_count = (
-        8
-        * (
-            len(matrix[ct_ref])
-            * (len(matrix["batches"]["single"]) + len(matrix["batches"]["batch"]))
-            + len(matrix[prime_ref])
-            * (len(matrix["batches"]["single"]) + len(matrix["batches"]["batch"]))
-            + len(matrix["sizes_2d"]) * len(matrix["batches"]["2d"])
-            + len(matrix["sizes_3d"]) * len(matrix["batches"]["3d"])
-        )
-        * len(matrix.get("scales", [1.0]))
-    )
-    assert len(cases) == expected_count
+    assert len(cases) == 464
     assert len({case["case_id"] for case in cases}) == len(cases)
     assert {case["op_id"] for case in cases} == set(expected_ids)
+    assert {case["dtype"] for case in cases} == set(RUN_TESTS.FLAGGEMS_DTYPES)
+    assert sum(case["placement"] == "in-place" for case in cases) == 80
     for op in operators:
         op_cases = [case for case in cases if case["op_id"] == op["id"]]
-        batch_key = op["batch"] if op["rank"] == 1 else f"{op['rank']}d"
-        assert {case["batch"] for case in op_cases} == set(matrix["batches"][batch_key])
-        assert {case["direction"] for case in op_cases} == set(
-            RUN_TESTS.DIRECTIONS[op["api"]]
+        batch_key = (
+            op["batch"]
+            if op["rank"] == 1
+            else f"{op['rank']}d" if op["batch"] == "single" else f"{op['rank']}d_batch"
         )
-        assert len(op_cases) == len(matrix[op["sizes"]]) * len(
-            matrix["batches"][batch_key]
-        ) * (len(RUN_TESTS.DIRECTIONS[op["api"]])) * len(matrix.get("scales", [1.0]))
+        assert {case["batch"] for case in op_cases} == set(matrix["batches"][batch_key])
+        assert {case["dtype"] for case in op_cases} == set(op["dtypes"])
+        for dtype in op["dtypes"]:
+            api = RUN_TESTS.API_BY_PRECISION[op["api"]][dtype]
+            dtype_cases = [case for case in op_cases if case["dtype"] == dtype]
+            assert {case["api"] for case in dtype_cases} == {api}
+            assert {case["direction"] for case in dtype_cases} == set(RUN_TESTS.DIRECTIONS[api])
+        expected_placements = (
+            {"in-place", "out-of-place"}
+            if op["rank"] > 1 and op["batch"] == "batch"
+            else {"out-of-place"}
+        )
+        assert {case["placement"] for case in op_cases} == expected_placements
+
+
+def test_requested_sizes_and_batch_counts(matrix):
+    assert matrix["sizes_1d_ct"] == [16, 1024, 2048]
+    assert matrix["sizes_1d_fourstep"] == [16384, 46189, 185640, 340200, 524288, 663000]
+    assert matrix["sizes_1d_prime"] == [23, 1009, 8191, 16381, 524287]
+    assert matrix["sizes_2d"] == [
+        [64, 64],
+        [128, 128],
+        [2048, 2048],
+        [46189, 48],
+        [32, 46189],
+    ]
+    assert matrix["sizes_3d"] == [
+        [16, 16, 16],
+        [32, 32, 32],
+        [16, 997, 64],
+        [128, 2048, 64],
+        [256, 256, 256],
+    ]
+    assert matrix["batches"] == {
+        "single": [1],
+        "batch": [64],
+        "2d": [1],
+        "2d_batch": [4],
+        "3d": [1],
+        "3d_batch": [4],
+    }
 
 
 def test_group_selection_and_alias_do_not_duplicate_cases(operators, matrix):
@@ -178,41 +204,34 @@ def test_group_selection_and_alias_do_not_duplicate_cases(operators, matrix):
     assert {case["rank"] for case in cases} == {1}
 
 
+def test_fourstep_cases_require_a_fourstep_runtime_plan():
+    case = {"algorithm": "fourstep"}
+    assert RUN_TESTS.fourstep_path_error(case, PLAN) == (
+        "four-step operator selected a plan without a FourStep node"
+    )
+    assert RUN_TESTS.fourstep_path_error(case, "FourStep(n=16384)\n") is None
+
+
+@pytest.mark.parametrize("backend", ["ix", "npu"])
+def test_unsupported_fp64_is_omitted_from_case_totals(operators, matrix, backend):
+    op = operators[0]
+    expanded = RUN_TESTS.expand_test_cases([op], matrix, "1d_ct_single")
+    cases, omitted = RUN_TESTS.filter_unsupported_dtypes([op], expanded, backend)
+    assert omitted == {op["id"]: {"torch.float64": RUN_TESTS.UNSUPPORTED_FP64_BACKENDS[backend]}}
+    assert cases
+    assert all(case["dtype"] == "torch.float32" for case in cases)
+    assert len(cases) == len(expanded) // 2
+
+
 def test_ix_backend_detection_and_fp64_policy(tmp_path, operators, matrix):
     build_dir = tmp_path / "ix-build"
     build_dir.mkdir()
     (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=IX\n")
     assert RUN_TESTS.detect_backend(build_dir) == "ix"
 
-    assert RUN_TESTS.UNSUPPORTED_APIS_BY_BACKEND["ix"] == {
-        "z2z",
-        "z2d",
-        "d2z",
-    }
-    c2c = next(op for op in operators if op["api"] == "c2c")
-    z2z = next(op for op in operators if op["api"] == "z2z")
-    assert RUN_TESTS.operator_skip_reason(c2c, "ix") is None
-    reason = RUN_TESTS.operator_skip_reason(z2z, "ix")
-    assert reason and "FP64" in reason
-
-    cases = RUN_TESTS.expand_test_cases([z2z], matrix, "1d_ct_single")[:1]
-    result = RUN_TESTS.aggregate_results(
-        [],
-        [z2z],
-        cases,
-        True,
-        True,
-        {z2z["id"]},
-        {z2z["id"]: reason},
-    )
-    op_result = result[z2z["id"]]
-    assert op_result["accuracy"]["status"] == "Skipped"
-    assert op_result["performance"]["status"] == "Skipped"
-    assert op_result["accuracy"]["policy_skipped"]
-    assert all(
-        case["status"] == "Skipped" for case in op_result["accuracy"]["cases"].values()
-    )
-    assert RUN_TESTS.requested_phases_passed(result, True, True)
+    assert "FP64" in RUN_TESTS.UNSUPPORTED_FP64_BACKENDS["ix"]
+    assert RUN_TESTS.dtype_skip_reason("torch.float32", "ix") is None
+    assert RUN_TESTS.dtype_skip_reason("torch.float64", "ix")
 
 
 def test_npu_backend_detection_and_fp64_policy(tmp_path, operators, matrix):
@@ -220,20 +239,9 @@ def test_npu_backend_detection_and_fp64_policy(tmp_path, operators, matrix):
     build_dir.mkdir()
     (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=NPU\n")
     assert RUN_TESTS.detect_backend(build_dir) == "npu"
-    assert RUN_TESTS.UNSUPPORTED_APIS_BY_BACKEND["npu"] == {"z2z", "z2d", "d2z"}
-    c2c = next(op for op in operators if op["api"] == "c2c")
-    z2z = next(op for op in operators if op["api"] == "z2z")
-    assert RUN_TESTS.operator_skip_reason(c2c, "npu") is None
-    reason = RUN_TESTS.operator_skip_reason(z2z, "npu")
-    assert reason and "FP64" in reason and "Ascend 910B" in reason
-
-    cases = RUN_TESTS.expand_test_cases([z2z], matrix, "1d_ct_single")[:1]
-    result = RUN_TESTS.aggregate_results(
-        [], [z2z], cases, True, True, {z2z["id"]}, {z2z["id"]: reason}
-    )
-    assert result[z2z["id"]]["accuracy"]["status"] == "Skipped"
-    assert result[z2z["id"]]["performance"]["status"] == "Skipped"
-    assert RUN_TESTS.requested_phases_passed(result, True, True)
+    assert "Ascend 910B" in RUN_TESTS.UNSUPPORTED_FP64_BACKENDS["npu"]
+    assert RUN_TESTS.dtype_skip_reason("torch.float32", "npu") is None
+    assert RUN_TESTS.dtype_skip_reason("torch.float64", "npu")
 
 
 def test_npu_benchmark_parser_accepts_ops_fft_reference_timing():
@@ -259,10 +267,11 @@ def test_npu_benchmark_parser_accepts_ops_fft_reference_timing():
 
 def test_npu_ops_fft_case_policy_limits(operators, matrix):
     npu_cases = RUN_TESTS.expand_test_cases(
-        [op for op in operators if op["api"] in ("c2c", "r2c", "c2r")],
+        [op for op in operators if op["api"] in RUN_TESTS.OP_APIS],
         matrix,
         "full",
     )
+    npu_cases = [case for case in npu_cases if case["dtype"] == "torch.float32"]
     reasons = {
         case["case_id"]: RUN_TESTS.case_skip_reason(case, "npu") for case in npu_cases
     }
@@ -288,12 +297,15 @@ def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
     case = {
         "case_id": "npu-2d-reference-skip",
         "op_id": op["id"],
+        "op_api": "c2c",
         "api": "c2c",
+        "dtype": "torch.float32",
         "rank": 2,
         "algorithm": "ct",
         "batch_mode": "single",
         "shape": [2048, 2048],
         "batch": 1,
+        "placement": "out-of-place",
         "direction": "forward",
         "scale": 1.0,
         "skip_reason": "ops-fft 2D C2C size is unsupported",
@@ -319,24 +331,22 @@ def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
     assert op_result["performance"]["status"] == "Skipped"
 
 
-def test_ix_policy_skip_is_visible_in_incremental_csv(operators):
-    op = next(op for op in operators if op["api"] == "d2z")
-    case = {
-        "case_id": "ix-skip",
-        "op_id": op["id"],
-        "api": op["api"],
-        "rank": 1,
-        "algorithm": "ct",
-        "batch_mode": "single",
-        "shape": [16],
-        "batch": 1,
-        "direction": "forward",
-        "scale": 1.0,
-        "skip_reason": "IX/CoreX does not support FP64",
+def test_dtype_and_placement_are_visible_in_incremental_csv(operators, matrix):
+    op = operators[0]
+    case = next(
+        case
+        for case in RUN_TESTS.expand_test_cases([op], matrix, "1d_ct_single")
+        if case["dtype"] == "torch.float32"
+    )
+    message = {
+        **case,
+        "phase": "accuracy",
+        "duration": 0.01,
+        "result": {"status": "Passed"},
     }
-    row = RUN_TESTS.incremental_row(RUN_TESTS.policy_skip_message(case, "accuracy"))
-    assert row["status"] == "Skipped"
-    assert row["skip_reason"] == case["skip_reason"]
+    row = RUN_TESTS.incremental_row(message)
+    assert row["dtype"] == "torch.float32"
+    assert row["placement"] == "out-of-place"
 
 
 @pytest.mark.parametrize("flag", ["--artifacts", "--analyze-only", "--dump-output"])
@@ -356,7 +366,7 @@ def test_source_commit_override_is_recorded_for_archive_runs(tmp_path, monkeypat
     assert RUN_TESTS.ENV_INFO["git_commit"] == "c3ca9d2"
 
 
-def test_ix_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
+def test_ix_dry_run_omits_fp64_without_counting_it(tmp_path, capsys):
     build_dir = tmp_path / "ix-build"
     build_dir.mkdir()
     (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=IX\n")
@@ -370,16 +380,13 @@ def test_ix_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output[output.index("{") :])
     assert payload["backend"] == "ix"
-    assert len(payload["operators"]) == 6
-    assert len(payload["skipped_operators"]) == 3
-    assert {case["api"] for case in payload["cases"] if "skip_reason" in case} == {
-        "z2z",
-        "z2d",
-        "d2z",
-    }
+    assert len(payload["operators"]) == 3
+    assert len(payload["cases"]) == 20
+    assert len(payload["omitted_dtypes"]) == 3
+    assert {case["dtype"] for case in payload["cases"]} == {"torch.float32"}
 
 
-def test_npu_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
+def test_npu_dry_run_omits_fp64_without_counting_it(tmp_path, capsys):
     build_dir = tmp_path / "npu-build"
     build_dir.mkdir()
     (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=NPU\n")
@@ -393,14 +400,16 @@ def test_npu_dry_run_keeps_six_operator_group_and_skips_fp64(tmp_path, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output[output.index("{") :])
     assert payload["backend"] == "npu"
-    assert len(payload["operators"]) == 6
-    assert len(payload["skipped_operators"]) == 3
+    assert len(payload["operators"]) == 3
+    assert len(payload["cases"]) == 20
+    assert len(payload["omitted_dtypes"]) == 3
+    assert {case["dtype"] for case in payload["cases"]} == {"torch.float32"}
 
 
 def test_missing_operator_is_not_accepted_as_a_complete_suite(tmp_path, operators):
     path = tmp_path / "operators.yaml"
     path.write_text(yaml.safe_dump({"ops": operators[:-1]}))
-    with pytest.raises(ValueError, match="36 acceptance operators"):
+    with pytest.raises(ValueError, match="30 acceptance operators"):
         RUN_TESTS.load_operators(path)
 
 
@@ -465,7 +474,7 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
             (output / operators[0]["id"] / "accuracy_result.json").read_text()
         )
         assert accuracy["status"] == "Incomplete"
-        assert accuracy["passed"] == 1 and accuracy["missing"] == 1
+        assert accuracy["passed"] == 1 and accuracy["missing"] == 3
         with pytest.raises(ProcessLookupError):
             os.kill(native_pid, 0)
         assert (output / "manifest.json").is_file()
@@ -1068,19 +1077,31 @@ def test_accuracy_log_carries_a_verdict_the_platform_parser_reads(
     assert status == entry["accuracy"]["status"]
 
 
-def test_performance_rows_put_speedup_in_the_complex_column():
+def test_performance_rows_put_speedup_in_the_matching_dtype_column():
     block = {
         "cases": {
-            "op_n256": {"case_id": "op_n256", "speedup": 3.4123},
-            "op_n512": {"case_id": "op_n512", "speedup": 1.5},
+            "op_n256": {
+                "case_id": "op_n256",
+                "dtype": "torch.float32",
+                "placement": "out-of-place",
+                "speedup": 3.4123,
+            },
+            "op_n512": {
+                "case_id": "op_n512",
+                "dtype": "torch.float64",
+                "placement": "in-place",
+                "speedup": 1.5,
+            },
         }
     }
     rows = RUN_TESTS.flaggems_performance_rows(block, 2.2627)
     assert [row["func_name"] for row in rows] == ["op_n256", "op_n512"]
-    assert rows[0]["cfloat"] == "3.4123"
-    for row in rows:
-        assert row["avg_speedup"] == "2.2627"
-        assert row["float32"] == "" and row["cfloat"] != ""
+    assert rows[0]["float32"] == "3.4123"
+    assert rows[0]["float64"] == ""
+    assert rows[1]["float64"] == "1.5"
+    assert rows[1]["float32"] == ""
+    assert rows[1]["placement"] == "in-place"
+    assert all(row["avg_speedup"] == "2.2627" for row in rows)
 
 
 def test_operator_speedup_stats_is_the_geometric_mean():

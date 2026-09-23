@@ -53,6 +53,11 @@ enum class Implementation {
   kPlatform,
 };
 
+enum class Placement {
+  kOutOfPlace,
+  kInPlace,
+};
+
 struct Spec {
   flagfftType type = FLAGFFT_C2C;
   std::string api;
@@ -62,6 +67,7 @@ struct Spec {
   fs::path input;
   fs::path output_dir;
   Implementation implementation = Implementation::kBoth;
+  Placement placement = Placement::kOutOfPlace;
   bool input_from_stdin = false;
   bool output_to_stdout = false;
 };
@@ -73,6 +79,7 @@ struct Layout {
   std::size_t scalar_bytes = 0;
   std::size_t input_bytes = 0;
   std::size_t output_bytes = 0;
+  std::size_t allocation_bytes = 0;
 };
 
 struct FlagPlan {
@@ -106,7 +113,8 @@ struct FlagPlan {
 
 void usage() {
   std::cout << "Usage: numpy_fft_capture --api API --shape N[,N[,N]] --batch B "
-               "--direction forward|inverse --input INPUT.bin --output-dir DIR "
+               "--direction forward|inverse --placement in-place|out-of-place "
+               "--input INPUT.bin --output-dir DIR "
                "[--implementation both|flagfft|platform]\n"
                "\n"
                "API is one of c2c, z2z, r2c, d2z, c2r, z2d.\n"
@@ -239,7 +247,50 @@ Layout make_layout(const Spec& spec) {
   layout.scalar_bytes = scalar_bytes;
   layout.input_bytes = input_elements * static_cast<std::size_t>(spec.batch) * scalar_bytes;
   layout.output_bytes = output_elements * static_cast<std::size_t>(spec.batch) * scalar_bytes;
+  layout.allocation_bytes = std::max(layout.input_bytes, layout.output_bytes);
   return layout;
+}
+
+std::vector<std::uint8_t> prepare_in_place_input(const Spec& spec,
+                                                const Layout& layout,
+                                                const std::vector<std::uint8_t>& input) {
+  std::vector<std::uint8_t> storage(layout.allocation_bytes);
+  std::memcpy(storage.data(), input.data(), layout.input_bytes);
+  if (spec.shape.size() > 1 && is_real_forward(spec.type)) {
+    const std::size_t rows = static_cast<std::size_t>(spec.batch) *
+                             layout.transform_elements / static_cast<std::size_t>(spec.shape.back());
+    const std::size_t n = static_cast<std::size_t>(spec.shape.back());
+    const std::size_t padded = 2 * (n / 2 + 1);
+    for (std::size_t row = rows; row-- > 0;) {
+      std::memmove(storage.data() + row * padded * layout.scalar_bytes,
+                   input.data() + row * n * layout.scalar_bytes,
+                   n * layout.scalar_bytes);
+      std::memset(storage.data() + (row * padded + n) * layout.scalar_bytes,
+                  0,
+                  (padded - n) * layout.scalar_bytes);
+    }
+  }
+  return storage;
+}
+
+std::vector<std::uint8_t> compact_in_place_output(const Spec& spec,
+                                                  const Layout& layout,
+                                                  const std::vector<std::uint8_t>& storage) {
+  std::vector<std::uint8_t> output(layout.output_bytes);
+  if (spec.shape.size() > 1 && is_real_inverse(spec.type)) {
+    const std::size_t rows = static_cast<std::size_t>(spec.batch) *
+                             layout.transform_elements / static_cast<std::size_t>(spec.shape.back());
+    const std::size_t n = static_cast<std::size_t>(spec.shape.back());
+    const std::size_t padded = 2 * (n / 2 + 1);
+    for (std::size_t row = 0; row < rows; ++row) {
+      std::memcpy(output.data() + row * n * layout.scalar_bytes,
+                  storage.data() + row * padded * layout.scalar_bytes,
+                  n * layout.scalar_bytes);
+    }
+  } else {
+    std::memcpy(output.data(), storage.data(), layout.output_bytes);
+  }
+  return output;
 }
 
 Spec parse_spec(const std::map<std::string, std::string>& args) {
@@ -264,6 +315,17 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
   } else {
     throw std::runtime_error("unknown --direction: " + direction);
   }
+  auto placement = args.find("placement");
+  if (placement != args.end()) {
+    if (placement->second == "in-place" || placement->second == "inplace" || placement->second == "in") {
+      spec.placement = Placement::kInPlace;
+    } else if (placement->second == "out-of-place" || placement->second == "outofplace" ||
+               placement->second == "out") {
+      spec.placement = Placement::kOutOfPlace;
+    } else {
+      throw std::runtime_error("unknown --placement: " + placement->second);
+    }
+  }
   spec.input = required("input");
   spec.output_dir = required("output-dir");
   spec.input_from_stdin = spec.input == "-";
@@ -278,9 +340,6 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
   }
   if (is_real_inverse(spec.type) && spec.direction != FLAGFFT_INVERSE) {
     throw std::runtime_error(spec.api + " only supports inverse direction");
-  }
-  if (spec.shape.size() == 3 && spec.batch != 1) {
-    throw std::runtime_error("rank-3 capture currently requires --batch 1");
   }
   if (spec.input_from_stdin && spec.implementation == Implementation::kBoth) {
     // stdin holds a single copy of the input, so it cannot be replayed for a
@@ -405,12 +464,23 @@ FlagPlan make_flag_plan(const Spec& spec, const Layout& layout) {
     const int half = spec.shape[0] * (spec.shape[1] / 2 + 1);
     const int idist = is_real_inverse(spec.type) ? half : full;
     const int odist = is_real_forward(spec.type) ? half : full;
+    const int padded = n[0] * 2 * (n[1] / 2 + 1);
+    const int plan_idist = spec.placement == Placement::kInPlace && is_real_forward(spec.type) ? padded : idist;
+    const int plan_odist = spec.placement == Placement::kInPlace && is_real_inverse(spec.type) ? padded : odist;
     check_flagfft(
-        flagfftPlanMany(&plan.handle, 2, n, nullptr, 1, idist, nullptr, 1, odist, spec.type, spec.batch),
+        flagfftPlanMany(&plan.handle, 2, n, nullptr, 1, plan_idist, nullptr, 1, plan_odist, spec.type, spec.batch),
         "flagfftPlanMany(rank=2)");
   } else {
-    check_flagfft(flagfftPlan3d(&plan.handle, spec.shape[0], spec.shape[1], spec.shape[2], spec.type),
-                  "flagfftPlan3d");
+    int n[3] = {spec.shape[0], spec.shape[1], spec.shape[2]};
+    const int full = static_cast<int>(layout.transform_elements);
+    const int half = spec.shape[0] * spec.shape[1] * (spec.shape[2] / 2 + 1);
+    const int idist = is_real_inverse(spec.type) ? half : full;
+    const int odist = is_real_forward(spec.type) ? half : full;
+    const int padded = n[0] * n[1] * 2 * (n[2] / 2 + 1);
+    const int plan_idist = spec.placement == Placement::kInPlace && is_real_forward(spec.type) ? padded : idist;
+    const int plan_odist = spec.placement == Placement::kInPlace && is_real_inverse(spec.type) ? padded : odist;
+    check_flagfft(flagfftPlanMany(&plan.handle, 3, n, nullptr, 1, plan_idist, nullptr, 1, plan_odist, spec.type, spec.batch),
+                  "flagfftPlanMany(rank=3)");
   }
   return plan;
 }
@@ -514,9 +584,9 @@ void execute_reference_one(RefPlanHandle& plan, const Spec& spec, void* input, v
 
 void execute_reference(
     RefPlanHandle& plan, const Spec& spec, const Layout& layout, void* input, void* output) {
-  // ref_plan_2d is intentionally a one-transform plan.  Use the same
-  // per-batch execution convention as the existing 2D correctness tests.
-  if (spec.shape.size() != 2 || spec.batch == 1) {
+  // The platform reference creates one rank-2/rank-3 transform at a time;
+  // execute each batch with compact input and output offsets.
+  if (spec.shape.size() == 1 || spec.batch == 1) {
     execute_reference_one(plan, spec, input, output);
     return;
   }
@@ -597,6 +667,11 @@ void run_implementation(const Spec& spec, Implementation implementation) {
     }
     input_offset += chunk_layout.input_bytes;
 
+    std::vector<std::uint8_t> prepared_input;
+    if (implementation == Implementation::kFlagFFT && spec.placement == Placement::kInPlace) {
+      prepared_input = prepare_in_place_input(chunk_spec, chunk_layout, host_input);
+    }
+
     std::vector<std::uint8_t> host_output;
 
     if (implementation == Implementation::kPlatform && flagfft::test_adaptor::reference_uses_host_memory()) {
@@ -609,9 +684,21 @@ void run_implementation(const Spec& spec, Implementation implementation) {
       execute_reference(reference_plan, chunk_spec, chunk_layout, host_input.data(), host_output.data());
       stream.sync();
     } else {
-      Memory device_input(chunk_layout.input_bytes);
-      Memory device_output(chunk_layout.output_bytes);
-      device_input.copy_from_host(host_input.data(), chunk_layout.input_bytes);
+      Memory device_input(implementation == Implementation::kFlagFFT &&
+                                  spec.placement == Placement::kInPlace
+                              ? chunk_layout.allocation_bytes
+                              : chunk_layout.input_bytes);
+      std::optional<Memory> device_output;
+      if (implementation != Implementation::kFlagFFT || spec.placement != Placement::kInPlace) {
+        device_output.emplace(chunk_layout.output_bytes);
+      }
+      device_input.copy_from_host(
+          implementation == Implementation::kFlagFFT && spec.placement == Placement::kInPlace
+              ? prepared_input.data()
+              : host_input.data(),
+          implementation == Implementation::kFlagFFT && spec.placement == Placement::kInPlace
+              ? chunk_layout.allocation_bytes
+              : chunk_layout.input_bytes);
       host_input.clear();
       host_input.shrink_to_fit();
 
@@ -624,7 +711,8 @@ void run_implementation(const Spec& spec, Implementation implementation) {
         // Retain the chosen plan even when execution subsequently fails/hangs.
         // The successful path writes it again with compiled execution details.
         write_plan_description(flag_plan.handle, spec);
-        execute_flagfft(flag_plan.handle, chunk_spec, device_input.data(), device_output.data());
+        void* output = spec.placement == Placement::kInPlace ? device_input.data() : device_output->data();
+        execute_flagfft(flag_plan.handle, chunk_spec, device_input.data(), output);
       } else {
         reference_plan.emplace(make_reference_plan(chunk_spec));
         flagfft::test_adaptor::ref_set_stream(*reference_plan, stream.get());
@@ -632,12 +720,18 @@ void run_implementation(const Spec& spec, Implementation implementation) {
                           chunk_spec,
                           chunk_layout,
                           device_input.data(),
-                          device_output.data());
+                          device_output->data());
       }
       stream.sync();
 
       host_output.resize(chunk_layout.output_bytes);
-      device_output.copy_to_host(host_output.data(), chunk_layout.output_bytes);
+      if (implementation == Implementation::kFlagFFT && spec.placement == Placement::kInPlace) {
+        std::vector<std::uint8_t> in_place_storage(chunk_layout.allocation_bytes);
+        device_input.copy_to_host(in_place_storage.data(), chunk_layout.allocation_bytes);
+        host_output = compact_in_place_output(chunk_spec, chunk_layout, in_place_storage);
+      } else {
+        device_output->copy_to_host(host_output.data(), chunk_layout.output_bytes);
+      }
       if (implementation == Implementation::kFlagFFT) {
         write_plan_description(flag_plan.handle, spec);
       }

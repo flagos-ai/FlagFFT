@@ -184,8 +184,7 @@ The FlagFFT Ascend 910B profile is FP32 `C2C`, `R2C`, and `C2R` for
 contiguous 1D, 2D, and 3D plans. Native FP64 is unavailable on Ascend 910B:
 `Z2Z`, `Z2D`, and `D2Z` plans return `FLAGFFT_NOT_SUPPORTED`; they are never
 silently downcast or moved to a CPU fallback. The unified acceptance runner
-keeps those three APIs in its 36-operator manifest and records them as policy
-skips on NPU.
+omits the FP64 dtype cases on NPU before calculating totals and averages.
 
 For the native comparison and performance baseline, set
 `ASCEND_OPS_FFT_ROOT` to a built [CANN ops-fft](https://gitcode.com/cann/ops-fft)
@@ -276,7 +275,7 @@ uses warmup 5 / iterations 20, rotates policy order across repetitions, checks
 FlagFFT against NumPy, and writes incremental CSV plus per-case logs. Times
 cover the complete FFT execution, excluding plan creation/JIT and host copies.
 For acceptance use `tools/run_tests.py`; the experiment is a representative
-matrix, not a replacement for the complete 36-operator report.
+matrix, not a replacement for the complete 30-operator report.
 
 FP64 diagnostics test native-SDK arithmetic (CoreX `clang++`, otherwise `nvcc`), Triton arithmetic and small
 FlagFFT/platform FFTs in separate bounded processes. A failed compiler or
@@ -486,7 +485,7 @@ tests (Google Test), and Python codegen tests (pytest).
 
 ### Unified Test Runner
 
-`tools/run_tests.py` is the single entry point for the 36 acceptance operators.
+`tools/run_tests.py` is the single entry point for the 30 acceptance operators.
 Correctness compares FlagFFT and, when available, the platform FFT library
 independently against a float64/complex128 NumPy reference. An operator passes
 correctness only when all selected FlagFFT-vs-NumPy cases pass; platform-library
@@ -497,34 +496,39 @@ Install test dependencies with `pip install -e '.[test]'` and build with
 `-DFLAGFFT_BUILD_TESTS=ON -DFLAGFFT_BUILD_CLI=ON`. The test build includes
 `build/ctest/numpy_fft_capture`; no separate validation build is required.
 
-`conf/operators.yaml` defines exactly 36 operators: six APIs
-(C2C, C2R, R2C, Z2Z, Z2D, D2Z) for each of the following groups, in this order:
+`conf/operators.yaml` defines the following 30 logical operators. Each operator
+expands to `torch.float32` and `torch.float64`; the runner maps those dtype
+values to C2C/R2C/C2R or Z2Z/D2Z/Z2D internally.
 
 | Group | Operator ID example |
 |---|---|
-| 1D Cooley-Tukey single | `1d_ct_single_c2c` |
-| 1D Prime single | `1d_prime_single_c2c` |
-| 1D Cooley-Tukey batch | `1d_ct_batch_c2c` |
-| 1D Prime batch | `1d_prime_batch_c2c` |
-| 2D | `2d_c2c` |
-| 3D | `3d_c2c` |
+| 1D CT single | `1d_ct_single_c2c` |
+| 1D CT batch | `1d_ct_batch_c2c` |
+| 1D four-step single | `1d_fourstep_single_c2c` |
+| 1D four-step batch | `1d_fourstep_batch_c2c` |
+| 1D prime single | `1d_prime_single_c2c` |
+| 1D prime batch | `1d_prime_batch_c2c` |
+| 2D single | `2d_c2c` |
+| 3D single | `3d_c2c` |
+| 2D batch | `2d_batch_c2c` |
+| 3D batch | `3d_batch_c2c` |
 
 `batch: single/batch` in an operator is a category, not a numeric batch
-count. `conf/test_matrix.yaml` owns size sets, numeric batches and scales.
-The matrix controls the case count and numeric batch sizes; inspect the current
-expansion with `--dry-run`. Single and current 3D cases require
-batch 1. CT/Prime are acceptance size categories; the recorded runtime plan
-shows the actual selected algorithm, including DirectDFT, Rader or Bluestein.
+count. `conf/test_matrix.yaml` sets 1D batch to 64, 2D/3D batch to 4, and keeps
+single-transform batch at 1. 2D/3D batch cases run in-place and out-of-place;
+their PlanMany layouts use contiguous defaults without custom embeds or strides,
+with the padded rows required by in-place real transforms.
+The current full matrix expands to 464 cases before backend dtype omissions.
+The four-step group also checks that the captured runtime plan contains a
+FourStep node.
 
-The current IX acceptance policy disables FP64. The three FP64 APIs (`Z2Z`, `Z2D`, and
-`D2Z`) remain present in the 36-operator manifest for a stable acceptance
-surface, but the runner records their accuracy and performance cases as
-policy `Skipped` and never dispatches them. The other 18 operators are run
-normally. The limitation is recorded in `skip_reason` in JSON and CSV.
+The current IX acceptance policy disables FP64. The runner omits
+`torch.float64` cases from the manifest's expanded case list on IX and does
+not count them as skipped or completed work; every logical operator still runs
+for FP32.
 
-On NPU, Ascend 910B has the same three FP64 APIs in the manifest, but the
-runner records their accuracy and performance cases as policy `Skipped` before
-launch. The remaining FP32 cases run FlagFFT against NumPy. The ops-fft
+On NPU, Ascend 910B does not support FP64, so the runner omits those cases
+before launch and aggregation. The FP32 cases run FlagFFT against NumPy. The ops-fft
 reference is used for supported horizontal 1D FP32 C2C/R2C/C2R cases and
 supported 2D C2C sizes; its unsupported 2D real, 3D, out-of-matrix 2D, and
 out-of-range 1D cases retain the FlagFFT NumPy result while their platform and
@@ -542,14 +546,14 @@ limits and reject nonfinite values.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--ops` | All 36 | Comma-separated acceptance operator IDs |
+| `--ops` | All 30 | Comma-separated acceptance operator IDs |
 | `--op-list-file` | — | One operator ID per line; `#` starts a comment |
 | `--start` | — | Start at this operator in configuration order |
 | `--combination` | `full` | Group filter: the six groups above; comma-separated, or `full/all` alone |
 | `--gpus` | `0` | Comma-separated device IDs or `all` |
 | `--build-dir` | `build` beside the runner | CMake build directory |
 | `--capture-bin` | `<build-dir>/ctest/numpy_fft_capture` | Optional native capture override |
-| `--output-dir` | Workspace `results/<timestamp>_acceptance36` | Fresh result directory |
+| `--output-dir` | Workspace `results/<timestamp>_acceptance30` | Fresh result directory |
 | `--incremental-csv` | `<output-dir>/incremental.csv` | One flushed row per completed case/phase |
 | `--accuracy-only` / `--performance-only` | Both phases | Mutually exclusive phase filters |
 | `--scales` | Matrix scales, or `[1.0]` if omitted | Comma-separated positive input amplitudes, or `all` for `2^-20,1,2^20` |
@@ -569,12 +573,12 @@ sizes. Stages are no longer configured or filtered.
 # Full acceptance suite; results are outside the repository/worktree.
 python tools/run_tests.py --gpus 0
 
-# Inspect the entire 36-operator execution matrix without using a GPU.
+# Inspect the entire 30-operator execution matrix without using a GPU.
 python tools/run_tests.py --dry-run
 
 # NumPy correctness for selected operators.
 python tools/run_tests.py --accuracy-only \
-  --ops 1d_ct_single_c2c,1d_prime_batch_z2d
+  --ops 1d_ct_single_c2c,1d_prime_batch_c2r
 
 # Prime batch group.
 python tools/run_tests.py --combination 1d_prime_batch --gpus 0
@@ -624,7 +628,7 @@ statistics; operators failing FlagFFT correctness are excluded as well.
 Performance-only runs have an unknown baseline validity.
 
 Exit code is 0 when all requested FlagFFT correctness and/or performance phases
-pass; an explicit backend-policy skip such as IX FP64 is allowed. Exit code 1
+pass; unsupported fp64 dtypes are omitted from the totals. Exit code 1
 indicates a failure, incomplete phase, or unexpected skip; 2 is a configuration
 error and 130 is interruption. Platform correctness is reported independently.
 
@@ -703,8 +707,8 @@ automatically skipped when dependencies are unavailable.
 
 The test parameter space is defined in `conf/`:
 
-- `conf/operators.yaml` — the fixed 36-operator acceptance list (six APIs across six groups)
-- `conf/test_matrix.yaml` — 1D CT/Prime and 2D/3D sizes, numeric batch counts, and scales
+- `conf/operators.yaml` — the fixed 30-operator acceptance list and dtype pairs
+- `conf/test_matrix.yaml` — CT/four-step/prime and 2D/3D sizes, batch counts, and scales
 
 ---
 

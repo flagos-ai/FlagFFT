@@ -12,13 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# FlagFFT 算子定义
-
-# 固定 36 个验收算子，顺序与验收清单一致。
-# api 同时用于 FlagFFT、平台库和 NumPy；方向由 api 推导。
-# 1D algorithm: ct / prime，batch: single / batch；实际批次数在 test_matrix.yaml。
-# 2D/3D 不细分算法或 batch 类别；sizes 引用 test_matrix.yaml 中的尺寸集合。
-
+# The acceptance surface has 30 logical operators. Every operator expands to
+# torch.float32 and torch.float64 cases; the runner maps these to the matching
+# FlagFFT C2C/R2C/C2R or Z2Z/D2Z/Z2D API.
 ops:
   - id: 1d_ct_single_c2c
     api: c2c
@@ -26,224 +22,195 @@ ops:
     algorithm: ct
     batch: single
     sizes: sizes_1d_ct
-
+    dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_single_c2r
     api: c2r
     rank: 1
     algorithm: ct
     batch: single
     sizes: sizes_1d_ct
-
+    dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_single_r2c
     api: r2c
     rank: 1
     algorithm: ct
     batch: single
     sizes: sizes_1d_ct
-
-  - id: 1d_ct_single_z2z
-    api: z2z
-    rank: 1
-    algorithm: ct
-    batch: single
-    sizes: sizes_1d_ct
-
-  - id: 1d_ct_single_z2d
-    api: z2d
-    rank: 1
-    algorithm: ct
-    batch: single
-    sizes: sizes_1d_ct
-
-  - id: 1d_ct_single_d2z
-    api: d2z
-    rank: 1
-    algorithm: ct
-    batch: single
-    sizes: sizes_1d_ct
-
-  - id: 1d_prime_single_c2c
-    api: c2c
-    rank: 1
-    algorithm: prime
-    batch: single
-    sizes: sizes_1d_bs
-
-  - id: 1d_prime_single_c2r
-    api: c2r
-    rank: 1
-    algorithm: prime
-    batch: single
-    sizes: sizes_1d_bs
-
-  - id: 1d_prime_single_r2c
-    api: r2c
-    rank: 1
-    algorithm: prime
-    batch: single
-    sizes: sizes_1d_bs
-
-  - id: 1d_prime_single_z2z
-    api: z2z
-    rank: 1
-    algorithm: prime
-    batch: single
-    sizes: sizes_1d_bs
-
-  - id: 1d_prime_single_z2d
-    api: z2d
-    rank: 1
-    algorithm: prime
-    batch: single
-    sizes: sizes_1d_bs
-
-  - id: 1d_prime_single_d2z
-    api: d2z
-    rank: 1
-    algorithm: prime
-    batch: single
-    sizes: sizes_1d_bs
-
+    dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_batch_c2c
     api: c2c
     rank: 1
     algorithm: ct
     batch: batch
     sizes: sizes_1d_ct
-
+    dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_batch_c2r
     api: c2r
     rank: 1
     algorithm: ct
     batch: batch
     sizes: sizes_1d_ct
-
+    dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_batch_r2c
     api: r2c
     rank: 1
     algorithm: ct
     batch: batch
     sizes: sizes_1d_ct
-
-  - id: 1d_ct_batch_z2z
-    api: z2z
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_fourstep_single_c2c
+    api: c2c
     rank: 1
-    algorithm: ct
-    batch: batch
-    sizes: sizes_1d_ct
-
-  - id: 1d_ct_batch_z2d
-    api: z2d
+    algorithm: fourstep
+    batch: single
+    sizes: sizes_1d_fourstep
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_fourstep_single_c2r
+    api: c2r
     rank: 1
-    algorithm: ct
-    batch: batch
-    sizes: sizes_1d_ct
-
-  - id: 1d_ct_batch_d2z
-    api: d2z
+    algorithm: fourstep
+    batch: single
+    sizes: sizes_1d_fourstep
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_fourstep_single_r2c
+    api: r2c
     rank: 1
-    algorithm: ct
+    algorithm: fourstep
+    batch: single
+    sizes: sizes_1d_fourstep
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_fourstep_batch_c2c
+    api: c2c
+    rank: 1
+    algorithm: fourstep
     batch: batch
-    sizes: sizes_1d_ct
-
+    sizes: sizes_1d_fourstep
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_fourstep_batch_c2r
+    api: c2r
+    rank: 1
+    algorithm: fourstep
+    batch: batch
+    sizes: sizes_1d_fourstep
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_fourstep_batch_r2c
+    api: r2c
+    rank: 1
+    algorithm: fourstep
+    batch: batch
+    sizes: sizes_1d_fourstep
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_prime_single_c2c
+    api: c2c
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_prime
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_prime_single_c2r
+    api: c2r
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_prime
+    dtypes: [torch.float32, torch.float64]
+  - id: 1d_prime_single_r2c
+    api: r2c
+    rank: 1
+    algorithm: prime
+    batch: single
+    sizes: sizes_1d_prime
+    dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_batch_c2c
     api: c2c
     rank: 1
     algorithm: prime
     batch: batch
-    sizes: sizes_1d_bs
-
+    sizes: sizes_1d_prime
+    dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_batch_c2r
     api: c2r
     rank: 1
     algorithm: prime
     batch: batch
-    sizes: sizes_1d_bs
-
+    sizes: sizes_1d_prime
+    dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_batch_r2c
     api: r2c
     rank: 1
     algorithm: prime
     batch: batch
-    sizes: sizes_1d_bs
-
-  - id: 1d_prime_batch_z2z
-    api: z2z
-    rank: 1
-    algorithm: prime
-    batch: batch
-    sizes: sizes_1d_bs
-
-  - id: 1d_prime_batch_z2d
-    api: z2d
-    rank: 1
-    algorithm: prime
-    batch: batch
-    sizes: sizes_1d_bs
-
-  - id: 1d_prime_batch_d2z
-    api: d2z
-    rank: 1
-    algorithm: prime
-    batch: batch
-    sizes: sizes_1d_bs
-
+    sizes: sizes_1d_prime
+    dtypes: [torch.float32, torch.float64]
   - id: 2d_c2c
     api: c2c
     rank: 2
+    batch: single
     sizes: sizes_2d
-
+    dtypes: [torch.float32, torch.float64]
   - id: 2d_c2r
     api: c2r
     rank: 2
+    batch: single
     sizes: sizes_2d
-
+    dtypes: [torch.float32, torch.float64]
   - id: 2d_r2c
     api: r2c
     rank: 2
+    batch: single
     sizes: sizes_2d
-
-  - id: 2d_z2z
-    api: z2z
-    rank: 2
-    sizes: sizes_2d
-
-  - id: 2d_z2d
-    api: z2d
-    rank: 2
-    sizes: sizes_2d
-
-  - id: 2d_d2z
-    api: d2z
-    rank: 2
-    sizes: sizes_2d
-
+    dtypes: [torch.float32, torch.float64]
   - id: 3d_c2c
     api: c2c
     rank: 3
+    batch: single
     sizes: sizes_3d
-
+    dtypes: [torch.float32, torch.float64]
   - id: 3d_c2r
     api: c2r
     rank: 3
+    batch: single
     sizes: sizes_3d
-
+    dtypes: [torch.float32, torch.float64]
   - id: 3d_r2c
     api: r2c
     rank: 3
+    batch: single
     sizes: sizes_3d
-
-  - id: 3d_z2z
-    api: z2z
+    dtypes: [torch.float32, torch.float64]
+  - id: 2d_batch_c2c
+    api: c2c
+    rank: 2
+    batch: batch
+    sizes: sizes_2d
+    dtypes: [torch.float32, torch.float64]
+  - id: 2d_batch_c2r
+    api: c2r
+    rank: 2
+    batch: batch
+    sizes: sizes_2d
+    dtypes: [torch.float32, torch.float64]
+  - id: 2d_batch_r2c
+    api: r2c
+    rank: 2
+    batch: batch
+    sizes: sizes_2d
+    dtypes: [torch.float32, torch.float64]
+  - id: 3d_batch_c2c
+    api: c2c
     rank: 3
+    batch: batch
     sizes: sizes_3d
-
-  - id: 3d_z2d
-    api: z2d
+    dtypes: [torch.float32, torch.float64]
+  - id: 3d_batch_c2r
+    api: c2r
     rank: 3
+    batch: batch
     sizes: sizes_3d
-
-  - id: 3d_d2z
-    api: d2z
+    dtypes: [torch.float32, torch.float64]
+  - id: 3d_batch_r2c
+    api: r2c
     rank: 3
+    batch: batch
     sizes: sizes_3d
+    dtypes: [torch.float32, torch.float64]

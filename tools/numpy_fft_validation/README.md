@@ -66,13 +66,14 @@ FlagFFT still runs against NumPy.
 
 For IX, point
 `CUDAToolkit_ROOT` at the CoreX SDK and use an Iluvatar-enabled Triton runtime;
-the unified runner keeps `Z2Z`, `Z2D`, and `D2Z` in the manifest but skips them
-under the current IX acceptance policy. Use `tools/probe_capabilities.py` for
+the unified runner omits FP64 cases under the current IX acceptance policy,
+without adding them to test totals. Use `tools/probe_capabilities.py` for
 device/toolchain-specific FP64 evidence. The native executable
 supports `--implementation=flagfft|platform|both`; the runner uses the two
 single-library modes, because stdin holds a single copy of the input and
-cannot be replayed for a second library. Current rank-3 capture and benchmark
-require batch 1.
+cannot be replayed for a second library. Rank-2 and rank-3 batched capture uses
+PlanMany with contiguous layouts; batch cases test in-place and out-of-place
+execution.
 
 The named-file form (`--input FILE --output-dir DIR`, which also writes
 `flagfft_plan.txt` into the output directory) remains available and is what

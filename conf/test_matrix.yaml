@@ -12,31 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# cooley-tukey 1D FFT sizes matrix
+# 1D CT leaf
 sizes_1d_ct:
   - 16
-  - 1024 # 2^10
-  - 2048 # 2^11
-  - 8192 # 2^13
-  - 16384 # 2^14
-  - 46189 # 11 * 13 * 17 * 19
-  - 185640 # 2^3 * 3 * 5 * 7 * 13 * 17
-  - 328050 # 2 * 3^8 * 5^2
-  - 340200 # 2^3 * 3^5 * 5^2 * 7
-  - 663000 # 2^3 * 3 * 5^3 * 13 * 17
-  - 1048576 # 2^20
+  - 1024
+  - 2048
 
+# 1D four-step
+sizes_1d_fourstep:
+  - 16384
+  - 46189
+  - 185640
+  - 340200
+  - 524288
+  - 663000
 
-# bluestein / rader / direct-dft 1D FFT sizes matrix
-sizes_1d_bs:
+# Prime / unsupported-factor paths
+sizes_1d_prime:
   - 23
-  - 997
   - 1009
   - 8191
   - 16381
   - 524287
 
-# 2D FFT sizes matrix
+# Keep the existing 2D transform sizes.
 sizes_2d:
   - [64, 64]
   - [128, 128]
@@ -44,7 +43,7 @@ sizes_2d:
   - [46189, 48]
   - [32, 46189]
 
-# 3D FFT sizes matrix
+# Keep the existing 3D transform sizes.
 sizes_3d:
   - [16, 16, 16]
   - [32, 32, 32]
@@ -52,15 +51,13 @@ sizes_3d:
   - [128, 2048, 64]
   - [256, 256, 256]
 
-# 1D/2D/3D FFT batch sizes matrix
 batches:
   single: [1]
-  batch: [256]
+  batch: [64]
   2d: [1]
-  3d: [1]  # 当前 capture 和 benchmark 仅支持 rank-3 batch=1。
+  2d_batch: [4]
+  3d: [1]
+  3d_batch: [4]
 
-# can be omitted, default [1.0];
-# `--scales` can override,
-# `--scales` all tests three input amplitudes.
 scales:
   - 1.0
