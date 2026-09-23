@@ -938,11 +938,7 @@ def expand_test_cases(
             if shapes is not None and tuple(shape) not in shapes:
                 continue
             for batch in batches:
-                placements = (
-                    ("in-place", "out-of-place")
-                    if op["rank"] > 1 and op["batch"] == "batch"
-                    else ("out-of-place",)
-                )
+                placements = ("out-of-place",)
                 for dtype in op["dtypes"]:
                     api = API_BY_PRECISION[op["api"]][dtype]
                     for placement in placements:

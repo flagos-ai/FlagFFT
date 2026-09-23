@@ -515,10 +515,9 @@ values to C2C/R2C/C2R or Z2Z/D2Z/Z2D internally.
 
 `batch: single/batch` in an operator is a category, not a numeric batch
 count. `conf/test_matrix.yaml` sets 1D batch to 64, 2D/3D batch to 4, and keeps
-single-transform batch at 1. 2D/3D batch cases run in-place and out-of-place;
-their PlanMany layouts use contiguous defaults without custom embeds or strides,
-with the padded rows required by in-place real transforms.
-The current full matrix expands to 464 cases before backend dtype omissions.
+single-transform batch at 1. All cases run out-of-place, including 2D/3D batch
+cases through contiguous PlanMany layouts without custom embeds or strides.
+The current full matrix expands to 384 cases before backend dtype omissions.
 The four-step group also checks that the captured runtime plan contains a
 FourStep node.
 
