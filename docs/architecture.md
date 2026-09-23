@@ -249,8 +249,8 @@ policy A/B comparisons.
 Each logical acceptance operator has `torch.float32` and `torch.float64` cases.
 On IX, unsupported FP64 cases are omitted before aggregation, so they do not
 contribute to accuracy or performance totals. The 2D/3D batch groups use
-batch 4 and test both in-place and out-of-place execution through contiguous
-`flagfftPlanMany` layouts, including padded rows for in-place real transforms.
+batch 4 and test out-of-place execution through contiguous `flagfftPlanMany`
+layouts.
 
 On Ascend 910B, FP64 is unavailable and `ops-fft` is FP32-only. FlagFFT's
 FP32 path covers contiguous 1D, 2D, and 3D C2C/R2C/C2R plans. The current

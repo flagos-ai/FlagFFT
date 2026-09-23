@@ -72,8 +72,7 @@ device/toolchain-specific FP64 evidence. The native executable
 supports `--implementation=flagfft|platform|both`; the runner uses the two
 single-library modes, because stdin holds a single copy of the input and
 cannot be replayed for a second library. Rank-2 and rank-3 batched capture uses
-PlanMany with contiguous layouts; batch cases test in-place and out-of-place
-execution.
+PlanMany with contiguous layouts; the test matrix runs batch cases out-of-place.
 
 The named-file form (`--input FILE --output-dir DIR`, which also writes
 `flagfft_plan.txt` into the output directory) remains available and is what

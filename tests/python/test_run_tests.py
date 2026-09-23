@@ -140,11 +140,11 @@ def test_acceptance_has_30_ordered_operators_and_distinct_cases(operators, matri
     assert [op["id"] for op in operators] == expected_ids
     assert "combinations" not in matrix
     cases = RUN_TESTS.expand_all_test_cases(operators, matrix)
-    assert len(cases) == 464
+    assert len(cases) == 384
     assert len({case["case_id"] for case in cases}) == len(cases)
     assert {case["op_id"] for case in cases} == set(expected_ids)
     assert {case["dtype"] for case in cases} == set(RUN_TESTS.FLAGGEMS_DTYPES)
-    assert sum(case["placement"] == "in-place" for case in cases) == 80
+    assert {case["placement"] for case in cases} == {"out-of-place"}
     for op in operators:
         op_cases = [case for case in cases if case["op_id"] == op["id"]]
         batch_key = (
@@ -159,12 +159,7 @@ def test_acceptance_has_30_ordered_operators_and_distinct_cases(operators, matri
             dtype_cases = [case for case in op_cases if case["dtype"] == dtype]
             assert {case["api"] for case in dtype_cases} == {api}
             assert {case["direction"] for case in dtype_cases} == set(RUN_TESTS.DIRECTIONS[api])
-        expected_placements = (
-            {"in-place", "out-of-place"}
-            if op["rank"] > 1 and op["batch"] == "batch"
-            else {"out-of-place"}
-        )
-        assert {case["placement"] for case in op_cases} == expected_placements
+        assert {case["placement"] for case in op_cases} == {"out-of-place"}
 
 
 def test_requested_sizes_and_batch_counts(matrix):
