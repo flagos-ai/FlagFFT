@@ -13,7 +13,9 @@ Ascend/CANN 9.0 的独立可执行流程见
 - 主机 worktree：`/rjs/llb/fft-dev/FlagFFT-dev`
 - 容器内路径：`/workspace/FlagFFT-dev`
 - 所有后端都需要 Python 3.10 及以上，推荐 Python 3.12。
-- 不要额外安装官方 `triton` 覆盖镜像中的 Triton/TLE。FlagTree 镜像应提供与后端匹配的 Triton 运行时。
+- 不要额外安装官方 `triton` 覆盖镜像中的 Triton/TLE。普通 FlagTree 镜像应提供
+  与后端匹配的 Triton 运行时；当前 baai-ascend 镜像是例外，必须按下方独立流程
+  从官方 FlagTree `triton_v3.5.x` 源码安装。
 
 ## 1. 启动 FlagTree 基础镜像
 
@@ -68,17 +70,58 @@ docker run --ipc=host --network=host \
 按 MetaX 镜像说明添加设备映射。本文假设 MACA SDK 安装在
 `/opt/maca`，并且镜像提供 `cmake_maca` / `make_maca` 包装命令。
 
-### Ascend/NPU
+### Ascend/NPU（baai-ascend，CANN 9.0）
 
-```bash
-docker run --ipc=host --network=host \
-  -v /rjs/llb/fft-dev:/workspace \
-  -w /workspace/FlagFFT-dev \
-  -it <flagtree-ascend-image> bash
+`baai-ascend` 当前使用的 910B 镜像是：
+
+```text
+harbor.baai.ac.cn/flagtree/flagtree-ascend3.5-910b-py311-cann9.0.0-ubuntu22.04-aarch64:202606-torch2.9.0-base
 ```
 
-按 Ascend 镜像说明添加 `/dev/davinci*` 等设备映射。镜像需要包含 CANN
-9.0 工具链、Ascend runtime，以及 Ascend 适配版 FlagTree/Triton。
+该基础镜像提供 CANN 9.0、PyTorch、`torch_npu` 和构建工具，但不保证已经安装
+FlagTree/Triton。FlagTree 必须按其官方 Ascend 3.5 指南从
+[`triton_v3.5.x`](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x)
+源码安装，不能用普通 CUDA 版 `triton` 覆盖它。
+
+下面的命令在 `baai-ascend` 宿主机执行。源码、构建目录、FlagTree 源码和结果均
+放在宿主机；容器只负责安装依赖、编译和运行。首次创建源码工作区和 FlagTree
+源码的方法见[Ascend 专用流程](ascend_environment_setup_complete.md)。
+
+```bash
+HOST_ROOT=/root/gcx
+SRC_HOST="$HOST_ROOT/FlagFFT-dev-ascend"
+BUILD_HOST="$HOST_ROOT/FlagFFT-build-ascend"
+FLAGTREE_HOST="$HOST_ROOT/FlagTree-ascend"
+mkdir -p "$BUILD_HOST" "$HOST_ROOT/results" "$FLAGTREE_HOST"
+
+IMAGE=harbor.baai.ac.cn/flagtree/flagtree-ascend3.5-910b-py311-cann9.0.0-ubuntu22.04-aarch64:202606-torch2.9.0-base
+docker run -dit -u 0 --user=root \
+  --network=host --pid=host --ipc=host --privileged \
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+  -v /usr/local/Ascend/add-ons:/usr/local/Ascend/add-ons \
+  -v /usr/local/sbin:/usr/local/sbin \
+  -v /etc/ascend_install.info:/etc/ascend_install.info \
+  --device=/dev/davinci0 --device=/dev/davinci1 \
+  --device=/dev/davinci2 --device=/dev/davinci3 \
+  --device=/dev/davinci4 --device=/dev/davinci5 \
+  --device=/dev/davinci6 --device=/dev/davinci7 \
+  --device=/dev/davinci_manager --device=/dev/devmm_svm \
+  --device=/dev/hisi_hdc \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /data:/data \
+  -v "$SRC_HOST:/home/FlagFFT-dev-ascend" \
+  -v "$BUILD_HOST:/home/FlagFFT-build-ascend" \
+  -v "$FLAGTREE_HOST:/home/FlagTree-ascend" \
+  -v "$HOST_ROOT/results:/home/results" \
+  -w /home/FlagFFT-dev-ascend \
+  --name flagfft-ascend "$IMAGE" bash
+
+docker exec -it flagfft-ascend bash
+```
+
+容器内必须先执行 FlagTree 的源代码安装，再执行 FlagFFT 的 Python 依赖、
+`ops-fft`、CMake 和测试。完整命令、固定路径和设备选择见
+[ascend_environment_setup_complete.md](ascend_environment_setup_complete.md)。
 
 ### Hygon BW1000（HCU）
 
@@ -154,9 +197,15 @@ python3 -m pip --version
 
 安装项目测试依赖：
 
+普通后端镜像可使用：
+
 ```bash
 python3 -m pip install -e '.[test]'
 ```
+
+baai-ascend 的基础镜像已带测试依赖，但没有预装 FlagTree/Triton；该镜像应先按
+[Ascend 专用流程](ascend_environment_setup_complete.md)安装 FlagTree，再使用其中
+的 `--no-index --no-build-isolation` 命令安装 FlagFFT。
 
 该命令安装 `numpy`、`PyYAML` 和 `pytest`。
 
@@ -168,9 +217,9 @@ python3 -m pip install ninja cmake nanobind pybind11
 
 ### 各后端的 Python 运行时
 
-PyTorch 和 FlagTree/Triton 已由各后端 FlagTree 基础镜像预装，不需要再次
-通过 pip 安装。尤其不要用 CUDA 版本的 wheel 覆盖 IX、MUSA、MACA、NPU 或 HCU 镜像中
-已经适配硬件的运行时。
+PyTorch 通常由各后端基础镜像预装；FlagTree/Triton 也通常已预装，但当前
+baai-ascend 镜像不预装它们，必须遵循上面的 Ascend 专用源码安装流程。尤其不要
+用 CUDA 版本的 wheel 覆盖 IX、MUSA、MACA、NPU 或 HCU 镜像中已经适配硬件的运行时。
 
 不同镜像应分别提供对应版本，例如 CUDA 镜像提供 CUDA 版运行时，IX 镜像提供
 Iluvatar 版运行时（项目曾使用 `flagtree==0.5.1+iluvatar3.1`）。
@@ -330,14 +379,17 @@ export PYTHONNOUSERSITE=1
 FlagFFT 的 CLI 和测试还需要编译好的 CANN `ops-fft` 参考库：
 
 ```bash
-export ASCEND_OPS_FFT_ROOT=/path/to/ops-fft
+export SRC="${SRC:-/workspace/FlagFFT-dev}"
+export ASCEND_OPS_FFT_ROOT="$SRC/deps/ops-fft/build_out/ops_fft"
 test -f "$ASCEND_OPS_FFT_ROOT/include/cann_ops_fft.h"
-find "$ASCEND_OPS_FFT_ROOT" -name 'libcann_ops_fft.so' -o \
-  -name 'libcann_ops_fft.a'
+test -f "$ASCEND_OPS_FFT_ROOT/lib64/libcann_ops_fft.so"
+find "$ASCEND_OPS_FFT_ROOT" \( -name 'libcann_ops_fft.so' -o \
+  -name 'libcann_ops_fft.a' \) -print
 ```
 
 `ASCEND_OPS_FFT_ROOT` 必须指向包含 `cann_ops_fft.h` 和
-`libcann_ops_fft` 的已构建 `ops-fft` 目录。
+`libcann_ops_fft` 的已安装 `ops-fft` 目录；完整的 clone、`build.sh` 和
+`cmake --install` 命令见 [Ascend 专用流程](ascend_environment_setup_complete.md)。
 
 ### Hygon BW1000（HCU）
 
@@ -458,19 +510,21 @@ make_maca -C build-maca -j"$(nproc)"
 export CANN_HOME=/usr/local/Ascend/cann-9.0.0
 source "$CANN_HOME/set_env.sh"
 export ASCEND_TOOLKIT_HOME="${ASCEND_TOOLKIT_HOME:-$CANN_HOME}"
+export SRC="${SRC:-/workspace/FlagFFT-dev}"
+export FLAGFFT_TRITON_JIT_SOURCE_DIR="${FLAGFFT_TRITON_JIT_SOURCE_DIR:-$SRC/deps/libtriton_jit}"
 ```
 
 如果 CANN 和 Toolkit 是分开安装的，把 `ASCEND_TOOLKIT_HOME` 改为实际包含
 `lib64/libascendcl.so` 的 Toolkit 根目录，`CANN_HOME` 仍指向包含
 `set_env.sh` 和架构目录的 CANN 根目录。
 
-`ASCEND_OPS_FFT_ROOT` 可以指向已安装的 ops-fft 根目录，也可以指向源码构建
-目录。项目 CMake 会在以下位置查找头文件和库：
+`ASCEND_OPS_FFT_ROOT` 应指向已安装的 ops-fft 根目录。当前流程把源码构建结果
+安装到 `$SRC/deps/ops-fft/build_out/ops_fft`，项目 CMake 会在该目录下查找头文件
+和库：
 
 ```bash
-test -f "$ASCEND_OPS_FFT_ROOT/include/cann_ops_fft.h" || \
-test -f "$ASCEND_OPS_FFT_ROOT/include/math_libs/cann_ops_fft.h" || \
-test -f "$ASCEND_OPS_FFT_ROOT/src/include/cann_ops_fft.h"
+test -f "$ASCEND_OPS_FFT_ROOT/include/cann_ops_fft.h"
+test -f "$ASCEND_OPS_FFT_ROOT/lib64/libcann_ops_fft.so"
 find "$ASCEND_OPS_FFT_ROOT" \( -name 'libcann_ops_fft.so' -o \
   -name 'libcann_ops_fft.a' \) -print
 ```
@@ -478,7 +532,8 @@ find "$ASCEND_OPS_FFT_ROOT" \( -name 'libcann_ops_fft.so' -o \
 构建命令如下：
 
 ```bash
-cmake -S . -B build-npu \
+cd "$SRC"
+cmake -S "$SRC" -B build-npu \
   -DCMAKE_BUILD_TYPE=Release \
   -DBACKEND=NPU \
   -DASCEND_TOOLKIT_HOME="$ASCEND_TOOLKIT_HOME" \
