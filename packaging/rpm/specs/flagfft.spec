@@ -1,6 +1,6 @@
 Name:           libflagfft-nvidia
 Version:        0.2.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
 
 License:        Apache-2.0
@@ -23,6 +23,7 @@ BuildRequires:  fmt-devel >= 8.1.1
 BuildRequires:  sqlite-devel
 BuildRequires:  nlohmann-json-devel >= 3.10.5
 
+Recommends:     python3-flagtree-nvidia
 %description
 FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation,
 targeting FlagOS multi-vendor accelerators. The NVIDIA backend uses
@@ -77,7 +78,7 @@ install -Dm0644 packaging/common/flagfft-triton-jit.pth \
 test -f %{buildroot}%{_libdir}/libflagfft.so
 test -f %{buildroot}%{_libdir}/libflagfft_triton_jit.so
 test -f %{buildroot}%{python3_sitelib}/flagfft_codegen/jit_source.py
-test -f %{buildroot}%{_datadir}/triton_jit/scripts/standalone_compile.py
+test -f %{buildroot}%{_datadir}/flagfft/triton_jit/scripts/standalone_compile.py
 test -f %{buildroot}%{python3_sitelib}/flagfft-triton-jit.pth
 readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libflagfft_triton_jit.so\]'
 ! readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libtriton_jit.so\]'
@@ -89,13 +90,16 @@ readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libflagfft_triton_j
 %{_libdir}/libflagfft_triton_jit.so
 %{python3_sitelib}/flagfft_codegen/
 %{python3_sitelib}/flagfft_codegen-*.dist-info/
-%{_datadir}/triton_jit/scripts/
+%{_datadir}/flagfft/triton_jit/scripts/
 %{python3_sitelib}/flagfft-triton-jit.pth
 
 %files devel
 %{_includedir}/flagfft/
 
 %changelog
+* Thu Sep 24 2026 FlagOS Contributors <contact@flagos.io> - 0.2.0-2
+- Install the bundled libtriton_jit helper scripts under %{_datadir}/flagfft/triton_jit/scripts (no longer conflicts with libtriton-jit)
+
 * Thu Sep 17 2026 FlagOS Contributors <contact@flagos.io> - 0.2.0-1
 - Align the packaging baseline with the 0.2.0 release line.
 
