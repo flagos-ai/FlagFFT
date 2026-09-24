@@ -124,14 +124,10 @@ bool is_supported_2d_desc(const FlagFFTPlanDesc &desc) {
   const int64_t half_n1 = n1 / 2 + 1;
   const int64_t input_logical = real_inverse ? n0 * half_n1 : n0 * n1;
   const int64_t output_logical = real_forward ? n0 * half_n1 : n0 * n1;
-  const int64_t padded_real_distance = n0 * 2 * half_n1;
-  const bool valid_input_distance =
-      desc.idist == input_logical || (real_forward && desc.idist == padded_real_distance);
-  const bool valid_output_distance =
-      desc.odist == output_logical || (real_inverse && desc.odist == padded_real_distance);
-  // Rank-2 kernels support the compact layout and the conventional padded
-  // real distance used by in-place R2C/C2R. Other custom strides are rejected.
-  if (!valid_input_distance || !valid_output_distance) {
+  // CompiledRaw2DNode::execute treats the entire (batch, n0, n1) block as
+  // tightly packed and ignores idist/odist.  Reject padded layouts until
+  // the 2D execution path plumbs strides through.
+  if (desc.idist != input_logical || desc.odist != output_logical) {
     return false;
   }
   return true;
@@ -159,13 +155,10 @@ bool is_supported_3d_desc(const FlagFFTPlanDesc &desc) {
   const int64_t half_n2 = n2 / 2 + 1;
   const int64_t input_logical = real_inverse ? n0 * n1 * half_n2 : n0 * n1 * n2;
   const int64_t output_logical = real_forward ? n0 * n1 * half_n2 : n0 * n1 * n2;
-  const int64_t padded_real_distance = n0 * n1 * 2 * half_n2;
-  const bool valid_input_distance =
-      desc.idist == input_logical || (real_forward && desc.idist == padded_real_distance);
-  const bool valid_output_distance =
-      desc.odist == output_logical || (real_inverse && desc.odist == padded_real_distance);
-  // Rank-3 kernels support compact data and padded in-place real transforms.
-  if (!valid_input_distance || !valid_output_distance) {
+  // The 3D execution path treats the entire (batch, n0, n1, n2) block as
+  // tightly packed and ignores idist/odist.  Reject padded layouts until
+  // the 3D execution path plumbs strides through.
+  if (desc.idist != input_logical || desc.odist != output_logical) {
     return false;
   }
   return true;

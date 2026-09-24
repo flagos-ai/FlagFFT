@@ -1509,7 +1509,7 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
     // (default tile_size=32) and jit_source.py:_emit_tiled_transpose_jit_kernel (ditto).
     constexpr int64_t tile_size = 32;
 
-    if (input != output && graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
+    if (graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
       graph_->launch(context.stream);
       return FLAGFFT_SUCCESS;
     }
@@ -1564,11 +1564,7 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
     // already compiled by the direct run above, so capture only records
     // launches.  Any capture/instantiation failure falls back to direct
     // launches for the lifetime of the plan.
-    // Capturing the second execution after the direct execution above would
-    // record an in-place FFT whose input has already been transformed. Keep
-    // aliased buffers on the direct path so each execution consumes its own
-    // current input, just like the out-of-place graph path.
-    if (input != output && graph_enabled_ && graph_ == nullptr && !graph_failed_) {
+    if (graph_enabled_ && graph_ == nullptr && !graph_failed_) {
       try {
         auto graph = std::make_unique<adaptor::CudaGraph>();
         graph->begin_capture(context.stream);
@@ -1619,7 +1615,7 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
   try {
     const int64_t batch = context.batch;
 
-    if (input != output && graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
+    if (graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
       graph_->launch(context.stream);
       return FLAGFFT_SUCCESS;
     }
@@ -1645,9 +1641,7 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
       return result;
     }
 
-    // The sequence has already overwritten aliased input before graph
-    // capture begins, so replay would transform output data a second time.
-    if (input != output && graph_enabled_ && graph_ == nullptr && !graph_failed_) {
+    if (graph_enabled_ && graph_ == nullptr && !graph_failed_) {
       try {
         auto graph = std::make_unique<adaptor::CudaGraph>();
         graph->begin_capture(context.stream);
@@ -1937,8 +1931,7 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
     // Input: (batch*n0, n1) real -> row_fft_buf: (batch*n0, n1) complex
     // Each row is processed independently, so total rows = batch * n0
     // input_distance is per-row distance in the input buffer
-    const bool in_place = input == output;
-    const int64_t input_distance = in_place ? 2 * half_n1 : n1;
+    const int64_t input_distance = n1;  // Each row in input has n1 real elements
     const int64_t total_rows = batch * n0;
     std::vector<JitKernelArg> expand_args = {
         JitKernelArg::device(input),
@@ -2053,14 +2046,12 @@ flagfftResult CompiledRaw2DR2CRCNode::execute(adaptor::DevicePtr input,
     constexpr int64_t block = 256;
     const int64_t half_n1 = n1 / 2 + 1;
     const int64_t total_rows = batch * n0;
-    const bool in_place = input == output;
-    const int64_t input_distance = in_place ? 2 * half_n1 : n1;
 
     // Step 1: Expand real input to complex.
     std::vector<JitKernelArg> expand_args = {
         JitKernelArg::device(input),
         JitKernelArg::device(row_fft_buf.get()),
-        JitKernelArg::i64(input_distance),
+        JitKernelArg::i64(n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
     expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
@@ -2280,12 +2271,10 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
 
     // Step 6: Pack complex -> real
     // temp3: (batch*n0, n1) complex -> output: (batch*n0, n1) real
-    const bool in_place = input == output;
-    const int64_t output_distance = in_place ? 2 * half_n1 : n1;
     std::vector<JitKernelArg> pack_args = {
         JitKernelArg::device(temp3.get()),
         JitKernelArg::device(output),
-        JitKernelArg::i64(output_distance),
+        JitKernelArg::i64(n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
     pack_kernel->launch(context.stream,
@@ -2363,12 +2352,10 @@ flagfftResult CompiledRaw2DC2RRCNode::execute(adaptor::DevicePtr input,
     }
 
     // Step 4: Pack complex -> real.
-    const bool in_place = input == output;
-    const int64_t output_distance = in_place ? 2 * half_n1 : n1;
     std::vector<JitKernelArg> pack_args = {
         JitKernelArg::device(temp_full.get()),
         JitKernelArg::device(output),
-        JitKernelArg::i64(output_distance),
+        JitKernelArg::i64(n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
     pack_kernel->launch(context.stream, pack_args, ceil_div(n1, block), total_rows, 1);
@@ -2655,8 +2642,6 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     const int64_t total_rows = batch * n0 * n1;
     const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
     const int64_t real_bytes = complex_bytes / 2;
-    const bool in_place = input == output;
-    const int64_t input_distance = in_place ? 2 * half : n2;
 
     // Step 1: Expand real -> complex rows of length n2.
     launch_grid_y_chunks(ceil_div(n2, block),
@@ -2664,9 +2649,9 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
                          expand_kernel->rows_per_block,
                          [&](int64_t row_offset, int64_t chunk_rows) {
                            std::vector<JitKernelArg> expand_args = {
-                               JitKernelArg::device(input + row_offset * input_distance * real_bytes),
+                               JitKernelArg::device(input + row_offset * n2 * real_bytes),
                                JitKernelArg::device(row_fft_buf.get() + row_offset * n2 * complex_bytes),
-                               JitKernelArg::i64(input_distance),
+                               JitKernelArg::i64(n2),
                                JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
                            };
                            expand_kernel->launch(context.stream,
@@ -2780,8 +2765,6 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     const int64_t half = n2 / 2 + 1;
     const int64_t total_rows = batch * n0 * n1;
     const int64_t packed = n0 * n1 * half;
-    const bool in_place = input == output;
-    const int64_t output_distance = in_place ? 2 * half : n2;
 
     // Step 1: (n0,n1,half) -> (n1,half,n0), IFFT along n0.
     launch_perm3d(perm_120, context.stream, input, temp1.get(), packed, batch);
@@ -2830,8 +2813,8 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
                          [&](int64_t row_offset, int64_t chunk_rows) {
                            std::vector<JitKernelArg> pack_args = {
                                JitKernelArg::device(full_buf.get() + row_offset * n2 * complex_bytes),
-                               JitKernelArg::device(output + row_offset * output_distance * real_bytes),
-                               JitKernelArg::i64(output_distance),
+                               JitKernelArg::device(output + row_offset * n2 * real_bytes),
+                               JitKernelArg::i64(n2),
                                JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
                            };
                            pack_kernel->launch(context.stream,
