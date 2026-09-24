@@ -82,7 +82,7 @@ install -Dm0644 packaging/common/flagfft-triton-jit.pth \
 test -f %{buildroot}%{_libdir}/libflagfft.so
 test -f %{buildroot}%{_libdir}/libflagfft_triton_jit.so
 test -f %{buildroot}%{python3_sitelib}/flagfft_codegen/jit_source.py
-test -f %{buildroot}%{_datadir}/triton_jit/scripts/standalone_compile.py
+test -f %{buildroot}%{_datadir}/flagfft/triton_jit/scripts/standalone_compile.py
 test -f %{buildroot}%{python3_sitelib}/flagfft-triton-jit.pth
 readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libflagfft_triton_jit.so\]'
 ! readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libtriton_jit.so\]'
@@ -94,7 +94,7 @@ readelf -d %{buildroot}%{_libdir}/libflagfft.so | grep -q '\[libflagfft_triton_j
 %{_libdir}/libflagfft_triton_jit.so
 %{python3_sitelib}/flagfft_codegen/
 %{python3_sitelib}/flagfft_codegen-*.dist-info/
-%{_datadir}/triton_jit/scripts/
+%{_datadir}/flagfft/triton_jit/scripts/
 %{python3_sitelib}/flagfft-triton-jit.pth
 
 %files devel
