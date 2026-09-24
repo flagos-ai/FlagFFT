@@ -23,6 +23,7 @@ BuildRequires:  fmt-devel >= 8.1.1
 BuildRequires:  sqlite-devel
 BuildRequires:  nlohmann-json-devel >= 3.10.5
 
+Recommends:     python3-flagtree-nvidia
 %description
 FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation,
 targeting FlagOS multi-vendor accelerators. The NVIDIA backend uses
