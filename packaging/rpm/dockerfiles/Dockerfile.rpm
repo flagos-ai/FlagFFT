@@ -14,10 +14,20 @@ RUN dnf install -y --allowerasing \
     python3-devel \
     python3-pip \
     sqlite-devel \
-    nlohmann-json-devel \
     rpm-build \
     rpmdevtools \
+    tar xz \
     && dnf clean all
+
+# Temporary: the pinned libtriton_jit needs nlohmann_json >= 3.11.3 and
+# openEuler 24.03 ships 3.11.2. Header-only, build container only; drop
+# once the submodule carries libtriton_jit#64 (floor 3.10.5).
+ARG NLOHMANN_JSON_URL=https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+RUN curl -fsSL -o /tmp/json.tar.xz ${NLOHMANN_JSON_URL} \
+    && mkdir -p /tmp/json && tar -xJf /tmp/json.tar.xz -C /tmp/json --strip-components=1 \
+    && cmake -S /tmp/json -B /tmp/json/build -DJSON_BuildTests=OFF \
+    && cmake --install /tmp/json/build --prefix /usr/local \
+    && rm -rf /tmp/json /tmp/json.tar.xz
 
 # Keep the Torch ABI used by DEB and RPM builds identical.
 COPY packaging/common/python-build-requirements.txt /tmp/flagfft-requirements.txt
