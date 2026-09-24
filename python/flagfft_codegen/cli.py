@@ -33,6 +33,7 @@ from .emit import (
     emit_jit_kernel,
 )
 from .metadata import _csv_ints
+from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
     BLUESTEIN_FOUR_STEP,
@@ -369,7 +370,8 @@ def main() -> None:
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }
     )
-    Path(metadata["module_path"]).with_suffix(".json").write_text(
+    write_text_atomic(
+        Path(metadata["module_path"]).with_suffix(".json"),
         json.dumps(metadata, sort_keys=True)
     )
     print(json.dumps(metadata, sort_keys=True))

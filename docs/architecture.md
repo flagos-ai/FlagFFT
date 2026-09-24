@@ -211,7 +211,14 @@ The generator is split by responsibility and algorithm family:
 The native runtime invokes `python -m flagfft_codegen.jit_source` (a thin
 facade over `cli.py`); the chosen Python environment must already supply
 compatible Triton/TLE dependencies.
-Generated JIT source/metadata live in `.flagfft` beside the executable.
+Generated JIT source/metadata live in `.flagfft/requests/<request-id>/` beside
+the executable, with a profile-specific subdirectory beneath each request.
+The request ID covers the kernel key, device profile and execution policy, so
+different requests cannot overwrite modules with the same generated name.
+Native compilation holds `.flagfft/.locks/<request-id>.lock` from source
+generation through binary loading. The lock is shared across processes and
+released by the OS if a process exits. Source and metadata files are published
+with an atomic rename, so readers never see a partially written file.
 `flagfft-cli tune --db PATH` writes measurements and one validated winner per
 request (device architecture, length, batch bucket, dtype, direction) into the
 SQLite tuning database. Runtime plan lookup consumes that database when

@@ -15,12 +15,64 @@
 #include "flagfft/core.hpp"
 #include "flagfft/maca_tail_policy.hpp"
 
+#include <cerrno>
+#include <fcntl.h>
+#include <iomanip>
+#include <sys/file.h>
+#include <unistd.h>
+
 #if defined(BACKEND_MACA)
 #include "triton_jit/jit_utils.h"
 #endif
 
 namespace flagfft {
 namespace {
+
+  // std::hash is not guaranteed to be stable across standard library versions.
+  // The two independent FNV streams give request directories stable names.
+  std::string request_id(const std::string &request) {
+    constexpr uint64_t prime = 1099511628211ULL;
+    uint64_t first = 14695981039346656037ULL;
+    uint64_t second = 7809847782465536322ULL;
+    for (unsigned char byte : request) {
+      first = (first ^ byte) * prime;
+      second = (second ^ byte) * prime;
+    }
+    std::ostringstream out;
+    out << std::hex << std::setfill('0') << std::setw(16) << first
+        << std::setw(16) << second;
+    return out.str();
+  }
+
+  class KernelFileLock {
+   public:
+    explicit KernelFileLock(const std::filesystem::path &path) {
+      std::filesystem::create_directories(path.parent_path());
+      fd_ = open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+      if (fd_ < 0) {
+        throw std::runtime_error("cannot open JIT lock " + path.string() + ": " +
+                                 std::strerror(errno));
+      }
+      while (flock(fd_, LOCK_EX) != 0) {
+        if (errno == EINTR) continue;
+        const int error = errno;
+        close(fd_);
+        throw std::runtime_error("cannot lock JIT request " + path.string() + ": " +
+                                 std::strerror(error));
+      }
+    }
+
+    KernelFileLock(const KernelFileLock &) = delete;
+    KernelFileLock &operator=(const KernelFileLock &) = delete;
+
+    ~KernelFileLock() {
+      flock(fd_, LOCK_UN);
+      close(fd_);
+    }
+
+   private:
+    int fd_ = -1;
+  };
 
   void reject_legacy_backend_env() {
     for (const char *name : {"FLAGFFT_KERNEL_BACKEND", "FFT_BACKEND"}) {
@@ -156,7 +208,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       ++state.hits;
       return it->second;
     }
-    ++state.misses;
   }
 
   std::string kernel_kind;
@@ -284,9 +335,23 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
+  const std::string id = request_id(cache_key);
+  const auto request_dir = out_dir() / "requests" / id;
+  // Keep the lock outside the output directory so it can survive a failed
+  // generation or cache cleanup without changing the inode being locked.
+  KernelFileLock request_lock(out_dir() / ".locks" / (id + ".lock"));
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    auto it = state.cache.find(cache_key);
+    if (it != state.cache.end()) {
+      ++state.hits;
+      return it->second;
+    }
+    ++state.misses;
+  }
   std::ostringstream jit_command;
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
-              << kernel_kind << " --out-dir " << shell_quote(out_dir().string()) << " --dtype "
+              << kernel_kind << " --out-dir " << shell_quote(request_dir.string()) << " --dtype "
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "
               << shell_quote(device_profile) << " --execution-policy " << shell_quote(policy);
   if (ix_ct_single_policy_) jit_command << " --ix-ct-single";

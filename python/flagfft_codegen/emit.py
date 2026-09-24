@@ -25,6 +25,7 @@ from textwrap import dedent
 from typing import Any
 from functools import wraps
 from .maca_tail_policy import maca_tail_kernel_scope, variant_suffix
+from .artifacts import write_text_atomic
 
 from .kernels_common import (
     LeafPlan,
@@ -196,7 +197,7 @@ def _emit_bluestein_jit_kernel(
     module_name = f"flagfft_jit_{kernel}_n{n}_m{m}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    module_path.write_text(_module_source(kernel_source))
+    write_text_atomic(module_path, _module_source(kernel_source))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -211,7 +212,7 @@ def _emit_bluestein_jit_kernel(
         "bluestein_m": int(m),
         "block": _BLUESTEIN_BLOCK,
     }
-    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
 
@@ -351,7 +352,7 @@ def _emit_rader_jit_kernel(
     module_name = f"flagfft_jit_{kernel}_n{n}_m{m}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    module_path.write_text(_module_source(kernel_source))
+    write_text_atomic(module_path, _module_source(kernel_source))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -366,7 +367,7 @@ def _emit_rader_jit_kernel(
         "rader_m": int(m),
         "block": _RADER_BLOCK,
     }
-    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
 
@@ -395,7 +396,7 @@ def _emit_reshape_jit_kernel(
     module_name = f"flagfft_jit_{kernel}_n{n1}_{n2}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    module_path.write_text(_module_source(kernel_source))
+    write_text_atomic(module_path, _module_source(kernel_source))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -410,7 +411,7 @@ def _emit_reshape_jit_kernel(
         "reshape_n2": int(n2),
         "block": 256,
     }
-    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
 
@@ -470,7 +471,7 @@ def _emit_r2c_pointwise_jit_kernel(
     module_name = f"flagfft_jit_{kernel}_n{n}_{dtype_tag}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    module_path.write_text(_module_source(kernel_source))
+    write_text_atomic(module_path, _module_source(kernel_source))
 
     sys.path.insert(0, str(module_path.parent))
     spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
@@ -493,7 +494,7 @@ def _emit_r2c_pointwise_jit_kernel(
         "block": 256,
         "rows_per_block": int(rows_per_block),
     }
-    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
 
@@ -623,7 +624,7 @@ def emit_jit_kernel(
         radices = tuple(sorted(codelet_radices_for(factors[:1])))
     else:
         radices = ()
-    module_path.write_text(_module_source(kernel_source, radices))
+    write_text_atomic(module_path, _module_source(kernel_source, radices))
 
     # Metadata describes the emitted function, not the generator's active
     # device. Do not import backend-specific TLE helpers just to read arguments.
@@ -645,7 +646,7 @@ def emit_jit_kernel(
     )
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
-    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
 
@@ -673,7 +674,7 @@ def _emit_tiled_transpose_jit_kernel(
     module_name = f"flagfft_jit_tiled_transpose_n{n0}_{n1}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    module_path.write_text(_module_source(kernel_source))
+    write_text_atomic(module_path, _module_source(kernel_source))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -689,7 +690,7 @@ def _emit_tiled_transpose_jit_kernel(
         "tile_size": int(tile_size),
         "block": tile_size * tile_size,
     }
-    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
 
@@ -756,7 +757,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    module_path.write_text(_module_source(kernel_source))
+    write_text_atomic(module_path, _module_source(kernel_source))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -773,7 +774,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         "transpose3d_order": order,
         "grid_x_override": int(grid_x),
     }
-    (out_dir / f"{module_name}.json").write_text(json.dumps(metadata, sort_keys=True))
+    write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
 
