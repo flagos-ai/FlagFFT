@@ -14,6 +14,9 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
+#include <string_view>
+
 namespace flagfft {
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
@@ -122,6 +125,17 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
   if (context.ix_short_single && n == 1024) return {16, 8, 8};
+  if (context.device_type == "hcu" && n == 1024) {
+    // Compare leaf schedules on BW1000 without changing other backends.  The
+    // override is fixed for the lifetime of a benchmark process.
+    const char *setting = std::getenv("FLAGFFT_HCU_CT_1024_FACTORS");
+    if (setting != nullptr) {
+      const std::string_view factors(setting);
+      if (factors == "32x32") return {32, 32};
+      if (factors == "16x8x8") return {16, 8, 8};
+      if (factors == "8x8x4x4") return {8, 8, 4, 4};
+    }
+  }
   auto it = best_leaf_factors_cache_.find(n);
   if (it != best_leaf_factors_cache_.end()) {
     return it->second;
