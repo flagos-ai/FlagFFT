@@ -122,11 +122,11 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
   if (context.ix_short_single && n == 1024) return {16, 8, 8};
-  if (context.device_type == "hcu" && n == 16) {
+  if (context.device_type == "hcu" && context.origin_rank <= 1 && n == 16) {
     // The direct radix-16 codelet avoids a shared-memory round trip.
     return {16};
   }
-  if (context.device_type == "hcu" && n == 1024 && context.batch == 64) {
+  if (context.device_type == "hcu" && context.origin_rank <= 1 && n == 1024 && context.batch == 64) {
     // Two radix-32 stages underuse BW1000's 64-lane wavefront for batch=64.
     return {16, 8, 8};
   }

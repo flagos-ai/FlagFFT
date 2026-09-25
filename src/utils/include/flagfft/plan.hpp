@@ -159,6 +159,7 @@ class PlanBuilder {
     std::string device_type;
     int64_t device_index = -1;
     std::string device_arch;
+    int64_t origin_rank = 0;
     int64_t batch = 1;
     bool ix_short_single = false;
     int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
