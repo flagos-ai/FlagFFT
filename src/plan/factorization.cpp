@@ -125,6 +125,14 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
   if (context.ix_short_single && n == 1024) return {16, 8, 8};
+  if (context.device_type == "hcu" && n == 16) {
+    const char *setting = std::getenv("FLAGFFT_HCU_CT_16_FACTORS");
+    if (setting != nullptr) {
+      const std::string_view factors(setting);
+      if (factors == "16") return {16};
+      if (factors == "4x4") return {4, 4};
+    }
+  }
   if (context.device_type == "hcu" && n == 1024) {
     // Compare leaf schedules on BW1000 without changing other backends.  The
     // override is fixed for the lifetime of a benchmark process.
