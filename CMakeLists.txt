@@ -63,6 +63,11 @@ add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
                  "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
 
 if(BACKEND STREQUAL "HCU")
+    # The bundled HCU backend logs every kernel launch at INFO. That host-side
+    # work sits between benchmark events and adds latency to short FFTs.
+    # Compile out INFO while retaining warnings and errors.
+    target_compile_definitions(triton_jit PRIVATE GOOGLE_STRIP_LOG=1)
+
     # The HCU Triton backend discovers HIP in the dependency subdirectory. Keep
     # the matching hipFFT package discoverable for FlagFFT's reference adaptor
     # as well; DTK images use either /opt/dtk or a versioned /opt/dtk-* root.
