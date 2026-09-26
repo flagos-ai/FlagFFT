@@ -550,6 +550,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   if (maca_real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, false);
   }
+  // Keep this fused half-length experiment behind a narrow IX request scope.
+  // It packs even/odd input samples, runs a 1024-point complex leaf, and
+  // reconstructs the 2048-point half spectrum within the same launch.
+  if (request.device_type == "ix" && request.device_arch == "71" &&
+      request.raw_dim == 1 && request.origin_rank <= 1 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n == 2048 && (batch == 1 || batch == 64) &&
+      !request.input_strides.empty() && request.input_strides.back() == 1 &&
+      std::getenv("FLAGFFT_IX_FUSED_R2C") != nullptr &&
+      std::string(std::getenv("FLAGFFT_IX_FUSED_R2C")) == "1") {
+    FFTRequest child_request = request;
+    child_request.n = n / 2;
+    child_request.requested_n = n / 2;
+    child_request.fft_length = n / 2;
+    child_request.output_dtype = child_request.input_dtype;
+    child_request.real_transform_kind.clear();
+    child_request.input_shape = {batch, n / 2};
+    child_request.input_strides = {n / 2, 1};
+    PlanBuilder child_builder;
+    child_builder.build(n / 2, child_request);
+    const std::vector<int64_t> factors {16, 8, 8};
+    const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
+    LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
+                             child_builder.choose_num_warps(lanes), {}, n / 2);
+    KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
+                                         request.direction, request.input_dtype,
+                                         packed_leaf.length, packed_leaf.factors,
+                                         packed_leaf.lanes, packed_leaf.num_warps,
+                                         packed_leaf.generic_radices, packed_leaf.smem_size);
+    key.kind = KernelKind::LeafPackedR2C;
+    return std::make_shared<CompiledRawR2CLeafNode>(
+        n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request));
+  }
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;

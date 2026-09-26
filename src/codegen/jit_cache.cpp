@@ -226,6 +226,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::LeafR2C:
       kernel_kind = "leaf_r2c";
       break;
+    case KernelKind::LeafPackedR2C:
+      kernel_kind = "leaf_packed_r2c";
+      break;
     case KernelKind::LeafC2R:
       kernel_kind = "leaf_c2r";
       break;
@@ -373,7 +376,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 #endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafPermutedStore ||
-      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
+      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafPackedR2C ||
+      key.kind == KernelKind::LeafC2R ||
       key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafBluesteinPrepare ||
       key.kind == KernelKind::LeafBluesteinFinish || key.kind == KernelKind::BluesteinFourStepPrepareRow ||
       key.kind == KernelKind::BluesteinFourStepPointwiseRow ||

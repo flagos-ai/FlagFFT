@@ -81,8 +81,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         CT_LEAF,
         io_mode="permuted_store",
         requires=_BASE_LEAF_FLAGS,
-    ),    KernelSpec(
+    ),
+    KernelSpec(
         "leaf_r2c", CT_LEAF, io_mode="contiguous_r2c", requires=_BASE_LEAF_FLAGS
+    ),
+    KernelSpec(
+        "leaf_packed_r2c", CT_LEAF, io_mode="packed_r2c", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(
         "leaf_c2r", CT_LEAF, io_mode="contiguous_c2r", requires=_BASE_LEAF_FLAGS
@@ -222,6 +226,7 @@ CONTIGUOUS_BATCH_PACK_KERNELS = frozenset(
         "leaf",
         "leaf_strided",
         "leaf_r2c",
+        "leaf_packed_r2c",
         "leaf_c2r",
         "leaf_bluestein",
         "leaf_bluestein_prepare",
@@ -304,7 +309,7 @@ def module_name_for(
             f"flagfft_jit_{spec.name}_{perm_form}_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
         )
-    if spec.name in {"leaf_r2c", "leaf_c2r"}:
+    if spec.name in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}:
         return (
             f"flagfft_jit_{spec.name}_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"

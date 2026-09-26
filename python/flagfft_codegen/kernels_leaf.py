@@ -1196,6 +1196,13 @@ def _emit_stage_block(
                     f"{indent}r{j} = tl.load(in_ptr + input_batch_base + in{j}, mask=lane_mask, other={zero})"
                 )
                 lines.append(f"{indent}i{j} = r{j} * 0.0")
+            elif io_mode == "packed_r2c":
+                lines.append(
+                    f"{indent}r{j} = tl.load(in_ptr + input_batch_base + 2 * in{j}, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + input_batch_base + 2 * in{j} + 1, mask=lane_mask, other={zero})"
+                )
             elif io_mode == "contiguous_c2r":
                 half_n = n // 2 + 1
                 nyquist_guard = f" | (in{j} == {n // 2})" if n % 2 == 0 else ""
@@ -1620,6 +1627,10 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
                 )
+            elif io_mode == "packed_r2c":
+                lines.extend(_emit_exchange_store(
+                    indent, "packed", f"out_idx{j}", j, f"r{j}", f"i{j}", portable_exchange
+                ))
             elif io_mode == "contiguous_c2r":
                 lines.append(
                     f"{indent}tl.store(out_ptr + output_batch_base + out_idx{j}, r{j}, mask=lane_mask)"
@@ -1923,6 +1934,7 @@ def _emit_stage_block(
 
     if portable_exchange:
         buffer = (
+            "packed" if is_last and io_mode == "packed_r2c" else
             bluestein_intermediate_buffer
             if is_last and io_mode == "bluestein_full_leaf" and bluestein_pass == 0
             else dest_buffer
@@ -1994,6 +2006,7 @@ def _leaf_kernel_params_for_io(
         params.insert(1, "b_fft_ptr")
     if io_mode in {
         "contiguous_r2c",
+        "packed_r2c",
         "contiguous_c2r",
         "four_step_real_row",
         "four_step_hermitian_row",
@@ -2001,6 +2014,7 @@ def _leaf_kernel_params_for_io(
         params.append("input_distance")
     if io_mode in {
         "contiguous_r2c",
+        "packed_r2c",
         "contiguous_c2r",
         "four_step_r2c_col",
         "four_step_c2r_col",
@@ -2500,6 +2514,8 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
+    if io_mode == "packed_r2c" and not portable_exchange:
+        raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
     smem_n = plan.smem_size
@@ -2518,6 +2534,7 @@ def _build_leaf_kernel_source_for_io(
         "strided",
         "permuted_store",
         "contiguous_r2c",
+        "packed_r2c",
         "contiguous_c2r",
         "bluestein_prepare_leaf",
         "bluestein_finish_leaf",
@@ -2527,7 +2544,7 @@ def _build_leaf_kernel_source_for_io(
         batch_pack = permuted_store_batch_pack_for(plan)
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
-            plan, real_boundary=io_mode in {"contiguous_r2c", "contiguous_c2r"}
+            plan, real_boundary=io_mode in {"contiguous_r2c", "packed_r2c", "contiguous_c2r"}
         )
     else:
         batch_pack = 1
@@ -2622,6 +2639,8 @@ def _build_leaf_kernel_source_for_io(
         )
     elif io_mode == "contiguous_r2c":
         kernel_name = f"r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "packed_r2c":
+        kernel_name = f"packed_r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
         kernel_name = f"c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_prepare_leaf":
@@ -2717,7 +2736,7 @@ def _build_leaf_kernel_source_for_io(
         if batch_pack == 1:
             if io_mode != "strided":
                 body.append(f"    batch_base = current_batch * {n}")
-        if io_mode in {"contiguous_r2c", "contiguous_c2r"}:
+        if io_mode in {"contiguous_r2c", "packed_r2c", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
             body.append("    output_batch_base = current_batch * output_distance")
         if io_mode == "permuted_store":
@@ -2847,6 +2866,36 @@ def _build_leaf_kernel_source_for_io(
                 exchange_slot_stride=smem_slot_stride,
             )
         )
+
+    if io_mode == "packed_r2c":
+        # The final codelet outputs were gathered into natural frequency order
+        # by the portable exchange. Reconstruct the real FFT's half spectrum
+        # without a second kernel launch or a global intermediate buffer.
+        body.extend([
+            f"    packed_pos = tl.arange(0, {smem_n})",
+            f"    packed_slot = packed_pos // {smem_slot_stride}",
+            f"    packed_k = packed_pos % {smem_slot_stride}",
+            f"    packed_mask = (packed_slot < {batch_pack}) & (packed_k < {n}) & (batch_id + packed_slot < nbatch)",
+            f"    packed_partner = packed_slot * {smem_slot_stride} + tl.where(packed_k == 0, 0, {n} - packed_k)",
+            "    packed_partner = tl.where(packed_mask, packed_partner, 0)",
+            "    packed_ar = packed_r",
+            "    packed_ai = packed_i",
+            "    packed_br = tl.gather(packed_r, packed_partner, 0)",
+            "    packed_bi = tl.gather(packed_i, packed_partner, 0)",
+            f"    packed_angle = -{math.pi / n!r} * packed_k",
+            "    packed_wr = tl.cos(packed_angle)",
+            "    packed_wi = tl.sin(packed_angle)",
+            "    packed_dr = packed_ar - packed_br",
+            "    packed_di = packed_ai + packed_bi",
+            "    packed_xr = 0.5 * (packed_ar + packed_br + packed_wi * packed_dr + packed_wr * packed_di)",
+            "    packed_xi = 0.5 * (packed_ai - packed_bi - packed_wr * packed_dr + packed_wi * packed_di)",
+            "    packed_dst = (batch_id + packed_slot) * output_distance + packed_k",
+            "    tl.store(out_ptr + packed_dst * 2, packed_xr, mask=packed_mask)",
+            "    tl.store(out_ptr + packed_dst * 2 + 1, packed_xi, mask=packed_mask)",
+            f"    packed_nyquist = (batch_id + packed_slot) * output_distance + {n}",
+            "    tl.store(out_ptr + packed_nyquist * 2, packed_ar - packed_ai, mask=packed_mask & (packed_k == 0))",
+            "    tl.store(out_ptr + packed_nyquist * 2 + 1, 0.0, mask=packed_mask & (packed_k == 0))",
+        ])
 
     if io_mode == "bluestein_full_leaf":
         body.append("    tl.debug_barrier()")
