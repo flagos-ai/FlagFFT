@@ -570,7 +570,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     child_request.input_strides = {n / 2, 1};
     PlanBuilder child_builder;
     child_builder.build(n / 2, child_request);
-    const std::vector<int64_t> factors {16, 8, 8};
+    std::vector<int64_t> factors {16, 8, 8};
+    if (const char *variant = std::getenv("FLAGFFT_IX_R2C_FACTORS")) {
+      const std::string choice(variant);
+      if (choice == "8,16,8") factors = {8, 16, 8};
+      else if (choice == "8,8,16") factors = {8, 8, 16};
+      else if (choice == "16,16,4") factors = {16, 16, 4};
+      else if (choice == "16,4,16") factors = {16, 4, 16};
+      else if (choice == "4,16,16") factors = {4, 16, 16};
+      else if (choice != "16,8,8")
+        throw std::runtime_error("unsupported FLAGFFT_IX_R2C_FACTORS value: " + choice);
+    }
     const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
     LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
                              child_builder.choose_num_warps(lanes), {}, n / 2);

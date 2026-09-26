@@ -179,6 +179,12 @@ def _metadata(
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
         profile.validate(num_warps)
+    if (_ix_backend_active() and kernel_type == "leaf_packed_r2c"
+            and os.environ.get("FLAGFFT_IX_WARPS") is None):
+        # The half-length reconstruction has twice the register work of a
+        # normal leaf. Four warps caused a large batch-64 regression on V150;
+        # the measured two-warp launch retains the one-kernel benefit.
+        num_warps = 2
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
