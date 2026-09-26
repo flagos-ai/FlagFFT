@@ -550,16 +550,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   if (maca_real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, false);
   }
-  // Keep this fused half-length experiment behind a narrow IX request scope.
-  // It packs even/odd input samples, runs a 1024-point complex leaf, and
-  // reconstructs the 2048-point half spectrum within the same launch.
+  // Pack even/odd input samples, run a half-length complex leaf, and
+  // reconstruct the compact spectrum in one launch on the qualified IX case.
+  // Keep an opt-out for driver/toolchain regressions.
+  const char *fused_setting = std::getenv("FLAGFFT_IX_FUSED_R2C");
+  if (fused_setting != nullptr && std::string(fused_setting) != "0" &&
+      std::string(fused_setting) != "1") {
+    throw std::runtime_error("FLAGFFT_IX_FUSED_R2C must be 0 or 1");
+  }
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       n == 2048 && (batch == 1 || batch == 64) &&
+      (batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) &&
       !request.input_strides.empty() && request.input_strides.back() == 1 &&
-      std::getenv("FLAGFFT_IX_FUSED_R2C") != nullptr &&
-      std::string(std::getenv("FLAGFFT_IX_FUSED_R2C")) == "1") {
+      (std::getenv("FLAGFFT_IX_PORTABLE_LEAF") == nullptr ||
+       std::string(std::getenv("FLAGFFT_IX_PORTABLE_LEAF")) == "1") &&
+      (fused_setting == nullptr || std::string(fused_setting) == "1")) {
     FFTRequest child_request = request;
     child_request.n = n / 2;
     child_request.requested_n = n / 2;
@@ -570,17 +577,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     child_request.input_strides = {n / 2, 1};
     PlanBuilder child_builder;
     child_builder.build(n / 2, child_request);
-    std::vector<int64_t> factors {16, 8, 8};
-    if (const char *variant = std::getenv("FLAGFFT_IX_R2C_FACTORS")) {
-      const std::string choice(variant);
-      if (choice == "8,16,8") factors = {8, 16, 8};
-      else if (choice == "8,8,16") factors = {8, 8, 16};
-      else if (choice == "16,16,4") factors = {16, 16, 4};
-      else if (choice == "16,4,16") factors = {16, 4, 16};
-      else if (choice == "4,16,16") factors = {4, 16, 16};
-      else if (choice != "16,8,8")
-        throw std::runtime_error("unsupported FLAGFFT_IX_R2C_FACTORS value: " + choice);
-    }
+    const std::vector<int64_t> factors {16, 8, 8};
     const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
     LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
                              child_builder.choose_num_warps(lanes), {}, n / 2);

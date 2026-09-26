@@ -228,7 +228,7 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 | Length | Complex FFT policy | Real FFT policy |
 |---|---|---|
 | 1024 | `[16,8,8]`, tensor exchange, two physical warps | Same leaf with real input/output |
-| 2048 | Tensor exchange, two physical warps | Same leaf with real input/output |
+| 2048 | Tensor exchange, two physical warps | R2C packs even/odd samples into a 1024-point complex leaf and reconstructs the half spectrum in one kernel; C2R keeps the real-boundary leaf |
 | 16384 | Tensor exchange, inner pack 4, two physical warps | Same Four-Step with real input/output |
 | 328050, 340200 | Interleaved shared exchange and twiddle recurrence | Half-length complex FFT plus pre/postprocess |
 | 663000 | Unchanged | Half-length complex FFT plus pre/postprocess |
@@ -236,8 +236,10 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 
 For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024 or
 2048 use tensor exchange and four physical warps. The 1024-point leaf uses
-`[8,8,4,4]`; the 2048-point leaf keeps `[16,16,8]`. This policy covers C2C,
-R2C and C2R. Set `FLAGFFT_IX_CT_BATCH=0` before starting the process to
+`[8,8,4,4]`; the 2048-point C2C/C2R leaf uses its measured factor order.
+The 2048-point R2C path uses the fused 1024-point `[16,8,8]` leaf with two
+physical warps. Set `FLAGFFT_IX_FUSED_R2C=0` before starting the process to
+restore the prior full-length R2C leaf. Set `FLAGFFT_IX_CT_BATCH=0` to
 compare with the previous batch path.
 
 Other lengths, batch sizes, ranks, architectures and FP64 retain their existing
