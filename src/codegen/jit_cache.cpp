@@ -197,7 +197,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (maca_1d_single_policy_ ? "1" : "0") + ";maca-2d-single=" +
                                 (maca_2d_single_policy_ ? "1" : "0") + ";ix-ct-single=" +
                                 (ix_ct_single_policy_ ? "1" : "0") + ";ix-ct-single-tle=" +
-                                std::to_string(ix_ct_single_tle_policy_) +
+                                std::to_string(ix_ct_single_tle_policy_) + ";ix-ct-batch=" +
+                                (ix_ct_batch_policy_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   KernelCacheState &state = kernel_cache_state();
@@ -355,6 +356,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "
               << shell_quote(device_profile) << " --execution-policy " << shell_quote(policy);
   if (ix_ct_single_policy_) jit_command << " --ix-ct-single";
+  if (ix_ct_batch_policy_) jit_command << " --ix-ct-batch";
   if (ix_ct_single_tle_policy_) jit_command << " --ix-ct-single-tle " << ix_ct_single_tle_policy_;
 #if defined(BACKEND_MACA)
   jit_command << " --compile-script "

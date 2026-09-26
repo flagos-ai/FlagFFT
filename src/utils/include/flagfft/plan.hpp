@@ -163,6 +163,7 @@ class PlanBuilder {
     int64_t requested_n = 0;
     int64_t batch = 1;
     bool ix_short_single = false;
+    bool ix_ct_batch = false;
     int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
 
     bool operator==(const RequestContext& other) const;

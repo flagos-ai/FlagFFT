@@ -1099,6 +1099,7 @@ class TritonCompiler {
   bool maca_1d_single_policy_ = false;
   bool maca_2d_single_policy_ = false;
   bool ix_ct_single_policy_ = false;
+  bool ix_ct_batch_policy_ = false;
   int ix_ct_single_tle_policy_ = 0;
   std::string maca_tail_policy_ = "off";
 
@@ -1214,6 +1215,7 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
                                              const std::vector<int64_t> &idx);
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request);
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
+bool ix_ct_batch_policy_enabled(const FFTRequest &request);
 bool ix_packed_real_policy_enabled(const FFTRequest &request);
 int ix_ct_single_tle_policy(const FFTRequest &request);
 std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request);

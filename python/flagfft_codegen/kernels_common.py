@@ -26,6 +26,7 @@ from typing import Literal
 from .backend_profile import current_profile
 from .target import (
     ix_ct_single_default_enabled,
+    ix_ct_batch_default_enabled,
     ix_ct_single_tle_default,
     maca_1d_single_default_enabled,
     maca_2d_single_default_enabled,
@@ -292,6 +293,8 @@ def _maca_knob(name: str, default: str = "") -> str:
         defaults = {"EXCHANGE": "direct_all", "SPLIT_ORDER": "lsb"}
         if ix_ct_single_default_enabled():
             defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="2", INNER_PACK="4", LANE_MIN="1")
+        if ix_ct_batch_default_enabled():
+            defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="4", LANE_MIN="1")
         if ix_ct_single_tle_default():
             defaults.update(SMEM_INTERLEAVE="1", RECURRENCE="1")
         if ix_ct_single_tle_default() == 2:

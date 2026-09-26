@@ -129,6 +129,64 @@ TEST(Plan1D, IxCtSinglePolicyScope) {
   EXPECT_THROW(flagfft::ix_ct_single_tle_policy(packed), std::runtime_error);
 }
 
+TEST(Plan1D, IxCtBatchPolicyScope) {
+  const char* original = std::getenv("FLAGFFT_IX_CT_BATCH");
+  const std::optional<std::string> saved = original ? std::optional<std::string>(original) : std::nullopt;
+  struct Restore {
+    std::optional<std::string> value;
+    ~Restore() {
+      if (value) setenv("FLAGFFT_IX_CT_BATCH", value->c_str(), 1);
+      else unsetenv("FLAGFFT_IX_CT_BATCH");
+    }
+  } restore{saved};
+  unsetenv("FLAGFFT_IX_CT_BATCH");
+
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.raw_dim = 1;
+  request.batch = 64;
+  request.n = request.fft_length = request.requested_n = 1024;
+  request.input_dtype = request.output_dtype = "complex64";
+  request.input_strides = {1024, 1};
+  EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(request));
+  auto longer = request;
+  longer.n = longer.fft_length = longer.requested_n = 2048;
+  EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(longer));
+  for (auto changed : {16, 210, 4096}) {
+    auto other = request;
+    other.n = other.fft_length = other.requested_n = changed;
+    EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(other));
+  }
+  auto changed = request;
+  changed.batch = 1;
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+  changed = request;
+  changed.raw_dim = 2;
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+  changed = request;
+  changed.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+  changed = request;
+  changed.device_arch = "other";
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+  changed = request;
+  changed.input_strides.back() = 2;
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+
+  flagfft::PlanBuilder builder;
+  auto optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
+  ASSERT_NE(optimized, nullptr);
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{8, 8, 4, 4}));
+  setenv("FLAGFFT_IX_CT_BATCH", "0", 1);
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(request));
+  auto baseline = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
+  ASSERT_NE(baseline, nullptr);
+  EXPECT_EQ(baseline->factors, (std::vector<int64_t>{32, 32}));
+  setenv("FLAGFFT_IX_CT_BATCH", "invalid", 1);
+  EXPECT_THROW(flagfft::ix_ct_batch_policy_enabled(request), std::runtime_error);
+}
+
 TEST(Plan1D, CreateDestroyAllTypes) {
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {

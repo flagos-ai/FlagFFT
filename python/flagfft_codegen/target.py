@@ -19,6 +19,7 @@ from contextvars import ContextVar
 _target = ContextVar("flagfft_codegen_target", default="")
 _MACA_1D_SINGLE_DEFAULT = ContextVar("flagfft_maca_1d_single_default", default=False)
 _IX_CT_SINGLE_DEFAULT = ContextVar("flagfft_ix_ct_single_default", default=False)
+_IX_CT_BATCH_DEFAULT = ContextVar("flagfft_ix_ct_batch_default", default=False)
 _IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
 _MACA_2D_SINGLE_DEFAULT = ContextVar("flagfft_maca_2d_single_default", default=False)
 
@@ -47,6 +48,18 @@ def reset_ix_ct_single_default(token):
 
 def ix_ct_single_default_enabled() -> bool:
     return _IX_CT_SINGLE_DEFAULT.get()
+
+
+def set_ix_ct_batch_default(enabled: bool):
+    return _IX_CT_BATCH_DEFAULT.set(bool(enabled))
+
+
+def reset_ix_ct_batch_default(token):
+    _IX_CT_BATCH_DEFAULT.reset(token)
+
+
+def ix_ct_batch_default_enabled() -> bool:
+    return _IX_CT_BATCH_DEFAULT.get()
 
 
 def set_codegen_target(target: str) -> None:

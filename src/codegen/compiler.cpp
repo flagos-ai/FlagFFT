@@ -200,6 +200,7 @@ namespace {
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
   ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
+  ix_ct_batch_policy_ = ix_ct_batch_policy_enabled(request);
   ix_ct_single_tle_policy_ = ix_ct_single_tle_policy(request);
   maca_tail_policy_ = maca_tail_codegen_root(request);
   maca_1d_single_policy_ = request.device_type == "maca" && request.raw_dim == 1 && request.batch == 1;

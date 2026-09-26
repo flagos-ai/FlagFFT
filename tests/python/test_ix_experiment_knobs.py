@@ -103,3 +103,20 @@ def test_ix_1024_single_warp_default_and_override(ix_profile, monkeypatch):
         assert _metadata(**args)["num_warps"] == 2
     finally:
         reset_ix_ct_single_default(token)
+
+
+def test_ix_ct_batch_portable_defaults_and_override(ix_profile, monkeypatch):
+    from flagfft_codegen.kernels_common import _maca_knob
+    from flagfft_codegen.target import set_ix_ct_batch_default, reset_ix_ct_batch_default
+
+    token = set_ix_ct_batch_default(True)
+    try:
+        assert _maca_knob("PORTABLE_LEAF") == "1"
+        assert _maca_knob("RECURRENCE") == "1"
+        assert _maca_knob("WARPS") == "4"
+        assert _maca_knob("LANE_MIN") == "1"
+        monkeypatch.setenv("FLAGFFT_IX_WARPS", "2")
+        assert _maca_knob("WARPS") == "2"
+    finally:
+        reset_ix_ct_batch_default(token)
+    assert _maca_knob("PORTABLE_LEAF") != "1"

@@ -234,13 +234,19 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 | 663000 | Unchanged | Half-length complex FFT plus pre/postprocess |
 | 1048576 | Interleaved/swizzled exchange, inner pack 8, four physical warps | Half-length complex FFT plus pre/postprocess |
 
-Other lengths, batches, ranks, architectures and FP64 retain their existing
+For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024 or
+2048 use tensor exchange and four physical warps. The 1024-point leaf uses
+`[8,8,4,4]`; the 2048-point leaf keeps `[16,16,8]`. This policy covers C2C,
+R2C and C2R. Set `FLAGFFT_IX_CT_BATCH=0` before starting the process to
+compare with the previous batch path.
+
+Other lengths, batch sizes, ranks, architectures and FP64 retain their existing
 paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to compare
-against the original implementation. `FLAGFFT_PACKED_REAL=0` can separately
+against the original single implementation. `FLAGFFT_PACKED_REAL=0` can separately
 disable the half-length real path. The policies select matching stage-twiddle
 tables and have separate in-process and filesystem kernel cache entries.
 
-Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --output-dir
+Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --batches 1,64 --output-dir
 <workspace>/results/<timestamp>_ix_ct_single` for serial, alternating
 baseline/default measurements on physical GPU 2 (`--gpu` selects another card).
 Accuracy validation remains
