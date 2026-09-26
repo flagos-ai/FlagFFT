@@ -227,7 +227,7 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 
 | Length | Complex FFT policy | Real FFT policy |
 |---|---|---|
-| 1024 | `[16,8,8]`, tensor exchange, one physical warp | Same leaf with real input/output |
+| 1024 | `[16,8,8]`, tensor exchange, two physical warps | Same leaf with real input/output |
 | 2048 | Tensor exchange, two physical warps | Same leaf with real input/output |
 | 16384 | Tensor exchange, inner pack 4, two physical warps | Same Four-Step with real input/output |
 | 328050, 340200 | Interleaved shared exchange and twiddle recurrence | Half-length complex FFT plus pre/postprocess |

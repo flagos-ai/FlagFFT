@@ -21,7 +21,6 @@ import os
 from typing import Any
 
 from .backend_profile import current_profile
-from .target import ix_ct_single_default_enabled
 from .kernels_common import (
     _CODELET_DIR,
     LeafPlan,
@@ -179,9 +178,6 @@ def _metadata(
         num_warps = max(2, num_warps)
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
-        if (ix_ct_single_default_enabled() and plan.length == 1024 and not n1 and not n2
-                and "FLAGFFT_IX_WARPS" not in os.environ):
-            num_warps = 1
         profile.validate(num_warps)
     return {
         "module_path": str(module_path),

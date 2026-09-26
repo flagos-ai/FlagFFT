@@ -87,7 +87,7 @@ def test_ix_tle_presets_are_scoped_and_overridable(ix_profile, monkeypatch):
     assert _maca_knob("TLE_INNER_PACK") == ""
 
 
-def test_ix_1024_single_warp_default_and_override(ix_profile, monkeypatch):
+def test_ix_1024_single_two_warp_default_and_override(ix_profile, monkeypatch):
     from pathlib import Path
     from flagfft_codegen.kernels_common import LeafPlan
     from flagfft_codegen.metadata import _metadata
@@ -98,9 +98,9 @@ def test_ix_1024_single_warp_default_and_override(ix_profile, monkeypatch):
         plan = LeafPlan(1024, (16, 8, 8), 1, 128, 4, (), 1024, "forward", "complex64")
         args = dict(module_path=Path("unused.py"), kernel_name="fft_kernel", arg_names=[],
                     plan=plan, kernel_type="leaf", n1=0, n2=0, dtype="complex64")
-        assert _metadata(**args)["num_warps"] == 1
-        monkeypatch.setenv("FLAGFFT_IX_WARPS", "2")
         assert _metadata(**args)["num_warps"] == 2
+        monkeypatch.setenv("FLAGFFT_IX_WARPS", "1")
+        assert _metadata(**args)["num_warps"] == 1
     finally:
         reset_ix_ct_single_default(token)
 
