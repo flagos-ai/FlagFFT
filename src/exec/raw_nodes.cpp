@@ -1135,8 +1135,9 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
 
 CompiledRawR2CLeafNode::CompiledRawR2CLeafNode(int64_t length,
                                                std::shared_ptr<JitKernel> kernel,
-                                               std::vector<DeviceAllocation> tables)
-    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+                                               std::vector<DeviceAllocation> tables,
+                                               DeviceAllocation twiddle)
+    : length(length), kernel(std::move(kernel)), tables(std::move(tables)), twiddle(std::move(twiddle)) {
 }
 
 std::string CompiledRawR2CLeafNode::describe() const {
@@ -1160,9 +1161,10 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
 
     std::vector<JitKernelArg> args;
-    args.reserve(2 + tables.size() + 3);
+    args.reserve(3 + tables.size() + 3);
     args.push_back(JitKernelArg::device(input));
     args.push_back(JitKernelArg::device(output));
+    if (twiddle.get()) args.push_back(JitKernelArg::device(twiddle.get()));
     for (const DeviceAllocation &table : tables) {
       args.push_back(JitKernelArg::device(table.get()));
     }

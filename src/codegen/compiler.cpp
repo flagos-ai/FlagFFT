@@ -581,7 +581,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                          packed_leaf.generic_radices, packed_leaf.smem_size);
     key.kind = KernelKind::LeafPackedR2C;
     return std::make_shared<CompiledRawR2CLeafNode>(
-        n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request));
+        n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
+        build_raw_packed_real_twiddle(request, n));
   }
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, false) : std::nullopt) {

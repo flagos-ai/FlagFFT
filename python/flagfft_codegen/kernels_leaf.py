@@ -1987,6 +1987,8 @@ def _leaf_kernel_params_for_io(
     params = _leaf_kernel_params(
         plan, include_four_step_twiddle=include_four_step_twiddle
     )
+    if io_mode == "packed_r2c":
+        params.insert(2, "packed_twiddle_ptr")
     if io_mode == "strided":
         params.append("outer_stride")
     if io_mode == "permuted_store":
@@ -2882,9 +2884,9 @@ def _build_leaf_kernel_source_for_io(
             "    packed_ai = packed_i",
             "    packed_br = tl.gather(packed_r, packed_partner, 0)",
             "    packed_bi = tl.gather(packed_i, packed_partner, 0)",
-            f"    packed_angle = -{math.pi / n!r} * packed_k",
-            "    packed_wr = tl.cos(packed_angle)",
-            "    packed_wi = tl.sin(packed_angle)",
+            "    packed_twiddle_k = tl.where(packed_mask, packed_k, 0)",
+            "    packed_wr = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2, mask=packed_mask, other=0.0)",
+            "    packed_wi = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2 + 1, mask=packed_mask, other=0.0)",
             "    packed_dr = packed_ar - packed_br",
             "    packed_di = packed_ai + packed_bi",
             "    packed_xr = 0.5 * (packed_ar + packed_br + packed_wi * packed_dr + packed_wr * packed_di)",

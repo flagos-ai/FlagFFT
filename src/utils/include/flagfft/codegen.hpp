@@ -486,7 +486,8 @@ struct CompiledRawPackedR2CNode final : CompiledRawNode {
 struct CompiledRawR2CLeafNode final : CompiledRawNode {
   CompiledRawR2CLeafNode(int64_t length,
                          std::shared_ptr<JitKernel> kernel,
-                         std::vector<DeviceAllocation> tables);
+                         std::vector<DeviceAllocation> tables,
+                         DeviceAllocation twiddle = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -495,6 +496,7 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
+  DeviceAllocation twiddle;
 };
 
 struct CompiledRawR2CFourStepHalfOutNode final : CompiledRawNode {
