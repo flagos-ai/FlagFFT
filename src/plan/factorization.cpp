@@ -14,6 +14,9 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
+#include <sstream>
+
 namespace flagfft {
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
@@ -121,6 +124,36 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  // Temporary IX screening knob. Keep the override on the root 1D FP32 CT
+  // leaf so child plans and other backends retain their usual factorization.
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.origin_rank <= 1 && context.requested_n == n &&
+      (context.batch == 1 || context.batch == 64) &&
+      (context.input_dtype == "float32" || context.input_dtype == "complex64") &&
+      (context.output_dtype == "float32" || context.output_dtype == "complex64") &&
+      (n == 16 || n == 210 || n == 1024 || n == 2048)) {
+    if (const char *setting = std::getenv("FLAGFFT_IX_CT_EXPERIMENT_FACTORS")) {
+      std::vector<int64_t> factors;
+      std::istringstream input(setting);
+      std::string part;
+      int64_t remaining = n;
+      while (std::getline(input, part, ',')) {
+        std::size_t parsed = 0;
+        int64_t radix = std::stoll(part, &parsed);
+        if (parsed != part.size() ||
+            std::find(kSupportedRadices.begin(), kSupportedRadices.end(), radix) ==
+                kSupportedRadices.end() || remaining % radix != 0) {
+          throw std::runtime_error("invalid FLAGFFT_IX_CT_EXPERIMENT_FACTORS");
+        }
+        factors.push_back(radix);
+        remaining /= radix;
+      }
+      if (factors.empty() || remaining != 1) {
+        throw std::runtime_error("invalid FLAGFFT_IX_CT_EXPERIMENT_FACTORS");
+      }
+      return factors;
+    }
+  }
   if (context.ix_short_single && n == 1024) return {16, 8, 8};
   if (context.device_type == "hcu" && context.origin_rank <= 1 &&
       context.requested_n == n && n == 16) {
