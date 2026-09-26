@@ -20,6 +20,7 @@
 #include <cstring>
 #include <set>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -185,6 +186,36 @@ TEST(Plan1D, IxCtBatchPolicyScope) {
   EXPECT_EQ(baseline->factors, (std::vector<int64_t>{32, 32}));
   setenv("FLAGFFT_IX_CT_BATCH", "invalid", 1);
   EXPECT_THROW(flagfft::ix_ct_batch_policy_enabled(request), std::runtime_error);
+}
+
+TEST(Plan1D, IxFp32RealBatchFactors) {
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.raw_dim = 1;
+  request.batch = 64;
+  request.input_strides = {1024, 1};
+  flagfft::PlanBuilder builder;
+  for (auto dtypes : {std::pair{"float32", "complex64"},
+                      std::pair{"complex64", "float32"}}) {
+    request.input_dtype = dtypes.first;
+    request.output_dtype = dtypes.second;
+    for (auto shape : {1024, 2048}) {
+      request.n = request.fft_length = request.requested_n = shape;
+      request.input_strides = {shape, 1};
+      auto plan = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(shape, request));
+      ASSERT_NE(plan, nullptr);
+      if (shape == 1024)
+        EXPECT_EQ(plan->factors, (std::vector<int64_t>{8, 4, 8, 4}));
+      else
+        EXPECT_EQ(plan->factors, (std::vector<int64_t>{16, 8, 16}));
+    }
+  }
+  request.input_dtype = request.output_dtype = "complex64";
+  request.n = request.fft_length = request.requested_n = 1024;
+  auto complex_plan = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
+  ASSERT_NE(complex_plan, nullptr);
+  EXPECT_EQ(complex_plan->factors, (std::vector<int64_t>{8, 8, 4, 4}));
 }
 
 TEST(Plan1D, CreateDestroyAllTypes) {
