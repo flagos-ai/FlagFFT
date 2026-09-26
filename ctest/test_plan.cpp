@@ -196,10 +196,9 @@ TEST(Plan1D, IxFp32RealBatchFactors) {
   request.batch = 64;
   request.input_strides = {1024, 1};
   flagfft::PlanBuilder builder;
-  for (auto dtypes : {std::pair{"float32", "complex64"},
-                      std::pair{"complex64", "float32"}}) {
-    request.input_dtype = dtypes.first;
-    request.output_dtype = dtypes.second;
+  request.input_dtype = request.output_dtype = "complex64";
+  for (auto kind : {"r2c", "c2r"}) {
+    request.real_transform_kind = kind;
     for (auto shape : {1024, 2048}) {
       request.n = request.fft_length = request.requested_n = shape;
       request.input_strides = {shape, 1};
@@ -211,7 +210,7 @@ TEST(Plan1D, IxFp32RealBatchFactors) {
         EXPECT_EQ(plan->factors, (std::vector<int64_t>{16, 8, 16}));
     }
   }
-  request.input_dtype = request.output_dtype = "complex64";
+  request.real_transform_kind.clear();
   request.n = request.fft_length = request.requested_n = 1024;
   auto complex_plan = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
   ASSERT_NE(complex_plan, nullptr);

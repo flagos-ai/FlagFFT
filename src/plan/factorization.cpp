@@ -124,9 +124,10 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const bool ix_fp32_real_batch =
       context.device_type == "ix" && context.device_arch == "71" &&
       context.origin_rank <= 1 && context.requested_n == n &&
-      context.batch == 64 &&
-      ((context.input_dtype == "float32" && context.output_dtype == "complex64") ||
-       (context.input_dtype == "complex64" && context.output_dtype == "float32"));
+      context.batch == 64 && context.input_dtype == "complex64" &&
+      context.output_dtype == "complex64" &&
+      (context.real_transform_kind == "r2c" ||
+       context.real_transform_kind == "c2r");
   if (ix_fp32_real_batch && n == 1024) return {8, 4, 8, 4};
   if (ix_fp32_real_batch && n == 2048) return {16, 8, 16};
   if (context.ix_short_single && n == 1024) return {16, 8, 8};
