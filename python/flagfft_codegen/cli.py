@@ -132,6 +132,8 @@ def main() -> None:
                         help="enable the scoped IX FP32 portable single policy")
     parser.add_argument("--ix-ct-batch", action="store_true",
                         help="enable the scoped IX FP32 batch-64 CT leaf policy")
+    parser.add_argument("--ix-real-single-pack", action="store_true",
+                        help="use one transform per block for IX N=210 real single")
     parser.add_argument("--ix-ct-single-tle", type=int, choices=(0, 1, 2), default=0,
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
     parser.add_argument("--maca-tail-mode", choices=("off", "p4w4", "real-direct"), default="off")
@@ -155,9 +157,10 @@ def main() -> None:
     set_codegen_target(args.target)
     set_maca_1d_single_default(args.maca_1d_single)
     from .target import (set_ix_ct_single_default, set_ix_ct_batch_default,
-                         set_ix_ct_single_tle_default)
+                         set_ix_ct_single_tle_default, set_ix_real_single_pack)
     set_ix_ct_single_default(args.ix_ct_single)
     set_ix_ct_batch_default(args.ix_ct_batch)
+    set_ix_real_single_pack(args.ix_real_single_pack)
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
@@ -187,6 +190,8 @@ def main() -> None:
         profile_dir += "-ct-single" if args.ix_ct_single else "-ct-single-off"
         if args.ix_ct_batch:
             profile_dir += "-ct-batch"
+        if args.ix_real_single_pack:
+            profile_dir += "-real-single-pack"
         if args.ix_ct_single_tle:
             profile_dir += f"-tle{args.ix_ct_single_tle}"
     if profile.backend == "maca":
@@ -370,6 +375,7 @@ def main() -> None:
             "maca_1d_single_default": args.maca_1d_single,
             "ix_ct_single_default": args.ix_ct_single,
             "ix_ct_batch_default": args.ix_ct_batch,
+            "ix_real_single_pack": args.ix_real_single_pack,
             "ix_ct_single_tle_default": args.ix_ct_single_tle,
             "maca_tail_mode": args.maca_tail_mode,
             "maca_2d_single_default": args.maca_2d_single,

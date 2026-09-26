@@ -1100,6 +1100,7 @@ class TritonCompiler {
   bool maca_2d_single_policy_ = false;
   bool ix_ct_single_policy_ = false;
   bool ix_ct_batch_policy_ = false;
+  bool ix_real_single_pack_ = false;
   int ix_ct_single_tle_policy_ = 0;
   std::string maca_tail_policy_ = "off";
 
