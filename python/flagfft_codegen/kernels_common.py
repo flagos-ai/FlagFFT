@@ -314,6 +314,11 @@ def _maca_knob(name: str, default: str = "") -> str:
     if maca_1d_batch_default_enabled():
         if name == "EXCHANGE":
             return "direct_all"
+        if name == "INNER_PACK":
+            # The resource guard in _maca_four_step_inner_pack keeps short and
+            # mixed leaves at their measured pack while allowing P8 for the
+            # 512/1024-point power-of-two pair used by N=524288.
+            return "8"
     if maca_1d_single_default_enabled() or maca_2d_single_default_enabled():
         defaults = {
             "EXCHANGE": "direct_all",

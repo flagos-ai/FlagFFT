@@ -33,6 +33,7 @@ def test_maca_1d_single_defaults_are_scoped_and_overridable(monkeypatch):
     try:
         assert _maca_knob("EXCHANGE") == "direct_all"
         assert _maca_knob("INNER_PACK") == "8"
+        assert _maca_knob("INNER_PACK") == "8"
         assert _maca_knob("MAX_WARPS") == "8"
         assert _maca_knob("SPLIT_ORDER") == "lsb"
         assert _maca_knob("VEC_IO", "0") == "0"
@@ -101,6 +102,29 @@ def test_maca_1d_batch_policy_matches_leaf_launch_and_respects_override(monkeypa
                          n1=0, n2=0, dtype=plan.dtype)
         assert "batch_id = pid * 4" in source
         assert meta["batch_per_block"] == 4
+    finally:
+        reset_maca_1d_batch_default(policy_token)
+        reset_profile(profile_token)
+
+
+def test_maca_1d_batch_four_step_pack_is_resource_bounded(monkeypatch):
+    from dataclasses import replace
+
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.kernels_common import LeafPlan, four_step_row_inner_pack_for
+    from flagfft_codegen.target import reset_maca_1d_batch_default, set_maca_1d_batch_default
+
+    monkeypatch.delenv("FLAGFFT_MACA_EXCHANGE", raising=False)
+    monkeypatch.delenv("FLAGFFT_MACA_INNER_PACK", raising=False)
+    profile_token = set_profile(replace(_maca_profile(), policy="legacy"))
+    policy_token = set_maca_1d_batch_default(True)
+    try:
+        large = LeafPlan(512, (8, 4, 4, 4), 1, 64, 2, (), 512)
+        short = LeafPlan(128, (8, 8, 2), 1, 64, 2, (), 128)
+        assert four_step_row_inner_pack_for(512, 1024, "complex64", large) == 8
+        assert four_step_row_inner_pack_for(128, 128, "complex64", short) == 4
+        monkeypatch.setenv("FLAGFFT_MACA_INNER_PACK", "4")
+        assert four_step_row_inner_pack_for(512, 1024, "complex64", large) == 4
     finally:
         reset_maca_1d_batch_default(policy_token)
         reset_profile(profile_token)
