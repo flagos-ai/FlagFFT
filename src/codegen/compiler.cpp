@@ -226,6 +226,8 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
                            request.requested_n == 2048 ||
                            ((request.requested_n == 16384 || request.requested_n == 524288 ||
                              (request.packed_real_child && request.requested_n == 262144)) &&
+                            request.input_dtype == "complex64") ||
+                           (request.requested_n == 524287 && request.real_transform_kind.empty() &&
                             request.input_dtype == "complex64")) &&
                           !request.input_strides.empty() && request.input_strides.back() == 1;
   if (maca_1d_batch_policy_) {
