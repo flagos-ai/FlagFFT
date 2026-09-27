@@ -315,10 +315,12 @@ def _maca_knob(name: str, default: str = "") -> str:
     if maca_1d_batch_default_enabled():
         if name == "EXCHANGE":
             return "direct_all"
+        if name == "FP64_REGISTER_PACK":
+            return "1"
         if name == "INNER_PACK":
             # The resource guard in _maca_four_step_inner_pack keeps short and
             # mixed leaves at their measured pack while allowing P8 for the
-            # 512/1024-point power-of-two pair used by N=524288.
+            # FP32 512/1024-point power-of-two pair used by N=524288.
             return "8"
     if maca_1d_single_default_enabled() or maca_2d_single_default_enabled():
         defaults = {
@@ -640,6 +642,12 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     launchable shared-memory limit.
     """
     override = _maca_knob("INNER_PACK", "")
+    if (maca_1d_batch_default_enabled() and plan is not None
+            and _is_double_dtype(plan.dtype)
+            and "FLAGFFT_MACA_INNER_PACK" not in os.environ):
+        # The measured FP64 register exchange uses the normal resource-derived
+        # pack, while the P8 default is qualified only for FP32 leaves.
+        override = ""
     # An explicit number is an experiment setting, but it still goes through
     # the hard launchable shared-memory limit.
     if override not in {"", "auto"}:

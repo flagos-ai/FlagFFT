@@ -111,20 +111,26 @@ def test_maca_1d_batch_four_step_pack_is_resource_bounded(monkeypatch):
     from dataclasses import replace
 
     from flagfft_codegen.backend_profile import reset_profile, set_profile
-    from flagfft_codegen.kernels_common import LeafPlan, four_step_row_inner_pack_for
+    from flagfft_codegen.kernels_common import LeafPlan, _maca_knob, four_step_row_inner_pack_for
     from flagfft_codegen.target import reset_maca_1d_batch_default, set_maca_1d_batch_default
 
     monkeypatch.delenv("FLAGFFT_MACA_EXCHANGE", raising=False)
     monkeypatch.delenv("FLAGFFT_MACA_INNER_PACK", raising=False)
+    monkeypatch.delenv("FLAGFFT_MACA_FP64_REGISTER_PACK", raising=False)
     profile_token = set_profile(replace(_maca_profile(), policy="legacy"))
     policy_token = set_maca_1d_batch_default(True)
     try:
         large = LeafPlan(512, (8, 4, 4, 4), 1, 64, 2, (), 512)
+        large_fp64 = replace(large, dtype="complex128")
         short = LeafPlan(128, (8, 8, 2), 1, 64, 2, (), 128)
         assert four_step_row_inner_pack_for(512, 1024, "complex64", large) == 8
+        assert _maca_knob("FP64_REGISTER_PACK") == "1"
+        assert four_step_row_inner_pack_for(512, 1024, "complex128", large_fp64) == 4
         assert four_step_row_inner_pack_for(128, 128, "complex64", short) == 4
         monkeypatch.setenv("FLAGFFT_MACA_INNER_PACK", "4")
         assert four_step_row_inner_pack_for(512, 1024, "complex64", large) == 4
+        monkeypatch.setenv("FLAGFFT_MACA_FP64_REGISTER_PACK", "0")
+        assert _maca_knob("FP64_REGISTER_PACK") == "0"
     finally:
         reset_maca_1d_batch_default(policy_token)
         reset_profile(profile_token)
