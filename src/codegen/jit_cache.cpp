@@ -194,7 +194,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   const auto tail_mode = maca_tail_kernel_mode(maca_tail_policy_, key.kind, key.dtype,
                                                key.length, key.four_step_n1, key.four_step_n2);
   const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
-                                (maca_1d_single_policy_ ? "1" : "0") + ";maca-2d-single=" +
+                                (maca_1d_single_policy_ ? "1" : "0") + ";maca-1d-batch=" +
+                                (maca_1d_batch_policy_ ? "1" : "0") + ";maca-2d-single=" +
                                 (maca_2d_single_policy_ ? "1" : "0") + ";ix-ct-single=" +
                                 (ix_ct_single_policy_ ? "1" : "0") + ";ix-ct-single-tle=" +
                                 std::to_string(ix_ct_single_tle_policy_) + ";ix-ct-batch=" +
@@ -368,6 +369,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
               << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());
   if (maca_1d_single_policy_) {
     jit_command << " --maca-1d-single";
+  }
+  if (maca_1d_batch_policy_) {
+    jit_command << " --maca-1d-batch";
   }
   jit_command << " --maca-tail-mode " << shell_quote(tail_mode);
   if (maca_2d_single_policy_) {

@@ -18,6 +18,7 @@ from contextvars import ContextVar
 
 _target = ContextVar("flagfft_codegen_target", default="")
 _MACA_1D_SINGLE_DEFAULT = ContextVar("flagfft_maca_1d_single_default", default=False)
+_MACA_1D_BATCH_DEFAULT = ContextVar("flagfft_maca_1d_batch_default", default=False)
 _IX_CT_SINGLE_DEFAULT = ContextVar("flagfft_ix_ct_single_default", default=False)
 _IX_CT_BATCH_DEFAULT = ContextVar("flagfft_ix_ct_batch_default", default=False)
 _IX_REAL_SINGLE_PACK = ContextVar("flagfft_ix_real_single_pack", default=False)
@@ -91,6 +92,18 @@ def reset_maca_1d_single_default(token) -> None:
 def maca_1d_single_default_enabled() -> bool:
     """Whether the native compiler requested the MACA 1D single defaults."""
     return _MACA_1D_SINGLE_DEFAULT.get()
+
+
+def set_maca_1d_batch_default(enabled: bool):
+    return _MACA_1D_BATCH_DEFAULT.set(bool(enabled))
+
+
+def reset_maca_1d_batch_default(token) -> None:
+    _MACA_1D_BATCH_DEFAULT.reset(token)
+
+
+def maca_1d_batch_default_enabled() -> bool:
+    return _MACA_1D_BATCH_DEFAULT.get()
 
 
 def set_maca_2d_single_default(enabled: bool):

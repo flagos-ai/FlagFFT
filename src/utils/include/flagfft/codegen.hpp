@@ -1099,6 +1099,7 @@ class TritonCompiler {
                                                         int64_t batch);
 
   bool maca_1d_single_policy_ = false;
+  bool maca_1d_batch_policy_ = false;
   bool maca_2d_single_policy_ = false;
   bool ix_ct_single_policy_ = false;
   bool ix_ct_batch_policy_ = false;

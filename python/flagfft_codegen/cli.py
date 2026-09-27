@@ -51,6 +51,7 @@ from .registry import (
 from .target import (
     set_codegen_target,
     set_maca_1d_single_default,
+    set_maca_1d_batch_default,
     set_maca_2d_single_default,
 )
 from .maca_tail_policy import set_maca_tail_mode, variant_suffix
@@ -128,6 +129,8 @@ def main() -> None:
         action="store_true",
         help="enable the measured MACA rank-1 batch-1 code-generation defaults",
     )
+    parser.add_argument("--maca-1d-batch", action="store_true",
+                        help="enable measured MACA rank-1 batch-64 code-generation defaults")
     parser.add_argument("--ix-ct-single", action="store_true",
                         help="enable the scoped IX FP32 portable single policy")
     parser.add_argument("--ix-ct-batch", action="store_true",
@@ -156,6 +159,7 @@ def main() -> None:
     args = parser.parse_args()
     set_codegen_target(args.target)
     set_maca_1d_single_default(args.maca_1d_single)
+    set_maca_1d_batch_default(args.maca_1d_batch)
     from .target import (set_ix_ct_single_default, set_ix_ct_batch_default,
                          set_ix_ct_single_tle_default, set_ix_real_single_pack)
     set_ix_ct_single_default(args.ix_ct_single)
@@ -200,6 +204,9 @@ def main() -> None:
         # filesystem cache must not let one policy overwrite the other.
         profile_dir += (
             "-maca-1d-single" if args.maca_1d_single else "-maca-1d-single-off"
+        )
+        profile_dir += (
+            "-maca-1d-batch" if args.maca_1d_batch else "-maca-1d-batch-off"
         )
         profile_dir += (
             "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"

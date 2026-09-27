@@ -62,3 +62,45 @@ def test_maca_policy_off_preserves_codegen_defaults(monkeypatch):
     finally:
         reset_maca_1d_single_default(policy_token)
         reset_profile(profile_token)
+
+
+def test_maca_1d_batch_policy_matches_leaf_launch_and_respects_override(monkeypatch):
+    from pathlib import Path
+
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.kernels_common import LeafPlan, _maca_knob
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    from flagfft_codegen.target import (
+        reset_maca_1d_batch_default,
+        set_maca_1d_batch_default,
+    )
+
+    monkeypatch.delenv("FLAGFFT_MACA_BATCH_PACK", raising=False)
+    monkeypatch.delenv("FLAGFFT_MACA_EXCHANGE", raising=False)
+    profile_token = set_profile(_maca_profile())
+    policy_token = set_maca_1d_batch_default(True)
+    try:
+        plan = LeafPlan(16, (16,), 1, 1, 2, (), 0)
+        for kernel, mode in (("leaf", "contiguous"), ("leaf_r2c", "contiguous_r2c"),
+                             ("leaf_c2r", "contiguous_c2r")):
+            name, source = _build_leaf_kernel_source_for_io(plan, io_mode=mode)
+            meta = _metadata(module_path=Path("unused.py"), kernel_name=name,
+                             arg_names=[], plan=plan, kernel_type=kernel,
+                             n1=0, n2=0, dtype=plan.dtype)
+            assert "batch_id = pid * 1" in source
+            assert meta["batch_per_block"] == 1
+
+        assert _maca_knob("EXCHANGE") == "direct_all"
+        monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", "")
+        assert _maca_knob("EXCHANGE") == ""
+        monkeypatch.setenv("FLAGFFT_MACA_BATCH_PACK", "4")
+        name, source = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+        meta = _metadata(module_path=Path("unused.py"), kernel_name=name,
+                         arg_names=[], plan=plan, kernel_type="leaf",
+                         n1=0, n2=0, dtype=plan.dtype)
+        assert "batch_id = pid * 4" in source
+        assert meta["batch_per_block"] == 4
+    finally:
+        reset_maca_1d_batch_default(policy_token)
+        reset_profile(profile_token)

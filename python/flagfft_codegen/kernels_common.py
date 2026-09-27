@@ -30,6 +30,7 @@ from .target import (
     ix_ct_single_tle_default,
     ix_real_single_pack_enabled,
     maca_1d_single_default_enabled,
+    maca_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
 )
 from .maca_tail_policy import resource_default
@@ -310,6 +311,9 @@ def _maca_knob(name: str, default: str = "") -> str:
         return tail_default
     if maca_2d_single_default_enabled() and name == "2D_TRANSPOSE":
         return "packed"
+    if maca_1d_batch_default_enabled():
+        if name == "EXCHANGE":
+            return "direct_all"
     if maca_1d_single_default_enabled() or maca_2d_single_default_enabled():
         defaults = {
             "EXCHANGE": "direct_all",
@@ -417,6 +421,8 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
             return _profile_batch_pack_for(plan)
         if override:
             return _positive_knob("BATCH_PACK", override)
+        if maca_1d_batch_default_enabled() and plan.length == 16:
+            return 1
         # Native 2D only emits these fused real boundary leaves when n0 > 256.
         # Group short rows to avoid tens of thousands of underfilled blocks.
         # Small 2D RC plans use ordinary complex leaves and stay at pack=1;

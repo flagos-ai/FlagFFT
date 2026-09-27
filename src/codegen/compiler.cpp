@@ -211,6 +211,24 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
                          !request.input_strides.empty() && request.input_strides.back() == 1;
   ix_ct_single_tle_policy_ = ix_ct_single_tle_policy(request);
   maca_tail_policy_ = maca_tail_codegen_root(request);
+  maca_1d_batch_policy_ = request.device_type == "maca" && request.device_arch == "102" &&
+                          request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&
+                          request.fft_length == request.requested_n &&
+                          (request.requested_n == 16 || request.requested_n == 1024 ||
+                           request.requested_n == 2048 ||
+                           ((request.requested_n == 16384 || request.requested_n == 524288) &&
+                            request.input_dtype == "complex64")) &&
+                          !request.input_strides.empty() && request.input_strides.back() == 1;
+  if (maca_1d_batch_policy_) {
+    const char *batch_override = std::getenv("FLAGFFT_MACA_1D_BATCH");
+    if (batch_override != nullptr && *batch_override != '\0') {
+      if (std::string(batch_override) == "0") {
+        maca_1d_batch_policy_ = false;
+      } else if (std::string(batch_override) != "1") {
+        throw std::runtime_error("FLAGFFT_MACA_1D_BATCH must be 0 or 1");
+      }
+    }
+  }
   maca_1d_single_policy_ = request.device_type == "maca" && request.raw_dim == 1 && request.batch == 1;
   if (!maca_1d_single_policy_) {
     return;
