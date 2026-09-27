@@ -50,11 +50,18 @@ namespace {
     const bool is_npu_single_fp32_target = request.device_type == "npu" &&
         request.input_dtype == "complex64" && batch == 1 && n >= 1024 && n <= 1048576;
     const bool is_ix_single_fp32_target = batch == 1 && ix_packed_real_policy_enabled(request);
+    const char *maca_batch_setting = std::getenv("FLAGFFT_MACA_1D_BATCH");
+    const bool is_maca_batch_fp32_target =
+        request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 &&
+        n == 524288 && request.input_dtype == "complex64" &&
+        (maca_batch_setting == nullptr || std::string(maca_batch_setting) != "0");
     if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target &&
-        !is_ix_single_fp32_target) {
+        !is_ix_single_fp32_target && !is_maca_batch_fp32_target) {
       return std::nullopt;
     }
-    if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target && (request.input_dtype != "complex128" || n < 65536 ||
+    if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target && !is_maca_batch_fp32_target &&
+        (request.input_dtype != "complex128" || n < 65536 ||
                    (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
     }
@@ -70,6 +77,7 @@ namespace {
     child_request.input_shape = {batch, n / 2};
     child_request.input_strides = {n / 2, 1};
     child_request.input_layout = "contiguous";
+    child_request.packed_real_child = true;
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
@@ -216,7 +224,8 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
                           request.fft_length == request.requested_n &&
                           (request.requested_n == 16 || request.requested_n == 1024 ||
                            request.requested_n == 2048 ||
-                           ((request.requested_n == 16384 || request.requested_n == 524288) &&
+                           ((request.requested_n == 16384 || request.requested_n == 524288 ||
+                             (request.packed_real_child && request.requested_n == 262144)) &&
                             request.input_dtype == "complex64")) &&
                           !request.input_strides.empty() && request.input_strides.back() == 1;
   if (maca_1d_batch_policy_) {

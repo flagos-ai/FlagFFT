@@ -107,6 +107,8 @@ struct FFTRequest {
   // Public real-transform kind, retained while the real request is lowered
   // through complex children. Empty for C2C/Z2Z.
   std::string real_transform_kind;
+  // True only for the dense half-length complex child of a packed real FFT.
+  bool packed_real_child = false;
   int64_t normalized_dim = -1;
   std::string norm = "backward";
   std::string input_dtype;
