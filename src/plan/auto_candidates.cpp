@@ -145,8 +145,11 @@ PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
                            (batch_policy == nullptr || std::string(batch_policy) != "0") &&
                            (split_override == nullptr || std::string(split_override) != "0");
   // Balanced, factorable children avoid the slow mixed-radix column leaves.
-  const int64_t n1 = n == 8191 ? 90 : 91;
-  const int64_t n2 = n == 8191 ? 91 : 180;
+  // Keep the opposite orientation available for a paired MACA comparison.
+  const bool reverse_split = tuned_split && split_override &&
+                             std::string(split_override) == "reverse";
+  const int64_t n1 = n == 8191 ? (reverse_split ? 91 : 90) : (reverse_split ? 180 : 91);
+  const int64_t n2 = n == 8191 ? (reverse_split ? 90 : 91) : (reverse_split ? 91 : 180);
   PlanNodePtr conv_plan = tuned_split
                               ? std::make_shared<FourStepPlanNode>(
                                     n - 1, n1, n2,
