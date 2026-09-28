@@ -13,7 +13,8 @@ class TailPolicy : public ::testing::Test {
     for (const char* name : {"FLAGFFT_MACA_TAIL_POLICY", "FLAGFFT_MACA_TAIL_PLAN",
                              "FLAGFFT_TUNE_DISABLE", "FLAGFFT_PACKED_REAL",
                              "FLAGFFT_MACA_REAL_DFT_REDUCTION", "FLAGFFT_MACA_1D_BATCH",
-                             "FLAGFFT_MACA_BATCH_VEC_IO", "FLAGFFT_MACA_BATCH_REAL_PACK2"}) {
+                             "FLAGFFT_MACA_BATCH_VEC_IO", "FLAGFFT_MACA_BATCH_REAL_PACK2",
+                             "FLAGFFT_MACA_BATCH_C2C_PACK2"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -174,6 +175,10 @@ TEST_F(TailPolicy, BatchResourceModesStayWithinMeasuredRequestsAndKernels) {
                                          "complex64", 64, 256, 64), "batch-vecio");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-vecio", KernelKind::FourStepRow,
                                          "complex64", 64, 64, 128), "batch-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-vecio", KernelKind::FourStepCol,
+                                         "complex128", 128, 128, 128), "batch-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-vecio", KernelKind::FourStepRow,
+                                         "complex128", 512, 512, 512), "batch-vecio");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-vecio", KernelKind::Leaf,
                                          "complex64", 256, 256, 64), "off");
   complex.batch = 1;
@@ -182,6 +187,13 @@ TEST_F(TailPolicy, BatchResourceModesStayWithinMeasuredRequestsAndKernels) {
   complex.origin_rank = 2;
   EXPECT_EQ(flagfft::maca_tail_codegen_root(complex), "off");
   complex.origin_rank = 1;
+  complex.requested_n = complex.fft_length = 262144;
+  complex.input_strides = {262144, 1};
+  complex.real_transform = complex.packed_real_child = true;
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(complex), "batch-vecio");
+  complex.requested_n = complex.fft_length = 16384;
+  complex.input_strides = {16384, 1};
+  complex.real_transform = complex.packed_real_child = false;
   setenv("FLAGFFT_MACA_BATCH_VEC_IO", "0", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(complex), "off");
   unsetenv("FLAGFFT_MACA_BATCH_VEC_IO");
@@ -199,5 +211,16 @@ TEST_F(TailPolicy, BatchResourceModesStayWithinMeasuredRequestsAndKernels) {
   real_child.packed_real_child = true;
   setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(real_child), "off");
+  unsetenv("FLAGFFT_MACA_1D_BATCH");
+
+  auto c2c = request(185640, "complex128");
+  c2c.device_arch = "102";
+  c2c.batch = 64;
+  c2c.input_strides = {185640, 1};
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(c2c), "batch-c2c-pack2");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-c2c-pack2", KernelKind::FourStepRow,
+                                         "complex128", 390, 390, 476), "batch-c2c-pack2");
+  setenv("FLAGFFT_MACA_BATCH_C2C_PACK2", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(c2c), "off");
 }
 }  // namespace

@@ -811,12 +811,15 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
 }
 
 std::string CompiledRawRaderNode::describe() const {
+  std::lock_guard<std::mutex> lock(graph_mutex_);
   std::ostringstream oss;
   oss << "CompiledRawRader(n=" << length << ", conv_length=" << conv_length
       << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->execution_description() : "null")
       << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->execution_description() : "null")
       << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->execution_description() : "null")
-      << ", fft=" << (fft ? fft->describe() : "null") << ")";
+      << ", fft=" << (fft ? fft->describe() : "null")
+      << ", graph=" << (graph_enabled_ ? (graph_ ? "ready" : (graph_failed_ ? "failed" : "pending"))
+                                     : "off") << ")";
   return oss.str();
 }
 

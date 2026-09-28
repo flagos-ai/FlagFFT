@@ -74,17 +74,25 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
     if (!batch_policy || std::string(batch_policy) != "0") {
       const char* vec_policy = std::getenv("FLAGFFT_MACA_BATCH_VEC_IO");
       if ((!vec_policy || std::string(vec_policy) != "0") &&
-          request.input_dtype == "complex64" &&
+          (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
           ((!request.real_transform && !request.packed_real_child &&
-            request.requested_n == 16384) ||
+            (request.requested_n == 16384 || request.requested_n == 524288 ||
+             (request.requested_n == 185640 && request.input_dtype == "complex64"))) ||
            (request.real_transform && request.packed_real_child &&
-            request.requested_n == 8192))) return "batch-vecio";
+            (request.requested_n == 8192 || request.requested_n == 262144)))) {
+        return "batch-vecio";
+      }
       const char* pack_policy = std::getenv("FLAGFFT_MACA_BATCH_REAL_PACK2");
       if ((!pack_policy || std::string(pack_policy) != "0") &&
           request.real_transform && request.packed_real_child &&
           request.input_dtype == "complex128" && request.requested_n == 92820) {
         return "batch-real-pack2";
       }
+      const char* c2c_pack_policy = std::getenv("FLAGFFT_MACA_BATCH_C2C_PACK2");
+      if ((!c2c_pack_policy || std::string(c2c_pack_policy) != "0") &&
+          !request.real_transform && !request.packed_real_child &&
+          request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+          request.requested_n == 185640) return "batch-c2c-pack2";
     }
   }
   // Batch-64 N=23 real transforms already use the fused direct DFT.  Give
@@ -113,10 +121,15 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
       (kind == KernelKind::DirectDftR2C || kind == KernelKind::DirectDftC2R)) return "real-direct";
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&
       (length == n1 || length == n2)) {
-    if (root == "batch-vecio" && dtype == "complex64" &&
-        ((n1 == 256 && n2 == 64) || (n1 == 64 && n2 == 128))) return root;
+    if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&
+        ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 128) ||
+         (n1 == 64 && n2 == 128) ||
+         (n1 == 390 && n2 == 476) || (n1 == 512 && n2 == 1024) ||
+         (n1 == 512 && n2 == 512))) return root;
     if (root == "batch-real-pack2" && dtype == "complex128" &&
         n1 * n2 == 92820) return root;
+    if (root == "batch-c2c-pack2" && dtype == "complex128" &&
+        n1 == 390 && n2 == 476) return root;
   }
   return "off";
 }
