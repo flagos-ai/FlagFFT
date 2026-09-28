@@ -66,6 +66,18 @@ inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
 
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
+  // Batch-64 N=23 real transforms already use the fused direct DFT.  Give
+  // that root the same FP64 tree reduction and distinct JIT identity as the
+  // measured single-transform path, while honoring both batch opt-outs.
+  if (request.device_type == "maca" && request.device_arch == "102" &&
+      request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&
+      request.requested_n == 23 && request.fft_length == 23 && request.real_transform &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128")) {
+    const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+    const char* direct_policy = std::getenv("FLAGFFT_MACA_BATCH_REAL_DIRECT_DFT");
+    if ((!batch_policy || std::string(batch_policy) != "0") &&
+        (!direct_policy || std::string(direct_policy) != "0")) return "real-direct";
+  }
   if (maca_tail_automatic_plan(request) == "ct1024x1024") return "p4w4";
   return "off";
 }
