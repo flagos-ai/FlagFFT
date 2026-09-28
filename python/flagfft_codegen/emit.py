@@ -222,9 +222,11 @@ def _rader_kernel_source(
 ) -> tuple[str, str, list[str]]:
     zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
+    vector_mode = os.environ.get("FLAGFFT_MACA_RADER_VEC_IO",
+                                 "1" if rader_vector_io_default() else "0")
     vector_io = (dtype in {"complex64", "complex128"} and _maca_backend_active() and
-                 os.environ.get("FLAGFFT_MACA_RADER_VEC_IO",
-                                "1" if rader_vector_io_default() else "0") == "1")
+                 vector_mode in {"1", "2"})
+    pointwise_vector_io = vector_io and vector_mode == "2"
     prepare_load = (
         "pair = tl.load(src[:, None] + tl.arange(0, 2)[None, :], "
         "mask=mask[:, None], other=0.0)\n"
@@ -239,6 +241,26 @@ def _rader_kernel_source(
         if vector_io else
         "tl.store(dst, yr, mask=mask)\n"
         "                    tl.store(dst + 1, yi, mask=mask)"
+    )
+    pointwise_load = (
+        "a_pair = tl.load(a[:, None] + tl.arange(0, 2)[None, :], "
+        "mask=mask[:, None], other=0.0)\n"
+        "                    ar, ai = tl.split(a_pair)\n"
+        "                    b_pair = tl.load(b[:, None] + tl.arange(0, 2)[None, :], "
+        "mask=mask[:, None], other=0.0)\n"
+        "                    br, bi = tl.split(b_pair)"
+        if pointwise_vector_io else
+        f"ar = tl.load(a, mask=mask, other={zero})\n"
+        f"                    ai = tl.load(a + 1, mask=mask, other={zero})\n"
+        f"                    br = tl.load(b, mask=mask, other={zero})\n"
+        f"                    bi = tl.load(b + 1, mask=mask, other={zero})"
+    )
+    pointwise_store = (
+        "tl.store(dst[:, None] + tl.arange(0, 2)[None, :], "
+        "tl.join(pr, -pi), mask=mask[:, None])"
+        if pointwise_vector_io else
+        "tl.store(dst, pr, mask=mask)\n"
+        "                    tl.store(dst + 1, -pi, mask=mask)"
     )
     if kind == "rader_prepare":
         return (
@@ -294,15 +316,11 @@ def _rader_kernel_source(
 
                     a = a_ptr + (pid_batch * m + offsets) * 2
                     b = b_ptr + offsets * 2
-                    ar = tl.load(a, mask=mask, other={zero})
-                    ai = tl.load(a + 1, mask=mask, other={zero})
-                    br = tl.load(b, mask=mask, other={zero})
-                    bi = tl.load(b + 1, mask=mask, other={zero})
+                    {pointwise_load}
                     pr, pi = _cmul(ar, ai, br, bi)
 
                     dst = out_ptr + (pid_batch * m + offsets) * 2
-                    tl.store(dst, pr, mask=mask)
-                    tl.store(dst + 1, -pi, mask=mask)
+                    {pointwise_store}
 
                     # A[0] is the sum of the permuted nonzero input.
                     # Reuse it before the inverse convolution overwrites A.
