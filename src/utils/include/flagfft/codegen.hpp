@@ -388,7 +388,8 @@ struct CompiledRawRaderNode final : CompiledRawNode {
                        DeviceAllocation a_buf,
                        DeviceAllocation work_buf,
                        DeviceAllocation b_fft_buf,
-                       DeviceAllocation input_copy);
+                       DeviceAllocation input_copy,
+                       bool enable_graph);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -409,6 +410,12 @@ struct CompiledRawRaderNode final : CompiledRawNode {
   DeviceAllocation input_copy;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  mutable std::unique_ptr<adaptor::CudaGraph> graph_;
+  mutable adaptor::DevicePtr graph_in_ = 0;
+  mutable adaptor::DevicePtr graph_out_ = 0;
+  const bool graph_enabled_;
+  mutable bool graph_failed_ = false;
+  mutable std::mutex graph_mutex_;
 };
 
 struct CompiledRawFourStepGenericNode final : CompiledRawNode {

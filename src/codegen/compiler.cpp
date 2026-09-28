@@ -568,6 +568,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     DeviceAllocation b_fft_buf = adaptor::Memory(static_cast<std::size_t>(conv_length * element_bytes));
     DeviceAllocation input_copy =
         adaptor::Memory(static_cast<std::size_t>(batch * rader->prime * element_bytes));
+    const char* graph_trial = std::getenv("FLAGFFT_MACA_BATCH_RADER_GRAPH");
+    const bool use_rader_graph = graph_trial && std::string(graph_trial) == "1" &&
+                                 request.device_type == "maca" && request.device_arch == "102" &&
+                                 request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 &&
+                                 (rader->prime == 1009 || rader->prime == 8191 ||
+                                  rader->prime == 16381);
     return std::make_shared<CompiledRawRaderNode>(
         rader->prime,
         conv_length,
@@ -580,7 +586,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::move(a_buf),
         std::move(work_buf),
         std::move(b_fft_buf),
-        std::move(input_copy));
+        std::move(input_copy),
+        use_rader_graph);
   }
   if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     return compile_raw_2d_node(two_dim, request, batch);

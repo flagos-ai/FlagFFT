@@ -172,6 +172,8 @@ TEST_F(TailPolicy, BatchResourceModesStayWithinMeasuredRequestsAndKernels) {
                                          "complex64", 256, 256, 64), "batch-vecio");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-vecio", KernelKind::FourStepCol,
                                          "complex64", 64, 256, 64), "batch-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-vecio", KernelKind::FourStepRow,
+                                         "complex64", 64, 64, 128), "batch-vecio");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-vecio", KernelKind::Leaf,
                                          "complex64", 256, 256, 64), "off");
   complex.batch = 1;

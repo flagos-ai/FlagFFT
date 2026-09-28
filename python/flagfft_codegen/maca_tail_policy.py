@@ -42,7 +42,7 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
         return "real-direct"
     if kernel in {"four_step_row", "four_step_col"} and length in {n1, n2}:
         if (_root_mode.get() == "batch-vecio" and dtype == "complex64"
-                and (n1, n2) in {(256, 64), (128, 64)}):
+                and (n1, n2) in {(256, 64), (64, 128)}):
             return "batch-vecio"
         if (_root_mode.get() == "batch-real-pack2" and dtype == "complex128"
                 and n1 * n2 == 92820):

@@ -114,7 +114,7 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&
       (length == n1 || length == n2)) {
     if (root == "batch-vecio" && dtype == "complex64" &&
-        ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 64))) return root;
+        ((n1 == 256 && n2 == 64) || (n1 == 64 && n2 == 128))) return root;
     if (root == "batch-real-pack2" && dtype == "complex128" &&
         n1 * n2 == 92820) return root;
   }
