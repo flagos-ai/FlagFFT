@@ -571,8 +571,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       fused_leaf_tables = build_raw_leaf_tables(fused_leaf, child_request);
     }
     const char* boundary = std::getenv("FLAGFFT_MACA_RADER_BOUNDARY_LEAF");
-    const std::string boundary_mode = boundary ? std::string(boundary)
-                                               : (request.real_transform_kind == "c2r" ? "1" : "0");
+    // The gather-heavy prepare fusion regresses C2C; its finish fusion alone
+    // saves two launches. C2R benefits from both boundaries.
+    std::string boundary_mode = boundary ? std::string(boundary) : "0";
+    if (!boundary && request.real_transform_kind == "c2r") boundary_mode = "1";
+    if (!boundary && request.real_transform_kind.empty()) boundary_mode = "finish";
     if (maca_batch1009_leaf && !fused_leaf_kernel &&
         (boundary_mode == "1" || boundary_mode == "finish")) {
       if (boundary_mode == "1") {
