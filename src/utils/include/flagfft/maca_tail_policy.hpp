@@ -100,6 +100,11 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
           (request.requested_n == 8191 || request.requested_n == 16381)) {
         return "batch-prime-vecio";
       }
+      const char* c2c_tree_policy = std::getenv("FLAGFFT_MACA_BATCH_C2C_TREE");
+      if ((!c2c_tree_policy || std::string(c2c_tree_policy) != "0") &&
+          !request.real_transform && !request.packed_real_child &&
+          request.requested_n == 23 && request.input_dtype == "complex128" &&
+          request.output_dtype == "complex128") return "batch-c2c-tree";
     }
   }
   // Batch-64 N=23 real transforms already use the fused direct DFT.  Give
@@ -126,6 +131,8 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
       (kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol)) return "p4w4";
   if (root == "real-direct" && length >= 2 && length <= 37 &&
       (kind == KernelKind::DirectDftR2C || kind == KernelKind::DirectDftC2R)) return "real-direct";
+  if (root == "batch-c2c-tree" && kind == KernelKind::DirectDft &&
+      dtype == "complex128" && length == 23) return root;
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&
       (length == n1 || length == n2)) {
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&

@@ -21,6 +21,7 @@ from textwrap import dedent
 from typing import Literal
 
 from .kernels_common import _dtype_suffix, _maca_backend_active, lane_block_for
+from .maca_tail_policy import resource_default
 
 
 def _build_direct_dft_kernel_source(
@@ -41,7 +42,8 @@ def _build_direct_dft_kernel_source(
     )
     tree = (
         dtype == "complex128" and n <= 32 and _maca_backend_active()
-        and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION", "kahan") == "tree"
+        and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION",
+                           resource_default("REAL_DFT_REDUCTION") or "kahan") == "tree"
     )
     if tree:
         kernel_name += "_tree"

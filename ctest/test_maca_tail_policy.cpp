@@ -15,7 +15,8 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_REAL_DFT_REDUCTION", "FLAGFFT_MACA_1D_BATCH",
                              "FLAGFFT_MACA_BATCH_VEC_IO", "FLAGFFT_MACA_BATCH_REAL_PACK2",
                              "FLAGFFT_MACA_BATCH_C2C_PACK2",
-                             "FLAGFFT_MACA_BATCH_PRIME_VEC_IO"}) {
+                             "FLAGFFT_MACA_BATCH_PRIME_VEC_IO",
+                             "FLAGFFT_MACA_BATCH_C2C_TREE"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -237,5 +238,15 @@ TEST_F(TailPolicy, BatchResourceModesStayWithinMeasuredRequestsAndKernels) {
                                          "complex64", 90, 90, 91), "off");
   setenv("FLAGFFT_MACA_BATCH_PRIME_VEC_IO", "0", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(prime), "off");
+
+  auto small_prime = request(23, "complex128");
+  small_prime.device_arch = "102";
+  small_prime.batch = 64;
+  small_prime.input_strides = {23, 1};
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(small_prime), "batch-c2c-tree");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-c2c-tree", KernelKind::DirectDft,
+                                         "complex128", 23, 0, 0), "batch-c2c-tree");
+  setenv("FLAGFFT_MACA_BATCH_C2C_TREE", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(small_prime), "off");
 }
 }  // namespace
