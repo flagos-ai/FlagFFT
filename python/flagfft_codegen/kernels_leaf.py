@@ -1767,10 +1767,10 @@ def _emit_stage_block(
                         f"{indent}dc_ptr{j} = out_ptr + current_batch * {prime_n} * 2"
                     )
                     lines.append(
-                        f"{indent}tl.store(dc_ptr{j}, r{j} + tl.load(x0_ptr{j}, mask=lane_mask, other={zero}), mask=dc_mask{j})"
+                        f"{indent}tl.store(dc_ptr{j} + out_idx{j}, r{j} + tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
                     )
                     lines.append(
-                        f"{indent}tl.store(dc_ptr{j} + 1, i{j} + tl.load(x0_ptr{j} + 1, mask=lane_mask, other={zero}), mask=dc_mask{j})"
+                        f"{indent}tl.store(dc_ptr{j} + out_idx{j} + 1, i{j} + tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
                     )
                 else:
                     lines.append(
@@ -1783,10 +1783,10 @@ def _emit_stage_block(
                         f"{indent}x0_ptr{j} = in_ptr + current_batch * {prime_n} * 2"
                     )
                     lines.append(
-                        f"{indent}tl.store(dst_ptr{j}, tl.load(x0_ptr{j}, mask=lane_mask, other={zero}) + r{j} / {n}, mask=lane_mask)"
+                        f"{indent}tl.store(dst_ptr{j}, tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero}) + r{j} / {n}, mask=lane_mask)"
                     )
                     lines.append(
-                        f"{indent}tl.store(dst_ptr{j} + 1, tl.load(x0_ptr{j} + 1, mask=lane_mask, other={zero}) - i{j} / {n}, mask=lane_mask)"
+                        f"{indent}tl.store(dst_ptr{j} + 1, tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}) - i{j} / {n}, mask=lane_mask)"
                     )
             elif io_mode == "bluestein_four_step_finish_col":
                 lines.append(
