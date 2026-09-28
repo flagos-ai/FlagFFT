@@ -644,7 +644,8 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     override = _maca_knob("INNER_PACK", "")
     if (maca_1d_batch_default_enabled() and plan is not None
             and _is_double_dtype(plan.dtype)
-            and "FLAGFFT_MACA_INNER_PACK" not in os.environ):
+            and "FLAGFFT_MACA_INNER_PACK" not in os.environ
+            and resource_default("INNER_PACK") is None):
         # The measured FP64 register exchange uses the normal resource-derived
         # pack, while the P8 default is qualified only for FP32 leaves.
         override = ""

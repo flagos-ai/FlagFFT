@@ -20,7 +20,7 @@ ENV_NAMES = (
 
 
 def set_maca_tail_mode(mode):
-    if mode not in {"off", "p4w4", "real-direct"}:
+    if mode not in {"off", "p4w4", "real-direct", "batch-vecio", "batch-real-pack2"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
 
@@ -40,6 +40,13 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
             and dtype in {"complex64", "complex128"}
             and kernel in {"direct_dft_r2c", "direct_dft_c2r"}):
         return "real-direct"
+    if kernel in {"four_step_row", "four_step_col"} and length in {n1, n2}:
+        if (_root_mode.get() == "batch-vecio" and dtype == "complex64"
+                and (n1, n2) in {(256, 64), (128, 64)}):
+            return "batch-vecio"
+        if (_root_mode.get() == "batch-real-pack2" and dtype == "complex128"
+                and n1 * n2 == 92820):
+            return "batch-real-pack2"
     return "off"
 
 
@@ -53,8 +60,14 @@ def maca_tail_kernel_scope(kernel, length, dtype, n1=0, n2=0):
 
 
 def resource_default(name):
-    if backend_name() == "maca" and _kernel_mode.get() == "p4w4":
+    if backend_name() != "maca":
+        return None
+    if _kernel_mode.get() == "p4w4":
         return {"FP64_REGISTER_PACK": "1", "INNER_PACK": "4", "MAX_WARPS": "4"}.get(name)
+    if _kernel_mode.get() == "batch-vecio":
+        return {"VEC_IO": "1"}.get(name)
+    if _kernel_mode.get() == "batch-real-pack2":
+        return {"INNER_PACK": "2"}.get(name)
     return None
 
 

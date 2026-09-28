@@ -275,7 +275,17 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     const bool prefer_bluestein = (context.device_type != "maca" && context.input_dtype == "complex64" &&
                                    context.output_dtype == "complex64") ||
                                   has_a100_fp64_fused_leaf || has_musa_s5000_fp64_fused_leaf ||
-                                  prefer_musa_batched_bluestein;
+                                  prefer_musa_batched_bluestein ||
+                                  ([&] {
+                                    const char* trial = std::getenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN");
+                                    return trial && std::string(trial) == "1" &&
+                                           context.device_type == "maca" && context.device_arch == "102" &&
+                                           context.raw_dim == 1 && context.origin_rank <= 1 &&
+                                           context.batch == 64 && !context.real_transform &&
+                                           context.input_dtype == "complex64" &&
+                                           context.output_dtype == "complex64" &&
+                                           (n == 1009 || n == 8191 || n == 16381);
+                                  })();
     if (!prefer_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);

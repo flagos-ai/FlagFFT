@@ -392,9 +392,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // elementwise work into its loads/stores. The measured boundary path is
     // the default for MACA 1D single transforms; the named environment
     // variable remains an explicit A/B override.
+    const char* batch_bs_trial = std::getenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN");
+    const bool trial_batch_bs = batch_bs_trial && std::string(batch_bs_trial) == "1" &&
+                                request.device_type == "maca" && request.device_arch == "102" &&
+                                request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 &&
+                                !request.real_transform && request.input_dtype == "complex64" &&
+                                request.output_dtype == "complex64" &&
+                                (bluestein->length == 1009 || bluestein->length == 8191 ||
+                                 bluestein->length == 16381);
     const bool use_maca_boundary_leaf =
-        request.device_type == "maca" && batch == 1 && leaf != nullptr &&
-        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION", maca_1d_single_policy_);
+        request.device_type == "maca" && (batch == 1 || trial_batch_bs) && leaf != nullptr &&
+        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION",
+                             trial_batch_bs || maca_1d_single_policy_);
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf) &&
@@ -413,10 +422,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // one FFT per boundary kernel and execute four kernels in total. Bound
     // each child to the existing 1024-point four-step leaf family.
     const bool use_maca_four_step =
-        request.device_type == "maca" && batch == 1 && four_step != nullptr &&
+        request.device_type == "maca" && (batch == 1 || trial_batch_bs) && four_step != nullptr &&
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
-        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
+        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION",
+                             trial_batch_bs || maca_1d_single_policy_);
     const bool use_four_step = use_default_four_step || use_maca_four_step;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
