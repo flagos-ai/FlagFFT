@@ -793,13 +793,17 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
                                            DeviceAllocation a_buf,
                                            DeviceAllocation work_buf,
                                            DeviceAllocation b_fft_buf,
-                                           DeviceAllocation input_copy)
+                                           DeviceAllocation input_copy,
+                                           std::shared_ptr<JitKernel> fused_leaf_kernel,
+                                           std::vector<DeviceAllocation> fused_leaf_tables)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
       prepare_kernel(std::move(prepare_kernel)),
       pointwise_kernel(std::move(pointwise_kernel)),
       finalize_kernel(std::move(finalize_kernel)),
+      fused_leaf_kernel(std::move(fused_leaf_kernel)),
+      fused_leaf_tables(std::move(fused_leaf_tables)),
       idx(std::move(idx)),
       b_time(std::move(b_time)),
       a_buf(std::move(a_buf)),
@@ -814,6 +818,7 @@ std::string CompiledRawRaderNode::describe() const {
       << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->execution_description() : "null")
       << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->execution_description() : "null")
       << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->execution_description() : "null")
+      << ", fused_leaf_kernel=" << (fused_leaf_kernel ? fused_leaf_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -840,6 +845,13 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
     if (input == output) {
       adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);
       effective_input = input_copy.get();
+    }
+    if (fused_leaf_kernel) {
+      std::vector<JitKernelArg> args = raw_kernel_args(
+          {effective_input, b_fft_buf.get(), idx.get(), output}, fused_leaf_tables, context.batch);
+      fused_leaf_kernel->launch(context.stream, args,
+                                ceil_div(context.batch, fused_leaf_kernel->batch_per_block), 1, 1);
+      return FLAGFFT_SUCCESS;
     }
 
     std::vector<JitKernelArg> prepare_args = {

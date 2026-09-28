@@ -15,13 +15,13 @@ ENV_NAMES = (
     "FLAGFFT_MACA_FP64_REGISTER_PACK", "FLAGFFT_MACA_INNER_PACK",
     "FLAGFFT_MACA_MAX_WARPS", "FLAGFFT_MACA_SPLIT_ORDER",
     "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_LANE_MIN",
-    "FLAGFFT_MACA_MIXED_EXCHANGE",
+    "FLAGFFT_MACA_MIXED_EXCHANGE", "FLAGFFT_MACA_RADER_FULL_LEAF",
 )
 
 
 def set_maca_tail_mode(mode):
     if mode not in {"off", "p4w4", "real-direct", "batch-vecio",
-                    "batch-real-pack2", "batch-c2c-pack2"}:
+                    "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
 
@@ -52,6 +52,10 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
         if (_root_mode.get() == "batch-c2c-pack2" and dtype == "complex128"
                 and (n1, n2) == (390, 476)):
             return "batch-c2c-pack2"
+        if (_root_mode.get() == "batch-prime-vecio"
+                and dtype in {"complex64", "complex128"}
+                and (n1, n2) in {(90, 91), (91, 180)}):
+            return "batch-prime-vecio"
     return "off"
 
 
@@ -69,7 +73,7 @@ def resource_default(name):
         return None
     if _kernel_mode.get() == "p4w4":
         return {"FP64_REGISTER_PACK": "1", "INNER_PACK": "4", "MAX_WARPS": "4"}.get(name)
-    if _kernel_mode.get() == "batch-vecio":
+    if _kernel_mode.get() in {"batch-vecio", "batch-prime-vecio"}:
         return {"VEC_IO": "1"}.get(name)
     if _kernel_mode.get() in {"batch-real-pack2", "batch-c2c-pack2"}:
         return {"INNER_PACK": "2"}.get(name)

@@ -98,6 +98,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         requires=_BASE_LEAF_FLAGS + ("bluestein_n",),
     ),
     KernelSpec(
+        "leaf_rader_full",
+        CT_LEAF,
+        io_mode="rader_full_leaf",
+        requires=_BASE_LEAF_FLAGS + ("rader_n",),
+    ),
+    KernelSpec(
         "leaf_bluestein_prepare",
         BLUESTEIN_LEAF,
         io_mode="bluestein_prepare_leaf",
@@ -229,6 +235,7 @@ CONTIGUOUS_BATCH_PACK_KERNELS = frozenset(
         "leaf_packed_r2c",
         "leaf_c2r",
         "leaf_bluestein",
+        "leaf_rader_full",
         "leaf_bluestein_prepare",
         "leaf_bluestein_finish",
     }

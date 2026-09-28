@@ -209,6 +209,7 @@ LeafIoMode = Literal[
     "bluestein_prepare_leaf",
     "bluestein_finish_leaf",
     "bluestein_full_leaf",
+    "rader_full_leaf",
     "bluestein_four_step_prepare_row",
     "bluestein_four_step_pointwise_row",
     "bluestein_four_step_finish_col",
@@ -237,7 +238,7 @@ def emitted_leaf_factors(
 ) -> tuple[int, ...]:
     if (
         _portable_leaf_backend_active()
-        and io_mode != "bluestein_full_leaf"
+        and io_mode not in {"bluestein_full_leaf", "rader_full_leaf"}
         and plan.length
         in _NATURAL_ORDER_CODELET_RADICES | _THREAD_LOCAL_MIXED_RADICES | {16}
     ):

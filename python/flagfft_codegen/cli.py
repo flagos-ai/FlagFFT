@@ -141,7 +141,7 @@ def main() -> None:
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
     parser.add_argument("--maca-tail-mode",
                         choices=("off", "p4w4", "real-direct", "batch-vecio",
-                                 "batch-real-pack2", "batch-c2c-pack2"),
+                                 "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio"),
                         default="off")
     parser.add_argument(
         "--maca-2d-single",
@@ -333,7 +333,8 @@ def main() -> None:
             smem_size=args.smem_size,
             direction=args.direction,
             dtype=args.dtype,
-            prime_n=args.bluestein_n or 0,
+            prime_n=(args.rader_n if args.kernel == "leaf_rader_full"
+                     else args.bluestein_n) or 0,
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,

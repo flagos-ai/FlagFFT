@@ -93,6 +93,13 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
           !request.real_transform && !request.packed_real_child &&
           request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
           request.requested_n == 185640) return "batch-c2c-pack2";
+      const char* prime_vec_policy = std::getenv("FLAGFFT_MACA_BATCH_PRIME_VEC_IO");
+      if ((!prime_vec_policy || std::string(prime_vec_policy) != "0") &&
+          !request.packed_real_child &&
+          (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+          (request.requested_n == 8191 || request.requested_n == 16381)) {
+        return "batch-prime-vecio";
+      }
     }
   }
   // Batch-64 N=23 real transforms already use the fused direct DFT.  Give
@@ -130,6 +137,9 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
         n1 * n2 == 92820) return root;
     if (root == "batch-c2c-pack2" && dtype == "complex128" &&
         n1 == 390 && n2 == 476) return root;
+    if (root == "batch-prime-vecio" &&
+        (dtype == "complex64" || dtype == "complex128") &&
+        ((n1 == 90 && n2 == 91) || (n1 == 91 && n2 == 180))) return root;
   }
   return "off";
 }
@@ -142,7 +152,7 @@ inline std::string maca_tail_codegen_identity(const std::string& mode) {
                            "FLAGFFT_MACA_FP64_REGISTER_PACK", "FLAGFFT_MACA_INNER_PACK",
                            "FLAGFFT_MACA_MAX_WARPS", "FLAGFFT_MACA_SPLIT_ORDER",
                            "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_LANE_MIN",
-                           "FLAGFFT_MACA_MIXED_EXCHANGE"}) {
+                           "FLAGFFT_MACA_MIXED_EXCHANGE", "FLAGFFT_MACA_RADER_FULL_LEAF"}) {
     const char* value = std::getenv(name);
     identity += std::string(";") + name + "=";
     identity += value ? std::to_string(std::string(value).size()) + ":" + value : "unset";

@@ -14,7 +14,8 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_TUNE_DISABLE", "FLAGFFT_PACKED_REAL",
                              "FLAGFFT_MACA_REAL_DFT_REDUCTION", "FLAGFFT_MACA_1D_BATCH",
                              "FLAGFFT_MACA_BATCH_VEC_IO", "FLAGFFT_MACA_BATCH_REAL_PACK2",
-                             "FLAGFFT_MACA_BATCH_C2C_PACK2"}) {
+                             "FLAGFFT_MACA_BATCH_C2C_PACK2",
+                             "FLAGFFT_MACA_BATCH_PRIME_VEC_IO"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -222,5 +223,19 @@ TEST_F(TailPolicy, BatchResourceModesStayWithinMeasuredRequestsAndKernels) {
                                          "complex128", 390, 390, 476), "batch-c2c-pack2");
   setenv("FLAGFFT_MACA_BATCH_C2C_PACK2", "0", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(c2c), "off");
+
+  auto prime = request(8191, "complex64");
+  prime.device_arch = "102";
+  prime.batch = 64;
+  prime.input_strides = {8191, 1};
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(prime), "batch-prime-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-prime-vecio", KernelKind::FourStepRow,
+                                         "complex64", 90, 90, 91), "batch-prime-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-prime-vecio", KernelKind::FourStepCol,
+                                         "complex128", 180, 91, 180), "batch-prime-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-prime-vecio", KernelKind::Leaf,
+                                         "complex64", 90, 90, 91), "off");
+  setenv("FLAGFFT_MACA_BATCH_PRIME_VEC_IO", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(prime), "off");
 }
 }  // namespace

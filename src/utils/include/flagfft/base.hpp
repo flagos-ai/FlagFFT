@@ -131,6 +131,7 @@ enum class KernelKind {
   LeafPackedR2C,
   LeafC2R,
   LeafBluestein,
+  LeafRaderFull,
   LeafBluesteinPrepare,
   LeafBluesteinFinish,
   BluesteinFourStepPrepareRow,
