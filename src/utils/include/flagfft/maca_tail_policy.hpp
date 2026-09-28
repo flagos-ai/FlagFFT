@@ -133,6 +133,9 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
       (kind == KernelKind::DirectDftR2C || kind == KernelKind::DirectDftC2R)) return "real-direct";
   if (root == "batch-c2c-tree" && kind == KernelKind::DirectDft &&
       dtype == "complex128" && length == 23) return root;
+  if (root == "batch-prime-vecio" &&
+      (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderFinalize) &&
+      (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&
       (length == n1 || length == n2)) {
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&

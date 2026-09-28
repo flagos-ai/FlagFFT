@@ -234,6 +234,12 @@ TEST_F(TailPolicy, BatchResourceModesStayWithinMeasuredRequestsAndKernels) {
                                          "complex64", 90, 90, 91), "batch-prime-vecio");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-prime-vecio", KernelKind::FourStepCol,
                                          "complex128", 180, 91, 180), "batch-prime-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-prime-vecio", KernelKind::RaderPrepare,
+                                         "complex64", 0, 0, 0), "batch-prime-rader-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-prime-vecio", KernelKind::RaderFinalize,
+                                         "complex128", 0, 0, 0), "batch-prime-rader-vecio");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-prime-vecio", KernelKind::RaderPointwise,
+                                         "complex64", 0, 0, 0), "off");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode("batch-prime-vecio", KernelKind::Leaf,
                                          "complex64", 90, 90, 91), "off");
   setenv("FLAGFFT_MACA_BATCH_PRIME_VEC_IO", "0", 1);

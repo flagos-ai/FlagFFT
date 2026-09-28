@@ -23,7 +23,7 @@ ENV_NAMES = (
 def set_maca_tail_mode(mode):
     if mode not in {"off", "p4w4", "real-direct", "batch-vecio",
                     "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio",
-                    "batch-c2c-tree"}:
+                    "batch-c2c-tree", "batch-prime-rader-vecio"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
 
@@ -89,6 +89,10 @@ def resource_default(name):
 
 def real_tree_default(n):
     return backend_name() == "maca" and n == 23 and _kernel_mode.get() == "real-direct"
+
+
+def rader_vector_io_default():
+    return backend_name() == "maca" and _root_mode.get() == "batch-prime-rader-vecio"
 
 
 def variant_suffix(*, root=False):

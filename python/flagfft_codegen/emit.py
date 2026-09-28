@@ -25,7 +25,7 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 from functools import wraps
-from .maca_tail_policy import maca_tail_kernel_scope, variant_suffix
+from .maca_tail_policy import maca_tail_kernel_scope, rader_vector_io_default, variant_suffix
 from .artifacts import write_text_atomic
 
 from .kernels_common import (
@@ -223,7 +223,8 @@ def _rader_kernel_source(
     zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
     vector_io = (dtype in {"complex64", "complex128"} and _maca_backend_active() and
-                 os.environ.get("FLAGFFT_MACA_RADER_VEC_IO") == "1")
+                 os.environ.get("FLAGFFT_MACA_RADER_VEC_IO",
+                                "1" if rader_vector_io_default() else "0") == "1")
     prepare_load = (
         "pair = tl.load(src[:, None] + tl.arange(0, 2)[None, :], "
         "mask=mask[:, None], other=0.0)\n"

@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
-from flagfft_codegen.emit import emit_jit_kernel
+from flagfft_codegen.emit import _rader_kernel_source, emit_jit_kernel
 from flagfft_codegen.maca_tail_policy import (
     ENV_NAMES, eligible_kernel_mode, maca_tail_kernel_scope, resource_default,
     reset_maca_tail_mode, set_maca_tail_mode, variant_suffix,
@@ -143,6 +143,23 @@ def test_cache_identity_and_backend_scope(monkeypatch):
     assert eligible_kernel_mode("four_step_col", 1024, "complex128", 1024, 1024) == "off"
     with pytest.raises(ValueError):
         set_maca_tail_mode("all")
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("kernel", ["rader_prepare", "rader_finalize"])
+def test_prime_rader_vector_io_policy_and_override(monkeypatch, dtype, kernel):
+    def source():
+        return _rader_kernel_source(kernel, 8191, 8190, dtype)[1]
+
+    baseline = source()
+    assert "tl.arange(0, 2)[None, :]" not in baseline
+    set_maca_tail_mode("batch-prime-rader-vecio")
+    candidate = source()
+    assert "tl.arange(0, 2)[None, :]" in candidate
+    monkeypatch.setenv("FLAGFFT_MACA_RADER_VEC_IO", "0")
+    assert source() == baseline
+    monkeypatch.setenv("FLAGFFT_MACA_RADER_VEC_IO", "1")
+    assert source() == candidate
 
 
 def test_cli_same_process_switches_filesystem_and_module_identity(tmp_path, monkeypatch, capsys):
