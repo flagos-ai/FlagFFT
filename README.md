@@ -60,7 +60,7 @@ A CUDA development environment with the default dependencies is available:
 
 ```bash
 docker build -t flagfft-dev -f docker/Dockerfile .
-docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
+docker run --gpus all -v $(pwd):/workspace/FlagFFT -it flagfft-dev
 # Inside the container, run steps 3-5 from above.
 ```
 
