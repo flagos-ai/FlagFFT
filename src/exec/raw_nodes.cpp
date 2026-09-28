@@ -793,8 +793,7 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
                                            DeviceAllocation a_buf,
                                            DeviceAllocation work_buf,
                                            DeviceAllocation b_fft_buf,
-                                           DeviceAllocation input_copy,
-                                           bool enable_graph)
+                                           DeviceAllocation input_copy)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
@@ -806,20 +805,16 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
       a_buf(std::move(a_buf)),
       work_buf(std::move(work_buf)),
       b_fft_buf(std::move(b_fft_buf)),
-      input_copy(std::move(input_copy)),
-      graph_enabled_(enable_graph) {
+      input_copy(std::move(input_copy)) {
 }
 
 std::string CompiledRawRaderNode::describe() const {
-  std::lock_guard<std::mutex> lock(graph_mutex_);
   std::ostringstream oss;
   oss << "CompiledRawRader(n=" << length << ", conv_length=" << conv_length
       << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->execution_description() : "null")
       << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->execution_description() : "null")
       << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->execution_description() : "null")
-      << ", fft=" << (fft ? fft->describe() : "null")
-      << ", graph=" << (graph_enabled_ ? (graph_ ? "ready" : (graph_failed_ ? "failed" : "pending"))
-                                     : "off") << ")";
+      << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
 
@@ -841,72 +836,55 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
                                             const RawExecutionContext &context) const {
   try {
     ensure_b_fft(context);
-    std::unique_lock<std::mutex> graph_lock(graph_mutex_, std::defer_lock);
-    if (graph_enabled_) {
-      graph_lock.lock();
-      if (graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
-        graph_->launch(context.stream);
-        return FLAGFFT_SUCCESS;
-      }
+    adaptor::DevicePtr effective_input = input;
+    if (input == output) {
+      adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);
+      effective_input = input_copy.get();
     }
 
-    auto run_sequence = [&]() -> flagfftResult {
-      adaptor::DevicePtr effective_input = input;
-      if (input == output) {
-        adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);
-        effective_input = input_copy.get();
-      }
-
-      std::vector<JitKernelArg> prepare_args = {
-          JitKernelArg::device(effective_input), JitKernelArg::device(idx.get()),
-          JitKernelArg::device(a_buf.get()), JitKernelArg::i64(length),
-          JitKernelArg::i64(conv_length), JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-      };
-      prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), context.batch, 1);
-
-      RawExecutionContext child_context {context.request, context.stream, context.batch};
-      flagfftResult result = fft->execute(a_buf.get(), work_buf.get(), child_context);
-      if (result != FLAGFFT_SUCCESS) return result;
-
-      std::vector<JitKernelArg> pointwise_args = {
-          JitKernelArg::device(work_buf.get()), JitKernelArg::device(b_fft_buf.get()),
-          JitKernelArg::device(a_buf.get()), JitKernelArg::device(effective_input),
-          JitKernelArg::device(output), JitKernelArg::i64(length),
-          JitKernelArg::i64(conv_length), JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-      };
-      pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 256), context.batch, 1);
-
-      result = fft->execute(a_buf.get(), work_buf.get(), child_context);
-      if (result != FLAGFFT_SUCCESS) return result;
-
-      std::vector<JitKernelArg> finalize_args = {
-          JitKernelArg::device(effective_input), JitKernelArg::device(work_buf.get()),
-          JitKernelArg::device(idx.get()), JitKernelArg::device(output),
-          JitKernelArg::i64(length), JitKernelArg::i64(conv_length),
-          JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-      };
-      finalize_kernel->launch(context.stream, finalize_args, ceil_div(conv_length, 256), context.batch, 1);
-      return FLAGFFT_SUCCESS;
+    std::vector<JitKernelArg> prepare_args = {
+        JitKernelArg::device(effective_input),
+        JitKernelArg::device(idx.get()),
+        JitKernelArg::device(a_buf.get()),
+        JitKernelArg::i64(length),
+        JitKernelArg::i64(conv_length),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
+    prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), context.batch, 1);
 
-    flagfftResult result = run_sequence();
-    if (result != FLAGFFT_SUCCESS) return result;
-    if (graph_enabled_ && graph_ == nullptr && !graph_failed_) {
-      try {
-        auto graph = std::make_unique<adaptor::CudaGraph>();
-        graph->begin_capture(context.stream);
-        if (run_sequence() != FLAGFFT_SUCCESS) {
-          throw std::runtime_error("Rader graph capture sequence failed");
-        }
-        graph->end_capture(context.stream);
-        graph->launch(context.stream);
-        graph_ = std::move(graph);
-        graph_in_ = input;
-        graph_out_ = output;
-      } catch (const std::exception &) {
-        graph_failed_ = true;
-      }
+    RawExecutionContext child_context {context.request, context.stream, context.batch};
+    flagfftResult result = fft->execute(a_buf.get(), work_buf.get(), child_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
     }
+
+    std::vector<JitKernelArg> pointwise_args = {
+        JitKernelArg::device(work_buf.get()),
+        JitKernelArg::device(b_fft_buf.get()),
+        JitKernelArg::device(a_buf.get()),
+        JitKernelArg::device(effective_input),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(length),
+        JitKernelArg::i64(conv_length),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 256), context.batch, 1);
+
+    result = fft->execute(a_buf.get(), work_buf.get(), child_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+
+    std::vector<JitKernelArg> finalize_args = {
+        JitKernelArg::device(effective_input),
+        JitKernelArg::device(work_buf.get()),
+        JitKernelArg::device(idx.get()),
+        JitKernelArg::device(output),
+        JitKernelArg::i64(length),
+        JitKernelArg::i64(conv_length),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+    };
+    finalize_kernel->launch(context.stream, finalize_args, ceil_div(conv_length, 256), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] Rader execute failed: %s\n", e.what());
