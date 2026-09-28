@@ -133,7 +133,25 @@ PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
 PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
   int64_t root = find_primitive_root(n);
   std::vector<int64_t> idx = build_rader_index_table(n, root);
-  PlanNodePtr conv_plan = build_auto_node(n - 1, false);
+  const auto &context = request_context();
+  const char *batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const char *split_override = std::getenv("FLAGFFT_MACA_BATCH_RADER_SPLIT");
+  const bool tuned_split = context.device_type == "maca" && context.device_arch == "102" &&
+                           context.origin_rank <= 1 && context.batch == 64 &&
+                           context.requested_n == n &&
+                           (context.input_dtype == "complex64" ||
+                            context.input_dtype == "complex128") &&
+                           (n == 8191 || n == 16381) &&
+                           (batch_policy == nullptr || std::string(batch_policy) != "0") &&
+                           (split_override == nullptr || std::string(split_override) != "0");
+  // Balanced, factorable children avoid the slow mixed-radix column leaves.
+  const int64_t n1 = n == 8191 ? 90 : 91;
+  const int64_t n2 = n == 8191 ? 91 : 180;
+  PlanNodePtr conv_plan = tuned_split
+                              ? std::make_shared<FourStepPlanNode>(
+                                    n - 1, n1, n2,
+                                    build_auto_node(n1, false), build_auto_node(n2, false))
+                              : build_auto_node(n - 1, false);
   return std::make_shared<RaderPlanNode>(n, root, std::move(idx), std::move(conv_plan));
 }
 

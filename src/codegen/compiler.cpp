@@ -161,15 +161,22 @@ namespace {
   bool maca_real_direct_dft_enabled(const PlanNodePtr &node,
                                     const FFTRequest &request,
                                     int64_t batch) {
-    // This is an independent, default-off experiment. In particular it must
-    // not change multidimensional subplans, packed-real children or C2C.
+    // Keep real DirectDFT at the public rank-1 boundary. Batch 64 at N=23
+    // avoids two conversion launches, with a separate opt-out for this path.
     auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node);
+    const bool single_target = request.batch == 1 && batch == 1 &&
+                               maca_flag_or_default("FLAGFFT_MACA_REAL_DIRECT_DFT",
+                                                    maca_tail_real_direct_dft(request));
+    const char *batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+    const bool batch_target = request.device_arch == "102" && request.origin_rank <= 1 &&
+                              request.batch == 64 && batch == 64 && request.requested_n == 23 &&
+                              (batch_policy == nullptr || std::string(batch_policy) != "0") &&
+                              maca_flag_or_default("FLAGFFT_MACA_BATCH_REAL_DIRECT_DFT", true);
     return request.device_type == "maca" && request.raw_dim == 1 &&
-           request.batch == 1 && batch == 1 && direct != nullptr &&
+           (single_target || batch_target) && direct != nullptr &&
            direct->length == request.requested_n && direct->length > 0 &&
            direct->length <= kDirectDftMaxN &&
-           (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
-           maca_flag_or_default("FLAGFFT_MACA_REAL_DIRECT_DFT", maca_tail_real_direct_dft(request));
+           (request.input_dtype == "complex64" || request.input_dtype == "complex128");
   }
 
   // Row/column requests replace batch with the number of axis transforms.
@@ -837,7 +844,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_direct_dft(
   const int64_t input_bytes = inverse ? (n / 2 + 1) * complex_bytes : n * (complex_bytes / 2);
   return std::make_shared<CompiledRawDirectDftNode>(
       n, compile_kernel(key), build_raw_direct_dft_tables(n, real_request),
-      adaptor::Memory(static_cast<std::size_t>(input_bytes)));
+      adaptor::Memory(static_cast<std::size_t>(request.batch * input_bytes)));
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPlanNode &leaf,
