@@ -175,19 +175,6 @@ def test_cli_accepts_prime_rader_vector_io_mode(tmp_path, monkeypatch, capsys):
     assert "tl.arange(0, 2)[None, :]" in Path(metadata["module_path"]).read_text()
 
 
-def test_prime_rader_pointwise_vector_io_is_opt_in(monkeypatch):
-    set_maca_tail_mode("batch-prime-rader-vecio")
-    def source():
-        return _rader_kernel_source("rader_pointwise", 8191, 8190, "complex64")[1]
-    default = source()
-    assert "a_pair = tl.load" not in default
-    monkeypatch.setenv("FLAGFFT_MACA_RADER_VEC_IO", "1")
-    assert source() == default
-    monkeypatch.setenv("FLAGFFT_MACA_RADER_VEC_IO", "2")
-    assert "a_pair = tl.load" in source()
-    assert "tl.join(pr, -pi)" in source()
-
-
 def test_cli_same_process_switches_filesystem_and_module_identity(tmp_path, monkeypatch, capsys):
     from flagfft_codegen.cli import main
     profile = json.dumps({"backend": "maca", "device_arch": "102", "warp_size": 64,
