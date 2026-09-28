@@ -16,6 +16,8 @@
 
 #include "rader_utils.hpp"
 
+#include <cstdlib>
+
 namespace flagfft {
 namespace {
 
@@ -108,7 +110,23 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
 
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
-  PlanNodePtr fft_plan = build_auto_node(conv_length, false);
+  const auto &context = request_context();
+  const char *balanced_override = std::getenv("FLAGFFT_MACA_BATCH_PRIME_BALANCED");
+  const char *batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const bool balanced_maca_batch = context.device_type == "maca" && context.device_arch == "102" &&
+                                    context.origin_rank <= 1 && context.batch == 64 &&
+                                    context.input_dtype == "complex128" && n == 524287 &&
+                                    conv_length == 1048576 &&
+                                    (batch_policy == nullptr || std::string(batch_policy) != "0") &&
+                                    (balanced_override == nullptr || std::string(balanced_override) != "0");
+  // The 1024x1024 FP64 convolution has a measured 4x advantage over the
+  // automatic 512x2048 split at batch 64. Keep the decision at the prime root
+  // so unrelated 1M FFTs retain their existing plan.
+  PlanNodePtr fft_plan = balanced_maca_batch
+                             ? std::make_shared<FourStepPlanNode>(
+                                   conv_length, 1024, 1024,
+                                   build_auto_node(1024, false), build_auto_node(1024, false))
+                             : build_auto_node(conv_length, false);
   return std::make_shared<BluesteinPlanNode>(n, conv_length, std::move(fft_plan));
 }
 

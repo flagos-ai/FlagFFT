@@ -54,8 +54,8 @@ namespace {
     const bool is_maca_batch_real_target =
         request.device_type == "maca" && request.device_arch == "102" &&
         request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 &&
-        n == 524288 && (request.input_dtype == "complex64" ||
-                        request.input_dtype == "complex128") &&
+        (n == 16384 || n == 185640 || n == 340200 || n == 524288 || n == 663000) &&
+        (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
         (maca_batch_setting == nullptr || std::string(maca_batch_setting) != "0");
     if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target &&
         !is_ix_single_fp32_target && !is_maca_batch_real_target) {
@@ -131,7 +131,7 @@ namespace {
     // the general FP64 leaf bound, provided it replaces such a large leaf.
     const bool c2r_large_leaf_relief =
         original_has_large_leaf && child_is_leaf_pair && four_step->n1 <= 1536 && four_step->n2 <= 1536;
-    if (!force && !bounded_leaf_pair && !c2r_large_leaf_relief) {
+    if (!force && !is_maca_batch_real_target && !bounded_leaf_pair && !c2r_large_leaf_relief) {
       return std::nullopt;
     }
     return PackedRealChild {std::move(child_request), std::move(child_plan)};
@@ -228,8 +228,9 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
                            ((request.requested_n == 16384 || request.requested_n == 524288 ||
                              (request.packed_real_child && request.requested_n == 262144)) &&
                             request.input_dtype == "complex64") ||
-                           (request.requested_n == 524287 && request.real_transform_kind.empty() &&
-                            request.input_dtype == "complex64") ||
+                           (request.requested_n == 524287 &&
+                            (request.input_dtype == "complex64" ||
+                             request.input_dtype == "complex128")) ||
                            ((request.requested_n == 524288 ||
                              (request.packed_real_child && request.requested_n == 262144)) &&
                             request.input_dtype == "complex128")) &&

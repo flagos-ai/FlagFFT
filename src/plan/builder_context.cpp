@@ -16,6 +16,8 @@
 #include "flagfft/core.hpp"
 #include "maca_tail_plans.hpp"
 
+#include <cstdlib>
+
 namespace flagfft {
 
 bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
@@ -77,6 +79,19 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                         [&](int64_t length, bool heuristic) {
                                           return build_auto_node(length, heuristic);
                                         });
+  }
+  const char *maca_batch_setting = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const bool maca_batch_c2c = request.device_type == "maca" && request.device_arch == "102" &&
+                              request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&
+                              n == request.requested_n && !request.real_transform &&
+                              request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+                              (maca_batch_setting == nullptr || std::string(maca_batch_setting) != "0");
+  if (maca_batch_c2c && (n == 16384 || n == 663000)) {
+    // The measured batch splits distribute the C550 column stage more evenly.
+    const int64_t n1 = n == 16384 ? 256 : 884;
+    const int64_t n2 = n / n1;
+    return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                              build_auto_node(n1, false), build_auto_node(n2, false));
   }
   return build_auto_node(n, true);
 }
