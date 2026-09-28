@@ -114,6 +114,7 @@ def measure(case, build, root, variant, overrides, args, env_base):
         return record
 
     times = []
+    reference_times = []
     plan = ""
     for repeat in range(args.repeats):
         proc = subprocess.run(
@@ -130,10 +131,14 @@ def measure(case, build, root, variant, overrides, args, env_base):
         result = json.loads(proc.stdout)["cases"][0]
         times.append(result["timing"]["flagfft_median_ms"])
         plan = result.get("plan_description", plan) or plan
-        record["platform_ms"] = result["timing"]["ref_median_ms"]
+        reference_times.append(result["timing"]["ref_median_ms"])
+    flagfft_ms = float(np.median(times))
+    platform_ms = float(np.median(reference_times))
     record.update(
         status="passed",
-        flagfft_ms=float(np.median(times)),
+        flagfft_ms=flagfft_ms,
+        platform_ms=platform_ms,
+        speedup_vs_reference=platform_ms / flagfft_ms,
         spread=float(max(times) - min(times)),
         plan=plan,
     )
@@ -191,7 +196,8 @@ def main():
     )
 
     records = []
-    fields = ["case", "variant", "status", "correct", "flagfft_ms", "platform_ms", "spread", "plan", "reason"]
+    fields = ["case", "variant", "status", "correct", "flagfft_ms", "platform_ms",
+              "speedup_vs_reference", "spread", "plan", "reason"]
     with (root / "incremental.csv").open("w", newline="") as out:
         writer = csv.DictWriter(out, fieldnames=fields)
         writer.writeheader()
@@ -224,16 +230,25 @@ def main():
             if len(trials) == args.repeats and all(r["status"] == "passed" for r in trials):
                 per_variant[name] = {
                     "median_ms": float(np.median([r["flagfft_ms"] for r in trials])),
-                    "platform_ms": trials[0]["platform_ms"],
+                    "platform_ms": float(np.median([r["platform_ms"] for r in trials])),
                     "plan": trials[0]["plan"],
                 }
         baseline = per_variant.get(variants[0][0], {}).get("median_ms")
+        baseline_relative = None
+        if variants[0][0] in per_variant:
+            data = per_variant[variants[0][0]]
+            baseline_relative = data["platform_ms"] / data["median_ms"]
         summary[case] = {
             "variants": per_variant,
             "speedup_vs_baseline": {
                 name: baseline / data["median_ms"]
                 for name, data in per_variant.items()
                 if baseline and name != variants[0][0]
+            },
+            "reference_normalized_speedup_vs_baseline": {
+                name: (data["platform_ms"] / data["median_ms"]) / baseline_relative
+                for name, data in per_variant.items()
+                if baseline_relative and name != variants[0][0]
             },
         }
     acceptance.write_json(root / "summary.json", summary)
