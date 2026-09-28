@@ -280,7 +280,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
                                     const char* trial = std::getenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN");
                                     return trial && std::string(trial) == "1" &&
                                            context.device_type == "maca" && context.device_arch == "102" &&
-                                           context.raw_dim == 1 && context.origin_rank <= 1 &&
+                                           context.origin_rank <= 1 &&
                                            context.batch == 64 &&
                                            context.input_dtype == "complex64" &&
                                            context.output_dtype == "complex64" &&
