@@ -57,13 +57,21 @@ namespace {
         (n == 16384 || n == 185640 || n == 340200 || n == 524288 || n == 663000) &&
         (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
         (maca_batch_setting == nullptr || std::string(maca_batch_setting) != "0");
+    // On C550, the compact-input four-step C2R pass still runs a full-length
+    // complex FFT. The measured half-length route wins for these single
+    // transforms in both precisions; keep short and batched paths unchanged.
+    const bool is_maca_single_c2r_target =
+        request.device_type == "maca" && request.raw_dim == 1 && batch == 1 && inverse &&
+        std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
+        (n == 185640 || n == 340200 || n == 524288 || n == 663000);
     if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target &&
-        !is_ix_single_fp32_target && !is_maca_batch_real_target) {
+        !is_ix_single_fp32_target && !is_maca_batch_real_target && !is_maca_single_c2r_target) {
       return std::nullopt;
     }
-    if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target && !is_maca_batch_real_target &&
+    if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target &&
+        !is_maca_batch_real_target && !is_maca_single_c2r_target &&
         (request.input_dtype != "complex128" || n < 65536 ||
-                   (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
+         (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
     }
 
@@ -112,6 +120,17 @@ namespace {
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
     if (!force && is_ix_single_fp32_target) {
       if (!child_is_leaf_pair) return std::nullopt;
+      return PackedRealChild {std::move(child_request), std::move(child_plan)};
+    }
+    if (!force && is_maca_single_c2r_target) {
+      // A tuned child may choose a different factor pair. Use the route only
+      // for the exact half-length decompositions measured on C550.
+      const bool measured_child = child_is_leaf_pair &&
+          ((n == 185640 && four_step->n1 == 260 && four_step->n2 == 357) ||
+           (n == 340200 && four_step->n1 == 243 && four_step->n2 == 700) ||
+           (n == 524288 && four_step->n1 == 512 && four_step->n2 == 512) ||
+           (n == 663000 && four_step->n1 == 300 && four_step->n2 == 1105));
+      if (!measured_child) return std::nullopt;
       return PackedRealChild {std::move(child_request), std::move(child_plan)};
     }
     // A half-length transform wins only while both generated leaf kernels stay

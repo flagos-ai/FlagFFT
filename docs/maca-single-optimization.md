@@ -189,3 +189,38 @@ global 访问仍为 scalar f32，故不能把总收益归因于宽访存或仅�
 `20260921_154730_maca_single_pack4_warm`。统一 runner 的方向筛选回归
 `tests/python/test_run_tests.py` 为 273 passed；正式 MACA 验收脚本默认改为
 2000/100，诊断用的低预热对照仍保留。
+
+## 2026-09-27：Four-step single C2R 半长度路径
+
+原路径把 compact 频谱直接送入 Hermitian row pass，再执行全长度的复数 four-step
+逆变换。例如 `N=524288` 的 FP64 路径为 `512×1024`，两个 kernel；半长度
+packed-real 路径先预处理频谱，再执行 `512×512` 复数逆变换，共三个 kernel。
+少做一半复数 FFT 工作是本次收益的主要解释；这是从执行 plan 和端到端 A/B
+推断的，尚未做独立的 row/column kernel 计时归因。
+
+同一 C550、同一旧二进制 `46338c9` 上逐 case 交替比较默认路径与
+`FLAGFFT_PACKED_REAL=1`，batch=1，40 次预热、80 次计时，FlagFFT 中位数如下。
+原始样本见 `results/20260927_210953_maca_fourstep_c2r_single_screen/`。
+
+| N | FP32 原路径 → packed / μs | FP64 原路径 → packed / μs |
+|---:|---:|---:|
+| 185640 | 58.4 → 53.0 | 153.9 → 130.8 |
+| 340200 | 83.7 → 74.2 | 179.7 → 118.3 |
+| 524288 | 71.7 → 53.5 | 158.7 → 125.4 |
+| 663000 | 191.5 → 134.9 | 424.2 → 282.6 |
+
+八个 case 的 FlagFFT 耗时比几何平均为 **1.297×**。`N=16384` 的 FP32
+持平、FP64 略慢；奇数尺寸 `N=46189` 不适用半长度实数分解。
+提交 `73e6e52` 只在 MACA rank=1、batch=1、C2R、上述四个尺寸，且
+半长度 child 恰为实测的 two-leaf four-step 分解时默认选用 packed-real。
+`FLAGFFT_PACKED_REAL=0` 可关闭此路径。
+
+提交版的完整 `1d_fourstep_single_c2r` 验收见
+`results/20260927_213025_maca_fourstep_single_c2r_validation/`：
+12/12 NumPy 精度、12/12 mcFFT 平台精度、12/12 性能通过，
+算子加速比几何平均 **0.9543×**，9/12 case 达到 0.8×。
+该轮为 200 次预热、100 次计时；其加速比与上表的同二进制 A/B 耗时比
+口径不同。额外的 in-place C API 检查覆盖 FP32 `N=185640` 和 FP64
+`N=663000`，两者误差、缓冲区哨兵均通过，记录在筛选目录的
+`inplace_result.jsonl`。当前低于 0.8× 的是 `N=524288` FP64 和
+`N=663000` 的两种精度。
