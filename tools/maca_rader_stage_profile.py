@@ -27,7 +27,9 @@ def main():
     import torch
     from flagfft_codegen.emit import _rader_kernel_source
     from flagfft_codegen.metadata import _module_source
+    from flagfft_codegen.target import set_codegen_target
 
+    set_codegen_target("maca:80:64")
     torch.cuda.set_device(0)
     n, m = args.shape, args.shape - 1
     grid = (math.ceil(m / 256), args.batch)

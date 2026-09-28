@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -221,6 +222,23 @@ def _rader_kernel_source(
 ) -> tuple[str, str, list[str]]:
     zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
+    vector_io = (dtype == "complex64" and _maca_backend_active() and
+                 os.environ.get("FLAGFFT_MACA_RADER_VEC_IO") == "1")
+    prepare_load = (
+        "pair = tl.load(src[:, None] + tl.arange(0, 2)[None, :], "
+        "mask=mask[:, None], other=0.0)\n"
+        "                    xr, xi = tl.split(pair)"
+        if vector_io else
+        f"xr = tl.load(src, mask=mask, other={zero})\n"
+        f"                    xi = tl.load(src + 1, mask=mask, other={zero})"
+    )
+    finalize_store = (
+        "tl.store(dst[:, None] + tl.arange(0, 2)[None, :], "
+        "tl.join(yr, yi), mask=mask[:, None])"
+        if vector_io else
+        "tl.store(dst, yr, mask=mask)\n"
+        "                    tl.store(dst + 1, yi, mask=mask)"
+    )
     if kind == "rader_prepare":
         return (
             "_rader_prepare_kernel",
@@ -243,8 +261,7 @@ def _rader_kernel_source(
                     src_index = tl.load(idx_ptr + inv_offsets, mask=mask, other=0)
 
                     src = in_ptr + (pid_batch * n + src_index) * 2
-                    xr = tl.load(src, mask=mask, other={zero})
-                    xi = tl.load(src + 1, mask=mask, other={zero})
+                    {prepare_load}
 
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, xr, mask=mask)
@@ -329,8 +346,7 @@ def _rader_kernel_source(
 
                     dst_index = tl.load(idx_ptr + offsets, mask=mask, other=0)
                     dst = out_ptr + (pid_batch * n + dst_index) * 2
-                    tl.store(dst, yr, mask=mask)
-                    tl.store(dst + 1, yi, mask=mask)
+                    {finalize_store}
 
                 """
             ),
