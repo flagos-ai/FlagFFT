@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shape", type=int, required=True)
     parser.add_argument("--batch", type=int, default=64)
+    parser.add_argument("--dtype", choices=("complex64", "complex128"), default="complex64")
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=100)
     args = parser.parse_args()
@@ -33,10 +34,11 @@ def main():
     torch.cuda.set_device(0)
     n, m = args.shape, args.shape - 1
     grid = (math.ceil(m / 256), args.batch)
-    input_data = torch.ones((args.batch * n * 2,), device="cuda", dtype=torch.float32)
-    fft_data = torch.ones((args.batch * m * 2,), device="cuda", dtype=torch.float32)
+    real_dtype = torch.float64 if args.dtype == "complex128" else torch.float32
+    input_data = torch.ones((args.batch * n * 2,), device="cuda", dtype=real_dtype)
+    fft_data = torch.ones((args.batch * m * 2,), device="cuda", dtype=real_dtype)
     work_data = torch.ones_like(fft_data)
-    b_fft = torch.ones((m * 2,), device="cuda", dtype=torch.float32)
+    b_fft = torch.ones((m * 2,), device="cuda", dtype=real_dtype)
     output_data = torch.empty_like(input_data)
     indices = torch.randperm(m, device="cuda", dtype=torch.int32) + 1
 
@@ -48,7 +50,7 @@ def main():
                            n, m, args.batch),
     }
     for kind, argv in arguments.items():
-        name, source, _ = _rader_kernel_source(kind, n, m, "complex64")
+        name, source, _ = _rader_kernel_source(kind, n, m, args.dtype)
         module_source = _module_source(source)
         filename = f"<maca_rader_profile_{kind}>"
         import linecache
@@ -77,6 +79,7 @@ def main():
             "kernel": kind,
             "shape": n,
             "batch": args.batch,
+            "dtype": args.dtype,
             "grid": list(grid),
             "ms": start.elapsed_time(stop) / args.iters,
             "correctness_checked": False,

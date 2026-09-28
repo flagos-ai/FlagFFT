@@ -222,7 +222,7 @@ def _rader_kernel_source(
 ) -> tuple[str, str, list[str]]:
     zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
-    vector_io = (dtype == "complex64" and _maca_backend_active() and
+    vector_io = (dtype in {"complex64", "complex128"} and _maca_backend_active() and
                  os.environ.get("FLAGFFT_MACA_RADER_VEC_IO") == "1")
     prepare_load = (
         "pair = tl.load(src[:, None] + tl.arange(0, 2)[None, :], "
