@@ -272,10 +272,18 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     // Keep the leaf Rader route (e.g. 1009) and small batches unchanged.
     const bool prefer_musa_batched_bluestein = context.device_type == "musa" && context.device_arch == "31" &&
                                                context.batch >= 16 && fp64_input && fp64_output && n == 8191;
+    const char *maca_bluestein = std::getenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN");
+    const bool try_maca_batched_bluestein = maca_bluestein && std::string(maca_bluestein) == "1" &&
+                                           context.device_type == "maca" && context.device_arch == "102" &&
+                                           context.origin_rank <= 1 && context.batch == 64 &&
+                                           context.real_transform_kind.empty() &&
+                                           context.input_dtype == "complex64" &&
+                                           context.output_dtype == "complex64" &&
+                                           context.requested_n == n && (n == 8191 || n == 16381);
     const bool prefer_bluestein = (context.device_type != "maca" && context.input_dtype == "complex64" &&
                                    context.output_dtype == "complex64") ||
                                   has_a100_fp64_fused_leaf || has_musa_s5000_fp64_fused_leaf ||
-                                  prefer_musa_batched_bluestein;
+                                  prefer_musa_batched_bluestein || try_maca_batched_bluestein;
     if (!prefer_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);
