@@ -891,6 +891,15 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
+    if (boundary_finish_kernel) {
+      std::vector<JitKernelArg> finish_args = raw_kernel_args(
+          {work_buf.get(), b_fft_buf.get(), idx.get(), effective_input, output},
+          boundary_tables, context.batch);
+      boundary_finish_kernel->launch(
+          context.stream, finish_args,
+          ceil_div(context.batch, boundary_finish_kernel->batch_per_block), 1, 1);
+      return FLAGFFT_SUCCESS;
+    }
 
     std::vector<JitKernelArg> pointwise_args = {
         JitKernelArg::device(work_buf.get()),

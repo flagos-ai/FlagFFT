@@ -571,10 +571,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       fused_leaf_tables = build_raw_leaf_tables(fused_leaf, child_request);
     }
     const char* boundary = std::getenv("FLAGFFT_MACA_RADER_BOUNDARY_LEAF");
-    const bool use_boundary = boundary ? std::string(boundary) == "1"
-                                       : request.real_transform_kind == "c2r";
-    if (use_boundary && maca_batch1009_leaf && !fused_leaf_kernel) {
-      boundary_prepare_kernel = compile_leaf_rader_prepare_kernel(*leaf, child_request, rader->prime);
+    const std::string boundary_mode = boundary ? std::string(boundary)
+                                               : (request.real_transform_kind == "c2r" ? "1" : "0");
+    if (maca_batch1009_leaf && !fused_leaf_kernel &&
+        (boundary_mode == "1" || boundary_mode == "finish")) {
+      if (boundary_mode == "1") {
+        boundary_prepare_kernel = compile_leaf_rader_prepare_kernel(*leaf, child_request, rader->prime);
+      }
       boundary_finish_kernel = compile_leaf_rader_finish_kernel(*leaf, child_request, rader->prime);
       boundary_tables = build_raw_leaf_tables(*leaf, child_request);
     }
