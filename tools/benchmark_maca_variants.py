@@ -63,6 +63,11 @@ def select_cases(args) -> list[dict]:
     if args.batches:
         batches = {int(b) for b in args.batches.split(",")}
         cases = [c for c in cases if c["batch"] in batches]
+    if args.dtypes:
+        dtypes = {f"torch.float{bits}" for bits in args.dtypes.split(",")}
+        if not dtypes <= {"torch.float32", "torch.float64"}:
+            raise SystemExit("dtypes must be a comma-separated subset of 32,64")
+        cases = [c for c in cases if c["dtype"] in dtypes]
     if args.directions:
         directions = set(filter(None, (d.strip() for d in args.directions.split(","))))
         cases = [c for c in cases if c["direction"] in directions]
@@ -144,6 +149,7 @@ def main():
     parser.add_argument("--ops", help="Comma-separated operator ids")
     parser.add_argument("--shapes", help="Comma-separated shapes, e.g. 8192,64x64,16x997x64")
     parser.add_argument("--batches", help="Comma-separated batch sizes")
+    parser.add_argument("--dtypes", help="Comma-separated precision bits: 32,64")
     parser.add_argument("--directions", help="forward,inverse")
     parser.add_argument("--variants", required=True)
     parser.add_argument("--repeats", type=int, default=3)
