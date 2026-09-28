@@ -396,7 +396,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool trial_batch_bs = batch_bs_trial && std::string(batch_bs_trial) == "1" &&
                                 request.device_type == "maca" && request.device_arch == "102" &&
                                 request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 &&
-                                !request.real_transform && request.input_dtype == "complex64" &&
+                                request.input_dtype == "complex64" &&
                                 request.output_dtype == "complex64" &&
                                 (bluestein->length == 1009 || bluestein->length == 8191 ||
                                  bluestein->length == 16381);
