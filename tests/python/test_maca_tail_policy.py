@@ -162,6 +162,19 @@ def test_prime_rader_vector_io_policy_and_override(monkeypatch, dtype, kernel):
     assert source() == candidate
 
 
+def test_cli_accepts_prime_rader_vector_io_mode(tmp_path, monkeypatch, capsys):
+    from flagfft_codegen.cli import main
+    profile = json.dumps({"backend": "maca", "device_arch": "102", "warp_size": 64,
+        "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536})
+    monkeypatch.setattr(sys, "argv", ["jit_source", "--kernel", "rader_prepare",
+        "--rader-n", "8191", "--rader-m", "8190", "--dtype", "complex64",
+        "--target", "maca:80:64", "--out-dir", str(tmp_path),
+        "--device-profile", profile, "--maca-tail-mode", "batch-prime-rader-vecio"])
+    main()
+    metadata = json.loads(capsys.readouterr().out)
+    assert "tl.arange(0, 2)[None, :]" in Path(metadata["module_path"]).read_text()
+
+
 def test_cli_same_process_switches_filesystem_and_module_identity(tmp_path, monkeypatch, capsys):
     from flagfft_codegen.cli import main
     profile = json.dumps({"backend": "maca", "device_arch": "102", "warp_size": 64,

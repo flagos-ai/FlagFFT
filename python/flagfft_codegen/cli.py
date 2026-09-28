@@ -142,7 +142,7 @@ def main() -> None:
     parser.add_argument("--maca-tail-mode",
                         choices=("off", "p4w4", "real-direct", "batch-vecio",
                                  "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio",
-                                 "batch-c2c-tree"),
+                                 "batch-c2c-tree", "batch-prime-rader-vecio"),
                         default="off")
     parser.add_argument(
         "--maca-2d-single",
