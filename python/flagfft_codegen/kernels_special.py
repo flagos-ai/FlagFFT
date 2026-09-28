@@ -16,10 +16,11 @@ from __future__ import annotations
 
 """Direct DFT kernel source generation."""
 
+import os
 from textwrap import dedent
 from typing import Literal
 
-from .kernels_common import _dtype_suffix, lane_block_for
+from .kernels_common import _dtype_suffix, _maca_backend_active, lane_block_for
 
 
 def _build_direct_dft_kernel_source(
@@ -38,6 +39,12 @@ def _build_direct_dft_kernel_source(
         if strided
         else f"{prefix}_kernel_n{n}_{suffix}_b{block}"
     )
+    tree = (
+        dtype == "complex128" and n <= 32 and _maca_backend_active()
+        and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION", "kahan") == "tree"
+    )
+    if tree:
+        kernel_name += "_tree"
     in_placeholder = "base + j * outer_stride" if strided else f"pid_batch * {n} + j"
     out_placeholder = "base + k * outer_stride" if strided else f"pid_batch * {n} + k"
     param_extra = "            outer_stride,\n" if strided else ""
@@ -74,7 +81,7 @@ def _build_direct_dft_kernel_source(
                 acc_r += tl.sum(xr * wr - xi * wi, axis=0)
                 acc_i += tl.sum(xr * wi + xi * wr, axis=0)
     """
-    if dtype == "complex128":
+    if dtype == "complex128" and not tree:
         compensation_init = f"""
             comp_r = tl.zeros(({block},), dtype={acc_dtype})
             comp_i = tl.zeros(({block},), dtype={acc_dtype})
