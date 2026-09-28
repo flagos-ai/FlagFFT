@@ -1266,6 +1266,31 @@ def _emit_stage_block(
                     f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})"
                 )
                 lines.append(f"{indent}i{j} = -point_i{j}")
+            elif io_mode == "rader_prepare_leaf":
+                lines.append(f"{indent}inv_idx{j} = tl.where(in{j} == 0, 0, {n} - in{j})")
+                lines.append(
+                    f"{indent}src_idx{j} = tl.load(idx_ptr + inv_idx{j}, mask=lane_mask, other=0)"
+                )
+                lines.append(
+                    f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + src_idx{j}) * 2"
+                )
+                lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})")
+                lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})")
+            elif io_mode == "rader_finish_leaf":
+                lines.append(
+                    f"{indent}ar{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}ai{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}br{j} = tl.load(b_fft_ptr + in{j} * 2, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}bi{j} = tl.load(b_fft_ptr + in{j} * 2 + 1, mask=lane_mask, other={zero})"
+                )
+                lines.append(f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})")
+                lines.append(f"{indent}i{j} = -point_i{j}")
             elif io_mode == "bluestein_full_leaf":
                 if bluestein_pass == 0:
                     lines.append(
@@ -1609,7 +1634,8 @@ def _emit_stage_block(
                 )
                 continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
-            if io_mode in {"contiguous", "strided", "bluestein_prepare_leaf"}:
+            if io_mode in {"contiguous", "strided", "bluestein_prepare_leaf",
+                           "rader_prepare_leaf"}:
                 if io_mode == "strided":
                     lines.append(
                         f"{indent}tl.store(out_ptr + (batch_base + out_idx{j} * outer_stride) * 2, "
@@ -1684,6 +1710,47 @@ def _emit_stage_block(
                 )
                 lines.append(
                     f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})"
+                )
+            elif io_mode == "rader_finish_leaf":
+                lines.append(
+                    f"{indent}dst_idx{j} = tl.load(idx_ptr + out_idx{j}, mask=lane_mask, other=0)"
+                )
+                lines.append(
+                    f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + dst_idx{j}) * 2"
+                )
+                lines.append(
+                    f"{indent}x0_ptr{j} = original_ptr + current_batch * {prime_n} * 2"
+                )
+                lines.append(
+                    f"{indent}x0r{j} = tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero})"
+                )
+                lines.append(
+                    f"{indent}x0i{j} = tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j}, x0r{j} + r{j} / {n}, mask=lane_mask)"
+                )
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j} + 1, x0i{j} - i{j} / {n}, mask=lane_mask)"
+                )
+                lines.append(f"{indent}dc_mask{j} = lane_mask & (out_idx{j} == 0)")
+                lines.append(
+                    f"{indent}a0_ptr{j} = in_ptr + batch_base * 2"
+                )
+                lines.append(
+                    f"{indent}dc_ptr{j} = out_ptr + current_batch * {prime_n} * 2"
+                )
+                lines.append(
+                    f"{indent}a0r{j} = tl.load(a0_ptr{j}, mask=current_batch < nbatch, other={zero})"
+                )
+                lines.append(
+                    f"{indent}a0i{j} = tl.load(a0_ptr{j} + 1, mask=current_batch < nbatch, other={zero})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dc_ptr{j} + out_idx{j}, x0r{j} + a0r{j}, mask=dc_mask{j})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dc_ptr{j} + out_idx{j} + 1, x0i{j} + a0i{j}, mask=dc_mask{j})"
                 )
             elif io_mode == "bluestein_full_leaf":
                 if bluestein_pass == 0:
@@ -2078,6 +2145,10 @@ def _leaf_kernel_params_for_io(
         params[1:1] = ["b_fft_ptr", "chirp_ptr"]
     elif io_mode == "rader_full_leaf":
         params[1:1] = ["b_fft_ptr", "idx_ptr"]
+    elif io_mode == "rader_prepare_leaf":
+        params.insert(1, "idx_ptr")
+    elif io_mode == "rader_finish_leaf":
+        params[1:1] = ["b_fft_ptr", "idx_ptr", "original_ptr"]
     elif io_mode in {
         "bluestein_four_step_prepare_row",
         "bluestein_four_step_finish_col",
@@ -2621,6 +2692,8 @@ def _build_leaf_kernel_source_for_io(
         "bluestein_finish_leaf",
         "bluestein_full_leaf",
         "rader_full_leaf",
+        "rader_prepare_leaf",
+        "rader_finish_leaf",
     }
     if io_mode == "permuted_store":
         batch_pack = permuted_store_batch_pack_for(plan)
@@ -2733,6 +2806,10 @@ def _build_leaf_kernel_source_for_io(
         kernel_name = f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "rader_full_leaf":
         kernel_name = f"rader_full_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "rader_prepare_leaf":
+        kernel_name = f"rader_prepare_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "rader_finish_leaf":
+        kernel_name = f"rader_finish_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode.startswith("bluestein_four_step_"):
         kernel_name = (
             f"{io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"

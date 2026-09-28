@@ -210,6 +210,8 @@ LeafIoMode = Literal[
     "bluestein_finish_leaf",
     "bluestein_full_leaf",
     "rader_full_leaf",
+    "rader_prepare_leaf",
+    "rader_finish_leaf",
     "bluestein_four_step_prepare_row",
     "bluestein_four_step_pointwise_row",
     "bluestein_four_step_finish_col",

@@ -550,11 +550,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     std::shared_ptr<CompiledRawNode> fft = compile_raw_node(rader->conv_plan, child_request, batch);
     std::shared_ptr<JitKernel> fused_leaf_kernel;
     std::vector<DeviceAllocation> fused_leaf_tables;
+    std::shared_ptr<JitKernel> boundary_prepare_kernel;
+    std::shared_ptr<JitKernel> boundary_finish_kernel;
+    std::vector<DeviceAllocation> boundary_tables;
     const auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(rader->conv_plan);
+    const bool maca_batch1009_leaf = request.device_type == "maca" &&
+        request.device_arch == "102" && request.raw_dim == 1 &&
+        request.origin_rank <= 1 && batch == 64 && rader->prime == 1009 &&
+        request.input_dtype == "complex64" && leaf != nullptr;
     const char* fusion = std::getenv("FLAGFFT_MACA_RADER_FULL_LEAF");
-    if (fusion && std::string(fusion) == "1" && request.device_type == "maca" &&
-        request.device_arch == "102" && request.raw_dim == 1 && request.origin_rank <= 1 &&
-        batch == 64 && rader->prime == 1009 && request.input_dtype == "complex64" && leaf) {
+    if (fusion && std::string(fusion) == "1" && maca_batch1009_leaf) {
       std::vector<int64_t> fused_factors = leaf->factors;
       if (fused_factors.size() >= 3) {
         std::reverse(fused_factors.begin() + 1, fused_factors.end());
@@ -564,6 +569,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                               leaf->smem_size);
       fused_leaf_kernel = compile_leaf_rader_full_kernel(fused_leaf, child_request, rader->prime);
       fused_leaf_tables = build_raw_leaf_tables(fused_leaf, child_request);
+    }
+    const char* boundary = std::getenv("FLAGFFT_MACA_RADER_BOUNDARY_LEAF");
+    if (boundary && std::string(boundary) == "1" && maca_batch1009_leaf && !fused_leaf_kernel) {
+      boundary_prepare_kernel = compile_leaf_rader_prepare_kernel(*leaf, child_request, rader->prime);
+      boundary_finish_kernel = compile_leaf_rader_finish_kernel(*leaf, child_request, rader->prime);
+      boundary_tables = build_raw_leaf_tables(*leaf, child_request);
     }
     DeviceAllocation idx = build_raw_rader_idx_table(rader->idx);
     DeviceAllocation b_time = build_raw_rader_conv_kernel(request, rader->prime, rader->idx);
@@ -589,7 +600,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::move(b_fft_buf),
         std::move(input_copy),
         std::move(fused_leaf_kernel),
-        std::move(fused_leaf_tables));
+        std::move(fused_leaf_tables),
+        std::move(boundary_prepare_kernel),
+        std::move(boundary_finish_kernel),
+        std::move(boundary_tables));
   }
   if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     return compile_raw_2d_node(two_dim, request, batch);
@@ -1102,6 +1116,26 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_full_kernel(const 
   KernelKey key = KernelKey::leaf_rader_full(target, request.direction, request.input_dtype,
                                              n, leaf.length, leaf.factors, leaf.lanes,
                                              leaf.num_warps, leaf.generic_radices, leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_prepare_kernel(const LeafPlanNode &leaf,
+                                                                              const FFTRequest &request,
+                                                                              int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::leaf_rader_prepare(target, request.direction, request.input_dtype,
+                                                n, leaf.length, leaf.factors, leaf.lanes,
+                                                leaf.num_warps, leaf.generic_radices, leaf.smem_size);
+  return compile_kernel(key);
+}
+
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_finish_kernel(const LeafPlanNode &leaf,
+                                                                             const FFTRequest &request,
+                                                                             int64_t n) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::leaf_rader_finish(target, request.direction, request.input_dtype,
+                                               n, leaf.length, leaf.factors, leaf.lanes,
+                                               leaf.num_warps, leaf.generic_radices, leaf.smem_size);
   return compile_kernel(key);
 }
 

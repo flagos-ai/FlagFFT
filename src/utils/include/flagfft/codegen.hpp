@@ -390,7 +390,10 @@ struct CompiledRawRaderNode final : CompiledRawNode {
                        DeviceAllocation b_fft_buf,
                        DeviceAllocation input_copy,
                        std::shared_ptr<JitKernel> fused_leaf_kernel = nullptr,
-                       std::vector<DeviceAllocation> fused_leaf_tables = {});
+                       std::vector<DeviceAllocation> fused_leaf_tables = {},
+                       std::shared_ptr<JitKernel> boundary_prepare_kernel = nullptr,
+                       std::shared_ptr<JitKernel> boundary_finish_kernel = nullptr,
+                       std::vector<DeviceAllocation> boundary_tables = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -405,6 +408,9 @@ struct CompiledRawRaderNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> finalize_kernel;
   std::shared_ptr<JitKernel> fused_leaf_kernel;
   std::vector<DeviceAllocation> fused_leaf_tables;
+  std::shared_ptr<JitKernel> boundary_prepare_kernel;
+  std::shared_ptr<JitKernel> boundary_finish_kernel;
+  std::vector<DeviceAllocation> boundary_tables;
   DeviceAllocation idx;
   DeviceAllocation b_time;
   DeviceAllocation a_buf;
@@ -1184,6 +1190,12 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_leaf_rader_full_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t n);
+  std::shared_ptr<JitKernel> compile_leaf_rader_prepare_kernel(const LeafPlanNode &leaf,
+                                                                const FFTRequest &request,
+                                                                int64_t n);
+  std::shared_ptr<JitKernel> compile_leaf_rader_finish_kernel(const LeafPlanNode &leaf,
+                                                               const FFTRequest &request,
+                                                               int64_t n);
   std::shared_ptr<JitKernel> compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request,
                                                                    int64_t n);

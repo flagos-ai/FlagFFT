@@ -159,7 +159,8 @@ inline std::string maca_tail_codegen_identity(const std::string& mode) {
                            "FLAGFFT_MACA_FP64_REGISTER_PACK", "FLAGFFT_MACA_INNER_PACK",
                            "FLAGFFT_MACA_MAX_WARPS", "FLAGFFT_MACA_SPLIT_ORDER",
                            "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_LANE_MIN",
-                           "FLAGFFT_MACA_MIXED_EXCHANGE", "FLAGFFT_MACA_RADER_FULL_LEAF"}) {
+                           "FLAGFFT_MACA_MIXED_EXCHANGE", "FLAGFFT_MACA_RADER_FULL_LEAF",
+                           "FLAGFFT_MACA_RADER_BOUNDARY_LEAF"}) {
     const char* value = std::getenv(name);
     identity += std::string(";") + name + "=";
     identity += value ? std::to_string(std::string(value).size()) + ":" + value : "unset";

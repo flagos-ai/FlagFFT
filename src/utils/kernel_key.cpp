@@ -176,6 +176,32 @@ KernelKey KernelKey::leaf_rader_full(std::string target,
   return key;
 }
 
+KernelKey KernelKey::leaf_rader_prepare(std::string target, std::string direction,
+                                        std::string dtype, int64_t prime_n, int64_t length,
+                                        std::vector<int64_t> factors, int64_t lanes,
+                                        int64_t num_warps, std::vector<int64_t> generic_radices,
+                                        int64_t smem_size) {
+  KernelKey key = KernelKey::leaf_rader_full(std::move(target), std::move(direction),
+                                             std::move(dtype), prime_n, length,
+                                             std::move(factors), lanes, num_warps,
+                                             std::move(generic_radices), smem_size);
+  key.kind = KernelKind::LeafRaderPrepare;
+  return key;
+}
+
+KernelKey KernelKey::leaf_rader_finish(std::string target, std::string direction,
+                                       std::string dtype, int64_t prime_n, int64_t length,
+                                       std::vector<int64_t> factors, int64_t lanes,
+                                       int64_t num_warps, std::vector<int64_t> generic_radices,
+                                       int64_t smem_size) {
+  KernelKey key = KernelKey::leaf_rader_full(std::move(target), std::move(direction),
+                                             std::move(dtype), prime_n, length,
+                                             std::move(factors), lanes, num_warps,
+                                             std::move(generic_radices), smem_size);
+  key.kind = KernelKind::LeafRaderFinish;
+  return key;
+}
+
 KernelKey KernelKey::leaf_bluestein_prepare(std::string target,
                                             std::string direction,
                                             std::string dtype,

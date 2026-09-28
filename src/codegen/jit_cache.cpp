@@ -239,6 +239,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::LeafRaderFull:
       kernel_kind = "leaf_rader_full";
       break;
+    case KernelKind::LeafRaderPrepare:
+      kernel_kind = "leaf_rader_prepare";
+      break;
+    case KernelKind::LeafRaderFinish:
+      kernel_kind = "leaf_rader_finish";
+      break;
     case KernelKind::LeafBluesteinPrepare:
       kernel_kind = "leaf_bluestein_prepare";
       break;
@@ -386,6 +392,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafPackedR2C ||
       key.kind == KernelKind::LeafC2R ||
       key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafRaderFull ||
+      key.kind == KernelKind::LeafRaderPrepare || key.kind == KernelKind::LeafRaderFinish ||
       key.kind == KernelKind::LeafBluesteinPrepare ||
       key.kind == KernelKind::LeafBluesteinFinish || key.kind == KernelKind::BluesteinFourStepPrepareRow ||
       key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
@@ -426,7 +433,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::BluesteinPointwise || key.kind == KernelKind::BluesteinFinalize) {
     jit_command << " --bluestein-n " << key.bluestein_n << " --bluestein-m " << key.bluestein_m;
   }
-  if (key.kind == KernelKind::LeafRaderFull || key.kind == KernelKind::RaderPrepare ||
+  if (key.kind == KernelKind::LeafRaderFull || key.kind == KernelKind::LeafRaderPrepare ||
+      key.kind == KernelKind::LeafRaderFinish || key.kind == KernelKind::RaderPrepare ||
       key.kind == KernelKind::RaderPointwise ||
       key.kind == KernelKind::RaderFinalize) {
     jit_command << " --rader-n " << key.rader_n << " --rader-m " << key.rader_m;

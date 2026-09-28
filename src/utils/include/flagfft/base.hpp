@@ -165,7 +165,9 @@ enum class KernelKind {
   CompactToHermitianFull,
   ComplexToReal,
   TiledTranspose,
-  Transpose3D
+  Transpose3D,
+  LeafRaderPrepare,
+  LeafRaderFinish
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

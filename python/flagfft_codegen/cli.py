@@ -334,7 +334,9 @@ def main() -> None:
             smem_size=args.smem_size,
             direction=args.direction,
             dtype=args.dtype,
-            prime_n=(args.rader_n if args.kernel == "leaf_rader_full"
+            prime_n=(args.rader_n if args.kernel in {"leaf_rader_full",
+                                                    "leaf_rader_prepare",
+                                                    "leaf_rader_finish"}
                      else args.bluestein_n) or 0,
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,

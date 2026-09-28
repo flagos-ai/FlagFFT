@@ -134,6 +134,10 @@ std::string kernel_kind_name(KernelKind kind) {
       return "leaf_bluestein";
     case KernelKind::LeafRaderFull:
       return "leaf_rader_full";
+    case KernelKind::LeafRaderPrepare:
+      return "leaf_rader_prepare";
+    case KernelKind::LeafRaderFinish:
+      return "leaf_rader_finish";
     case KernelKind::LeafBluesteinPrepare:
       return "leaf_bluestein_prepare";
     case KernelKind::LeafBluesteinFinish:

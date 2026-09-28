@@ -795,7 +795,10 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
                                            DeviceAllocation b_fft_buf,
                                            DeviceAllocation input_copy,
                                            std::shared_ptr<JitKernel> fused_leaf_kernel,
-                                           std::vector<DeviceAllocation> fused_leaf_tables)
+                                           std::vector<DeviceAllocation> fused_leaf_tables,
+                                           std::shared_ptr<JitKernel> boundary_prepare_kernel,
+                                           std::shared_ptr<JitKernel> boundary_finish_kernel,
+                                           std::vector<DeviceAllocation> boundary_tables)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
@@ -804,6 +807,9 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
       finalize_kernel(std::move(finalize_kernel)),
       fused_leaf_kernel(std::move(fused_leaf_kernel)),
       fused_leaf_tables(std::move(fused_leaf_tables)),
+      boundary_prepare_kernel(std::move(boundary_prepare_kernel)),
+      boundary_finish_kernel(std::move(boundary_finish_kernel)),
+      boundary_tables(std::move(boundary_tables)),
       idx(std::move(idx)),
       b_time(std::move(b_time)),
       a_buf(std::move(a_buf)),
@@ -819,6 +825,8 @@ std::string CompiledRawRaderNode::describe() const {
       << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->execution_description() : "null")
       << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->execution_description() : "null")
       << ", fused_leaf_kernel=" << (fused_leaf_kernel ? fused_leaf_kernel->execution_description() : "null")
+      << ", boundary_prepare_kernel=" << (boundary_prepare_kernel ? boundary_prepare_kernel->execution_description() : "null")
+      << ", boundary_finish_kernel=" << (boundary_finish_kernel ? boundary_finish_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -851,6 +859,20 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
           {effective_input, b_fft_buf.get(), idx.get(), output}, fused_leaf_tables, context.batch);
       fused_leaf_kernel->launch(context.stream, args,
                                 ceil_div(context.batch, fused_leaf_kernel->batch_per_block), 1, 1);
+      return FLAGFFT_SUCCESS;
+    }
+    if (boundary_prepare_kernel && boundary_finish_kernel) {
+      std::vector<JitKernelArg> prepare_args = raw_kernel_args(
+          {effective_input, idx.get(), a_buf.get()}, boundary_tables, context.batch);
+      boundary_prepare_kernel->launch(
+          context.stream, prepare_args,
+          ceil_div(context.batch, boundary_prepare_kernel->batch_per_block), 1, 1);
+      std::vector<JitKernelArg> finish_args = raw_kernel_args(
+          {a_buf.get(), b_fft_buf.get(), idx.get(), effective_input, output},
+          boundary_tables, context.batch);
+      boundary_finish_kernel->launch(
+          context.stream, finish_args,
+          ceil_div(context.batch, boundary_finish_kernel->batch_per_block), 1, 1);
       return FLAGFFT_SUCCESS;
     }
 
