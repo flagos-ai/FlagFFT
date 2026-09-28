@@ -139,7 +139,10 @@ def main() -> None:
                         help="use one transform per block for IX N=210 real single")
     parser.add_argument("--ix-ct-single-tle", type=int, choices=(0, 1, 2), default=0,
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
-    parser.add_argument("--maca-tail-mode", choices=("off", "p4w4", "real-direct"), default="off")
+    parser.add_argument("--maca-tail-mode",
+                        choices=("off", "p4w4", "real-direct", "batch-vecio",
+                                 "batch-real-pack2", "batch-c2c-pack2"),
+                        default="off")
     parser.add_argument(
         "--maca-2d-single",
         action="store_true",
