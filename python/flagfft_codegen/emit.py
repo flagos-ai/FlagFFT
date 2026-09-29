@@ -31,6 +31,7 @@ from .artifacts import write_text_atomic
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
+    _hcu_backend_active,
     _maca_backend_active,
     _maca_knob,
     _zero_other,
@@ -756,14 +757,16 @@ def _emit_tiled_transpose3d_jit_kernel(
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
-    elif dtype == "complex64" and _portable_transpose3d_supported():
+    elif _portable_transpose3d_supported() and (
+        dtype == "complex64" or (dtype == "complex128" and _hcu_backend_active())
+    ):
         (
             kernel_name,
             kernel_source,
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=32
+            n0, n1, n2, order, dtype, tile=32 if dtype == "complex64" else 16
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(

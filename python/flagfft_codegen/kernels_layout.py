@@ -272,8 +272,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
     if order not in {"021", "210", "201", "120"}:
         raise ValueError(f"unsupported 3D transpose order: {order}")
     suffix = _dtype_suffix(dtype)
-    if dtype != "complex64":
-        raise ValueError("tiled 3D transpose requires complex64")
+    if dtype not in {"complex64", "complex128"}:
+        raise ValueError("tiled 3D transpose requires a complex dtype")
     zero = _zero_other(dtype)
     total_complex = s0 * s1 * s2
     total_float = total_complex * 2

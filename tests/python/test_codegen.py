@@ -773,6 +773,26 @@ def test_tiled_transpose3d_tile_selected_only_for_validated_backends(
     )
 
 
+def test_hcu_fp64_3d_transpose_uses_register_tile(tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64))
+    try:
+        metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=16, n1=33, n2=997, order="210", dtype="complex128", out_dir=tmp_path
+        )
+    finally:
+        reset_profile(token)
+
+    assert "t16_tile" in metadata["kernel_name"]
+    assert metadata["grid_x_override"] == 33 * ((16 + 15) // 16) * ((997 + 15) // 16)
+    source = Path(metadata["module_path"]).read_text()
+    assert "tl.trans(src_r)" in source
+    assert "tl.trans(src_i)" in source
+
+
 def test_tiled_transpose3d_falls_back_to_v1_for_unvalidated_backends(
     kernels, tmp_path, monkeypatch
 ) -> None:
