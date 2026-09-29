@@ -14,6 +14,7 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
 #include <sstream>
 
 namespace flagfft {
@@ -123,6 +124,19 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (n == 16 && context.device_type == "ix" && context.device_arch == "71" &&
+      context.origin_rank <= 1 && context.requested_n == n &&
+      context.batch == 64 && context.input_dtype == "complex64" &&
+      context.output_dtype == "complex64") {
+    if (const char *raw = std::getenv("FLAGFFT_IX_CT_16_FACTORS")) {
+      const std::string factors(raw);
+      if (factors == "16") return {16};
+      if (factors == "8,2") return {8, 2};
+      if (factors == "2,8") return {2, 8};
+      if (factors == "4,4") return {4, 4};
+      throw std::runtime_error("invalid FLAGFFT_IX_CT_16_FACTORS");
+    }
+  }
   const bool ix_fp32_real_batch =
       context.device_type == "ix" && context.device_arch == "71" &&
       context.origin_rank <= 1 && context.requested_n == n &&
