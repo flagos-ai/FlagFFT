@@ -446,7 +446,6 @@ def _emit_permuted_store(
     factors: tuple[int, ...],
     pack: int,
     lane_block: int,
-    dtype: str,
     compact_length: int | None = None,
 ) -> list[str]:
     """Store one radix digit with the batch axis made contiguous.
@@ -484,18 +483,6 @@ def _emit_permuted_store(
         (_mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1")
         or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1") == "1")
     )
-    if (_hcu_backend_active() and dtype == "complex64" and
-            os.getenv("FLAGFFT_HCU_3D_U64_STORE", "0") == "1"):
-        return [
-            f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
-            f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
-            f"{indent}perm_addr{digit} = {address}",
-            f"{indent}bits_r{digit} = tl.cast(tl.cast(zr{digit}, tl.uint32, bitcast=True), tl.uint64)",
-            f"{indent}bits_i{digit} = tl.cast(tl.cast(zi{digit}, tl.uint32, bitcast=True), tl.uint64)",
-            f"{indent}pair_bits{digit} = bits_r{digit} | (bits_i{digit} << 32)",
-            f"{indent}tl.store(tl.cast(out_ptr, tl.pointer_type(tl.uint64)) + perm_addr{digit}, "
-            f"pair_bits{digit}, mask={mask})",
-        ]
     if pair_store:
         return [
             f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
@@ -1698,7 +1685,6 @@ def _emit_stage_block(
                 lines.extend(
                     _emit_permuted_store(
                         indent, j, factors, smem_pack, lane_block,
-                        dtype,
                         compact_length=(n // 2 + 1 if io_mode == "permuted_r2c" else None),
                     )
                 )
