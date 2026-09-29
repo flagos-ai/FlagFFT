@@ -20,6 +20,52 @@
 #include <sstream>
 
 namespace flagfft {
+
+CompiledRawGraphNode::CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inner)
+    : inner(std::move(inner)) {}
+
+std::string CompiledRawGraphNode::describe() const {
+  return "CompiledRawGraph(inner=" + inner->describe() + ")";
+}
+
+flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
+                                            adaptor::DevicePtr output,
+                                            const RawExecutionContext &context) const {
+  try {
+    if (graph && graph_input == input && graph_output == output && graph_batch == context.batch) {
+      graph->launch(context.stream);
+      return FLAGFFT_SUCCESS;
+    }
+
+    flagfftResult result = inner->execute(input, output, context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    if (!graph && !graph_failed) {
+      try {
+        auto captured = std::make_unique<adaptor::CudaGraph>();
+        captured->begin_capture(context.stream);
+        result = inner->execute(input, output, context);
+        captured->end_capture(context.stream);
+        if (result != FLAGFFT_SUCCESS) {
+          graph_failed = true;
+          return result;
+        }
+        captured->launch(context.stream);
+        graph = std::move(captured);
+        graph_input = input;
+        graph_output = output;
+        graph_batch = context.batch;
+      } catch (const std::exception &) {
+        graph_failed = true;
+      }
+    }
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] graph execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 namespace {
 
   std::vector<JitKernelArg> raw_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
