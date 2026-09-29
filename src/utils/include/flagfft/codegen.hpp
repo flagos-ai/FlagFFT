@@ -1007,6 +1007,30 @@ struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
+// A compact real spectrum is kept between a fused inner 2D plane transform
+// and the strided FFT along the outer axis.
+struct CompiledRaw3DFusedRealPlaneNode final : CompiledRawNode {
+  CompiledRaw3DFusedRealPlaneNode(int64_t plane_size,
+                                 bool inverse,
+                                 std::shared_ptr<JitKernel> plane_fft,
+                                 std::shared_ptr<CompiledRawNode> outer_fft,
+                                 DeviceAllocation temp,
+                                 DeviceAllocation tw_r,
+                                 DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t plane_size;
+  bool inverse;
+  std::shared_ptr<JitKernel> plane_fft;
+  std::shared_ptr<CompiledRawNode> outer_fft;
+  DeviceAllocation temp;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 // 3D C2C/Z2Z that runs the n1 and n0 axes as strided leaves on the natural
 // layout instead of permuting the cube between passes: three launches and no
 // full-cube transpose traffic.  Used when both non-contiguous axis plans are
