@@ -1378,7 +1378,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   const bool fused16 = small_plane_backend && n0 == 16 && n1 == 16 && n2 == 16 &&
                        (fused16_override == nullptr || std::string(fused16_override) != "0");
   const bool fused32 = request.device_type == "hcu" && n0 == 32 && n1 == 32 && n2 == 32 &&
-                       fused32_override != nullptr && std::string(fused32_override) == "1";
+                       (fused32_override == nullptr || std::string(fused32_override) != "0");
   if ((fused16 || fused32) && batch <= 4 && n0_leaf && n1_leaf && n2_leaf) {
     const int64_t plane_size = n0;
     std::vector<double> tw_r_d(static_cast<std::size_t>(plane_size / 2));
@@ -1478,16 +1478,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // below, whose win there is already established, so the two are disjoint.
   if (!direct_strided && n2_leaf && n1_leaf && n0_leaf && fused_3d_store_enabled() &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
+    const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_LAST_TRANSPOSE");
+    const bool last_transpose = request.device_type == "hcu" &&
+                                last_transpose_override != nullptr &&
+                                std::string(last_transpose_override) == "1";
     std::shared_ptr<CompiledRawNode> n2_fft =
         compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, "outer");
     std::shared_ptr<CompiledRawNode> n1_fft =
         compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
-    std::shared_ptr<CompiledRawNode> n0_fft =
-        compile_raw_permuted_store_leaf(*n0_leaf, n0_request, /*perm_span=*/n1 * n2, "outer");
+    std::shared_ptr<CompiledRawNode> n0_fft = last_transpose
+        ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
+        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, /*perm_span=*/n1 * n2, "outer");
 
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
 
+    if (last_transpose) {
+      auto perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+      return std::make_shared<CompiledRaw3DHybridNode>(
+          n0, n1, n2, std::move(n2_fft), std::move(n1_fft), std::move(n0_fft),
+          std::shared_ptr<JitKernel>{}, std::move(temp1), std::move(temp2),
+          std::shared_ptr<JitKernel>{}, std::move(perm_201));
+    }
     return std::make_shared<CompiledRaw3DStridedNode>(n0,
                                                       n1,
                                                       n2,

@@ -2775,14 +2775,15 @@ flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
                     perm_021 ? temp1.get() : temp2.get(),
                     perm_021 ? temp2.get() : temp1.get(), total, batch);
     }
-    result = n0_fft->execute(perm_210 ? (perm_021 ? temp2.get() : temp1.get())
-                                      : (perm_021 ? temp1.get() : temp2.get()),
-                             perm_201 ? (perm_021 ? temp1.get() : temp2.get()) : output,
-                             n0_context);
+    adaptor::DevicePtr n0_input = perm_210 ? (perm_021 ? temp2.get() : temp1.get())
+                                            : (perm_021 ? temp1.get() : temp2.get());
+    adaptor::DevicePtr n0_output = perm_201
+        ? (n0_input == temp1.get() ? temp2.get() : temp1.get())
+        : output;
+    result = n0_fft->execute(n0_input, n0_output, n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
     if (perm_201) {
-      launch_perm3d(perm_201, context.stream,
-                    perm_021 ? temp1.get() : temp2.get(), output, total, batch);
+      launch_perm3d(perm_201, context.stream, n0_output, output, total, batch);
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
