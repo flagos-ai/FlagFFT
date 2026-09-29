@@ -193,6 +193,14 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     };
   }
 
+  const char *hcu_rader_override = std::getenv("FLAGFFT_HCU_3D_RADER997");
+  if (request_context().device_type == "hcu" && request_context().origin_rank == 3 &&
+      n == 997 && hcu_rader_override != nullptr &&
+      std::string(hcu_rader_override) == "1") {
+    PlanNodePtr node = make_rader_plan(n);
+    return {{node, rader_cost(n), priority(node)}};
+  }
+
   std::vector<PlanCandidate> candidates;
   Factorization factorization = factorize_supported_radices(n);
   if (factorization.remainder == 1 && !factorization.factors.empty() &&
