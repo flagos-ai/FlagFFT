@@ -1494,7 +1494,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   const bool ix_hybrid = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       ix_hybrid_override != nullptr && std::string(ix_hybrid_override) == "1";
-  if ((musa_hybrid || ix_hybrid) && n2_leaf && n1_leaf && n0_leaf &&
+  // IX also screens the prime middle axis: its non-leaf FFT still consumes
+  // contiguous rows, while the short outer leaves can fold two permutations.
+  if ((musa_hybrid || ix_hybrid) && n2_leaf && n0_leaf &&
+      (n1_leaf || ix_hybrid) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
