@@ -472,7 +472,7 @@ def _emit_permuted_store(
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
         mask = "perm_store_mask"
-    if _mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE") == "1":
+    if _mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1":
         return [
             f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
             f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
