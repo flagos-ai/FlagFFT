@@ -259,6 +259,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     order: str,
     dtype: str,
     tile: int = 32,
+    pair_store: bool = False,
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -329,6 +330,15 @@ def _build_tiled_transpose3d_tile_kernel_source(
     grid_x = num_slices * tiles_per_slice
     kernel_name = (
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}_tile"
+        f"{'_pair' if pair_store else ''}"
+    )
+    store_lines = (
+        "dst_pair = tl.join(dst_r, dst_i)\n"
+        "            pair_base = dst_base[:, :, None] + tl.arange(0, 2)[None, None, :]\n"
+        "            tl.store(out_ptr + pair_base, dst_pair, mask=store_mask[:, :, None])"
+        if pair_store else
+        "tl.store(out_ptr + dst_base, dst_r, mask=store_mask)\n"
+        "            tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)"
     )
     source = dedent(
         f"""
@@ -375,8 +385,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
                 + safe_cols[None, :] * 2
             )
             store_mask = row_mask[:, None] & col_mask[None, :]
-            tl.store(out_ptr + dst_base, dst_r, mask=store_mask)
-            tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)
+            {store_lines}
         """
     )
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x

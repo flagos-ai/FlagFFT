@@ -752,6 +752,15 @@ def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> Non
     assert "safe_cols[None, :] * 2" in source
 
 
+def test_hcu_tiled_transpose3d_can_store_complex_pairs(kernels) -> None:
+    kernel_name, source, _, _ = kernels._build_tiled_transpose3d_tile_kernel_source(
+        256, 256, 129, "021", "complex64", tile=32, pair_store=True
+    )
+    assert kernel_name.endswith("_tile_pair")
+    assert "dst_pair = tl.join(dst_r, dst_i)" in source
+    assert "tl.store(out_ptr + pair_base, dst_pair, mask=store_mask[:, :, None])" in source
+
+
 def test_tiled_transpose3d_tile_selected_only_for_validated_backends(
     kernels, tmp_path, monkeypatch
 ) -> None:

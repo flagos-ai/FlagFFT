@@ -771,7 +771,9 @@ def _emit_tiled_transpose3d_jit_kernel(
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=32 if dtype == "complex64" else 16
+            n0, n1, n2, order, dtype, tile=32 if dtype == "complex64" else 16,
+            pair_store=_hcu_backend_active()
+            and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1",
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
