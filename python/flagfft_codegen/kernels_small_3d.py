@@ -115,7 +115,7 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "module_path": str(module_path),
         "kernel_name": "fused_plane_fft_kernel",
         "signature": _signature(args, dtype),
-        "num_warps": 16 if n == 32 and target.startswith("corex:") else 8,
+        "num_warps": 16 if n == 32 and target.startswith("ix:") else 8,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
