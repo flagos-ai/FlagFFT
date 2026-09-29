@@ -217,7 +217,7 @@ namespace {
                                  request.requested_n == 23 && request.input_dtype == "complex64" &&
                                  request.output_dtype == "complex64" &&
                                  !request.input_strides.empty() && request.input_strides.back() == 1 &&
-                                 ix_setting != nullptr && std::string(ix_setting) == "1";
+                                 (ix_setting == nullptr || std::string(ix_setting) != "0");
     return request.raw_dim == 1 &&
            ((request.device_type == "maca" && (single_target || batch_target)) || ix_batch_target) &&
            direct != nullptr &&
@@ -456,15 +456,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                (request.input_dtype == "complex64" || use_musa_fp64_four_step) &&
                                four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
                                row_leaf->length < 512 && col_leaf->length < 512;
-    const char *ix_large_fusion_setting = std::getenv("FLAGFFT_IX_BLUESTEIN_FOUR_STEP");
-    const bool use_ix_large_four_step =
-        request.device_type == "ix" && request.device_arch == "71" &&
-        request.raw_dim == 1 && request.origin_rank <= 1 &&
-        request.input_dtype == "complex64" && batch == 64 &&
-        bluestein->length == 524287 && four_step != nullptr &&
-        row_leaf != nullptr && col_leaf != nullptr &&
-        row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
-        ix_large_fusion_setting != nullptr && std::string(ix_large_fusion_setting) == "1";
     // Separate from the two-kernel leaf experiment: large convolutions retain
     // one FFT per boundary kernel and execute four kernels in total. Bound
     // each child to the existing 1024-point four-step leaf family.
@@ -473,7 +464,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
         maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
-    const bool use_four_step = use_default_four_step || use_maca_four_step || use_ix_large_four_step;
+    const bool use_four_step = use_default_four_step || use_maca_four_step;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));

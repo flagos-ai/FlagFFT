@@ -240,6 +240,8 @@ or 16384 use tensor exchange and four physical warps. The 1024-point leaf uses
 The 2048-point R2C path uses the fused 1024-point `[16,8,8]` leaf with two
 physical warps. The same exchange policy covers the 8191-point batch-64
 Bluestein plan, whose convolution uses a 16384-point Four-Step child.
+For 23-point batch-64 R2C/C2R, a direct real DFT folds the two conversion
+kernels into the transform; `FLAGFFT_IX_REAL_DIRECT_DFT=0` restores the prior path.
 At length 16384, batch-64 R2C/C2R use a packed 8192-point complex child;
 `FLAGFFT_PACKED_REAL=0` disables this real-transform path.
 At lengths 185640, 340200, 524288, and 663000, batch-64 R2C/C2R also use
