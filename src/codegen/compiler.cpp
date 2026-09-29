@@ -1604,14 +1604,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
-  // Screen IX's small real cubes with the same compact three-leaf path.
-  // Larger IX cubes retain RTRT until their strided and fused-store costs
-  // have been measured separately.
+  // Screen IX's small strided and large fused-store real paths separately.
   const char *ix_real_leaf_override = std::getenv("FLAGFFT_IX_3D_REAL_LEAF");
+  const char *ix_real_fused_override = std::getenv("FLAGFFT_IX_3D_REAL_FUSED");
   const bool ix_real_leaf_screen = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       ix_real_leaf_override != nullptr && std::string(ix_real_leaf_override) == "1";
-  if (request.device_type != "musa" && !ix_real_leaf_screen) return nullptr;
+  const bool ix_real_fused_screen = request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      ix_real_fused_override != nullptr && std::string(ix_real_fused_override) == "1";
+  if (request.device_type != "musa" && !ix_real_leaf_screen && !ix_real_fused_screen) return nullptr;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
@@ -1623,8 +1625,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
-  if (ix_real_leaf_screen && !small) return nullptr;
-  if (!small && !fused_3d_store_enabled()) return nullptr;
+  if (ix_real_leaf_screen && !ix_real_fused_screen && !small) return nullptr;
+  if (!small && !fused_3d_store_enabled() && !ix_real_fused_screen) return nullptr;
 
   FFTRequest n2_request = request;
   n2_request.fft_length = n2;
