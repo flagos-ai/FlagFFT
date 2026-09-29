@@ -1059,9 +1059,9 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
-// Real 3D leaf path.  The innermost axis reads/writes the compact real
-// boundary directly.  The other two axes either run on the natural layout
-// (small cubes) or fuse their output permutations (large cubes).
+// Compact real 3D path.  The innermost axis reads/writes the real boundary
+// directly.  A non-leaf middle axis can run between two transposes while the
+// outer leaf still fuses its final permutation.
 struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   CompiledRaw3DRealLeafNode(int64_t n0,
                             int64_t n1,
@@ -1073,7 +1073,8 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
                             std::shared_ptr<CompiledRawNode> n0_fft,
                             std::shared_ptr<JitKernel> perm_021,
                             DeviceAllocation temp1,
-                            DeviceAllocation temp2);
+                            DeviceAllocation temp2,
+                            std::shared_ptr<JitKernel> perm_210 = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1088,6 +1089,7 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_210;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };

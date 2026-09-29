@@ -2771,7 +2771,8 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
                                                      std::shared_ptr<CompiledRawNode> n0_fft,
                                                      std::shared_ptr<JitKernel> perm_021,
                                                      DeviceAllocation temp1,
-                                                     DeviceAllocation temp2)
+                                                     DeviceAllocation temp2,
+                                                     std::shared_ptr<JitKernel> perm_210)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2781,6 +2782,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
       n1_fft(std::move(n1_fft)),
       n0_fft(std::move(n0_fft)),
       perm_021(std::move(perm_021)),
+      perm_210(std::move(perm_210)),
       temp1(std::move(temp1)),
       temp2(std::move(temp2)) {
 }
@@ -2789,6 +2791,7 @@ std::string CompiledRaw3DRealLeafNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DRealLeaf(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", inverse=" << inverse << ", fused_store=" << fused_store
+      << ", middle_transpose=" << (perm_210 != nullptr)
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
@@ -2819,7 +2822,11 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
         result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
       }
       if (result != FLAGFFT_SUCCESS) return result;
-      return n0_fft->execute(fused_store ? temp1.get() : temp2.get(), output, n0_context);
+      if (perm_210) {
+        launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch);
+      }
+      return n0_fft->execute(perm_210 ? temp2.get() :
+                             (fused_store ? temp1.get() : temp2.get()), output, n0_context);
     }
 
     // Axes commute, so the compact n1/n0 transforms can precede the real
@@ -2831,6 +2838,12 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
       result = n1_fft->execute(input, temp1.get(), n1_context);
     }
     if (result != FLAGFFT_SUCCESS) return result;
+    if (perm_210) {
+      launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch);
+      result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return n2_real_fft->execute(temp2.get(), output, n2_context);
+    }
     result = n0_fft->execute(fused_store ? temp2.get() : temp1.get(),
                              fused_store ? temp1.get() : temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) return result;

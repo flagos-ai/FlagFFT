@@ -1501,12 +1501,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
-  // A non-leaf axis retains the general RTRT fallback.
+  // A non-leaf middle axis can stay in the compact real layout on HCU.
   if (request.device_type != "musa" && request.device_type != "hcu") return nullptr;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
-  if (!n2_leaf || !n1_leaf || !n0_leaf) return nullptr;
+  if (!n2_leaf || !n0_leaf) return nullptr;
 
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1514,6 +1514,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
+  const char *real_hybrid_override = std::getenv("FLAGFFT_HCU_3D_REAL_HYBRID");
+  const bool real_hybrid = !n1_leaf && request.device_type == "hcu" && !small &&
+                           n1 >= 4 * std::max(n0, n2) && fused_3d_store_enabled() &&
+                           (real_hybrid_override == nullptr || std::string(real_hybrid_override) != "0");
+  if (!n1_leaf && !real_hybrid) return nullptr;
   if (!small && !fused_3d_store_enabled()) return nullptr;
 
   FFTRequest n2_request = request;
@@ -1543,6 +1548,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_210;
   if (small) {
     n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
     n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
@@ -1551,7 +1557,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     // writes in the layout consumed by the next axis, leaving natural compact
     // (n0,n1,half) order after n0.
     perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
-    n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner");
+    if (real_hybrid) {
+      n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+      perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
+    } else {
+      n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner");
+    }
     n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
   }
 
@@ -1568,7 +1579,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                                      std::move(n0_fft),
                                                      std::move(perm_021),
                                                      std::move(temp1),
-                                                     std::move(temp2));
+                                                     std::move(temp2),
+                                                     std::move(perm_210));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
