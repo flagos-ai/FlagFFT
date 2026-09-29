@@ -1523,18 +1523,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
-  if (!n2_leaf || !n1_leaf || !n0_leaf) return nullptr;
+  const bool maca_prime_compact = request.device_type == "maca" &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_COMPACT", false);
+  if (!n2_leaf || !n0_leaf || (!n1_leaf && !maca_prime_compact)) return nullptr;
 
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const int64_t n2 = node->n2;
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
-  const bool small = packed <= 64 * 64 * 64 ||
+  const bool small = n1_leaf && (packed <= 64 * 64 * 64 ||
       (request.device_type == "maca" &&
-       maca_flag_or_default("FLAGFFT_MACA_3D_LARGE_STRIDED", false));
+       maca_flag_or_default("FLAGFFT_MACA_3D_LARGE_STRIDED", false)));
   if (!small && request.device_type == "musa" && !fused_3d_store_enabled()) return nullptr;
   const auto layout = small ? CompiledRaw3DRealLeafNode::Layout::Strided
+      : !n1_leaf ? CompiledRaw3DRealLeafNode::Layout::Transposed
       : fused_3d_store_enabled() ? CompiledRaw3DRealLeafNode::Layout::FusedStore
                                  : CompiledRaw3DRealLeafNode::Layout::Transposed;
 
@@ -1578,7 +1581,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner");
     n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
   } else {
-    n1_fft = compile_raw_leaf(*n1_leaf, n1_request);
+    n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request)
+                     : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
     n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
     if (inverse) {
       perm_first = compile_transpose3d_kernel(request, n0, n1, half, "120");
