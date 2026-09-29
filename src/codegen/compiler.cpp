@@ -1450,9 +1450,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // A 16x16 plane fits in one block. Transform n2 and n1 together so a
   // 16^3 cube needs only one plane launch plus the outer strided leaf.
   const char *fused16_override = std::getenv("FLAGFFT_MUSA_3D_FUSED16");
-  if (request.device_type == "musa" && n0 == 16 && n1 == 16 && n2 == 16 &&
-      batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
-      (fused16_override == nullptr || std::string(fused16_override) != "0")) {
+  const char *ix_fused16_override = std::getenv("FLAGFFT_IX_3D_FUSED16");
+  const bool fused16_enabled =
+      (request.device_type == "musa" &&
+       (fused16_override == nullptr || std::string(fused16_override) != "0")) ||
+      (request.device_type == "ix" && request.device_arch == "71" &&
+       request.input_dtype == "complex64" && request.output_dtype == request.input_dtype &&
+       ix_fused16_override != nullptr &&
+       std::string(ix_fused16_override) == "1");
+  if (fused16_enabled && n0 == 16 && n1 == 16 && n2 == 16 &&
+      batch <= 4 && n0_leaf && n1_leaf && n2_leaf) {
     std::vector<double> tw_r_d(8);
     std::vector<double> tw_i_d(8);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
@@ -1592,9 +1599,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
-  // Keep this path on the backend where its layout and launch costs have
-  // been measured.  A non-leaf axis retains the general RTRT fallback.
-  if (request.device_type != "musa") return nullptr;
+  // Screen IX's small real cubes with the same compact three-leaf path.
+  // Larger IX cubes retain RTRT until their strided and fused-store costs
+  // have been measured separately.
+  const char *ix_real_leaf_override = std::getenv("FLAGFFT_IX_3D_REAL_LEAF");
+  const bool ix_real_leaf_screen = request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      ix_real_leaf_override != nullptr && std::string(ix_real_leaf_override) == "1";
+  if (request.device_type != "musa" && !ix_real_leaf_screen) return nullptr;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
@@ -1606,6 +1618,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
+  if (ix_real_leaf_screen && !small) return nullptr;
   if (!small && !fused_3d_store_enabled()) return nullptr;
 
   FFTRequest n2_request = request;
