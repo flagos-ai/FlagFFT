@@ -419,7 +419,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_maca_3d_boundary =
         request.device_type == "maca" && request.origin_rank == 3 &&
         bluestein->length == 997 && batch <= 4096 &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_BOUNDARY", false);
+        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_BOUNDARY", true);
     const bool use_maca_boundary_leaf =
         request.device_type == "maca" && leaf != nullptr &&
         ((batch == 1 &&
