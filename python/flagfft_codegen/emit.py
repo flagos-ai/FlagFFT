@@ -764,19 +764,21 @@ def _emit_tiled_transpose3d_jit_kernel(
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
     elif dtype == "complex64" and _portable_transpose3d_supported():
         tile = 32
+        packed_complex = False
         if _ix_backend_active():
             ix_tile = os.getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE")
             if ix_tile is not None:
                 if ix_tile not in {"8", "16", "32"}:
                     raise ValueError("FLAGFFT_IX_3D_TRANSPOSE_TILE must be 8, 16 or 32")
                 tile = int(ix_tile)
+            packed_complex = os.getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE") == "1"
         (
             kernel_name,
             kernel_source,
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=tile
+            n0, n1, n2, order, dtype, tile=tile, packed_complex=packed_complex
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(

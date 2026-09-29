@@ -220,7 +220,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::Transpose3D && adaptor::backend_name() == "ix") {
     const char *tile = std::getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE");
+    const char *packed = std::getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE");
     cache_key += ";ix-3d-transpose-tile=" + std::string(tile != nullptr ? tile : "32");
+    cache_key += ";ix-3d-packed-transpose=" + std::string(packed != nullptr &&
+                                                         std::string(packed) == "1" ? "1" : "0");
   }
   KernelCacheState &state = kernel_cache_state();
   {
