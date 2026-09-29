@@ -319,10 +319,13 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
             compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
       }
       const char *ix_graph = std::getenv("FLAGFFT_IX_3D_GRAPH");
-      const bool screen_ix_graph = adaptor::backend_name() == "ix" && ix_graph != nullptr &&
-          ix_graph[0] == '1' && ix_graph[1] == '\0' &&
+      const char *ix_large_graph = std::getenv("FLAGFFT_IX_3D_GRAPH_LARGE");
+      const bool small_graph = ix_graph != nullptr && ix_graph[0] == '1' && ix_graph[1] == '\0' &&
+          three_dim->n0 <= 32 && three_dim->n1 <= 32 && three_dim->n2 <= 32;
+      const bool large_graph = ix_large_graph != nullptr && ix_large_graph[0] == '1' &&
+          ix_large_graph[1] == '\0';
+      const bool screen_ix_graph = adaptor::backend_name() == "ix" && (small_graph || large_graph) &&
           std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr && plan->desc.batch <= 4 &&
-          three_dim->n0 <= 32 && three_dim->n1 <= 32 && three_dim->n2 <= 32 &&
           (plan->desc.type == FLAGFFT_C2C || plan->desc.type == FLAGFFT_R2C ||
            plan->desc.type == FLAGFFT_C2R);
       if (screen_ix_graph) {
