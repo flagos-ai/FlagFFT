@@ -1309,7 +1309,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_tiled_transpose_kernel(const 
 std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
     const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order) {
   std::string target = triton_target_for_request(request);
-  KernelKey key = KernelKey::transpose3d(target, request.input_dtype, n0, n1, n2, order);
+  // The 3D real paths permute compact complex intermediates, even when the
+  // public transform starts or ends with real values.
+  const std::string dtype = request.device_type == "maca"
+                                ? complex_dtype_for(request.input_dtype)
+                                : request.input_dtype;
+  KernelKey key = KernelKey::transpose3d(target, dtype, n0, n1, n2, order);
   return compile_kernel(key);
 }
 
