@@ -543,6 +543,7 @@ def emit_jit_kernel(
     four_step_n1: int,
     four_step_n2: int,
     perm_form: str = "outer",
+    hcu_full_smem: bool = False,
     out_dir: Path,
 ) -> dict[str, Any]:
     plan = LeafPlan(
@@ -575,6 +576,7 @@ def emit_jit_kernel(
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
             perm_form=perm_form,
+            hcu_full_smem=hcu_full_smem,
         )
         n1 = four_step_n1 if spec.is_four_step else 0
         n2 = four_step_n2 if spec.is_four_step else 0
@@ -661,6 +663,7 @@ def emit_jit_kernel(
         n1=n1,
         n2=n2,
         dtype=dtype,
+        hcu_full_smem=hcu_full_smem,
     )
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block

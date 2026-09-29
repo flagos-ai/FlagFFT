@@ -854,6 +854,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.smem_size,
                                                  perm_form);
   if (strided_input) key.kind = KernelKind::LeafStridedPermutedStore;
+  const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
+  key.hcu_full_smem = request.device_type == "hcu" && request.origin_rank == 3 &&
+                      !request.real_transform && request.input_dtype == "complex128" &&
+                      leaf.length == 256 &&
+                      (full_smem_override == nullptr || std::string(full_smem_override) != "0");
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   // Same argument shape as the strided leaf: the permutation span rides in the
   // slot that carries outer_stride there, so the node is reused unchanged.

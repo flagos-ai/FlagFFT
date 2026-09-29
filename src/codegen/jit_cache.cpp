@@ -422,6 +422,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::LeafR2CPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
+  if (key.hcu_full_smem) jit_command << " --hcu-3d-full-smem";
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
       key.kind == KernelKind::DirectDftR2C || key.kind == KernelKind::DirectDftC2R) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);

@@ -460,7 +460,7 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
     return _profile_batch_pack_for(plan)
 
 
-def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
+def permuted_store_batch_pack_for(plan: LeafPlan, *, force_full_smem: bool = False) -> int:
     """Batch slots per block for the fused permuted store.
 
     Four is the FP32 default.  With paired complex stores on MUSA, FP64 pack
@@ -480,12 +480,14 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
                 raise ValueError("FLAGFFT_MUSA_3D_PACK must be 1, 2, 4 or 8")
             target_pack = int(override)
     if _hcu_backend_active():
+        if force_full_smem:
+            target_pack = 8
         override = os.getenv("FLAGFFT_HCU_3D_PACK")
         if override is not None and override != "auto":
             if override not in {"1", "2", "4", "8", "16", "32"}:
                 raise ValueError("FLAGFFT_HCU_3D_PACK must be 1, 2, 4, 8, 16 or 32")
             target_pack = int(override)
-        if (os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0") == "1"
+        if ((force_full_smem or os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0") == "1")
                 and len(plan.factors) == 2):
             # The normal 48 KiB budget preserves occupancy.  For this HCU
             # two-stage experiment, admit a pack only when its exchange fits

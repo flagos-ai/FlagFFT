@@ -2684,6 +2684,7 @@ def _build_leaf_kernel_source_for_io(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
     perm_form: str = "outer",
+    hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
     if _use_thread_local_mixed_leaf(
         plan,
@@ -2731,7 +2732,7 @@ def _build_leaf_kernel_source_for_io(
         "rader_finish_leaf",
     }
     if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
-        batch_pack = permuted_store_batch_pack_for(plan)
+        batch_pack = permuted_store_batch_pack_for(plan, force_full_smem=hcu_full_smem)
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
             plan, real_boundary=io_mode in {"contiguous_r2c", "packed_r2c", "contiguous_c2r"}

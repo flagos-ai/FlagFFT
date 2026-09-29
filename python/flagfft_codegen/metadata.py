@@ -127,9 +127,10 @@ def _metadata(
     n1: int,
     n2: int,
     dtype: str,
+    hcu_full_smem: bool = False,
 ) -> dict[str, Any]:
     if kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}:
-        batch_per_block = permuted_store_batch_pack_for(plan)
+        batch_per_block = permuted_store_batch_pack_for(plan, force_full_smem=hcu_full_smem)
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(
             plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}

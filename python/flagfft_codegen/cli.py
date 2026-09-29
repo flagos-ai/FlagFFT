@@ -111,6 +111,7 @@ def main() -> None:
         default="outer",
         help="axis placement for the permuted store's fused permutation",
     )
+    parser.add_argument("--hcu-3d-full-smem", action="store_true")
     parser.add_argument("--bluestein-n", type=int)
     parser.add_argument("--bluestein-m", type=int)
     parser.add_argument("--rader-n", type=int)
@@ -253,7 +254,8 @@ def main() -> None:
         profile_dir += (f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"
                         f"-fp64-tile-{fp64_tile}-warps-{fused_warps}"
                         f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
-                        f"-full-smem-{full_smem}-vec-load-{vec_load}")
+                        f"-full-smem-{full_smem}-key-full-{int(args.hcu_3d_full_smem)}"
+                        f"-vec-load-{vec_load}")
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
@@ -384,6 +386,7 @@ def main() -> None:
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,
+            hcu_full_smem=args.hcu_3d_full_smem,
             out_dir=args.out_dir,
         )
     else:
