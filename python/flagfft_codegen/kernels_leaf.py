@@ -89,7 +89,6 @@ def _portable_complex_vector_io() -> bool:
     """
     return (
         (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
-        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_VEC_LOAD", "0") == "1")
     )
 
 

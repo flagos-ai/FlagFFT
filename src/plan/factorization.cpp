@@ -123,17 +123,6 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
-  if (context.device_type == "hcu" && context.origin_rank == 3 && n == 2048) {
-    if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_2048_FACTORS")) {
-      const std::string choice(override_value);
-      if (choice == "16,16,8") return {16, 16, 8};
-      if (choice == "16,8,16") return {16, 8, 16};
-      if (choice == "8,16,16") return {8, 16, 16};
-      if (choice == "8,8,8,4") return {8, 8, 8, 4};
-      if (choice == "32,32,2") return {32, 32, 2};
-      throw std::runtime_error("FLAGFFT_HCU_3D_2048_FACTORS must be 16,16,8, 16,8,16, 8,16,16, 8,8,8,4 or 32,32,2");
-    }
-  }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
     const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
     if (override_value != nullptr) {
