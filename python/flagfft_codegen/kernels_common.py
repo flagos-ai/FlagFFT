@@ -887,6 +887,13 @@ def _use_single_smem_buffer(
     four_step_n2: int = 0,
 ) -> bool:
     """Reuse one shared buffer between generated mixed-radix stages."""
+    if (io_mode == "permuted_store" and _mthreads_backend_active()
+            and len(plan.factors) == 2
+            and os.getenv("FLAGFFT_MUSA_3D_SINGLE_SMEM", "0") == "1"):
+        # The first stage writes shared memory and the final stage only reads
+        # it before storing to global memory, so this two-stage case needs no
+        # in-place exchange barrier.
+        return True
     if _leaf_single_smem_buffer_eligible(
         plan,
         io_mode=io_mode,
