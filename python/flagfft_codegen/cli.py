@@ -228,11 +228,14 @@ def main() -> None:
     if profile.backend == "hcu":
         pair_store = os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
+        fp64_tile = os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "0")
         if pair_store not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_PAIR_STORE must be 0 or 1")
         if permuted_pack not in {"auto", "1", "2", "4", "8"}:
             parser.error("FLAGFFT_HCU_3D_PACK must be auto, 1, 2, 4 or 8")
-        profile_dir += f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"
+        if fp64_tile not in {"0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_FP64_TILE must be 0 or 1")
+        profile_dir += f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}-fp64-tile-{fp64_tile}"
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.

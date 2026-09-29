@@ -780,12 +780,17 @@ def test_hcu_fp64_3d_transpose_uses_register_tile(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
     token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64))
     try:
+        default_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=16, n1=33, n2=997, order="210", dtype="complex128", out_dir=tmp_path / "default"
+        )
+        monkeypatch.setenv("FLAGFFT_HCU_3D_FP64_TILE", "1")
         metadata = emit._emit_tiled_transpose3d_jit_kernel(
-            n0=16, n1=33, n2=997, order="210", dtype="complex128", out_dir=tmp_path
+            n0=16, n1=33, n2=997, order="210", dtype="complex128", out_dir=tmp_path / "tiled"
         )
     finally:
         reset_profile(token)
 
+    assert default_metadata["grid_x_override"] == 0
     assert "t16_tile" in metadata["kernel_name"]
     assert metadata["grid_x_override"] == 33 * ((16 + 15) // 16) * ((997 + 15) // 16)
     source = Path(metadata["module_path"]).read_text()

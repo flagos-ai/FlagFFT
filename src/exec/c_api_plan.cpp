@@ -319,9 +319,14 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
             compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
       }
       const char *graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH");
+      const char *large_graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH_LARGE");
+      const int64_t graph_max_elements = large_graph_override != nullptr &&
+                                          std::string(large_graph_override) == "1"
+                                              ? 4 * 1024 * 1024
+                                              : 64 * 64 * 64;
       const bool graph_allowed = plan->executable.forward_request.device_type == "hcu" &&
                                  plan->desc.batch * three_dim->n0 * three_dim->n1 * three_dim->n2 <=
-                                     4 * 1024 * 1024 &&
+                                     graph_max_elements &&
                                  std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
                                  (graph_override == nullptr || std::string(graph_override) != "0");
       if (graph_allowed) {
