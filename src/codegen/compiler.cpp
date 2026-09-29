@@ -1555,10 +1555,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                               n1_leaf && strided_large_override != nullptr &&
                               std::string(strided_large_override) == "1";
   const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
+  const bool c2r_fused_load_default = !(request.input_dtype == "complex64" && batch >= 4 &&
+                                        n0 == 256 && n1 == 256 && n2 == 256);
   const bool n1_strided_input = request.device_type == "hcu" && inverse && !small &&
                                 !direct_strided && n1_leaf &&
-                                c2r_fused_load_override != nullptr &&
-                                std::string(c2r_fused_load_override) == "1";
+                                (c2r_fused_load_override == nullptr
+                                     ? c2r_fused_load_default
+                                     : std::string(c2r_fused_load_override) == "1");
   const char *real_hybrid_override = std::getenv("FLAGFFT_HCU_3D_REAL_HYBRID");
   const bool real_hybrid = !n1_leaf && request.device_type == "hcu" && !small &&
                            n1 >= 4 * std::max(n0, n2) && fused_3d_store_enabled() &&
