@@ -17,11 +17,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from .artifacts import write_text_atomic
-from .kernels_common import _dtype_suffix, _ix_backend_active
+from .kernels_common import _dtype_suffix
 from .metadata import _module_source, _signature
 
 
@@ -36,13 +35,6 @@ def emit_fused_plane_kernel(
     """
     if n not in (16, 32):
         raise ValueError("fused plane supports 16 or 32")
-    num_warps = 8
-    if _ix_backend_active():
-        value = os.getenv("FLAGFFT_IX_3D_PLANE_WARPS")
-        if value is not None:
-            if value not in {"2", "4", "8"}:
-                raise ValueError("FLAGFFT_IX_3D_PLANE_WARPS must be 2, 4 or 8")
-            num_warps = int(value)
     bits = n.bit_length() - 1
     plane_size = n * n
     load_source = (
@@ -122,7 +114,7 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "module_path": str(module_path),
         "kernel_name": "fused_plane_fft_kernel",
         "signature": _signature(args, dtype),
-        "num_warps": num_warps,
+        "num_warps": 8,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
