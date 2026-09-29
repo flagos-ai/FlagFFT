@@ -184,6 +184,10 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
         if (choice != "16") {
           throw std::runtime_error("FLAGFFT_HCU_3D_16_FACTORS must be 16, 4,4, 2,2,2,2, 4,2,2, 2,2,4, 2,8 or 8,2");
         }
+      } else if (context.batch >= 10000) {
+        // Long-axis 3D plans run enough short outer FFTs to amortize the
+        // extra exchange; small 16^3 cubes keep the direct codelet.
+        return {4, 4};
       }
     }
     // The direct radix-16 codelet avoids a shared-memory round trip.

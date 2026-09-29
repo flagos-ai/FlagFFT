@@ -411,8 +411,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_hcu_3d_fp64_full_leaf = request.device_type == "hcu" &&
                                           request.input_dtype == "complex128" && request.origin_rank == 3 &&
                                           bluestein->length == 997 && batch <= 4096 &&
-                                          hcu_full_leaf_override != nullptr &&
-                                          std::string(hcu_full_leaf_override) == "1";
+                                          (hcu_full_leaf_override == nullptr ||
+                                           std::string(hcu_full_leaf_override) != "0");
     // MACA's portable register exchange is compiled separately for each FFT.
     // Combining both FFTs makes this plugin's optimization prohibitively slow.
     const bool allow_bluestein_fusion = request.device_type != "maca";
@@ -1582,8 +1582,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
 
   const char *r2c_permute_override = std::getenv("FLAGFFT_HCU_3D_R2C_PERMUTED_STORE");
   const bool n2_permuted = request.device_type == "hcu" && !inverse && !small &&
-                           n1_leaf && r2c_permute_override != nullptr &&
-                           std::string(r2c_permute_override) == "1";
+                           n1_leaf &&
+                           (r2c_permute_override == nullptr ||
+                            std::string(r2c_permute_override) != "0");
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   if (n2_permuted) {
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
