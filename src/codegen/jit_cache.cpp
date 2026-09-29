@@ -206,10 +206,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
+    const char *pack = std::getenv("FLAGFFT_IX_3D_PACK");
     cache_key += ";ix-3d-direct-store=" + std::string(direct_store != nullptr &&
                                                        std::string(direct_store) == "1" ? "1" : "0");
     cache_key += ";ix-3d-pair-store=" + std::string(pair_store != nullptr &&
                                                      std::string(pair_store) == "1" ? "1" : "0");
+    cache_key += ";ix-3d-pack=" + std::string(pack != nullptr ? pack : "auto");
   }
   KernelCacheState &state = kernel_cache_state();
   {
