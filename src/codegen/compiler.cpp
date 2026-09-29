@@ -404,6 +404,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                          request.input_dtype == "complex128" && batch == 1;
     const bool use_musa_s5000_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
                                                request.input_dtype == "complex128" && batch == 1;
+    const bool use_musa_3d_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
+                                           request.input_dtype == "complex128" && request.origin_rank == 3 &&
+                                           bluestein->length == 997 && batch <= 4096;
     // MACA's portable register exchange is compiled separately for each FFT.
     // Combining both FFTs makes this plugin's optimization prohibitively slow.
     const bool allow_bluestein_fusion = request.device_type != "maca";
@@ -416,7 +419,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION", maca_1d_single_policy_);
     const bool use_full_leaf =
         allow_bluestein_fusion &&
-        (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf) &&
+        (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
+         use_musa_3d_fp64_full_leaf) &&
         leaf != nullptr;
     // Batched S5000 FP64 convolutions can fuse the boundary when both
     // leaves fit the bounds below and the complete batch fits the existing
@@ -1342,6 +1346,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   if (request.device_type == "musa" && request.input_dtype == "complex64" &&
       n2_leaf && n1_leaf && n0_leaf &&
       fused_3d_store_enabled() && n1 >= 1024 &&
+      n1 >= 4 * std::max(n0, n2) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
