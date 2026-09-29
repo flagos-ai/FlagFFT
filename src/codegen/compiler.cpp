@@ -1473,10 +1473,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                       std::move(n1_fft),
                                                       std::move(n0_fft),
                                                       std::move(temp1),
-                                                      std::move(temp2),
-                                                      request.device_type == "maca" && n0 == 32 && n1 == 32 &&
-                                                          n2 == 32 && batch <= 4 &&
-                                                          maca_flag_or_default("FLAGFFT_MACA_3D_GRAPH", true));
+                                                      std::move(temp2));
   }
 
   std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);

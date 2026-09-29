@@ -2620,8 +2620,7 @@ CompiledRaw3DStridedNode::CompiledRaw3DStridedNode(int64_t n0,
                                                    std::shared_ptr<CompiledRawNode> n1_fft,
                                                    std::shared_ptr<CompiledRawNode> n0_fft,
                                                    DeviceAllocation temp1,
-                                                   DeviceAllocation temp2,
-                                                   bool enable_graph)
+                                                   DeviceAllocation temp2)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2629,8 +2628,7 @@ CompiledRaw3DStridedNode::CompiledRaw3DStridedNode(int64_t n0,
       n1_fft(std::move(n1_fft)),
       n0_fft(std::move(n0_fft)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)),
-      graph_enabled_(enable_graph) {
+      temp2(std::move(temp2)) {
 }
 
 std::string CompiledRaw3DStridedNode::describe() const {
@@ -2648,43 +2646,21 @@ flagfftResult CompiledRaw3DStridedNode::execute(adaptor::DevicePtr input,
   try {
     const int64_t batch = context.batch;
 
-    if (graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
-      graph_->launch(context.stream);
-      return FLAGFFT_SUCCESS;
-    }
-
     // The cube stays in its natural (n0,n1,n2) layout throughout; each
     // non-contiguous axis is transformed in place with its own stride.
     RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * n2};
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * n2};
 
-    auto run_sequence = [&]() -> flagfftResult {
-      flagfftResult result = n2_fft->execute(input, temp1.get(), n2_context);
-      if (result != FLAGFFT_SUCCESS) return result;
-      result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
-      if (result != FLAGFFT_SUCCESS) return result;
-      return n0_fft->execute(temp2.get(), output, n0_context);
-    };
-    flagfftResult result = run_sequence();
-    if (result != FLAGFFT_SUCCESS) return result;
-
-    if (graph_enabled_ && graph_ == nullptr && !graph_failed_) {
-      try {
-        auto graph = std::make_unique<adaptor::CudaGraph>();
-        graph->begin_capture(context.stream);
-        result = run_sequence();
-        if (result != FLAGFFT_SUCCESS) throw std::runtime_error("3D graph capture launch failed");
-        graph->end_capture(context.stream);
-        graph->launch(context.stream);
-        graph_ = std::move(graph);
-        graph_in_ = input;
-        graph_out_ = output;
-      } catch (const std::exception &) {
-        graph_failed_ = true;
-      }
+    flagfftResult result = n2_fft->execute(input, temp1.get(), n2_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
     }
-    return FLAGFFT_SUCCESS;
+    result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    if (result != FLAGFFT_SUCCESS) {
+      return result;
+    }
+    return n0_fft->execute(temp2.get(), output, n0_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D strided execute failed: %s\n", e.what());
     std::fflush(stderr);
