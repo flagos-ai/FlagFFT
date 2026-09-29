@@ -52,6 +52,21 @@ namespace {
     const bool is_ix_single_fp32_target = batch == 1 && ix_packed_real_policy_enabled(request);
     const bool is_ix_batch_fp32_target = batch == 64 && n == 16384 &&
         ix_ct_batch_policy_enabled(request);
+    const char *ix_batch_setting = std::getenv("FLAGFFT_IX_CT_BATCH");
+    if (request.device_type == "ix" && request.device_arch == "71" &&
+        batch == 64 && (n == 185640 || n == 340200 || n == 524288 || n == 663000) &&
+        ix_batch_setting != nullptr && std::string(ix_batch_setting) != "0" &&
+        std::string(ix_batch_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_CT_BATCH must be 0 or 1");
+    }
+    const bool is_ix_large_batch_fp32_target =
+        request.device_type == "ix" && request.device_arch == "71" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 &&
+        request.fft_length == n && request.input_dtype == "complex64" &&
+        request.output_dtype == "complex64" &&
+        (n == 185640 || n == 340200 || n == 524288 || n == 663000) &&
+        !request.input_strides.empty() && request.input_strides.back() == 1 &&
+        (ix_batch_setting == nullptr || std::string(ix_batch_setting) != "0");
     const char *maca_batch_setting = std::getenv("FLAGFFT_MACA_1D_BATCH");
     const bool is_maca_batch_real_target =
         request.device_type == "maca" && request.device_arch == "102" &&
@@ -67,12 +82,12 @@ namespace {
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
         (n == 185640 || n == 340200 || n == 524288 || n == 663000);
     if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target &&
-        !is_ix_single_fp32_target && !is_ix_batch_fp32_target &&
+        !is_ix_single_fp32_target && !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target) {
       return std::nullopt;
     }
     if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target &&
-        !is_ix_batch_fp32_target &&
+        !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target &&
         (request.input_dtype != "complex128" || n < 65536 ||
          (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
@@ -122,7 +137,8 @@ namespace {
     const bool child_is_leaf_pair = four_step != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
-    if (!force && (is_ix_single_fp32_target || is_ix_batch_fp32_target)) {
+    if (!force && (is_ix_single_fp32_target || is_ix_batch_fp32_target ||
+                   is_ix_large_batch_fp32_target)) {
       if (!child_is_leaf_pair) return std::nullopt;
       return PackedRealChild {std::move(child_request), std::move(child_plan)};
     }
@@ -181,9 +197,9 @@ namespace {
     return std::string(value) == "1";
   }
 
-  bool maca_real_direct_dft_enabled(const PlanNodePtr &node,
-                                    const FFTRequest &request,
-                                    int64_t batch) {
+  bool real_direct_dft_enabled(const PlanNodePtr &node,
+                               const FFTRequest &request,
+                               int64_t batch) {
     // Keep real DirectDFT at the public rank-1 boundary. Batch 64 at N=23
     // avoids two conversion launches, with a separate opt-out for this path.
     auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node);
@@ -195,8 +211,16 @@ namespace {
                               request.batch == 64 && batch == 64 && request.requested_n == 23 &&
                               (batch_policy == nullptr || std::string(batch_policy) != "0") &&
                               maca_flag_or_default("FLAGFFT_MACA_BATCH_REAL_DIRECT_DFT", true);
-    return request.device_type == "maca" && request.raw_dim == 1 &&
-           (single_target || batch_target) && direct != nullptr &&
+    const char *ix_setting = std::getenv("FLAGFFT_IX_REAL_DIRECT_DFT");
+    const bool ix_batch_target = request.device_type == "ix" && request.device_arch == "71" &&
+                                 request.origin_rank <= 1 && request.batch == 64 && batch == 64 &&
+                                 request.requested_n == 23 && request.input_dtype == "complex64" &&
+                                 request.output_dtype == "complex64" &&
+                                 !request.input_strides.empty() && request.input_strides.back() == 1 &&
+                                 ix_setting != nullptr && std::string(ix_setting) == "1";
+    return request.raw_dim == 1 &&
+           ((request.device_type == "maca" && (single_target || batch_target)) || ix_batch_target) &&
+           direct != nullptr &&
            direct->length == request.requested_n && direct->length > 0 &&
            direct->length <= kDirectDftMaxN &&
            (request.input_dtype == "complex64" || request.input_dtype == "complex128");
@@ -432,6 +456,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                (request.input_dtype == "complex64" || use_musa_fp64_four_step) &&
                                four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
                                row_leaf->length < 512 && col_leaf->length < 512;
+    const char *ix_large_fusion_setting = std::getenv("FLAGFFT_IX_BLUESTEIN_FOUR_STEP");
+    const bool use_ix_large_four_step =
+        request.device_type == "ix" && request.device_arch == "71" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 &&
+        request.input_dtype == "complex64" && batch == 64 &&
+        bluestein->length == 524287 && four_step != nullptr &&
+        row_leaf != nullptr && col_leaf != nullptr &&
+        row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
+        ix_large_fusion_setting != nullptr && std::string(ix_large_fusion_setting) == "1";
     // Separate from the two-kernel leaf experiment: large convolutions retain
     // one FFT per boundary kernel and execute four kernels in total. Bound
     // each child to the existing 1024-point four-step leaf family.
@@ -440,7 +473,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
         maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
-    const bool use_four_step = use_default_four_step || use_maca_four_step;
+    const bool use_four_step = use_default_four_step || use_maca_four_step || use_ix_large_four_step;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
@@ -646,7 +679,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
-  if (maca_real_direct_dft_enabled(node, request, batch)) {
+  if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, false);
   }
   // Pack even/odd input samples, run a half-length complex leaf, and
@@ -747,7 +780,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
-  if (maca_real_direct_dft_enabled(node, request, batch)) {
+  if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, true);
   }
   if (auto packed_child =

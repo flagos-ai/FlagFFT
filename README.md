@@ -242,6 +242,9 @@ physical warps. The same exchange policy covers the 8191-point batch-64
 Bluestein plan, whose convolution uses a 16384-point Four-Step child.
 At length 16384, batch-64 R2C/C2R use a packed 8192-point complex child;
 `FLAGFFT_PACKED_REAL=0` disables this real-transform path.
+At lengths 185640, 340200, 524288, and 663000, batch-64 R2C/C2R also use
+the packed half-length complex Four-Step child. These cases keep the full-length
+path when `FLAGFFT_IX_CT_BATCH=0` or `FLAGFFT_PACKED_REAL=0`.
 Set `FLAGFFT_IX_FUSED_R2C=0` before starting the process to
 restore the prior full-length R2C leaf. Set `FLAGFFT_IX_CT_BATCH=0` to
 compare with the previous batch path.
