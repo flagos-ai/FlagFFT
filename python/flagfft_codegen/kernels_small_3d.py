@@ -110,3 +110,96 @@ def fused_{plane_size}_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     }
     write_text_atomic(out_dir / f"{name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
+
+
+def emit_fused_16_cube_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
+    """Compute one output plane per block, including the outer 16-point DFT.
+
+    Each block rereads the small cube, so there is no global synchronization
+    between axes. The outer DFT is evaluated directly before the two inner
+    radix-two FFTs; this trades redundant cached reads for one launch.
+    """
+    scalar = "tl.float64" if dtype == "complex128" else "tl.float32"
+    source = f"""
+@triton.jit
+def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
+    output_plane = tl.program_id(0) % 16
+    cube = tl.program_id(0) // 16
+    idx = tl.arange(0, 256)
+    row = idx // 16
+    col = idx % 16
+    rev_row = tl.full((256,), 0, tl.int32)
+    rev_col = tl.full((256,), 0, tl.int32)
+    for bit in tl.static_range(4):
+        rev_row = (rev_row << 1) | ((row >> bit) & 1)
+        rev_col = (rev_col << 1) | ((col >> bit) & 1)
+
+    xr = tl.full((256,), 0.0, {scalar})
+    xi = tl.full((256,), 0.0, {scalar})
+    for input_plane in tl.static_range(16):
+        src = ((cube * 16 + input_plane) * 256 + rev_row * 16 + rev_col) * 2
+        ar = tl.load(in_ptr + src)
+        ai = tl.load(in_ptr + src + 1)
+        phase = (input_plane * output_plane) % 16
+        wr = tl.load(tw_r_ptr + phase)
+        wi = tl.load(tw_i_ptr + phase)
+        xr = xr + wr * ar - wi * ai
+        xi = xi + wr * ai + wi * ar
+
+    for stage in tl.static_range(4):
+        partner = idx ^ (1 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (col & (1 << stage)) != 0
+        ar = tl.where(upper, pr, xr)
+        ai = tl.where(upper, pi, xi)
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        tw = (col & ((1 << stage) - 1)) * (16 >> (stage + 1))
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        tr = wr * br - wi * bi
+        ti = wr * bi + wi * br
+        xr = tl.where(upper, ar - tr, ar + tr)
+        xi = tl.where(upper, ai - ti, ai + ti)
+
+    for stage in tl.static_range(4):
+        partner = idx ^ (16 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (row & (1 << stage)) != 0
+        ar = tl.where(upper, pr, xr)
+        ai = tl.where(upper, pi, xi)
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        tw = (row & ((1 << stage) - 1)) * (16 >> (stage + 1))
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        tr = wr * br - wi * bi
+        ti = wr * bi + wi * br
+        xr = tl.where(upper, ar - tr, ar + tr)
+        xi = tl.where(upper, ai - ti, ai + ti)
+
+    dst = ((cube * 16 + output_plane) * 256 + idx) * 2
+    tl.store(out_ptr + dst, xr)
+    tl.store(out_ptr + dst + 1, xi)
+"""
+    name = f"flagfft_jit_fused_16_cube_{direction}_{_dtype_suffix(dtype)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{name}.py"
+    write_text_atomic(module_path, _module_source(source))
+    args = ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": "fused_16_cube_fft_kernel",
+        "signature": _signature(args, dtype),
+        "num_warps": 4,
+        "num_stages": 1,
+        "batch_per_block": 1,
+        "arg_names": args,
+        "kernel_type": "fused_16_cube",
+        "dtype": dtype,
+        "direction": direction,
+    }
+    write_text_atomic(out_dir / f"{name}.json", json.dumps(metadata, sort_keys=True))
+    return metadata

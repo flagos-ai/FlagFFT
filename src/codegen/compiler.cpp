@@ -1373,6 +1373,33 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                        (fused16_override == nullptr || std::string(fused16_override) != "0");
   const bool fused32 = request.device_type == "hcu" && n0 == 32 && n1 == 32 && n2 == 32 &&
                        (fused32_override == nullptr || std::string(fused32_override) != "0");
+  const char *fused_cube_override = std::getenv("FLAGFFT_HCU_3D_FUSED16_CUBE");
+  const bool fused_cube = request.device_type == "hcu" && n0 == 16 && n1 == 16 && n2 == 16 &&
+                          batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
+                          fused_cube_override != nullptr && std::string(fused_cube_override) == "1";
+  if (fused_cube) {
+    std::vector<double> tw_r_d(16);
+    std::vector<double> tw_i_d(16);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 16; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 16.0;
+      tw_r_d[static_cast<std::size_t>(k)] = std::cos(angle);
+      tw_i_d[static_cast<std::size_t>(k)] = std::sin(angle);
+    }
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (request.input_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto key = KernelKey::fused_16_cube(
+        triton_target_for_request(request), request.direction, request.input_dtype);
+    return std::make_shared<CompiledRaw3DFusedCubeNode>(
+        compile_kernel(key), std::move(tw_r), std::move(tw_i));
+  }
   if ((fused16 || fused32) && batch <= 4 && n0_leaf && n1_leaf && n2_leaf) {
     const int64_t plane_size = n0;
     std::vector<double> tw_r_d(static_cast<std::size_t>(plane_size / 2));

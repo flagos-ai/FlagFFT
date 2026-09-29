@@ -26,6 +26,16 @@ KernelKey KernelKey::fused_16_plane(std::string target, std::string direction, s
   return key;
 }
 
+KernelKey KernelKey::fused_16_cube(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused16Cube;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 16;
+  return key;
+}
+
 KernelKey KernelKey::leaf(std::string target,
                           std::string direction,
                           std::string dtype,

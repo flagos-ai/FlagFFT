@@ -212,6 +212,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "transpose3d";
     case KernelKind::Fused16Plane:
       return "fused_16_plane";
+    case KernelKind::Fused16Cube:
+      return "fused_16_cube";
   }
   return "unknown";
 }
