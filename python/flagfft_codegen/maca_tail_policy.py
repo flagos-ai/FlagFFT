@@ -12,6 +12,7 @@ _root_mode = ContextVar("maca_tail_root_mode", default="off")
 _kernel_mode = ContextVar("maca_tail_kernel_mode", default="off")
 ENV_NAMES = (
     "FLAGFFT_MACA_REAL_DFT_REDUCTION", "FLAGFFT_MACA_EXCHANGE",
+    "FLAGFFT_MACA_BATCH_PACK",
     "FLAGFFT_MACA_FP64_REGISTER_PACK", "FLAGFFT_MACA_INNER_PACK",
     "FLAGFFT_MACA_MAX_WARPS", "FLAGFFT_MACA_SPLIT_ORDER",
     "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_LANE_MIN",
