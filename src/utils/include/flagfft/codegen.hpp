@@ -969,6 +969,26 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
+// Small 16^3 complex transform: one kernel handles both axes in each 16x16
+// plane, then the outer axis uses the existing strided leaf.
+struct CompiledRaw3DFused16PlaneNode final : CompiledRawNode {
+  CompiledRaw3DFused16PlaneNode(std::shared_ptr<JitKernel> plane_fft,
+                                std::shared_ptr<CompiledRawNode> outer_fft,
+                                DeviceAllocation temp,
+                                DeviceAllocation tw_r,
+                                DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  std::shared_ptr<JitKernel> plane_fft;
+  std::shared_ptr<CompiledRawNode> outer_fft;
+  DeviceAllocation temp;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 // 3D C2C/Z2Z that runs the n1 and n0 axes as strided leaves on the natural
 // layout instead of permuting the cube between passes: three launches and no
 // full-cube transpose traffic.  Used when both non-contiguous axis plans are

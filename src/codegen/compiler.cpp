@@ -1349,6 +1349,37 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
 
+  // A 16x16 plane fits in one block. Transform n2 and n1 together so a
+  // 16^3 cube needs only one plane launch plus the outer strided leaf.
+  const char *fused16_override = std::getenv("FLAGFFT_MUSA_3D_FUSED16");
+  if (request.device_type == "musa" && n0 == 16 && n1 == 16 && n2 == 16 &&
+      batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
+      (fused16_override == nullptr || std::string(fused16_override) != "0")) {
+    std::vector<double> tw_r_d(8);
+    std::vector<double> tw_i_d(8);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 8; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 16.0;
+      tw_r_d[k] = std::cos(angle);
+      tw_i_d[k] = std::sin(angle);
+    }
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (request.input_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto plane_fft = compile_kernel(KernelKey::fused_16_plane(
+        triton_target_for_request(request), request.direction, request.input_dtype));
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, 16 * 16);
+    DeviceAllocation temp = adaptor::Memory(static_cast<std::size_t>(batch * 16 * 16 * 16 * element_bytes));
+    return std::make_shared<CompiledRaw3DFused16PlaneNode>(
+        std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
+  }
+
   // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
   // transpose beats the packed permuted-store leaf.  FP64 measured slower
   // with this exchange, so it stays on the fully fused path.  The short
