@@ -4,6 +4,7 @@ import pytest
 
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
 from flagfft_codegen.kernels_common import LeafPlan
+from flagfft_codegen.kernels_common import permuted_store_batch_pack_for
 from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
 from flagfft_codegen.metadata import _metadata
 
@@ -84,5 +85,29 @@ def test_hcu_permuted_store_warp_override(monkeypatch, warps):
             dtype="complex64",
         )
         assert metadata["num_warps"] == warps
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize("dtype, requested, expected", [
+    ("complex64", "16", 16),
+    ("complex128", "8", 8),
+])
+def test_hcu_permuted_store_full_shared_memory_pack(monkeypatch, dtype, requested, expected):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_PACK", requested)
+    monkeypatch.setenv("FLAGFFT_HCU_3D_FULL_SMEM", "1")
+    token = set_profile(
+        BackendProfile(
+            backend="hcu", device_arch="gfx936", warp_size=64,
+            max_threads_per_block=1024, max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=256, factors=(16, 16), remainder=1, lanes=16,
+            num_warps=1, generic_radices=(), smem_size=256, dtype=dtype,
+        )
+        assert permuted_store_batch_pack_for(plan) == expected
     finally:
         reset_profile(token)

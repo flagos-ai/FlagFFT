@@ -232,6 +232,7 @@ def main() -> None:
         fused_warps = os.getenv("FLAGFFT_HCU_3D_FUSED_WARPS", "auto")
         transpose_pair = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0")
         transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32")
+        full_smem = os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0")
         if pair_store not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_PAIR_STORE must be 0 or 1")
         if permuted_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
@@ -244,9 +245,12 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_TRANSPOSE_PAIR must be 0 or 1")
         if transpose_tile not in {"16", "32", "64"}:
             parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be 16, 32 or 64")
+        if full_smem not in {"0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_FULL_SMEM must be 0 or 1")
         profile_dir += (f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"
                         f"-fp64-tile-{fp64_tile}-warps-{fused_warps}"
-                        f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}")
+                        f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
+                        f"-full-smem-{full_smem}")
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
