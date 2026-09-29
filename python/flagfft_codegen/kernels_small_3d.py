@@ -35,6 +35,7 @@ def emit_fused_plane_kernel(
     """
     if n not in (16, 32):
         raise ValueError("fused plane supports 16 or 32")
+    quarter_r, quarter_i = ("bi", "-br") if direction == "forward" else ("-bi", "br")
     bits = n.bit_length() - 1
     plane_size = n * n
     load_source = (
@@ -80,6 +81,9 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         if stage == 0:
             tr = br
             ti = bi
+        elif stage == 1:
+            tr = tl.where((col & 1) != 0, {quarter_r}, br)
+            ti = tl.where((col & 1) != 0, {quarter_i}, bi)
         else:
             tw = (col & ((1 << stage) - 1)) * ({n} >> (stage + 1))
             wr = tl.load(tw_r_ptr + tw)
@@ -101,6 +105,9 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         if stage == 0:
             tr = br
             ti = bi
+        elif stage == 1:
+            tr = tl.where((row & 1) != 0, {quarter_r}, br)
+            ti = tl.where((row & 1) != 0, {quarter_i}, bi)
         else:
             tw = (row & ((1 << stage) - 1)) * ({n} >> (stage + 1))
             wr = tl.load(tw_r_ptr + tw)
@@ -142,6 +149,7 @@ def emit_fused_16_cube_kernel(
     The outer axis uses a direct 16-point sum across planes. The remaining
     16x16 transform stays in the block, avoiding a second kernel launch.
     """
+    quarter_r, quarter_i = ("bi", "-br") if direction == "forward" else ("-bi", "br")
     load_source = (
         "vr = tl.load(in_ptr + batch * 4096 + i0 * 256 + idx)\n"
         "        vi = tl.full((256,), 0.0, tl.float32)"
@@ -200,6 +208,9 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         if stage == 0:
             tr = br
             ti = bi
+        elif stage == 1:
+            tr = tl.where((col & 1) != 0, {quarter_r}, br)
+            ti = tl.where((col & 1) != 0, {quarter_i}, bi)
         else:
             tw = (col & ((1 << stage) - 1)) * (16 >> (stage + 1))
             wr = tl.load(tw_r_ptr + tw)
@@ -221,6 +232,9 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         if stage == 0:
             tr = br
             ti = bi
+        elif stage == 1:
+            tr = tl.where((row & 1) != 0, {quarter_r}, br)
+            ti = tl.where((row & 1) != 0, {quarter_i}, bi)
         else:
             tw = (row & ((1 << stage) - 1)) * (16 >> (stage + 1))
             wr = tl.load(tw_r_ptr + tw)
@@ -256,7 +270,8 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
 
 def emit_fused_32_column_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
     """Transform 32 outer-axis points for sixteen adjacent output columns."""
-    source = """
+    quarter_r, quarter_i = ("bi", "-br") if direction == "forward" else ("-bi", "br")
+    source = f"""
 @triton.jit
 def fused_32_column_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr, outer_stride):
     tile = tl.program_id(0)
@@ -284,6 +299,9 @@ def fused_32_column_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr, outer_stride
         if stage == 0:
             tr = br
             ti = bi
+        elif stage == 1:
+            tr = tl.where((row & 1) != 0, {quarter_r}, br)
+            ti = tl.where((row & 1) != 0, {quarter_i}, bi)
         else:
             tw = (row & ((1 << stage) - 1)) * (32 >> (stage + 1))
             wr = tl.load(tw_r_ptr + tw)
