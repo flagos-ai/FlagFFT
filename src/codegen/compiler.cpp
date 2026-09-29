@@ -22,6 +22,11 @@
 namespace flagfft {
 namespace {
 
+  bool flag_or_default(const char *name, bool default_value) {
+    const char *value = std::getenv(name);
+    return value == nullptr ? default_value : std::string(value) == "1";
+  }
+
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
                                    const FFTRequest &request,
                                    int64_t batch) {
@@ -1507,18 +1512,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // A small plane fits in one block. Transform n2 and n1 together so a
   // cube needs only one plane launch plus the outer strided leaf.
   const char *fused16_override = std::getenv("FLAGFFT_MUSA_3D_FUSED16");
-  const char *ix_fused16_override = std::getenv("FLAGFFT_IX_3D_FUSED16");
-  const char *ix_fused32_override = std::getenv("FLAGFFT_IX_3D_FUSED32");
   const bool fused16_enabled =
       (request.device_type == "musa" &&
        (fused16_override == nullptr || std::string(fused16_override) != "0")) ||
       (request.device_type == "ix" && request.device_arch == "71" &&
        request.input_dtype == "complex64" && request.output_dtype == request.input_dtype &&
-       ix_fused16_override != nullptr &&
-       std::string(ix_fused16_override) == "1");
+       flag_or_default("FLAGFFT_IX_3D_FUSED16", true));
   const bool fused32_enabled = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      ix_fused32_override != nullptr && std::string(ix_fused32_override) == "1";
+      flag_or_default("FLAGFFT_IX_3D_FUSED32", true);
   const int64_t fused_size = fused16_enabled && n0 == 16 && n1 == 16 && n2 == 16 ? 16 :
       fused32_enabled && n0 == 32 && n1 == 32 && n2 == 32 ? 32 : 0;
   if (fused_size != 0 &&
@@ -1561,10 +1563,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // outer axes keep their fused stores, and the axes commute for inverse.
   const bool musa_hybrid = request.device_type == "musa" && request.input_dtype == "complex64" &&
       fused_3d_store_enabled() && n1 >= 1024 && n1 >= 4 * std::max(n0, n2);
-  const char *ix_hybrid_override = std::getenv("FLAGFFT_IX_3D_HYBRID");
   const bool ix_hybrid = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      ix_hybrid_override != nullptr && std::string(ix_hybrid_override) == "1";
+      (n2 == 64 || n2 == 256) && flag_or_default("FLAGFFT_IX_3D_HYBRID", true);
   // IX also screens the prime middle axis: its non-leaf FFT still consumes
   // contiguous rows, while the short outer leaves can fold two permutations.
   if ((musa_hybrid || ix_hybrid) && n2_leaf && n0_leaf &&
@@ -1685,11 +1686,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     int64_t batch,
     bool inverse) {
   // Screen IX's small strided and large fused-store real paths separately.
-  const char *ix_real_leaf_override = std::getenv("FLAGFFT_IX_3D_REAL_LEAF");
   const char *ix_real_fused_override = std::getenv("FLAGFFT_IX_3D_REAL_FUSED");
   const bool ix_real_leaf_screen = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      ix_real_leaf_override != nullptr && std::string(ix_real_leaf_override) == "1";
+      flag_or_default("FLAGFFT_IX_3D_REAL_LEAF", true);
   const bool ix_real_fused_screen = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       ix_real_fused_override != nullptr && std::string(ix_real_fused_override) == "1";
@@ -1769,9 +1769,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     int64_t batch,
     bool inverse) {
   const char *ix_rtrt_override = std::getenv("FLAGFFT_IX_3D_REAL_RTRT");
-  const char *ix_hybrid_override = std::getenv("FLAGFFT_IX_3D_REAL_HYBRID");
   const bool screen_rtrt = ix_rtrt_override != nullptr && std::string(ix_rtrt_override) == "1";
-  const bool screen_hybrid = ix_hybrid_override != nullptr && std::string(ix_hybrid_override) == "1";
+  const bool screen_hybrid = (node->n2 == 64 || node->n2 == 256) &&
+      flag_or_default("FLAGFFT_IX_3D_REAL_HYBRID", !screen_rtrt);
   if (request.device_type != "ix" || request.device_arch != "71" ||
       request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
       (!screen_rtrt && !screen_hybrid)) return nullptr;
@@ -1789,10 +1789,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const bool fused_middle = !inverse && screen_hybrid && n1_leaf &&
       packed > 64 * 64 * 64 && ix_fused_middle != nullptr &&
       std::string(ix_fused_middle) == "1";
-  const char *ix_fused_first = std::getenv("FLAGFFT_IX_3D_R2C_FUSED_FIRST");
   const bool fused_first = !inverse && n2_leaf && (n2 == 64 || n2 == 256) &&
-      packed > 64 * 64 * 64 && ix_fused_first != nullptr &&
-      std::string(ix_fused_first) == "1";
+      packed > 64 * 64 * 64 && flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_FIRST", true);
 
   FFTRequest n2_request = request;
   n2_request.fft_length = n2;

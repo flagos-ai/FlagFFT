@@ -132,8 +132,8 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const char *ix_3d_32_factors = std::getenv("FLAGFFT_IX_3D_32_FACTORS");
   if (context.device_type == "ix" && context.device_arch == "71" &&
       context.origin_rank == 3 && context.input_dtype == "complex64" &&
-      n == 32 && ix_3d_32_factors != nullptr &&
-      std::string(ix_3d_32_factors) == "1") {
+      n == 32 && (ix_3d_32_factors == nullptr ||
+                  std::string(ix_3d_32_factors) == "1")) {
     return {4, 8};
   }
   if (context.device_type == "ix" && context.device_arch == "71" &&
@@ -145,7 +145,7 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     if (n == 128) {
       const char *value = std::getenv("FLAGFFT_IX_3D_128_FACTORS");
       if (value != nullptr && std::string(value) == "8x16") return {8, 16};
-      if (value != nullptr && std::string(value) == "16x8") return {16, 8};
+      if (value == nullptr || std::string(value) == "16x8") return {16, 8};
     }
     if (n == 256) {
       const char *value = std::getenv("FLAGFFT_IX_3D_256_FACTORS");

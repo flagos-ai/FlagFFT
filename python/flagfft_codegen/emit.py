@@ -771,6 +771,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         tile = 32
         packed_complex = False
         if _ix_backend_active():
+            tile = 16
             ix_tile = os.getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE")
             if ix_tile is not None:
                 if ix_tile not in {"8", "16", "32"}:
