@@ -122,21 +122,21 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
   if (context.device_type == "musa" && context.origin_rank == 3 &&
-      (n == 256 || n == 2048)) {
-    const char *name = n == 256 ? "FLAGFFT_MUSA_3D_FACTOR_256" : "FLAGFFT_MUSA_3D_FACTOR_2048";
-    if (const char *value = std::getenv(name)) {
+      (n == 16 || n == 32 || n == 256 || n == 2048)) {
+    const std::string name = "FLAGFFT_MUSA_3D_FACTOR_" + std::to_string(n);
+    if (const char *value = std::getenv(name.c_str())) {
       std::vector<int64_t> factors;
       std::istringstream stream(value);
       std::string token;
       while (std::getline(stream, token, ',')) {
         int64_t radix = std::stoll(token);
         if (!contains(kSupportedRadices, radix)) {
-          throw std::runtime_error(std::string(name) + " has an unsupported radix");
+          throw std::runtime_error(name + " has an unsupported radix");
         }
         factors.push_back(radix);
       }
       if (factors.empty() || product(factors) != n) {
-        throw std::runtime_error(std::string(name) + " does not factor the axis length");
+        throw std::runtime_error(name + " does not factor the axis length");
       }
       return factors;
     }
