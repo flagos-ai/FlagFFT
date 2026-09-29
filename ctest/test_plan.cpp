@@ -154,7 +154,7 @@ TEST(Plan1D, IxCtBatchPolicyScope) {
   auto longer = request;
   longer.n = longer.fft_length = longer.requested_n = 2048;
   EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(longer));
-  for (auto length : {8191, 16384}) {
+  for (auto length : {8191, 16381, 16384}) {
     auto batched = request;
     batched.n = batched.fft_length = batched.requested_n = length;
     batched.input_strides = {length, 1};

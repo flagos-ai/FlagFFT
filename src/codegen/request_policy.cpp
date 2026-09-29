@@ -39,10 +39,11 @@ bool ix_ct_single_policy_enabled(const FFTRequest &request) {
 }
 
 bool ix_ct_batch_policy_enabled(const FFTRequest &request) {
-  // The 8191-point Bluestein path uses these CT leaves for its 16384-point
-  // convolution. The 8192-point case is restricted to a packed-real child.
+  // Prime Bluestein convolutions at 8191 and 16381 benefit from the portable
+  // four-warp exchange. The 8192-point case is a packed-real child only.
   const bool measured_1d_batch = request.origin_rank <= 1 &&
       (request.requested_n == 16384 || request.requested_n == 8191 ||
+       request.requested_n == 16381 ||
        (request.requested_n == 8192 && request.packed_real_child));
   const bool qualified_length = request.requested_n == 1024 || request.requested_n == 2048 ||
                                 measured_1d_batch;
