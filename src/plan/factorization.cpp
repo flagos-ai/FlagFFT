@@ -14,6 +14,7 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
 #include <sstream>
 
 namespace flagfft {
@@ -126,6 +127,13 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   // Five radix-two stages cost more than two short codelets for 32^3 axes on
   // S5000. Keep other ranks and devices on their established factorization.
   if (context.device_type == "musa" && context.origin_rank == 3 && n == 32) {
+    return {4, 8};
+  }
+  const char *ix_3d_32_factors = std::getenv("FLAGFFT_IX_3D_32_FACTORS");
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.origin_rank == 3 && context.input_dtype == "complex64" &&
+      n == 32 && ix_3d_32_factors != nullptr &&
+      std::string(ix_3d_32_factors) == "1") {
     return {4, 8};
   }
   const bool ix_fp32_real_batch =
