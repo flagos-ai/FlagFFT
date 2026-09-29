@@ -121,6 +121,11 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  // Five radix-two stages cost more than two short codelets for 32^3 axes on
+  // S5000. Keep other ranks and devices on their established factorization.
+  if (context.device_type == "musa" && context.origin_rank == 3 && n == 32) {
+    return {4, 8};
+  }
   const bool ix_fp32_real_batch =
       context.device_type == "ix" && context.device_arch == "71" &&
       context.origin_rank <= 1 && context.requested_n == n &&

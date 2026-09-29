@@ -2572,6 +2572,47 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DFused16PlaneNode::CompiledRaw3DFused16PlaneNode(
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> outer_fft,
+    DeviceAllocation temp,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFused16PlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DFused16Plane(plane_fft=" << plane_fft->execution_description()
+      << ", outer_fft=" << outer_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DFused16PlaneNode::execute(adaptor::DevicePtr input,
+                                                     adaptor::DevicePtr output,
+                                                     const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * 16, 1, 1);
+    RawExecutionContext outer_context {context.request, context.stream, batch * 16 * 16};
+    return outer_fft->execute(temp.get(), output, outer_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DStridedNode::CompiledRaw3DStridedNode(int64_t n0,
                                                    int64_t n1,
                                                    int64_t n2,
@@ -2622,6 +2663,138 @@ flagfftResult CompiledRaw3DStridedNode::execute(adaptor::DevicePtr input,
     return n0_fft->execute(temp2.get(), output, n0_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D strided execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DHybridNode::CompiledRaw3DHybridNode(int64_t n0,
+                                                 int64_t n1,
+                                                 int64_t n2,
+                                                 std::shared_ptr<CompiledRawNode> n2_fft,
+                                                 std::shared_ptr<CompiledRawNode> n1_fft,
+                                                 std::shared_ptr<CompiledRawNode> n0_fft,
+                                                 std::shared_ptr<JitKernel> perm_210,
+                                                 DeviceAllocation temp1,
+                                                 DeviceAllocation temp2)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      n2_fft(std::move(n2_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      perm_210(std::move(perm_210)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw3DHybridNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DHybrid(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", n2_fft=" << n2_fft->describe() << ", n1_fft=" << n1_fft->describe()
+      << ", n0_fft=" << n0_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
+                                               adaptor::DevicePtr output,
+                                               const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t total = n0 * n1 * n2;
+    RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
+    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * n2};
+    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * n2};
+
+    flagfftResult result = n2_fft->execute(input, temp1.get(), n2_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), total, batch);
+    return n0_fft->execute(temp1.get(), output, n0_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D hybrid execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
+                                                     int64_t n1,
+                                                     int64_t n2,
+                                                     bool inverse,
+                                                     bool fused_store,
+                                                     std::shared_ptr<CompiledRawNode> n2_real_fft,
+                                                     std::shared_ptr<CompiledRawNode> n1_fft,
+                                                     std::shared_ptr<CompiledRawNode> n0_fft,
+                                                     std::shared_ptr<JitKernel> perm_021,
+                                                     DeviceAllocation temp1,
+                                                     DeviceAllocation temp2)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      inverse(inverse),
+      fused_store(fused_store),
+      n2_real_fft(std::move(n2_real_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      perm_021(std::move(perm_021)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw3DRealLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DRealLeaf(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", inverse=" << inverse << ", fused_store=" << fused_store
+      << ", n2_real_fft=" << n2_real_fft->describe()
+      << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
+                                                 adaptor::DevicePtr output,
+                                                 const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t half = n2 / 2 + 1;
+    const int64_t packed = n0 * n1 * half;
+    RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
+    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
+    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
+    flagfftResult result;
+
+    if (!inverse) {
+      // The real leaf produces compact rows in natural (n0,n1,half) order.
+      result = n2_real_fft->execute(input, temp1.get(), n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      if (fused_store) {
+        // n1 wants contiguous rows in (n0,half,n1) order.  Its store and
+        // the n0 store both apply the following layout change.
+        launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch);
+        result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+      } else {
+        result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+      }
+      if (result != FLAGFFT_SUCCESS) return result;
+      return n0_fft->execute(fused_store ? temp1.get() : temp2.get(), output, n0_context);
+    }
+
+    // Axes commute, so the compact n1/n0 transforms can precede the real
+    // inverse n2 boundary.  This also keeps the compact cube throughout.
+    if (fused_store) {
+      launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch);
+      result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    } else {
+      result = n1_fft->execute(input, temp1.get(), n1_context);
+    }
+    if (result != FLAGFFT_SUCCESS) return result;
+    result = n0_fft->execute(fused_store ? temp2.get() : temp1.get(),
+                             fused_store ? temp1.get() : temp2.get(), n0_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    return n2_real_fft->execute(fused_store ? temp1.get() : temp2.get(), output, n2_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D real leaf execute failed: %s\n", e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }

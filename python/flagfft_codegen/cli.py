@@ -33,6 +33,7 @@ from .emit import (
     emit_jit_kernel,
 )
 from .metadata import _csv_ints
+from .kernels_small_3d import emit_fused_16_plane_kernel
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -43,6 +44,7 @@ from .registry import (
     RADER,
     REAL_POINTWISE,
     RESHAPE,
+    SMALL_3D,
     STOCKHAM,
     TRANSPOSE,
     TRANSPOSE3D,
@@ -215,6 +217,14 @@ def main() -> None:
         profile_dir += (
             "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
+    if profile.backend == "musa":
+        pair_store = os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1")
+        permuted_pack = os.getenv("FLAGFFT_MUSA_3D_PACK", "auto")
+        if pair_store not in {"0", "1"}:
+            parser.error("FLAGFFT_MUSA_3D_PAIR_STORE must be 0 or 1")
+        if permuted_pack not in {"auto", "1", "2", "4", "8"}:
+            parser.error("FLAGFFT_MUSA_3D_PACK must be auto, 1, 2, 4 or 8")
+        profile_dir += f"-musa-3d-pair-store-{pair_store}-pack-{permuted_pack}"
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
@@ -287,6 +297,10 @@ def main() -> None:
             order=args.transpose3d_order,
             dtype=args.dtype,
             out_dir=args.out_dir,
+        )
+    elif spec.family == SMALL_3D:
+        metadata = emit_fused_16_plane_kernel(
+            dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
         )
     elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:

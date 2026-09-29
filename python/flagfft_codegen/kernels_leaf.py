@@ -17,6 +17,7 @@ from __future__ import annotations
 """Mixed-radix leaf generation: codelet emitters, stage/route emission, thread-local leaves and I/O builders."""
 
 import math
+import os
 from typing import Literal
 
 from .kernels_common import (
@@ -28,6 +29,7 @@ from .kernels_common import (
     LeafPlan,
     _is_double_dtype,
     _maca_backend_active,
+    _mthreads_backend_active,
     _ix_backend_active,
     _portable_leaf_backend_active,
     _maca_knob,
@@ -470,6 +472,17 @@ def _emit_permuted_store(
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
         mask = "perm_store_mask"
+    if _mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1":
+        return [
+            f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
+            f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}pair{digit} = tl.join(zr{digit}, zi{digit})",
+            f"{indent}pair_addr{digit} = perm_addr{digit}[:, :, None] * 2 + "
+            "tl.arange(0, 2)[None, None, :]",
+            f"{indent}tl.store(out_ptr + pair_addr{digit}, pair{digit}, "
+            f"mask={mask}[:, :, None])",
+        ]
     return [
         f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
         f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
