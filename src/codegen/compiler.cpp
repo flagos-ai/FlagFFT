@@ -1513,7 +1513,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       batch == 1 && n0 == 16 && n1 == 16 && n2 == 16 &&
       n0_leaf && n1_leaf && n2_leaf &&
-      flag_or_default("FLAGFFT_IX_3D_FUSED16_CUBE", false);
+      flag_or_default("FLAGFFT_IX_3D_FUSED16_CUBE", true);
   if (ix_fused_cube) {
     std::vector<float> tw_r(16);
     std::vector<float> tw_i(16);
@@ -1753,7 +1753,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
 
   const bool fused_real_cube = !inverse && ix_real_leaf_screen && batch == 1 &&
       n0 == 16 && n1 == 16 && n2 == 16 &&
-      flag_or_default("FLAGFFT_IX_3D_REAL_FUSED16_CUBE", false);
+      flag_or_default("FLAGFFT_IX_3D_REAL_FUSED16_CUBE", true);
   if (fused_real_cube) {
     std::vector<float> tw_r(16);
     std::vector<float> tw_i(16);
