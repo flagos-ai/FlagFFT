@@ -2966,6 +2966,82 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
+    int64_t n0,
+    int64_t n1,
+    int64_t n2,
+    bool inverse,
+    std::shared_ptr<CompiledRawNode> n2_real_fft,
+    std::shared_ptr<CompiledRawNode> n1_fft,
+    std::shared_ptr<CompiledRawNode> n0_fft,
+    std::shared_ptr<JitKernel> perm_021,
+    std::shared_ptr<JitKernel> perm_210,
+    std::shared_ptr<JitKernel> perm_201,
+    DeviceAllocation temp1,
+    DeviceAllocation temp2)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      inverse(inverse),
+      n2_real_fft(std::move(n2_real_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      perm_021(std::move(perm_021)),
+      perm_210(std::move(perm_210)),
+      perm_201(std::move(perm_201)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw3DRealRTRTNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DRealRTRT(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", inverse=" << inverse << ", n2_real_fft=" << n2_real_fft->describe()
+      << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
+                                                 adaptor::DevicePtr output,
+                                                 const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t half = n2 / 2 + 1;
+    const int64_t packed = n0 * n1 * half;
+    RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
+    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
+    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
+
+    if (!inverse) {
+      flagfftResult result = n2_real_fft->execute(input, temp1.get(), n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch);
+      result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch);
+      result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_201, context.stream, temp1.get(), output, packed, batch);
+      return FLAGFFT_SUCCESS;
+    }
+
+    // The outer transforms commute, so both use the same compact layouts
+    // before the final real inverse along n2.
+    launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch);
+    flagfftResult result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch);
+    result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    launch_perm3d(perm_201, context.stream, temp2.get(), temp1.get(), packed, batch);
+    return n2_real_fft->execute(temp1.get(), output, n2_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D real RTRT execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DR2CNode::CompiledRaw3DR2CNode(int64_t n0,
                                            int64_t n1,
                                            int64_t n2,

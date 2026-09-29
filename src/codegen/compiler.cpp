@@ -1678,10 +1678,74 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                                      std::move(temp2));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
+    const std::shared_ptr<ThreeDimPlanNode> &node,
+    const FFTRequest &request,
+    int64_t batch,
+    bool inverse) {
+  const char *ix_rtrt_override = std::getenv("FLAGFFT_IX_3D_REAL_RTRT");
+  if (request.device_type != "ix" || request.device_arch != "71" ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      ix_rtrt_override == nullptr || std::string(ix_rtrt_override) != "1") return nullptr;
+
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+  const int64_t n2 = node->n2;
+  const int64_t half = n2 / 2 + 1;
+  const int64_t packed = batch * n0 * n1 * half;
+
+  FFTRequest n2_request = request;
+  n2_request.fft_length = n2;
+  n2_request.input_shape = {batch * n0 * n1, n2};
+  n2_request.input_strides = {n2, 1};
+  n2_request.requested_n = n2;
+  n2_request.batch = batch * n0 * n1;
+
+  FFTRequest n1_request = request;
+  n1_request.fft_length = n1;
+  n1_request.input_shape = {batch * n0 * half, n1};
+  n1_request.input_strides = {n1, 1};
+  n1_request.requested_n = n1;
+  n1_request.batch = batch * n0 * half;
+
+  FFTRequest n0_request = request;
+  n0_request.fft_length = n0;
+  n0_request.input_shape = {batch * n1 * half, n0};
+  n0_request.input_strides = {n0, 1};
+  n0_request.requested_n = n0;
+  n0_request.batch = batch * n1 * half;
+
+  auto n2_real_fft = inverse
+      ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
+      : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+  auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
+  auto perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+  auto perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
+  auto perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
+
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
+  DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
+  return std::make_shared<CompiledRaw3DRealRTRTNode>(n0,
+                                                     n1,
+                                                     n2,
+                                                     inverse,
+                                                     std::move(n2_real_fft),
+                                                     std::move(n1_fft),
+                                                     std::move(n0_fft),
+                                                     std::move(perm_021),
+                                                     std::move(perm_210),
+                                                     std::move(perm_201),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   configure_single_transform_policies(request);
   if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, false)) return leaf_path;
+  if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, false)) return rtrt_path;
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1747,6 +1811,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   configure_single_transform_policies(request);
   if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, true)) return leaf_path;
+  if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, true)) return rtrt_path;
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
