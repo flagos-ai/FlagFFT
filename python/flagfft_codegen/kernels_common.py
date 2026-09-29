@@ -474,6 +474,12 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
     smem_pack = max(
         1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
     )
+    if _mthreads_backend_active():
+        override = os.getenv("FLAGFFT_MUSA_3D_PACK")
+        if override is not None:
+            if override not in {"1", "2", "4", "8"}:
+                raise ValueError("FLAGFFT_MUSA_3D_PACK must be 1, 2, 4 or 8")
+            return _floor_power_of_two(max(1, min(int(override), smem_pack)))
     return _floor_power_of_two(max(1, min(4, smem_pack)))
 
 
