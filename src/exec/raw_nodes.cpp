@@ -2745,6 +2745,7 @@ std::string CompiledRaw3DHybridNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DHybrid(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", first_transpose=" << (perm_021 != nullptr)
+      << ", middle_transpose=" << (perm_210 != nullptr)
       << ", last_transpose=" << (perm_201 != nullptr)
       << ", n2_fft=" << n2_fft->describe() << ", n1_fft=" << n1_fft->describe()
       << ", n0_fft=" << n0_fft->describe() << ")";
@@ -2769,10 +2770,13 @@ flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
     result = n1_fft->execute(perm_021 ? temp2.get() : temp1.get(),
                              perm_021 ? temp1.get() : temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    launch_perm3d(perm_210, context.stream,
-                  perm_021 ? temp1.get() : temp2.get(),
-                  perm_021 ? temp2.get() : temp1.get(), total, batch);
-    result = n0_fft->execute(perm_021 ? temp2.get() : temp1.get(),
+    if (perm_210) {
+      launch_perm3d(perm_210, context.stream,
+                    perm_021 ? temp1.get() : temp2.get(),
+                    perm_021 ? temp2.get() : temp1.get(), total, batch);
+    }
+    result = n0_fft->execute(perm_210 ? (perm_021 ? temp2.get() : temp1.get())
+                                      : (perm_021 ? temp1.get() : temp2.get()),
                              perm_201 ? (perm_021 ? temp1.get() : temp2.get()) : output,
                              n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
