@@ -260,6 +260,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     dtype: str,
     tile: int = 32,
     pair: bool = False,
+    vec_store: bool = False,
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -277,6 +278,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
         raise ValueError("tiled 3D transpose requires a complex dtype")
     if pair and dtype != "complex64":
         raise ValueError("paired tiled 3D transpose requires complex64")
+    if vec_store and dtype != "complex128":
+        raise ValueError("vector-store tiled 3D transpose requires complex128")
     zero = _zero_other(dtype)
     total_complex = s0 * s1 * s2
     scalar_width = 1 if pair else 2
@@ -334,6 +337,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     kernel_name = (
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}_tile"
         + ("_pair" if pair else "")
+        + ("_vec" if vec_store else "")
     )
     source = dedent(
         f"""
@@ -385,6 +389,10 @@ def _build_tiled_transpose3d_tile_kernel_source(
             store_mask = row_mask[:, None] & col_mask[None, :]
             if {pair}:
                 tl.store(tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base, dst_pair, mask=store_mask)
+            elif {vec_store}:
+                dst_pair = tl.join(dst_r, dst_i)
+                pair_addr = dst_base[:, :, None] + tl.arange(0, 2)[None, None, :]
+                tl.store(out_ptr + pair_addr, dst_pair, mask=store_mask[:, :, None])
             else:
                 tl.store(out_ptr + dst_base, dst_r, mask=store_mask)
                 tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)
