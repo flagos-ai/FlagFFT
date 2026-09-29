@@ -783,6 +783,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
         build_raw_packed_real_twiddle(request, n));
   }
+  // The 3D real boundary has many contiguous rows.  Screen the existing
+  // one-launch even/odd leaf there to halve its FFT length without adding a
+  // packing pass; n=64 and n=256 cover the current large FP32 3D matrix.
+  const char *ix_3d_packed_override = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");
+  if (request.device_type == "ix" && request.device_arch == "71" &&
+      request.origin_rank == 3 && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && (n == 64 || n == 256) &&
+      batch >= 1024 && ix_3d_packed_override != nullptr &&
+      std::string(ix_3d_packed_override) == "1") {
+    FFTRequest child_request = request;
+    child_request.n = n / 2;
+    child_request.requested_n = n / 2;
+    child_request.fft_length = n / 2;
+    child_request.real_transform_kind.clear();
+    child_request.input_shape = {batch, n / 2};
+    child_request.input_strides = {n / 2, 1};
+    PlanBuilder child_builder;
+    child_builder.build(n / 2, child_request);
+    const std::vector<int64_t> factors = n == 64
+        ? std::vector<int64_t>{4, 8} : std::vector<int64_t>{8, 16};
+    const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
+    LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
+                             child_builder.choose_num_warps(lanes), {}, n / 2);
+    KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
+                                         request.direction, request.input_dtype,
+                                         packed_leaf.length, packed_leaf.factors,
+                                         packed_leaf.lanes, packed_leaf.num_warps,
+                                         packed_leaf.generic_radices, packed_leaf.smem_size);
+    key.kind = KernelKind::LeafPackedR2C;
+    return std::make_shared<CompiledRawR2CLeafNode>(
+        n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
+        build_raw_packed_real_twiddle(request, n));
+  }
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;
