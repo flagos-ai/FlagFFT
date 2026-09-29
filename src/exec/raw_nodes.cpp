@@ -2840,7 +2840,7 @@ flagfftResult CompiledRaw3DColumnNode::execute(adaptor::DevicePtr input,
         JitKernelArg::device(tw_i.get()),
         JitKernelArg::i64(outer_stride),
     };
-    kernel->launch(context.stream, args, ceil_div(outer_stride, int64_t{16}), cube_batch, 1);
+    kernel->launch(context.stream, args, ceil_div(outer_stride, int64_t{8}), cube_batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D column execute failed: %s\n", e.what());

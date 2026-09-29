@@ -239,16 +239,16 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
 
 
 def emit_fused_32_column_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
-    """Transform 32 outer-axis points for sixteen adjacent output columns."""
+    """Transform 32 outer-axis points for eight adjacent output columns."""
     source = """
 @triton.jit
 def fused_32_column_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr, outer_stride):
     tile = tl.program_id(0)
     batch = tl.program_id(1)
-    idx = tl.arange(0, 512)
-    row = idx // 16
-    col = tile * 16 + idx % 16
-    reverse_row = tl.full((512,), 0, tl.int32)
+    idx = tl.arange(0, 256)
+    row = idx // 8
+    col = tile * 8 + idx % 8
+    reverse_row = tl.full((256,), 0, tl.int32)
     for bit in tl.static_range(5):
         reverse_row = (reverse_row << 1) | ((row >> bit) & 1)
     src = (batch * 32 * outer_stride + reverse_row * outer_stride + col) * 2
@@ -257,7 +257,7 @@ def fused_32_column_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr, outer_stride
     xi = tl.load(in_ptr + src + 1, mask=valid, other=0.0)
 
     for stage in tl.static_range(5):
-        partner = idx ^ (16 << stage)
+        partner = idx ^ (8 << stage)
         pr = tl.gather(xr, partner, 0)
         pi = tl.gather(xi, partner, 0)
         upper = (row & (1 << stage)) != 0
