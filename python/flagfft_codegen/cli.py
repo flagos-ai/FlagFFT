@@ -55,6 +55,7 @@ from .target import (
     set_maca_1d_single_default,
     set_maca_1d_batch_default,
     set_maca_2d_single_default,
+    set_maca_3d_default,
 )
 from .maca_tail_policy import set_maca_tail_mode, variant_suffix
 
@@ -151,6 +152,8 @@ def main() -> None:
         action="store_true",
         help="enable the MACA rank-2 FP32 batch-1 code-generation policy",
     )
+    parser.add_argument("--maca-3d", action="store_true",
+                        help="enable scoped MACA rank-3 axis packing")
     parser.add_argument(
         "--compile-script",
         type=Path,
@@ -174,6 +177,7 @@ def main() -> None:
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
+    set_maca_3d_default(args.maca_3d)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}
@@ -217,6 +221,7 @@ def main() -> None:
         profile_dir += (
             "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
+        profile_dir += "-maca-3d" if args.maca_3d else "-maca-3d-off"
     if profile.backend == "musa":
         pair_store = os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_MUSA_3D_PACK", "auto")

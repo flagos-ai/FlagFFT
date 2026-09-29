@@ -235,6 +235,7 @@ namespace {
 }  // namespace
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
+  maca_3d_policy_ = request.device_type == "maca" && request.origin_rank == 3;
   ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
   ix_ct_batch_policy_ = ix_ct_batch_policy_enabled(request);
   ix_real_single_pack_ = request.device_type == "ix" && request.device_arch == "71" &&

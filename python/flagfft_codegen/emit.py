@@ -752,21 +752,21 @@ def _emit_tiled_transpose3d_jit_kernel(
     from .kernels_common import _declared_backend
 
     maca_mode = (
-        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", "tile32")
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
         if _declared_backend() == "maca"
         else "tile32"
     )
     if maca_mode not in {"tile16", "tile32", "tile64", "pair16", "pair32", "pair64", "v1"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, pair32, pair64 or v1")
     maca_warps = (
-        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8" if dtype == "complex64" else "4")
         if _declared_backend() == "maca"
         else "4"
     )
     if maca_warps not in {"2", "4", "8"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4 or 8")
     fp64_mode = (
-        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "v1")
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
         if _declared_backend() == "maca"
         else "v1"
     )

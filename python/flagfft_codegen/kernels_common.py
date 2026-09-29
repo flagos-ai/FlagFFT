@@ -32,6 +32,7 @@ from .target import (
     maca_1d_single_default_enabled,
     maca_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
+    maca_3d_default_enabled,
 )
 from .maca_tail_policy import resource_default
 
@@ -438,6 +439,11 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
                 if short_pack not in {"1", "2", "4", "8", "16", "32"}:
                     raise ValueError("FLAGFFT_MACA_3D_N64_PACK must be 1, 2, 4, 8, 16 or 32")
                 return int(short_pack)
+        if maca_3d_default_enabled() and len(emitted_leaf_factors(plan)) > 1:
+            if plan.length == 64 and plan.dtype == "complex64":
+                return 8
+            if plan.length == 256 and plan.dtype == "complex128":
+                return 2
         if maca_1d_batch_default_enabled() and plan.length == 16:
             return 1
         # Native 2D only emits these fused real boundary leaves when n0 > 256.

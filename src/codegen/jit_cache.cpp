@@ -196,7 +196,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
                                 (maca_1d_single_policy_ ? "1" : "0") + ";maca-1d-batch=" +
                                 (maca_1d_batch_policy_ ? "1" : "0") + ";maca-2d-single=" +
-                                (maca_2d_single_policy_ ? "1" : "0") + ";ix-ct-single=" +
+                                (maca_2d_single_policy_ ? "1" : "0") + ";maca-3d=" +
+                                (maca_3d_policy_ ? "1" : "0") + ";ix-ct-single=" +
                                 (ix_ct_single_policy_ ? "1" : "0") + ";ix-ct-single-tle=" +
                                 std::to_string(ix_ct_single_tle_policy_) + ";ix-ct-batch=" +
                                 (ix_ct_batch_policy_ ? "1" : "0") + ";ix-real-single-pack=" +
@@ -388,6 +389,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   jit_command << " --maca-tail-mode " << shell_quote(tail_mode);
   if (maca_2d_single_policy_) {
     jit_command << " --maca-2d-single";
+  }
+  if (maca_3d_policy_) {
+    jit_command << " --maca-3d";
   }
 #endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
