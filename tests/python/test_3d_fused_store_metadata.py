@@ -48,3 +48,41 @@ def test_hcu_permuted_store_grid_matches_generated_batch_pack(monkeypatch, pack)
         assert f"batch_id = pid * {pack}" in source
     finally:
         reset_profile(token)
+
+
+@pytest.mark.parametrize("warps", (1, 2, 4, 8))
+def test_hcu_permuted_store_warp_override(monkeypatch, warps):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_FUSED_WARPS", str(warps))
+    token = set_profile(
+        BackendProfile(
+            backend="hcu",
+            device_arch="gfx936",
+            warp_size=64,
+            max_threads_per_block=1024,
+            max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=256,
+            factors=(16, 16),
+            remainder=1,
+            lanes=16,
+            num_warps=1,
+            generic_radices=(),
+            smem_size=256,
+        )
+        metadata = _metadata(
+            module_path=Path("generated.py"),
+            kernel_name="permuted_store_outer_fft_kernel",
+            arg_names=["in_ptr", "out_ptr", "perm_span", "nbatch"],
+            plan=plan,
+            kernel_type="leaf_permuted_store",
+            n1=0,
+            n2=0,
+            dtype="complex64",
+        )
+        assert metadata["num_warps"] == warps
+    finally:
+        reset_profile(token)

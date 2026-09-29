@@ -189,6 +189,14 @@ def _metadata(
         # normal leaf. Four warps caused a large batch-64 regression on V150;
         # the measured two-warp launch retains the one-kernel benefit.
         num_warps = 2
+    if profile.backend == "hcu" and kernel_type == "leaf_permuted_store":
+        fused_warps = os.environ.get("FLAGFFT_HCU_3D_FUSED_WARPS")
+        if fused_warps is not None:
+            try:
+                num_warps = int(fused_warps)
+            except ValueError as exc:
+                raise ValueError("FLAGFFT_HCU_3D_FUSED_WARPS must be 1, 2, 4 or 8") from exc
+            profile.validate(num_warps)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
