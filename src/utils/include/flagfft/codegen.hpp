@@ -1013,6 +1013,7 @@ struct CompiledRaw3DNode final : CompiledRawNode {
 // then the outer axis uses the existing strided leaf.
 struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
   CompiledRaw3DFusedPlaneNode(int64_t n,
+                              int64_t outer_rows_per_cube,
                               std::shared_ptr<JitKernel> plane_fft,
                               std::shared_ptr<CompiledRawNode> outer_fft,
                               DeviceAllocation temp,
@@ -1024,6 +1025,7 @@ struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
   std::string describe() const override;
 
   int64_t n;
+  int64_t outer_rows_per_cube;
   std::shared_ptr<JitKernel> plane_fft;
   std::shared_ptr<CompiledRawNode> outer_fft;
   DeviceAllocation temp;

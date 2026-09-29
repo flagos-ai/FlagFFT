@@ -383,6 +383,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Fused32Plane:
       kernel_kind = "fused_32_plane";
       break;
+    case KernelKind::Fused16RealPlane:
+      kernel_kind = "fused_16_real_plane";
+      break;
+    case KernelKind::Fused32RealPlane:
+      kernel_kind = "fused_32_real_plane";
+      break;
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
@@ -485,7 +491,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --transpose3d-n2 " << key.transpose3d_n2 << " --transpose3d-order "
                 << shell_quote(key.transpose3d_order);
   }
-  if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32Plane) {
+  if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32Plane ||
+      key.kind == KernelKind::Fused16RealPlane || key.kind == KernelKind::Fused32RealPlane) {
     jit_command << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||

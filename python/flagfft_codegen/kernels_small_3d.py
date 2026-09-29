@@ -24,7 +24,9 @@ from .kernels_common import _dtype_suffix
 from .metadata import _module_source, _signature
 
 
-def emit_fused_plane_kernel(*, n: int, dtype: str, direction: str, out_dir: Path) -> dict:
+def emit_fused_plane_kernel(
+    *, n: int, dtype: str, direction: str, out_dir: Path, real_input: bool = False
+) -> dict:
     """Emit a small square plane FFT; one block owns one complete plane.
 
     Both axes use decimation in time. The load reverses the bits on each axis,
@@ -35,6 +37,22 @@ def emit_fused_plane_kernel(*, n: int, dtype: str, direction: str, out_dir: Path
         raise ValueError("fused plane supports 16 or 32")
     bits = n.bit_length() - 1
     plane_size = n * n
+    load_source = (
+        f"xr = tl.load(in_ptr + plane * {plane_size} + rev_row * {n} + rev_col)\n"
+        f"    xi = tl.full(({plane_size},), 0.0, tl.float32)"
+        if real_input else
+        "xr = tl.load(in_ptr + src)\n    xi = tl.load(in_ptr + src + 1)"
+    )
+    store_source = (
+        f"dst = (plane * {n} * {n // 2 + 1} + row * {n // 2 + 1} + col) * 2\n"
+        f"    keep = col <= {n // 2}\n"
+        "    tl.store(out_ptr + dst, xr, mask=keep)\n"
+        "    tl.store(out_ptr + dst + 1, xi, mask=keep)"
+        if real_input else
+        f"dst = (plane * {plane_size} + idx) * 2\n"
+        "    tl.store(out_ptr + dst, xr)\n"
+        "    tl.store(out_ptr + dst + 1, xi)"
+    )
     source = f"""
 @triton.jit
 def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
@@ -48,8 +66,7 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         rev_row = (rev_row << 1) | ((row >> bit) & 1)
         rev_col = (rev_col << 1) | ((col >> bit) & 1)
     src = (plane * {plane_size} + rev_row * {n} + rev_col) * 2
-    xr = tl.load(in_ptr + src)
-    xi = tl.load(in_ptr + src + 1)
+    {load_source}
 
     for stage in tl.static_range({bits}):
         partner = idx ^ (1 << stage)
@@ -85,11 +102,10 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
-    dst = (plane * {plane_size} + idx) * 2
-    tl.store(out_ptr + dst, xr)
-    tl.store(out_ptr + dst + 1, xi)
+    {store_source}
 """
-    name = f"flagfft_jit_fused_{n}_plane_{direction}_{_dtype_suffix(dtype)}"
+    kind = f"fused_{n}_{'real_' if real_input else ''}plane"
+    name = f"flagfft_jit_{kind}_{direction}_{_dtype_suffix(dtype)}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))
@@ -102,7 +118,7 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
-        "kernel_type": f"fused_{n}_plane",
+        "kernel_type": kind,
         "dtype": dtype,
         "direction": direction,
     }

@@ -1553,7 +1553,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     DeviceAllocation temp = adaptor::Memory(
         static_cast<std::size_t>(batch * fused_size * fused_size * fused_size * element_bytes));
     return std::make_shared<CompiledRaw3DFusedPlaneNode>(
-        fused_size, std::move(plane_fft), std::move(outer_fft), std::move(temp),
+        fused_size, fused_size * fused_size, std::move(plane_fft),
+        std::move(outer_fft), std::move(temp),
         std::move(tw_r), std::move(tw_i));
   }
 
@@ -1728,6 +1729,33 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n0_request.input_strides = {n0, 1};
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
+
+  const bool fused_real_plane = !inverse && ix_real_leaf_screen && small && batch <= 4 &&
+      n0 == n1 && n1 == n2 && (n0 == 16 || n0 == 32) &&
+      flag_or_default("FLAGFFT_IX_3D_REAL_FUSED_PLANE", false);
+  if (fused_real_plane) {
+    std::vector<float> tw_r(n0 / 2);
+    std::vector<float> tw_i(n0 / 2);
+    for (int64_t k = 0; k < n0 / 2; ++k) {
+      const double angle = -2.0 * kPi * static_cast<double>(k) / static_cast<double>(n0);
+      tw_r[k] = static_cast<float>(std::cos(angle));
+      tw_i[k] = static_cast<float>(std::sin(angle));
+    }
+    auto key = n0 == 16
+        ? KernelKey::fused_16_real_plane(triton_target_for_request(request), request.direction,
+                                         request.input_dtype)
+        : KernelKey::fused_32_real_plane(triton_target_for_request(request), request.direction,
+                                         request.input_dtype);
+    auto plane_fft = compile_kernel(key);
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
+    DeviceAllocation temp = adaptor::Memory(
+        static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype)));
+    DeviceAllocation tw_r_dev = adaptor::Memory::from_floats(tw_r);
+    DeviceAllocation tw_i_dev = adaptor::Memory::from_floats(tw_i);
+    return std::make_shared<CompiledRaw3DFusedPlaneNode>(
+        n0, n1 * half, std::move(plane_fft), std::move(outer_fft), std::move(temp),
+        std::move(tw_r_dev), std::move(tw_i_dev));
+  }
 
   auto n2_real_fft = inverse
       ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)

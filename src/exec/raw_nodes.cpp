@@ -2740,12 +2740,14 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
 
 CompiledRaw3DFusedPlaneNode::CompiledRaw3DFusedPlaneNode(
     int64_t n,
+    int64_t outer_rows_per_cube,
     std::shared_ptr<JitKernel> plane_fft,
     std::shared_ptr<CompiledRawNode> outer_fft,
     DeviceAllocation temp,
     DeviceAllocation tw_r,
     DeviceAllocation tw_i)
     : n(n),
+      outer_rows_per_cube(outer_rows_per_cube),
       plane_fft(std::move(plane_fft)),
       outer_fft(std::move(outer_fft)),
       temp(std::move(temp)),
@@ -2755,7 +2757,8 @@ CompiledRaw3DFusedPlaneNode::CompiledRaw3DFusedPlaneNode(
 
 std::string CompiledRaw3DFusedPlaneNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRaw3DFusedPlane(n=" << n << ", plane_fft=" << plane_fft->execution_description()
+  oss << "CompiledRaw3DFusedPlane(n=" << n << ", outer_rows=" << outer_rows_per_cube
+      << ", plane_fft=" << plane_fft->execution_description()
       << ", outer_fft=" << outer_fft->describe() << ")";
   return oss.str();
 }
@@ -2772,7 +2775,8 @@ flagfftResult CompiledRaw3DFusedPlaneNode::execute(adaptor::DevicePtr input,
         JitKernelArg::device(tw_i.get()),
     };
     plane_fft->launch(context.stream, args, batch * n, 1, 1);
-    RawExecutionContext outer_context {context.request, context.stream, batch * n * n};
+    RawExecutionContext outer_context {context.request, context.stream,
+                                       batch * outer_rows_per_cube};
     return outer_fft->execute(temp.get(), output, outer_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D fused plane execute failed: %s\n", e.what());

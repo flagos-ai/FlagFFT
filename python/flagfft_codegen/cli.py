@@ -300,7 +300,8 @@ def main() -> None:
         )
     elif spec.family == SMALL_3D:
         metadata = emit_fused_plane_kernel(
-            n=16 if args.kernel == "fused_16_plane" else 32,
+            n=16 if args.kernel.startswith("fused_16_") else 32,
+            real_input="real" in args.kernel,
             dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
         )
     elif spec.family == REAL_POINTWISE:
