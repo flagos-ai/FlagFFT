@@ -44,6 +44,7 @@ from .kernels_common import (
     use_four_step_row_fused_twiddle,
     use_tle_fused_twiddle,
 )
+from .target import ix_ct_batch_default_enabled
 
 
 def _fmt_const(value: float) -> str:
@@ -696,11 +697,12 @@ def _emit_direct_exchange_registers(
     lane_block: int,
     pack: int,
     interleaved: bool,
+    split_order_msb: bool = False,
 ) -> list[str]:
     """Split the routed tensor directly into the next stage's registers."""
     lanes = n // radix
     split_shape = (pack, lane_block, *((2,) * (radix.bit_length() - 1)))
-    highest_first = _maca_knob("SPLIT_ORDER", "lsb") == "msb"
+    highest_first = split_order_msb or _maca_knob("SPLIT_ORDER", "lsb") == "msb"
     lines = []
     for component in ("r", "i"):
         prefix = f"{buffer}_register_{component}"
@@ -863,6 +865,7 @@ def _emit_portable_exchange(
     register_lane_stride: int = 1,
     register_slot_stride: int | None = None,
     allow_mixed_direct: bool = True,
+    split_order_msb: bool = False,
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
@@ -915,6 +918,7 @@ def _emit_portable_exchange(
                     lane_block,
                     pack,
                     interleaved=register_lane_stride > 1,
+                    split_order_msb=split_order_msb,
                 )
             )
         return lines
@@ -2104,6 +2108,14 @@ def _emit_stage_block(
                     register_lane_stride=inner_pack if inner_pack > 1 else 1,
                     register_slot_stride=1 if inner_pack > 1 else lane_block,
                     allow_mixed_direct=mixed_direct_layout,
+                    split_order_msb=(
+                        _ix_backend_active()
+                        and ix_ct_batch_default_enabled()
+                        and direction == "inverse"
+                        and io_mode == "contiguous"
+                        and n in {1024, 2048}
+                        and _maca_knob("CT_BATCH_INVERSE_MSB", "0") == "1"
+                    ),
                 )
             )
     elif not is_last:
