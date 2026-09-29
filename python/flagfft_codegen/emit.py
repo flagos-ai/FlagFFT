@@ -749,6 +749,15 @@ def _emit_tiled_transpose3d_jit_kernel(
     dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
+    from .kernels_common import _declared_backend
+
+    maca_mode = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", "tile32")
+        if _declared_backend() == "maca"
+        else "tile32"
+    )
+    if maca_mode not in {"tile16", "tile32", "tile64", "v1"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64 or v1")
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -756,14 +765,14 @@ def _emit_tiled_transpose3d_jit_kernel(
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
-    elif dtype == "complex64" and _portable_transpose3d_supported():
+    elif dtype == "complex64" and _portable_transpose3d_supported() and maca_mode != "v1":
         (
             kernel_name,
             kernel_source,
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=32
+            n0, n1, n2, order, dtype, tile=int(maca_mode[4:])
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
