@@ -217,9 +217,10 @@ def main() -> None:
         )
     if profile.backend == "musa":
         pair_store = os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "0")
-        if pair_store not in {"0", "1"}:
-            parser.error("FLAGFFT_MUSA_3D_PAIR_STORE must be 0 or 1")
-        profile_dir += f"-musa-3d-pair-store-{pair_store}"
+        pair_load = os.getenv("FLAGFFT_MUSA_3D_PAIR_LOAD", "0")
+        if pair_store not in {"0", "1"} or pair_load not in {"0", "1"}:
+            parser.error("FLAGFFT_MUSA_3D_PAIR_STORE and FLAGFFT_MUSA_3D_PAIR_LOAD must be 0 or 1")
+        profile_dir += f"-musa-3d-pair-store-{pair_store}-load-{pair_load}"
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.

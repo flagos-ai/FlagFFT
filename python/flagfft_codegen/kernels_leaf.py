@@ -89,6 +89,10 @@ def _portable_complex_vector_io() -> bool:
     return _maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"}
 
 
+def _musa_permuted_pair_load() -> bool:
+    return _mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_LOAD") == "1"
+
+
 def _emit_vectorized_complex_load(
     indent: str,
     ptr: str,
@@ -96,7 +100,7 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
-    if _portable_complex_vector_io():
+    if _portable_complex_vector_io() or _musa_permuted_pair_load():
         pair = "_pair_" + dest.split(",")[0].strip()
         return [
             f"{indent}{pair} = tl.load(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
@@ -1091,7 +1095,11 @@ def _emit_stage_block(
     lines: list[str] = []
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
-    vector_io_allowed = not _non_nvidia_backend_active() or _portable_complex_vector_io()
+    vector_io_allowed = (
+        not _non_nvidia_backend_active()
+        or _portable_complex_vector_io()
+        or (io_mode == "permuted_store" and _musa_permuted_pair_load())
+    )
     vectorized_four_step_complex_io = (
         io_mode
         in {
@@ -2848,7 +2856,7 @@ def _build_leaf_kernel_source_for_io(
         suffix = "," if idx < len(params) - 1 else ""
         body.append(f"    {param}{suffix}")
     body.append("):")
-    if _portable_complex_vector_io():
+    if _portable_complex_vector_io() or (io_mode == "permuted_store" and _musa_permuted_pair_load()):
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     if io_mode in contiguous_modes:
         body.append("    pid = tl.program_id(0)")
