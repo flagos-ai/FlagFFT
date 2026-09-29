@@ -1570,9 +1570,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
 
-  auto n2_real_fft = inverse
-      ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
-      : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  const char *r2c_permute_override = std::getenv("FLAGFFT_HCU_3D_R2C_PERMUTED_STORE");
+  const bool n2_permuted = request.device_type == "hcu" && !inverse && !small &&
+                           n1_leaf && r2c_permute_override != nullptr &&
+                           std::string(r2c_permute_override) == "1";
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+  if (n2_permuted) {
+    KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
+                                        n2_request.direction, n2_request.input_dtype,
+                                        n2_leaf->length, n2_leaf->factors, n2_leaf->lanes,
+                                        n2_leaf->num_warps, n2_leaf->generic_radices,
+                                        n2_leaf->smem_size);
+    key.kind = KernelKind::LeafR2CPermutedStore;
+    key.perm_form = "outer";
+    n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
+        n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
+        DeviceAllocation{}, n1);
+  } else {
+    n2_real_fft = inverse
+        ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
+        : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  }
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_021;
@@ -1584,7 +1602,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     // The first permutation makes n1 rows contiguous.  Each following leaf
     // writes in the layout consumed by the next axis, leaving natural compact
     // (n0,n1,half) order after n0.
-    perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+    if (!n2_permuted) {
+      perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+    }
     if (real_hybrid) {
       n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
@@ -1602,6 +1622,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                                      n2,
                                                      inverse,
                                                      !small,
+                                                     n2_permuted,
                                                      std::move(n2_real_fft),
                                                      std::move(n1_fft),
                                                      std::move(n0_fft),

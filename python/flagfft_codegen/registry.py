@@ -87,6 +87,10 @@ _SPECS: tuple[KernelSpec, ...] = (
         "leaf_r2c", CT_LEAF, io_mode="contiguous_r2c", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(
+        "leaf_r2c_permuted_store", CT_LEAF, io_mode="permuted_r2c",
+        requires=_BASE_LEAF_FLAGS,
+    ),
+    KernelSpec(
         "leaf_packed_r2c", CT_LEAF, io_mode="packed_r2c", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(

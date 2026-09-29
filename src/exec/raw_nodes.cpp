@@ -1212,8 +1212,10 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
 CompiledRawR2CLeafNode::CompiledRawR2CLeafNode(int64_t length,
                                                std::shared_ptr<JitKernel> kernel,
                                                std::vector<DeviceAllocation> tables,
-                                               DeviceAllocation twiddle)
-    : length(length), kernel(std::move(kernel)), tables(std::move(tables)), twiddle(std::move(twiddle)) {
+                                               DeviceAllocation twiddle,
+                                               int64_t perm_span)
+    : length(length), kernel(std::move(kernel)), tables(std::move(tables)),
+      twiddle(std::move(twiddle)), perm_span(perm_span) {
 }
 
 std::string CompiledRawR2CLeafNode::describe() const {
@@ -1221,7 +1223,8 @@ std::string CompiledRawR2CLeafNode::describe() const {
   oss << "CompiledRawR2CLeaf(n=" << length
       << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
-      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
+      << ", module=" << (kernel ? kernel->module_path : "null")
+      << ", tables=" << tables.size() << ", perm_span=" << perm_span << ")";
   return oss.str();
 }
 
@@ -1237,7 +1240,7 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
 
     std::vector<JitKernelArg> args;
-    args.reserve(3 + tables.size() + 3);
+    args.reserve(3 + tables.size() + 4);
     args.push_back(JitKernelArg::device(input));
     args.push_back(JitKernelArg::device(output));
     if (twiddle.get()) args.push_back(JitKernelArg::device(twiddle.get()));
@@ -1246,6 +1249,7 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i64(input_distance));
     args.push_back(JitKernelArg::i64(output_distance));
+    if (perm_span > 0) args.push_back(JitKernelArg::i64(perm_span));
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
     kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
     return FLAGFFT_SUCCESS;
@@ -2786,6 +2790,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
                                                      int64_t n2,
                                                      bool inverse,
                                                      bool fused_store,
+                                                     bool n2_permuted,
                                                      std::shared_ptr<CompiledRawNode> n2_real_fft,
                                                      std::shared_ptr<CompiledRawNode> n1_fft,
                                                      std::shared_ptr<CompiledRawNode> n0_fft,
@@ -2798,6 +2803,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
       n2(n2),
       inverse(inverse),
       fused_store(fused_store),
+      n2_permuted(n2_permuted),
       n2_real_fft(std::move(n2_real_fft)),
       n1_fft(std::move(n1_fft)),
       n0_fft(std::move(n0_fft)),
@@ -2811,6 +2817,7 @@ std::string CompiledRaw3DRealLeafNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DRealLeaf(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", inverse=" << inverse << ", fused_store=" << fused_store
+      << ", n2_permuted=" << n2_permuted
       << ", middle_transpose=" << (perm_210 != nullptr)
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
@@ -2830,13 +2837,15 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
     flagfftResult result;
 
     if (!inverse) {
-      // The real leaf produces compact rows in natural (n0,n1,half) order.
-      result = n2_real_fft->execute(input, temp1.get(), n2_context);
+      // The optional fused store produces (n0,half,n1) directly.
+      result = n2_real_fft->execute(input, n2_permuted ? temp2.get() : temp1.get(), n2_context);
       if (result != FLAGFFT_SUCCESS) return result;
       if (fused_store) {
         // n1 wants contiguous rows in (n0,half,n1) order.  Its store and
         // the n0 store both apply the following layout change.
-        launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch);
+        if (!n2_permuted) {
+          launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch);
+        }
         result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       } else {
         result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);

@@ -128,6 +128,7 @@ enum class KernelKind {
   LeafStrided,
   LeafPermutedStore,
   LeafR2C,
+  LeafR2CPermutedStore,
   LeafPackedR2C,
   LeafC2R,
   LeafBluestein,

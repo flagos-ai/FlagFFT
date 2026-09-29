@@ -511,7 +511,8 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   CompiledRawR2CLeafNode(int64_t length,
                          std::shared_ptr<JitKernel> kernel,
                          std::vector<DeviceAllocation> tables,
-                         DeviceAllocation twiddle = {});
+                         DeviceAllocation twiddle = {},
+                         int64_t perm_span = 0);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -521,6 +522,7 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
   DeviceAllocation twiddle;
+  int64_t perm_span;
 };
 
 struct CompiledRawR2CFourStepHalfOutNode final : CompiledRawNode {
@@ -1073,6 +1075,7 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
                             int64_t n2,
                             bool inverse,
                             bool fused_store,
+                            bool n2_permuted,
                             std::shared_ptr<CompiledRawNode> n2_real_fft,
                             std::shared_ptr<CompiledRawNode> n1_fft,
                             std::shared_ptr<CompiledRawNode> n0_fft,
@@ -1090,6 +1093,7 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   int64_t n2;
   bool inverse;
   bool fused_store;
+  bool n2_permuted;
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;

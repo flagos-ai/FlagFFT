@@ -203,6 +203,7 @@ LeafIoMode = Literal[
     "contiguous",
     "strided",
     "permuted_store",
+    "permuted_r2c",
     "contiguous_r2c",
     "packed_r2c",
     "contiguous_c2r",
