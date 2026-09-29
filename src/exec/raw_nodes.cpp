@@ -42,7 +42,8 @@ namespace {
     const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH");
     return setting && std::string(setting) == "1" && request.device_type == "ix" &&
            request.device_arch == "71" && request.origin_rank <= 1 && request.raw_dim == 1 &&
-           request.requested_n == length && (length == 1024 || length == 2048) &&
+           request.requested_n == length &&
+           (length == 210 || length == 1024 || length == 2048) &&
            context.batch == 64 && request.input_dtype == "complex64" &&
            request.output_dtype == "complex64";
   }
