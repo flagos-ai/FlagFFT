@@ -115,6 +115,9 @@ elseif(BACKEND STREQUAL "NPU")
     find_library(ASCEND_OPAPI_LIBRARY NAMES opapi
         HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
               "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
+    find_library(ASCEND_NNOPBASE_LIBRARY NAMES nnopbase
+        HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+              "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
     find_library(ASCENDCL_LIBRARY NAMES ascendcl
         HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
               "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
@@ -131,6 +134,7 @@ elseif(BACKEND STREQUAL "NPU")
     target_link_libraries(numpy_fft_capture PRIVATE
         "${ASCEND_SIP_LIBRARY}"
         "${ASCEND_OPAPI_LIBRARY}"
+        "${ASCEND_NNOPBASE_LIBRARY}"
         "${ASCENDCL_LIBRARY}"
         "${ASCEND_RUNTIME_LIBRARY}")
 elseif(BACKEND STREQUAL "HCU")

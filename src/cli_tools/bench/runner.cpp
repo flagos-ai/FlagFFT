@@ -47,8 +47,8 @@ namespace {
     std::size_t allocation_bytes;
   };
 
-  // ops-fft exposes a host-pointer API and performs H2D/D2H transfers inside
-  // its execution call. Keep aligned host storage for that reference path.
+  // Some reference libraries use host pointers and perform transfers inside
+  // their execution calls. Keep aligned storage for that path.
   struct HostBuffer {
     std::vector<std::max_align_t> storage;
     std::size_t bytes = 0;
