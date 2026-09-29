@@ -17,6 +17,7 @@
 #include "maca_tail_plans.hpp"
 
 #include <cstdlib>
+#include <string>
 
 namespace flagfft {
 
@@ -72,6 +73,35 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   set_request_context(request);
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
+  }
+  // An opt-in split lets Ascend qualify the existing generic FourStep path
+  // with Stockham/Bluestein children before changing its automatic policy.
+  // Scope the override to the requested 1D root, never a convolution child.
+  const char *npu_split = std::getenv("FLAGFFT_NPU_FOURSTEP_SPLIT");
+  if (request.device_type == "npu" && request.origin_rank == 1 && npu_split != nullptr && *npu_split != '\0') {
+    const std::string spec(npu_split);
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t target_length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (target_length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_SPLIT must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      return std::make_shared<FourStepPlanNode>(
+          n, n1, n2, build_auto_node(n1, false), build_auto_node(n2, false));
+    }
   }
   const auto experiments = detail::maca_tail_plans(n, request, false);
   if (!experiments.empty()) {
