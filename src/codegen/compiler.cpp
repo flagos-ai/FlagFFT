@@ -1570,7 +1570,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         : KernelKey::fused_32_plane(triton_target_for_request(request), request.direction,
                                     request.input_dtype);
     auto plane_fft = compile_kernel(plane_key);
-    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, fused_size * fused_size);
+    std::shared_ptr<CompiledRawNode> outer_fft;
+    const bool ix_column = fused_size == 32 && request.device_type == "ix" &&
+        request.device_arch == "71" && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", false);
+    if (ix_column) {
+      auto column_kernel = compile_kernel(KernelKey::fused_32_column(
+          triton_target_for_request(request), request.direction, request.input_dtype));
+      outer_fft = std::make_shared<CompiledRaw3DColumnNode>(
+          fused_size * fused_size, std::move(column_kernel),
+          adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end())),
+          adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end())));
+    } else {
+      outer_fft = compile_raw_strided_leaf(*n0_leaf, request, fused_size * fused_size);
+    }
     DeviceAllocation temp = adaptor::Memory(
         static_cast<std::size_t>(batch * fused_size * fused_size * fused_size * element_bytes));
     return std::make_shared<CompiledRaw3DFusedPlaneNode>(
@@ -1786,7 +1798,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
         : KernelKey::fused_32_real_plane(triton_target_for_request(request), request.direction,
                                          request.input_dtype);
     auto plane_fft = compile_kernel(key);
-    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
+    std::shared_ptr<CompiledRawNode> outer_fft;
+    if (n0 == 32 && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", false)) {
+      auto column_kernel = compile_kernel(KernelKey::fused_32_column(
+          triton_target_for_request(request), request.direction, request.input_dtype));
+      outer_fft = std::make_shared<CompiledRaw3DColumnNode>(
+          n1 * half, std::move(column_kernel),
+          adaptor::Memory::from_floats(tw_r), adaptor::Memory::from_floats(tw_i));
+    } else {
+      outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
+    }
     DeviceAllocation temp = adaptor::Memory(
         static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype)));
     DeviceAllocation tw_r_dev = adaptor::Memory::from_floats(tw_r);

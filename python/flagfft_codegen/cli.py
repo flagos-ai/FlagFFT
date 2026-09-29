@@ -33,7 +33,11 @@ from .emit import (
     emit_jit_kernel,
 )
 from .metadata import _csv_ints
-from .kernels_small_3d import emit_fused_16_cube_kernel, emit_fused_plane_kernel
+from .kernels_small_3d import (
+    emit_fused_16_cube_kernel,
+    emit_fused_32_column_kernel,
+    emit_fused_plane_kernel,
+)
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -299,7 +303,11 @@ def main() -> None:
             out_dir=args.out_dir,
         )
     elif spec.family == SMALL_3D:
-        if args.kernel.endswith("cube"):
+        if args.kernel == "fused_32_column":
+            metadata = emit_fused_32_column_kernel(
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
+            )
+        elif args.kernel.endswith("cube"):
             metadata = emit_fused_16_cube_kernel(
                 real_input="real" in args.kernel,
                 dtype=args.dtype, direction=args.direction, out_dir=args.out_dir

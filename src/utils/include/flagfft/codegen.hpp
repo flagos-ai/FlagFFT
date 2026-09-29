@@ -1047,6 +1047,22 @@ struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
+struct CompiledRaw3DColumnNode final : CompiledRawNode {
+  CompiledRaw3DColumnNode(int64_t outer_stride,
+                          std::shared_ptr<JitKernel> kernel,
+                          DeviceAllocation tw_r,
+                          DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t outer_stride;
+  std::shared_ptr<JitKernel> kernel;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 // 3D C2C/Z2Z that runs the n1 and n0 axes as strided leaves on the natural
 // layout instead of permuting the cube between passes: three launches and no
 // full-cube transpose traffic.  Used when both non-contiguous axis plans are

@@ -2813,6 +2813,42 @@ flagfftResult CompiledRaw3DFusedCubeNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DColumnNode::CompiledRaw3DColumnNode(
+    int64_t outer_stride, std::shared_ptr<JitKernel> kernel,
+    DeviceAllocation tw_r, DeviceAllocation tw_i)
+    : outer_stride(outer_stride), kernel(std::move(kernel)),
+      tw_r(std::move(tw_r)), tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DColumnNode::describe() const {
+  return "CompiledRaw3DColumn(outer_stride=" + std::to_string(outer_stride) +
+         ", kernel=" + kernel->execution_description() + ")";
+}
+
+flagfftResult CompiledRaw3DColumnNode::execute(adaptor::DevicePtr input,
+                                               adaptor::DevicePtr output,
+                                               const RawExecutionContext &context) const {
+  try {
+    if (context.batch % outer_stride != 0) {
+      throw std::runtime_error("3D column batch must be a multiple of the outer stride");
+    }
+    const int64_t cube_batch = context.batch / outer_stride;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(output),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+        JitKernelArg::i64(outer_stride),
+    };
+    kernel->launch(context.stream, args, ceil_div(outer_stride, int64_t{16}), cube_batch, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D column execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DStridedNode::CompiledRaw3DStridedNode(int64_t n0,
                                                    int64_t n1,
                                                    int64_t n2,
