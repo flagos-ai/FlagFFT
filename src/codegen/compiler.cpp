@@ -1368,20 +1368,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                               n1_leaf && n0_leaf && strided_large_override != nullptr &&
                               std::string(strided_large_override) == "1";
 
-  // A 16x16 plane fits in one block. Transform n2 and n1 together so a
-  // 16^3 cube needs only one plane launch plus the outer strided leaf.
+  // A small square plane fits in one block. Transform n2 and n1 together,
+  // then run the outer strided leaf in a second launch.
   const bool small_plane_backend = request.device_type == "musa" || request.device_type == "hcu";
   const char *fused16_override = std::getenv(request.device_type == "hcu"
                                                   ? "FLAGFFT_HCU_3D_FUSED16"
                                                   : "FLAGFFT_MUSA_3D_FUSED16");
-  if (small_plane_backend && n0 == 16 && n1 == 16 && n2 == 16 &&
-      batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
-      (fused16_override == nullptr || std::string(fused16_override) != "0")) {
-    std::vector<double> tw_r_d(8);
-    std::vector<double> tw_i_d(8);
+  const char *fused32_override = std::getenv("FLAGFFT_HCU_3D_FUSED32");
+  const bool fused16 = small_plane_backend && n0 == 16 && n1 == 16 && n2 == 16 &&
+                       (fused16_override == nullptr || std::string(fused16_override) != "0");
+  const bool fused32 = request.device_type == "hcu" && n0 == 32 && n1 == 32 && n2 == 32 &&
+                       fused32_override != nullptr && std::string(fused32_override) == "1";
+  if ((fused16 || fused32) && batch <= 4 && n0_leaf && n1_leaf && n2_leaf) {
+    const int64_t plane_size = n0;
+    std::vector<double> tw_r_d(static_cast<std::size_t>(plane_size / 2));
+    std::vector<double> tw_i_d(static_cast<std::size_t>(plane_size / 2));
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
-    for (int64_t k = 0; k < 8; ++k) {
-      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 16.0;
+    for (int64_t k = 0; k < plane_size / 2; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / static_cast<double>(plane_size);
       tw_r_d[k] = std::cos(angle);
       tw_i_d[k] = std::sin(angle);
     }
@@ -1394,12 +1398,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
       tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
     }
-    auto plane_fft = compile_kernel(KernelKey::fused_16_plane(
-        triton_target_for_request(request), request.direction, request.input_dtype));
-    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, 16 * 16);
-    DeviceAllocation temp = adaptor::Memory(static_cast<std::size_t>(batch * 16 * 16 * 16 * element_bytes));
-    return std::make_shared<CompiledRaw3DFused16PlaneNode>(
-        std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
+    KernelKey plane_key = KernelKey::fused_16_plane(
+        triton_target_for_request(request), request.direction, request.input_dtype);
+    plane_key.length = plane_size;
+    auto plane_fft = compile_kernel(plane_key);
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, plane_size * plane_size);
+    DeviceAllocation temp = adaptor::Memory(static_cast<std::size_t>(
+        batch * plane_size * plane_size * plane_size * element_bytes));
+    return std::make_shared<CompiledRaw3DFusedPlaneNode>(
+        plane_size, std::move(plane_fft), std::move(outer_fft), std::move(temp),
+        std::move(tw_r), std::move(tw_i));
   }
 
   // A long middle axis can run contiguously before one tiled transpose.

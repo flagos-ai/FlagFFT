@@ -2618,27 +2618,29 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
   }
 }
 
-CompiledRaw3DFused16PlaneNode::CompiledRaw3DFused16PlaneNode(
+CompiledRaw3DFusedPlaneNode::CompiledRaw3DFusedPlaneNode(
+    int64_t plane_size,
     std::shared_ptr<JitKernel> plane_fft,
     std::shared_ptr<CompiledRawNode> outer_fft,
     DeviceAllocation temp,
     DeviceAllocation tw_r,
     DeviceAllocation tw_i)
-    : plane_fft(std::move(plane_fft)),
+    : plane_size(plane_size),
+      plane_fft(std::move(plane_fft)),
       outer_fft(std::move(outer_fft)),
       temp(std::move(temp)),
       tw_r(std::move(tw_r)),
       tw_i(std::move(tw_i)) {
 }
 
-std::string CompiledRaw3DFused16PlaneNode::describe() const {
+std::string CompiledRaw3DFusedPlaneNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRaw3DFused16Plane(plane_fft=" << plane_fft->execution_description()
+  oss << "CompiledRaw3DFusedPlane(n=" << plane_size << ", plane_fft=" << plane_fft->execution_description()
       << ", outer_fft=" << outer_fft->describe() << ")";
   return oss.str();
 }
 
-flagfftResult CompiledRaw3DFused16PlaneNode::execute(adaptor::DevicePtr input,
+flagfftResult CompiledRaw3DFusedPlaneNode::execute(adaptor::DevicePtr input,
                                                      adaptor::DevicePtr output,
                                                      const RawExecutionContext &context) const {
   try {
@@ -2649,8 +2651,9 @@ flagfftResult CompiledRaw3DFused16PlaneNode::execute(adaptor::DevicePtr input,
         JitKernelArg::device(tw_r.get()),
         JitKernelArg::device(tw_i.get()),
     };
-    plane_fft->launch(context.stream, args, batch * 16, 1, 1);
-    RawExecutionContext outer_context {context.request, context.stream, batch * 16 * 16};
+    plane_fft->launch(context.stream, args, batch * plane_size, 1, 1);
+    RawExecutionContext outer_context {context.request, context.stream,
+                                       batch * plane_size * plane_size};
     return outer_fft->execute(temp.get(), output, outer_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D fused plane execute failed: %s\n", e.what());

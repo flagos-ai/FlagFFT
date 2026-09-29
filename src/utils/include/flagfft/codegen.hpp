@@ -987,8 +987,9 @@ struct CompiledRaw3DNode final : CompiledRawNode {
 
 // Small 16^3 complex transform: one kernel handles both axes in each 16x16
 // plane, then the outer axis uses the existing strided leaf.
-struct CompiledRaw3DFused16PlaneNode final : CompiledRawNode {
-  CompiledRaw3DFused16PlaneNode(std::shared_ptr<JitKernel> plane_fft,
+struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
+  CompiledRaw3DFusedPlaneNode(int64_t plane_size,
+                                std::shared_ptr<JitKernel> plane_fft,
                                 std::shared_ptr<CompiledRawNode> outer_fft,
                                 DeviceAllocation temp,
                                 DeviceAllocation tw_r,
@@ -998,6 +999,7 @@ struct CompiledRaw3DFused16PlaneNode final : CompiledRawNode {
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
 
+  int64_t plane_size;
   std::shared_ptr<JitKernel> plane_fft;
   std::shared_ptr<CompiledRawNode> outer_fft;
   DeviceAllocation temp;

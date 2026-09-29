@@ -331,7 +331,8 @@ def main() -> None:
         )
     elif spec.family == SMALL_3D:
         metadata = emit_fused_16_plane_kernel(
-            dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
+            dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+            plane_size=args.length or 16,
         )
     elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:

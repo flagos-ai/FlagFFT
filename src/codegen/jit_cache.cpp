@@ -463,7 +463,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << shell_quote(key.transpose3d_order);
   }
   if (key.kind == KernelKind::Fused16Plane) {
-    jit_command << " --direction " << shell_quote(key.direction);
+    jit_command << " --direction " << shell_quote(key.direction)
+                << " --length " << key.length;
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
