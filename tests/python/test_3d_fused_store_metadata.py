@@ -111,3 +111,23 @@ def test_hcu_permuted_store_full_shared_memory_pack(monkeypatch, dtype, requeste
         assert permuted_store_batch_pack_for(plan) == expected
     finally:
         reset_profile(token)
+
+
+def test_hcu_full_shared_memory_pack_keeps_three_stage_budget(monkeypatch):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_PACK", "32")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_FULL_SMEM", "1")
+    token = set_profile(
+        BackendProfile(
+            backend="hcu", device_arch="gfx936", warp_size=64,
+            max_threads_per_block=1024, max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=128, factors=(8, 4, 4), remainder=1, lanes=16,
+            num_warps=1, generic_radices=(), smem_size=128,
+        )
+        assert permuted_store_batch_pack_for(plan) == 16
+    finally:
+        reset_profile(token)

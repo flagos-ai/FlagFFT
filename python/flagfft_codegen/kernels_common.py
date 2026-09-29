@@ -483,10 +483,12 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
             if override not in {"1", "2", "4", "8", "16", "32"}:
                 raise ValueError("FLAGFFT_HCU_3D_PACK must be 1, 2, 4, 8, 16 or 32")
             target_pack = int(override)
-        if os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0") == "1":
+        if (os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0") == "1"
+                and len(plan.factors) == 2):
             # The normal 48 KiB budget preserves occupancy.  For this HCU
-            # experiment, admit a pack only when the generated two-buffer
-            # exchange fits the queried 64 KiB dynamic shared-memory limit.
+            # two-stage experiment, admit a pack only when its exchange fits
+            # the queried 64 KiB dynamic shared-memory limit.  Three-stage
+            # leaves use more buffers; the ordinary budget remains in force.
             smem_limit = profile.shared_budget(64 * 1024)
             smem_pack = max(
                 (pack for pack in (1, 2, 4, 8, 16, 32)
