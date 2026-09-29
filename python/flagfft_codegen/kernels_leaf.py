@@ -469,16 +469,6 @@ def _emit_permuted_store(
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
             f"mask=lane_mask)",
         ]
-    if _maca_backend_active() and os.getenv("FLAGFFT_MACA_3D_DIRECT_STORE") == "1":
-        # Keep the FFT's lane-major register layout and calculate the output
-        # address for every lane.  This trades coalesced stores for avoiding
-        # a layout conversion that can be expensive on the MetaX backend.
-        vector_base = "output_base" if offset == 0 else f"(output_base + {offset})"
-        return [
-            f"{indent}perm_addr{digit} = {vector_base} * perm_k_stride + perm_gbase_v",
-            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, mask=lane_mask)",
-            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, mask=lane_mask)",
-        ]
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
         mask = "perm_store_mask"
@@ -2942,13 +2932,6 @@ def _build_leaf_kernel_source_for_io(
                 body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
-            if _maca_backend_active() and os.getenv("FLAGFFT_MACA_3D_DIRECT_STORE") == "1":
-                body.append("    perm_i0_v = current_batch // perm_span")
-                body.append("    perm_i1_v = current_batch - perm_i0_v * perm_span")
-                if perm_form == "inner":
-                    body.append("    perm_gbase_v = perm_i1_v * (nbatch // perm_span) + perm_i0_v")
-                else:
-                    body.append(f"    perm_gbase_v = perm_i0_v * ({n} * perm_span) + perm_i1_v")
             if batch_pack == 1:
                 # Keep the singleton row address scalar.  On MUSA this avoids
                 # a degenerate [1] tensor layout being broadcast into the
