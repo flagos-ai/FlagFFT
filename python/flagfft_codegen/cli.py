@@ -218,11 +218,17 @@ def main() -> None:
     if profile.backend == "musa":
         pair_store = os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_MUSA_3D_PACK", "auto")
+        contiguous_2048_pack = os.getenv("FLAGFFT_MUSA_3D_CONTIG_2048_PACK", "auto")
         if pair_store not in {"0", "1"}:
             parser.error("FLAGFFT_MUSA_3D_PAIR_STORE must be 0 or 1")
         if permuted_pack not in {"auto", "1", "2", "4", "8"}:
             parser.error("FLAGFFT_MUSA_3D_PACK must be auto, 1, 2, 4 or 8")
-        profile_dir += f"-musa-3d-pair-store-{pair_store}-pack-{permuted_pack}"
+        if contiguous_2048_pack not in {"auto", "1", "2", "4"}:
+            parser.error("FLAGFFT_MUSA_3D_CONTIG_2048_PACK must be auto, 1, 2 or 4")
+        profile_dir += (
+            f"-musa-3d-pair-store-{pair_store}-pack-{permuted_pack}"
+            f"-contig2048-{contiguous_2048_pack}"
+        )
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.

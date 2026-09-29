@@ -426,6 +426,12 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
+    if _mthreads_backend_active() and plan.length == 2048 and not real_boundary:
+        override = os.getenv("FLAGFFT_MUSA_3D_CONTIG_2048_PACK")
+        if override is not None:
+            if override not in {"1", "2", "4"}:
+                raise ValueError("FLAGFFT_MUSA_3D_CONTIG_2048_PACK must be 1, 2 or 4")
+            return int(override)
     if _portable_leaf_backend_active():
         override = _maca_knob("BATCH_PACK")
         if override == "auto":
