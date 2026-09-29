@@ -1032,7 +1032,8 @@ struct CompiledRaw3DStridedNode final : CompiledRawNode {
 };
 
 // Large 3D C2C with a long middle axis: contiguous n1 FFT plus one transpose
-// can cost less than the fused n1 store, while n2 and n0 keep their fused stores.
+// can cost less than the fused n1 store.  The first n2 pass may also use a
+// separate transpose when its fused store is less efficient.
 struct CompiledRaw3DHybridNode final : CompiledRawNode {
   CompiledRaw3DHybridNode(int64_t n0,
                           int64_t n1,
@@ -1042,7 +1043,8 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
                           std::shared_ptr<CompiledRawNode> n0_fft,
                           std::shared_ptr<JitKernel> perm_210,
                           DeviceAllocation temp1,
-                          DeviceAllocation temp2);
+                          DeviceAllocation temp2,
+                          std::shared_ptr<JitKernel> perm_021 = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1055,6 +1057,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_021;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };

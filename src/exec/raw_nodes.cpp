@@ -2718,7 +2718,8 @@ CompiledRaw3DHybridNode::CompiledRaw3DHybridNode(int64_t n0,
                                                  std::shared_ptr<CompiledRawNode> n0_fft,
                                                  std::shared_ptr<JitKernel> perm_210,
                                                  DeviceAllocation temp1,
-                                                 DeviceAllocation temp2)
+                                                 DeviceAllocation temp2,
+                                                 std::shared_ptr<JitKernel> perm_021)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2726,6 +2727,7 @@ CompiledRaw3DHybridNode::CompiledRaw3DHybridNode(int64_t n0,
       n1_fft(std::move(n1_fft)),
       n0_fft(std::move(n0_fft)),
       perm_210(std::move(perm_210)),
+      perm_021(std::move(perm_021)),
       temp1(std::move(temp1)),
       temp2(std::move(temp2)) {
 }
@@ -2733,6 +2735,7 @@ CompiledRaw3DHybridNode::CompiledRaw3DHybridNode(int64_t n0,
 std::string CompiledRaw3DHybridNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DHybrid(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", first_transpose=" << (perm_021 != nullptr)
       << ", n2_fft=" << n2_fft->describe() << ", n1_fft=" << n1_fft->describe()
       << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
@@ -2750,10 +2753,16 @@ flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
 
     flagfftResult result = n2_fft->execute(input, temp1.get(), n2_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    if (perm_021) {
+      launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), total, batch);
+    }
+    result = n1_fft->execute(perm_021 ? temp2.get() : temp1.get(),
+                             perm_021 ? temp1.get() : temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), total, batch);
-    return n0_fft->execute(temp1.get(), output, n0_context);
+    launch_perm3d(perm_210, context.stream,
+                  perm_021 ? temp1.get() : temp2.get(),
+                  perm_021 ? temp2.get() : temp1.get(), total, batch);
+    return n0_fft->execute(perm_021 ? temp2.get() : temp1.get(), output, n0_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D hybrid execute failed: %s\n", e.what());
     std::fflush(stderr);
