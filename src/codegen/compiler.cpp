@@ -1496,9 +1496,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
-  // Keep this path on the backend where its layout and launch costs have
-  // been measured.  A non-leaf axis retains the general RTRT fallback.
-  if (request.device_type != "musa") return nullptr;
+  // A non-leaf axis retains the general RTRT fallback.
+  if (request.device_type != "musa" && request.device_type != "maca") return nullptr;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
@@ -1510,7 +1509,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
-  if (!small && !fused_3d_store_enabled()) return nullptr;
+  if (!small && request.device_type == "musa" && !fused_3d_store_enabled()) return nullptr;
+  const auto layout = small ? CompiledRaw3DRealLeafNode::Layout::Strided
+      : fused_3d_store_enabled() ? CompiledRaw3DRealLeafNode::Layout::FusedStore
+                                 : CompiledRaw3DRealLeafNode::Layout::Transposed;
 
   FFTRequest n2_request = request;
   n2_request.fft_length = n2;
@@ -1538,17 +1540,31 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
-  std::shared_ptr<JitKernel> perm_021;
-  if (small) {
+  std::shared_ptr<JitKernel> perm_first;
+  std::shared_ptr<JitKernel> perm_second;
+  std::shared_ptr<JitKernel> perm_third;
+  if (layout == CompiledRaw3DRealLeafNode::Layout::Strided) {
     n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
     n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
-  } else {
+  } else if (layout == CompiledRaw3DRealLeafNode::Layout::FusedStore) {
     // The first permutation makes n1 rows contiguous.  Each following leaf
     // writes in the layout consumed by the next axis, leaving natural compact
     // (n0,n1,half) order after n0.
-    perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+    perm_first = compile_transpose3d_kernel(request, n0, n1, half, "021");
     n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner");
     n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
+  } else {
+    n1_fft = compile_raw_leaf(*n1_leaf, n1_request);
+    n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
+    if (inverse) {
+      perm_first = compile_transpose3d_kernel(request, n0, n1, half, "120");
+      perm_second = compile_transpose3d_kernel(request, n1, half, n0, "210");
+      perm_third = compile_transpose3d_kernel(request, n0, half, n1, "021");
+    } else {
+      perm_first = compile_transpose3d_kernel(request, n0, n1, half, "021");
+      perm_second = compile_transpose3d_kernel(request, n0, half, n1, "210");
+      perm_third = compile_transpose3d_kernel(request, n1, half, n0, "201");
+    }
   }
 
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -1558,11 +1574,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                                      n1,
                                                      n2,
                                                      inverse,
-                                                     !small,
+                                                     layout,
                                                      std::move(n2_real_fft),
                                                      std::move(n1_fft),
                                                      std::move(n0_fft),
-                                                     std::move(perm_021),
+                                                     std::move(perm_first),
+                                                     std::move(perm_second),
+                                                     std::move(perm_third),
                                                      std::move(temp1),
                                                      std::move(temp2));
 }

@@ -2723,22 +2723,26 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
                                                      int64_t n1,
                                                      int64_t n2,
                                                      bool inverse,
-                                                     bool fused_store,
+                                                     Layout layout,
                                                      std::shared_ptr<CompiledRawNode> n2_real_fft,
                                                      std::shared_ptr<CompiledRawNode> n1_fft,
                                                      std::shared_ptr<CompiledRawNode> n0_fft,
-                                                     std::shared_ptr<JitKernel> perm_021,
+                                                     std::shared_ptr<JitKernel> perm_first,
+                                                     std::shared_ptr<JitKernel> perm_second,
+                                                     std::shared_ptr<JitKernel> perm_third,
                                                      DeviceAllocation temp1,
                                                      DeviceAllocation temp2)
     : n0(n0),
       n1(n1),
       n2(n2),
       inverse(inverse),
-      fused_store(fused_store),
+      layout(layout),
       n2_real_fft(std::move(n2_real_fft)),
       n1_fft(std::move(n1_fft)),
       n0_fft(std::move(n0_fft)),
-      perm_021(std::move(perm_021)),
+      perm_first(std::move(perm_first)),
+      perm_second(std::move(perm_second)),
+      perm_third(std::move(perm_third)),
       temp1(std::move(temp1)),
       temp2(std::move(temp2)) {
 }
@@ -2746,7 +2750,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
 std::string CompiledRaw3DRealLeafNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DRealLeaf(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
-      << ", inverse=" << inverse << ", fused_store=" << fused_store
+      << ", inverse=" << inverse << ", layout=" << static_cast<int>(layout)
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
@@ -2768,31 +2772,49 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
       // The real leaf produces compact rows in natural (n0,n1,half) order.
       result = n2_real_fft->execute(input, temp1.get(), n2_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      if (fused_store) {
+      if (layout == Layout::FusedStore) {
         // n1 wants contiguous rows in (n0,half,n1) order.  Its store and
         // the n0 store both apply the following layout change.
-        launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch);
+        launch_perm3d(perm_first, context.stream, temp1.get(), temp2.get(), packed, batch);
         result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+      } else if (layout == Layout::Transposed) {
+        launch_perm3d(perm_first, context.stream, temp1.get(), temp2.get(), packed, batch);
+        result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch);
+        result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch);
+        return FLAGFFT_SUCCESS;
       } else {
         result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
       }
       if (result != FLAGFFT_SUCCESS) return result;
-      return n0_fft->execute(fused_store ? temp1.get() : temp2.get(), output, n0_context);
+      return n0_fft->execute(layout == Layout::FusedStore ? temp1.get() : temp2.get(), output, n0_context);
     }
 
     // Axes commute, so the compact n1/n0 transforms can precede the real
     // inverse n2 boundary.  This also keeps the compact cube throughout.
-    if (fused_store) {
-      launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch);
+    if (layout == Layout::FusedStore) {
+      launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch);
       result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    } else if (layout == Layout::Transposed) {
+      launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch);
+      result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_second, context.stream, temp2.get(), temp1.get(), packed, batch);
+      result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_third, context.stream, temp2.get(), temp1.get(), packed, batch);
+      return n2_real_fft->execute(temp1.get(), output, n2_context);
     } else {
       result = n1_fft->execute(input, temp1.get(), n1_context);
     }
     if (result != FLAGFFT_SUCCESS) return result;
-    result = n0_fft->execute(fused_store ? temp2.get() : temp1.get(),
-                             fused_store ? temp1.get() : temp2.get(), n0_context);
+    result = n0_fft->execute(layout == Layout::FusedStore ? temp2.get() : temp1.get(),
+                             layout == Layout::FusedStore ? temp1.get() : temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    return n2_real_fft->execute(fused_store ? temp1.get() : temp2.get(), output, n2_context);
+    return n2_real_fft->execute(layout == Layout::FusedStore ? temp1.get() : temp2.get(), output, n2_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D real leaf execute failed: %s\n", e.what());
     std::fflush(stderr);

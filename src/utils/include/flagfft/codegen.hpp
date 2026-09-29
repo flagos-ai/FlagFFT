@@ -1046,18 +1046,21 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
 };
 
 // Real 3D leaf path.  The innermost axis reads/writes the compact real
-// boundary directly.  The other two axes either run on the natural layout
-// (small cubes) or fuse their output permutations (large cubes).
+// boundary directly.  The other two axes run on the natural layout for small
+// cubes, use fused stores, or use separate transposes for large cubes.
 struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
+  enum class Layout { Strided, FusedStore, Transposed };
   CompiledRaw3DRealLeafNode(int64_t n0,
                             int64_t n1,
                             int64_t n2,
                             bool inverse,
-                            bool fused_store,
+                            Layout layout,
                             std::shared_ptr<CompiledRawNode> n2_real_fft,
                             std::shared_ptr<CompiledRawNode> n1_fft,
                             std::shared_ptr<CompiledRawNode> n0_fft,
-                            std::shared_ptr<JitKernel> perm_021,
+                            std::shared_ptr<JitKernel> perm_first,
+                            std::shared_ptr<JitKernel> perm_second,
+                            std::shared_ptr<JitKernel> perm_third,
                             DeviceAllocation temp1,
                             DeviceAllocation temp2);
   flagfftResult execute(adaptor::DevicePtr input,
@@ -1069,11 +1072,13 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   int64_t n1;
   int64_t n2;
   bool inverse;
-  bool fused_store;
+  Layout layout;
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
-  std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_first;
+  std::shared_ptr<JitKernel> perm_second;
+  std::shared_ptr<JitKernel> perm_third;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };
