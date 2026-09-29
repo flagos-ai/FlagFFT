@@ -1542,6 +1542,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
+  const char *strided_large_override = std::getenv("FLAGFFT_HCU_3D_C2R_STRIDED_LARGE");
+  const bool direct_strided = request.device_type == "hcu" && inverse && !small &&
+                              n1_leaf && strided_large_override != nullptr &&
+                              std::string(strided_large_override) == "1";
   const char *real_hybrid_override = std::getenv("FLAGFFT_HCU_3D_REAL_HYBRID");
   const bool real_hybrid = !n1_leaf && request.device_type == "hcu" && !small &&
                            n1 >= 4 * std::max(n0, n2) && fused_3d_store_enabled() &&
@@ -1595,7 +1599,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_210;
-  if (small) {
+  if (small || direct_strided) {
     n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
     n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
   } else {
@@ -1621,7 +1625,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                                      n1,
                                                      n2,
                                                      inverse,
-                                                     !small,
+                                                     !small && !direct_strided,
                                                      n2_permuted,
                                                      std::move(n2_real_fft),
                                                      std::move(n1_fft),
