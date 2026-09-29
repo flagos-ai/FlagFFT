@@ -14,6 +14,8 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
+
 namespace flagfft {
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
@@ -121,6 +123,16 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
+    const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
+    if (override_value != nullptr) {
+      const std::string choice(override_value);
+      if (choice == "8,8,4") return {8, 8, 4};
+      if (choice == "4,4,4,4") return {4, 4, 4, 4};
+      if (choice == "16,16") return {16, 16};
+      throw std::runtime_error("FLAGFFT_HCU_3D_256_FACTORS must be 16,16, 8,8,4 or 4,4,4,4");
+    }
+  }
   // Use two short codelets for 32^3 axes instead of five radix-two stages.
   if ((context.device_type == "musa" || context.device_type == "hcu") &&
       context.origin_rank == 3 && n == 32) {
