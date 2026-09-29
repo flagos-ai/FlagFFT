@@ -1768,8 +1768,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const int64_t n2 = node->n2;
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
+  auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
+  const char *ix_fused_first = std::getenv("FLAGFFT_IX_3D_R2C_FUSED_FIRST");
+  const bool fused_first = !inverse && n2_leaf && (n2 == 64 || n2 == 256) &&
+      packed > 64 * 64 * 64 && ix_fused_first != nullptr &&
+      std::string(ix_fused_first) == "1";
 
   FFTRequest n2_request = request;
   n2_request.fft_length = n2;
@@ -1792,14 +1797,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
 
-  auto n2_real_fft = inverse
-      ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
-      : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+  if (fused_first) {
+    KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
+                                         n2_request.direction, n2_request.input_dtype,
+                                         n2_leaf->length, n2_leaf->factors,
+                                         n2_leaf->lanes, n2_leaf->num_warps,
+                                         n2_leaf->generic_radices, n2_leaf->smem_size);
+    key.perm_form = "permuted";
+    n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
+        n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request));
+  } else {
+    n2_real_fft = inverse
+        ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
+        : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  }
   auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
   auto n0_fft = fused_n0
       ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
       : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
-  auto perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+  auto perm_021 = fused_first
+      ? std::shared_ptr<JitKernel>{}
+      : compile_transpose3d_kernel(request, n0, n1, half, "021");
   auto perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
   auto perm_201 = fused_n0
       ? std::shared_ptr<JitKernel>{}

@@ -107,7 +107,7 @@ def main() -> None:
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument(
         "--perm-form",
-        choices=("outer", "inner"),
+        choices=("outer", "inner", "permuted"),
         default="outer",
         help="axis placement for the permuted store's fused permutation",
     )

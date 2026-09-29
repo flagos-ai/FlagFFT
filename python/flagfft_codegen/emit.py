@@ -563,6 +563,11 @@ def emit_jit_kernel(
     )
     spec = kernel_spec(kernel)
     if spec.is_leaf_like:
+        io_mode = (
+            "permuted_r2c"
+            if kernel == "leaf_r2c" and perm_form == "permuted"
+            else spec.io_mode
+        )
         if kernel in FOUR_STEP_ROW_NAMES and plan.length != four_step_n1:
             raise ValueError(
                 f"four-step {kernel} kernel length must equal n1: "
@@ -575,7 +580,7 @@ def emit_jit_kernel(
             )
         kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
             plan,
-            io_mode=spec.io_mode,
+            io_mode=io_mode,
             prime_n=prime_n,
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,

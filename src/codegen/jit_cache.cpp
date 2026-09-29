@@ -433,7 +433,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
                 << " --direction " << shell_quote(key.direction);
   }
-  if (key.kind == KernelKind::LeafPermutedStore) {
+  if (key.kind == KernelKind::LeafPermutedStore ||
+      (key.kind == KernelKind::LeafR2C && key.perm_form == "permuted")) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
