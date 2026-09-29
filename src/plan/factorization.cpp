@@ -156,6 +156,17 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   if (context.device_type == "hcu" &&
       (context.origin_rank <= 1 || context.origin_rank == 3) &&
       context.requested_n == n && n == 16) {
+    if (context.origin_rank == 3) {
+      if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_16_FACTORS")) {
+        const std::string choice(override_value);
+        if (choice == "4,4") return {4, 4};
+        if (choice == "2,8") return {2, 8};
+        if (choice == "8,2") return {8, 2};
+        if (choice != "16") {
+          throw std::runtime_error("FLAGFFT_HCU_3D_16_FACTORS must be 16, 4,4, 2,8 or 8,2");
+        }
+      }
+    }
     // The direct radix-16 codelet avoids a shared-memory round trip.
     return {16};
   }
