@@ -304,9 +304,6 @@ def _maca_knob(name: str, default: str = "") -> str:
     A/B testing and rollback.
     Direct Python code-generation calls remain on the historical defaults.
     """
-    if (_hcu_backend_active() and name == "EXCHANGE" and
-            os.getenv("FLAGFFT_HCU_3D_PORTABLE_LEAF", "0") == "1"):
-        return "direct_all"
     if _ix_backend_active():
         defaults = {"EXCHANGE": "direct_all", "SPLIT_ORDER": "lsb"}
         if ix_ct_single_default_enabled():
@@ -984,8 +981,6 @@ def _portable_leaf_backend_active() -> bool:
     """Select the tensor-exchange leaf implementation for IX experiments."""
     return _maca_backend_active() or (
         _ix_backend_active() and _maca_knob("PORTABLE_LEAF") == "1"
-    ) or (
-        _hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_PORTABLE_LEAF", "0") == "1"
     )
 
 
