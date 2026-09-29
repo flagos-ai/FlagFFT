@@ -234,8 +234,8 @@ def main() -> None:
         transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32")
         if pair_store not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_PAIR_STORE must be 0 or 1")
-        if permuted_pack not in {"auto", "1", "2", "4", "8"}:
-            parser.error("FLAGFFT_HCU_3D_PACK must be auto, 1, 2, 4 or 8")
+        if permuted_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
+            parser.error("FLAGFFT_HCU_3D_PACK must be auto, 1, 2, 4, 8, 16 or 32")
         if fp64_tile not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_FP64_TILE must be 0 or 1")
         if fused_warps not in {"auto", "1", "2", "4", "8"}:

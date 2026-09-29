@@ -8,7 +8,7 @@ from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
 from flagfft_codegen.metadata import _metadata
 
 
-@pytest.mark.parametrize("pack", (1, 2, 4, 8))
+@pytest.mark.parametrize("pack", (1, 2, 4, 8, 16, 32))
 def test_hcu_permuted_store_grid_matches_generated_batch_pack(monkeypatch, pack):
     monkeypatch.setenv("FLAGFFT_HCU_3D_PACK", str(pack))
     token = set_profile(
