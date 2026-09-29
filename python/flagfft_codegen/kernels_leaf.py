@@ -87,7 +87,10 @@ def _portable_complex_vector_io() -> bool:
     natively, without the ``ld.global.v2`` inline asm that the MetaX plugin
     cannot compile.
     """
-    return _maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"}
+    return (
+        (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
+        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_VEC_LOAD", "0") == "1")
+    )
 
 
 def _emit_vectorized_complex_load(
@@ -1115,7 +1118,7 @@ def _emit_stage_block(
     vectorized_complex_io = (
         io_mode in {"contiguous", "contiguous_c2r", "permuted_store"}
         or vectorized_four_step_complex_io
-    ) and vector_io_allowed
+    ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
     vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
