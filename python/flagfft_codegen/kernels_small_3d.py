@@ -57,7 +57,7 @@ def emit_fused_16_plane_kernel(
 """
     elif real_kind == "c2r":
         load = f"""    reflected = rev_col >= {half}
-    src_row = tl.where(reflected, (-rev_row) % {plane_size}, rev_row)
+    src_row = tl.where(reflected, ({plane_size} - rev_row) % {plane_size}, rev_row)
     src_col = tl.where(reflected, {plane_size} - rev_col, rev_col)
     src = (plane * {plane_size * half} + src_row * {half} + src_col) * 2
     xr = tl.load(in_ptr + src)
