@@ -131,6 +131,16 @@ struct CompiledRawNode {
   virtual std::string describe() const = 0;
 };
 
+struct Raw1DGraphState {
+  std::unique_ptr<adaptor::CudaGraph> graph;
+  adaptor::DevicePtr input = 0;
+  adaptor::DevicePtr output = 0;
+  int64_t batch = 0;
+  int64_t input_distance = 0;
+  int64_t output_distance = 0;
+  bool failed = false;
+};
+
 struct CompiledRawLeafNode final : CompiledRawNode {
   CompiledRawLeafNode(int64_t length,
                       std::shared_ptr<JitKernel> kernel,
@@ -143,6 +153,7 @@ struct CompiledRawLeafNode final : CompiledRawNode {
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
+  mutable Raw1DGraphState graph_state;
 };
 
 struct CompiledRawStridedLeafNode final : CompiledRawNode {
@@ -312,7 +323,9 @@ struct CompiledRawBluesteinFullLeafNode final : CompiledRawNode {
                                    std::vector<DeviceAllocation> tables,
                                    DeviceAllocation chirp,
                                    DeviceAllocation b_time,
-                                   DeviceAllocation b_fft_buf);
+                                   DeviceAllocation b_fft_buf,
+                                   std::string real_kind = "",
+                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -329,6 +342,10 @@ struct CompiledRawBluesteinFullLeafNode final : CompiledRawNode {
   mutable DeviceAllocation b_fft_buf;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  std::string real_kind;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
@@ -348,7 +365,9 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
                                    DeviceAllocation b_time,
                                    DeviceAllocation stage1,
                                    DeviceAllocation work_buf,
-                                   DeviceAllocation b_fft_buf);
+                                   DeviceAllocation b_fft_buf,
+                                   std::string real_kind = "",
+                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -374,6 +393,10 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
   mutable DeviceAllocation b_fft_buf;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  std::string real_kind;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawRaderNode final : CompiledRawNode {
@@ -507,6 +530,7 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
   DeviceAllocation twiddle;
+  mutable Raw1DGraphState graph_state;
 };
 
 struct CompiledRawR2CFourStepHalfOutNode final : CompiledRawNode {
@@ -619,6 +643,7 @@ struct CompiledRawC2RLeafNode final : CompiledRawNode {
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
+  mutable Raw1DGraphState graph_state;
 };
 
 struct CompiledRawC2RFourStepRealOutNode final : CompiledRawNode {

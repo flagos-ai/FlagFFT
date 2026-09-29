@@ -234,11 +234,20 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 | 663000 | Unchanged | Half-length complex FFT plus pre/postprocess |
 | 1048576 | Interleaved/swizzled exchange, inner pack 8, four physical warps | Half-length complex FFT plus pre/postprocess |
 
-For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024 or
-2048 use tensor exchange and four physical warps. The 1024-point leaf uses
+For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024, 2048,
+or 16384 use tensor exchange and four physical warps. The 1024-point leaf uses
 `[8,8,4,4]`; the 2048-point C2C/C2R leaf uses its measured factor order.
 The 2048-point R2C path uses the fused 1024-point `[16,8,8]` leaf with two
-physical warps. Set `FLAGFFT_IX_FUSED_R2C=0` before starting the process to
+physical warps. The same exchange policy covers the 8191-point batch-64
+Bluestein plan, whose convolution uses a 16384-point Four-Step child.
+For 23-point batch-64 R2C/C2R, a direct real DFT folds the two conversion
+kernels into the transform; `FLAGFFT_IX_REAL_DIRECT_DFT=0` restores the prior path.
+At length 16384, batch-64 R2C/C2R use a packed 8192-point complex child;
+`FLAGFFT_PACKED_REAL=0` disables this real-transform path.
+At lengths 185640, 340200, 524288, and 663000, batch-64 R2C/C2R also use
+the packed half-length complex Four-Step child. These cases keep the full-length
+path when `FLAGFFT_IX_CT_BATCH=0` or `FLAGFFT_PACKED_REAL=0`.
+Set `FLAGFFT_IX_FUSED_R2C=0` before starting the process to
 restore the prior full-length R2C leaf. Set `FLAGFFT_IX_CT_BATCH=0` to
 compare with the previous batch path.
 

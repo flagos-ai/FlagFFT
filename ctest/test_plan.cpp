@@ -154,6 +154,20 @@ TEST(Plan1D, IxCtBatchPolicyScope) {
   auto longer = request;
   longer.n = longer.fft_length = longer.requested_n = 2048;
   EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(longer));
+  for (auto length : {8191, 16381, 16384}) {
+    auto batched = request;
+    batched.n = batched.fft_length = batched.requested_n = length;
+    batched.input_strides = {length, 1};
+    EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(batched));
+  }
+  auto packed_child = request;
+  packed_child.n = packed_child.fft_length = packed_child.requested_n = 8192;
+  packed_child.input_strides = {8192, 1};
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(packed_child));
+  packed_child.packed_real_child = true;
+  EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(packed_child));
+  packed_child.origin_rank = 2;
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(packed_child));
   for (auto changed : {16, 210, 4096}) {
     auto other = request;
     other.n = other.fft_length = other.requested_n = changed;
