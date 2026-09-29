@@ -1121,7 +1121,7 @@ def _emit_stage_block(
     ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
     hcu_u64_load = (
         _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
-        and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "0") == "1"
+        and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1") == "1"
     )
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"

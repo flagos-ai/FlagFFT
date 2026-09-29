@@ -234,7 +234,7 @@ def main() -> None:
         transpose_pair = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0")
         transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32")
         full_smem = os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0")
-        u64_load = os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "0")
+        u64_load = os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1")
         if pair_store not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_PAIR_STORE must be 0 or 1")
         if permuted_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
