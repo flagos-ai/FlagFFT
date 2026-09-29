@@ -537,11 +537,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       if (fused_factors.size() >= 3) {
         std::reverse(fused_factors.begin() + 1, fused_factors.end());
       }
+      int64_t fused_warps = leaf->num_warps;
+      if (request.device_type == "ix" && request.device_arch == "71" &&
+          request.origin_rank == 3 && bluestein->length == 997) {
+        const char *value = std::getenv("FLAGFFT_IX_3D_BLUESTEIN_WARPS");
+        if (value != nullptr && (std::string(value) == "4" || std::string(value) == "8")) {
+          fused_warps = std::strtoll(value, nullptr, 10);
+        }
+      }
       LeafPlanNode fused_leaf(leaf->length,
                               std::move(fused_factors),
                               leaf->remainder,
                               leaf->lanes,
-                              leaf->num_warps,
+                              fused_warps,
                               leaf->generic_radices,
                               leaf->smem_size);
       KernelKey fused_key = KernelKey::leaf_bluestein(triton_target_for_request(child_request),

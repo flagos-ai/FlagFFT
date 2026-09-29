@@ -136,6 +136,27 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       std::string(ix_3d_32_factors) == "1") {
     return {4, 8};
   }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.origin_rank == 3 && context.input_dtype == "complex64") {
+    if (n == 64) {
+      const char *value = std::getenv("FLAGFFT_IX_3D_64_FACTORS");
+      if (value != nullptr && std::string(value) == "8x8") return {8, 8};
+    }
+    if (n == 128) {
+      const char *value = std::getenv("FLAGFFT_IX_3D_128_FACTORS");
+      if (value != nullptr && std::string(value) == "8x16") return {8, 16};
+      if (value != nullptr && std::string(value) == "16x8") return {16, 8};
+    }
+    if (n == 256) {
+      const char *value = std::getenv("FLAGFFT_IX_3D_256_FACTORS");
+      if (value != nullptr && std::string(value) == "8x8x4") return {8, 8, 4};
+      if (value != nullptr && std::string(value) == "4x4x4x4") return {4, 4, 4, 4};
+    }
+    if (n == 2048) {
+      const char *value = std::getenv("FLAGFFT_IX_3D_2048_FACTORS");
+      if (value != nullptr && std::string(value) == "16x8x16") return {16, 8, 16};
+    }
+  }
   const bool ix_fp32_real_batch =
       context.device_type == "ix" && context.device_arch == "71" &&
       context.origin_rank <= 1 && context.requested_n == n &&
