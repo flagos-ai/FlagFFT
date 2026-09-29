@@ -137,6 +137,19 @@ elseif(BACKEND STREQUAL "NPU")
         "${ASCEND_NNOPBASE_LIBRARY}"
         "${ASCENDCL_LIBRARY}"
         "${ASCEND_RUNTIME_LIBRARY}")
+    # The Ascend PyTorch wheel keeps OpenBLAS's private libgfortran in
+    # torch.libs. Match the main FlagFFT build's link search path.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -c
+                "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), '..', 'torch.libs'))"
+        OUTPUT_VARIABLE ASCEND_TORCH_LIBS_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(ASCEND_TORCH_LIBS_PATH AND EXISTS "${ASCEND_TORCH_LIBS_PATH}")
+        target_link_options(numpy_fft_capture PRIVATE
+            "-Wl,-rpath-link,${ASCEND_TORCH_LIBS_PATH}")
+    endif()
 elseif(BACKEND STREQUAL "HCU")
     list(APPEND CMAKE_PREFIX_PATH
         "$ENV{ROCM_PATH}"
