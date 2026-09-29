@@ -1456,10 +1456,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                       std::move(temp2));
   }
 
-  const bool maca_large_strided = request.device_type == "maca" &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_LARGE_STRIDED", false);
-  if (n1_leaf && n0_leaf &&
-      (batch * n0 * n1 * n2 <= kStridedMaxElements || maca_large_strided)) {
+  if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements) {
     std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
     std::shared_ptr<CompiledRawNode> n1_fft =
         compile_raw_strided_leaf(*n1_leaf, request, /*outer_stride=*/n2);
@@ -1532,9 +1529,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t n2 = node->n2;
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
-  const bool small = n1_leaf && (packed <= 64 * 64 * 64 ||
-      (request.device_type == "maca" &&
-       maca_flag_or_default("FLAGFFT_MACA_3D_LARGE_STRIDED", false)));
+  const bool small = n1_leaf && packed <= 64 * 64 * 64;
   if (!small && request.device_type == "musa" && !fused_3d_store_enabled()) return nullptr;
   const auto layout = small ? CompiledRaw3DRealLeafNode::Layout::Strided
       : !n1_leaf ? CompiledRaw3DRealLeafNode::Layout::Transposed
