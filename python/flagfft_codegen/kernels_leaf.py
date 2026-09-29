@@ -1119,6 +1119,10 @@ def _emit_stage_block(
         io_mode in {"contiguous", "contiguous_c2r", "permuted_store"}
         or vectorized_four_step_complex_io
     ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
+    hcu_u64_load = (
+        _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
+        and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "0") == "1"
+    )
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
     vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
@@ -1188,7 +1192,20 @@ def _emit_stage_block(
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             if io_mode in {"contiguous", "permuted_store"}:
-                if vectorized_complex_io:
+                if hcu_u64_load:
+                    lines.append(
+                        f"{indent}packed{j} = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.uint64)) "
+                        f"+ batch_base + in{j}, mask=lane_mask, other=0)"
+                    )
+                    lines.append(
+                        f"{indent}r{j} = tl.cast(tl.cast(packed{j} & 0xffffffff, tl.uint32), "
+                        "tl.float32, bitcast=True)"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.cast(tl.cast(packed{j} >> 32, tl.uint32), "
+                        "tl.float32, bitcast=True)"
+                    )
+                elif vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_load(
                             indent,
