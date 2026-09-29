@@ -14,8 +14,6 @@
 
 #include "flagfft/core.hpp"
 
-#include <cstdlib>
-
 namespace flagfft {
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
@@ -123,18 +121,6 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
-  if (context.device_type == "maca" && context.origin_rank == 3 && n == 256) {
-    if (const char *value = std::getenv("FLAGFFT_MACA_3D_N256_FACTORS")) {
-      const std::string choice(value);
-      if (choice == "16x16") return {16, 16};
-      if (choice == "8x8x4") return {8, 8, 4};
-      if (choice == "4x8x8") return {4, 8, 8};
-      if (choice == "32x8") return {32, 8};
-      if (choice != "default") {
-        throw std::runtime_error("FLAGFFT_MACA_3D_N256_FACTORS must be default, 16x16, 8x8x4, 4x8x8 or 32x8");
-      }
-    }
-  }
   // Five radix-two stages cost more than two short codelets for 32^3 axes on
   // S5000. Keep other ranks and devices on their established factorization.
   if (context.device_type == "musa" && context.origin_rank == 3 && n == 32) {
