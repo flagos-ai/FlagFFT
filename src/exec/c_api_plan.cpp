@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cstdio>
+#include <cstdlib>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
@@ -316,6 +317,20 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
             compiler.compile_raw_3d_node(three_dim, plan->executable.forward_request, plan->desc.batch);
         plan->executable.inverse =
             compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
+      }
+      const char *graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH");
+      const bool graph_allowed = plan->executable.forward_request.device_type == "hcu" &&
+                                 plan->desc.batch * three_dim->n0 * three_dim->n1 * three_dim->n2 <=
+                                     64 * 64 * 64 &&
+                                 std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
+                                 (graph_override == nullptr || std::string(graph_override) != "0");
+      if (graph_allowed) {
+        if (plan->executable.forward) {
+          plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+        }
+        if (plan->executable.inverse) {
+          plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+        }
       }
     } else {
       // 1D FFT: original compilation

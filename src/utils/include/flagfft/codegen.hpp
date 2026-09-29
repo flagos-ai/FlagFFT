@@ -131,6 +131,20 @@ struct CompiledRawNode {
   virtual std::string describe() const = 0;
 };
 
+struct CompiledRawGraphNode final : CompiledRawNode {
+  explicit CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inner);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  std::shared_ptr<CompiledRawNode> inner;
+  mutable std::unique_ptr<adaptor::CudaGraph> graph;
+  mutable adaptor::DevicePtr graph_input = 0;
+  mutable adaptor::DevicePtr graph_output = 0;
+  mutable bool graph_failed = false;
+};
+
 struct CompiledRawLeafNode final : CompiledRawNode {
   CompiledRawLeafNode(int64_t length,
                       std::shared_ptr<JitKernel> kernel,
