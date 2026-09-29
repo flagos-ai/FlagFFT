@@ -218,11 +218,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";ix-3d-packed-r2c=" + std::string(packed_3d != nullptr &&
                                                      std::string(packed_3d) == "1" ? "1" : "0");
   }
-  if ((key.kind == KernelKind::Fused16Cube || key.kind == KernelKind::Fused16RealCube) &&
-      adaptor::backend_name() == "ix") {
-    const char *warps = std::getenv("FLAGFFT_IX_3D_CUBE_WARPS");
-    cache_key += ";ix-3d-cube-warps=" + std::string(warps != nullptr ? warps : "4");
-  }
   if (key.kind == KernelKind::Transpose3D && adaptor::backend_name() == "ix") {
     const char *tile = std::getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE");
     const char *packed = std::getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE");

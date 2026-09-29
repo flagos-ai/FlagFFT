@@ -17,11 +17,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from .artifacts import write_text_atomic
-from .kernels_common import _dtype_suffix, _ix_backend_active
+from .kernels_common import _dtype_suffix
 from .metadata import _module_source, _signature
 
 
@@ -135,13 +134,6 @@ def emit_fused_16_cube_kernel(
     The outer axis uses a direct 16-point sum across planes. The remaining
     16x16 transform stays in the block, avoiding a second kernel launch.
     """
-    num_warps = 4
-    if _ix_backend_active():
-        value = os.getenv("FLAGFFT_IX_3D_CUBE_WARPS")
-        if value is not None:
-            if value not in {"2", "4", "8"}:
-                raise ValueError("FLAGFFT_IX_3D_CUBE_WARPS must be 2, 4 or 8")
-            num_warps = int(value)
     load_source = (
         "vr = tl.load(in_ptr + batch * 4096 + i0 * 256 + idx)\n"
         "        vi = tl.full((256,), 0.0, tl.float32)"
@@ -234,7 +226,7 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "module_path": str(module_path),
         "kernel_name": "fused_16_cube_fft_kernel",
         "signature": _signature(args, dtype),
-        "num_warps": num_warps,
+        "num_warps": 4,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
