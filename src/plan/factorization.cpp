@@ -128,9 +128,12 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     if (override_value != nullptr) {
       const std::string choice(override_value);
       if (choice == "8,8,4") return {8, 8, 4};
+      if (choice == "4,8,8") return {4, 8, 8};
+      if (choice == "8,4,8") return {8, 4, 8};
+      if (choice == "4,16,4") return {4, 16, 4};
       if (choice == "4,4,4,4") return {4, 4, 4, 4};
       if (choice == "16,16") return {16, 16};
-      throw std::runtime_error("FLAGFFT_HCU_3D_256_FACTORS must be 16,16, 8,8,4 or 4,4,4,4");
+      throw std::runtime_error("FLAGFFT_HCU_3D_256_FACTORS must be 16,16, 8,8,4, 4,8,8, 8,4,8, 4,16,4 or 4,4,4,4");
     }
   }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 128) {
