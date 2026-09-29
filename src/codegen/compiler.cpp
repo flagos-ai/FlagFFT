@@ -1419,6 +1419,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(temp2));
   }
 
+  if (request.device_type == "maca" && n2_leaf && n1_leaf && n0_leaf &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_STRIDED_MID", false) &&
+      batch * n0 * n1 * n2 > kStridedMaxElements) {
+    auto n2_fft = compile_raw_leaf(*n2_leaf, n2_request);
+    auto n1_fft = compile_raw_strided_leaf(*n1_leaf, request, n2);
+    auto n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
+    auto perm_120 = compile_transpose3d_kernel(request, n0, n1, n2, "120");
+    auto perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    return std::make_shared<CompiledRaw3DMiddleStridedNode>(n0,
+                                                             n1,
+                                                             n2,
+                                                             std::move(n2_fft),
+                                                             std::move(n1_fft),
+                                                             std::move(n0_fft),
+                                                             std::move(perm_120),
+                                                             std::move(perm_201),
+                                                             std::move(temp1),
+                                                             std::move(temp2));
+  }
+
   // Fused fast path: each axis runs as a leaf whose store also applies the
   // permutation the next axis wants, so three FFT passes plus three full-cube
   // transposes collapse into three passes.  Worth it only where the standalone
