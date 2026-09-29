@@ -1813,10 +1813,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
-  const char *ix_fused_middle = std::getenv("FLAGFFT_IX_3D_R2C_FUSED_MIDDLE");
+  // The middle store removes one full-cube transpose for single 256^3 R2C.
+  // Batch four and the elongated shape measured slower, so keep this narrow.
   const bool fused_middle = !inverse && screen_hybrid && n1_leaf &&
-      packed > 64 * 64 * 64 && ix_fused_middle != nullptr &&
-      std::string(ix_fused_middle) == "1";
+      packed > 64 * 64 * 64 &&
+      flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_MIDDLE",
+                      batch == 1 && n0 == 256 && n1 == 256 && n2 == 256);
   const bool fused_first = !inverse && n2_leaf && (n2 == 64 || n2 == 256) &&
       packed > 64 * 64 * 64 && flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_FIRST", true);
 
