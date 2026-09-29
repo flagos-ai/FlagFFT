@@ -484,6 +484,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_maca_boundary_leaf =
         request.device_type == "maca" && batch == 1 && leaf != nullptr &&
         maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION", maca_1d_single_policy_);
+    const char *ix_3d_boundary = std::getenv("FLAGFFT_IX_3D_BLUESTEIN_BOUNDARY");
+    const bool use_ix_3d_boundary_leaf =
+        request.device_type == "ix" && request.device_arch == "71" &&
+        request.origin_rank == 3 && request.input_dtype == "complex64" &&
+        bluestein->length == 997 && leaf != nullptr && ix_3d_boundary != nullptr &&
+        std::string(ix_3d_boundary) == "1";
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
@@ -511,7 +517,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
-    if (use_maca_boundary_leaf) {
+    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf) {
       DeviceAllocation work_buf =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
       return std::make_shared<CompiledRawBluesteinLeafNode>(
