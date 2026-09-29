@@ -298,11 +298,22 @@ PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &f
     }
   }
   std::sort(generic_radices.begin(), generic_radices.end());
+  int64_t num_warps = choose_num_warps(execution_lanes);
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.origin_rank == 3 && context.input_dtype == "complex64" && n == 256) {
+    if (const char *value = std::getenv("FLAGFFT_IX_3D_256_WARPS")) {
+      const std::string setting(value);
+      if (setting != "1" && setting != "2" && setting != "4" && setting != "8") {
+        throw std::runtime_error("FLAGFFT_IX_3D_256_WARPS must be 1, 2, 4 or 8");
+      }
+      num_warps = std::stoll(setting);
+    }
+  }
   return std::make_shared<LeafPlanNode>(n,
                                         factors,
                                         rem,
                                         lanes,
-                                        choose_num_warps(execution_lanes),
+                                        num_warps,
                                         generic_radices,
                                         *smem_elements);
 }
