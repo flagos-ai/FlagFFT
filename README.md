@@ -527,7 +527,7 @@ values to C2C/R2C/C2R or Z2Z/D2Z/Z2D internally.
 count. `conf/test_matrix.yaml` sets 1D batch to 64, 2D/3D batch to 4, and keeps
 single-transform batch at 1. All cases run out-of-place, including 2D/3D batch
 cases through contiguous PlanMany layouts without custom embeds or strides.
-The current full matrix expands to 384 cases before backend dtype omissions.
+The current full matrix expands to 400 cases before backend dtype omissions.
 The four-step group also checks that the captured runtime plan contains a
 FourStep node.
 

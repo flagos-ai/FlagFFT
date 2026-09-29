@@ -140,7 +140,7 @@ def test_acceptance_has_30_ordered_operators_and_distinct_cases(operators, matri
     assert [op["id"] for op in operators] == expected_ids
     assert "combinations" not in matrix
     cases = RUN_TESTS.expand_all_test_cases(operators, matrix)
-    assert len(cases) == 384
+    assert len(cases) == 400
     assert len({case["case_id"] for case in cases}) == len(cases)
     assert {case["op_id"] for case in cases} == set(expected_ids)
     assert {case["dtype"] for case in cases} == set(RUN_TESTS.FLAGGEMS_DTYPES)
@@ -163,7 +163,7 @@ def test_acceptance_has_30_ordered_operators_and_distinct_cases(operators, matri
 
 
 def test_requested_sizes_and_batch_counts(matrix):
-    assert matrix["sizes_1d_ct"] == [16, 1024, 2048]
+    assert matrix["sizes_1d_ct"] == [16, 210, 1024, 2048]
     assert matrix["sizes_1d_fourstep"] == [16384, 46189, 185640, 340200, 524288, 663000]
     assert matrix["sizes_1d_prime"] == [23, 1009, 8191, 16381, 524287]
     assert matrix["sizes_2d"] == [
