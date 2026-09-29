@@ -765,6 +765,13 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_warps not in {"2", "4", "8"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4 or 8")
+    fp64_mode = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "v1")
+        if _declared_backend() == "maca"
+        else "v1"
+    )
+    if fp64_mode not in {"tile16", "tile32", "tile64", "v1"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64 or v1")
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -781,6 +788,15 @@ def _emit_tiled_transpose3d_jit_kernel(
         ) = _build_tiled_transpose3d_tile_kernel_source(
             n0, n1, n2, order, dtype, tile=int(maca_mode[4:]),
             pair=maca_mode.startswith("pair"),
+        )
+    elif dtype == "complex128" and _declared_backend() == "maca" and fp64_mode != "v1":
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=int(fp64_mode[4:])
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
