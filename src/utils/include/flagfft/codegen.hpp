@@ -131,6 +131,16 @@ struct CompiledRawNode {
   virtual std::string describe() const = 0;
 };
 
+struct Raw1DGraphState {
+  std::unique_ptr<adaptor::CudaGraph> graph;
+  adaptor::DevicePtr input = 0;
+  adaptor::DevicePtr output = 0;
+  int64_t batch = 0;
+  int64_t input_distance = 0;
+  int64_t output_distance = 0;
+  bool failed = false;
+};
+
 struct CompiledRawLeafNode final : CompiledRawNode {
   CompiledRawLeafNode(int64_t length,
                       std::shared_ptr<JitKernel> kernel,
@@ -143,6 +153,7 @@ struct CompiledRawLeafNode final : CompiledRawNode {
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
+  mutable Raw1DGraphState graph_state;
 };
 
 struct CompiledRawStridedLeafNode final : CompiledRawNode {
@@ -519,6 +530,7 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
   DeviceAllocation twiddle;
+  mutable Raw1DGraphState graph_state;
 };
 
 struct CompiledRawR2CFourStepHalfOutNode final : CompiledRawNode {
@@ -631,6 +643,7 @@ struct CompiledRawC2RLeafNode final : CompiledRawNode {
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
+  mutable Raw1DGraphState graph_state;
 };
 
 struct CompiledRawC2RFourStepRealOutNode final : CompiledRawNode {

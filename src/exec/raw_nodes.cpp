@@ -15,6 +15,7 @@
 #include "flagfft/core.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <sstream>
 
@@ -34,6 +35,54 @@ namespace {
     }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(batch)));
     return args;
+  }
+
+  bool ix_ct_batch_graph_enabled(const RawExecutionContext &context, int64_t length) {
+    const FFTRequest &request = context.request;
+    const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH");
+    return setting && std::string(setting) == "1" && request.device_type == "ix" &&
+           request.device_arch == "71" && request.origin_rank <= 1 && request.raw_dim == 1 &&
+           request.requested_n == length && (length == 1024 || length == 2048) &&
+           context.batch == 64 && request.input_dtype == "complex64" &&
+           request.output_dtype == "complex64";
+  }
+
+  bool replay_leaf_graph(Raw1DGraphState &state,
+                         const RawExecutionContext &context,
+                         adaptor::DevicePtr input,
+                         adaptor::DevicePtr output,
+                         int64_t input_distance,
+                         int64_t output_distance) {
+    if (!state.graph || state.input != input || state.output != output ||
+        state.batch != context.batch || state.input_distance != input_distance ||
+        state.output_distance != output_distance) return false;
+    state.graph->launch(context.stream);
+    return true;
+  }
+
+  template <typename Launch>
+  void capture_leaf_graph(Raw1DGraphState &state,
+                          const RawExecutionContext &context,
+                          adaptor::DevicePtr input,
+                          adaptor::DevicePtr output,
+                          int64_t input_distance,
+                          int64_t output_distance,
+                          Launch launch) {
+    if (state.graph || state.failed) return;
+    try {
+      auto graph = std::make_unique<adaptor::CudaGraph>();
+      graph->begin_capture(context.stream);
+      launch();
+      graph->end_capture(context.stream);
+      state.graph = std::move(graph);
+      state.input = input;
+      state.output = output;
+      state.batch = context.batch;
+      state.input_distance = input_distance;
+      state.output_distance = output_distance;
+    } catch (const std::exception &) {
+      state.failed = true;
+    }
   }
 
   std::vector<JitKernelArg> raw_distance_col_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
@@ -118,9 +167,18 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
                                            adaptor::DevicePtr output,
                                            const RawExecutionContext &context) const {
   try {
+    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
+    if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
+                                           context.input_distance, context.output_distance)) {
+      return FLAGFFT_SUCCESS;
+    }
     std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
-
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    auto launch = [&]() {
+      kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    };
+    launch();
+    if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,
+                                          context.input_distance, context.output_distance, launch);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] Leaf execute failed: %s\n", e.what());
@@ -1231,6 +1289,11 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     const int64_t input_distance = in_place ? std::max(context.input_distance, padded_real_distance)
                                             : (context.input_distance > 0 ? context.input_distance : length);
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
+    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
+    if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
+                                           input_distance, output_distance)) {
+      return FLAGFFT_SUCCESS;
+    }
 
     std::vector<JitKernelArg> args;
     args.reserve(3 + tables.size() + 3);
@@ -1243,7 +1306,12 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     args.push_back(JitKernelArg::i64(input_distance));
     args.push_back(JitKernelArg::i64(output_distance));
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    auto launch = [&]() {
+      kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    };
+    launch();
+    if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,
+                                          input_distance, output_distance, launch);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] R2CLeaf execute failed: %s\n", e.what());
@@ -1781,6 +1849,11 @@ flagfftResult CompiledRawC2RLeafNode::execute(adaptor::DevicePtr input,
     const int64_t output_distance = in_place
                                         ? std::max(context.output_distance, padded_real_distance)
                                         : (context.output_distance > 0 ? context.output_distance : length);
+    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
+    if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
+                                           input_distance, output_distance)) {
+      return FLAGFFT_SUCCESS;
+    }
 
     std::vector<JitKernelArg> args;
     args.reserve(2 + tables.size() + 3);
@@ -1792,7 +1865,12 @@ flagfftResult CompiledRawC2RLeafNode::execute(adaptor::DevicePtr input,
     args.push_back(JitKernelArg::i64(input_distance));
     args.push_back(JitKernelArg::i64(output_distance));
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    auto launch = [&]() {
+      kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    };
+    launch();
+    if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,
+                                          input_distance, output_distance, launch);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] C2RLeaf execute failed: %s\n", e.what());
