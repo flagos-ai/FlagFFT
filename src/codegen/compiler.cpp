@@ -1543,10 +1543,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   if ((musa_hybrid || ix_hybrid) && n2_leaf && n0_leaf &&
       (n1_leaf || ix_hybrid) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
+    const char *ix_last_transpose = std::getenv("FLAGFFT_IX_3D_HYBRID_LAST_TRANSPOSE");
+    const bool final_transpose = ix_hybrid && ix_last_transpose != nullptr &&
+                                 std::string(ix_last_transpose) == "1";
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
-    auto n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+    auto n0_fft = final_transpose
+        ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
+        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+    auto perm_201 = final_transpose
+        ? compile_transpose3d_kernel(request, n1, n2, n0, "201")
+        : std::shared_ptr<JitKernel>{};
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     return std::make_shared<CompiledRaw3DHybridNode>(n0,
@@ -1556,6 +1564,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(n1_fft),
                                                      std::move(n0_fft),
                                                      std::move(perm_210),
+                                                     std::move(perm_201),
                                                      std::move(temp1),
                                                      std::move(temp2));
   }
