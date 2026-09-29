@@ -1355,6 +1355,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
+  const char *strided_large_override = std::getenv("FLAGFFT_HCU_3D_C2C_STRIDED_LARGE");
+  const bool direct_strided = request.device_type == "hcu" &&
+                              batch * n0 * n1 * n2 > kStridedMaxElements &&
+                              n1_leaf && n0_leaf && strided_large_override != nullptr &&
+                              std::string(strided_large_override) == "1";
 
   // A 16x16 plane fits in one block. Transform n2 and n1 together so a
   // 16^3 cube needs only one plane launch plus the outer strided leaf.
@@ -1400,7 +1405,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   const char *hcu_hybrid_override = std::getenv("FLAGFFT_HCU_3D_HYBRID");
   const bool hcu_hybrid = request.device_type == "hcu" &&
                           (hcu_hybrid_override == nullptr || std::string(hcu_hybrid_override) != "0");
-  if (n2_leaf && n0_leaf && fused_3d_store_enabled() && elongated_3d &&
+  if (!direct_strided && n2_leaf && n0_leaf && fused_3d_store_enabled() && elongated_3d &&
       (musa_hybrid || hcu_hybrid)) {
     const char *first_transpose_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_FIRST_TRANSPOSE");
     const bool first_transpose = request.device_type == "hcu" &&
@@ -1450,7 +1455,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // the chain because the per-axis transforms commute and only the final
   // layout has to be the natural one.  Small cubes keep the strided path
   // below, whose win there is already established, so the two are disjoint.
-  if (n2_leaf && n1_leaf && n0_leaf && fused_3d_store_enabled() &&
+  if (!direct_strided && n2_leaf && n1_leaf && n0_leaf && fused_3d_store_enabled() &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     std::shared_ptr<CompiledRawNode> n2_fft =
         compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, "outer");
@@ -1472,7 +1477,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                       std::move(temp2));
   }
 
-  if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements) {
+  if (n1_leaf && n0_leaf &&
+      (batch * n0 * n1 * n2 <= kStridedMaxElements || direct_strided)) {
     std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
     std::shared_ptr<CompiledRawNode> n1_fft =
         compile_raw_strided_leaf(*n1_leaf, request, /*outer_stride=*/n2);
