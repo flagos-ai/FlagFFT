@@ -50,6 +50,8 @@ namespace {
     const bool is_npu_single_fp32_target = request.device_type == "npu" &&
         request.input_dtype == "complex64" && batch == 1 && n >= 1024 && n <= 1048576;
     const bool is_ix_single_fp32_target = batch == 1 && ix_packed_real_policy_enabled(request);
+    const bool is_ix_batch_fp32_target = batch == 64 && n == 16384 &&
+        ix_ct_batch_policy_enabled(request);
     const char *maca_batch_setting = std::getenv("FLAGFFT_MACA_1D_BATCH");
     const bool is_maca_batch_real_target =
         request.device_type == "maca" && request.device_arch == "102" &&
@@ -65,10 +67,12 @@ namespace {
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
         (n == 185640 || n == 340200 || n == 524288 || n == 663000);
     if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target &&
-        !is_ix_single_fp32_target && !is_maca_batch_real_target && !is_maca_single_c2r_target) {
+        !is_ix_single_fp32_target && !is_ix_batch_fp32_target &&
+        !is_maca_batch_real_target && !is_maca_single_c2r_target) {
       return std::nullopt;
     }
     if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target &&
+        !is_ix_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target &&
         (request.input_dtype != "complex128" || n < 65536 ||
          (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
@@ -118,7 +122,7 @@ namespace {
     const bool child_is_leaf_pair = four_step != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) != nullptr &&
                                     std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
-    if (!force && is_ix_single_fp32_target) {
+    if (!force && (is_ix_single_fp32_target || is_ix_batch_fp32_target)) {
       if (!child_is_leaf_pair) return std::nullopt;
       return PackedRealChild {std::move(child_request), std::move(child_plan)};
     }
