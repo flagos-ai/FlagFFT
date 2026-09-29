@@ -1473,7 +1473,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   const char *fused_cube_override = std::getenv("FLAGFFT_HCU_3D_FUSED16_CUBE");
   const bool fused_cube = request.device_type == "hcu" && n0 == 16 && n1 == 16 && n2 == 16 &&
                           batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
-                          fused_cube_override != nullptr && std::string(fused_cube_override) == "1";
+                          (fused_cube_override == nullptr || std::string(fused_cube_override) != "0");
   if (fused_cube) {
     std::vector<double> tw_r_d(16);
     std::vector<double> tw_i_d(16);
