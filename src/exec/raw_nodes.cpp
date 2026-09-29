@@ -2996,7 +2996,8 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
 std::string CompiledRaw3DRealRTRTNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DRealRTRT(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
-      << ", inverse=" << inverse << ", n2_real_fft=" << n2_real_fft->describe()
+      << ", inverse=" << inverse << ", fused_n0=" << (perm_201 == nullptr)
+      << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
 }
@@ -3019,9 +3020,9 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
       result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) return result;
       launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch);
-      result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+      result = n0_fft->execute(temp2.get(), perm_201 ? temp1.get() : output, n0_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      launch_perm3d(perm_201, context.stream, temp1.get(), output, packed, batch);
+      if (perm_201) launch_perm3d(perm_201, context.stream, temp1.get(), output, packed, batch);
       return FLAGFFT_SUCCESS;
     }
 
@@ -3033,8 +3034,8 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
     launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch);
     result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    launch_perm3d(perm_201, context.stream, temp2.get(), temp1.get(), packed, batch);
-    return n2_real_fft->execute(temp1.get(), output, n2_context);
+    if (perm_201) launch_perm3d(perm_201, context.stream, temp2.get(), temp1.get(), packed, batch);
+    return n2_real_fft->execute(perm_201 ? temp1.get() : temp2.get(), output, n2_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D real RTRT execute failed: %s\n", e.what());
     std::fflush(stderr);

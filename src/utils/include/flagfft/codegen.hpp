@@ -1118,8 +1118,8 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
-// Compact real boundary with the usual three transposes.  This handles
-// non-leaf middle axes and avoids expanding/packing full complex rows.
+// Compact real boundary with the usual three transposes.  The final
+// transpose may be folded into a leaf n0 store when profitable.
 struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
   CompiledRaw3DRealRTRTNode(int64_t n0,
                             int64_t n1,

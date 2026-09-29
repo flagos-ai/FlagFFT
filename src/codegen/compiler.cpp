@@ -1689,15 +1689,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     int64_t batch,
     bool inverse) {
   const char *ix_rtrt_override = std::getenv("FLAGFFT_IX_3D_REAL_RTRT");
+  const char *ix_hybrid_override = std::getenv("FLAGFFT_IX_3D_REAL_HYBRID");
+  const bool screen_rtrt = ix_rtrt_override != nullptr && std::string(ix_rtrt_override) == "1";
+  const bool screen_hybrid = ix_hybrid_override != nullptr && std::string(ix_hybrid_override) == "1";
   if (request.device_type != "ix" || request.device_arch != "71" ||
       request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
-      ix_rtrt_override == nullptr || std::string(ix_rtrt_override) != "1") return nullptr;
+      (!screen_rtrt && !screen_hybrid)) return nullptr;
 
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const int64_t n2 = node->n2;
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
+  auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
+  const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
 
   FFTRequest n2_request = request;
   n2_request.fft_length = n2;
@@ -1724,10 +1729,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
       : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
   auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
-  auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
+  auto n0_fft = fused_n0
+      ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
+      : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
   auto perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
   auto perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
-  auto perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
+  auto perm_201 = fused_n0
+      ? std::shared_ptr<JitKernel>{}
+      : compile_transpose3d_kernel(request, n1, half, n0, "201");
 
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
