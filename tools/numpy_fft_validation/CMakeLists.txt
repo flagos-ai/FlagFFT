@@ -98,30 +98,41 @@ elseif(BACKEND STREQUAL "MACA")
     target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
     target_link_libraries(numpy_fft_capture PRIVATE "${MCFFT_LIB}" "${MACA_RUNTIME_LIB}")
 elseif(BACKEND STREQUAL "NPU")
-    set(ASCEND_OPS_FFT_ROOT "$ENV{ASCEND_OPS_FFT_ROOT}" CACHE PATH
-        "ops-fft installation root used as the Ascend reference library")
-    find_path(ASCEND_OPS_FFT_INCLUDE_DIR cann_ops_fft.h
-        HINTS
-            "${ASCEND_OPS_FFT_ROOT}/include"
-            "${ASCEND_OPS_FFT_ROOT}/include/math_libs"
-            "${ASCEND_OPS_FFT_ROOT}/src/include"
-        REQUIRED)
-    find_library(ASCEND_OPS_FFT_LIBRARY NAMES cann_ops_fft
-        HINTS
-            "${ASCEND_OPS_FFT_ROOT}/lib"
-            "${ASCEND_OPS_FFT_ROOT}/lib64"
-            "${ASCEND_OPS_FFT_ROOT}/build/lib"
-            "${ASCEND_OPS_FFT_ROOT}/build"
-        REQUIRED)
+    set(_ASCEND_SIP_DEFAULT_ROOT "$ENV{ASCEND_SIP_ROOT}")
+    if(NOT _ASCEND_SIP_DEFAULT_ROOT)
+        set(_ASCEND_SIP_DEFAULT_ROOT "/usr/local/Ascend/nnal/asdsip/latest")
+    endif()
+    set(ASCEND_SIP_ROOT "${_ASCEND_SIP_DEFAULT_ROOT}" CACHE PATH
+        "installed Ascend SiP root used as the NPU FFT reference")
+    find_path(ASCEND_SIP_INCLUDE_DIR fft_api.h
+        HINTS "${ASCEND_SIP_ROOT}/include" REQUIRED)
+    find_library(ASCEND_SIP_LIBRARY NAMES asdsip
+        HINTS "${ASCEND_SIP_ROOT}/lib" REQUIRED)
+    set(ASCEND_TOOLKIT_HOME "$ENV{ASCEND_TOOLKIT_HOME}" CACHE PATH "Ascend toolkit root")
+    if(NOT ASCEND_TOOLKIT_HOME)
+        set(ASCEND_TOOLKIT_HOME "/usr/local/Ascend/ascend-toolkit/latest")
+    endif()
+    find_library(ASCEND_OPAPI_LIBRARY NAMES opapi
+        HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+              "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
+    find_library(ASCENDCL_LIBRARY NAMES ascendcl
+        HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+              "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
+    find_library(ASCEND_RUNTIME_LIBRARY NAMES runtime
+        HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+              "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
     set(REFERENCE_SOURCE "${FLAGFFT_SOURCE_DIR}/src/adaptor/backend/npu/test_adaptor.cpp")
-    target_include_directories(numpy_fft_capture PRIVATE "${ASCEND_OPS_FFT_INCLUDE_DIR}")
+    target_include_directories(numpy_fft_capture PRIVATE
+        "${ASCEND_SIP_INCLUDE_DIR}"
+        "${ASCEND_TOOLKIT_HOME}/include"
+        "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/include"
+        "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/pkg_inc")
     target_sources(numpy_fft_capture PRIVATE "${REFERENCE_SOURCE}")
     target_link_libraries(numpy_fft_capture PRIVATE
-        "${ASCEND_OPS_FFT_LIBRARY}"
-        # cann_ops_fft.h includes acl/acl.h; the imported CANN targets carry
-        # the toolkit and pkg_inc include directories needed to compile it.
-        Ascend::ascendcl
-        Ascend::runtime)
+        "${ASCEND_SIP_LIBRARY}"
+        "${ASCEND_OPAPI_LIBRARY}"
+        "${ASCENDCL_LIBRARY}"
+        "${ASCEND_RUNTIME_LIBRARY}")
 elseif(BACKEND STREQUAL "HCU")
     list(APPEND CMAKE_PREFIX_PATH
         "$ENV{ROCM_PATH}"
@@ -165,12 +176,11 @@ elseif(BACKEND STREQUAL "IX")
 elseif(BACKEND STREQUAL "MACA")
     list(APPEND _tool_rpath "${MACA_PATH}/lib" "${MACA_PATH}/mxgpu_llvm/lib")
 elseif(BACKEND STREQUAL "NPU")
-    # ACL and libtriton_jit paths are supplied by the CANN environment.
+    # The installed SiP library is part of NNAL, outside the Toolkit tree.
     list(APPEND _tool_rpath
-        "${ASCEND_OPS_FFT_ROOT}/lib"
-        "${ASCEND_OPS_FFT_ROOT}/lib64"
-        "${ASCEND_OPS_FFT_ROOT}/build/lib"
-        "${ASCEND_OPS_FFT_ROOT}/build")
+        "${ASCEND_SIP_ROOT}/lib"
+        "${ASCEND_TOOLKIT_HOME}/lib64"
+        "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64")
 elseif(BACKEND STREQUAL "HCU")
     list(APPEND _tool_rpath
         "$ENV{ROCM_PATH}/lib"

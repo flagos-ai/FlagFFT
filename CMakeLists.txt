@@ -186,7 +186,7 @@ install(DIRECTORY deps/libtriton_jit/scripts/
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.
 # Reused by flagfft-cli (bench/verify) and the native capture target. NPU links
-# the external CANN ops-fft reference when CLI/tests are enabled.
+# the SiP FFT library supplied by the CANN NNAL installation.
 if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
     if(BACKEND STREQUAL "CUDA")
         find_package(CUDAToolkit REQUIRED)
@@ -264,31 +264,27 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             CUDA::cuda_driver
         )
     elseif(BACKEND STREQUAL "NPU")
-        set(ASCEND_OPS_FFT_ROOT "$ENV{ASCEND_OPS_FFT_ROOT}" CACHE PATH
-            "ops-fft installation root used as the Ascend reference library")
-        find_path(ASCEND_OPS_FFT_INCLUDE_DIR cann_ops_fft.h
-            HINTS
-                "${ASCEND_OPS_FFT_ROOT}/include"
-                "${ASCEND_OPS_FFT_ROOT}/include/math_libs"
-                "${ASCEND_OPS_FFT_ROOT}/src/include"
-            REQUIRED)
-        find_library(ASCEND_OPS_FFT_LIBRARY NAMES cann_ops_fft
-            HINTS
-                "${ASCEND_OPS_FFT_ROOT}/lib"
-                "${ASCEND_OPS_FFT_ROOT}/lib64"
-                "${ASCEND_OPS_FFT_ROOT}/build/lib"
-                "${ASCEND_OPS_FFT_ROOT}/build"
-            REQUIRED)
+        set(_ASCEND_SIP_DEFAULT_ROOT "$ENV{ASCEND_SIP_ROOT}")
+        if(NOT _ASCEND_SIP_DEFAULT_ROOT)
+            set(_ASCEND_SIP_DEFAULT_ROOT "/usr/local/Ascend/nnal/asdsip/latest")
+        endif()
+        set(ASCEND_SIP_ROOT "${_ASCEND_SIP_DEFAULT_ROOT}" CACHE PATH
+            "installed Ascend SiP root used as the NPU FFT reference")
+        find_path(ASCEND_SIP_INCLUDE_DIR fft_api.h
+            HINTS "${ASCEND_SIP_ROOT}/include" REQUIRED)
+        find_library(ASCEND_SIP_LIBRARY NAMES asdsip
+            HINTS "${ASCEND_SIP_ROOT}/lib" REQUIRED)
+        find_library(ASCEND_OPAPI_LIBRARY NAMES opapi
+            HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+                  "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
         add_library(flagfft_test_adaptor OBJECT
             src/adaptor/backend/npu/test_adaptor.cpp
         )
         target_include_directories(flagfft_test_adaptor PUBLIC
-            "${ASCEND_OPS_FFT_INCLUDE_DIR}")
+            "${ASCEND_SIP_INCLUDE_DIR}")
         target_link_libraries(flagfft_test_adaptor PUBLIC
-            "${ASCEND_OPS_FFT_LIBRARY}"
-            # The ops-fft public header includes acl/acl.h.  Linking the
-            # imported CANN targets also propagates the complete CANN include
-            # tree (including pkg_inc) to this object target.
+            "${ASCEND_SIP_LIBRARY}"
+            "${ASCEND_OPAPI_LIBRARY}"
             Ascend::ascendcl
             Ascend::runtime)
     elseif(BACKEND STREQUAL "HCU")

@@ -56,13 +56,12 @@ inside the MetaX environment with `CUDA_VISIBLE_DEVICES=4`,
 `MACA_VISIBLE_DEVICES=4`, and `MC_VISIBLE_DEVICES=4` when validating card 4.
 The capture's platform stage uses mcFFT independently from FlagFFT.
 
-For NPU, use CANN 9 and
-set `ASCEND_OPS_FFT_ROOT` to a built [ops-fft](https://gitcode.com/cann/ops-fft)
-tree; ops-fft uses host pointers, which the NPU adaptor handles explicitly.
-The reference library is FP32-only and currently covers horizontal 1D
-`C2C`/`R2C`/`C2R` plus 2D `C2C` for dimensions 32, 64, and 128. Unsupported
-reference cases are reported as platform/performance `Skipped` rows while
-FlagFFT still runs against NumPy.
+For NPU, use CANN 9 and source the installed SiP environment at
+`/usr/local/Ascend/nnal/asdsip/set_env.sh`. The capture links the preinstalled
+SiP FFT library, using device tensors for FP32 1D/2D/3D `C2C`/`R2C`/`C2R`.
+Set `ASCEND_SIP_ROOT` only if SiP is installed outside its default NNAL path.
+Unsupported SiP shapes are reported as platform/performance `Skipped` rows
+while FlagFFT still runs against NumPy.
 
 For IX, point
 `CUDAToolkit_ROOT` at the CoreX SDK and use an Iluvatar-enabled Triton runtime;

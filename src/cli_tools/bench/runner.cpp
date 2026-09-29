@@ -197,6 +197,7 @@ namespace {
 
   test_adaptor::RefPlanHandle make_ref_plan(const CaseSpec& spec, const BufferLayout& layout) {
     test_adaptor::RefPlanHandle plan;
+    plan.configure_case(spec.direction, spec.batch);
     if (spec.rank == 1) {
       test_adaptor::ref_plan_1d(plan, layout.innermost, flagfft_type(spec.api), spec.batch);
     } else if (spec.rank == 2) {
@@ -286,7 +287,7 @@ namespace {
   }
 
   void exec_ref(test_adaptor::RefPlanHandle& plan, const CaseSpec& spec, void* input, void* output) {
-    if (spec.rank == 1 || spec.batch == 1) {
+    if (spec.rank == 1 || spec.batch == 1 || test_adaptor::backend_name() == "npu-sip") {
       exec_ref_one(plan, spec, input, output);
       return;
     }
@@ -380,7 +381,11 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
     if (spec.placement == Placement::InPlace) seed_input(ff_in, layout, spec);
   };
   auto reset_reference_input = [&]() {
-    if (spec.placement != Placement::InPlace) return;
+    // SiP may modify out-of-place input for large power-of-two horizontal FFTs.
+    const int n = layout.innermost;
+    const bool sip_mutates_input = test_adaptor::backend_name() == "npu-sip" &&
+                                   spec.rank == 1 && n >= 32768 && (n & (n - 1)) == 0;
+    if (spec.placement != Placement::InPlace && !sip_mutates_input) return;
     if (reference_uses_host_memory) {
       ref_host_in = ref_host_seed;
     } else {
