@@ -330,7 +330,11 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
           std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr && plan->desc.batch <= 4 &&
           (plan->desc.type == FLAGFFT_C2C || plan->desc.type == FLAGFFT_R2C ||
            plan->desc.type == FLAGFFT_C2R);
-      if (screen_ix_graph) {
+      // Capturing a single fused cube kernel costs more than its direct launch.
+      const bool single_cube =
+          std::dynamic_pointer_cast<CompiledRaw3DFusedCubeNode>(plan->executable.forward) != nullptr ||
+          std::dynamic_pointer_cast<CompiledRaw3DFusedCubeNode>(plan->executable.inverse) != nullptr;
+      if (screen_ix_graph && !single_cube) {
         if (plan->executable.forward) {
           plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
         }
