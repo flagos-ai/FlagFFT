@@ -333,8 +333,6 @@ def main() -> None:
         metadata = emit_fused_16_plane_kernel(
             dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
             plane_size=args.length or 16,
-            real_kind=("r2c" if args.direction == "forward" else "c2r")
-            if args.kernel == "fused_real_plane" else None,
         )
     elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:
