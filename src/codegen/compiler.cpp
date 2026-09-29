@@ -746,10 +746,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       std::string(fused_setting) != "1") {
     throw std::runtime_error("FLAGFFT_IX_FUSED_R2C must be 0 or 1");
   }
+  const char *fused_1024_setting = std::getenv("FLAGFFT_IX_FUSED_R2C_1024");
+  if (fused_1024_setting != nullptr && std::string(fused_1024_setting) != "0" &&
+      std::string(fused_1024_setting) != "1") {
+    throw std::runtime_error("FLAGFFT_IX_FUSED_R2C_1024 must be 0 or 1");
+  }
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      n == 2048 && (batch == 1 || batch == 64) &&
+      (n == 2048 || (n == 1024 && fused_1024_setting != nullptr &&
+                     std::string(fused_1024_setting) == "1")) &&
+      (batch == 1 || batch == 64) &&
       (batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) &&
       !request.input_strides.empty() && request.input_strides.back() == 1 &&
       (std::getenv("FLAGFFT_IX_PORTABLE_LEAF") == nullptr ||
@@ -765,7 +772,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     child_request.input_strides = {n / 2, 1};
     PlanBuilder child_builder;
     child_builder.build(n / 2, child_request);
-    const std::vector<int64_t> factors {16, 8, 8};
+    const std::vector<int64_t> factors = n == 1024
+        ? std::vector<int64_t> {8, 8, 8}
+        : std::vector<int64_t> {16, 8, 8};
     const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
     LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
                              child_builder.choose_num_warps(lanes), {}, n / 2);
