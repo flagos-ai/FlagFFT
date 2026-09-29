@@ -2785,6 +2785,34 @@ flagfftResult CompiledRaw3DFusedPlaneNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DFusedCubeNode::CompiledRaw3DFusedCubeNode(
+    std::shared_ptr<JitKernel> kernel, DeviceAllocation tw_r, DeviceAllocation tw_i)
+    : kernel(std::move(kernel)), tw_r(std::move(tw_r)), tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFusedCubeNode::describe() const {
+  return "CompiledRaw3DFusedCube(kernel=" + kernel->execution_description() + ")";
+}
+
+flagfftResult CompiledRaw3DFusedCubeNode::execute(adaptor::DevicePtr input,
+                                                  adaptor::DevicePtr output,
+                                                  const RawExecutionContext &context) const {
+  try {
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(output),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    kernel->launch(context.stream, args, context.batch * 16, 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused cube execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DStridedNode::CompiledRaw3DStridedNode(int64_t n0,
                                                    int64_t n1,
                                                    int64_t n2,

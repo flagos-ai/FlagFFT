@@ -33,7 +33,7 @@ from .emit import (
     emit_jit_kernel,
 )
 from .metadata import _csv_ints
-from .kernels_small_3d import emit_fused_plane_kernel
+from .kernels_small_3d import emit_fused_16_cube_kernel, emit_fused_plane_kernel
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -299,11 +299,17 @@ def main() -> None:
             out_dir=args.out_dir,
         )
     elif spec.family == SMALL_3D:
-        metadata = emit_fused_plane_kernel(
-            n=16 if args.kernel.startswith("fused_16_") else 32,
-            real_input="real" in args.kernel,
-            dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
-        )
+        if args.kernel.endswith("cube"):
+            metadata = emit_fused_16_cube_kernel(
+                real_input="real" in args.kernel,
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
+            )
+        else:
+            metadata = emit_fused_plane_kernel(
+                n=16 if args.kernel.startswith("fused_16_") else 32,
+                real_input="real" in args.kernel,
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
+            )
     elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:
             parser.error(f"--kernel {args.kernel} requires --length")

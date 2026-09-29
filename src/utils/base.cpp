@@ -214,6 +214,10 @@ std::string kernel_kind_name(KernelKind kind) {
       return "fused_16_real_plane";
     case KernelKind::Fused32RealPlane:
       return "fused_32_real_plane";
+    case KernelKind::Fused16Cube:
+      return "fused_16_cube";
+    case KernelKind::Fused16RealCube:
+      return "fused_16_real_cube";
   }
   return "unknown";
 }

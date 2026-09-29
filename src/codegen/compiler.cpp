@@ -1509,6 +1509,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
 
+  const bool ix_fused_cube = request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      batch == 1 && n0 == 16 && n1 == 16 && n2 == 16 &&
+      n0_leaf && n1_leaf && n2_leaf &&
+      flag_or_default("FLAGFFT_IX_3D_FUSED16_CUBE", false);
+  if (ix_fused_cube) {
+    std::vector<float> tw_r(16);
+    std::vector<float> tw_i(16);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 16; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 16.0;
+      tw_r[k] = static_cast<float>(std::cos(angle));
+      tw_i[k] = static_cast<float>(std::sin(angle));
+    }
+    auto kernel = compile_kernel(KernelKey::fused_16_cube(
+        triton_target_for_request(request), request.direction, request.input_dtype));
+    return std::make_shared<CompiledRaw3DFusedCubeNode>(
+        std::move(kernel), adaptor::Memory::from_floats(tw_r),
+        adaptor::Memory::from_floats(tw_i));
+  }
+
   // A small plane fits in one block. Transform n2 and n1 together so a
   // cube needs only one plane launch plus the outer strided leaf.
   const char *fused16_override = std::getenv("FLAGFFT_MUSA_3D_FUSED16");
@@ -1729,6 +1750,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n0_request.input_strides = {n0, 1};
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
+
+  const bool fused_real_cube = !inverse && ix_real_leaf_screen && batch == 1 &&
+      n0 == 16 && n1 == 16 && n2 == 16 &&
+      flag_or_default("FLAGFFT_IX_3D_REAL_FUSED16_CUBE", false);
+  if (fused_real_cube) {
+    std::vector<float> tw_r(16);
+    std::vector<float> tw_i(16);
+    for (int64_t k = 0; k < 16; ++k) {
+      const double angle = -2.0 * kPi * static_cast<double>(k) / 16.0;
+      tw_r[k] = static_cast<float>(std::cos(angle));
+      tw_i[k] = static_cast<float>(std::sin(angle));
+    }
+    auto kernel = compile_kernel(KernelKey::fused_16_real_cube(
+        triton_target_for_request(request), request.direction, request.input_dtype));
+    return std::make_shared<CompiledRaw3DFusedCubeNode>(
+        std::move(kernel), adaptor::Memory::from_floats(tw_r),
+        adaptor::Memory::from_floats(tw_i));
+  }
 
   const bool fused_real_plane = !inverse && ix_real_leaf_screen && small && batch <= 4 &&
       n0 == n1 && n1 == n2 && (n0 == 16 || n0 == 32) &&
