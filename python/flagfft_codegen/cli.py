@@ -217,6 +217,10 @@ def main() -> None:
         profile_dir += (
             "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
+        direct_store = os.getenv("FLAGFFT_MACA_3D_DIRECT_STORE", "0")
+        if direct_store not in {"0", "1"}:
+            parser.error("FLAGFFT_MACA_3D_DIRECT_STORE must be 0 or 1")
+        profile_dir += f"-maca-3d-direct-store-{direct_store}"
     if profile.backend == "musa":
         pair_store = os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_MUSA_3D_PACK", "auto")

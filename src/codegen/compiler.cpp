@@ -159,14 +159,15 @@ namespace {
   // Whether 3D should fuse its axis permutations into the FFT stores.  The
   // trade depends on the backend: where the standalone transpose is already
   // vectorized (NVIDIA) the fused store costs more than it saves, so this
-  // defaults to off there.  FLAGFFT_3D_FUSED_STORE=0/1 overrides either way,
-  // which is how the two paths are A/B'd.
+  // defaults to off there.  On MACA, the generated fused-store leaves are
+  // also slower than separate leaves and transposes for large 3D cubes.
+  // FLAGFFT_3D_FUSED_STORE=0/1 overrides either way for A/B measurements.
   bool fused_3d_store_enabled() {
     const char *override_value = std::getenv("FLAGFFT_3D_FUSED_STORE");
     if (override_value != nullptr && *override_value != '\0') {
       return std::string(override_value) != "0";
     }
-    return adaptor::backend_name() != "cuda";
+    return adaptor::backend_name() != "cuda" && adaptor::backend_name() != "maca";
   }
 
   bool maca_flag_or_default(const char *name, bool default_value) {
