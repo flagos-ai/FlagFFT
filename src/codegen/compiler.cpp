@@ -1478,14 +1478,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // below, whose win there is already established, so the two are disjoint.
   if (!direct_strided && n2_leaf && n1_leaf && n0_leaf && fused_3d_store_enabled() &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
+    const char *middle_transpose_override = std::getenv("FLAGFFT_HCU_3D_MIDDLE_TRANSPOSE");
+    const bool middle_transpose = request.device_type == "hcu" &&
+                                  middle_transpose_override != nullptr &&
+                                  std::string(middle_transpose_override) == "1";
     const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_LAST_TRANSPOSE");
     const bool last_transpose = request.device_type == "hcu" &&
                                 last_transpose_override != nullptr &&
                                 std::string(last_transpose_override) == "1";
     std::shared_ptr<CompiledRawNode> n2_fft =
         compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, "outer");
-    std::shared_ptr<CompiledRawNode> n1_fft =
-        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
+    std::shared_ptr<CompiledRawNode> n1_fft = middle_transpose
+        ? compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2)
+        : compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
     std::shared_ptr<CompiledRawNode> n0_fft = last_transpose
         ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
         : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, /*perm_span=*/n1 * n2, "outer");
@@ -1493,11 +1498,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
 
-    if (last_transpose) {
-      auto perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+    if (middle_transpose || last_transpose) {
+      auto perm_210 = middle_transpose
+          ? compile_transpose3d_kernel(request, n0, n2, n1, "210")
+          : std::shared_ptr<JitKernel>{};
+      auto perm_201 = last_transpose
+          ? compile_transpose3d_kernel(request, n1, n2, n0, "201")
+          : std::shared_ptr<JitKernel>{};
       return std::make_shared<CompiledRaw3DHybridNode>(
           n0, n1, n2, std::move(n2_fft), std::move(n1_fft), std::move(n0_fft),
-          std::shared_ptr<JitKernel>{}, std::move(temp1), std::move(temp2),
+          std::move(perm_210), std::move(temp1), std::move(temp2),
           std::shared_ptr<JitKernel>{}, std::move(perm_201));
     }
     return std::make_shared<CompiledRaw3DStridedNode>(n0,
