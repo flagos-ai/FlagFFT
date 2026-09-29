@@ -758,6 +758,13 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_mode not in {"tile16", "tile32", "tile64", "pair16", "pair32", "pair64", "v1"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, pair32, pair64 or v1")
+    maca_warps = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
+        if _declared_backend() == "maca"
+        else "4"
+    )
+    if maca_warps not in {"2", "4", "8"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4 or 8")
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -789,7 +796,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": 4,
+        "num_warps": int(maca_warps),
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": arg_names,
