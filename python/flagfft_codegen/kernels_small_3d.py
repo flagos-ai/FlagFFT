@@ -77,11 +77,15 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         ai = tl.where(upper, pi, xi)
         br = tl.where(upper, xr, pr)
         bi = tl.where(upper, xi, pi)
-        tw = (col & ((1 << stage) - 1)) * ({n} >> (stage + 1))
-        wr = tl.load(tw_r_ptr + tw)
-        wi = tl.load(tw_i_ptr + tw)
-        tr = wr * br - wi * bi
-        ti = wr * bi + wi * br
+        if stage == 0:
+            tr = br
+            ti = bi
+        else:
+            tw = (col & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
@@ -94,11 +98,15 @@ def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         ai = tl.where(upper, pi, xi)
         br = tl.where(upper, xr, pr)
         bi = tl.where(upper, xi, pi)
-        tw = (row & ((1 << stage) - 1)) * ({n} >> (stage + 1))
-        wr = tl.load(tw_r_ptr + tw)
-        wi = tl.load(tw_i_ptr + tw)
-        tr = wr * br - wi * bi
-        ti = wr * bi + wi * br
+        if stage == 0:
+            tr = br
+            ti = bi
+        else:
+            tw = (row & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
@@ -189,11 +197,15 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         bi = tl.where(upper, xi, pi)
         cr = tl.where(upper, pr, xr)
         ci = tl.where(upper, pi, xi)
-        tw = (col & ((1 << stage) - 1)) * (16 >> (stage + 1))
-        wr = tl.load(tw_r_ptr + tw)
-        wi = tl.load(tw_i_ptr + tw)
-        tr = wr * br - wi * bi
-        ti = wr * bi + wi * br
+        if stage == 0:
+            tr = br
+            ti = bi
+        else:
+            tw = (col & ((1 << stage) - 1)) * (16 >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
         xr = tl.where(upper, cr - tr, cr + tr)
         xi = tl.where(upper, ci - ti, ci + ti)
 
@@ -206,11 +218,15 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         bi = tl.where(upper, xi, pi)
         cr = tl.where(upper, pr, xr)
         ci = tl.where(upper, pi, xi)
-        tw = (row & ((1 << stage) - 1)) * (16 >> (stage + 1))
-        wr = tl.load(tw_r_ptr + tw)
-        wi = tl.load(tw_i_ptr + tw)
-        tr = wr * br - wi * bi
-        ti = wr * bi + wi * br
+        if stage == 0:
+            tr = br
+            ti = bi
+        else:
+            tw = (row & ((1 << stage) - 1)) * (16 >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
         xr = tl.where(upper, cr - tr, cr + tr)
         xi = tl.where(upper, ci - ti, ci + ti)
 
@@ -265,11 +281,15 @@ def fused_32_column_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr, outer_stride
         ai = tl.where(upper, pi, xi)
         br = tl.where(upper, xr, pr)
         bi = tl.where(upper, xi, pi)
-        tw = (row & ((1 << stage) - 1)) * (32 >> (stage + 1))
-        wr = tl.load(tw_r_ptr + tw)
-        wi = tl.load(tw_i_ptr + tw)
-        tr = wr * br - wi * bi
-        ti = wr * bi + wi * br
+        if stage == 0:
+            tr = br
+            ti = bi
+        else:
+            tw = (row & ((1 << stage) - 1)) * (32 >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
