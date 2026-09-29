@@ -1049,6 +1049,7 @@ def _emit_stage_block(
     portable_exchange: bool = False,
     exchange_size: int = 0,
     exchange_slot_stride: int = 0,
+    bluestein_real_kind: str = "",
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1321,15 +1322,20 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}prime_mask{j} = lane_mask & (in{j} < {prime_n})"
                     )
-                    lines.append(
-                        f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + in{j}) * 2"
-                    )
-                    lines.append(
-                        f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})"
-                    )
+                    if bluestein_real_kind == "r2c":
+                        lines.append(f"{indent}src_ptr{j} = in_ptr + current_batch * {prime_n} + in{j}")
+                        lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                        lines.append(f"{indent}i{j} = {zero}")
+                    elif bluestein_real_kind == "c2r":
+                        lines.append(f"{indent}compact_idx{j} = tl.minimum(in{j}, {prime_n} - in{j})")
+                        lines.append(f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n // 2 + 1} + compact_idx{j}) * 2")
+                        lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                        lines.append(f"{indent}loaded_i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
+                        lines.append(f"{indent}i{j} = tl.where(in{j} == 0, 0.0, tl.where(in{j} <= {prime_n // 2}, loaded_i{j}, -loaded_i{j}))")
+                    else:
+                        lines.append(f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + in{j}) * 2")
+                        lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                        lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
                     lines.append(
                         f"{indent}chirp_r{j} = tl.load(chirp_ptr + in{j} * 2, mask=prime_mask{j}, other={zero})"
                     )
@@ -1388,15 +1394,20 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}prime_mask{j} = lane_mask & (src_idx{j} < {prime_n})"
                 )
-                lines.append(
-                    f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n} + src_idx{j}) * 2"
-                )
-                lines.append(
-                    f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})"
-                )
+                if bluestein_real_kind == "r2c":
+                    lines.append(f"{indent}src_ptr{j} = in_ptr + four_step_batch * {prime_n} + src_idx{j}")
+                    lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                    lines.append(f"{indent}i{j} = {zero}")
+                elif bluestein_real_kind == "c2r":
+                    lines.append(f"{indent}compact_idx{j} = tl.minimum(src_idx{j}, {prime_n} - src_idx{j})")
+                    lines.append(f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n // 2 + 1} + compact_idx{j}) * 2")
+                    lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                    lines.append(f"{indent}loaded_i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
+                    lines.append(f"{indent}i{j} = tl.where(src_idx{j} == 0, 0.0, tl.where(src_idx{j} <= {prime_n // 2}, loaded_i{j}, -loaded_i{j}))")
+                else:
+                    lines.append(f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n} + src_idx{j}) * 2")
+                    lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                    lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
                 lines.append(
                     f"{indent}chirp_r{j} = tl.load(chirp_ptr + src_idx{j} * 2, mask=prime_mask{j}, other={zero})"
                 )
@@ -1809,9 +1820,8 @@ def _emit_stage_block(
                         )
                     )
                 else:
-                    lines.append(
-                        f"{indent}prime_mask{j} = lane_mask & (out_idx{j} < {prime_n})"
-                    )
+                    output_length = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+                    lines.append(f"{indent}prime_mask{j} = lane_mask & (out_idx{j} < {output_length})")
                     lines.append(f"{indent}scaled_r{j} = r{j} / {n}")
                     lines.append(f"{indent}scaled_i{j} = -i{j} / {n}")
                     lines.append(
@@ -1823,15 +1833,14 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
                     )
-                    lines.append(
-                        f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + out_idx{j}) * 2"
-                    )
-                    lines.append(
-                        f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})"
-                    )
-                    lines.append(
-                        f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})"
-                    )
+                    if bluestein_real_kind == "c2r":
+                        lines.append(f"{indent}dst_ptr{j} = out_ptr + current_batch * {prime_n} + out_idx{j}")
+                        lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                    else:
+                        output_distance = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+                        lines.append(f"{indent}dst_ptr{j} = out_ptr + (current_batch * {output_distance} + out_idx{j}) * 2")
+                        lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                        lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
             elif io_mode == "rader_full_leaf":
                 if bluestein_pass == 0:
                     lines.append(
@@ -1887,9 +1896,8 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
                 )
-                lines.append(
-                    f"{indent}prime_mask{j} = lane_mask & (dst_idx{j} < {prime_n})"
-                )
+                output_length = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+                lines.append(f"{indent}prime_mask{j} = lane_mask & (dst_idx{j} < {output_length})")
                 lines.append(
                     f"{indent}scaled_r{j} = r{j} / {four_step_n1 * four_step_n2}"
                 )
@@ -1905,15 +1913,14 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
                 )
-                lines.append(
-                    f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * {prime_n} + dst_idx{j}) * 2"
-                )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})"
-                )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})"
-                )
+                if bluestein_real_kind == "c2r":
+                    lines.append(f"{indent}dst_ptr{j} = out_ptr + four_step_batch * {prime_n} + dst_idx{j}")
+                    lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                else:
+                    output_distance = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+                    lines.append(f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * {output_distance} + dst_idx{j}) * 2")
+                    lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                    lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
             elif io_mode == "four_step_row_strided":
                 lines.append(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
@@ -2685,6 +2692,11 @@ def _build_leaf_kernel_source_for_io(
     perm_form: str = "outer",
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
+    kernel_io_mode = io_mode
+    bluestein_real_kind = ""
+    if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
+        bluestein_real_kind = io_mode.rsplit("_", 1)[1]
+        io_mode = io_mode.rsplit("_", 1)[0]
     if _use_thread_local_mixed_leaf(
         plan,
         io_mode=io_mode,
@@ -2840,7 +2852,7 @@ def _build_leaf_kernel_source_for_io(
     elif io_mode == "bluestein_finish_leaf":
         kernel_name = f"bluestein_finish_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_full_leaf":
-        kernel_name = f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
+        kernel_name = f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}{'_' + bluestein_real_kind if bluestein_real_kind else ''}"
     elif io_mode == "rader_full_leaf":
         kernel_name = f"rader_full_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "rader_prepare_leaf":
@@ -2849,7 +2861,7 @@ def _build_leaf_kernel_source_for_io(
         kernel_name = f"rader_finish_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode.startswith("bluestein_four_step_"):
         kernel_name = (
-            f"{io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
+            f"{kernel_io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
             f"_l{plan.lanes}_b{lane_block}"
         )
     elif io_mode in {"permuted_store", "strided_permuted_store"}:
@@ -3066,6 +3078,7 @@ def _build_leaf_kernel_source_for_io(
                 portable_exchange=portable_exchange,
                 exchange_size=smem_n,
                 exchange_slot_stride=smem_slot_stride,
+                bluestein_real_kind=bluestein_real_kind,
             )
         )
 
@@ -3125,6 +3138,7 @@ def _build_leaf_kernel_source_for_io(
                     portable_exchange=portable_exchange,
                     exchange_size=smem_n,
                     exchange_slot_stride=smem_slot_stride,
+                    bluestein_real_kind=bluestein_real_kind,
                 )
             )
 

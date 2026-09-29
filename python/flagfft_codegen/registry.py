@@ -108,6 +108,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         io_mode="bluestein_full_leaf",
         requires=_BASE_LEAF_FLAGS + ("bluestein_n",),
     ),
+    *(KernelSpec(
+        f"leaf_bluestein_{real_kind}",
+        BLUESTEIN_LEAF,
+        io_mode=f"bluestein_full_leaf_{real_kind}",
+        requires=_BASE_LEAF_FLAGS + ("bluestein_n",),
+    ) for real_kind in ("r2c", "c2r")),
     KernelSpec(
         "leaf_rader_full",
         CT_LEAF,
@@ -144,6 +150,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         io_mode="bluestein_four_step_prepare_row",
         requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
     ),
+    *(KernelSpec(
+        f"bluestein_four_step_prepare_row_{real_kind}",
+        BLUESTEIN_FOUR_STEP,
+        io_mode=f"bluestein_four_step_prepare_row_{real_kind}",
+        requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
+    ) for real_kind in ("r2c", "c2r")),
     KernelSpec(
         "bluestein_four_step_pointwise_row",
         BLUESTEIN_FOUR_STEP,
@@ -156,6 +168,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         io_mode="bluestein_four_step_finish_col",
         requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
     ),
+    *(KernelSpec(
+        f"bluestein_four_step_finish_col_{real_kind}",
+        BLUESTEIN_FOUR_STEP,
+        io_mode=f"bluestein_four_step_finish_col_{real_kind}",
+        requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
+    ) for real_kind in ("r2c", "c2r")),
     KernelSpec("direct_dft", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_strided", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_r2c", DIRECT_DFT, requires=("length",)),
@@ -260,6 +278,8 @@ CONTIGUOUS_BATCH_PACK_KERNELS = frozenset(
         "leaf_packed_r2c",
         "leaf_c2r",
         "leaf_bluestein",
+        "leaf_bluestein_r2c",
+        "leaf_bluestein_c2r",
         "leaf_rader_full",
         "leaf_rader_prepare",
         "leaf_rader_finish",
@@ -273,6 +293,8 @@ INNER_PACK_ROW_KERNELS = frozenset(
         "four_step_real_row",
         "four_step_hermitian_row",
         "bluestein_four_step_prepare_row",
+        "bluestein_four_step_prepare_row_r2c",
+        "bluestein_four_step_prepare_row_c2r",
         "bluestein_four_step_pointwise_row",
         "four_step_row_strided",
     }
@@ -283,6 +305,8 @@ INNER_PACK_COL_KERNELS = frozenset(
         "four_step_r2c_col",
         "four_step_c2r_col",
         "bluestein_four_step_finish_col",
+        "bluestein_four_step_finish_col_r2c",
+        "bluestein_four_step_finish_col_c2r",
         "four_step_col_strided",
     }
 )

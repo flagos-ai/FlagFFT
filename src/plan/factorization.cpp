@@ -15,6 +15,7 @@
 #include "flagfft/core.hpp"
 
 #include <cstdlib>
+#include <sstream>
 
 namespace flagfft {
 
@@ -163,6 +164,12 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
        context.real_transform_kind == "c2r");
   if (ix_fp32_real_batch && n == 1024) return {8, 4, 8, 4};
   if (ix_fp32_real_batch && n == 2048) return {16, 8, 16};
+  if (context.ix_ct_batch && context.requested_n == n && n == 2048 &&
+      context.real_transform_kind.empty()) {
+    // At batch 64, moving the radix-8 stage to the middle lowers both C2C
+    // directions by about 14% on BI-V150 with the portable exchange.
+    return {16, 8, 16};
+  }
   if (context.ix_short_single && n == 1024) return {16, 8, 8};
   if (context.ix_ct_batch && context.requested_n == n && n == 1024) {
     // Four radix-8/4 stages use more lanes and avoid the slow two radix-32

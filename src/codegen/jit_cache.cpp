@@ -240,7 +240,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "leaf_c2r";
       break;
     case KernelKind::LeafBluestein:
-      kernel_kind = "leaf_bluestein";
+      kernel_kind = key.perm_form == "outer" ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form;
       break;
     case KernelKind::LeafRaderFull:
       kernel_kind = "leaf_rader_full";
@@ -258,13 +258,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "leaf_bluestein_finish";
       break;
     case KernelKind::BluesteinFourStepPrepareRow:
-      kernel_kind = "bluestein_four_step_prepare_row";
+      kernel_kind = key.perm_form == "outer" ? "bluestein_four_step_prepare_row"
+                                             : "bluestein_four_step_prepare_row_" + key.perm_form;
       break;
     case KernelKind::BluesteinFourStepPointwiseRow:
       kernel_kind = "bluestein_four_step_pointwise_row";
       break;
     case KernelKind::BluesteinFourStepFinishCol:
-      kernel_kind = "bluestein_four_step_finish_col";
+      kernel_kind = key.perm_form == "outer" ? "bluestein_four_step_finish_col"
+                                             : "bluestein_four_step_finish_col_" + key.perm_form;
       break;
     case KernelKind::DirectDft:
       kernel_kind = "direct_dft";
