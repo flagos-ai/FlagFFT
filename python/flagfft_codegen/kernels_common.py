@@ -431,6 +431,12 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 
 
 def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
+    if _ix_backend_active() and plan.length == 256:
+        value = os.getenv("FLAGFFT_IX_3D_256_CONTIG_PACK")
+        if value is not None:
+            if value not in {"1", "2", "4", "8"}:
+                raise ValueError("FLAGFFT_IX_3D_256_CONTIG_PACK must be 1, 2, 4 or 8")
+            return int(value)
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
     if _portable_leaf_backend_active():
