@@ -95,6 +95,34 @@ def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     assert "nbatch" in source
 
 
+def test_permuted_store_launch_grid_matches_generated_batch_pack(kernels, jit_source, tmp_path) -> None:
+    plan = kernels.LeafPlan(
+        length=256,
+        factors=(4, 4, 4, 4),
+        remainder=1,
+        lanes=64,
+        num_warps=2,
+        generic_radices=(),
+        smem_size=256,
+    )
+    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
+        plan, io_mode="permuted_store", perm_form="outer"
+    )
+    metadata = jit_source._metadata(
+        module_path=tmp_path / "unused.py",
+        kernel_name=kernel_name,
+        arg_names=["in_ptr", "out_ptr", "nbatch", "perm_span"],
+        plan=plan,
+        kernel_type="leaf_permuted_store",
+        n1=0,
+        n2=0,
+        dtype=plan.dtype,
+    )
+
+    assert metadata["batch_per_block"] == 4
+    assert "batch_id = pid * 4" in source
+
+
 def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
     forward = kernels.LeafPlan(
         length=8,
