@@ -127,7 +127,8 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   if (context.device_type == "ix" && context.device_arch == "71" &&
       context.origin_rank <= 1 && context.requested_n == n &&
       context.batch == 64 && context.input_dtype == "complex64" &&
-      context.output_dtype == "complex64" && (n == 1024 || n == 2048)) {
+      context.output_dtype == "complex64" &&
+      (n == 210 || n == 1024 || n == 2048)) {
     if (const char *raw = std::getenv("FLAGFFT_IX_CT_EXPERIMENT_FACTORS")) {
       std::vector<int64_t> factors;
       std::istringstream input(raw);
