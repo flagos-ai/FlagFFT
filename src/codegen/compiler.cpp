@@ -1335,6 +1335,30 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
 
+  // A long middle axis spends much longer in the packed permuted-store leaf
+  // than in an ordinary contiguous leaf.  On MUSA at 128x2048x64, the latter
+  // plus one tiled transpose is still cheaper; the short outer axes retain
+  // their fused stores.  The axes commute, so this order also handles inverse.
+  if (request.device_type == "musa" && n2_leaf && n1_leaf && n0_leaf &&
+      fused_3d_store_enabled() && n1 >= 1024 &&
+      batch * n0 * n1 * n2 > kStridedMaxElements) {
+    auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
+    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
+    auto n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    return std::make_shared<CompiledRaw3DHybridNode>(n0,
+                                                     n1,
+                                                     n2,
+                                                     std::move(n2_fft),
+                                                     std::move(n1_fft),
+                                                     std::move(n0_fft),
+                                                     std::move(perm_210),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+  }
+
   // Fused fast path: each axis runs as a leaf whose store also applies the
   // permutation the next axis wants, so three FFT passes plus three full-cube
   // transposes collapse into three passes.  Worth it only where the standalone

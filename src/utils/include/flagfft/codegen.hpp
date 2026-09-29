@@ -997,6 +997,34 @@ struct CompiledRaw3DStridedNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
+// Large 3D C2C with a long middle axis: contiguous n1 FFT plus one transpose
+// can cost less than the fused n1 store, while n2 and n0 keep their fused stores.
+struct CompiledRaw3DHybridNode final : CompiledRawNode {
+  CompiledRaw3DHybridNode(int64_t n0,
+                          int64_t n1,
+                          int64_t n2,
+                          std::shared_ptr<CompiledRawNode> n2_fft,
+                          std::shared_ptr<CompiledRawNode> n1_fft,
+                          std::shared_ptr<CompiledRawNode> n0_fft,
+                          std::shared_ptr<JitKernel> perm_210,
+                          DeviceAllocation temp1,
+                          DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<CompiledRawNode> n2_fft;
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<JitKernel> perm_210;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
 // Real 3D leaf path.  The innermost axis reads/writes the compact real
 // boundary directly.  The other two axes either run on the natural layout
 // (small cubes) or fuse their output permutations (large cubes).
