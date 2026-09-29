@@ -1418,9 +1418,86 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                              std::move(temp2));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
+    const std::shared_ptr<ThreeDimPlanNode> &node,
+    const FFTRequest &request,
+    int64_t batch,
+    bool inverse) {
+  // Keep this path on the backend where its layout and launch costs have
+  // been measured.  A non-leaf axis retains the general RTRT fallback.
+  if (request.device_type != "musa") return nullptr;
+  auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
+  auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
+  auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
+  if (!n2_leaf || !n1_leaf || !n0_leaf) return nullptr;
+
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+  const int64_t n2 = node->n2;
+  const int64_t half = n2 / 2 + 1;
+  const int64_t packed = batch * n0 * n1 * half;
+  const bool small = packed <= 64 * 64 * 64;
+  if (!small && !fused_3d_store_enabled()) return nullptr;
+
+  FFTRequest n2_request = request;
+  n2_request.fft_length = n2;
+  n2_request.input_shape = {batch * n0 * n1, n2};
+  n2_request.input_strides = {n2, 1};
+  n2_request.requested_n = n2;
+  n2_request.batch = batch * n0 * n1;
+
+  FFTRequest n1_request = request;
+  n1_request.fft_length = n1;
+  n1_request.input_shape = {batch * n0 * half, n1};
+  n1_request.input_strides = {n1, 1};
+  n1_request.requested_n = n1;
+  n1_request.batch = batch * n0 * half;
+
+  FFTRequest n0_request = request;
+  n0_request.fft_length = n0;
+  n0_request.input_shape = {batch * n1 * half, n0};
+  n0_request.input_strides = {n0, 1};
+  n0_request.requested_n = n0;
+  n0_request.batch = batch * n1 * half;
+
+  auto n2_real_fft = inverse
+      ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
+      : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<JitKernel> perm_021;
+  if (small) {
+    n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
+    n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
+  } else {
+    // The first permutation makes n1 rows contiguous.  Each following leaf
+    // writes in the layout consumed by the next axis, leaving natural compact
+    // (n0,n1,half) order after n0.
+    perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+    n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner");
+    n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
+  }
+
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
+  DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
+  return std::make_shared<CompiledRaw3DRealLeafNode>(n0,
+                                                     n1,
+                                                     n2,
+                                                     inverse,
+                                                     !small,
+                                                     std::move(n2_real_fft),
+                                                     std::move(n1_fft),
+                                                     std::move(n0_fft),
+                                                     std::move(perm_021),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   configure_single_transform_policies(request);
+  if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, false)) return leaf_path;
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -1485,6 +1562,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   configure_single_transform_policies(request);
+  if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, true)) return leaf_path;
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;

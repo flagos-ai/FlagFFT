@@ -997,6 +997,39 @@ struct CompiledRaw3DStridedNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
+// Real 3D leaf path.  The innermost axis reads/writes the compact real
+// boundary directly.  The other two axes either run on the natural layout
+// (small cubes) or fuse their output permutations (large cubes).
+struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
+  CompiledRaw3DRealLeafNode(int64_t n0,
+                            int64_t n1,
+                            int64_t n2,
+                            bool inverse,
+                            bool fused_store,
+                            std::shared_ptr<CompiledRawNode> n2_real_fft,
+                            std::shared_ptr<CompiledRawNode> n1_fft,
+                            std::shared_ptr<CompiledRawNode> n0_fft,
+                            std::shared_ptr<JitKernel> perm_021,
+                            DeviceAllocation temp1,
+                            DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  bool inverse;
+  bool fused_store;
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<JitKernel> perm_021;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
 struct CompiledRaw3DR2CNode final : CompiledRawNode {
   CompiledRaw3DR2CNode(int64_t n0,
                        int64_t n1,
@@ -1104,6 +1137,11 @@ class TritonCompiler {
 
  private:
   void configure_single_transform_policies(const FFTRequest &request);
+  std::shared_ptr<CompiledRawNode> compile_raw_3d_real_leaf_node(
+      const std::shared_ptr<ThreeDimPlanNode> &node,
+      const FFTRequest &request,
+      int64_t batch,
+      bool inverse);
   std::shared_ptr<CompiledRawNode> compile_raw_2d_rc_row(const PlanNodePtr &node,
                                                         const FFTRequest &request,
                                                         int64_t batch);
