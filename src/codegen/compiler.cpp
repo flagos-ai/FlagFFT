@@ -1352,8 +1352,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
   // A 16x16 plane fits in one block. Transform n2 and n1 together so a
   // 16^3 cube needs only one plane launch plus the outer strided leaf.
-  const char *fused16_override = std::getenv("FLAGFFT_MUSA_3D_FUSED16");
-  if (request.device_type == "musa" && n0 == 16 && n1 == 16 && n2 == 16 &&
+  const bool small_plane_backend = request.device_type == "musa" || request.device_type == "hcu";
+  const char *fused16_override = std::getenv(request.device_type == "hcu"
+                                                  ? "FLAGFFT_HCU_3D_FUSED16"
+                                                  : "FLAGFFT_MUSA_3D_FUSED16");
+  if (small_plane_backend && n0 == 16 && n1 == 16 && n2 == 16 &&
       batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
       (fused16_override == nullptr || std::string(fused16_override) != "0")) {
     std::vector<double> tw_r_d(8);
@@ -1495,9 +1498,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
-  // Keep this path on the backend where its layout and launch costs have
-  // been measured.  A non-leaf axis retains the general RTRT fallback.
-  if (request.device_type != "musa") return nullptr;
+  // A non-leaf axis retains the general RTRT fallback.
+  if (request.device_type != "musa" && request.device_type != "hcu") return nullptr;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);

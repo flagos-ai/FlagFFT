@@ -28,6 +28,7 @@ from .kernels_common import (
     LeafIoMode,
     LeafPlan,
     _is_double_dtype,
+    _hcu_backend_active,
     _maca_backend_active,
     _mthreads_backend_active,
     _ix_backend_active,
@@ -472,7 +473,11 @@ def _emit_permuted_store(
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
         mask = "perm_store_mask"
-    if _mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1":
+    pair_store = (
+        (_mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1")
+        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1") == "1")
+    )
+    if pair_store:
         return [
             f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
             f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
