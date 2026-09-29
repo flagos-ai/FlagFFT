@@ -965,6 +965,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
       num_warps = override;
     }
   }
+  if (request.device_type == "ix" && request.origin_rank == 3) {
+    if (const char *value = std::getenv("FLAGFFT_IX_3D_FUSED_WARPS")) {
+      const int64_t planner_hint = std::strtoll(value, nullptr, 10);
+      if (planner_hint != 2 && planner_hint != 4 && planner_hint != 8) {
+        throw std::runtime_error("FLAGFFT_IX_3D_FUSED_WARPS must be 2, 4 or 8");
+      }
+      // The plan stores warp budgets in 32-thread units.  On IX, 2/4/8
+      // therefore become 1/2/4 physical 64-thread warps at codegen.
+      num_warps = planner_hint;
+    }
+  }
   KernelKey key = KernelKey::leaf_permuted_store(target,
                                                  request.direction,
                                                  request.input_dtype,
