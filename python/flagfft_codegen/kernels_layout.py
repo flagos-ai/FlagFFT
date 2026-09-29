@@ -259,6 +259,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     order: str,
     dtype: str,
     tile: int = 32,
+    pair: bool = False,
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -276,7 +277,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
         raise ValueError("tiled 3D transpose requires complex64")
     zero = _zero_other(dtype)
     total_complex = s0 * s1 * s2
-    total_float = total_complex * 2
+    scalar_width = 1 if pair else 2
+    total_scalar = total_complex * scalar_width
     transpose_descs = {
         "021": dict(
             num_slices=s0,
@@ -329,6 +331,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     grid_x = num_slices * tiles_per_slice
     kernel_name = (
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}_tile"
+        + ("_pair" if pair else "")
     )
     source = dedent(
         f"""
@@ -356,27 +359,33 @@ def _build_tiled_transpose3d_tile_kernel_source(
 
             # Load the tile with the source-contiguous axis (rows) innermost.
             src_base = (
-                pid_batch * {total_float}
-                + slice_idx * {src_slice_stride} * 2
-                + safe_cols[:, None] * {src_col_stride} * 2
-                + safe_rows[None, :] * 2
+                pid_batch * {total_scalar}
+                + slice_idx * {src_slice_stride} * {scalar_width}
+                + safe_cols[:, None] * {src_col_stride} * {scalar_width}
+                + safe_rows[None, :] * {scalar_width}
             )
-            src_r = tl.load(in_ptr + src_base, mask=load_mask, other={zero})
-            src_i = tl.load(in_ptr + src_base + 1, mask=load_mask, other={zero})
-
-            dst_r = tl.trans(src_r)
-            dst_i = tl.trans(src_i)
+            if {pair}:
+                src_pair = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base, mask=load_mask, other=0)
+                dst_pair = tl.trans(src_pair)
+            else:
+                src_r = tl.load(in_ptr + src_base, mask=load_mask, other={zero})
+                src_i = tl.load(in_ptr + src_base + 1, mask=load_mask, other={zero})
+                dst_r = tl.trans(src_r)
+                dst_i = tl.trans(src_i)
 
             # Store the tile with the destination-contiguous axis innermost.
             dst_base = (
-                pid_batch * {total_float}
-                + slice_idx * {dst_slice_stride} * 2
-                + safe_rows[:, None] * {dst_row_stride} * 2
-                + safe_cols[None, :] * 2
+                pid_batch * {total_scalar}
+                + slice_idx * {dst_slice_stride} * {scalar_width}
+                + safe_rows[:, None] * {dst_row_stride} * {scalar_width}
+                + safe_cols[None, :] * {scalar_width}
             )
             store_mask = row_mask[:, None] & col_mask[None, :]
-            tl.store(out_ptr + dst_base, dst_r, mask=store_mask)
-            tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)
+            if {pair}:
+                tl.store(tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base, dst_pair, mask=store_mask)
+            else:
+                tl.store(out_ptr + dst_base, dst_r, mask=store_mask)
+                tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)
         """
     )
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
