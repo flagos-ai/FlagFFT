@@ -1572,7 +1572,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     auto plane_fft = compile_kernel(plane_key);
     std::shared_ptr<CompiledRawNode> outer_fft;
     const bool ix_column = fused_size == 32 && request.device_type == "ix" &&
-        request.device_arch == "71" && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", false);
+        request.device_arch == "71" && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", true);
     if (ix_column) {
       auto column_kernel = compile_kernel(KernelKey::fused_32_column(
           triton_target_for_request(request), request.direction, request.input_dtype));
@@ -1799,7 +1799,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                          request.input_dtype);
     auto plane_fft = compile_kernel(key);
     std::shared_ptr<CompiledRawNode> outer_fft;
-    if (n0 == 32 && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", false)) {
+    if (n0 == 32 && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", true)) {
       auto column_kernel = compile_kernel(KernelKey::fused_32_column(
           triton_target_for_request(request), request.direction, request.input_dtype));
       outer_fft = std::make_shared<CompiledRaw3DColumnNode>(
