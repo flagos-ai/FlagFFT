@@ -1354,9 +1354,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // A 16x16 plane fits in one block. Transform n2 and n1 together so a
   // 16^3 cube needs only one plane launch plus the outer strided leaf.
   const char *fused16_override = std::getenv("FLAGFFT_MUSA_3D_FUSED16");
-  if (request.device_type == "musa" && n0 == 16 && n1 == 16 && n2 == 16 &&
-      batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
-      (fused16_override == nullptr || std::string(fused16_override) != "0")) {
+  const char *maca_fused16_override = std::getenv("FLAGFFT_MACA_3D_FUSED16");
+  const bool use_fused16 =
+      (request.device_type == "musa" &&
+       (fused16_override == nullptr || std::string(fused16_override) != "0")) ||
+      (request.device_type == "maca" && maca_fused16_override != nullptr &&
+       std::string(maca_fused16_override) == "1");
+  if (use_fused16 && n0 == 16 && n1 == 16 && n2 == 16 &&
+      batch <= 4 && n0_leaf && n1_leaf && n2_leaf) {
     std::vector<double> tw_r_d(8);
     std::vector<double> tw_i_d(8);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
