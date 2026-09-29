@@ -1406,6 +1406,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const bool first_transpose = request.device_type == "hcu" &&
                                  first_transpose_override != nullptr &&
                                  std::string(first_transpose_override) == "1";
+    const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_LAST_TRANSPOSE");
+    const bool last_transpose = request.device_type == "hcu" && n0 >= 64 &&
+                                last_transpose_override != nullptr &&
+                                std::string(last_transpose_override) == "1";
     auto n2_fft = first_transpose
         ? compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1)
         : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
@@ -1415,7 +1419,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     if (first_transpose) {
       perm_021 = compile_transpose3d_kernel(request, n0, n1, n2, "021");
     }
-    auto n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+    auto n0_fft = last_transpose
+        ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
+        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+    std::shared_ptr<JitKernel> perm_201;
+    if (last_transpose) {
+      perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+    }
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     return std::make_shared<CompiledRaw3DHybridNode>(n0,
@@ -1427,7 +1437,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(perm_210),
                                                      std::move(temp1),
                                                      std::move(temp2),
-                                                     std::move(perm_021));
+                                                     std::move(perm_021),
+                                                     std::move(perm_201));
   }
 
   // Fused fast path: each axis runs as a leaf whose store also applies the
