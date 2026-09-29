@@ -18,6 +18,7 @@
 
 #include <cstdlib>
 #include <optional>
+#include <sstream>
 
 namespace flagfft {
 namespace {
@@ -772,9 +773,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     child_request.input_strides = {n / 2, 1};
     PlanBuilder child_builder;
     child_builder.build(n / 2, child_request);
-    const std::vector<int64_t> factors = n == 1024
+    std::vector<int64_t> factors = n == 1024
         ? std::vector<int64_t> {8, 8, 8}
         : std::vector<int64_t> {16, 8, 8};
+    if (const char *raw = std::getenv("FLAGFFT_IX_FUSED_R2C_FACTORS")) {
+      factors.clear();
+      std::istringstream input(raw);
+      std::string token;
+      int64_t product = 1;
+      while (std::getline(input, token, ',')) {
+        std::size_t consumed = 0;
+        const int64_t radix = std::stoll(token, &consumed);
+        if (consumed != token.size() ||
+            (radix != 2 && radix != 4 && radix != 8 && radix != 16) ||
+            product > (n / 2) / radix) {
+          throw std::runtime_error("invalid FLAGFFT_IX_FUSED_R2C_FACTORS");
+        }
+        factors.push_back(radix);
+        product *= radix;
+      }
+      if (factors.size() < 2 || product != n / 2) {
+        throw std::runtime_error("invalid FLAGFFT_IX_FUSED_R2C_FACTORS");
+      }
+    }
     const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
     LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
                              child_builder.choose_num_warps(lanes), {}, n / 2);
