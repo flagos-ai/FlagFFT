@@ -1521,7 +1521,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   const bool maca_prime_compact = request.device_type == "maca" &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_COMPACT", false);
+      node->n0 == 16 && node->n1 == 997 && node->n2 == 64 && batch <= 4 &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_COMPACT", true);
   if (!n2_leaf || !n0_leaf || (!n1_leaf && !maca_prime_compact)) return nullptr;
 
   const int64_t n0 = node->n0;
