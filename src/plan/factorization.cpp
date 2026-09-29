@@ -121,9 +121,9 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
-  // Five radix-two stages cost more than two short codelets for 32^3 axes on
-  // S5000. Keep other ranks and devices on their established factorization.
-  if (context.device_type == "musa" && context.origin_rank == 3 && n == 32) {
+  // Use two short codelets for 32^3 axes instead of five radix-two stages.
+  if ((context.device_type == "musa" || context.device_type == "hcu") &&
+      context.origin_rank == 3 && n == 32) {
     return {4, 8};
   }
   const bool ix_fp32_real_batch =
@@ -141,7 +141,8 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // batch leaf on V150. The code generator separately selects tensor exchange.
     return {8, 8, 4, 4};
   }
-  if (context.device_type == "hcu" && context.origin_rank <= 1 &&
+  if (context.device_type == "hcu" &&
+      (context.origin_rank <= 1 || context.origin_rank == 3) &&
       context.requested_n == n && n == 16) {
     // The direct radix-16 codelet avoids a shared-memory round trip.
     return {16};

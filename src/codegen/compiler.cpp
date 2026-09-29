@@ -1384,15 +1384,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
   }
 
-  // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
-  // transpose beats the packed permuted-store leaf.  FP64 measured slower
-  // with this exchange, so it stays on the fully fused path.  The short
-  // outer axes keep their fused stores, and the axes commute for inverse.
-  if (request.device_type == "musa" && request.input_dtype == "complex64" &&
-      n2_leaf && n1_leaf && n0_leaf &&
-      fused_3d_store_enabled() && n1 >= 1024 &&
-      n1 >= 4 * std::max(n0, n2) &&
-      batch * n0 * n1 * n2 > kStridedMaxElements) {
+  // A long middle axis can run contiguously before one tiled transpose.
+  // This also permits a non-leaf middle axis such as the 997-point Bluestein
+  // plan while the short outer axes retain their fused stores.
+  const bool elongated_3d = n1 >= 4 * std::max(n0, n2) &&
+                            batch * n0 * n1 * n2 > kStridedMaxElements;
+  const bool musa_hybrid = request.device_type == "musa" &&
+                           request.input_dtype == "complex64" && n1_leaf && n1 >= 1024;
+  const char *hcu_hybrid_override = std::getenv("FLAGFFT_HCU_3D_HYBRID");
+  const bool hcu_hybrid = request.device_type == "hcu" &&
+                          (hcu_hybrid_override == nullptr || std::string(hcu_hybrid_override) != "0");
+  if (n2_leaf && n0_leaf && fused_3d_store_enabled() && elongated_3d &&
+      (musa_hybrid || hcu_hybrid)) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");

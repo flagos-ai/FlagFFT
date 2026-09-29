@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 
 from .artifacts import write_text_atomic
-from .kernels_common import _dtype_suffix
+from .kernels_common import _dtype_suffix, _hcu_backend_active
 from .metadata import _module_source, _signature
 
 
@@ -94,7 +94,7 @@ def fused_16_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "module_path": str(module_path),
         "kernel_name": "fused_16_plane_fft_kernel",
         "signature": _signature(args, dtype),
-        "num_warps": 8,
+        "num_warps": 4 if _hcu_backend_active() else 8,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
