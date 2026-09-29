@@ -1364,8 +1364,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   const bool use_fused16 =
       (request.device_type == "musa" &&
        (fused16_override == nullptr || std::string(fused16_override) != "0")) ||
-      (request.device_type == "maca" && maca_fused16_override != nullptr &&
-       std::string(maca_fused16_override) == "1");
+      (request.device_type == "maca" &&
+       (maca_fused16_override == nullptr || std::string(maca_fused16_override) != "0"));
   if (use_fused16 && n0 == 16 && n1 == 16 && n2 == 16 &&
       batch <= 4 && n0_leaf && n1_leaf && n2_leaf) {
     std::vector<double> tw_r_d(8);
