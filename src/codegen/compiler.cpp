@@ -1335,11 +1335,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
 
-  // A long middle axis spends much longer in the packed permuted-store leaf
-  // than in an ordinary contiguous leaf.  On MUSA at 128x2048x64, the latter
-  // plus one tiled transpose is still cheaper; the short outer axes retain
-  // their fused stores.  The axes commute, so this order also handles inverse.
-  if (request.device_type == "musa" && n2_leaf && n1_leaf && n0_leaf &&
+  // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
+  // transpose beats the packed permuted-store leaf.  FP64 measured slower
+  // with this exchange, so it stays on the fully fused path.  The short
+  // outer axes keep their fused stores, and the axes commute for inverse.
+  if (request.device_type == "musa" && request.input_dtype == "complex64" &&
+      n2_leaf && n1_leaf && n0_leaf &&
       fused_3d_store_enabled() && n1 >= 1024 &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
