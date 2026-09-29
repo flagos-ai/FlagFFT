@@ -415,9 +415,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // elementwise work into its loads/stores. The measured boundary path is
     // the default for MACA 1D single transforms; the named environment
     // variable remains an explicit A/B override.
+    const bool use_maca_3d_boundary =
+        request.device_type == "maca" && request.origin_rank == 3 &&
+        bluestein->length == 997 && batch <= 4096 &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_BOUNDARY", false);
     const bool use_maca_boundary_leaf =
-        request.device_type == "maca" && batch == 1 && leaf != nullptr &&
-        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION", maca_1d_single_policy_);
+        request.device_type == "maca" && leaf != nullptr &&
+        ((batch == 1 &&
+          maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION", maca_1d_single_policy_)) ||
+         use_maca_3d_boundary);
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
