@@ -407,6 +407,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_musa_3d_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
                                            request.input_dtype == "complex128" && request.origin_rank == 3 &&
                                            bluestein->length == 997 && batch <= 4096;
+    const char *hcu_full_leaf_override = std::getenv("FLAGFFT_HCU_3D_BLUESTEIN_FULL_LEAF");
+    const bool use_hcu_3d_fp64_full_leaf = request.device_type == "hcu" &&
+                                          request.input_dtype == "complex128" && request.origin_rank == 3 &&
+                                          bluestein->length == 997 && batch <= 4096 &&
+                                          hcu_full_leaf_override != nullptr &&
+                                          std::string(hcu_full_leaf_override) == "1";
     // MACA's portable register exchange is compiled separately for each FFT.
     // Combining both FFTs makes this plugin's optimization prohibitively slow.
     const bool allow_bluestein_fusion = request.device_type != "maca";
@@ -420,7 +426,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
-         use_musa_3d_fp64_full_leaf) &&
+         use_musa_3d_fp64_full_leaf || use_hcu_3d_fp64_full_leaf) &&
         leaf != nullptr;
     // Batched S5000 FP64 convolutions can fuse the boundary when both
     // leaves fit the bounds below and the complete batch fits the existing

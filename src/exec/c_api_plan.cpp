@@ -321,7 +321,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       const char *graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH");
       const bool graph_allowed = plan->executable.forward_request.device_type == "hcu" &&
                                  plan->desc.batch * three_dim->n0 * three_dim->n1 * three_dim->n2 <=
-                                     64 * 64 * 64 &&
+                                     4 * 1024 * 1024 &&
                                  std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
                                  (graph_override == nullptr || std::string(graph_override) != "0");
       if (graph_allowed) {
