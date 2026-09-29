@@ -121,6 +121,26 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.device_type == "musa" && context.origin_rank == 3 &&
+      (n == 256 || n == 2048)) {
+    const char *name = n == 256 ? "FLAGFFT_MUSA_3D_FACTOR_256" : "FLAGFFT_MUSA_3D_FACTOR_2048";
+    if (const char *value = std::getenv(name)) {
+      std::vector<int64_t> factors;
+      std::istringstream stream(value);
+      std::string token;
+      while (std::getline(stream, token, ',')) {
+        int64_t radix = std::stoll(token);
+        if (!contains(kSupportedRadices, radix)) {
+          throw std::runtime_error(std::string(name) + " has an unsupported radix");
+        }
+        factors.push_back(radix);
+      }
+      if (factors.empty() || product(factors) != n) {
+        throw std::runtime_error(std::string(name) + " does not factor the axis length");
+      }
+      return factors;
+    }
+  }
   const bool ix_fp32_real_batch =
       context.device_type == "ix" && context.device_arch == "71" &&
       context.origin_rank <= 1 && context.requested_n == n &&

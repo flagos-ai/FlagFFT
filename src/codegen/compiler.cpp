@@ -825,13 +825,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
   // The fused store vectorizes along the batch slots, so it wants one element per
   // thread across lane_block * batch_pack of them.  Two warps measured best across
   // n=64/128/256 on MUSA; the planner's hint for a rank-1 axis request is one.
+  int64_t num_warps = std::max<int64_t>(2, leaf.num_warps);
+  if (request.device_type == "musa" && request.origin_rank == 3) {
+    if (const char *value = std::getenv("FLAGFFT_MUSA_3D_FUSED_WARPS")) {
+      const int64_t override = std::strtoll(value, nullptr, 10);
+      if (override != 1 && override != 2 && override != 4 && override != 8) {
+        throw std::runtime_error("FLAGFFT_MUSA_3D_FUSED_WARPS must be 1, 2, 4 or 8");
+      }
+      num_warps = override;
+    }
+  }
   KernelKey key = KernelKey::leaf_permuted_store(target,
                                                  request.direction,
                                                  request.input_dtype,
                                                  leaf.length,
                                                  leaf.factors,
                                                  leaf.lanes,
-                                                 std::max<int64_t>(2, leaf.num_warps),
+                                                 num_warps,
                                                  leaf.generic_radices,
                                                  leaf.smem_size,
                                                  perm_form);
