@@ -432,6 +432,10 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
+    if _ix_backend_active() and real_boundary and plan.length == 210:
+        override = _maca_knob("CT_210_PACK")
+        if override:
+            return _positive_knob("CT_210_PACK", override)
     if _portable_leaf_backend_active():
         override = _maca_knob("BATCH_PACK")
         if override == "auto":
