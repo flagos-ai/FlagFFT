@@ -121,25 +121,10 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
-  if (context.device_type == "musa" && context.origin_rank == 3 &&
-      (n == 16 || n == 32 || n == 256 || n == 2048)) {
-    const std::string name = "FLAGFFT_MUSA_3D_FACTOR_" + std::to_string(n);
-    if (const char *value = std::getenv(name.c_str())) {
-      std::vector<int64_t> factors;
-      std::istringstream stream(value);
-      std::string token;
-      while (std::getline(stream, token, ',')) {
-        int64_t radix = std::stoll(token);
-        if (!contains(kSupportedRadices, radix)) {
-          throw std::runtime_error(name + " has an unsupported radix");
-        }
-        factors.push_back(radix);
-      }
-      if (factors.empty() || product(factors) != n) {
-        throw std::runtime_error(name + " does not factor the axis length");
-      }
-      return factors;
-    }
+  // Five radix-two stages cost more than two short codelets for 32^3 axes on
+  // S5000. Keep other ranks and devices on their established factorization.
+  if (context.device_type == "musa" && context.origin_rank == 3 && n == 32) {
+    return {4, 8};
   }
   const bool ix_fp32_real_batch =
       context.device_type == "ix" && context.device_arch == "71" &&

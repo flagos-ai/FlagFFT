@@ -822,11 +822,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                                                 int64_t perm_span,
                                                                                 const std::string &perm_form) {
   std::string target = triton_target_for_request(request);
-  // The fused store vectorizes along the batch slots, so it wants one element per
-  // thread across lane_block * batch_pack of them.  Two warps measured best across
-  // n=64/128/256 on MUSA; the planner's hint for a rank-1 axis request is one.
+  // The fused store vectorizes along the batch slots. FP64 length-256 uses a
+  // smaller pack than FP32, and one warp measured faster than two on S5000.
+  // Keep the planner's four warps for the long length-2048 axis.
   int64_t num_warps = std::max<int64_t>(2, leaf.num_warps);
   if (request.device_type == "musa" && request.origin_rank == 3) {
+    if (request.input_dtype == "complex128" && leaf.length == 256) num_warps = 1;
     if (const char *value = std::getenv("FLAGFFT_MUSA_3D_FUSED_WARPS")) {
       const int64_t override = std::strtoll(value, nullptr, 10);
       if (override != 1 && override != 2 && override != 4 && override != 8) {
