@@ -761,6 +761,23 @@ def test_hcu_tiled_transpose3d_can_store_complex_pairs(kernels) -> None:
     assert "tl.store(out_ptr + pair_base, dst_pair, mask=store_mask[:, :, None])" in source
 
 
+def test_hcu_tiled_transpose3d_tile_override(tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "64")
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64))
+    try:
+        metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=128, n1=2048, n2=64, order="210", dtype="complex64", out_dir=tmp_path
+        )
+    finally:
+        reset_profile(token)
+    assert "t64_tile" in metadata["kernel_name"]
+    assert metadata["grid_x_override"] > 0
+
+
 def test_tiled_transpose3d_tile_selected_only_for_validated_backends(
     kernels, tmp_path, monkeypatch
 ) -> None:
