@@ -22,6 +22,33 @@
 namespace flagfft {
 namespace {
 
+  bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
+                                   const FFTRequest &request,
+                                   int64_t batch) {
+    const auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
+    if (!bluestein || request.device_type != "ix" || request.device_arch != "71" ||
+        request.raw_dim != 1 || request.origin_rank > 1 || batch != 64 ||
+        request.packed_real_child || request.fft_length != request.requested_n ||
+        request.requested_n != bluestein->length ||
+        (bluestein->length != 1009 && bluestein->length != 8191 && bluestein->length != 16381) ||
+        request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+        (request.real_transform_kind != "r2c" && request.real_transform_kind != "c2r") ||
+        request.input_strides.empty() || request.input_strides.back() != 1) {
+      return false;
+    }
+    const char *setting = std::getenv("FLAGFFT_IX_PRIME_REAL_FUSION");
+    if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_PRIME_REAL_FUSION must be 0 or 1");
+    }
+    if (setting && std::string(setting) == "0") return false;
+    if (std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan)) return true;
+    const auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(bluestein->fft_plan);
+    if (!four_step) return false;
+    const auto row = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
+    const auto col = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
+    return row && col && row->length < 512 && col->length < 512;
+  }
+
   struct PackedRealChild {
     FFTRequest request;
     PlanNodePtr plan;
@@ -402,6 +429,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return compile_raw_four_step_generic(*four_step, request, batch);
   }
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
+    const std::string real_kind = use_ix_prime_real_bluestein(node, request, batch)
+                                      ? request.real_transform_kind : "";
+    auto make_real_layout_fallback = [node, request, batch]() -> std::shared_ptr<CompiledRawNode> {
+      FFTRequest fallback_request = request;
+      fallback_request.real_transform_kind.clear();
+      TritonCompiler compiler;
+      return request.real_transform_kind == "r2c"
+                 ? compiler.compile_raw_r2c_node(node, fallback_request, batch, false)
+                 : compiler.compile_raw_c2r_node(node, fallback_request, batch, false);
+    };
     FFTRequest child_request = forward_child_request(request);
     // The generic Bluestein pipeline uses per-batch convolution buffers
     // (a_buf/work_buf plus the child FFT workspace).  For large primes and
@@ -498,15 +535,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                               leaf->num_warps,
                               leaf->generic_radices,
                               leaf->smem_size);
+      KernelKey fused_key = KernelKey::leaf_bluestein(triton_target_for_request(child_request),
+                                                       child_request.direction,
+                                                       child_request.input_dtype,
+                                                       bluestein->length,
+                                                       fused_leaf.length,
+                                                       fused_leaf.factors,
+                                                       fused_leaf.lanes,
+                                                       fused_leaf.num_warps,
+                                                       fused_leaf.generic_radices,
+                                                       fused_leaf.smem_size);
+      if (!real_kind.empty()) fused_key.perm_form = real_kind;
       return std::make_shared<CompiledRawBluesteinFullLeafNode>(
           bluestein->length,
           bluestein->conv_length,
           std::move(fft),
-          compile_leaf_bluestein_kernel(fused_leaf, child_request, bluestein->length),
+          compile_kernel(fused_key),
           build_raw_leaf_tables(fused_leaf, child_request),
           std::move(chirp),
           std::move(b_time),
-          std::move(b_fft_buf));
+          std::move(b_fft_buf),
+          real_kind,
+          real_kind.empty() ? std::function<std::shared_ptr<CompiledRawNode>()>{}
+                            : make_real_layout_fallback);
     }
     if (use_four_step) {
       auto make_boundary_leaf = [use_maca_four_step](const LeafPlanNode &source) {
@@ -550,6 +601,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         key.kind = kind;
         key.bluestein_n = bluestein->length;
         key.bluestein_m = bluestein->conv_length;
+        if (!real_kind.empty() &&
+            (kind == KernelKind::BluesteinFourStepPrepareRow ||
+             kind == KernelKind::BluesteinFourStepFinishCol)) {
+          key.perm_form = real_kind;
+        }
         return compile_kernel(key);
       };
 
@@ -575,7 +631,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           std::move(b_time),
           std::move(stage1),
           std::move(work_buf),
-          std::move(b_fft_buf));
+          std::move(b_fft_buf),
+          real_kind,
+          real_kind.empty() ? std::function<std::shared_ptr<CompiledRawNode>()>{}
+                            : make_real_layout_fallback);
     }
     DeviceAllocation work_buf =
         adaptor::Memory(static_cast<std::size_t>(chunk_batch * bluestein->conv_length * element_bytes));
@@ -675,6 +734,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   const int64_t n = request.requested_n;
   if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, false);
+  }
+  if (use_ix_prime_real_bluestein(node, request, batch)) {
+    return compile_raw_node(node, request, batch);
   }
   // Pack even/odd input samples, run a half-length complex leaf, and
   // reconstruct the compact spectrum in one launch on the qualified IX case.
@@ -776,6 +838,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   const int64_t n = request.requested_n;
   if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, true);
+  }
+  if (use_ix_prime_real_bluestein(node, request, batch)) {
+    return compile_raw_node(node, request, batch);
   }
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, true) : std::nullopt) {

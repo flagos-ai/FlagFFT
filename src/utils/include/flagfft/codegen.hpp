@@ -312,7 +312,9 @@ struct CompiledRawBluesteinFullLeafNode final : CompiledRawNode {
                                    std::vector<DeviceAllocation> tables,
                                    DeviceAllocation chirp,
                                    DeviceAllocation b_time,
-                                   DeviceAllocation b_fft_buf);
+                                   DeviceAllocation b_fft_buf,
+                                   std::string real_kind = "",
+                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -329,6 +331,10 @@ struct CompiledRawBluesteinFullLeafNode final : CompiledRawNode {
   mutable DeviceAllocation b_fft_buf;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  std::string real_kind;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
@@ -348,7 +354,9 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
                                    DeviceAllocation b_time,
                                    DeviceAllocation stage1,
                                    DeviceAllocation work_buf,
-                                   DeviceAllocation b_fft_buf);
+                                   DeviceAllocation b_fft_buf,
+                                   std::string real_kind = "",
+                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -374,6 +382,10 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
   mutable DeviceAllocation b_fft_buf;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  std::string real_kind;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawRaderNode final : CompiledRawNode {

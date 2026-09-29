@@ -612,7 +612,9 @@ CompiledRawBluesteinFullLeafNode::CompiledRawBluesteinFullLeafNode(int64_t lengt
                                                                    std::vector<DeviceAllocation> tables,
                                                                    DeviceAllocation chirp,
                                                                    DeviceAllocation b_time,
-                                                                   DeviceAllocation b_fft_buf)
+                                                                   DeviceAllocation b_fft_buf,
+                                                                   std::string real_kind,
+                                                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
@@ -620,7 +622,9 @@ CompiledRawBluesteinFullLeafNode::CompiledRawBluesteinFullLeafNode(int64_t lengt
       tables(std::move(tables)),
       chirp(std::move(chirp)),
       b_time(std::move(b_time)),
-      b_fft_buf(std::move(b_fft_buf)) {
+      b_fft_buf(std::move(b_fft_buf)),
+      real_kind(std::move(real_kind)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawBluesteinFullLeafNode::describe() const {
@@ -648,6 +652,21 @@ flagfftResult CompiledRawBluesteinFullLeafNode::execute(adaptor::DevicePtr input
                                                         adaptor::DevicePtr output,
                                                         const RawExecutionContext &context) const {
   try {
+    if (!real_kind.empty()) {
+      const int64_t half = length / 2 + 1;
+      const int64_t dense_input = real_kind == "r2c" ? length : half;
+      const int64_t dense_output = real_kind == "r2c" ? half : length;
+      if (input == output || (context.input_distance > 0 && context.input_distance != dense_input) ||
+          (context.output_distance > 0 && context.output_distance != dense_output)) {
+        std::shared_ptr<CompiledRawNode> fallback;
+        {
+          std::lock_guard<std::mutex> lock(layout_mutex);
+          if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+          fallback = layout_fallback;
+        }
+        return fallback ? fallback->execute(input, output, context) : FLAGFFT_INVALID_VALUE;
+      }
+    }
     ensure_b_fft(context);
     std::vector<JitKernelArg> args =
         raw_kernel_args({input, b_fft_buf.get(), chirp.get(), output}, tables, context.batch);
@@ -677,7 +696,9 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
     DeviceAllocation b_time,
     DeviceAllocation stage1,
     DeviceAllocation work_buf,
-    DeviceAllocation b_fft_buf)
+    DeviceAllocation b_fft_buf,
+    std::string real_kind,
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       conv_length(conv_length),
       n1(n1),
@@ -694,7 +715,9 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
       b_time(std::move(b_time)),
       stage1(std::move(stage1)),
       work_buf(std::move(work_buf)),
-      b_fft_buf(std::move(b_fft_buf)) {
+      b_fft_buf(std::move(b_fft_buf)),
+      real_kind(std::move(real_kind)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawBluesteinFourStepNode::describe() const {
@@ -726,6 +749,21 @@ flagfftResult CompiledRawBluesteinFourStepNode::execute(adaptor::DevicePtr input
                                                         const RawExecutionContext &context) const {
   const char *stage = "precompute";
   try {
+    if (!real_kind.empty()) {
+      const int64_t half = length / 2 + 1;
+      const int64_t dense_input = real_kind == "r2c" ? length : half;
+      const int64_t dense_output = real_kind == "r2c" ? half : length;
+      if (input == output || (context.input_distance > 0 && context.input_distance != dense_input) ||
+          (context.output_distance > 0 && context.output_distance != dense_output)) {
+        std::shared_ptr<CompiledRawNode> fallback;
+        {
+          std::lock_guard<std::mutex> lock(layout_mutex);
+          if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+          fallback = layout_fallback;
+        }
+        return fallback ? fallback->execute(input, output, context) : FLAGFFT_INVALID_VALUE;
+      }
+    }
     ensure_b_fft(context);
     const bool fused_twiddle = prepare_row_kernel->tle_fused_twiddle;
 
