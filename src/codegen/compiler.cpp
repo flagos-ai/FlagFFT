@@ -1509,6 +1509,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     bool inverse) {
   // A non-leaf axis retains the general RTRT fallback.
   if (request.device_type != "musa" && request.device_type != "maca") return nullptr;
+  if (request.device_type == "maca" &&
+      !maca_flag_or_default("FLAGFFT_MACA_3D_REAL_COMPACT", true)) return nullptr;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
