@@ -14,7 +14,6 @@
 
 #include "flagfft/core.hpp"
 
-#include <cstdlib>
 #include <sstream>
 
 namespace flagfft {
@@ -124,30 +123,6 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
-  if (context.device_type == "ix" && context.device_arch == "71" &&
-      context.origin_rank <= 1 && context.requested_n == n &&
-      context.batch == 64 && context.input_dtype == "complex64" &&
-      context.output_dtype == "complex64" &&
-      (n == 210 || n == 1024 || n == 2048)) {
-    if (const char *raw = std::getenv("FLAGFFT_IX_CT_EXPERIMENT_FACTORS")) {
-      std::vector<int64_t> factors;
-      std::istringstream input(raw);
-      std::string token;
-      int64_t product = 1;
-      while (std::getline(input, token, ',')) {
-        const int64_t radix = std::stoll(token);
-        if (!contains(kSupportedRadices, radix) || product > n / radix) {
-          throw std::runtime_error("invalid FLAGFFT_IX_CT_EXPERIMENT_FACTORS");
-        }
-        factors.push_back(radix);
-        product *= radix;
-      }
-      if (factors.size() < 2 || product != n) {
-        throw std::runtime_error("invalid FLAGFFT_IX_CT_EXPERIMENT_FACTORS");
-      }
-      return factors;
-    }
-  }
   const bool ix_fp32_real_batch =
       context.device_type == "ix" && context.device_arch == "71" &&
       context.origin_rank <= 1 && context.requested_n == n &&

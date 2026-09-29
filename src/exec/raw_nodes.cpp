@@ -40,10 +40,13 @@ namespace {
   bool ix_ct_batch_graph_enabled(const RawExecutionContext &context, int64_t length) {
     const FFTRequest &request = context.request;
     const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH");
-    return setting && std::string(setting) == "1" && request.device_type == "ix" &&
+    const bool enabled = setting == nullptr || std::string(setting) == "1";
+    const bool measured_shape = length == 1024 ||
+        (length == 2048 && (request.real_transform_kind == "r2c" ||
+                            request.real_transform_kind == "c2r"));
+    return enabled && measured_shape && request.device_type == "ix" &&
            request.device_arch == "71" && request.origin_rank <= 1 && request.raw_dim == 1 &&
            request.requested_n == length &&
-           (length == 16 || length == 210 || length == 1024 || length == 2048) &&
            context.batch == 64 && request.input_dtype == "complex64" &&
            request.output_dtype == "complex64";
   }
