@@ -1153,7 +1153,7 @@ def _emit_stage_block(
         lines.extend(
             _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
         )
-        if io_mode in {"permuted_store", "permuted_r2c"}:
+        if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
             active_lanes = max(stage_lanes) if stage_lanes is not None else lanes
             lines.append(f"{indent}lane_only = tl.arange(0, {lane_block})")
             lines.append(f"{indent}perm_lane_mask = lane_only < {active_lanes}")
@@ -1204,13 +1204,14 @@ def _emit_stage_block(
                         f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, "
                         f"mask=lane_mask, other={zero})"
                     )
-            elif io_mode == "strided":
+            elif io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
                 lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2, "
+                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * {stride}) * 2, "
                     f"mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2 + 1, "
+                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j} * {stride}) * 2 + 1, "
                     f"mask=lane_mask, other={zero})"
                 )
             elif io_mode in {"contiguous_r2c", "permuted_r2c"}:
@@ -1650,7 +1651,7 @@ def _emit_stage_block(
 
     for j in range(radix):
         if is_last:
-            if io_mode in {"permuted_store", "permuted_r2c"}:
+            if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
                 lines.extend(
                     _emit_permuted_store(
                         indent, j, factors, smem_pack, lane_block,
@@ -2160,7 +2161,7 @@ def _leaf_kernel_params_for_io(
         params.insert(2, "packed_twiddle_ptr")
     if io_mode == "strided":
         params.append("outer_stride")
-    if io_mode == "permuted_store":
+    if io_mode in {"permuted_store", "strided_permuted_store"}:
         params.append("perm_span")
     if io_mode == "bluestein_prepare_leaf":
         params.insert(1, "chirp_ptr")
@@ -2714,6 +2715,7 @@ def _build_leaf_kernel_source_for_io(
         "contiguous",
         "strided",
         "permuted_store",
+        "strided_permuted_store",
         "permuted_r2c",
         "contiguous_r2c",
         "packed_r2c",
@@ -2725,7 +2727,7 @@ def _build_leaf_kernel_source_for_io(
         "rader_prepare_leaf",
         "rader_finish_leaf",
     }
-    if io_mode in {"permuted_store", "permuted_r2c"}:
+    if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
         batch_pack = permuted_store_batch_pack_for(plan)
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
@@ -2847,7 +2849,7 @@ def _build_leaf_kernel_source_for_io(
             f"{io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
             f"_l{plan.lanes}_b{lane_block}"
         )
-    elif io_mode == "permuted_store":
+    elif io_mode in {"permuted_store", "strided_permuted_store"}:
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = (
             f"permuted_store_{perm_form}_{kernel_prefix}_kernel_{suffix}"
@@ -2888,22 +2890,23 @@ def _build_leaf_kernel_source_for_io(
             body.append("    current_batch = batch_id")
             body.append("    lane = lane_vec")
             body.append(f"    lane_mask = lane < {active_lanes}")
-            if io_mode == "permuted_store" and perm_form == "inner":
+            if io_mode in {"permuted_store", "strided_permuted_store"} and perm_form == "inner":
                 # The packed path derives perm_base from pid below.  With one
                 # batch slot, pid already is the row index, but the common
                 # inner-form address equations still consume this name.
                 body.append("    perm_base = batch_id")
-            if io_mode == "strided":
-                body.append("    batch_index = current_batch // outer_stride")
+            if io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
+                body.append(f"    batch_index = current_batch // {stride}")
                 body.append(
-                    f"    batch_base = batch_index * ({n} * outer_stride) + "
-                    "(current_batch - batch_index * outer_stride)"
+                    f"    batch_base = batch_index * ({n} * {stride}) + "
+                    f"(current_batch - batch_index * {stride})"
                 )
         else:
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
             body.append("    current_batch = batch_id + batch_slot")
-            if io_mode == "permuted_store" and perm_form == "inner":
+            if io_mode in {"permuted_store", "strided_permuted_store"} and perm_form == "inner":
                 # This pass permutes an axis whose output position is scaled by
                 # the *other* cube dimension, so a block has to span that
                 # dimension rather than consecutive rows: its rows are strided
@@ -2917,22 +2920,23 @@ def _build_leaf_kernel_source_for_io(
             body.append(
                 f"    lane_mask = (lane < {active_lanes}) & (current_batch < nbatch)"
             )
-            if io_mode == "strided":
-                body.append("    batch_index = current_batch // outer_stride")
+            if io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
+                body.append(f"    batch_index = current_batch // {stride}")
                 body.append(
-                    f"    batch_base = batch_index * ({n} * outer_stride) + "
-                    "(current_batch - batch_index * outer_stride)"
+                    f"    batch_base = batch_index * ({n} * {stride}) + "
+                    f"(current_batch - batch_index * {stride})"
                 )
             else:
                 body.append(f"    batch_base = current_batch * {n}")
             body.append(f"    smem_offset = batch_slot * {smem_slot_stride}")
         if batch_pack == 1:
-            if io_mode != "strided":
+            if io_mode not in {"strided", "strided_permuted_store"}:
                 body.append(f"    batch_base = current_batch * {n}")
         if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
             body.append("    output_batch_base = current_batch * output_distance")
-        if io_mode in {"permuted_store", "permuted_r2c"}:
+        if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
             # `perm_gbase` is the output address of each batch slot's row start
             # and `perm_k_stride` the stride of the FFT output index; the store
             # adds the two.  The two forms differ in which of the row index's

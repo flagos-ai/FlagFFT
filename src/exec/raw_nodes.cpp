@@ -2791,6 +2791,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
                                                      bool inverse,
                                                      bool fused_store,
                                                      bool n2_permuted,
+                                                     bool n1_strided_input,
                                                      std::shared_ptr<CompiledRawNode> n2_real_fft,
                                                      std::shared_ptr<CompiledRawNode> n1_fft,
                                                      std::shared_ptr<CompiledRawNode> n0_fft,
@@ -2804,6 +2805,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
       inverse(inverse),
       fused_store(fused_store),
       n2_permuted(n2_permuted),
+      n1_strided_input(n1_strided_input),
       n2_real_fft(std::move(n2_real_fft)),
       n1_fft(std::move(n1_fft)),
       n0_fft(std::move(n0_fft)),
@@ -2818,6 +2820,7 @@ std::string CompiledRaw3DRealLeafNode::describe() const {
   oss << "CompiledRaw3DRealLeaf(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", inverse=" << inverse << ", fused_store=" << fused_store
       << ", n2_permuted=" << n2_permuted
+      << ", n1_strided_input=" << n1_strided_input
       << ", middle_transpose=" << (perm_210 != nullptr)
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
@@ -2861,8 +2864,10 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
     // Axes commute, so the compact n1/n0 transforms can precede the real
     // inverse n2 boundary.  This also keeps the compact cube throughout.
     if (fused_store) {
-      launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch);
-      result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+      if (!n1_strided_input) {
+        launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch);
+      }
+      result = n1_fft->execute(n1_strided_input ? input : temp1.get(), temp2.get(), n1_context);
     } else {
       result = n1_fft->execute(input, temp1.get(), n1_context);
     }

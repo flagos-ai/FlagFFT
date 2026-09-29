@@ -762,7 +762,13 @@ def _emit_tiled_transpose3d_jit_kernel(
         or (
             dtype == "complex128"
             and _hcu_backend_active()
-            and os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "0") == "1"
+            and (
+                os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "1"
+                or (
+                    os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "auto"
+                    and (n0, n1, n2, order) == (256, 256, 129, "021")
+                )
+            )
         )
     ):
         (

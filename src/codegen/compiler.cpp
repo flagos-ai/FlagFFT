@@ -826,7 +826,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
                                                                                 const FFTRequest &request,
                                                                                 int64_t perm_span,
-                                                                                const std::string &perm_form) {
+                                                                                const std::string &perm_form,
+                                                                                bool strided_input) {
   std::string target = triton_target_for_request(request);
   // The fused store vectorizes along the batch slots. FP64 length-256 uses a
   // smaller pack than FP32, and one warp measured faster than two on S5000.
@@ -852,6 +853,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.generic_radices,
                                                  leaf.smem_size,
                                                  perm_form);
+  if (strided_input) key.kind = KernelKind::LeafStridedPermutedStore;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   // Same argument shape as the strided leaf: the permutation span rides in the
   // slot that carries outer_stride there, so the node is reused unchanged.
@@ -1552,6 +1554,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool direct_strided = request.device_type == "hcu" && inverse && !small &&
                               n1_leaf && strided_large_override != nullptr &&
                               std::string(strided_large_override) == "1";
+  const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
+  const bool n1_strided_input = request.device_type == "hcu" && inverse && !small &&
+                                !direct_strided && n1_leaf &&
+                                c2r_fused_load_override != nullptr &&
+                                std::string(c2r_fused_load_override) == "1";
   const char *real_hybrid_override = std::getenv("FLAGFFT_HCU_3D_REAL_HYBRID");
   const bool real_hybrid = !n1_leaf && request.device_type == "hcu" && !small &&
                            n1 >= 4 * std::max(n0, n2) && fused_3d_store_enabled() &&
@@ -1613,14 +1620,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     // The first permutation makes n1 rows contiguous.  Each following leaf
     // writes in the layout consumed by the next axis, leaving natural compact
     // (n0,n1,half) order after n0.
-    if (!n2_permuted) {
+    if (!n2_permuted && !n1_strided_input) {
       perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
     }
     if (real_hybrid) {
       n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
     } else {
-      n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner");
+      n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner",
+                                                n1_strided_input);
     }
     n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
   }
@@ -1634,6 +1642,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                                      inverse,
                                                      !small && !direct_strided,
                                                      n2_permuted,
+                                                     n1_strided_input,
                                                      std::move(n2_real_fft),
                                                      std::move(n1_fft),
                                                      std::move(n0_fft),

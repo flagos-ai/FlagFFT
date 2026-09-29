@@ -1076,6 +1076,7 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
                             bool inverse,
                             bool fused_store,
                             bool n2_permuted,
+                            bool n1_strided_input,
                             std::shared_ptr<CompiledRawNode> n2_real_fft,
                             std::shared_ptr<CompiledRawNode> n1_fft,
                             std::shared_ptr<CompiledRawNode> n0_fft,
@@ -1094,6 +1095,7 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   bool inverse;
   bool fused_store;
   bool n2_permuted;
+  bool n1_strided_input;
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
@@ -1230,9 +1232,10 @@ class TritonCompiler {
 
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
-                                                                   const FFTRequest &request,
-                                                                   int64_t perm_span,
-                                                                   const std::string &perm_form);
+                                                                    const FFTRequest &request,
+                                                                    int64_t perm_span,
+                                                                    const std::string &perm_form,
+                                                                    bool strided_input = false);
   std::shared_ptr<CompiledRawNode> compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t outer_stride);

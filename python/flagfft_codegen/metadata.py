@@ -128,7 +128,7 @@ def _metadata(
     n2: int,
     dtype: str,
 ) -> dict[str, Any]:
-    if kernel_type in {"leaf_permuted_store", "leaf_r2c_permuted_store"}:
+    if kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}:
         batch_per_block = permuted_store_batch_pack_for(plan)
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(
@@ -189,7 +189,7 @@ def _metadata(
         # normal leaf. Four warps caused a large batch-64 regression on V150;
         # the measured two-warp launch retains the one-kernel benefit.
         num_warps = 2
-    if profile.backend == "hcu" and kernel_type == "leaf_permuted_store":
+    if profile.backend == "hcu" and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store"}:
         fused_warps = os.environ.get("FLAGFFT_HCU_3D_FUSED_WARPS")
         if fused_warps is not None:
             try:

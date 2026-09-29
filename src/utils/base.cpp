@@ -124,6 +124,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "leaf_strided";
     case KernelKind::LeafPermutedStore:
       return "leaf_permuted_store";
+    case KernelKind::LeafStridedPermutedStore:
+      return "leaf_strided_permuted_store";
     case KernelKind::LeafR2C:
       return "leaf_r2c";
     case KernelKind::LeafR2CPermutedStore:

@@ -224,6 +224,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::LeafPermutedStore:
       kernel_kind = "leaf_permuted_store";
       break;
+    case KernelKind::LeafStridedPermutedStore:
+      kernel_kind = "leaf_strided_permuted_store";
+      break;
     case KernelKind::LeafR2C:
       kernel_kind = "leaf_r2c";
       break;
@@ -395,6 +398,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 #endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafPermutedStore ||
+      key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafR2CPermutedStore ||
       key.kind == KernelKind::LeafPackedR2C ||
       key.kind == KernelKind::LeafC2R ||
@@ -414,6 +418,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::LeafPermutedStore ||
+      key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
