@@ -469,6 +469,16 @@ def _emit_permuted_store(
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
             f"mask=lane_mask)",
         ]
+    if _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
+        # Keep the register tile in its original (batch, lane) layout.  This
+        # screens whether IX's lowering of tl.trans costs more than scalar
+        # stores for this kernel; the row-to-output mapping is unchanged.
+        address = f"(output_base + {offset}) * perm_k_stride + perm_gbase_vector"
+        return [
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, mask=lane_mask)",
+            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, mask=lane_mask)",
+        ]
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
         mask = "perm_store_mask"
@@ -2944,6 +2954,13 @@ def _build_leaf_kernel_source_for_io(
                 body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
+            if batch_pack > 1 and _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
+                body.append("    perm_i0_vector = current_batch // perm_span")
+                body.append("    perm_i1_vector = current_batch - perm_i0_vector * perm_span")
+                if perm_form == "inner":
+                    body.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
+                else:
+                    body.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
             if batch_pack == 1:
                 # Keep the singleton row address scalar.  On MUSA this avoids
                 # a degenerate [1] tensor layout being broadcast into the

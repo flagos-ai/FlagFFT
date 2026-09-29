@@ -193,7 +193,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   const std::string policy = policy_env ? policy_env : default_policy;
   const auto tail_mode = maca_tail_kernel_mode(maca_tail_policy_, key.kind, key.dtype,
                                                key.length, key.four_step_n1, key.four_step_n2);
-  const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
+  std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
                                 (maca_1d_single_policy_ ? "1" : "0") + ";maca-1d-batch=" +
                                 (maca_1d_batch_policy_ ? "1" : "0") + ";maca-2d-single=" +
                                 (maca_2d_single_policy_ ? "1" : "0") + ";ix-ct-single=" +
@@ -203,6 +203,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
+    const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
+    cache_key += ";ix-3d-direct-store=" + std::string(direct_store != nullptr &&
+                                                       std::string(direct_store) == "1" ? "1" : "0");
+  }
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);

@@ -204,16 +204,15 @@ namespace {
   }
 
   // Whether 3D should fuse its axis permutations into the FFT stores.  The
-  // trade depends on the backend: where the standalone transpose is already
-  // vectorized (NVIDIA) the fused store costs more than it saves, so this
-  // defaults to off there.  FLAGFFT_3D_FUSED_STORE=0/1 overrides either way,
-  // which is how the two paths are A/B'd.
+  // trade depends on the backend.  On IX, the fused path is much slower on
+  // large cubes than the standalone tiled transposes, so keep it off by
+  // default.  FLAGFFT_3D_FUSED_STORE=0/1 overrides this for screening.
   bool fused_3d_store_enabled() {
     const char *override_value = std::getenv("FLAGFFT_3D_FUSED_STORE");
     if (override_value != nullptr && *override_value != '\0') {
       return std::string(override_value) != "0";
     }
-    return adaptor::backend_name() != "cuda";
+    return adaptor::backend_name() != "cuda" && adaptor::backend_name() != "ix";
   }
 
   bool maca_flag_or_default(const char *name, bool default_value) {
@@ -1489,10 +1488,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // transpose beats the packed permuted-store leaf.  FP64 measured slower
   // with this exchange, so it stays on the fully fused path.  The short
   // outer axes keep their fused stores, and the axes commute for inverse.
-  if (request.device_type == "musa" && request.input_dtype == "complex64" &&
-      n2_leaf && n1_leaf && n0_leaf &&
-      fused_3d_store_enabled() && n1 >= 1024 &&
-      n1 >= 4 * std::max(n0, n2) &&
+  const bool musa_hybrid = request.device_type == "musa" && request.input_dtype == "complex64" &&
+      fused_3d_store_enabled() && n1 >= 1024 && n1 >= 4 * std::max(n0, n2);
+  const char *ix_hybrid_override = std::getenv("FLAGFFT_IX_3D_HYBRID");
+  const bool ix_hybrid = request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      ix_hybrid_override != nullptr && std::string(ix_hybrid_override) == "1";
+  if ((musa_hybrid || ix_hybrid) && n2_leaf && n1_leaf && n0_leaf &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
