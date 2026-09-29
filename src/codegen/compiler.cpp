@@ -1732,7 +1732,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
 
   const bool fused_real_plane = !inverse && ix_real_leaf_screen && small && batch <= 4 &&
       n0 == n1 && n1 == n2 && (n0 == 16 || n0 == 32) &&
-      flag_or_default("FLAGFFT_IX_3D_REAL_FUSED_PLANE", false);
+      flag_or_default("FLAGFFT_IX_3D_REAL_FUSED_PLANE", true);
   if (fused_real_plane) {
     std::vector<float> tw_r(n0 / 2);
     std::vector<float> tw_i(n0 / 2);
