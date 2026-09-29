@@ -216,7 +216,10 @@ namespace {
                                  request.origin_rank <= 1 && request.batch == 64 && batch == 64 &&
                                  request.requested_n == 23 && request.input_dtype == "complex64" &&
                                  request.output_dtype == "complex64" &&
-                                 !request.input_strides.empty() && request.input_strides.back() == 1 &&
+                                 request.input_strides.size() == 2 &&
+                                 request.input_strides.back() == 1 &&
+                                 request.input_strides.front() ==
+                                     (request.real_transform_kind == "c2r" ? 12 : 23) &&
                                  (ix_setting == nullptr || std::string(ix_setting) != "0");
     return request.raw_dim == 1 &&
            ((request.device_type == "maca" && (single_target || batch_target)) || ix_batch_target) &&
