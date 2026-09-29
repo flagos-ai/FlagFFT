@@ -213,6 +213,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                                      std::string(pair_store) == "1" ? "1" : "0");
     cache_key += ";ix-3d-pack=" + std::string(pack != nullptr ? pack : "auto");
   }
+  if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
+    const char *packed_3d = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");
+    cache_key += ";ix-3d-packed-r2c=" + std::string(packed_3d != nullptr &&
+                                                     std::string(packed_3d) == "1" ? "1" : "0");
+  }
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);

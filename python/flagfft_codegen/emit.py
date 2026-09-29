@@ -31,6 +31,7 @@ from .artifacts import write_text_atomic
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
+    _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
     _zero_other,
@@ -544,6 +545,11 @@ def emit_jit_kernel(
     perm_form: str = "outer",
     out_dir: Path,
 ) -> dict[str, Any]:
+    if (kernel == "leaf_packed_r2c" and _ix_backend_active()
+            and os.getenv("FLAGFFT_IX_3D_PACKED_R2C") == "1"):
+        # Each JIT source process emits one kernel.  Keep the portable
+        # exchange required by this packed boundary local to that process.
+        os.environ["FLAGFFT_IX_PORTABLE_LEAF"] = "1"
     plan = LeafPlan(
         length=length,
         factors=factors,
