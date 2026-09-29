@@ -1769,8 +1769,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
+  auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
+  const char *ix_fused_middle = std::getenv("FLAGFFT_IX_3D_R2C_FUSED_MIDDLE");
+  const bool fused_middle = !inverse && screen_hybrid && n1_leaf &&
+      packed > 64 * 64 * 64 && ix_fused_middle != nullptr &&
+      std::string(ix_fused_middle) == "1";
   const char *ix_fused_first = std::getenv("FLAGFFT_IX_3D_R2C_FUSED_FIRST");
   const bool fused_first = !inverse && n2_leaf && (n2 == 64 || n2 == 256) &&
       packed > 64 * 64 * 64 && ix_fused_first != nullptr &&
@@ -1812,14 +1817,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
         ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
         : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
   }
-  auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+  auto n1_fft = fused_middle
+      ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner")
+      : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
   auto n0_fft = fused_n0
       ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
       : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
   auto perm_021 = fused_first
       ? std::shared_ptr<JitKernel>{}
       : compile_transpose3d_kernel(request, n0, n1, half, "021");
-  auto perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
+  auto perm_210 = fused_middle
+      ? std::shared_ptr<JitKernel>{}
+      : compile_transpose3d_kernel(request, n0, half, n1, "210");
   auto perm_201 = fused_n0
       ? std::shared_ptr<JitKernel>{}
       : compile_transpose3d_kernel(request, n1, half, n0, "201");

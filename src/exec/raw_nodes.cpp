@@ -3003,6 +3003,7 @@ std::string CompiledRaw3DRealRTRTNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DRealRTRT(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", inverse=" << inverse << ", fused_first=" << (perm_021 == nullptr)
+      << ", fused_middle=" << (perm_210 == nullptr)
       << ", fused_n0=" << (perm_201 == nullptr)
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
@@ -3027,10 +3028,13 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
       if (perm_021) launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch);
       result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch);
-      result = n0_fft->execute(temp2.get(), perm_201 ? temp1.get() : output, n0_context);
+      if (perm_210) launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch);
+      adaptor::DevicePtr n0_output = perm_201
+          ? (perm_210 ? temp1.get() : temp2.get()) : output;
+      result = n0_fft->execute(perm_210 ? temp2.get() : temp1.get(),
+                               n0_output, n0_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      if (perm_201) launch_perm3d(perm_201, context.stream, temp1.get(), output, packed, batch);
+      if (perm_201) launch_perm3d(perm_201, context.stream, n0_output, output, packed, batch);
       return FLAGFFT_SUCCESS;
     }
 
