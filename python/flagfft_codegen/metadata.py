@@ -26,6 +26,7 @@ from .kernels_common import (
     LeafPlan,
     _cooperative_warp_cap,
     _dtype_suffix,
+    _hcu_backend_active,
     _maca_knob,
     _portable_leaf_backend_active,
     _ix_backend_active,
