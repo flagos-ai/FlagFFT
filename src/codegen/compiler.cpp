@@ -22,6 +22,11 @@
 namespace flagfft {
 namespace {
 
+  bool flag_or_default(const char *name, bool default_value) {
+    const char *value = std::getenv(name);
+    return value == nullptr ? default_value : std::string(value) == "1";
+  }
+
   std::string hcu_3d_final_axis_perm_form(const FFTRequest &request) {
     if (request.device_type != "hcu") return "outer";
     for (const char *name : {"FLAGFFT_HCU_3D_FINAL_WARPS", "FLAGFFT_HCU_3D_FINAL_PACK"}) {
