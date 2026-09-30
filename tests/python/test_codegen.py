@@ -703,6 +703,12 @@ def test_strided_direct_dft_kernel_source_generation(kernels) -> None:
     assert "batch_index = pid_batch // outer_stride" in source
     assert "base + k * outer_stride" in source
 
+    _, small_tile_source, _ = kernels._build_direct_dft_kernel_source(
+        128, "forward", "complex64", strided=True, reduction_tile=8
+    )
+    assert "for j_base in tl.static_range(0, 128, 8)" in small_tile_source
+    assert "tl.arange(0, 8)[:, None]" in small_tile_source
+
 
 def test_tiled_transpose_uses_register_transpose(kernels) -> None:
     _, source, _ = kernels._build_tiled_transpose_kernel_source(64, 32, "complex64")
