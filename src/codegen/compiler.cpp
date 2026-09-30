@@ -1399,15 +1399,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
   }
 
-  // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
-  // transpose beats the packed permuted-store leaf.  On MACA, the same hybrid
-  // path is opt-in through FLAGFFT_MACA_3D_FIRST_STORE: the n1 permuted store has
-  // only one batch slot under the shared-memory cap, so its stores stride by
-  // the full n0*n2 batch.  MACA fuses only the first n2 store here; the n0
-  // store still loses to a contiguous leaf plus a tiled transpose.  Its n2
-  // pack is 16 complex64 values to fill a C550 128-byte coalescing group.
+  // At 128x2048x64, a contiguous n1 leaf plus one tiled transpose beats the
+  // packed permuted-store leaf.  On MACA, the same hybrid path wins when it
+  // fuses only the first n2 store: under the shared-memory
+  // cap, the n1 permuted store has one batch slot and its stores stride by the
+  // full n0*n2 batch.  The n0 store also loses to a contiguous leaf plus a
+  // tiled transpose.  Pack 16 complex64 values to fill a C550 128-byte
+  // coalescing group.  Enable by default only for the validated 128x2048x64
+  // shape; keep the environment override available for additional screening.
+  const bool maca_first_store_default = n0 == 128 && n1 == 2048 && n2 == 64;
   const bool maca_first_store_enabled = request.device_type == "maca" &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_FIRST_STORE", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_FIRST_STORE", maca_first_store_default);
   const bool use_long_axis_hybrid =
       (request.device_type == "musa" && fused_3d_store_enabled()) ||
       maca_first_store_enabled;
