@@ -324,9 +324,18 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
                                           std::string(large_graph_override) == "1"
                                               ? 4 * 1024 * 1024
                                               : 64 * 64 * 64;
+      const bool real_transform = plan->desc.type == FLAGFFT_R2C ||
+                                  plan->desc.type == FLAGFFT_D2Z ||
+                                  plan->desc.type == FLAGFFT_C2R ||
+                                  plan->desc.type == FLAGFFT_Z2D;
+      const bool hcu_prime_real_graph =
+          plan->executable.forward_request.device_type == "hcu" && real_transform &&
+          plan->desc.batch == 1 && three_dim->n0 == 16 && three_dim->n1 == 997 &&
+          three_dim->n2 == 64;
+      const int64_t total_elements =
+          plan->desc.batch * three_dim->n0 * three_dim->n1 * three_dim->n2;
       const bool graph_allowed = plan->executable.forward_request.device_type == "hcu" &&
-                                 plan->desc.batch * three_dim->n0 * three_dim->n1 * three_dim->n2 <=
-                                     graph_max_elements &&
+                                 (total_elements <= graph_max_elements || hcu_prime_real_graph) &&
                                  std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
                                  (graph_override == nullptr || std::string(graph_override) != "0");
       if (graph_allowed) {
