@@ -114,6 +114,53 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n1, false), build_auto_node(n2, false));
     }
   }
+  // Let 2D axis plans reuse the existing FourStep plan and fused-leaf
+  // execution for long axes. Keep this opt-in so the current 2D policy stays
+  // unchanged while splits are screened on Ascend.
+  const char *npu_2d_split = std::getenv("FLAGFFT_NPU_2D_FOURSTEP_SPLIT");
+  if (request.device_type == "npu" && request.origin_rank == 2 && request.raw_dim == 1 &&
+      request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      npu_2d_split != nullptr && *npu_2d_split != '\0') {
+    const std::string spec(npu_2d_split);
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_NPU_2D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t target_length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_NPU_2D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_NPU_2D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (target_length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_FOURSTEP_SPLIT must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
+        const auto row_factors = select_leaf_factors(n1);
+        const auto col_factors = select_leaf_factors(n2);
+        if (!should_use_leaf(n1, row_factors) || !should_use_leaf(n2, col_factors)) {
+          throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_LEAF requires two supported leaf lengths");
+        }
+        return std::make_shared<FourStepPlanNode>(n,
+                                                  n1,
+                                                  n2,
+                                                  make_leaf_plan(n1, row_factors),
+                                                  make_leaf_plan(n2, col_factors));
+      }
+      return std::make_shared<FourStepPlanNode>(n,
+                                                n1,
+                                                n2,
+                                                build_auto_node(n1, false),
+                                                build_auto_node(n2, false));
+    }
+  }
   const bool npu_fourstep_operator = request.device_type == "npu" &&
                                      request.raw_dim == 1 && request.origin_rank == 1 &&
                                      request.requested_n == n &&
