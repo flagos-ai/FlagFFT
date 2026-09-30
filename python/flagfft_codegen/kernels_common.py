@@ -446,6 +446,12 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
                 return 8
             if plan.length == 64 and plan.dtype == "complex128":
                 return 8
+            if plan.length == 128:
+                pack_128 = os.getenv("FLAGFFT_MACA_3D_N128_PACK")
+                if pack_128 is not None:
+                    if pack_128 not in {"1", "2", "4"}:
+                        raise ValueError("FLAGFFT_MACA_3D_N128_PACK must be 1, 2 or 4")
+                    return int(pack_128)
             # On C550, the 256-point FP32 3D leaf runs with a 128-thread
             # block.  Packing two transforms fills that block and halves the
             # CTA count; a paired GPU measurement improved 256^3 C2C by 10%.
