@@ -1401,16 +1401,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
   // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
   // transpose beats the packed permuted-store leaf.  On MACA, the same hybrid
-  // path is opt-in through FLAGFFT_3D_FUSED_STORE: the n1 permuted store has
+  // path is opt-in through FLAGFFT_MACA_3D_FIRST_STORE: the n1 permuted store has
   // only one batch slot under the shared-memory cap, so its stores stride by
   // the full n0*n2 batch.  MACA fuses only the first n2 store here; the n0
   // store still loses to a contiguous leaf plus a tiled transpose.  Its n2
   // pack is 16 complex64 values to fill a C550 128-byte coalescing group.
-  if ((request.device_type == "musa" ||
-       (request.device_type == "maca" && fused_3d_store_enabled())) &&
-      request.input_dtype == "complex64" &&
+  const bool maca_first_store_enabled = request.device_type == "maca" &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_FIRST_STORE", false);
+  const bool use_long_axis_hybrid =
+      (request.device_type == "musa" && fused_3d_store_enabled()) ||
+      maca_first_store_enabled;
+  if (use_long_axis_hybrid && request.input_dtype == "complex64" &&
       n2_leaf && n1_leaf && n0_leaf &&
-      fused_3d_store_enabled() && n1 >= 1024 &&
+      n1 >= 1024 &&
       n1 >= 4 * std::max(n0, n2) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
