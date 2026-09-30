@@ -120,6 +120,9 @@ struct FFTRequest {
   bool requires_contiguous_copy = false;
   std::string direction = "forward";
   int64_t batch = 0;
+  // Explicit experimental packing for the HCU 3D middle-axis 2048 leaf.
+  // Zero keeps the default policy.
+  int64_t hcu_3d_middle_batch_pack = 0;
 };
 
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim, ThreeDim };

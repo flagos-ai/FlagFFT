@@ -379,6 +379,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  if (key.target.rfind("hcu:", 0) == 0) {
+    jit_command << "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK="
+                << (key.hcu_3d_middle_batch_pack > 0
+                        ? std::to_string(key.hcu_3d_middle_batch_pack)
+                        : std::string("auto"))
+                << " ";
+  }
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(request_dir.string()) << " --dtype "
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "

@@ -224,3 +224,32 @@ def test_hcu_strided_permuted_store_uses_middle_axis_pack_override(monkeypatch):
         assert "batch_id = pid * 8" in source
     finally:
         reset_profile(token)
+
+
+@pytest.mark.parametrize("pack", (1, 2, 4, 8, 16, 32))
+def test_hcu_2048_middle_leaf_grid_matches_batch_pack(monkeypatch, pack):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", str(pack))
+    token = set_profile(
+        BackendProfile(
+            backend="hcu", device_arch="gfx936", warp_size=64,
+            max_threads_per_block=1024, max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=2048, factors=(16, 16, 8), remainder=1, lanes=128,
+            num_warps=8, generic_radices=(), smem_size=2048,
+        )
+        kernel_name, source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="contiguous"
+        )
+        metadata = _metadata(
+            module_path=Path("generated.py"), kernel_name=kernel_name,
+            arg_names=["in_ptr", "out_ptr", "nbatch"], plan=plan,
+            kernel_type="leaf", n1=0, n2=0, dtype="complex64",
+        )
+        assert metadata["batch_per_block"] == pack
+        assert f"batch_id = pid * {pack}" in source
+    finally:
+        reset_profile(token)

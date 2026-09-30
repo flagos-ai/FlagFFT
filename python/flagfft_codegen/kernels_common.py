@@ -432,6 +432,14 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 
 
 def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
+    if _hcu_backend_active() and plan.length == 2048:
+        middle_batch_pack = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
+        if middle_batch_pack != "auto":
+            if middle_batch_pack not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4, 8, 16 or 32"
+                )
+            return int(middle_batch_pack)
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
     if _portable_leaf_backend_active():
