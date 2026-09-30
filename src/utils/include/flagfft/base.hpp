@@ -167,7 +167,6 @@ enum class KernelKind {
   TiledTranspose,
   Transpose3D,
   Fused16Plane,
-  Fused32Plane,
   LeafRaderPrepare,
   LeafRaderFinish
 };

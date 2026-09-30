@@ -26,16 +26,6 @@ KernelKey KernelKey::fused_16_plane(std::string target, std::string direction, s
   return key;
 }
 
-KernelKey KernelKey::fused_32_plane(std::string target, std::string direction, std::string dtype) {
-  KernelKey key;
-  key.kind = KernelKind::Fused32Plane;
-  key.target = std::move(target);
-  key.direction = std::move(direction);
-  key.dtype = std::move(dtype);
-  key.length = 32;
-  return key;
-}
-
 KernelKey KernelKey::leaf(std::string target,
                           std::string direction,
                           std::string dtype,

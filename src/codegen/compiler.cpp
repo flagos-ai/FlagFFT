@@ -1395,34 +1395,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         triton_target_for_request(request), request.direction, request.input_dtype));
     auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, 16 * 16);
     DeviceAllocation temp = adaptor::Memory(static_cast<std::size_t>(batch * 16 * 16 * 16 * element_bytes));
-    return std::make_shared<CompiledRaw3DFusedPlaneNode>(
-        16, std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
-  }
-
-  // Experimental 32x32 plane path. Keep it opt-in and restricted to the
-  // single-batch FP64 C2C case until C550 accuracy and timing are measured.
-  const char *maca_fused32_override = std::getenv("FLAGFFT_MACA_3D_FUSED32");
-  const bool use_fused32 = request.device_type == "maca" && maca_fused32_override != nullptr &&
-      std::string(maca_fused32_override) == "1" && request.input_dtype == "complex128" &&
-      request.output_dtype == "complex128";
-  if (use_fused32 && n0 == 32 && n1 == 32 && n2 == 32 && batch == 1 &&
-      n0_leaf && n1_leaf && n2_leaf) {
-    std::vector<double> tw_r_d(16);
-    std::vector<double> tw_i_d(16);
-    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
-    for (int64_t k = 0; k < 16; ++k) {
-      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
-      tw_r_d[k] = std::cos(angle);
-      tw_i_d[k] = std::sin(angle);
-    }
-    auto plane_fft = compile_kernel(KernelKey::fused_32_plane(
-        triton_target_for_request(request), request.direction, request.input_dtype));
-    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, 32 * 32);
-    DeviceAllocation temp = adaptor::Memory(
-        static_cast<std::size_t>(batch * 32 * 32 * 32 * element_bytes));
-    return std::make_shared<CompiledRaw3DFusedPlaneNode>(
-        32, std::move(plane_fft), std::move(outer_fft), std::move(temp),
-        adaptor::Memory::from_doubles(tw_r_d), adaptor::Memory::from_doubles(tw_i_d));
+    return std::make_shared<CompiledRaw3DFused16PlaneNode>(
+        std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
   }
 
   // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled

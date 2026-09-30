@@ -969,21 +969,19 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
-// Small cubic complex transform: one kernel handles both axes in each plane,
-// then the outer axis uses the existing strided leaf.
-struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
-  CompiledRaw3DFusedPlaneNode(int64_t n,
-                              std::shared_ptr<JitKernel> plane_fft,
-                              std::shared_ptr<CompiledRawNode> outer_fft,
-                              DeviceAllocation temp,
-                              DeviceAllocation tw_r,
-                              DeviceAllocation tw_i);
+// Small 16^3 complex transform: one kernel handles both axes in each 16x16
+// plane, then the outer axis uses the existing strided leaf.
+struct CompiledRaw3DFused16PlaneNode final : CompiledRawNode {
+  CompiledRaw3DFused16PlaneNode(std::shared_ptr<JitKernel> plane_fft,
+                                std::shared_ptr<CompiledRawNode> outer_fft,
+                                DeviceAllocation temp,
+                                DeviceAllocation tw_r,
+                                DeviceAllocation tw_i);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
 
-  int64_t n;
   std::shared_ptr<JitKernel> plane_fft;
   std::shared_ptr<CompiledRawNode> outer_fft;
   DeviceAllocation temp;

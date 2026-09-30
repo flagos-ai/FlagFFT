@@ -95,7 +95,6 @@ struct KernelKey {
   std::string perm_form = "outer";
 
   static KernelKey fused_16_plane(std::string target, std::string direction, std::string dtype);
-  static KernelKey fused_32_plane(std::string target, std::string direction, std::string dtype);
 
   static KernelKey leaf(std::string target,
                         std::string direction,
