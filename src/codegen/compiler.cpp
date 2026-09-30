@@ -1780,10 +1780,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n0_request.batch = batch * n1 * half;
 
   const char *r2c_permute_override = std::getenv("FLAGFFT_HCU_3D_R2C_PERMUTED_STORE");
+  const bool r2c_fp64_cube_prefers_transpose =
+      request.device_type == "hcu" && request.input_dtype == "complex128" && batch == 1 &&
+      n0 == 256 && n1 == 256 && n2 == 256;
+  const bool r2c_permute_default = !r2c_fp64_cube_prefers_transpose;
   const bool n2_permuted = request.device_type == "hcu" && !inverse && !small &&
                            n1_leaf &&
-                           (r2c_permute_override == nullptr ||
-                            std::string(r2c_permute_override) != "0");
+                           (r2c_permute_override == nullptr
+                                ? r2c_permute_default
+                                : std::string(r2c_permute_override) != "0");
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   if (n2_permuted) {
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
