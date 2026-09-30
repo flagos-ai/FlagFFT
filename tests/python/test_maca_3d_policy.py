@@ -13,7 +13,7 @@ from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 def test_maca_3d_packing_scope_and_override(monkeypatch):
     for name in ("FLAGFFT_MACA_BATCH_PACK", "FLAGFFT_MACA_3D_N64_PACK",
                  "FLAGFFT_MACA_3D_N128_PACK", "FLAGFFT_MACA_EXCHANGE",
-                 "FLAGFFT_MACA_VEC_IO"):
+                 "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_3D_PERMSTORE_PACK"):
         monkeypatch.delenv(name, raising=False)
     profile = set_profile(
         BackendProfile.from_device(
@@ -49,6 +49,20 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single128) == 2
             assert permuted_store_batch_pack_for(short) == 16
             assert permuted_store_batch_pack_for(single128) == 16
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "8")
+            assert permuted_store_batch_pack_for(short) == 8
+            assert permuted_store_batch_pack_for(single128) == 8
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "32")
+            assert permuted_store_batch_pack_for(short) == 32
+            assert permuted_store_batch_pack_for(single128) == 16
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "3")
+            try:
+                permuted_store_batch_pack_for(short)
+            except ValueError as error:
+                assert "must be 1, 2, 4, 8, 16, 32 or auto" in str(error)
+            else:
+                raise AssertionError("unsupported MACA permuted-store pack was accepted")
+            monkeypatch.delenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
             # The 2048-point leaf consumes enough shared memory to cap its
             # permuted-store pack at one; the long-axis hybrid avoids that.
             assert permuted_store_batch_pack_for(long_middle) == 1

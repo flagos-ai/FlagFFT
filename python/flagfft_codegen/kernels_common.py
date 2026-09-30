@@ -511,6 +511,13 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
         and plan.length in {64, 128}
     ):
         target_pack = 16
+        override = os.getenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
+        if override is not None and override != "auto":
+            if override not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError(
+                    "FLAGFFT_MACA_3D_PERMSTORE_PACK must be 1, 2, 4, 8, 16, 32 or auto"
+                )
+            target_pack = int(override)
     if _mthreads_backend_active():
         override = os.getenv("FLAGFFT_MUSA_3D_PACK")
         if override is not None and override != "auto":
