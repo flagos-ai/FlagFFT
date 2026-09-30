@@ -41,6 +41,15 @@ namespace {
                : default_form;
   }
 
+  bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request) {
+    if (request.device_type != "hcu" || request.origin_rank != 3) return false;
+    const char *setting = std::getenv("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY");
+    if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY must be 0 or 1");
+    }
+    return setting != nullptr && std::string(setting) == "1";
+  }
+
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
                                    const FFTRequest &request,
                                    int64_t batch) {
@@ -78,7 +87,8 @@ namespace {
                                                           int64_t batch,
                                                           bool inverse) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
-    const bool force = setting != nullptr && std::string(setting) == "1";
+    const bool force = (setting != nullptr && std::string(setting) == "1") ||
+                       hcu_3d_packed_real_boundary_enabled(request);
     const bool disable = setting != nullptr && std::string(setting) == "0";
     const int64_t n = request.requested_n;
     if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") || n <= 0 ||
@@ -1811,6 +1821,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
+  const bool packed_real_boundary = !small && hcu_3d_packed_real_boundary_enabled(request);
   const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
   const bool c2r_fused_load_default = !(request.input_dtype == "complex64" && batch >= 4 &&
                                         n0 == 256 && n1 == 256 && n2 == 256);
@@ -1854,6 +1865,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       n0 == 256 && n1 == 256 && n2 == 256;
   const bool r2c_permute_default = !r2c_fp64_cube_prefers_transpose;
   const bool n2_permuted = request.device_type == "hcu" && !inverse && !small &&
+                           !packed_real_boundary &&
                            n1_leaf &&
                            (r2c_permute_override == nullptr
                                 ? r2c_permute_default
@@ -1873,8 +1885,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
         DeviceAllocation{}, n1);
   } else {
     n2_real_fft = inverse
-        ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
-        : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+        ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, packed_real_boundary)
+        : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, packed_real_boundary);
   }
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
