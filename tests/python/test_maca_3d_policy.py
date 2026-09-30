@@ -17,12 +17,14 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     )
     short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex64")
     double_short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex128")
+    single = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex64")
     double = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex128")
     try:
         off = set_maca_3d_default(False)
         try:
             assert contiguous_batch_pack_for(short) == 1
             assert contiguous_batch_pack_for(double_short) == 1
+            assert contiguous_batch_pack_for(single) == 1
             assert contiguous_batch_pack_for(double) == 1
             assert _maca_knob("EXCHANGE") == ""
         finally:
@@ -31,12 +33,14 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
         try:
             assert contiguous_batch_pack_for(short) == 8
             assert contiguous_batch_pack_for(double_short) == 8
+            assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
             assert _maca_knob("EXCHANGE") == "direct_all"
             monkeypatch.setenv("FLAGFFT_MACA_3D_N64_PACK", "4")
             assert contiguous_batch_pack_for(short) == 4
             assert contiguous_batch_pack_for(double_short) == 4
             monkeypatch.setenv("FLAGFFT_MACA_BATCH_PACK", "1")
+            assert contiguous_batch_pack_for(single) == 1
             assert contiguous_batch_pack_for(double) == 1
             monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", "join")
             assert _maca_knob("EXCHANGE") == "join"
