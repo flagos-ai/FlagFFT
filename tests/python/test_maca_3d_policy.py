@@ -125,3 +125,16 @@ def test_maca_3d_n32_warp_override(monkeypatch):
         set_codegen_target("")
         reset_maca_3d_default(enabled)
         reset_profile(profile)
+
+
+def test_maca_environment_fingerprint_separates_variants():
+    from flagfft_codegen.cli import _maca_environment_fingerprint
+
+    pack8 = {"FLAGFFT_MACA_3D_N32_PACK": "8"}
+    pack16 = {"FLAGFFT_MACA_3D_N32_PACK": "16"}
+    other_backend = {"FLAGFFT_IX_WARPS": "4"}
+    assert _maca_environment_fingerprint({}) == ""
+    assert _maca_environment_fingerprint(pack8) != _maca_environment_fingerprint(pack16)
+    assert _maca_environment_fingerprint(pack8) == _maca_environment_fingerprint(
+        {**pack8, **other_backend}
+    )

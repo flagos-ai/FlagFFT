@@ -78,6 +78,18 @@ def _toolchain_version() -> str:
     return "unspecified"
 
 
+def _maca_environment_fingerprint(environment: dict[str, str] | None = None) -> str:
+    """Separate generated MACA artifacts for explicit resource-policy overrides."""
+    import hashlib
+
+    values = os.environ if environment is None else environment
+    overrides = {key: value for key, value in values.items() if key.startswith("FLAGFFT_MACA_")}
+    if not overrides:
+        return ""
+    payload = json.dumps(overrides, sort_keys=True).encode()
+    return hashlib.sha256(payload).hexdigest()[:12]
+
+
 def main() -> None:
     import hashlib
     from dataclasses import asdict, replace
@@ -222,6 +234,9 @@ def main() -> None:
             "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
         profile_dir += "-maca-3d" if args.maca_3d else "-maca-3d-off"
+        maca_env_fingerprint = _maca_environment_fingerprint()
+        if maca_env_fingerprint:
+            profile_dir += f"-maca-env-{maca_env_fingerprint}"
     if profile.backend == "musa":
         pair_store = os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_MUSA_3D_PACK", "auto")
