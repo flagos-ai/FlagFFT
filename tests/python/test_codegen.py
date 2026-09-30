@@ -123,6 +123,49 @@ def test_permuted_store_launch_grid_matches_generated_batch_pack(kernels, jit_so
     assert "batch_id = pid * 4" in source
 
 
+@pytest.mark.parametrize("pack", [1, 4])
+def test_maca_packed_permuted_store_uses_one_u64_store(kernels, monkeypatch, pack) -> None:
+    from flagfft_codegen import kernels_leaf
+    from flagfft_codegen.backend_profile import (
+        BackendProfile,
+        reset_profile,
+        set_profile,
+    )
+
+    profile = BackendProfile.from_device(
+        {
+            "backend": "maca",
+            "device_arch": "102",
+            "warp_size": 64,
+            "max_threads_per_block": 1024,
+            "max_dynamic_shared_memory": 65536,
+        }
+    )
+    token = set_profile(profile)
+    monkeypatch.setenv("FLAGFFT_MACA_VEC_IO", "packed")
+    monkeypatch.setattr(kernels_leaf, "permuted_store_batch_pack_for", lambda _plan: pack)
+    plan = kernels.LeafPlan(
+        length=256,
+        factors=(4, 4, 4, 4),
+        remainder=1,
+        lanes=64,
+        num_warps=2,
+        generic_radices=(),
+        smem_size=256,
+        dtype="complex64",
+    )
+    try:
+        _name, source = kernels._build_leaf_kernel_source_for_io(
+            plan, io_mode="permuted_store", perm_form="outer"
+        )
+    finally:
+        reset_profile(token)
+
+    assert "tl.pointer_type(tl.uint64)" in source
+    assert "tl.store(perm_ptr0, perm_pair0" in source
+    assert "tl.store(out_ptr + perm_addr0 * 2 + 1" not in source
+
+
 def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
     forward = kernels.LeafPlan(
         length=8,

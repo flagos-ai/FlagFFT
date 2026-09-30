@@ -487,6 +487,16 @@ def _emit_permuted_store(
         # that singleton layout with the wrong pointer lanes.  The ordinary
         # one-dimensional tensor is both semantically exact and cheaper.
         address = f"{base} * perm_k_stride + perm_gbase_scalar"
+        if _packed_maca_fp32_complex_io("complex64"):
+            return [
+                f"{indent}perm_addr{digit} = {address}",
+                f"{indent}perm_pair{digit} = "
+                f"tl.cast(tl.cast(r{digit}, tl.uint32, bitcast=True), tl.uint64) "
+                f"| (tl.cast(tl.cast(i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)",
+                f"{indent}perm_ptr{digit} = tl.cast(out_ptr + perm_addr{digit} * 2, "
+                "tl.pointer_type(tl.uint64))",
+                f"{indent}tl.store(perm_ptr{digit}, perm_pair{digit}, mask=lane_mask)",
+            ]
         return [
             f"{indent}perm_addr{digit} = {address}",
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, "
@@ -507,6 +517,18 @@ def _emit_permuted_store(
             "tl.arange(0, 2)[None, None, :]",
             f"{indent}tl.store(out_ptr + pair_addr{digit}, pair{digit}, "
             f"mask={mask}[:, :, None])",
+        ]
+    if _packed_maca_fp32_complex_io("complex64"):
+        return [
+            f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
+            f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}perm_pair{digit} = "
+            f"tl.cast(tl.cast(zr{digit}, tl.uint32, bitcast=True), tl.uint64) "
+            f"| (tl.cast(tl.cast(zi{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)",
+            f"{indent}perm_ptr{digit} = tl.cast(out_ptr + perm_addr{digit} * 2, "
+            "tl.pointer_type(tl.uint64))",
+            f"{indent}tl.store(perm_ptr{digit}, perm_pair{digit}, mask={mask})",
         ]
     return [
         f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
