@@ -46,7 +46,10 @@ namespace {
                : default_form;
   }
 
-  bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request, bool inverse) {
+  bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request,
+                                           bool inverse,
+                                           int64_t batch,
+                                           int64_t length) {
     // The half-length boundary helped C2R, while it displaced the faster
     // permuted-store R2C path. Keep this experiment inverse-only.
     if (request.device_type != "hcu" || request.origin_rank != 3) return false;
@@ -54,7 +57,13 @@ namespace {
     if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY must be 0 or 1");
     }
-    return inverse && setting != nullptr && std::string(setting) == "1";
+    if (!inverse || (request.input_dtype != "complex64" && request.input_dtype != "complex128")) {
+      return false;
+    }
+    if (setting != nullptr) return std::string(setting) == "1";
+    // In rank-3 C2R, this boundary request batches n0*n1 rows. The only
+    // qualified case so far is the single-batch 256^3 cube.
+    return length == 256 && batch == 256 * 256;
   }
 
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
@@ -94,10 +103,10 @@ namespace {
                                                           int64_t batch,
                                                           bool inverse) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
-    const bool force = (setting != nullptr && std::string(setting) == "1") ||
-                       hcu_3d_packed_real_boundary_enabled(request, inverse);
-    const bool disable = setting != nullptr && std::string(setting) == "0";
     const int64_t n = request.requested_n;
+    const bool force = (setting != nullptr && std::string(setting) == "1") ||
+                       hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
+    const bool disable = setting != nullptr && std::string(setting) == "0";
     if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") || n <= 0 ||
         n % 2 != 0) {
       return std::nullopt;
@@ -1827,8 +1836,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
-  const bool packed_real_boundary = !small &&
-                                    hcu_3d_packed_real_boundary_enabled(request, inverse);
+  const bool packed_real_boundary =
+      !small && hcu_3d_packed_real_boundary_enabled(request, inverse, batch * n0 * n1, n2);
   const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
   const bool c2r_fused_load_default = !(request.input_dtype == "complex64" && batch >= 4 &&
                                         n0 == 256 && n1 == 256 && n2 == 256);
