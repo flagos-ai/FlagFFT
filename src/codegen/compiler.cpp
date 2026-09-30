@@ -22,6 +22,15 @@
 namespace flagfft {
 namespace {
 
+  std::string hcu_3d_final_axis_perm_form(const FFTRequest &request) {
+    if (request.device_type != "hcu") return "outer";
+    for (const char *name : {"FLAGFFT_HCU_3D_FINAL_WARPS", "FLAGFFT_HCU_3D_FINAL_PACK"}) {
+      const char *value = std::getenv(name);
+      if (value != nullptr && std::string(value) != "auto") return "outer_last";
+    }
+    return "outer";
+  }
+
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
                                    const FFTRequest &request,
                                    int64_t batch) {
@@ -1604,17 +1613,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, "outer");
     std::shared_ptr<CompiledRawNode> n1_fft =
         compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
-    const char *final_warps_override = std::getenv("FLAGFFT_HCU_3D_FINAL_WARPS");
-    const char *final_pack_override = std::getenv("FLAGFFT_HCU_3D_FINAL_PACK");
-    const bool final_warps_enabled = request.device_type == "hcu" &&
-                                     final_warps_override != nullptr &&
-                                     std::string(final_warps_override) != "auto";
-    const bool final_pack_enabled = request.device_type == "hcu" &&
-                                    final_pack_override != nullptr &&
-                                    std::string(final_pack_override) != "auto";
-    const std::string n0_perm_form = final_warps_enabled || final_pack_enabled
-                                         ? "outer_last"
-                                         : "outer";
+    const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
     std::shared_ptr<CompiledRawNode> n0_fft =
         last_transpose ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
                        : compile_raw_permuted_store_leaf(*n0_leaf,
@@ -1726,6 +1725,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                            (real_hybrid_override == nullptr || std::string(real_hybrid_override) != "0");
   if (!n1_leaf && !real_hybrid) return nullptr;
   if (!small && !fused_3d_store_enabled()) return nullptr;
+  const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
 
   FFTRequest n2_request = request;
   n2_request.fft_length = n2;
@@ -1791,7 +1791,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner",
                                                 n1_strided_input);
     }
-    n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
+    n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, n0_perm_form);
   }
 
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
