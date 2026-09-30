@@ -972,10 +972,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  perm_form);
   if (strided_input) key.kind = KernelKind::LeafStridedPermutedStore;
   const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
+  // Forcing FP64 256-point stores to use the full 64 KiB shared-memory pack
+  // raised latency by about 10% on HCU 256^3 C2C, for both batch=1 and batch=4.
+  // Keep the larger pack available as an explicit experiment, but default to
+  // the occupancy-friendly 48 KiB policy.
+  const bool full_smem_enabled =
+      full_smem_override != nullptr && std::string(full_smem_override) == "1";
   key.hcu_full_smem = request.device_type == "hcu" && request.origin_rank == 3 &&
                       !request.real_transform && request.input_dtype == "complex128" &&
-                      leaf.length == 256 &&
-                      (full_smem_override == nullptr || std::string(full_smem_override) != "0");
+                      leaf.length == 256 && full_smem_enabled;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   // Same argument shape as the strided leaf: the permutation span rides in the
   // slot that carries outer_stride there, so the node is reused unchanged.
