@@ -133,8 +133,6 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // slightly improving the direct C550 2048-point 3D axis. Keep it off the
     // Bluestein convolution used by the 997-point transform.
     if (context.device_arch == "102" && n == 2048 && context.requested_n == n) {
-      const char *trial = std::getenv("FLAGFFT_MACA_3D_N2048_FACTORS");
-      if (trial != nullptr && std::string(trial) == "8x16x16") return {8, 16, 16};
       return {16, 8, 16};
     }
     if (n == 256) {
