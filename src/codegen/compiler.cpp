@@ -1775,7 +1775,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                         n2_leaf->num_warps, n2_leaf->generic_radices,
                                         n2_leaf->smem_size);
     key.kind = KernelKind::LeafR2CPermutedStore;
-    key.perm_form = "outer";
+    key.perm_form = hcu_3d_axis_perm_form(
+        request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
         DeviceAllocation{}, n1);
@@ -1802,7 +1803,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
     } else {
-      n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner",
+      const std::string n1_perm_form = hcu_3d_axis_perm_form(
+          request, "FLAGFFT_HCU_3D_MIDDLE_PACK", "inner_middle", "inner");
+      n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, n1_perm_form,
                                                 n1_strided_input);
     }
     n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, n0_perm_form);
