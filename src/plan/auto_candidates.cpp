@@ -111,13 +111,12 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
   const auto &context = request_context();
-  const char *maca_3d_997_conv = std::getenv("FLAGFFT_MACA_3D_997_CONV");
-  const bool maca_3d_997_pow2_conv =
-      context.device_type == "maca" && context.origin_rank == 3 && n == 997 &&
-      (context.input_dtype == "complex128" || context.input_dtype == "float64") &&
-      maca_3d_997_conv != nullptr && std::string(maca_3d_997_conv) == "2048";
-  if (maca_3d_997_pow2_conv) {
-    // Compare the C550's regular radix-2 convolution against the cost model's
+  const bool maca_c550_3d_997_fp64 =
+      context.device_type == "maca" && context.device_arch == "102" &&
+      context.origin_rank == 3 && n == 997 &&
+      (context.input_dtype == "complex128" || context.input_dtype == "float64");
+  if (maca_c550_3d_997_fp64) {
+    // C550's regular radix-2 convolution is faster than the cost model's
     // 2000-point mixed-radix choice for the rank-3 FP64 prime axis.
     conv_length = 2048;
   }
