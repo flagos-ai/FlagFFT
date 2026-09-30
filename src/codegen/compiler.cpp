@@ -46,13 +46,15 @@ namespace {
                : default_form;
   }
 
-  bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request) {
+  bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request, bool inverse) {
+    // The half-length boundary helped C2R, while it displaced the faster
+    // permuted-store R2C path. Keep this experiment inverse-only.
     if (request.device_type != "hcu" || request.origin_rank != 3) return false;
     const char *setting = std::getenv("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY");
     if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY must be 0 or 1");
     }
-    return setting != nullptr && std::string(setting) == "1";
+    return inverse && setting != nullptr && std::string(setting) == "1";
   }
 
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
@@ -93,7 +95,7 @@ namespace {
                                                           bool inverse) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
     const bool force = (setting != nullptr && std::string(setting) == "1") ||
-                       hcu_3d_packed_real_boundary_enabled(request);
+                       hcu_3d_packed_real_boundary_enabled(request, inverse);
     const bool disable = setting != nullptr && std::string(setting) == "0";
     const int64_t n = request.requested_n;
     if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") || n <= 0 ||
@@ -1825,7 +1827,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
-  const bool packed_real_boundary = !small && hcu_3d_packed_real_boundary_enabled(request);
+  const bool packed_real_boundary = !small &&
+                                    hcu_3d_packed_real_boundary_enabled(request, inverse);
   const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
   const bool c2r_fused_load_default = !(request.input_dtype == "complex64" && batch >= 4 &&
                                         n0 == 256 && n1 == 256 && n2 == 256);
