@@ -2824,19 +2824,6 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
       return n0_fft->execute(layout == Layout::FusedStore ? temp1.get() : temp2.get(), output, n0_context);
     }
 
-    if (layout == Layout::C2RMiddleStore) {
-      // The n0 leaf writes (n0,half,n1), so n1 is already contiguous and the
-      // intermediate transpose is unnecessary. Keep the final compact rows
-      // contiguous for the C2R boundary leaf.
-      launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch);
-      result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
-      if (result != FLAGFFT_SUCCESS) return result;
-      result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
-      if (result != FLAGFFT_SUCCESS) return result;
-      launch_perm3d(perm_third, context.stream, temp1.get(), temp2.get(), packed, batch);
-      return n2_real_fft->execute(temp2.get(), output, n2_context);
-    }
-
     // Axes commute, so the compact n1/n0 transforms can precede the real
     // inverse n2 boundary.  This also keeps the compact cube throughout.
     if (layout == Layout::FusedStore) {
