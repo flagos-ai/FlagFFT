@@ -1459,7 +1459,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   n1_request.input_strides = {n1, 1};
   n1_request.requested_n = n1;
   n1_request.batch = batch * n0 * n2;
-  if (request.device_type == "hcu" && n1 == 2048 &&
+  if (request.device_type == "hcu" && request.input_dtype == "complex64" && n1 == 2048 &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan)) {
     const char *middle_batch_pack = std::getenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK");
     if (middle_batch_pack != nullptr && *middle_batch_pack != '\0' &&
