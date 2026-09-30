@@ -1403,7 +1403,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // transpose beats the packed permuted-store leaf.  On MACA, the same hybrid
   // path is opt-in through FLAGFFT_3D_FUSED_STORE: the n1 permuted store has
   // only one batch slot under the shared-memory cap, so its stores stride by
-  // the full n0*n2 batch.  The short outer axes keep fused stores; their MACA
+  // the full n0*n2 batch.  MACA fuses only the first n2 store here; the n0
+  // store still loses to a contiguous leaf plus a tiled transpose.  Its n2
   // pack is 16 complex64 values to fill a C550 128-byte coalescing group.
   if ((request.device_type == "musa" ||
        (request.device_type == "maca" && fused_3d_store_enabled())) &&
@@ -1415,7 +1416,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
-    auto n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+    const bool maca_long_axis = request.device_type == "maca";
+    auto n0_fft = maca_long_axis
+        ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
+        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+    auto perm_201 = maca_long_axis
+        ? compile_transpose3d_kernel(request, n1, n2, n0, "201")
+        : nullptr;
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     return std::make_shared<CompiledRaw3DHybridNode>(n0,
@@ -1426,7 +1433,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(n0_fft),
                                                      std::move(perm_210),
                                                      std::move(temp1),
-                                                     std::move(temp2));
+                                                     std::move(temp2),
+                                                     std::move(perm_201));
   }
 
   // Fused fast path: each axis runs as a leaf whose store also applies the

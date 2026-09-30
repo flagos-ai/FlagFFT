@@ -1028,7 +1028,8 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
                           std::shared_ptr<CompiledRawNode> n0_fft,
                           std::shared_ptr<JitKernel> perm_210,
                           DeviceAllocation temp1,
-                          DeviceAllocation temp2);
+                          DeviceAllocation temp2,
+                          std::shared_ptr<JitKernel> perm_201 = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1041,6 +1042,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_201;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };
