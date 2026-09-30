@@ -129,6 +129,15 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       if (trial != nullptr && std::string(trial) == "4x8") return {4, 8};
       if (trial != nullptr && std::string(trial) == "8x4") return {8, 4};
     }
+    // Screen the direct 2048-point axis factor order inside the FP64
+    // Bluestein convolution for the 997-point 3D policy. This is opt-in so
+    // ordinary 997 plans keep the established convolution factorization.
+    if (context.device_arch == "102" && n == 2048 &&
+        context.requested_n == 997 &&
+        (context.input_dtype == "complex128" || context.input_dtype == "float64")) {
+      const char *trial = std::getenv("FLAGFFT_MACA_3D_997_CONV_FACTORS");
+      if (trial != nullptr && std::string(trial) == "16x8x16") return {16, 8, 16};
+    }
     // This order retains the 128 collaboration lanes and 4-warps block while
     // slightly improving the direct C550 2048-point 3D axis. Keep it off the
     // Bluestein convolution used by the 997-point transform.
