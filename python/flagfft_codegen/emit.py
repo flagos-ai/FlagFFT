@@ -69,7 +69,6 @@ from .registry import (
     kernel_spec,
     module_name_for,
 )
-from .target import backend_name
 
 _BLUESTEIN_BLOCK = 256
 _BLUESTEIN_NUM_WARPS = 4
@@ -607,19 +606,11 @@ def emit_jit_kernel(
                 length, dtype, inverse=(kernel == "direct_dft_c2r")
             )
         else:
-            strided_direct_dft = kernel == "direct_dft_strided"
-            reduction_tile = 32
-            if strided_direct_dft and backend_name() == "npu":
-                # Ascend's local UB cannot hold the default 32-by-N reduction
-                # tile for strided columns. Bound the live reduction tile by
-                # N while keeping the contiguous DirectDFT mapping unchanged.
-                reduction_tile = 8 if length >= 128 else 16 if length >= 64 else 32
             kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
                 length,
                 direction,
                 dtype,
-                strided=strided_direct_dft,
-                reduction_tile=reduction_tile,
+                strided=(kernel == "direct_dft_strided"),
             )
         n1 = 0
         n2 = 0

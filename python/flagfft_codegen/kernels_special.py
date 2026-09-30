@@ -30,16 +30,13 @@ def _build_direct_dft_kernel_source(
     dtype: str,
     *,
     strided: bool = False,
-    reduction_tile: int = 32,
 ) -> tuple[str, str, list[str]]:
-    if reduction_tile not in (8, 16, 32):
-        raise ValueError("DirectDFT reduction tile must be 8, 16 or 32")
     block = lane_block_for(n)
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     suffix = _dtype_suffix(dtype)
     prefix = "direct_idft" if direction == "inverse" else "direct_dft"
     kernel_name = (
-        f"{prefix}_strided_kernel_n{n}_{suffix}_b{block}_r{reduction_tile}"
+        f"{prefix}_strided_kernel_n{n}_{suffix}_b{block}"
         if strided
         else f"{prefix}_kernel_n{n}_{suffix}_b{block}"
     )
@@ -66,8 +63,8 @@ def _build_direct_dft_kernel_source(
                 acc_i += xr * wi + xi * wr
     """
     loop = f"""
-            for j_base in tl.static_range(0, {n}, {reduction_tile}):
-                j = j_base + tl.arange(0, {reduction_tile})[:, None]
+            for j_base in tl.static_range(0, {n}, 32):
+                j = j_base + tl.arange(0, 32)[:, None]
                 j_mask = j < {n}
                 xr = tl.load(
                     in_ptr + ({in_placeholder}) * 2,
