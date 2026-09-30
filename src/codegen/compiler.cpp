@@ -1800,7 +1800,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     auto plane_fft = compile_kernel(key);
     std::shared_ptr<CompiledRawNode> outer_fft;
     if (n0 == 32 && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", true)) {
-      const int64_t columns = batch == 1 && flag_or_default("FLAGFFT_IX_3D_REAL_COLUMN8", false) ? 8 : 16;
+      const int64_t columns = batch == 1 && flag_or_default("FLAGFFT_IX_3D_REAL_COLUMN8", true) ? 8 : 16;
       auto column_kernel = compile_kernel(KernelKey::fused_32_column(
           triton_target_for_request(request), request.direction, request.input_dtype, columns));
       outer_fft = std::make_shared<CompiledRaw3DColumnNode>(
