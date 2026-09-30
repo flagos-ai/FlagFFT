@@ -1431,6 +1431,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       request.device_type == "maca" && request.input_dtype == "complex128";
   const bool first_store_dtype_supported = request.input_dtype == "complex64" ||
       maca_first_store_fp64_enabled;
+  // Experimental exact-shape C2C path: let the n0 leaf write natural output
+  // order and remove the final perm_201 transpose. Keep it opt-in until its
+  // correctness and end-to-end performance are measured on C550.
+  const bool maca_final_store_enabled = request.device_type == "maca" &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_FINAL_STORE", false) &&
+      n0 == 128 && n1 == 2048 && n2 == 64 &&
+      request.input_dtype == "complex64";
   const bool use_long_axis_hybrid =
       (request.device_type == "musa" && fused_3d_store_enabled()) ||
       maca_first_store_enabled;
@@ -1444,9 +1451,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
     const bool maca_long_axis = request.device_type == "maca";
     auto n0_fft = maca_long_axis
-        ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
+        ? (maca_final_store_enabled
+               ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer")
+               : compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2))
         : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
-    auto perm_201 = maca_long_axis
+    auto perm_201 = maca_long_axis && !maca_final_store_enabled
         ? compile_transpose3d_kernel(request, n1, n2, n0, "201")
         : nullptr;
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
