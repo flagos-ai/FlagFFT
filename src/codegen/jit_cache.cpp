@@ -379,11 +379,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
-  const char *middle_batch_pack_env = std::getenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK");
-  if (key.hcu_3d_middle_batch_pack > 0 &&
-      (middle_batch_pack_env == nullptr || *middle_batch_pack_env == '\0')) {
-    jit_command << "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK=" << key.hcu_3d_middle_batch_pack << " ";
-  }
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(request_dir.string()) << " --dtype "
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "

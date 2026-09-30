@@ -120,9 +120,6 @@ struct FFTRequest {
   bool requires_contiguous_copy = false;
   std::string direction = "forward";
   int64_t batch = 0;
-  // Optional HCU 3D middle-axis leaf packing selected by the parent plan.
-  // Zero leaves the generic metadata policy in control.
-  int64_t hcu_3d_middle_batch_pack = 0;
 };
 
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim, ThreeDim };

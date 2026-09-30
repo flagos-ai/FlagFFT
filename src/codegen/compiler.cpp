@@ -933,7 +933,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                   leaf.num_warps,
                                   leaf.generic_radices,
                                   leaf.smem_size);
-  key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   return std::make_shared<CompiledRawLeafNode>(leaf.length,
                                                std::move(kernel),
@@ -1459,9 +1458,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   n1_request.input_strides = {n1, 1};
   n1_request.requested_n = n1;
   n1_request.batch = batch * n0 * n2;
-  if (request.device_type == "hcu" && n1 == 2048 && std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan)) {
-    n1_request.hcu_3d_middle_batch_pack = 16;
-  }
 
   FFTRequest n0_request = request;
   n0_request.fft_length = n0;

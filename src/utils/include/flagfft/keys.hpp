@@ -94,7 +94,6 @@ struct KernelKey {
   std::string transpose3d_order;
   std::string perm_form = "outer";
   bool hcu_full_smem = false;
-  int64_t hcu_3d_middle_batch_pack = 0;
 
   static KernelKey fused_16_plane(std::string target, std::string direction, std::string dtype);
   static KernelKey fused_16_cube(std::string target, std::string direction, std::string dtype);
