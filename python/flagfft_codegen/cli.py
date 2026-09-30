@@ -317,7 +317,8 @@ def main() -> None:
             metadata = emit_fused_plane_kernel(
                 n=16 if args.kernel.startswith("fused_16_") else 32,
                 real_input="real" in args.kernel,
-                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+                target=args.target,
             )
     elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:

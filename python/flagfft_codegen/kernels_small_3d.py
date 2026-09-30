@@ -25,7 +25,8 @@ from .metadata import _module_source, _signature
 
 
 def emit_fused_plane_kernel(
-    *, n: int, dtype: str, direction: str, out_dir: Path, real_input: bool = False
+    *, n: int, dtype: str, direction: str, out_dir: Path,
+    real_input: bool = False, target: str = ""
 ) -> dict:
     """Emit a small square plane FFT; one block owns one complete plane.
 
