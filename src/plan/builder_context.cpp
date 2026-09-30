@@ -117,7 +117,6 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   const bool npu_fourstep_operator = request.device_type == "npu" &&
                                      request.raw_dim == 1 && request.origin_rank == 1 &&
                                      request.requested_n == n &&
-                                     (request.batch == 1 || request.batch == 64) &&
                                      (request.input_dtype == "complex64" ||
                                       request.output_dtype == "complex64");
   if (npu_fourstep_operator) {
