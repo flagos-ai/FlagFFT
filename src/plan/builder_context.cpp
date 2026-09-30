@@ -99,8 +99,19 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      return std::make_shared<FourStepPlanNode>(
-          n, n1, n2, build_auto_node(n1, false), build_auto_node(n2, false));
+      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
+        const auto row_factors = select_leaf_factors(n1);
+        const auto col_factors = select_leaf_factors(n2);
+        if (!should_use_leaf(n1, row_factors) || !should_use_leaf(n2, col_factors)) {
+          throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_LEAF requires two supported leaf lengths");
+        }
+        return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                  make_leaf_plan(n1, row_factors),
+                                                  make_leaf_plan(n2, col_factors));
+      }
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
     }
   }
   const auto experiments = detail::maca_tail_plans(n, request, false);
