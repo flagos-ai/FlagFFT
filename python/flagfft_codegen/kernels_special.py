@@ -135,21 +135,18 @@ def _build_direct_dft_kernel_source(
                 column_tile_index = program_in_matrix - k * columns_per_matrix
                 columns = column_tile_index * {column_tile} + tl.arange(0, {column_tile})
                 base = matrix_index * ({n} * outer_stride)
-                j_offsets = tl.arange(0, {reduction_tile})[:, None]
                 column_mask = columns < outer_stride
                 acc_r = tl.zeros(({column_tile},), dtype={acc_dtype})
                 acc_i = tl.zeros(({column_tile},), dtype={acc_dtype})
-                for j_base in tl.static_range(0, {n}, {reduction_tile}):
-                    j = j_base + j_offsets
-                    j_mask = j < {n}
-                    src = in_ptr + (base + j * outer_stride + columns[None, :]) * 2
-                    xr = tl.load(src, mask=j_mask & column_mask[None, :], other=0.0)
-                    xi = tl.load(src + 1, mask=j_mask & column_mask[None, :], other=0.0)
-                    twiddle_offsets = j * {n} + k
-                    wr = tl.load(dft_r_ptr + twiddle_offsets, mask=j_mask, other=0.0)
-                    wi = tl.load(dft_i_ptr + twiddle_offsets, mask=j_mask, other=0.0)
-                    acc_r += tl.sum(xr * wr - xi * wi, axis=0)
-                    acc_i += tl.sum(xr * wi + xi * wr, axis=0)
+                for j in tl.static_range(0, {n}):
+                    src = in_ptr + (base + j * outer_stride + columns) * 2
+                    xr = tl.load(src, mask=column_mask, other=0.0)
+                    xi = tl.load(src + 1, mask=column_mask, other=0.0)
+                    twiddle_offset = j * {n} + k
+                    wr = tl.load(dft_r_ptr + twiddle_offset)
+                    wi = tl.load(dft_i_ptr + twiddle_offset)
+                    acc_r += xr * wr - xi * wi
+                    acc_i += xr * wi + xi * wr
                 dst = out_ptr + (base + k * outer_stride + columns) * 2
                 tl.store(dst, acc_r, mask=column_mask)
                 tl.store(dst + 1, acc_i, mask=column_mask)

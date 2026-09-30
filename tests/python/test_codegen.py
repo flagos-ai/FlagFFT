@@ -714,7 +714,8 @@ def test_strided_direct_dft_kernel_source_generation(kernels) -> None:
         reduction_tile=16, column_tile=32,
     )
     assert "columns = column_tile_index * 32 + tl.arange(0, 32)" in coalesced_source
-    assert "tl.sum(xr * wr - xi * wi, axis=0)" in coalesced_source
+    assert "for j in tl.static_range(0, 64)" in coalesced_source
+    assert "tl.sum(" not in coalesced_source
 
 
 def test_tiled_transpose_uses_register_transpose(kernels) -> None:
