@@ -45,7 +45,6 @@ from .registry import (
     STRIDED_FOUR_STEP_KERNELS,
     is_four_step_twiddle_eligible,
 )
-from .target import backend_name
 
 
 def _pointer_signature(dtype: str) -> str:
@@ -154,8 +153,12 @@ def _metadata(
     profile = current_profile()
     num_warps = profile.planner_warps(int(plan.num_warps))
     if dtype == "complex64" and (
-        kernel_type in {"direct_dft", "direct_dft_r2c", "direct_dft_c2r"}
-        or (kernel_type == "direct_dft_strided" and backend_name() == "npu")
+        kernel_type in {
+            "direct_dft",
+            "direct_dft_strided",
+            "direct_dft_r2c",
+            "direct_dft_c2r",
+        }
     ):
         num_warps = 4
     if tle_fused_twiddle:
