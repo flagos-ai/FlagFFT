@@ -78,7 +78,7 @@ _COMPLEX_PAIR_OFFSETS = "_fft_pair_offsets"
 
 
 def _portable_complex_vector_io() -> bool:
-    """Whether to vectorize complex IO with a ``[..., 2]`` block.
+    """Whether to vectorize complex IO on MACA.
 
     The scalar form issues two 4-byte accesses per complex element, which is
     limited by load/store throughput rather than DRAM.  A block whose
@@ -89,6 +89,14 @@ def _portable_complex_vector_io() -> bool:
     return _maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"}
 
 
+def _packed_maca_fp32_complex_io(dtype: str) -> bool:
+    return (
+        dtype == "complex64"
+        and _maca_backend_active()
+        and _maca_knob("VEC_IO", "0") == "packed"
+    )
+
+
 def _emit_vectorized_complex_load(
     indent: str,
     ptr: str,
@@ -96,6 +104,15 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
+    if _packed_maca_fp32_complex_io(dtype):
+        pair = "_packed_pair_" + dest.split(",")[0].strip()
+        real, imag = (name.strip() for name in dest.split(","))
+        return [
+            f"{indent}{pair} = tl.load(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), "
+            f"mask={mask}, other=0)",
+            f"{indent}{real} = tl.cast(tl.cast({pair}, tl.uint32), tl.float32, bitcast=True)",
+            f"{indent}{imag} = tl.cast(tl.cast({pair} >> 32, tl.uint32), tl.float32, bitcast=True)",
+        ]
     if _portable_complex_vector_io():
         pair = "_pair_" + dest.split(",")[0].strip()
         return [
@@ -129,6 +146,14 @@ def _emit_vectorized_complex_store(
     mask: str,
     dtype: str,
 ) -> list[str]:
+    if _packed_maca_fp32_complex_io(dtype):
+        pair = "_packed_store_" + r_name
+        return [
+            f"{indent}{pair} = tl.cast(tl.cast({r_name}, tl.uint32, bitcast=True), tl.uint64) "
+            f"| (tl.cast(tl.cast({i_name}, tl.uint32, bitcast=True), tl.uint64) << 32)",
+            f"{indent}tl.store(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), {pair}, "
+            f"mask={mask})",
+        ]
     if _portable_complex_vector_io():
         return [
             f"{indent}tl.store(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
@@ -1091,7 +1116,10 @@ def _emit_stage_block(
     lines: list[str] = []
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
-    vector_io_allowed = not _non_nvidia_backend_active() or _portable_complex_vector_io()
+    vector_io_allowed = not _non_nvidia_backend_active() or (
+        _portable_complex_vector_io()
+        and (_maca_knob("VEC_IO", "0") != "packed" or dtype == "complex64")
+    )
     vectorized_four_step_complex_io = (
         io_mode
         in {
