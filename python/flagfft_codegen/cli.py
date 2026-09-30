@@ -237,6 +237,7 @@ def main() -> None:
         u64_load = os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1")
         first_pack = os.getenv("FLAGFFT_HCU_3D_FIRST_PACK", "auto")
         middle_pack = os.getenv("FLAGFFT_HCU_3D_MIDDLE_PACK", "auto")
+        middle_batch_pack = os.getenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
         final_warps = os.getenv("FLAGFFT_HCU_3D_FINAL_WARPS", "auto")
         final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
         smem_swizzle = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "0")
@@ -262,6 +263,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_FIRST_PACK must be auto, 1, 2, 4, 8, 16 or 32")
         if middle_pack not in valid_packs:
             parser.error("FLAGFFT_HCU_3D_MIDDLE_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+        if middle_batch_pack not in {"auto", "1", "2", "4", "8"}:
+            parser.error("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4 or 8")
         if final_warps not in {"auto", "1", "2", "4", "8"}:
             parser.error("FLAGFFT_HCU_3D_FINAL_WARPS must be auto, 1, 2, 4 or 8")
         if final_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
@@ -275,6 +278,7 @@ def main() -> None:
                         f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
                         f"-full-smem-{full_smem}-key-full-{int(args.hcu_3d_full_smem)}"
                         f"-u64-load-{u64_load}-first-pack-{first_pack}-middle-pack-{middle_pack}"
+                        f"-middle-batch-pack-{middle_batch_pack}"
                         f"-final-warps-{final_warps}-final-pack-{final_pack}"
                         f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
     args.out_dir = args.out_dir / profile_dir
