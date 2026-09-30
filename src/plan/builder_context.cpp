@@ -114,22 +114,31 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n1, false), build_auto_node(n2, false));
     }
   }
-  const bool measured_npu_single_c2c =
-      request.device_type == "npu" &&
-      request.raw_dim == 1 && request.origin_rank == 1 && request.requested_n == n &&
-      request.batch == 1 && !request.real_transform &&
-      request.input_dtype == "complex64" && request.output_dtype == "complex64";
-  if (measured_npu_single_c2c && n == 185640) {
-    // Split the 524288-point root Bluestein convolution into a smooth 420
-    // Stockham child and a 442-point Bluestein child (1024 convolution).
-    return std::make_shared<FourStepPlanNode>(n, 420, 442,
-                                              build_auto_node(420, false), build_auto_node(442, false));
-  }
-  if (measured_npu_single_c2c && n == 663000) {
-    // Replace the 2097152-point root Bluestein convolution with a 663-point
-    // Bluestein child (2048 convolution) and a smooth 1000-point child.
-    return std::make_shared<FourStepPlanNode>(n, 663, 1000,
-                                              build_auto_node(663, false), build_auto_node(1000, false));
+  const bool npu_fourstep_operator = request.device_type == "npu" &&
+                                     request.raw_dim == 1 && request.origin_rank == 1 &&
+                                     request.requested_n == n &&
+                                     (request.batch == 1 || request.batch == 64) &&
+                                     (request.input_dtype == "complex64" ||
+                                      request.output_dtype == "complex64");
+  if (npu_fourstep_operator) {
+    // Keep the existing 1D FourStep operator family on a FourStep plan root
+    // for every transform type and batch mode. These splits also avoid making
+    // the full root a Bluestein convolution for the largest awkward lengths.
+    int64_t n1 = 0;
+    switch (n) {
+      case 16384: n1 = 128; break;
+      case 46189: n1 = 209; break;
+      case 185640: n1 = 420; break;
+      case 340200: n1 = 567; break;
+      case 524288: n1 = 512; break;
+      case 663000: n1 = 663; break;
+      default: break;
+    }
+    if (n1 != 0) {
+      const int64_t n2 = n / n1;
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
+    }
   }
   const auto experiments = detail::maca_tail_plans(n, request, false);
   if (!experiments.empty()) {

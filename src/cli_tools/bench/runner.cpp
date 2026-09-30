@@ -381,10 +381,10 @@ BenchResult run_benchmark(const CaseSpec& spec, int warmup, int iters, bool incl
     if (spec.placement == Placement::InPlace) seed_input(ff_in, layout, spec);
   };
   auto reset_reference_input = [&]() {
-    // SiP may modify out-of-place input for large power-of-two horizontal FFTs.
+    // SiP may modify out-of-place input for larger power-of-two horizontal FFTs.
     const int n = layout.innermost;
     const bool sip_mutates_input = test_adaptor::backend_name() == "npu-sip" &&
-                                   spec.rank == 1 && n >= 32768 && (n & (n - 1)) == 0;
+                                   spec.rank == 1 && n >= 16384 && (n & (n - 1)) == 0;
     if (spec.placement != Placement::InPlace && !sip_mutates_input) return;
     if (reference_uses_host_memory) {
       ref_host_in = ref_host_seed;
