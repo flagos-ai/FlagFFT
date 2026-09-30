@@ -100,7 +100,8 @@ struct KernelKey {
   static KernelKey fused_32_real_plane(std::string target, std::string direction, std::string dtype);
   static KernelKey fused_16_cube(std::string target, std::string direction, std::string dtype);
   static KernelKey fused_16_real_cube(std::string target, std::string direction, std::string dtype);
-  static KernelKey fused_32_column(std::string target, std::string direction, std::string dtype);
+  static KernelKey fused_32_column(std::string target, std::string direction, std::string dtype,
+                                   int64_t columns = 16);
 
   static KernelKey leaf(std::string target,
                         std::string direction,

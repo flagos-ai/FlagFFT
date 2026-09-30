@@ -305,7 +305,8 @@ def main() -> None:
     elif spec.family == SMALL_3D:
         if args.kernel == "fused_32_column":
             metadata = emit_fused_32_column_kernel(
-                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+                columns=args.length or 16,
             )
         elif args.kernel.endswith("cube"):
             metadata = emit_fused_16_cube_kernel(

@@ -1577,7 +1577,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       auto column_kernel = compile_kernel(KernelKey::fused_32_column(
           triton_target_for_request(request), request.direction, request.input_dtype));
       outer_fft = std::make_shared<CompiledRaw3DColumnNode>(
-          fused_size * fused_size, std::move(column_kernel),
+          fused_size * fused_size, 16, std::move(column_kernel),
           adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end())),
           adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end())));
     } else {
@@ -1800,10 +1800,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     auto plane_fft = compile_kernel(key);
     std::shared_ptr<CompiledRawNode> outer_fft;
     if (n0 == 32 && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", true)) {
+      const int64_t columns = batch == 1 && flag_or_default("FLAGFFT_IX_3D_REAL_COLUMN8", false) ? 8 : 16;
       auto column_kernel = compile_kernel(KernelKey::fused_32_column(
-          triton_target_for_request(request), request.direction, request.input_dtype));
+          triton_target_for_request(request), request.direction, request.input_dtype, columns));
       outer_fft = std::make_shared<CompiledRaw3DColumnNode>(
-          n1 * half, std::move(column_kernel),
+          n1 * half, columns, std::move(column_kernel),
           adaptor::Memory::from_floats(tw_r), adaptor::Memory::from_floats(tw_i));
     } else {
       outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);

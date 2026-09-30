@@ -1048,7 +1048,7 @@ struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
 };
 
 struct CompiledRaw3DColumnNode final : CompiledRawNode {
-  CompiledRaw3DColumnNode(int64_t outer_stride,
+  CompiledRaw3DColumnNode(int64_t outer_stride, int64_t columns,
                           std::shared_ptr<JitKernel> kernel,
                           DeviceAllocation tw_r,
                           DeviceAllocation tw_i);
@@ -1058,6 +1058,7 @@ struct CompiledRaw3DColumnNode final : CompiledRawNode {
   std::string describe() const override;
 
   int64_t outer_stride;
+  int64_t columns;
   std::shared_ptr<JitKernel> kernel;
   DeviceAllocation tw_r;
   DeviceAllocation tw_i;

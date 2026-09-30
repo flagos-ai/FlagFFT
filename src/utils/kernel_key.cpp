@@ -76,13 +76,14 @@ KernelKey KernelKey::fused_16_real_cube(std::string target, std::string directio
   return key;
 }
 
-KernelKey KernelKey::fused_32_column(std::string target, std::string direction, std::string dtype) {
+KernelKey KernelKey::fused_32_column(std::string target, std::string direction,
+                                      std::string dtype, int64_t columns) {
   KernelKey key;
   key.kind = KernelKind::Fused32Column;
   key.target = std::move(target);
   key.direction = std::move(direction);
   key.dtype = std::move(dtype);
-  key.length = 32;
+  key.length = columns;
   return key;
 }
 

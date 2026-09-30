@@ -268,18 +268,22 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     return metadata
 
 
-def emit_fused_32_column_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
-    """Transform 32 outer-axis points for sixteen adjacent output columns."""
+def emit_fused_32_column_kernel(
+    *, dtype: str, direction: str, out_dir: Path, columns: int = 16
+) -> dict:
+    """Transform 32 outer-axis points for adjacent output columns."""
+    if columns not in (8, 16):
+        raise ValueError("fused 32-column kernel supports tiles of 8 or 16 columns")
     quarter_r, quarter_i = ("bi", "-br") if direction == "forward" else ("-bi", "br")
     source = f"""
 @triton.jit
 def fused_32_column_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr, outer_stride):
     tile = tl.program_id(0)
     batch = tl.program_id(1)
-    idx = tl.arange(0, 512)
-    row = idx // 16
-    col = tile * 16 + idx % 16
-    reverse_row = tl.full((512,), 0, tl.int32)
+    idx = tl.arange(0, {32 * columns})
+    row = idx // {columns}
+    col = tile * {columns} + idx % {columns}
+    reverse_row = tl.full(({32 * columns},), 0, tl.int32)
     for bit in tl.static_range(5):
         reverse_row = (reverse_row << 1) | ((row >> bit) & 1)
     src = (batch * 32 * outer_stride + reverse_row * outer_stride + col) * 2
@@ -288,7 +292,7 @@ def fused_32_column_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr, outer_stride
     xi = tl.load(in_ptr + src + 1, mask=valid, other=0.0)
 
     for stage in tl.static_range(5):
-        partner = idx ^ (16 << stage)
+        partner = idx ^ ({columns} << stage)
         pr = tl.gather(xr, partner, 0)
         pi = tl.gather(xi, partner, 0)
         upper = (row & (1 << stage)) != 0
@@ -315,7 +319,7 @@ def fused_32_column_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr, outer_stride
     tl.store(out_ptr + dst, xr, mask=valid)
     tl.store(out_ptr + dst + 1, xi, mask=valid)
 """
-    name = f"flagfft_jit_fused_32_column_{direction}_{_dtype_suffix(dtype)}"
+    name = f"flagfft_jit_fused_32_column_{columns}_{direction}_{_dtype_suffix(dtype)}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))

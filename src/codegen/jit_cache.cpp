@@ -500,6 +500,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::Fused32Column) {
     jit_command << " --direction " << shell_quote(key.direction);
   }
+  if (key.kind == KernelKind::Fused32Column) {
+    jit_command << " --length " << key.length;
+  }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
