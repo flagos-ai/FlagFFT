@@ -191,7 +191,11 @@ def _metadata(
         # the measured two-warp launch retains the one-kernel benefit.
         num_warps = 2
     if profile.backend == "hcu" and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store"}:
+        is_final_axis = "permuted_store_outer_last_" in kernel_name
+        final_warps = os.environ.get("FLAGFFT_HCU_3D_FINAL_WARPS") if is_final_axis else None
         fused_warps = os.environ.get("FLAGFFT_HCU_3D_FUSED_WARPS")
+        if final_warps not in (None, "auto"):
+            fused_warps = final_warps
         if fused_warps is not None:
             try:
                 num_warps = int(fused_warps)

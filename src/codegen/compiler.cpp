@@ -1604,9 +1604,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, "outer");
     std::shared_ptr<CompiledRawNode> n1_fft =
         compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
-    std::shared_ptr<CompiledRawNode> n0_fft = last_transpose
-        ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
-        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, /*perm_span=*/n1 * n2, "outer");
+    const char *final_warps_override = std::getenv("FLAGFFT_HCU_3D_FINAL_WARPS");
+    const bool final_warps_enabled = request.device_type == "hcu" &&
+                                     final_warps_override != nullptr &&
+                                     std::string(final_warps_override) != "auto";
+    const std::string n0_perm_form = final_warps_enabled ? "outer_last" : "outer";
+    std::shared_ptr<CompiledRawNode> n0_fft =
+        last_transpose ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
+                       : compile_raw_permuted_store_leaf(*n0_leaf,
+                                                         n0_request,
+                                                         /*perm_span=*/n1 * n2,
+                                                         n0_perm_form);
 
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
