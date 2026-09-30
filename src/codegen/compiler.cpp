@@ -1400,19 +1400,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   }
 
   // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
-  // transpose beats the packed permuted-store leaf.  Keep the corresponding
-  // MACA path opt-in for A/B testing: its fused stores are slower in the
-  // general 3D path, but fusing only the short outer axes may still save two
-  // full-array transposes on the long-axis shape.  FP64 remains on the
-  // separate-transpose path.  The axes commute for inverse.
-  const bool use_musa_hybrid =
-      request.device_type == "musa" && fused_3d_store_enabled();
-  const bool use_maca_hybrid =
-      request.device_type == "maca" &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_HYBRID", false);
-  if ((use_musa_hybrid || use_maca_hybrid) &&
-      request.input_dtype == "complex64" && n2_leaf && n1_leaf && n0_leaf &&
-      n1 >= 1024 && n1 >= 4 * std::max(n0, n2) &&
+  // transpose beats the packed permuted-store leaf.  FP64 measured slower
+  // with this exchange, so it stays on the fully fused path.  The short
+  // outer axes keep their fused stores, and the axes commute for inverse.
+  if (request.device_type == "musa" && request.input_dtype == "complex64" &&
+      n2_leaf && n1_leaf && n0_leaf &&
+      fused_3d_store_enabled() && n1 >= 1024 &&
+      n1 >= 4 * std::max(n0, n2) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
