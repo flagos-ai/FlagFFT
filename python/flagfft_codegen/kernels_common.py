@@ -496,6 +496,17 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
     smem_pack = max(
         1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
     )
+    if (
+        _maca_backend_active()
+        and maca_3d_default_enabled()
+        and plan.length == 2048
+        and plan.dtype == "complex64"
+    ):
+        override = os.getenv("FLAGFFT_MACA_3D_N2048_PERM_PACK")
+        if override is not None:
+            if override not in {"1", "2"}:
+                raise ValueError("FLAGFFT_MACA_3D_N2048_PERM_PACK must be 1 or 2")
+            return int(override)
     target_pack = 2 if _mthreads_backend_active() and _is_double_dtype(plan.dtype) else 4
     if _mthreads_backend_active():
         override = os.getenv("FLAGFFT_MUSA_3D_PACK")

@@ -1,7 +1,12 @@
 """MACA rank-3 packing remains scoped to rank-3 code generation."""
 
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
-from flagfft_codegen.kernels_common import LeafPlan, _maca_knob, contiguous_batch_pack_for
+from flagfft_codegen.kernels_common import (
+    LeafPlan,
+    _maca_knob,
+    contiguous_batch_pack_for,
+    permuted_store_batch_pack_for,
+)
 from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 
 
@@ -77,6 +82,36 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         assert fp64["num_warps"] == 4
     finally:
         set_codegen_target("")
+
+
+def test_maca_3d_n2048_permuted_store_pack_override(monkeypatch):
+    from flagfft_codegen.target import set_codegen_target
+
+    profile = set_profile(
+        BackendProfile.from_device(
+            {"backend": "maca", "device_arch": "102", "warp_size": 64,
+             "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536}
+        )
+    )
+    plan = LeafPlan(2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex64")
+    set_codegen_target("maca:102:64")
+    on = set_maca_3d_default(True)
+    try:
+        monkeypatch.delenv("FLAGFFT_MACA_3D_N2048_PERM_PACK", raising=False)
+        assert permuted_store_batch_pack_for(plan) == 1
+        monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_PERM_PACK", "2")
+        assert permuted_store_batch_pack_for(plan) == 2
+        monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_PERM_PACK", "4")
+        try:
+            permuted_store_batch_pack_for(plan)
+        except ValueError as error:
+            assert "FLAGFFT_MACA_3D_N2048_PERM_PACK must be 1 or 2" in str(error)
+        else:
+            raise AssertionError("unsupported n2048 permuted-store pack was accepted")
+    finally:
+        reset_maca_3d_default(on)
+        set_codegen_target("")
+        reset_profile(profile)
 
 
 def test_maca_leaf_warp_override_is_validated(monkeypatch):
