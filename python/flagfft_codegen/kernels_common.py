@@ -453,12 +453,6 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
                 return 2
             if plan.length == 256 and plan.dtype == "complex128":
                 return 2
-            # The long 2048-point middle-axis leaf otherwise launches one
-            # transform per CTA despite its four-warp block.  Pack two rows
-            # to improve useful work per CTA on C550; keep FP64 unchanged
-            # because its register footprint is larger.
-            if plan.length == 2048 and plan.dtype == "complex64":
-                return 2
         if maca_1d_batch_default_enabled() and plan.length == 16:
             return 1
         # Native 2D only emits these fused real boundary leaves when n0 > 256.
