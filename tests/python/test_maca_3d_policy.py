@@ -77,14 +77,16 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         assert fp64["num_warps"] == 4
     finally:
         set_codegen_target("")
+
+
 def test_maca_environment_fingerprint_separates_variants():
     from flagfft_codegen.cli import _maca_environment_fingerprint
 
-    pack8 = {"FLAGFFT_MACA_3D_N32_PACK": "8"}
-    pack16 = {"FLAGFFT_MACA_3D_N32_PACK": "16"}
+    pack1 = {"FLAGFFT_MACA_3D_N128_PACK": "1"}
+    pack4 = {"FLAGFFT_MACA_3D_N128_PACK": "4"}
     other_backend = {"FLAGFFT_IX_WARPS": "4"}
     assert _maca_environment_fingerprint({}) == ""
-    assert _maca_environment_fingerprint(pack8) != _maca_environment_fingerprint(pack16)
-    assert _maca_environment_fingerprint(pack8) == _maca_environment_fingerprint(
-        {**pack8, **other_backend}
+    assert _maca_environment_fingerprint(pack1) != _maca_environment_fingerprint(pack4)
+    assert _maca_environment_fingerprint(pack1) == _maca_environment_fingerprint(
+        {**pack1, **other_backend}
     )
