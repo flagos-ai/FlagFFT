@@ -1141,6 +1141,11 @@ def case_skip_reason(case: dict, backend: str) -> str | None:
         return "SiP FFT does not support in-place transforms."
     if rank not in (1, 2, 3) or len(shape) != rank:
         return f"SiP FFT does not implement rank-{rank} plans."
+    if rank == 1 and shape == (16384,) and int(case["batch"]) == 64 and case["api"] == "c2c":
+        return (
+            "SiP C2C n=16384 batch=64 produced intermittent incorrect batch outputs in repeated "
+            "CANN 9 runs; platform accuracy and performance are not a reliable baseline."
+        )
     if any(n <= 0 or n > 2**27 for n in shape):
         return "SiP FFT limits each dimension to the range [1, 2^27]."
     if any(factor > 199 for n in shape for factor in _prime_factors(n)):

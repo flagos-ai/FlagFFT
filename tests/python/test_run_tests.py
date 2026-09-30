@@ -284,6 +284,22 @@ def test_npu_sip_case_policy_limits(operators, matrix):
                for case in supported)
 
 
+def test_npu_sip_skips_intermittent_16384_batched_c2c_reference():
+    case = {
+        "api": "c2c",
+        "rank": 1,
+        "shape": [16384],
+        "batch": 64,
+        "placement": "out-of-place",
+    }
+    reason = RUN_TESTS.case_skip_reason(case, "npu")
+    assert reason is not None
+    assert "intermittent incorrect batch outputs" in reason
+
+    case["batch"] = 1
+    assert RUN_TESTS.case_skip_reason(case, "npu") is None
+
+
 def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
     op = next(op for op in operators if op["id"] == "2d_c2c")
     case = {
