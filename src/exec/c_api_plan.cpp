@@ -322,7 +322,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       const char *large_graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH_LARGE");
       const int64_t graph_max_elements = large_graph_override != nullptr &&
                                           std::string(large_graph_override) == "1"
-                                              ? 32 * 1024 * 1024
+                                              ? 4 * 1024 * 1024
                                               : 64 * 64 * 64;
       const bool graph_allowed = plan->executable.forward_request.device_type == "hcu" &&
                                  plan->desc.batch * three_dim->n0 * three_dim->n1 * three_dim->n2 <=
