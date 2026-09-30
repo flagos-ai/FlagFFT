@@ -2881,7 +2881,8 @@ def _build_leaf_kernel_source_for_io(
     elif io_mode == "contiguous_r2c":
         kernel_name = f"r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "permuted_r2c":
-        kernel_name = f"r2c_permuted_store_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+        perm_tag = f"_{perm_form}" if perm_form != "outer" else ""
+        kernel_name = f"r2c_permuted_store{perm_tag}_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "packed_r2c":
         kernel_name = f"packed_r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
