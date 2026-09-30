@@ -31,6 +31,16 @@ namespace {
     return "outer";
   }
 
+  std::string hcu_3d_axis_perm_form(const FFTRequest &request,
+                                    const char *pack_knob,
+                                    const char *tagged_form,
+                                    const char *default_form) {
+    const char *value = std::getenv(pack_knob);
+    return request.device_type == "hcu" && value != nullptr && std::string(value) != "auto"
+               ? tagged_form
+               : default_form;
+  }
+
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
                                    const FFTRequest &request,
                                    int64_t batch) {
@@ -1609,10 +1619,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                 (last_transpose_override == nullptr
                                      ? last_transpose_default
                                      : std::string(last_transpose_override) == "1");
+    const std::string n2_perm_form = hcu_3d_axis_perm_form(
+        request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
+    const std::string n1_perm_form = hcu_3d_axis_perm_form(
+        request, "FLAGFFT_HCU_3D_MIDDLE_PACK", "inner_middle", "inner");
     std::shared_ptr<CompiledRawNode> n2_fft =
-        compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, "outer");
+        compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, n2_perm_form);
     std::shared_ptr<CompiledRawNode> n1_fft =
-        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
+        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, n1_perm_form);
     const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
     std::shared_ptr<CompiledRawNode> n0_fft =
         last_transpose ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)

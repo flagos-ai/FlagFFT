@@ -2741,6 +2741,7 @@ def _build_leaf_kernel_source_for_io(
         raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
+    inner_perm_form = perm_form in {"inner", "inner_middle"}
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
@@ -2770,10 +2771,15 @@ def _build_leaf_kernel_source_for_io(
     }
     if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
         final_pack = None
-        if _hcu_backend_active() and perm_form == "outer_last":
-            requested_final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
-            if requested_final_pack != "auto":
-                final_pack = int(requested_final_pack)
+        if _hcu_backend_active():
+            pack_knob = {
+                "outer_first": "FLAGFFT_HCU_3D_FIRST_PACK",
+                "inner_middle": "FLAGFFT_HCU_3D_MIDDLE_PACK",
+                "outer_last": "FLAGFFT_HCU_3D_FINAL_PACK",
+            }.get(perm_form)
+            requested_pack = os.getenv(pack_knob, "auto") if pack_knob else "auto"
+            if requested_pack != "auto":
+                final_pack = int(requested_pack)
         batch_pack = permuted_store_batch_pack_for(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )
@@ -2938,7 +2944,7 @@ def _build_leaf_kernel_source_for_io(
             body.append("    current_batch = batch_id")
             body.append("    lane = lane_vec")
             body.append(f"    lane_mask = lane < {active_lanes}")
-            if io_mode in {"permuted_store", "strided_permuted_store"} and perm_form == "inner":
+            if io_mode in {"permuted_store", "strided_permuted_store"} and inner_perm_form:
                 # The packed path derives perm_base from pid below.  With one
                 # batch slot, pid already is the row index, but the common
                 # inner-form address equations still consume this name.
@@ -2954,7 +2960,7 @@ def _build_leaf_kernel_source_for_io(
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
             body.append("    current_batch = batch_id + batch_slot")
-            if io_mode in {"permuted_store", "strided_permuted_store"} and perm_form == "inner":
+            if io_mode in {"permuted_store", "strided_permuted_store"} and inner_perm_form:
                 # This pass permutes an axis whose output position is scaled by
                 # the *other* cube dimension, so a block has to span that
                 # dimension rather than consecutive rows: its rows are strided
@@ -2990,7 +2996,7 @@ def _build_leaf_kernel_source_for_io(
             # adds the two.  The two forms differ in which of the row index's
             # two mixed-radix parts gets scaled by the output layout.
             body.append(f"    perm_slot = tl.arange(0, {batch_pack})")
-            if perm_form == "inner":
+            if inner_perm_form:
                 body.append("    perm_batch = perm_base + perm_slot * perm_span")
                 body.append("    perm_i0 = perm_batch // perm_span")
                 body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
@@ -3008,7 +3014,7 @@ def _build_leaf_kernel_source_for_io(
                 # Keep the singleton row address scalar.  On MUSA this avoids
                 # a degenerate [1] tensor layout being broadcast into the
                 # lane-shaped store pointer.
-                if perm_form == "inner":
+                if inner_perm_form:
                     body.append("    perm_batch_scalar = perm_base")
                 else:
                     body.append("    perm_batch_scalar = batch_id")
@@ -3017,7 +3023,7 @@ def _build_leaf_kernel_source_for_io(
                     "    perm_i1_scalar = perm_batch_scalar - "
                     "perm_i0_scalar * perm_span"
                 )
-                if perm_form == "inner":
+                if inner_perm_form:
                     body.append(
                         "    perm_gbase_scalar = perm_i1_scalar * "
                         "(nbatch // perm_span) + perm_i0_scalar"
