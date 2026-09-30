@@ -278,7 +278,7 @@ def main() -> None:
                         f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
                         f"-full-smem-{full_smem}-key-full-{int(args.hcu_3d_full_smem)}"
                         f"-u64-load-{u64_load}-first-pack-{first_pack}-middle-pack-{middle_pack}"
-                        f"-middle-batch-pack-{middle_batch_pack}"
+                        f"-mbp-{middle_batch_pack}"
                         f"-final-warps-{final_warps}-final-pack-{final_pack}"
                         f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
     args.out_dir = args.out_dir / profile_dir
