@@ -810,26 +810,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlanNode &leaf,
                                                                   const FFTRequest &request) {
   std::string target = triton_target_for_request(request);
-  int64_t num_warps = leaf.num_warps;
-  // Screen launch geometry for the long direct 2048-point axis in MACA 3D
-  // without changing the short axes or the standalone 1D path.
-  if (request.device_type == "maca" && request.device_arch == "102" &&
-      request.origin_rank == 3 && request.requested_n == 2048 && leaf.length == 2048) {
-    if (const char *value = std::getenv("FLAGFFT_MACA_3D_N2048_WARPS")) {
-      const int64_t override = std::strtoll(value, nullptr, 10);
-      if (override != 2 && override != 4 && override != 8) {
-        throw std::runtime_error("FLAGFFT_MACA_3D_N2048_WARPS must be 2, 4 or 8");
-      }
-      num_warps = override;
-    }
-  }
   KernelKey key = KernelKey::leaf(target,
                                   request.direction,
                                   request.input_dtype,
                                   leaf.length,
                                   leaf.factors,
                                   leaf.lanes,
-                                  num_warps,
+                                  leaf.num_warps,
                                   leaf.generic_radices,
                                   leaf.smem_size);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
