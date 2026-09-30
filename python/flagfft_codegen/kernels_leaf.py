@@ -1059,7 +1059,12 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
-    smem_swizzle = fuse_twiddle_into_row or (
+    hcu_smem_swizzle = (
+        _hcu_backend_active() and not portable_exchange and n & (n - 1) == 0
+        and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}
+        and os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "0") == "1"
+    )
+    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
@@ -1073,6 +1078,10 @@ def _emit_stage_block(
         swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
         if not 1 <= swizzle_shift <= 8:
             raise ValueError("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
+    if hcu_smem_swizzle:
+        swizzle_shift = int(os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5"))
+        if not 1 <= swizzle_shift <= 8:
+            raise ValueError("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
     is_last = stage == len(factors) - 1
     source_buffer = (
         None
