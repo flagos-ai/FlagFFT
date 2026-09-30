@@ -1069,10 +1069,19 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
+    hcu_swizzle_override = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE")
+    hcu_swizzle_default = dtype == "complex128" and n >= 64
+    hcu_swizzle_enabled = (
+        hcu_swizzle_default
+        if hcu_swizzle_override in (None, "auto")
+        else hcu_swizzle_override == "1"
+    )
     hcu_smem_swizzle = (
-        _hcu_backend_active() and not portable_exchange and n & (n - 1) == 0
+        _hcu_backend_active()
+        and not portable_exchange
+        and n & (n - 1) == 0
         and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}
-        and os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "0") == "1"
+        and hcu_swizzle_enabled
     )
     smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0

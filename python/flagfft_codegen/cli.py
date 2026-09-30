@@ -247,7 +247,7 @@ def main() -> None:
         middle_batch_pack = os.getenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
         final_warps = os.getenv("FLAGFFT_HCU_3D_FINAL_WARPS", "auto")
         final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
-        smem_swizzle = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "0")
+        smem_swizzle = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "auto")
         swizzle_shift = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5")
         if pair_store not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_PAIR_STORE must be 0 or 1")
@@ -276,8 +276,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_FINAL_WARPS must be auto, 1, 2, 4 or 8")
         if final_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
             parser.error("FLAGFFT_HCU_3D_FINAL_PACK must be auto, 1, 2, 4, 8, 16 or 32")
-        if smem_swizzle not in {"0", "1"}:
-            parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE must be 0 or 1")
+        if smem_swizzle not in {"auto", "0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE must be auto, 0 or 1")
         if swizzle_shift not in {str(x) for x in range(1, 9)}:
             parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
         profile_dir += (f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"

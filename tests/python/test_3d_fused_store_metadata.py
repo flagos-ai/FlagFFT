@@ -226,6 +226,80 @@ def test_hcu_strided_permuted_store_uses_middle_axis_pack_override(monkeypatch):
         reset_profile(token)
 
 
+@pytest.mark.parametrize(
+    "dtype,length,factors,expected",
+    (
+        ("complex128", 64, (4, 4, 4), True),
+        ("complex128", 256, (16, 16), True),
+        ("complex128", 32, (4, 8), False),
+        ("complex64", 256, (16, 16), False),
+    ),
+)
+def test_hcu_f64_permuted_store_auto_swizzles_large_power_of_two_leaves(
+    monkeypatch, dtype, length, factors, expected
+):
+    monkeypatch.delenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", raising=False)
+    token = set_profile(
+        BackendProfile(
+            backend="hcu",
+            device_arch="gfx936",
+            warp_size=64,
+            max_threads_per_block=1024,
+            max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=length,
+            factors=factors,
+            remainder=1,
+            lanes=16,
+            num_warps=1,
+            generic_radices=(),
+            smem_size=length,
+            dtype=dtype,
+        )
+        _, source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="permuted_store", perm_form="outer"
+        )
+        assert ("smem_phys0 = logical_phys0 ^" in source) is expected
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize("override,dtype,expected", (("0", "complex128", False), ("1", "complex64", True)))
+def test_hcu_smem_swizzle_override_wins_over_auto(monkeypatch, override, dtype, expected):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", override)
+    token = set_profile(
+        BackendProfile(
+            backend="hcu",
+            device_arch="gfx936",
+            warp_size=64,
+            max_threads_per_block=1024,
+            max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=256,
+            factors=(16, 16),
+            remainder=1,
+            lanes=16,
+            num_warps=1,
+            generic_radices=(),
+            smem_size=256,
+            dtype=dtype,
+        )
+        _, source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="permuted_store", perm_form="outer"
+        )
+        assert ("smem_phys0 = logical_phys0 ^" in source) is expected
+    finally:
+        reset_profile(token)
+
+
 @pytest.mark.parametrize("pack", (1, 2, 4, 8, 16, 32))
 def test_hcu_2048_middle_leaf_grid_matches_batch_pack(monkeypatch, pack):
     monkeypatch.setenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", str(pack))
