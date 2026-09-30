@@ -1569,9 +1569,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                 (last_transpose_override == nullptr
                                      ? last_transpose_default
                                      : std::string(last_transpose_override) == "1");
+    const std::string n2_perm_form = hcu_3d_axis_perm_form(
+        request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
+    const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
     auto n2_fft = first_transpose
         ? compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1)
-        : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
+        : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, n2_perm_form);
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
     std::shared_ptr<JitKernel> perm_021;
@@ -1580,7 +1583,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     }
     auto n0_fft = last_transpose
         ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
-        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, n0_perm_form);
     std::shared_ptr<JitKernel> perm_201;
     if (last_transpose) {
       perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
