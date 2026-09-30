@@ -1689,7 +1689,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(n1_fft),
                                                      std::move(n0_fft),
                                                      std::move(perm_210),
-                                                     std::move(perm_201),
                                                      std::move(temp1),
                                                      std::move(temp2),
                                                      std::move(perm_021),
