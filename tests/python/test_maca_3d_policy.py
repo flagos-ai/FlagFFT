@@ -79,6 +79,52 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         set_codegen_target("")
 
 
+def test_maca_leaf_warp_override_is_validated(monkeypatch):
+    from pathlib import Path
+
+    from flagfft_codegen.metadata import _metadata
+    from flagfft_codegen.target import set_codegen_target
+
+    profile = set_profile(
+        BackendProfile.from_device(
+            {"backend": "maca", "device_arch": "102", "warp_size": 64,
+             "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536}
+        )
+    )
+    plan = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex64")
+    set_codegen_target("maca:102:64")
+
+    def make_metadata():
+        return _metadata(
+            module_path=Path("kernel.py"),
+            kernel_name="fft_kernel",
+            arg_names=[],
+            plan=plan,
+            kernel_type="leaf",
+            n1=0,
+            n2=0,
+            dtype="complex64",
+        )
+
+    try:
+        monkeypatch.delenv("FLAGFFT_MACA_WARPS", raising=False)
+        assert make_metadata()["num_warps"] == 2
+        monkeypatch.setenv("FLAGFFT_MACA_WARPS", "4")
+        assert make_metadata()["num_warps"] == 4
+        monkeypatch.setenv("FLAGFFT_MACA_WARPS", "8")
+        assert make_metadata()["num_warps"] == 8
+        monkeypatch.setenv("FLAGFFT_MACA_WARPS", "16")
+        try:
+            make_metadata()
+        except ValueError as error:
+            assert "FLAGFFT_MACA_WARPS must be 2, 4 or 8" in str(error)
+        else:
+            raise AssertionError("unsupported MACA warp override was accepted")
+    finally:
+        set_codegen_target("")
+        reset_profile(profile)
+
+
 def test_maca_environment_fingerprint_separates_variants():
     from flagfft_codegen.cli import _maca_environment_fingerprint
 

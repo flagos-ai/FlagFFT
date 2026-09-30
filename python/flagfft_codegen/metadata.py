@@ -180,6 +180,20 @@ def _metadata(
     if maca_backend:
         # One warp triggers unsupported shuffle lowering in multi-stage leaves.
         num_warps = max(2, num_warps)
+        warp_override = _maca_knob("WARPS")
+        if warp_override:
+            try:
+                requested_warps = int(warp_override)
+            except ValueError:
+                raise ValueError(
+                    f"FLAGFFT_MACA_WARPS must be 2, 4 or 8, got {warp_override!r}"
+                ) from None
+            if requested_warps not in {2, 4, 8}:
+                raise ValueError(
+                    f"FLAGFFT_MACA_WARPS must be 2, 4 or 8, got {requested_warps}"
+                )
+            profile.validate(requested_warps)
+            num_warps = requested_warps
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
         profile.validate(num_warps)
