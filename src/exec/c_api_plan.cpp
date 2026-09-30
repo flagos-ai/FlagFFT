@@ -13,12 +13,17 @@
 // limitations under the License.
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
 #include "flagfft/tune_json.hpp"
 #include "flagfft/maca_tail_policy.hpp"
 #include "plan/rader_utils.hpp"
+
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+#include "adaptor/backend/npu/sip_executor.hpp"
+#endif
 
 namespace flagfft {
 namespace {
@@ -57,6 +62,81 @@ namespace {
     }
     return builder.build(request.requested_n, request);
   }
+
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+  enum class NpuExecutionBackend { Auto, Triton, SiP };
+
+  NpuExecutionBackend npu_execution_backend() {
+    const char *raw = std::getenv("FLAGFFT_NPU_EXECUTION_BACKEND");
+    if (raw == nullptr || *raw == '\0' || std::string(raw) == "auto") {
+      return NpuExecutionBackend::Auto;
+    }
+    if (std::string(raw) == "triton" || std::string(raw) == "native") {
+      return NpuExecutionBackend::Triton;
+    }
+    if (std::string(raw) == "sip") {
+      return NpuExecutionBackend::SiP;
+    }
+    throw std::runtime_error(
+        "FLAGFFT_NPU_EXECUTION_BACKEND must be auto, sip, or triton");
+  }
+
+  bool sip_factor_limit(int64_t length) {
+    for (int64_t factor = 2; factor <= 199 && factor * factor <= length; ++factor) {
+      while (length % factor == 0) length /= factor;
+    }
+    return length <= 199;
+  }
+
+  bool npu_sip_supports(const FlagFFTPlanDesc &desc) {
+    if (desc.rank != 1 || desc.batch <= 0 || desc.n.size() != 1 ||
+        desc.n[0] > (int64_t{1} << 27) || desc.n[0] * desc.batch > (int64_t{1} << 30) ||
+        desc.istride != 1 || desc.ostride != 1 ||
+        (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_R2C && desc.type != FLAGFFT_C2R) ||
+        !sip_factor_limit(desc.n[0])) {
+      return false;
+    }
+    const int64_t n = desc.n[0];
+    const int64_t half = n / 2 + 1;
+    const int64_t input_length = desc.type == FLAGFFT_C2R ? half : n;
+    const int64_t output_length = desc.type == FLAGFFT_R2C ? half : n;
+    return desc.idist == input_length && desc.odist == output_length &&
+           desc.inembed.size() == 1 && desc.inembed[0] == input_length &&
+           desc.onembed.size() == 1 && desc.onembed[0] == output_length;
+  }
+
+  flagfftResult configure_npu_sip_execution(FlagFFTPlan &plan) {
+    const NpuExecutionBackend backend = npu_execution_backend();
+    if (backend == NpuExecutionBackend::Triton) return FLAGFFT_SUCCESS;
+    if (!npu_sip_supports(plan.desc)) {
+      return backend == NpuExecutionBackend::SiP ? FLAGFFT_NOT_SUPPORTED : FLAGFFT_SUCCESS;
+    }
+
+    void *forward = nullptr;
+    void *inverse = nullptr;
+    try {
+      if (plan.desc.type == FLAGFFT_C2C || plan.desc.type == FLAGFFT_R2C) {
+        forward = adaptor::npu::sip_plan_create(plan.desc.n[0], plan.desc.batch,
+                                                plan.desc.type, FLAGFFT_FORWARD);
+      }
+      if (plan.desc.type == FLAGFFT_C2C || plan.desc.type == FLAGFFT_C2R) {
+        inverse = adaptor::npu::sip_plan_create(plan.desc.n[0], plan.desc.batch,
+                                                plan.desc.type, FLAGFFT_INVERSE);
+      }
+    } catch (const std::exception &e) {
+      adaptor::npu::sip_plan_destroy(forward);
+      adaptor::npu::sip_plan_destroy(inverse);
+      if (backend == NpuExecutionBackend::SiP) throw;
+      std::fprintf(stderr, "[flagfft] SiP plan unavailable; using Triton: %s\n", e.what());
+      std::fflush(stderr);
+      return FLAGFFT_SUCCESS;
+    }
+    plan.npu_sip_forward = forward;
+    plan.npu_sip_inverse = inverse;
+    plan.npu_sip_enabled = true;
+    return FLAGFFT_SUCCESS;
+  }
+#endif
 
 }  // namespace
 
@@ -367,6 +447,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
                                                              plan->desc.batch);
       }
     }
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+    const flagfftResult sip_result = configure_npu_sip_execution(*plan);
+    if (sip_result != FLAGFFT_SUCCESS) return sip_result;
+#endif
     plan->state.initialized = true;
 
     std::unique_ptr<flagfftPlan_t> handle(new flagfftPlan_t());
