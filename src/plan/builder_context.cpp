@@ -114,30 +114,6 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n1, false), build_auto_node(n2, false));
     }
   }
-  // Screen a single CT leaf for each large 2D axis before using it as the
-  // default. This keeps the TwoDimPlanNode and only changes its 1D children.
-  const char *npu_2d_leaf = std::getenv("FLAGFFT_NPU_2D_AXIS_LEAF");
-  if (request.device_type == "npu" && request.origin_rank == 2 && request.raw_dim == 1 &&
-      request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      npu_2d_leaf != nullptr && *npu_2d_leaf != '\0') {
-    std::size_t parsed = 0;
-    int64_t target_length = 0;
-    try {
-      target_length = std::stoll(npu_2d_leaf, &parsed);
-    } catch (const std::exception &) {
-      throw std::runtime_error("FLAGFFT_NPU_2D_AXIS_LEAF must be a positive transform length");
-    }
-    if (parsed != std::string(npu_2d_leaf).size() || target_length <= 0) {
-      throw std::runtime_error("FLAGFFT_NPU_2D_AXIS_LEAF must be a positive transform length");
-    }
-    if (target_length == n) {
-      const auto factors = select_leaf_factors(n);
-      if (!should_use_leaf(n, factors)) {
-        throw std::runtime_error("FLAGFFT_NPU_2D_AXIS_LEAF length does not fit a supported CT leaf");
-      }
-      return make_leaf_plan(n, factors);
-    }
-  }
   // Let 2D axis plans reuse the existing FourStep plan and fused-leaf
   // execution for long axes. Keep this opt-in so the current 2D policy stays
   // unchanged while splits are screened on Ascend.
