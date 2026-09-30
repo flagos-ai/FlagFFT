@@ -609,17 +609,20 @@ def emit_jit_kernel(
         else:
             strided_direct_dft = kernel == "direct_dft_strided"
             reduction_tile = 32
-            if strided_direct_dft and backend_name() == "npu":
+            column_tile = 1
+            if strided_direct_dft and backend_name() == "npu" and dtype == "complex64":
                 # Ascend's local UB cannot hold the default 32-by-N reduction
                 # tile for strided columns. Bound the live reduction tile by
-                # N while keeping the contiguous DirectDFT mapping unchanged.
+                # N and vectorize contiguous columns to improve memory access.
                 reduction_tile = 8 if length >= 128 else 16 if length >= 64 else 32
+                column_tile = 32
             kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
                 length,
                 direction,
                 dtype,
                 strided=strided_direct_dft,
                 reduction_tile=reduction_tile,
+                column_tile=column_tile,
             )
         n1 = 0
         n2 = 0
@@ -683,6 +686,8 @@ def emit_jit_kernel(
     )
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
+    if kernel == "direct_dft_strided" and backend_name() == "npu" and dtype == "complex64":
+        metadata["columns_per_block"] = 32
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
