@@ -1420,18 +1420,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // fuses only the first n2 store: under the shared-memory
   // cap, the n1 permuted store has one batch slot and its stores stride by the
   // full n0*n2 batch.  The n0 store also loses to a contiguous leaf plus a
-  // tiled transpose.  Pack 16 complex64 values to fill a C550 128-byte
-  // coalescing group.  Enable by default only for the validated 128x2048x64
-  // FP32 is enabled by default only at the validated shape. The environment
-  // override can screen additional dtypes/shapes without changing defaults.
-  const bool maca_first_store_default = request.input_dtype == "complex64" &&
+  // tiled transpose. Enable both validated complex dtypes by default only at
+  // this exact shape; the environment override remains for additional screens.
+  const bool maca_first_store_default =
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
       n0 == 128 && n1 == 2048 && n2 == 64;
   const bool maca_first_store_enabled = request.device_type == "maca" &&
       maca_flag_or_default("FLAGFFT_MACA_3D_FIRST_STORE", maca_first_store_default);
-  const bool maca_first_store_fp64_screen = maca_first_store_enabled &&
+  const bool maca_first_store_fp64_enabled = maca_first_store_enabled &&
       request.device_type == "maca" && request.input_dtype == "complex128";
   const bool first_store_dtype_supported = request.input_dtype == "complex64" ||
-      maca_first_store_fp64_screen;
+      maca_first_store_fp64_enabled;
   const bool use_long_axis_hybrid =
       (request.device_type == "musa" && fused_3d_store_enabled()) ||
       maca_first_store_enabled;
