@@ -36,8 +36,11 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(double_short) == 8
             assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
-            monkeypatch.setenv("FLAGFFT_MACA_3D_N128_PACK", "2")
             assert contiguous_batch_pack_for(single128) == 2
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N128_PACK", "1")
+            assert contiguous_batch_pack_for(single128) == 1
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N128_PACK", "4")
+            assert contiguous_batch_pack_for(single128) == 4
             assert _maca_knob("EXCHANGE") == "direct_all"
             monkeypatch.setenv("FLAGFFT_MACA_3D_N64_PACK", "4")
             assert contiguous_batch_pack_for(short) == 4

@@ -129,6 +129,10 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       if (trial != nullptr && std::string(trial) == "4x8") return {4, 8};
       if (trial != nullptr && std::string(trial) == "8x4") return {8, 4};
     }
+    if (n == 128) {
+      const char *trial = std::getenv("FLAGFFT_MACA_3D_N128_FACTORS");
+      if (trial != nullptr && std::string(trial) == "2x4x4x4") return {2, 4, 4, 4};
+    }
     if (n == 256) {
       const char *trial = std::getenv("FLAGFFT_MACA_3D_N256_FACTORS");
       if (trial != nullptr && std::string(trial) == "16x16") return {16, 16};
