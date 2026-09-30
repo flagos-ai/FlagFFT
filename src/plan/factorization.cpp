@@ -124,6 +124,10 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
   if (context.device_type == "maca" && context.origin_rank == 3) {
+    if (context.device_arch == "102" && n == 64) {
+      const char *trial = std::getenv("FLAGFFT_MACA_3D_N64_FACTORS");
+      if (trial != nullptr && std::string(trial) == "8x8") return {8, 8};
+    }
     if (n == 32) {
       const char *trial = std::getenv("FLAGFFT_MACA_3D_N32_FACTORS");
       if (trial != nullptr && std::string(trial) == "4x8") return {4, 8};

@@ -221,6 +221,39 @@ TEST_F(MacaTailPlans, BalancedFp64ChildrenQualifyForSeparateRegisterPackTrial) {
   EXPECT_EQ(baseline->col_plan->length, 2048);
 }
 
+TEST_F(MacaTailPlans, Maca3dN64FactorOverrideIsOptInAndScoped) {
+  Env factors{"FLAGFFT_MACA_3D_N64_FACTORS"};
+  auto request = request_for(64, false);
+  request.device_type = "maca";
+  request.device_arch = "102";
+  request.origin_rank = 3;
+
+  factors.set(nullptr);
+  PlanBuilder baseline_builder;
+  auto baseline = std::dynamic_pointer_cast<LeafPlanNode>(baseline_builder.build(64, request));
+  ASSERT_NE(baseline, nullptr);
+  EXPECT_EQ(baseline->factors, (std::vector<int64_t>{4, 4, 4}));
+
+  factors.set("8x8");
+  PlanBuilder candidate_builder;
+  auto candidate = std::dynamic_pointer_cast<LeafPlanNode>(candidate_builder.build(64, request));
+  ASSERT_NE(candidate, nullptr);
+  EXPECT_EQ(candidate->factors, (std::vector<int64_t>{8, 8}));
+
+  request.origin_rank = 1;
+  PlanBuilder rank1_builder;
+  auto rank1 = std::dynamic_pointer_cast<LeafPlanNode>(rank1_builder.build(64, request));
+  ASSERT_NE(rank1, nullptr);
+  EXPECT_NE(rank1->factors, candidate->factors);
+
+  request.origin_rank = 3;
+  request.device_type = "musa";
+  PlanBuilder musa_builder;
+  auto musa = std::dynamic_pointer_cast<LeafPlanNode>(musa_builder.build(64, request));
+  ASSERT_NE(musa, nullptr);
+  EXPECT_NE(musa->factors, candidate->factors);
+}
+
 TEST_F(MacaTailPlans, OtherBackendsBatchesRanksAndChildBuildsRemainUnchanged) {
   for (const auto* backend : {"cuda", "musa", "hcu", "ppu", "ix", "npu", "maca"}) {
     for (int mode : {0, 1, 2, 3}) {
