@@ -2782,6 +2782,63 @@ flagfftResult CompiledRaw3DFusedPlaneNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DPrimePlaneNode::CompiledRaw3DPrimePlaneNode(
+    int64_t n0,
+    int64_t n1,
+    int64_t n2,
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> middle_fft,
+    std::shared_ptr<JitKernel> output_transpose,
+    DeviceAllocation temp1,
+    DeviceAllocation temp2,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      plane_fft(std::move(plane_fft)),
+      middle_fft(std::move(middle_fft)),
+      output_transpose(std::move(output_transpose)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DPrimePlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DPrimePlane(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", plane_fft=" << plane_fft->execution_description()
+      << ", middle_fft=" << middle_fft->describe()
+      << ", output_transpose=" << output_transpose->execution_description() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DPrimePlaneNode::execute(adaptor::DevicePtr input,
+                                                    adaptor::DevicePtr output,
+                                                    const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * n1, 1, 1);
+    RawExecutionContext middle_context {context.request, context.stream, batch * n0 * n2};
+    flagfftResult result = middle_fft->execute(temp1.get(), temp2.get(), middle_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    launch_perm3d(output_transpose, context.stream, temp2.get(), output,
+                  n0 * n1 * n2, batch);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D prime plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DFusedCubeNode::CompiledRaw3DFusedCubeNode(
     std::shared_ptr<JitKernel> fft,
     DeviceAllocation tw_r,

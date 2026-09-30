@@ -112,6 +112,107 @@ def fused_{plane_size}_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     return metadata
 
 
+def emit_fused_rect_plane_kernel(
+    *,
+    dtype: str,
+    direction: str,
+    out_dir: Path,
+    plane_n0: int,
+    plane_n1: int,
+    middle_size: int,
+) -> dict:
+    """Emit a rectangular two-axis complex FFT plane with permuted output.
+
+    The HCU 16x64 variant handles both short axes of a 16x997x64 transform in
+    one block per middle-axis coordinate. Its output is laid out as
+    (n0,n2,n1), so the long middle-axis FFT can consume contiguous rows.
+    """
+    if plane_n0 != 16 or plane_n1 != 64 or middle_size != 997:
+        raise ValueError("fused rectangular plane currently supports 16x64 with middle size 997")
+    plane_elements = plane_n0 * plane_n1
+    stages0 = plane_n0.bit_length() - 1
+    stages1 = plane_n1.bit_length() - 1
+    source = f"""
+@triton.jit
+def fused_16x64_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
+    plane = tl.program_id(0)
+    batch = plane // {middle_size}
+    middle = plane % {middle_size}
+    idx = tl.arange(0, {plane_elements})
+    row = idx // {plane_n1}
+    col = idx % {plane_n1}
+    rev_row = tl.full(({plane_elements},), 0, tl.int32)
+    rev_col = tl.full(({plane_elements},), 0, tl.int32)
+    for bit in tl.static_range({stages0}):
+        rev_row = (rev_row << 1) | ((row >> bit) & 1)
+    for bit in tl.static_range({stages1}):
+        rev_col = (rev_col << 1) | ((col >> bit) & 1)
+    src = (((batch * {plane_n0} + rev_row) * {middle_size} + middle) * {plane_n1} + rev_col) * 2
+    xr = tl.load(in_ptr + src)
+    xi = tl.load(in_ptr + src + 1)
+
+    for stage in tl.static_range({stages1}):
+        partner = idx ^ (1 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (col & (1 << stage)) != 0
+        ar = tl.where(upper, pr, xr)
+        ai = tl.where(upper, pi, xi)
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        tw = (col & ((1 << stage) - 1)) * ({plane_n1} >> (stage + 1))
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        tr = wr * br - wi * bi
+        ti = wr * bi + wi * br
+        xr = tl.where(upper, ar - tr, ar + tr)
+        xi = tl.where(upper, ai - ti, ai + ti)
+
+    for stage in tl.static_range({stages0}):
+        partner = idx ^ ({plane_n1} << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (row & (1 << stage)) != 0
+        ar = tl.where(upper, pr, xr)
+        ai = tl.where(upper, pi, xi)
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        tw = (row & ((1 << stage) - 1)) * ({plane_n1} >> (stage + 1))
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        tr = wr * br - wi * bi
+        ti = wr * bi + wi * br
+        xr = tl.where(upper, ar - tr, ar + tr)
+        xi = tl.where(upper, ai - ti, ai + ti)
+
+    dst = ((batch * {plane_n0} + row) * {plane_n1} + col) * {middle_size} + middle
+    tl.store(out_ptr + dst * 2, xr)
+    tl.store(out_ptr + dst * 2 + 1, xi)
+"""
+    name = f"flagfft_jit_fused_rect_plane_{plane_n0}x{plane_n1}x{middle_size}_{direction}_{_dtype_suffix(dtype)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{name}.py"
+    write_text_atomic(module_path, _module_source(source))
+    args = ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": "fused_16x64_plane_fft_kernel",
+        "signature": _signature(args, dtype),
+        "num_warps": 4,
+        "num_stages": 1,
+        "batch_per_block": 1,
+        "arg_names": args,
+        "kernel_type": "fused_rect_plane",
+        "dtype": dtype,
+        "direction": direction,
+        "plane_n0": plane_n0,
+        "plane_n1": plane_n1,
+        "middle_size": middle_size,
+    }
+    write_text_atomic(out_dir / f"{name}.json", json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
 def emit_fused_16_cube_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
     """Compute one output plane per block, including the outer 16-point DFT.
 

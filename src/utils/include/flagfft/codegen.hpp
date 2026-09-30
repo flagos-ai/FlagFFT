@@ -1032,6 +1032,37 @@ struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
+// Experimental HCU path for 16x997x64 C2C: fuse the two short axes in one
+// 16x64 plane kernel, run the 997-point transform on contiguous rows, then
+// restore natural output order with one tiled transpose.
+struct CompiledRaw3DPrimePlaneNode final : CompiledRawNode {
+  CompiledRaw3DPrimePlaneNode(int64_t n0,
+                              int64_t n1,
+                              int64_t n2,
+                              std::shared_ptr<JitKernel> plane_fft,
+                              std::shared_ptr<CompiledRawNode> middle_fft,
+                              std::shared_ptr<JitKernel> output_transpose,
+                              DeviceAllocation temp1,
+                              DeviceAllocation temp2,
+                              DeviceAllocation tw_r,
+                              DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<JitKernel> plane_fft;
+  std::shared_ptr<CompiledRawNode> middle_fft;
+  std::shared_ptr<JitKernel> output_transpose;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
   CompiledRaw3DFusedCubeNode(std::shared_ptr<JitKernel> fft,
                             DeviceAllocation tw_r,

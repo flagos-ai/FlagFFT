@@ -772,6 +772,25 @@ def test_fused_16_cube_codegen_resolves_template_parameters(tmp_path) -> None:
     assert "{quarter_r}" not in source
 
 
+def test_fused_rect_plane_codegen_emits_16x64_strided_batches(tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_rect_plane_kernel
+
+    metadata = emit_fused_rect_plane_kernel(
+        dtype="complex64",
+        direction="forward",
+        out_dir=tmp_path,
+        plane_n0=16,
+        plane_n1=64,
+        middle_size=997,
+    )
+    source = Path(metadata["module_path"]).read_text()
+
+    assert metadata["kernel_type"] == "fused_rect_plane"
+    assert "tl.arange(0, 1024)" in source
+    assert "idx ^ (64 << stage)" in source
+    assert "* 997 + middle" in source
+
+
 def test_hcu_tiled_transpose3d_tile_override(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile

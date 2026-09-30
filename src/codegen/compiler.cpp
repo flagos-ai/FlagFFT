@@ -1655,6 +1655,46 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::move(tw_r), std::move(tw_i));
   }
 
+  const char *prime_plane_override = std::getenv("FLAGFFT_HCU_3D_PRIME_PLANE");
+  const bool prime_plane_enabled = prime_plane_override != nullptr &&
+                                   std::string(prime_plane_override) == "1";
+  const bool hcu_prime_plane = request.device_type == "hcu" && batch == 1 &&
+                               n0 == 16 && n1 == 997 && n2 == 64 &&
+                               std::dynamic_pointer_cast<BluesteinPlanNode>(node->n1_plan) !=
+                                   nullptr &&
+                               prime_plane_enabled;
+  if (hcu_prime_plane) {
+    std::vector<double> tw_r_d(32);
+    std::vector<double> tw_i_d(32);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 32; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 64.0;
+      tw_r_d[static_cast<std::size_t>(k)] = std::cos(angle);
+      tw_i_d[static_cast<std::size_t>(k)] = std::sin(angle);
+    }
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (request.input_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto plane_key = KernelKey::fused_rect_plane(
+        triton_target_for_request(request), request.direction, request.input_dtype, n0, n2, n1);
+    auto plane_fft = compile_kernel(plane_key);
+    auto middle_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    auto output_transpose = compile_transpose3d_kernel(request, n0, n2, n1, "021");
+    const std::size_t temp_bytes = static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(temp_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(temp_bytes);
+    return std::make_shared<CompiledRaw3DPrimePlaneNode>(
+        n0, n1, n2, std::move(plane_fft), std::move(middle_fft),
+        std::move(output_transpose), std::move(temp1), std::move(temp2),
+        std::move(tw_r), std::move(tw_i));
+  }
+
   // A long middle axis can run contiguously before one tiled transpose.
   // This also permits a non-leaf middle axis such as the 997-point Bluestein
   // plan while the short outer axes retain their fused stores.

@@ -33,7 +33,11 @@ from .emit import (
     emit_jit_kernel,
 )
 from .metadata import _csv_ints
-from .kernels_small_3d import emit_fused_16_cube_kernel, emit_fused_16_plane_kernel
+from .kernels_small_3d import (
+    emit_fused_16_cube_kernel,
+    emit_fused_16_plane_kernel,
+    emit_fused_rect_plane_kernel,
+)
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -122,6 +126,9 @@ def main() -> None:
     parser.add_argument("--transpose3d-n1", type=int, default=0)
     parser.add_argument("--transpose3d-n2", type=int, default=0)
     parser.add_argument("--transpose3d-order", choices=("021", "210", "201", "120"))
+    parser.add_argument("--fused-plane-n0", type=int, default=0)
+    parser.add_argument("--fused-plane-n1", type=int, default=0)
+    parser.add_argument("--fused-plane-middle", type=int, default=0)
     parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument(
@@ -358,6 +365,15 @@ def main() -> None:
         if args.kernel == "fused_16_cube":
             metadata = emit_fused_16_cube_kernel(
                 dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+            )
+        elif args.kernel == "fused_rect_plane":
+            metadata = emit_fused_rect_plane_kernel(
+                dtype=args.dtype,
+                direction=args.direction,
+                out_dir=args.out_dir,
+                plane_n0=args.fused_plane_n0,
+                plane_n1=args.fused_plane_n1,
+                middle_size=args.fused_plane_middle,
             )
         else:
             metadata = emit_fused_16_plane_kernel(
