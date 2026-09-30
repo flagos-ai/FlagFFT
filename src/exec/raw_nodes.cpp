@@ -2824,6 +2824,19 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
       return n0_fft->execute(layout == Layout::FusedStore ? temp1.get() : temp2.get(), output, n0_context);
     }
 
+    if (layout == Layout::C2RFinalStore) {
+      // Keep the input-axis FFT order, but let n1's store produce the natural
+      // compact rows consumed by C2R. This removes the final full-cube
+      // transpose without making the C2R input loads strided.
+      launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch);
+      result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_second, context.stream, temp2.get(), temp1.get(), packed, batch);
+      result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return n2_real_fft->execute(temp2.get(), output, n2_context);
+    }
+
     // Axes commute, so the compact n1/n0 transforms can precede the real
     // inverse n2 boundary.  This also keeps the compact cube throughout.
     if (layout == Layout::FusedStore) {
