@@ -435,12 +435,6 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
             return _profile_batch_pack_for(plan)
         if override:
             return _positive_knob("BATCH_PACK", override)
-        if maca_3d_default_enabled() and plan.length == 32 and len(emitted_leaf_factors(plan)) == 1:
-            pack_32 = os.getenv("FLAGFFT_MACA_3D_N32_PACK")
-            if pack_32 is not None:
-                if pack_32 not in {"8", "16", "32", "64"}:
-                    raise ValueError("FLAGFFT_MACA_3D_N32_PACK must be 8, 16, 32 or 64")
-                return int(pack_32)
         if plan.length == 64 and len(emitted_leaf_factors(plan)) > 1:
             short_pack = os.getenv("FLAGFFT_MACA_3D_N64_PACK")
             if short_pack is not None:

@@ -7,8 +7,7 @@ from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 
 def test_maca_3d_packing_scope_and_override(monkeypatch):
     for name in ("FLAGFFT_MACA_BATCH_PACK", "FLAGFFT_MACA_3D_N64_PACK",
-                 "FLAGFFT_MACA_3D_N32_PACK", "FLAGFFT_MACA_3D_N128_PACK",
-                 "FLAGFFT_MACA_EXCHANGE"):
+                 "FLAGFFT_MACA_3D_N128_PACK", "FLAGFFT_MACA_EXCHANGE"):
         monkeypatch.delenv(name, raising=False)
     profile = set_profile(
         BackendProfile.from_device(
@@ -18,7 +17,6 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     )
     short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex64")
     double_short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex128")
-    single32 = LeafPlan(32, (32,), 1, 1, 2, (), 0, dtype="complex64")
     single = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex64")
     double = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex128")
     single128 = LeafPlan(128, (4, 4, 4, 2), 1, 32, 2, (), 128, dtype="complex64")
@@ -34,11 +32,6 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             reset_maca_3d_default(off)
         on = set_maca_3d_default(True)
         try:
-            assert contiguous_batch_pack_for(single32) == 32
-            monkeypatch.setenv("FLAGFFT_MACA_3D_N32_PACK", "16")
-            assert contiguous_batch_pack_for(single32) == 16
-            monkeypatch.setenv("FLAGFFT_MACA_3D_N32_PACK", "64")
-            assert contiguous_batch_pack_for(single32) == 64
             assert contiguous_batch_pack_for(short) == 8
             assert contiguous_batch_pack_for(double_short) == 8
             assert contiguous_batch_pack_for(single) == 2
