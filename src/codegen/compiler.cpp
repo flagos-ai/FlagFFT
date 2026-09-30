@@ -1564,11 +1564,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
-  // Experimental MACA R2C path: let the n2 leaf produce (n0,half,n1)
-  // directly, avoiding the first full compact-cube transpose.
-  const bool maca_r2c_first_store = request.device_type == "maca" && !inverse &&
-      request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64 &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", false);
+  // Let the n2 leaf produce (n0,half,n1) directly and avoid the first full
+  // compact-cube transpose. This is validated for MACA FP32 R2C at this shape;
+  // retain the environment override for screening and rollback.
+  const bool maca_r2c_first_store_default = request.device_type == "maca" && !inverse &&
+      request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64;
+  const bool maca_r2c_first_store = request.device_type == "maca" &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", maca_r2c_first_store_default);
   if (!small && request.device_type == "musa" && !fused_3d_store_enabled()) return nullptr;
   const auto layout = small ? CompiledRaw3DRealLeafNode::Layout::Strided
       : !n1_leaf ? CompiledRaw3DRealLeafNode::Layout::Transposed
