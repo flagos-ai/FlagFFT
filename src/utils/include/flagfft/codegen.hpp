@@ -1053,7 +1053,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
 // boundary directly.  The other two axes run on the natural layout for small
 // cubes, use fused stores, or use separate transposes for large cubes.
 struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
-  enum class Layout { Strided, FusedStore, Transposed, R2CFirstStore };
+  enum class Layout { Strided, FusedStore, Transposed, R2CFirstStore, C2RMiddleStore };
   CompiledRaw3DRealLeafNode(int64_t n0,
                             int64_t n1,
                             int64_t n2,

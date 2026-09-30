@@ -1571,9 +1571,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64;
   const bool maca_r2c_first_store = request.device_type == "maca" &&
       maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", maca_r2c_first_store_default);
+  const bool maca_c2r_middle_store = request.device_type == "maca" && inverse && batch == 1 &&
+      request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64 &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2R_MIDDLE_STORE", false);
   if (!small && request.device_type == "musa" && !fused_3d_store_enabled()) return nullptr;
   const auto layout = small ? CompiledRaw3DRealLeafNode::Layout::Strided
       : !n1_leaf ? CompiledRaw3DRealLeafNode::Layout::Transposed
+      : maca_c2r_middle_store ? CompiledRaw3DRealLeafNode::Layout::C2RMiddleStore
       : maca_r2c_first_store ? CompiledRaw3DRealLeafNode::Layout::R2CFirstStore
       : fused_3d_store_enabled() ? CompiledRaw3DRealLeafNode::Layout::FusedStore
                                  : CompiledRaw3DRealLeafNode::Layout::Transposed;
@@ -1633,6 +1637,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
     perm_second = compile_transpose3d_kernel(request, n0, half, n1, "210");
     perm_third = compile_transpose3d_kernel(request, n1, half, n0, "201");
+  } else if (layout == CompiledRaw3DRealLeafNode::Layout::C2RMiddleStore) {
+    // Let n0's store write (n0,half,n1), eliminating the following transpose
+    // while keeping n1 and C2R reads contiguous.
+    n1_fft = compile_raw_leaf(*n1_leaf, n1_request);
+    n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, half, "inner");
+    perm_first = compile_transpose3d_kernel(request, n0, n1, half, "120");
+    perm_third = compile_transpose3d_kernel(request, n0, half, n1, "021");
   } else {
     n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request)
                      : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
