@@ -1569,32 +1569,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                 (last_transpose_override == nullptr
                                      ? last_transpose_default
                                      : std::string(last_transpose_override) == "1");
-    const char *middle_store_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_MIDDLE_STORE");
-    if (middle_store_override != nullptr && std::string(middle_store_override) != "0" &&
-        std::string(middle_store_override) != "1") {
-      throw std::runtime_error("FLAGFFT_HCU_3D_HYBRID_MIDDLE_STORE must be 0 or 1");
-    }
-    // On a long leaf middle axis, write its FFT results directly in the
-    // (n1,n2,n0) layout consumed by the final axis.  This replaces the full
-    // 3D perm_210 pass.  Keep the experiment opt-in and batch-1 only while its
-    // cross-batch layout has not been qualified.
-    const bool middle_store = request.device_type == "hcu" && batch == 1 && n1_leaf &&
-                              n1 >= 1024 && middle_store_override != nullptr &&
-                              std::string(middle_store_override) == "1";
     const std::string n2_perm_form = hcu_3d_axis_perm_form(
         request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
-    const std::string n1_perm_form = hcu_3d_axis_perm_form(
-        request, "FLAGFFT_HCU_3D_MIDDLE_PACK", "inner_middle", "inner");
     const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
     auto n2_fft = first_transpose
         ? compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1)
         : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, n2_perm_form);
-    std::shared_ptr<CompiledRawNode> n1_fft = middle_store
-        ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, n2, n1_perm_form)
-        : compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
-    std::shared_ptr<JitKernel> perm_210 = middle_store
-        ? std::shared_ptr<JitKernel>{}
-        : compile_transpose3d_kernel(request, n0, n2, n1, "210");
+    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
     std::shared_ptr<JitKernel> perm_021;
     if (first_transpose) {
       perm_021 = compile_transpose3d_kernel(request, n0, n1, n2, "021");
