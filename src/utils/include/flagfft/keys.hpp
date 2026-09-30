@@ -133,6 +133,16 @@ struct KernelKey {
                             int64_t num_warps,
                             std::vector<int64_t> generic_radices,
                             int64_t smem_size);
+  static KernelKey leaf_r2c_permuted_store(std::string target,
+                                           std::string direction,
+                                           std::string dtype,
+                                           int64_t length,
+                                           std::vector<int64_t> factors,
+                                           int64_t lanes,
+                                           int64_t num_warps,
+                                           std::vector<int64_t> generic_radices,
+                                           int64_t smem_size,
+                                           std::string perm_form);
   static KernelKey leaf_c2r(std::string target,
                             std::string direction,
                             std::string dtype,

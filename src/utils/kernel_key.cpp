@@ -120,6 +120,30 @@ KernelKey KernelKey::leaf_r2c(std::string target,
   return key;
 }
 
+KernelKey KernelKey::leaf_r2c_permuted_store(std::string target,
+                                             std::string direction,
+                                             std::string dtype,
+                                             int64_t length,
+                                             std::vector<int64_t> factors,
+                                             int64_t lanes,
+                                             int64_t num_warps,
+                                             std::vector<int64_t> generic_radices,
+                                             int64_t smem_size,
+                                             std::string perm_form) {
+  KernelKey key = KernelKey::leaf_r2c(std::move(target),
+                                      std::move(direction),
+                                      std::move(dtype),
+                                      length,
+                                      std::move(factors),
+                                      lanes,
+                                      num_warps,
+                                      std::move(generic_radices),
+                                      smem_size);
+  key.kind = KernelKind::LeafR2CPermutedStore;
+  key.perm_form = std::move(perm_form);
+  return key;
+}
+
 KernelKey KernelKey::leaf_c2r(std::string target,
                               std::string direction,
                               std::string dtype,

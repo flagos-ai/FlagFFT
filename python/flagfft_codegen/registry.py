@@ -87,6 +87,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         "leaf_r2c", CT_LEAF, io_mode="contiguous_r2c", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(
+        "leaf_r2c_permuted_store",
+        CT_LEAF,
+        io_mode="permuted_store_r2c",
+        requires=_BASE_LEAF_FLAGS,
+    ),
+    KernelSpec(
         "leaf_packed_r2c", CT_LEAF, io_mode="packed_r2c", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(
@@ -327,7 +333,7 @@ def module_name_for(
             f"flagfft_jit_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
         )
-    if spec.name == "leaf_permuted_store":
+    if spec.name in {"leaf_permuted_store", "leaf_r2c_permuted_store"}:
         return (
             f"flagfft_jit_{spec.name}_{perm_form}_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"

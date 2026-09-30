@@ -939,6 +939,22 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPla
   return compile_kernel(key);
 }
 
+std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_permuted_store_kernel(
+    const LeafPlanNode &leaf, const FFTRequest &request) {
+  std::string target = triton_target_for_request(request);
+  KernelKey key = KernelKey::leaf_r2c_permuted_store(target,
+                                                     request.direction,
+                                                     request.input_dtype,
+                                                     leaf.length,
+                                                     leaf.factors,
+                                                     leaf.lanes,
+                                                     leaf.num_warps,
+                                                     leaf.generic_radices,
+                                                     leaf.smem_size,
+                                                     "outer");
+  return compile_kernel(key);
+}
+
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request) {
   std::string target = triton_target_for_request(request);
@@ -1548,9 +1564,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
+  // Experimental MACA R2C path: let the n2 leaf produce (n0,half,n1)
+  // directly, avoiding the first full compact-cube transpose.
+  const bool maca_r2c_first_store = request.device_type == "maca" && !inverse &&
+      request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64 &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", false);
   if (!small && request.device_type == "musa" && !fused_3d_store_enabled()) return nullptr;
   const auto layout = small ? CompiledRaw3DRealLeafNode::Layout::Strided
       : !n1_leaf ? CompiledRaw3DRealLeafNode::Layout::Transposed
+      : maca_r2c_first_store ? CompiledRaw3DRealLeafNode::Layout::R2CFirstStore
       : fused_3d_store_enabled() ? CompiledRaw3DRealLeafNode::Layout::FusedStore
                                  : CompiledRaw3DRealLeafNode::Layout::Transposed;
 
@@ -1575,9 +1597,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
 
-  auto n2_real_fft = inverse
-      ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
-      : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+  if (layout == CompiledRaw3DRealLeafNode::Layout::R2CFirstStore) {
+    auto n2_kernel = compile_leaf_r2c_permuted_store_kernel(*n2_leaf, n2_request);
+    n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
+        n2,
+        std::move(n2_kernel),
+        build_raw_leaf_tables(*n2_leaf, n2_request),
+        DeviceAllocation{},
+        n1);
+  } else {
+    n2_real_fft = inverse
+        ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
+        : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  }
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_first;
@@ -1593,6 +1626,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     perm_first = compile_transpose3d_kernel(request, n0, n1, half, "021");
     n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner");
     n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
+  } else if (layout == CompiledRaw3DRealLeafNode::Layout::R2CFirstStore) {
+    n1_fft = compile_raw_leaf(*n1_leaf, n1_request);
+    n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
+    perm_second = compile_transpose3d_kernel(request, n0, half, n1, "210");
+    perm_third = compile_transpose3d_kernel(request, n1, half, n0, "201");
   } else {
     n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request)
                      : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);

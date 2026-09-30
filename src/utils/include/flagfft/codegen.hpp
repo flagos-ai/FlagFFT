@@ -497,7 +497,8 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   CompiledRawR2CLeafNode(int64_t length,
                          std::shared_ptr<JitKernel> kernel,
                          std::vector<DeviceAllocation> tables,
-                         DeviceAllocation twiddle = {});
+                         DeviceAllocation twiddle = {},
+                         int64_t perm_span = 0);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -507,6 +508,7 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
   DeviceAllocation twiddle;
+  int64_t perm_span;
 };
 
 struct CompiledRawR2CFourStepHalfOutNode final : CompiledRawNode {
@@ -1051,7 +1053,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
 // boundary directly.  The other two axes run on the natural layout for small
 // cubes, use fused stores, or use separate transposes for large cubes.
 struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
-  enum class Layout { Strided, FusedStore, Transposed };
+  enum class Layout { Strided, FusedStore, Transposed, R2CFirstStore };
   CompiledRaw3DRealLeafNode(int64_t n0,
                             int64_t n1,
                             int64_t n2,
@@ -1232,6 +1234,8 @@ class TritonCompiler {
                                                                  const FFTRequest &request,
                                                                  int64_t batch);
   std::shared_ptr<JitKernel> compile_leaf_r2c_kernel(const LeafPlanNode &leaf, const FFTRequest &request);
+  std::shared_ptr<JitKernel> compile_leaf_r2c_permuted_store_kernel(
+      const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<JitKernel> compile_leaf_c2r_kernel(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<JitKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                           const FFTRequest &request,

@@ -1170,8 +1170,13 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
 CompiledRawR2CLeafNode::CompiledRawR2CLeafNode(int64_t length,
                                                std::shared_ptr<JitKernel> kernel,
                                                std::vector<DeviceAllocation> tables,
-                                               DeviceAllocation twiddle)
-    : length(length), kernel(std::move(kernel)), tables(std::move(tables)), twiddle(std::move(twiddle)) {
+                                               DeviceAllocation twiddle,
+                                               int64_t perm_span)
+    : length(length),
+      kernel(std::move(kernel)),
+      tables(std::move(tables)),
+      twiddle(std::move(twiddle)),
+      perm_span(perm_span) {
 }
 
 std::string CompiledRawR2CLeafNode::describe() const {
@@ -1179,7 +1184,8 @@ std::string CompiledRawR2CLeafNode::describe() const {
   oss << "CompiledRawR2CLeaf(n=" << length
       << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
-      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
+      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size()
+      << ", perm_span=" << perm_span << ")";
   return oss.str();
 }
 
@@ -1203,7 +1209,11 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
       args.push_back(JitKernelArg::device(table.get()));
     }
     args.push_back(JitKernelArg::i64(input_distance));
-    args.push_back(JitKernelArg::i64(output_distance));
+    if (perm_span > 0) {
+      args.push_back(JitKernelArg::i64(perm_span));
+    } else {
+      args.push_back(JitKernelArg::i64(output_distance));
+    }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
     kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
     return FLAGFFT_SUCCESS;
@@ -2777,6 +2787,19 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
     flagfftResult result;
 
     if (!inverse) {
+      if (layout == Layout::R2CFirstStore) {
+        // The R2C leaf already writes (n0,half,n1), so the long n1 axis is
+        // contiguous and its first full-cube transpose is unnecessary.
+        result = n2_real_fft->execute(input, temp2.get(), n2_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch);
+        result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch);
+        return FLAGFFT_SUCCESS;
+      }
       // The real leaf produces compact rows in natural (n0,n1,half) order.
       result = n2_real_fft->execute(input, temp1.get(), n2_context);
       if (result != FLAGFFT_SUCCESS) return result;

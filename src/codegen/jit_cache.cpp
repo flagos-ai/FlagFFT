@@ -228,6 +228,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::LeafR2C:
       kernel_kind = "leaf_r2c";
       break;
+    case KernelKind::LeafR2CPermutedStore:
+      kernel_kind = "leaf_r2c_permuted_store";
+      break;
     case KernelKind::LeafPackedR2C:
       kernel_kind = "leaf_packed_r2c";
       break;
@@ -396,7 +399,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 #endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafPermutedStore ||
-      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafPackedR2C ||
+      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafR2CPermutedStore ||
+      key.kind == KernelKind::LeafPackedR2C ||
       key.kind == KernelKind::LeafC2R ||
       key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafRaderFull ||
       key.kind == KernelKind::LeafRaderPrepare || key.kind == KernelKind::LeafRaderFinish ||
@@ -413,7 +417,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
                 << " --direction " << shell_quote(key.direction);
   }
-  if (key.kind == KernelKind::LeafPermutedStore) {
+  if (key.kind == KernelKind::LeafPermutedStore ||
+      key.kind == KernelKind::LeafR2CPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||

@@ -128,7 +128,7 @@ def _metadata(
     n2: int,
     dtype: str,
 ) -> dict[str, Any]:
-    if kernel_type == "leaf_permuted_store":
+    if kernel_type in {"leaf_permuted_store", "leaf_r2c_permuted_store"}:
         batch_per_block = permuted_store_batch_pack_for(plan)
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(

@@ -27,6 +27,7 @@ from .kernels_common import (
     _TLE_SMEM_SWIZZLE_SHIFT,
     LeafIoMode,
     LeafPlan,
+    _dtype_suffix,
     _is_double_dtype,
     _maca_backend_active,
     _mthreads_backend_active,
@@ -469,6 +470,7 @@ def _emit_permuted_store(
     pack: int,
     lane_block: int,
     dtype: str,
+    compact_length: int | None = None,
 ) -> list[str]:
     """Store one radix digit with the batch axis made contiguous.
 
@@ -488,6 +490,9 @@ def _emit_permuted_store(
         # that singleton layout with the wrong pointer lanes.  The ordinary
         # one-dimensional tensor is both semantically exact and cheaper.
         address = f"{base} * perm_k_stride + perm_gbase_scalar"
+        mask = "lane_mask"
+        if compact_length is not None:
+            mask = f"lane_mask & ({base} < {compact_length})"
         if _packed_maca_fp32_complex_io(dtype):
             return [
                 f"{indent}perm_addr{digit} = {address}",
@@ -496,18 +501,20 @@ def _emit_permuted_store(
                 f"| (tl.cast(tl.cast(i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)",
                 f"{indent}perm_ptr{digit} = tl.cast(out_ptr + perm_addr{digit} * 2, "
                 "tl.pointer_type(tl.uint64))",
-                f"{indent}tl.store(perm_ptr{digit}, perm_pair{digit}, mask=lane_mask)",
+                f"{indent}tl.store(perm_ptr{digit}, perm_pair{digit}, mask={mask})",
             ]
         return [
             f"{indent}perm_addr{digit} = {address}",
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, "
-            f"mask=lane_mask)",
+            f"mask={mask})",
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
-            f"mask=lane_mask)",
+            f"mask={mask})",
         ]
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
         mask = "perm_store_mask"
+        if compact_length is not None:
+            mask = f"{mask} & ({base}[:, None] < {compact_length})"
     if _mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1":
         return [
             f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
@@ -1195,7 +1202,7 @@ def _emit_stage_block(
         lines.extend(
             _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
         )
-        if io_mode == "permuted_store":
+        if io_mode in {"permuted_store", "permuted_store_r2c"}:
             active_lanes = max(stage_lanes) if stage_lanes is not None else lanes
             lines.append(f"{indent}lane_only = tl.arange(0, {lane_block})")
             lines.append(f"{indent}perm_lane_mask = lane_only < {active_lanes}")
@@ -1255,7 +1262,7 @@ def _emit_stage_block(
                     f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2 + 1, "
                     f"mask=lane_mask, other={zero})"
                 )
-            elif io_mode == "contiguous_r2c":
+            elif io_mode in {"contiguous_r2c", "permuted_store_r2c"}:
                 lines.append(
                     f"{indent}r{j} = tl.load(in_ptr + input_batch_base + in{j}, mask=lane_mask, other={zero})"
                 )
@@ -1692,10 +1699,17 @@ def _emit_stage_block(
 
     for j in range(radix):
         if is_last:
-            if io_mode == "permuted_store":
+            if io_mode in {"permuted_store", "permuted_store_r2c"}:
+                compact_length = n // 2 + 1 if io_mode == "permuted_store_r2c" else None
                 lines.extend(
                     _emit_permuted_store(
-                        indent, j, factors, smem_pack, lane_block, dtype
+                        indent,
+                        j,
+                        factors,
+                        smem_pack,
+                        lane_block,
+                        dtype,
+                        compact_length=compact_length,
                     )
                 )
                 continue
@@ -2203,6 +2217,8 @@ def _leaf_kernel_params_for_io(
         params.append("outer_stride")
     if io_mode == "permuted_store":
         params.append("perm_span")
+    elif io_mode == "permuted_store_r2c":
+        params.extend(("input_distance", "perm_span"))
     if io_mode == "bluestein_prepare_leaf":
         params.insert(1, "chirp_ptr")
     elif io_mode == "bluestein_finish_leaf":
@@ -2751,6 +2767,7 @@ def _build_leaf_kernel_source_for_io(
         "contiguous",
         "strided",
         "permuted_store",
+        "permuted_store_r2c",
         "contiguous_r2c",
         "packed_r2c",
         "contiguous_c2r",
@@ -2761,7 +2778,7 @@ def _build_leaf_kernel_source_for_io(
         "rader_prepare_leaf",
         "rader_finish_leaf",
     }
-    if io_mode == "permuted_store":
+    if io_mode in {"permuted_store", "permuted_store_r2c"}:
         batch_pack = permuted_store_batch_pack_for(plan)
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
@@ -2887,6 +2904,11 @@ def _build_leaf_kernel_source_for_io(
             f"permuted_store_{perm_form}_{kernel_prefix}_kernel_{suffix}"
             f"_l{plan.lanes}_b{lane_block}"
         )
+    elif io_mode == "permuted_store_r2c":
+        kernel_name = (
+            f"permuted_store_r2c_{perm_form}_{suffix}"
+            f"_l{plan.lanes}_b{lane_block}_{_dtype_suffix(plan.dtype)}"
+        )
     else:
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = (
@@ -2966,7 +2988,9 @@ def _build_leaf_kernel_source_for_io(
         if io_mode in {"contiguous_r2c", "packed_r2c", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
             body.append("    output_batch_base = current_batch * output_distance")
-        if io_mode == "permuted_store":
+        elif io_mode == "permuted_store_r2c":
+            body.append("    input_batch_base = current_batch * input_distance")
+        if io_mode in {"permuted_store", "permuted_store_r2c"}:
             # `perm_gbase` is the output address of each batch slot's row start
             # and `perm_k_stride` the stride of the FFT output index; the store
             # adds the two.  The two forms differ in which of the row index's
@@ -2982,7 +3006,10 @@ def _build_leaf_kernel_source_for_io(
                 body.append("    perm_batch = batch_id + perm_slot")
                 body.append("    perm_i0 = perm_batch // perm_span")
                 body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
-                body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
+                permuted_axis_length = n // 2 + 1 if io_mode == "permuted_store_r2c" else n
+                body.append(
+                    f"    perm_gbase = perm_i0 * ({permuted_axis_length} * perm_span) + perm_i1"
+                )
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
             if batch_pack == 1:
@@ -3006,7 +3033,7 @@ def _build_leaf_kernel_source_for_io(
                 else:
                     body.append(
                         f"    perm_gbase_scalar = perm_i0_scalar * "
-                        f"({n} * perm_span) + perm_i1_scalar"
+                        f"({permuted_axis_length} * perm_span) + perm_i1_scalar"
                     )
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:
