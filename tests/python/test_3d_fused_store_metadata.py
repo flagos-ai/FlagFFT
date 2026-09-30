@@ -193,3 +193,34 @@ def test_hcu_r2c_permuted_store_uses_first_axis_pack_override(monkeypatch):
         assert "batch_id = pid * 8" in source
     finally:
         reset_profile(token)
+
+
+def test_hcu_strided_permuted_store_uses_middle_axis_pack_override(monkeypatch):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_MIDDLE_PACK", "8")
+    token = set_profile(
+        BackendProfile(
+            backend="hcu", device_arch="gfx936", warp_size=64,
+            max_threads_per_block=1024, max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=256, factors=(16, 16), remainder=1, lanes=16,
+            num_warps=1, generic_radices=(), smem_size=256,
+        )
+        kernel_name, source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="strided_permuted_store", perm_form="inner_middle"
+        )
+        metadata = _metadata(
+            module_path=Path("generated.py"), kernel_name=kernel_name,
+            arg_names=["in_ptr", "out_ptr", "outer_stride", "perm_span", "nbatch"],
+            plan=plan, kernel_type="leaf_strided_permuted_store", n1=0, n2=0,
+            dtype="complex64",
+        )
+        compile(source, "<strided_middle_axis_pack>", "exec")
+        assert "permuted_store_inner_middle_" in kernel_name
+        assert metadata["batch_per_block"] == 8
+        assert "batch_id = pid * 8" in source
+    finally:
+        reset_profile(token)
