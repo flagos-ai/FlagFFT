@@ -120,6 +120,9 @@ def emit_fused_16_cube_kernel(*, dtype: str, direction: str, out_dir: Path) -> d
     radix-two FFTs; this trades redundant cached reads for one launch.
     """
     scalar = "tl.float64" if dtype == "complex128" else "tl.float32"
+    bits = 4
+    n = 16
+    quarter_r, quarter_i = ("bi", "-br") if direction == "forward" else ("-bi", "br")
     source = f"""
 @triton.jit
 def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):

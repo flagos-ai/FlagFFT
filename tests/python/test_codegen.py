@@ -761,6 +761,17 @@ def test_hcu_tiled_transpose3d_can_store_complex_pairs(kernels) -> None:
     assert "tl.store(out_ptr + pair_base, dst_pair, mask=store_mask[:, :, None])" in source
 
 
+def test_fused_16_cube_codegen_resolves_template_parameters(tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_16_cube_kernel
+
+    metadata = emit_fused_16_cube_kernel(dtype="complex64", direction="forward", out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+
+    assert source.count("tl.static_range(4)") == 3
+    assert "{bits}" not in source
+    assert "{quarter_r}" not in source
+
+
 def test_hcu_tiled_transpose3d_tile_override(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
