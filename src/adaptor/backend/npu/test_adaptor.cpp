@@ -66,6 +66,8 @@ namespace {
   struct SipPlan {
     AsdSip::asdFftHandle handle = nullptr;
     void* workspace = nullptr;
+    AsdSip::asdFftHandle companion_handle = nullptr;
+    void* companion_workspace = nullptr;
     aclTensor* input_tensor = nullptr;
     aclTensor* output_tensor = nullptr;
     void* input_ptr = nullptr;
@@ -78,6 +80,8 @@ namespace {
     ~SipPlan() {
       if (input_tensor != nullptr) (void)aclDestroyTensor(input_tensor);
       if (output_tensor != nullptr) (void)aclDestroyTensor(output_tensor);
+      if (companion_workspace != nullptr) (void)aclrtFree(companion_workspace);
+      if (companion_handle != nullptr) (void)AsdSip::asdFftDestroy(companion_handle);
       if (workspace != nullptr) (void)aclrtFree(workspace);
       if (handle != nullptr) (void)AsdSip::asdFftDestroy(handle);
     }
@@ -126,8 +130,8 @@ namespace {
     plan.output_ptr = output;
   }
 
-  void make_plan(RefPlanHandle& target, std::vector<int64_t> dimensions,
-                 flagfftType type, int batch) {
+void make_plan(RefPlanHandle& target, std::vector<int64_t> dimensions,
+               flagfftType type, int batch) {
     if (batch <= 0 || dimensions.empty() || dimensions.size() > 3 ||
         std::any_of(dimensions.begin(), dimensions.end(), [](int64_t n) { return n <= 0; })) {
       throw std::runtime_error("invalid SiP FFT reference shape or batch");
@@ -142,34 +146,48 @@ namespace {
     if (type == FLAGFFT_C2R) plan->input_shape.back() = dimensions.back() / 2 + 1;
     if (type == FLAGFFT_R2C) plan->output_shape.back() = dimensions.back() / 2 + 1;
 
-    check_sip(AsdSip::asdFftCreate(plan->handle), "asdFftCreate");
     const auto fft_type = sip_type(type);
-    const auto direction = sip_direction(target.direction());
-    switch (dimensions.size()) {
-      case 1:
-        check_sip(AsdSip::asdFftMakePlan1D(plan->handle, dimensions[0], fft_type,
-                                            direction, batch, AsdSip::ASCEND_FFT_HORIZONTAL),
-                  "asdFftMakePlan1D");
-        break;
-      case 2:
-        check_sip(AsdSip::asdFftMakePlan2D(plan->handle, dimensions[0], dimensions[1],
-                                            fft_type, direction, batch), "asdFftMakePlan2D");
-        break;
-      case 3:
-        check_sip(AsdSip::asdFftMakePlan3D(plan->handle, dimensions[0], dimensions[1],
-                                            dimensions[2], fft_type, direction, batch),
-                  "asdFftMakePlan3D");
-        break;
+    auto create_handle = [&](AsdSip::asdFftHandle& handle, void*& workspace, int direction_value) {
+      check_sip(AsdSip::asdFftCreate(handle), "asdFftCreate");
+      const auto direction = sip_direction(direction_value);
+      switch (dimensions.size()) {
+        case 1:
+          check_sip(AsdSip::asdFftMakePlan1D(handle, dimensions[0], fft_type,
+                                              direction, batch, AsdSip::ASCEND_FFT_HORIZONTAL),
+                    "asdFftMakePlan1D");
+          break;
+        case 2:
+          check_sip(AsdSip::asdFftMakePlan2D(handle, dimensions[0], dimensions[1],
+                                              fft_type, direction, batch), "asdFftMakePlan2D");
+          break;
+        case 3:
+          check_sip(AsdSip::asdFftMakePlan3D(handle, dimensions[0], dimensions[1],
+                                              dimensions[2], fft_type, direction, batch),
+                    "asdFftMakePlan3D");
+          break;
+      }
+      std::size_t workspace_size = 0;
+      check_sip(AsdSip::asdFftGetWorkspaceSize(handle, workspace_size),
+                "asdFftGetWorkspaceSize");
+      if (workspace_size != 0) {
+        check_acl(aclrtMalloc(&workspace, workspace_size, ACL_MEM_MALLOC_HUGE_FIRST),
+                  "aclrtMalloc(SiP workspace)");
+      }
+      check_sip(AsdSip::asdFftSetWorkspace(handle, workspace), "asdFftSetWorkspace");
+    };
+
+    const bool paired_batched_c2c_16k = type == FLAGFFT_C2C && dimensions.size() == 1 &&
+                                        dimensions[0] == 16384 && batch == 64;
+    if (paired_batched_c2c_16k && target.direction() == FLAGFFT_INVERSE) {
+      // Match FlagFFT's forward-then-inverse SiP plan allocation order. On
+      // CANN 9, a lone 16384-point C2C batch-64 reference plan can leave
+      // nondeterministic batch outputs; the paired plan layout is stable.
+      create_handle(plan->companion_handle, plan->companion_workspace, FLAGFFT_FORWARD);
     }
-    std::size_t workspace_size = 0;
-    check_sip(AsdSip::asdFftGetWorkspaceSize(plan->handle, workspace_size),
-              "asdFftGetWorkspaceSize");
-    if (workspace_size != 0) {
-      check_acl(aclrtMalloc(&plan->workspace, workspace_size, ACL_MEM_MALLOC_HUGE_FIRST),
-                "aclrtMalloc(SiP workspace)");
+    create_handle(plan->handle, plan->workspace, target.direction());
+    if (paired_batched_c2c_16k && target.direction() == FLAGFFT_FORWARD) {
+      create_handle(plan->companion_handle, plan->companion_workspace, FLAGFFT_INVERSE);
     }
-    check_sip(AsdSip::asdFftSetWorkspace(plan->handle, plan->workspace),
-              "asdFftSetWorkspace");
     target.replace(reinterpret_cast<std::uintptr_t>(plan.release()));
   }
 
@@ -262,7 +280,11 @@ void ref_plan_3d(RefPlanHandle& plan, int nx, int ny, int nz, flagfftType type) 
 }
 
 void ref_set_stream(RefPlanHandle& plan, flagfftStream_t stream) {
-  check_sip(AsdSip::asdFftSetStream(as_plan(plan).handle, stream), "asdFftSetStream");
+  SipPlan& sip = as_plan(plan);
+  check_sip(AsdSip::asdFftSetStream(sip.handle, stream), "asdFftSetStream");
+  if (sip.companion_handle != nullptr) {
+    check_sip(AsdSip::asdFftSetStream(sip.companion_handle, stream), "asdFftSetStream(companion)");
+  }
 }
 
 void ref_exec_c2c(RefPlanHandle& plan, flagfftComplex* idata,
