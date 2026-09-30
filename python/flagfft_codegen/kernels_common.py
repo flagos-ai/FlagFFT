@@ -500,6 +500,17 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
         1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
     )
     target_pack = 2 if _mthreads_backend_active() and _is_double_dtype(plan.dtype) else 4
+    # C550 coalesces each 16-thread subgroup as a 128-byte transaction.  The
+    # permuted store makes batch slots the contiguous axis, so a 16-element
+    # complex64 pack fills one transaction.  Limit this to the MACA rank-3
+    # fused-store path; ordinary contiguous leaves have separate pack tuning.
+    if (
+        _declared_backend() == "maca"
+        and maca_3d_default_enabled()
+        and plan.dtype == "complex64"
+        and plan.length in {64, 128}
+    ):
+        target_pack = 16
     if _mthreads_backend_active():
         override = os.getenv("FLAGFFT_MUSA_3D_PACK")
         if override is not None and override != "auto":

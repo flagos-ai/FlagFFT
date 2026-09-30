@@ -1400,10 +1400,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   }
 
   // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
-  // transpose beats the packed permuted-store leaf.  FP64 measured slower
-  // with this exchange, so it stays on the fully fused path.  The short
-  // outer axes keep their fused stores, and the axes commute for inverse.
-  if (request.device_type == "musa" && request.input_dtype == "complex64" &&
+  // transpose beats the packed permuted-store leaf.  On MACA, the same hybrid
+  // path is opt-in through FLAGFFT_3D_FUSED_STORE: the n1 permuted store has
+  // only one batch slot under the shared-memory cap, so its stores stride by
+  // the full n0*n2 batch.  The short outer axes keep fused stores; their MACA
+  // pack is 16 complex64 values to fill a C550 128-byte coalescing group.
+  if ((request.device_type == "musa" ||
+       (request.device_type == "maca" && fused_3d_store_enabled())) &&
+      request.input_dtype == "complex64" &&
       n2_leaf && n1_leaf && n0_leaf &&
       fused_3d_store_enabled() && n1 >= 1024 &&
       n1 >= 4 * std::max(n0, n2) &&

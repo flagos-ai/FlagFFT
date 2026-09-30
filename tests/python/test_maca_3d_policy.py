@@ -1,7 +1,12 @@
 """MACA rank-3 packing remains scoped to rank-3 code generation."""
 
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
-from flagfft_codegen.kernels_common import LeafPlan, _maca_knob, contiguous_batch_pack_for
+from flagfft_codegen.kernels_common import (
+    LeafPlan,
+    _maca_knob,
+    contiguous_batch_pack_for,
+    permuted_store_batch_pack_for,
+)
 from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 
 
@@ -21,6 +26,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     single = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex64")
     double = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex128")
     single128 = LeafPlan(128, (4, 4, 4, 2), 1, 32, 2, (), 128, dtype="complex64")
+    long_middle = LeafPlan(2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex64")
     try:
         off = set_maca_3d_default(False)
         try:
@@ -28,6 +34,8 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(double_short) == 1
             assert contiguous_batch_pack_for(single) == 1
             assert contiguous_batch_pack_for(double) == 1
+            assert permuted_store_batch_pack_for(short) == 4
+            assert permuted_store_batch_pack_for(single128) == 4
             assert _maca_knob("EXCHANGE") == ""
             assert _maca_knob("VEC_IO", "0") == "0"
         finally:
@@ -39,6 +47,11 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
             assert contiguous_batch_pack_for(single128) == 2
+            assert permuted_store_batch_pack_for(short) == 16
+            assert permuted_store_batch_pack_for(single128) == 16
+            # The 2048-point leaf consumes enough shared memory to cap its
+            # permuted-store pack at one; the long-axis hybrid avoids that.
+            assert permuted_store_batch_pack_for(long_middle) == 1
             assert _maca_knob("VEC_IO", "0") == "packed"
             from flagfft_codegen.kernels_leaf import _packed_maca_fp32_complex_io
             assert _packed_maca_fp32_complex_io("complex64")
