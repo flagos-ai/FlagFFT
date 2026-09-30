@@ -115,7 +115,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     }
   }
   const bool measured_npu_single_c2c =
-      request.device_type == "npu" && request.device_arch == "102" &&
+      request.device_type == "npu" &&
       request.raw_dim == 1 && request.origin_rank == 1 && request.requested_n == n &&
       request.batch == 1 && !request.real_transform &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64";
