@@ -1,7 +1,5 @@
 """MACA rank-3 packing remains scoped to rank-3 code generation."""
 
-import pytest
-
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
 from flagfft_codegen.kernels_common import LeafPlan, _maca_knob, contiguous_batch_pack_for
 from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
@@ -86,47 +84,6 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         assert fp64["num_warps"] == 4
     finally:
         set_codegen_target("")
-
-
-def test_maca_3d_n32_warp_override(monkeypatch):
-    from pathlib import Path
-
-    from flagfft_codegen.metadata import _metadata
-    from flagfft_codegen.target import set_codegen_target
-
-    monkeypatch.delenv("FLAGFFT_MACA_3D_N32_WARPS", raising=False)
-    profile = set_profile(
-        BackendProfile.from_device(
-            {"backend": "maca", "device_arch": "102", "warp_size": 64,
-             "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536}
-        )
-    )
-    enabled = set_maca_3d_default(True)
-    set_codegen_target("maca:102:64")
-    plan = LeafPlan(32, (32,), 1, 1, 2, (), 0, dtype="complex64")
-    args = {
-        "module_path": Path("unused.py"),
-        "kernel_name": "fft_kernel_32_l1_b1",
-        "arg_names": ["in_ptr", "out_ptr"],
-        "plan": plan,
-        "kernel_type": "leaf_strided",
-        "n1": 0,
-        "n2": 0,
-        "dtype": "complex64",
-    }
-    try:
-        assert _metadata(**args)["num_warps"] == 2
-        monkeypatch.setenv("FLAGFFT_MACA_3D_N32_WARPS", "4")
-        assert _metadata(**args)["num_warps"] == 4
-        monkeypatch.setenv("FLAGFFT_MACA_3D_N32_WARPS", "1")
-        with pytest.raises(ValueError, match="must be 2, 4 or 8"):
-            _metadata(**args)
-    finally:
-        set_codegen_target("")
-        reset_maca_3d_default(enabled)
-        reset_profile(profile)
-
-
 def test_maca_environment_fingerprint_separates_variants():
     from flagfft_codegen.cli import _maca_environment_fingerprint
 

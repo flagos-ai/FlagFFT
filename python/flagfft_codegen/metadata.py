@@ -45,7 +45,6 @@ from .registry import (
     STRIDED_FOUR_STEP_KERNELS,
     is_four_step_twiddle_eligible,
 )
-from .target import maca_3d_default_enabled
 
 
 def _pointer_signature(dtype: str) -> str:
@@ -181,19 +180,6 @@ def _metadata(
     if maca_backend:
         # One warp triggers unsupported shuffle lowering in multi-stage leaves.
         num_warps = max(2, num_warps)
-    if (
-        maca_backend
-        and maca_3d_default_enabled()
-        and kernel_type in {"leaf", "leaf_strided"}
-        and plan.length == 32
-        and plan.factors == (32,)
-    ):
-        maca_n32_warps = os.environ.get("FLAGFFT_MACA_3D_N32_WARPS")
-        if maca_n32_warps is not None:
-            if maca_n32_warps not in {"2", "4", "8"}:
-                raise ValueError("FLAGFFT_MACA_3D_N32_WARPS must be 2, 4 or 8")
-            num_warps = int(maca_n32_warps)
-            profile.validate(num_warps)
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
         profile.validate(num_warps)
