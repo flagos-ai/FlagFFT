@@ -7,7 +7,8 @@ from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 
 def test_maca_3d_packing_scope_and_override(monkeypatch):
     for name in ("FLAGFFT_MACA_BATCH_PACK", "FLAGFFT_MACA_3D_N64_PACK",
-                 "FLAGFFT_MACA_3D_N128_PACK", "FLAGFFT_MACA_EXCHANGE"):
+                 "FLAGFFT_MACA_3D_N128_PACK", "FLAGFFT_MACA_EXCHANGE",
+                 "FLAGFFT_MACA_VEC_IO"):
         monkeypatch.delenv(name, raising=False)
     profile = set_profile(
         BackendProfile.from_device(
@@ -28,6 +29,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single) == 1
             assert contiguous_batch_pack_for(double) == 1
             assert _maca_knob("EXCHANGE") == ""
+            assert _maca_knob("VEC_IO", "0") == "0"
         finally:
             reset_maca_3d_default(off)
         on = set_maca_3d_default(True)
@@ -37,6 +39,17 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
             assert contiguous_batch_pack_for(single128) == 2
+            assert _maca_knob("VEC_IO", "0") == "packed"
+            from flagfft_codegen.kernels_leaf import _packed_maca_fp32_complex_io
+            assert _packed_maca_fp32_complex_io("complex64")
+            assert not _packed_maca_fp32_complex_io("complex128")
+            monkeypatch.setenv("FLAGFFT_MACA_VEC_IO", "0")
+            assert _maca_knob("VEC_IO", "0") == "0"
+            assert not _packed_maca_fp32_complex_io("complex64")
+            monkeypatch.setenv("FLAGFFT_MACA_VEC_IO", "1")
+            assert _maca_knob("VEC_IO", "0") == "1"
+            assert not _packed_maca_fp32_complex_io("complex64")
+            monkeypatch.delenv("FLAGFFT_MACA_VEC_IO")
             monkeypatch.setenv("FLAGFFT_MACA_3D_N128_PACK", "1")
             assert contiguous_batch_pack_for(single128) == 1
             monkeypatch.setenv("FLAGFFT_MACA_3D_N128_PACK", "4")

@@ -291,8 +291,8 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
 def _maca_knob(name: str, default: str = "") -> str:
     """Read a MACA code-generation override.
 
-    The native compiler scopes the measured 1D single, 1D batch and 2D single
-    policies. The 2D scope also covers batched row/column kernels. These
+    The native compiler scopes measured 1D single, 1D batch, 2D single and
+    3D policies. The 2D scope also covers batched row/column kernels. These
     supply defaults while preserving an explicit environment override for
     A/B testing and rollback.
     Direct Python code-generation calls remain on the historical defaults.
@@ -314,8 +314,11 @@ def _maca_knob(name: str, default: str = "") -> str:
     tail_default = resource_default(name)
     if tail_default is not None:
         return tail_default
-    if maca_3d_default_enabled() and name == "EXCHANGE":
-        return "direct_all"
+    if maca_3d_default_enabled():
+        if name == "EXCHANGE":
+            return "direct_all"
+        if name == "VEC_IO":
+            return "packed"
     if maca_2d_single_default_enabled() and name == "2D_TRANSPOSE":
         return "packed"
     if maca_1d_batch_default_enabled():
