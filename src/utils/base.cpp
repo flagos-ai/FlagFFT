@@ -208,6 +208,18 @@ std::string kernel_kind_name(KernelKind kind) {
       return "transpose3d";
     case KernelKind::Fused16Plane:
       return "fused_16_plane";
+    case KernelKind::Fused32Plane:
+      return "fused_32_plane";
+    case KernelKind::Fused16RealPlane:
+      return "fused_16_real_plane";
+    case KernelKind::Fused32RealPlane:
+      return "fused_32_real_plane";
+    case KernelKind::Fused16Cube:
+      return "fused_16_cube";
+    case KernelKind::Fused16RealCube:
+      return "fused_16_real_cube";
+    case KernelKind::Fused32Column:
+      return "fused_32_column";
   }
   return "unknown";
 }

@@ -108,8 +108,9 @@ class BackendProfile:
         return self.warps_for(hint * 32)
 
     def validate(self, num_warps):
+        legal_warps = (1, 2, 4, 8, 16) if self.backend == "ix" else (1, 2, 4, 8)
         if (
-            num_warps not in (1, 2, 4, 8)
+            num_warps not in legal_warps
             or num_warps * self.warp_size > self.max_threads_per_block
         ):
             raise ValueError(f"illegal launch: {num_warps} warps on {self}")

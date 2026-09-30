@@ -33,7 +33,11 @@ from .emit import (
     emit_jit_kernel,
 )
 from .metadata import _csv_ints
-from .kernels_small_3d import emit_fused_16_plane_kernel
+from .kernels_small_3d import (
+    emit_fused_16_cube_kernel,
+    emit_fused_32_column_kernel,
+    emit_fused_plane_kernel,
+)
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -107,7 +111,7 @@ def main() -> None:
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument(
         "--perm-form",
-        choices=("outer", "inner"),
+        choices=("outer", "inner", "permuted"),
         default="outer",
         help="axis placement for the permuted store's fused permutation",
     )
@@ -299,9 +303,23 @@ def main() -> None:
             out_dir=args.out_dir,
         )
     elif spec.family == SMALL_3D:
-        metadata = emit_fused_16_plane_kernel(
-            dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
-        )
+        if args.kernel == "fused_32_column":
+            metadata = emit_fused_32_column_kernel(
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+                columns=args.length or 16,
+            )
+        elif args.kernel.endswith("cube"):
+            metadata = emit_fused_16_cube_kernel(
+                real_input="real" in args.kernel,
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
+            )
+        else:
+            metadata = emit_fused_plane_kernel(
+                n=16 if args.kernel.startswith("fused_16_") else 32,
+                real_input="real" in args.kernel,
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+                target=args.target,
+            )
     elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:
             parser.error(f"--kernel {args.kernel} requires --length")

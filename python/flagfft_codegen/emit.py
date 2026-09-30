@@ -31,6 +31,7 @@ from .artifacts import write_text_atomic
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
+    _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
     _zero_other,
@@ -544,6 +545,11 @@ def emit_jit_kernel(
     perm_form: str = "outer",
     out_dir: Path,
 ) -> dict[str, Any]:
+    if (kernel == "leaf_packed_r2c" and _ix_backend_active()
+            and os.getenv("FLAGFFT_IX_3D_PACKED_R2C") == "1"):
+        # Each JIT source process emits one kernel.  Keep the portable
+        # exchange required by this packed boundary local to that process.
+        os.environ["FLAGFFT_IX_PORTABLE_LEAF"] = "1"
     plan = LeafPlan(
         length=length,
         factors=factors,
@@ -557,6 +563,11 @@ def emit_jit_kernel(
     )
     spec = kernel_spec(kernel)
     if spec.is_leaf_like:
+        io_mode = (
+            "permuted_r2c"
+            if kernel == "leaf_r2c" and perm_form == "permuted"
+            else spec.io_mode
+        )
         if kernel in FOUR_STEP_ROW_NAMES and plan.length != four_step_n1:
             raise ValueError(
                 f"four-step {kernel} kernel length must equal n1: "
@@ -569,7 +580,7 @@ def emit_jit_kernel(
             )
         kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
             plan,
-            io_mode=spec.io_mode,
+            io_mode=io_mode,
             prime_n=prime_n,
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
@@ -757,13 +768,23 @@ def _emit_tiled_transpose3d_jit_kernel(
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
     elif dtype == "complex64" and _portable_transpose3d_supported():
+        tile = 32
+        packed_complex = False
+        if _ix_backend_active():
+            tile = 16
+            ix_tile = os.getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE")
+            if ix_tile is not None:
+                if ix_tile not in {"8", "16", "32"}:
+                    raise ValueError("FLAGFFT_IX_3D_TRANSPOSE_TILE must be 8, 16 or 32")
+                tile = int(ix_tile)
+            packed_complex = os.getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE") == "1"
         (
             kernel_name,
             kernel_source,
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=32
+            n0, n1, n2, order, dtype, tile=tile, packed_complex=packed_complex
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(

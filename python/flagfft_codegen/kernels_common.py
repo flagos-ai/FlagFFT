@@ -204,6 +204,7 @@ LeafIoMode = Literal[
     "strided",
     "permuted_store",
     "contiguous_r2c",
+    "permuted_r2c",
     "packed_r2c",
     "contiguous_c2r",
     "bluestein_prepare_leaf",
@@ -482,6 +483,12 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
         if override is not None and override != "auto":
             if override not in {"1", "2", "4", "8"}:
                 raise ValueError("FLAGFFT_MUSA_3D_PACK must be 1, 2, 4 or 8")
+            target_pack = int(override)
+    if _ix_backend_active():
+        override = os.getenv("FLAGFFT_IX_3D_PACK")
+        if override is not None and override != "auto":
+            if override not in {"1", "2", "4", "8"}:
+                raise ValueError("FLAGFFT_IX_3D_PACK must be 1, 2, 4 or 8")
             target_pack = int(override)
     return _floor_power_of_two(max(1, min(target_pack, smem_pack)))
 

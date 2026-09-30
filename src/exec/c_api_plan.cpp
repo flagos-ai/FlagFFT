@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cstdio>
+#include <cstdlib>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
@@ -316,6 +317,36 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
             compiler.compile_raw_3d_node(three_dim, plan->executable.forward_request, plan->desc.batch);
         plan->executable.inverse =
             compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
+      }
+      const char *ix_graph = std::getenv("FLAGFFT_IX_3D_GRAPH");
+      const char *ix_large_graph = std::getenv("FLAGFFT_IX_3D_GRAPH_LARGE");
+      const bool small_graph = (ix_graph == nullptr || (ix_graph[0] == '1' && ix_graph[1] == '\0')) &&
+          three_dim->n0 <= 32 && three_dim->n1 <= 32 && three_dim->n2 <= 32;
+      const bool large_graph = ix_large_graph != nullptr && ix_large_graph[0] == '1' &&
+          ix_large_graph[1] == '\0';
+      const char *ix_prime_graph = std::getenv("FLAGFFT_IX_3D_PRIME_GRAPH");
+      const bool prime_graph =
+          (ix_prime_graph == nullptr || (ix_prime_graph[0] == '1' && ix_prime_graph[1] == '\0')) &&
+          three_dim->n0 == 16 && three_dim->n1 == 997 && three_dim->n2 == 64 &&
+          plan->desc.batch == 1 &&
+          (plan->desc.type == FLAGFFT_C2C || plan->desc.type == FLAGFFT_R2C);
+      const bool screen_ix_graph = adaptor::backend_name() == "ix" &&
+          plan->executable.forward_request.device_arch == "71" &&
+          (small_graph || large_graph || prime_graph) &&
+          std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr && plan->desc.batch <= 4 &&
+          (plan->desc.type == FLAGFFT_C2C || plan->desc.type == FLAGFFT_R2C ||
+           plan->desc.type == FLAGFFT_C2R);
+      // Capturing a single fused cube kernel costs more than its direct launch.
+      const bool single_cube =
+          std::dynamic_pointer_cast<CompiledRaw3DFusedCubeNode>(plan->executable.forward) != nullptr ||
+          std::dynamic_pointer_cast<CompiledRaw3DFusedCubeNode>(plan->executable.inverse) != nullptr;
+      if (screen_ix_graph && !single_cube) {
+        if (plan->executable.forward) {
+          plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+        }
+        if (plan->executable.inverse) {
+          plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+        }
       }
     } else {
       // 1D FFT: original compilation

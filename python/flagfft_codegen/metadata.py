@@ -35,6 +35,7 @@ from .kernels_common import (
     four_step_col_inner_pack_for,
     four_step_row_inner_pack_for,
     lane_block_for,
+    permuted_store_batch_pack_for,
     use_four_step_row_fused_twiddle,
 )
 from .registry import (
@@ -127,11 +128,16 @@ def _metadata(
     n2: int,
     dtype: str,
 ) -> dict[str, Any]:
-    batch_per_block = (
-        contiguous_batch_pack_for(plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"})
-        if kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS
-        else 1
-    )
+    if kernel_type == "leaf_permuted_store" and _ix_backend_active():
+        # The generated kernel advances batch_id by this pack.  Launch the
+        # same number of rows per CTA that the source actually processes.
+        batch_per_block = permuted_store_batch_pack_for(plan)
+    elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
+        batch_per_block = contiguous_batch_pack_for(
+            plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}
+        )
+    else:
+        batch_per_block = 1
     stage_lanes = cooperative_stage_lanes_for(plan)
     tle_fused_twiddle = is_four_step_twiddle_eligible(
         kernel_type
