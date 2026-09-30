@@ -154,8 +154,8 @@ def _metadata(
     if _hcu_backend_active() and kernel_type == "leaf" and plan.length == 2048:
         middle_batch_pack = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
         if middle_batch_pack != "auto":
-            if middle_batch_pack not in {"1", "2", "4", "8"}:
-                raise ValueError("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4 or 8")
+            if middle_batch_pack not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4, 8, 16 or 32")
             batch_per_block = int(middle_batch_pack)
     stage_lanes = cooperative_stage_lanes_for(plan)
     tle_fused_twiddle = is_four_step_twiddle_eligible(

@@ -263,8 +263,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_FIRST_PACK must be auto, 1, 2, 4, 8, 16 or 32")
         if middle_pack not in valid_packs:
             parser.error("FLAGFFT_HCU_3D_MIDDLE_PACK must be auto, 1, 2, 4, 8, 16 or 32")
-        if middle_batch_pack not in {"auto", "1", "2", "4", "8"}:
-            parser.error("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4 or 8")
+        if middle_batch_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
+            parser.error("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4, 8, 16 or 32")
         if final_warps not in {"auto", "1", "2", "4", "8"}:
             parser.error("FLAGFFT_HCU_3D_FINAL_WARPS must be auto, 1, 2, 4 or 8")
         if final_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
