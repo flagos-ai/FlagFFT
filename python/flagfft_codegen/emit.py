@@ -32,6 +32,7 @@ from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
     _hcu_backend_active,
+    _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
     _zero_other,
@@ -784,18 +785,29 @@ def _emit_tiled_transpose3d_jit_kernel(
             )
         )
     ):
+        tile = 32 if dtype == "complex64" else 16
+        packed_complex = False
+        pair_store = False
+        if _ix_backend_active():
+            tile = 16
+            ix_tile = os.getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE")
+            if ix_tile is not None:
+                if ix_tile not in {"8", "16", "32"}:
+                    raise ValueError("FLAGFFT_IX_3D_TRANSPOSE_TILE must be 8, 16 or 32")
+                tile = int(ix_tile)
+            packed_complex = os.getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE") == "1"
+        elif _hcu_backend_active():
+            if dtype == "complex64":
+                tile = int(os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32"))
+            pair_store = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1"
         (
             kernel_name,
             kernel_source,
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype,
-            tile=(int(os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32"))
-                  if dtype == "complex64" and _hcu_backend_active()
-                  else (32 if dtype == "complex64" else 16)),
-            pair_store=_hcu_backend_active()
-            and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1",
+            n0, n1, n2, order, dtype, tile=tile,
+            packed_complex=packed_complex, pair_store=pair_store,
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
