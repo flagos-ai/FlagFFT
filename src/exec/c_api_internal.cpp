@@ -14,7 +14,18 @@
 
 #include "c_api_internal.hpp"
 
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+#include "adaptor/backend/npu/sip_executor.hpp"
+#endif
+
 namespace flagfft {
+
+FlagFFTPlan::~FlagFFTPlan() {
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+  adaptor::npu::sip_plan_destroy(npu_sip_forward);
+  adaptor::npu::sip_plan_destroy(npu_sip_inverse);
+#endif
+}
 
 flagfftResult type_metadata(flagfftType type,
                             FlagFFTPrecision &precision,

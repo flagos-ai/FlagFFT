@@ -299,10 +299,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
     std::vector<std::shared_ptr<JitKernel>> kernels;
     int64_t stage_span = 1;
-    // A 128-butterfly tile leaves these single transforms on only one or two
-    // NPU programs. Smaller tiles distribute them across the vector cores.
-    int64_t butterfly_block =
-        batch == 1 && (stockham->length == 1024 || stockham->length == 2048) ? 16 : 128;
+    // Small single transforms use smaller tiles to expose more NPU programs;
+    // batch-64 1024/2048 transforms use the best measured 32/64 tile sizes.
+    int64_t butterfly_block = 128;
+    if (stockham->length == 1024 || stockham->length == 2048) {
+      if (batch == 1) {
+        butterfly_block = 8;
+      } else if (batch == 64) {
+        butterfly_block = stockham->length == 1024 ? 32 : 64;
+      }
+    }
     auto block_override = [](const char *name, int64_t fallback) {
       const char *raw = std::getenv(name);
       if (raw == nullptr) return fallback;

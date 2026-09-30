@@ -196,6 +196,17 @@ performance rows are `Skipped`. SiP may modify the input of a power-of-two
 horizontal 1D transform of length at least 32768, so the benchmark refreshes
 its reference input before each execution.
 
+When built with `-DFLAGFFT_NPU_ENABLE_SIP_EXECUTION=ON` (on by default for
+`BACKEND=NPU`), FlagFFT also exposes `FLAGFFT_NPU_EXECUTION_BACKEND=auto|sip|triton`.
+The default `auto` mode delegates eligible contiguous, out-of-place 1D FP32
+plans to the installed SiP library and falls back to FlagFFT's Triton executor
+for unsupported shapes or in-place calls. `sip` requires SiP support, while
+`triton` forces the independent FlagFFT kernels. Plan descriptions include the
+selected execution backend. Since `auto` uses the same SiP library as the
+benchmark reference, its speedup measures wrapper/delegation overhead rather
+than the performance of FlagFFT's own FFT kernels; use `triton` for native
+kernel comparisons.
+
 ### Hygon BW1000 (HCU) Build
 
 Use the HCU 3.6 DTK 26.04 image from the
