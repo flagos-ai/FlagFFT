@@ -25,12 +25,7 @@ from .metadata import _module_source, _signature
 
 
 def emit_fused_16_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
-    """Emit a 16x16 plane FFT; one block owns one complete plane.
-
-    Both axes use decimation in time. The load reverses the bits on each axis,
-    then ``tl.gather`` performs four radix-two butterfly stages per axis. The
-    twiddle buffers carry the forward/inverse sign and precision.
-    """
+    """Emit the validated 16x16 plane FFT; one block owns one full plane."""
     source = """
 @triton.jit
 def fused_16_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
@@ -99,6 +94,106 @@ def fused_16_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "batch_per_block": 1,
         "arg_names": args,
         "kernel_type": "fused_16_plane",
+        "dtype": dtype,
+        "direction": direction,
+    }
+    write_text_atomic(out_dir / f"{name}.json", json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
+def emit_fused_32_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
+    return _emit_fused_plane_kernel(n=32, dtype=dtype, direction=direction, out_dir=out_dir)
+
+
+def _emit_fused_plane_kernel(*, n: int, dtype: str, direction: str, out_dir: Path) -> dict:
+    """Emit a square plane FFT; one block owns one complete plane."""
+    if n != 32:
+        raise ValueError("the experimental fused plane emitter supports length 32")
+    bits = n.bit_length() - 1
+    plane_size = n * n
+    quarter_r, quarter_i = ("bi", "-br") if direction == "forward" else ("-bi", "br")
+    source = f"""
+@triton.jit
+def fused_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
+    plane = tl.program_id(0)
+    idx = tl.arange(0, {plane_size})
+    row = idx // {n}
+    col = idx % {n}
+    rev_row = tl.full(({plane_size},), 0, tl.int32)
+    rev_col = tl.full(({plane_size},), 0, tl.int32)
+    for bit in tl.static_range({bits}):
+        rev_row = (rev_row << 1) | ((row >> bit) & 1)
+        rev_col = (rev_col << 1) | ((col >> bit) & 1)
+    src = (plane * {plane_size} + rev_row * {n} + rev_col) * 2
+    xr = tl.load(in_ptr + src)
+    xi = tl.load(in_ptr + src + 1)
+
+    for stage in tl.static_range({bits}):
+        partner = idx ^ (1 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (col & (1 << stage)) != 0
+        ar = tl.where(upper, pr, xr)
+        ai = tl.where(upper, pi, xi)
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        if stage == 0:
+            tr = br
+            ti = bi
+        elif stage == 1:
+            tr = tl.where((col & 1) != 0, {quarter_r}, br)
+            ti = tl.where((col & 1) != 0, {quarter_i}, bi)
+        else:
+            tw = (col & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
+        xr = tl.where(upper, ar - tr, ar + tr)
+        xi = tl.where(upper, ai - ti, ai + ti)
+
+    for stage in tl.static_range({bits}):
+        partner = idx ^ ({n} << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (row & (1 << stage)) != 0
+        ar = tl.where(upper, pr, xr)
+        ai = tl.where(upper, pi, xi)
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        if stage == 0:
+            tr = br
+            ti = bi
+        elif stage == 1:
+            tr = tl.where((row & 1) != 0, {quarter_r}, br)
+            ti = tl.where((row & 1) != 0, {quarter_i}, bi)
+        else:
+            tw = (row & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
+        xr = tl.where(upper, ar - tr, ar + tr)
+        xi = tl.where(upper, ai - ti, ai + ti)
+
+    dst = (plane * {plane_size} + idx) * 2
+    tl.store(out_ptr + dst, xr)
+    tl.store(out_ptr + dst + 1, xi)
+"""
+    name = f"flagfft_jit_fused_{n}_plane_{direction}_{_dtype_suffix(dtype)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{name}.py"
+    write_text_atomic(module_path, _module_source(source))
+    args = ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": "fused_plane_fft_kernel",
+        "signature": _signature(args, dtype),
+        "num_warps": 8,
+        "num_stages": 1,
+        "batch_per_block": 1,
+        "arg_names": args,
+        "kernel_type": f"fused_{n}_plane",
         "dtype": dtype,
         "direction": direction,
     }
