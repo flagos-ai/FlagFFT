@@ -14,44 +14,169 @@
 
 #include "adaptor/test_adaptor.h"
 
+#include <acl/acl.h>
+#include <acl/acl_rt.h>
+#include <aclnn/acl_meta.h>
+#include <fft_api.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <memory>
 #include <stdexcept>
-
-#include <cann_ops_fft.h>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace flagfft::test_adaptor {
 namespace {
 
-  aclfftHandle as_ops_handle(std::uintptr_t value) {
-    return reinterpret_cast<aclfftHandle>(value);
+  void check_sip(AsdSip::AspbStatus status, const char* context) {
+    if (status == AsdSip::ACL_SUCCESS) return;
+    throw std::runtime_error(std::string(context) + " failed with SiP status=" +
+                             std::to_string(status));
   }
 
-  std::uintptr_t from_ops_handle(aclfftHandle value) {
-    return reinterpret_cast<std::uintptr_t>(value);
-  }
-
-  void check_ops(aclfftResult result, const char* context) {
-    if (result == ACLFFT_SUCCESS) {
-      return;
-    }
-    const char* detail = aclfftGetErrorString(result);
-    std::string message =
-        std::string(context) + " failed with aclfftResult=" + std::to_string(static_cast<int>(result));
-    if (detail != nullptr && *detail != '\0') {
+  void check_acl(aclError status, const char* context) {
+    if (status == ACL_SUCCESS) return;
+    std::string message = std::string(context) + " failed with aclError=" +
+                          std::to_string(static_cast<int>(status));
+    if (const char* detail = aclGetRecentErrMsg(); detail != nullptr && *detail != '\0') {
       message += ": ";
       message += detail;
     }
     throw std::runtime_error(message);
   }
 
+  AsdSip::asdFftType sip_type(flagfftType type) {
+    switch (type) {
+      case FLAGFFT_C2C: return AsdSip::ASCEND_FFT_C2C;
+      case FLAGFFT_R2C: return AsdSip::ASCEND_FFT_R2C;
+      case FLAGFFT_C2R: return AsdSip::ASCEND_FFT_C2R;
+      default: throw std::runtime_error("SiP FFT reference supports FP32 C2C/R2C/C2R only");
+    }
+  }
+
+  AsdSip::asdFftDirection sip_direction(int direction) {
+    if (direction == FLAGFFT_FORWARD) return AsdSip::ASCEND_FFT_FORWARD;
+    if (direction == FLAGFFT_INVERSE) return AsdSip::ASCEND_FFT_INVERSE;
+    throw std::runtime_error("invalid SiP FFT direction");
+  }
+
+  struct SipPlan {
+    AsdSip::asdFftHandle handle = nullptr;
+    void* workspace = nullptr;
+    aclTensor* input_tensor = nullptr;
+    aclTensor* output_tensor = nullptr;
+    void* input_ptr = nullptr;
+    void* output_ptr = nullptr;
+    std::vector<int64_t> input_shape;
+    std::vector<int64_t> output_shape;
+    flagfftType type = FLAGFFT_C2C;
+    int direction = FLAGFFT_FORWARD;
+
+    ~SipPlan() {
+      if (input_tensor != nullptr) (void)aclDestroyTensor(input_tensor);
+      if (output_tensor != nullptr) (void)aclDestroyTensor(output_tensor);
+      if (workspace != nullptr) (void)aclrtFree(workspace);
+      if (handle != nullptr) (void)AsdSip::asdFftDestroy(handle);
+    }
+
+    SipPlan() = default;
+    SipPlan(const SipPlan&) = delete;
+    SipPlan& operator=(const SipPlan&) = delete;
+  };
+
+  SipPlan& as_plan(RefPlanHandle& plan) {
+    if (plan.get() == 0) throw std::runtime_error("SiP FFT reference plan is null");
+    return *reinterpret_cast<SipPlan*>(plan.get());
+  }
+
+  aclTensor* make_tensor(const std::vector<int64_t>& shape, aclDataType dtype, void* data) {
+    std::vector<int64_t> strides(shape.size());
+    int64_t stride = 1;
+    for (std::size_t i = shape.size(); i-- > 0;) {
+      strides[i] = stride;
+      stride *= shape[i];
+    }
+    aclTensor* tensor = aclCreateTensor(shape.data(), shape.size(), dtype, strides.data(), 0,
+                                        ACL_FORMAT_ND, shape.data(), shape.size(), data);
+    if (tensor == nullptr) throw std::runtime_error("aclCreateTensor failed for SiP FFT reference");
+    return tensor;
+  }
+
+  void bind_tensors(SipPlan& plan, void* input, void* output) {
+    if (input == output) throw std::runtime_error("SiP FFT reference requires out-of-place buffers");
+    if (plan.input_tensor != nullptr && plan.output_tensor != nullptr &&
+        plan.input_ptr == input && plan.output_ptr == output) {
+      return;
+    }
+    if (plan.input_tensor != nullptr) (void)aclDestroyTensor(plan.input_tensor);
+    if (plan.output_tensor != nullptr) (void)aclDestroyTensor(plan.output_tensor);
+    plan.input_tensor = nullptr;
+    plan.output_tensor = nullptr;
+    plan.input_ptr = nullptr;
+    plan.output_ptr = nullptr;
+
+    const aclDataType input_type = plan.type == FLAGFFT_R2C ? ACL_FLOAT : ACL_COMPLEX64;
+    const aclDataType output_type = plan.type == FLAGFFT_C2R ? ACL_FLOAT : ACL_COMPLEX64;
+    plan.input_tensor = make_tensor(plan.input_shape, input_type, input);
+    plan.output_tensor = make_tensor(plan.output_shape, output_type, output);
+    plan.input_ptr = input;
+    plan.output_ptr = output;
+  }
+
+  void make_plan(RefPlanHandle& target, std::vector<int64_t> dimensions,
+                 flagfftType type, int batch) {
+    if (batch <= 0 || dimensions.empty() || dimensions.size() > 3 ||
+        std::any_of(dimensions.begin(), dimensions.end(), [](int64_t n) { return n <= 0; })) {
+      throw std::runtime_error("invalid SiP FFT reference shape or batch");
+    }
+    auto plan = std::make_unique<SipPlan>();
+    plan->type = type;
+    plan->direction = target.direction();
+    plan->input_shape = dimensions;
+    plan->output_shape = dimensions;
+    plan->input_shape.insert(plan->input_shape.begin(), batch);
+    plan->output_shape.insert(plan->output_shape.begin(), batch);
+    if (type == FLAGFFT_C2R) plan->input_shape.back() = dimensions.back() / 2 + 1;
+    if (type == FLAGFFT_R2C) plan->output_shape.back() = dimensions.back() / 2 + 1;
+
+    check_sip(AsdSip::asdFftCreate(plan->handle), "asdFftCreate");
+    const auto fft_type = sip_type(type);
+    const auto direction = sip_direction(target.direction());
+    switch (dimensions.size()) {
+      case 1:
+        check_sip(AsdSip::asdFftMakePlan1D(plan->handle, dimensions[0], fft_type,
+                                            direction, batch, AsdSip::ASCEND_FFT_HORIZONTAL),
+                  "asdFftMakePlan1D");
+        break;
+      case 2:
+        check_sip(AsdSip::asdFftMakePlan2D(plan->handle, dimensions[0], dimensions[1],
+                                            fft_type, direction, batch), "asdFftMakePlan2D");
+        break;
+      case 3:
+        check_sip(AsdSip::asdFftMakePlan3D(plan->handle, dimensions[0], dimensions[1],
+                                            dimensions[2], fft_type, direction, batch),
+                  "asdFftMakePlan3D");
+        break;
+    }
+    std::size_t workspace_size = 0;
+    check_sip(AsdSip::asdFftGetWorkspaceSize(plan->handle, workspace_size),
+              "asdFftGetWorkspaceSize");
+    if (workspace_size != 0) {
+      check_acl(aclrtMalloc(&plan->workspace, workspace_size, ACL_MEM_MALLOC_HUGE_FIRST),
+                "aclrtMalloc(SiP workspace)");
+    }
+    check_sip(AsdSip::asdFftSetWorkspace(plan->handle, plan->workspace),
+              "asdFftSetWorkspace");
+    target.replace(reinterpret_cast<std::uintptr_t>(plan.release()));
+  }
+
   template <typename T>
   ErrorMetric scalar_error(const T* a, const T* b, std::size_t n) {
     ErrorMetric error;
-    if (n == 0) {
-      return error;
-    }
+    if (n == 0) return error;
     double sum_sq = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
       const double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
@@ -68,9 +193,7 @@ namespace {
     for (int i = 0; i < n; ++i) {
       const double numerator = std::abs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
       const double denominator = std::abs(static_cast<double>(b[i]));
-      if (denominator > 0.0) {
-        max_error = std::max(max_error, numerator / denominator);
-      }
+      if (denominator > 0.0) max_error = std::max(max_error, numerator / denominator);
     }
     return max_error;
   }
@@ -87,9 +210,7 @@ namespace {
     for (int i = 0; i < n; ++i) {
       const double numerator = std::abs(complex_magnitude(a[i]) - complex_magnitude(b[i]));
       const double denominator = complex_magnitude(b[i]);
-      if (denominator > 0.0) {
-        max_error = std::max(max_error, numerator / denominator);
-      }
+      if (denominator > 0.0) max_error = std::max(max_error, numerator / denominator);
     }
     return max_error;
   }
@@ -100,21 +221,20 @@ RefPlanHandle::RefPlanHandle() : impl_(0) {
 }
 
 RefPlanHandle::~RefPlanHandle() {
-  if (impl_ != 0) {
-    (void)aclfftDestroy(as_ops_handle(impl_));
-  }
+  delete reinterpret_cast<SipPlan*>(impl_);
 }
 
-RefPlanHandle::RefPlanHandle(RefPlanHandle&& other) noexcept : impl_(other.impl_) {
+RefPlanHandle::RefPlanHandle(RefPlanHandle&& other) noexcept
+    : impl_(other.impl_), direction_(other.direction_), batch_(other.batch_) {
   other.impl_ = 0;
 }
 
 RefPlanHandle& RefPlanHandle::operator=(RefPlanHandle&& other) noexcept {
   if (this != &other) {
-    if (impl_ != 0) {
-      (void)aclfftDestroy(as_ops_handle(impl_));
-    }
+    delete reinterpret_cast<SipPlan*>(impl_);
     impl_ = other.impl_;
+    direction_ = other.direction_;
+    batch_ = other.batch_;
     other.impl_ = 0;
   }
   return *this;
@@ -125,73 +245,70 @@ std::uintptr_t RefPlanHandle::get() const {
 }
 
 void RefPlanHandle::replace(std::uintptr_t new_handle) {
-  if (impl_ != 0) {
-    (void)aclfftDestroy(as_ops_handle(impl_));
-  }
+  delete reinterpret_cast<SipPlan*>(impl_);
   impl_ = new_handle;
 }
 
 void ref_plan_1d(RefPlanHandle& plan, int nx, flagfftType type, int batch) {
-  aclfftHandle handle = nullptr;
-  check_ops(aclfftPlan1d(&handle, nx, static_cast<aclfftType>(type), batch, ACLFFT_HORIZONTAL),
-            "aclfftPlan1d");
-  plan.replace(from_ops_handle(handle));
+  make_plan(plan, {nx}, type, batch);
 }
 
 void ref_plan_2d(RefPlanHandle& plan, int nx, int ny, flagfftType type) {
-  aclfftHandle handle = nullptr;
-  check_ops(aclfftPlan2d(&handle, 1, nx, ny, static_cast<aclfftType>(type)), "aclfftPlan2d");
-  plan.replace(from_ops_handle(handle));
+  make_plan(plan, {nx, ny}, type, plan.batch());
 }
 
-void ref_plan_3d(RefPlanHandle&, int, int, int, flagfftType) {
-  throw std::runtime_error("ops-fft does not implement 3D plans on Ascend 910B");
+void ref_plan_3d(RefPlanHandle& plan, int nx, int ny, int nz, flagfftType type) {
+  make_plan(plan, {nx, ny, nz}, type, plan.batch());
 }
 
 void ref_set_stream(RefPlanHandle& plan, flagfftStream_t stream) {
-  check_ops(aclfftSetStream(as_ops_handle(plan.get()), reinterpret_cast<aclrtStream>(stream)),
-            "aclfftSetStream");
+  check_sip(AsdSip::asdFftSetStream(as_plan(plan).handle, stream), "asdFftSetStream");
 }
 
-void ref_exec_c2c(RefPlanHandle& plan, flagfftComplex* idata, flagfftComplex* odata, int direction) {
-  check_ops(aclfftExecC2C(as_ops_handle(plan.get()),
-                          reinterpret_cast<aclfftComplex*>(idata),
-                          reinterpret_cast<aclfftComplex*>(odata),
-                          direction),
-            "aclfftExecC2C");
+void ref_exec_c2c(RefPlanHandle& plan, flagfftComplex* idata,
+                  flagfftComplex* odata, int direction) {
+  SipPlan& sip = as_plan(plan);
+  if (sip.type != FLAGFFT_C2C || sip.direction != direction) {
+    throw std::runtime_error("SiP C2C execution does not match its plan");
+  }
+  bind_tensors(sip, idata, odata);
+  check_sip(AsdSip::asdFftExecC2C(sip.handle, sip.input_tensor, sip.output_tensor),
+            "asdFftExecC2C");
 }
 
 void ref_exec_z2z(RefPlanHandle&, flagfftDoubleComplex*, flagfftDoubleComplex*, int) {
-  throw std::runtime_error("ops-fft does not implement FP64 Z2Z");
+  throw std::runtime_error("SiP FFT reference does not implement FP64 Z2Z");
 }
 
 void ref_exec_r2c(RefPlanHandle& plan, flagfftReal* idata, flagfftComplex* odata) {
-  check_ops(aclfftExecR2C(as_ops_handle(plan.get()),
-                          reinterpret_cast<aclfftReal*>(idata),
-                          reinterpret_cast<aclfftComplex*>(odata)),
-            "aclfftExecR2C");
+  SipPlan& sip = as_plan(plan);
+  if (sip.type != FLAGFFT_R2C) throw std::runtime_error("SiP R2C execution does not match its plan");
+  bind_tensors(sip, idata, odata);
+  check_sip(AsdSip::asdFftExecR2C(sip.handle, sip.input_tensor, sip.output_tensor),
+            "asdFftExecR2C");
 }
 
 void ref_exec_d2z(RefPlanHandle&, flagfftDoubleReal*, flagfftDoubleComplex*) {
-  throw std::runtime_error("ops-fft does not implement FP64 D2Z");
+  throw std::runtime_error("SiP FFT reference does not implement FP64 D2Z");
 }
 
 void ref_exec_c2r(RefPlanHandle& plan, flagfftComplex* idata, flagfftReal* odata) {
-  check_ops(aclfftExecC2R(as_ops_handle(plan.get()),
-                          reinterpret_cast<aclfftComplex*>(idata),
-                          reinterpret_cast<aclfftReal*>(odata)),
-            "aclfftExecC2R");
+  SipPlan& sip = as_plan(plan);
+  if (sip.type != FLAGFFT_C2R) throw std::runtime_error("SiP C2R execution does not match its plan");
+  bind_tensors(sip, idata, odata);
+  check_sip(AsdSip::asdFftExecC2R(sip.handle, sip.input_tensor, sip.output_tensor),
+            "asdFftExecC2R");
 }
 
 void ref_exec_z2d(RefPlanHandle&, flagfftDoubleComplex*, flagfftDoubleReal*) {
-  throw std::runtime_error("ops-fft does not implement FP64 Z2D");
+  throw std::runtime_error("SiP FFT reference does not implement FP64 Z2D");
 }
 
 void initialize() {
 }
 
 std::string backend_name() {
-  return "npu-ops-fft";
+  return "npu-sip";
 }
 
 bool reference_available() {
@@ -199,9 +316,7 @@ bool reference_available() {
 }
 
 bool reference_uses_host_memory() {
-  // ops-fft's public aclfftExec* API accepts host pointers and performs the
-  // H2D/D2H transfers internally.
-  return true;
+  return false;
 }
 
 std::vector<flagfftComplex> random_complex(int n) {
@@ -224,17 +339,13 @@ std::vector<flagfftDoubleComplex> random_double_complex(int n) {
 
 std::vector<flagfftReal> random_real(int n) {
   std::vector<flagfftReal> values(static_cast<std::size_t>(n));
-  for (auto& value : values) {
-    value = static_cast<float>(std::rand()) / RAND_MAX * 2.0f - 1.0f;
-  }
+  for (auto& value : values) value = static_cast<float>(std::rand()) / RAND_MAX * 2.0f - 1.0f;
   return values;
 }
 
 std::vector<flagfftDoubleReal> random_double_real(int n) {
   std::vector<flagfftDoubleReal> values(static_cast<std::size_t>(n));
-  for (auto& value : values) {
-    value = static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0;
-  }
+  for (auto& value : values) value = static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0;
   return values;
 }
 

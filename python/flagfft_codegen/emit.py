@@ -546,6 +546,11 @@ def emit_jit_kernel(
     hcu_full_smem: bool = False,
     out_dir: Path,
 ) -> dict[str, Any]:
+    if (kernel == "leaf_packed_r2c" and _ix_backend_active()
+            and os.getenv("FLAGFFT_IX_3D_PACKED_R2C") == "1"):
+        # Each JIT source process emits one kernel.  Keep the portable
+        # exchange required by this packed boundary local to that process.
+        os.environ["FLAGFFT_IX_PORTABLE_LEAF"] = "1"
     plan = LeafPlan(
         length=length,
         factors=factors,
@@ -559,6 +564,11 @@ def emit_jit_kernel(
     )
     spec = kernel_spec(kernel)
     if spec.is_leaf_like:
+        io_mode = (
+            "permuted_r2c"
+            if kernel == "leaf_r2c" and perm_form == "permuted"
+            else spec.io_mode
+        )
         if kernel in FOUR_STEP_ROW_NAMES and plan.length != four_step_n1:
             raise ValueError(
                 f"four-step {kernel} kernel length must equal n1: "
@@ -571,7 +581,7 @@ def emit_jit_kernel(
             )
         kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
             plan,
-            io_mode=spec.io_mode,
+            io_mode=io_mode,
             prime_n=prime_n,
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,

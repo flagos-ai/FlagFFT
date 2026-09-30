@@ -340,6 +340,50 @@ def _build_tiled_transpose3d_tile_kernel_source(
         "tl.store(out_ptr + dst_base, dst_r, mask=store_mask)\n"
         "            tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)"
     )
+    if packed_complex:
+        load_store = f"""
+            src = in_ptr.to(tl.pointer_type(tl.uint64))
+            dst = out_ptr.to(tl.pointer_type(tl.uint64))
+            src_base = (
+                pid_batch * {total_complex}
+                + slice_idx * {src_slice_stride}
+                + safe_cols[:, None] * {src_col_stride}
+                + safe_rows[None, :]
+            )
+            values = tl.load(src + src_base, mask=load_mask, other=0)
+            dst_base = (
+                pid_batch * {total_complex}
+                + slice_idx * {dst_slice_stride}
+                + safe_rows[:, None] * {dst_row_stride}
+                + safe_cols[None, :]
+            )
+            store_mask = row_mask[:, None] & col_mask[None, :]
+            tl.store(dst + dst_base, tl.trans(values), mask=store_mask)
+        """
+    else:
+        load_store = f"""
+            src_base = (
+                pid_batch * {total_float}
+                + slice_idx * {src_slice_stride} * 2
+                + safe_cols[:, None] * {src_col_stride} * 2
+                + safe_rows[None, :] * 2
+            )
+            src_r = tl.load(in_ptr + src_base, mask=load_mask, other={zero})
+            src_i = tl.load(in_ptr + src_base + 1, mask=load_mask, other={zero})
+
+            dst_r = tl.trans(src_r)
+            dst_i = tl.trans(src_i)
+
+            dst_base = (
+                pid_batch * {total_float}
+                + slice_idx * {dst_slice_stride} * 2
+                + safe_rows[:, None] * {dst_row_stride} * 2
+                + safe_cols[None, :] * 2
+            )
+            store_mask = row_mask[:, None] & col_mask[None, :]
+            tl.store(out_ptr + dst_base, dst_r, mask=store_mask)
+            tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)
+        """
     source = dedent(
         f"""
         @triton.jit

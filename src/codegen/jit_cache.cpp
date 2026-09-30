@@ -193,7 +193,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   const std::string policy = policy_env ? policy_env : default_policy;
   const auto tail_mode = maca_tail_kernel_mode(maca_tail_policy_, key.kind, key.dtype,
                                                key.length, key.four_step_n1, key.four_step_n2);
-  const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
+  std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
                                 (maca_1d_single_policy_ ? "1" : "0") + ";maca-1d-batch=" +
                                 (maca_1d_batch_policy_ ? "1" : "0") + ";maca-2d-single=" +
                                 (maca_2d_single_policy_ ? "1" : "0") + ";ix-ct-single=" +
@@ -203,6 +203,28 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
+    const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
+    const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
+    const char *pack = std::getenv("FLAGFFT_IX_3D_PACK");
+    cache_key += ";ix-3d-direct-store=" + std::string(direct_store != nullptr &&
+                                                       std::string(direct_store) == "1" ? "1" : "0");
+    cache_key += ";ix-3d-pair-store=" + std::string(pair_store != nullptr &&
+                                                     std::string(pair_store) == "1" ? "1" : "0");
+    cache_key += ";ix-3d-pack=" + std::string(pack != nullptr ? pack : "auto");
+  }
+  if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
+    const char *packed_3d = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");
+    cache_key += ";ix-3d-packed-r2c=" + std::string(packed_3d != nullptr &&
+                                                     std::string(packed_3d) == "1" ? "1" : "0");
+  }
+  if (key.kind == KernelKind::Transpose3D && adaptor::backend_name() == "ix") {
+    const char *tile = std::getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE");
+    const char *packed = std::getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE");
+    cache_key += ";ix-3d-transpose-tile=" + std::string(tile != nullptr ? tile : "16");
+    cache_key += ";ix-3d-packed-transpose=" + std::string(packed != nullptr &&
+                                                         std::string(packed) == "1" ? "1" : "0");
+  }
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -477,6 +499,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused16Cube) {
     jit_command << " --direction " << shell_quote(key.direction)
                 << " --length " << key.length;
+  }
+  if (key.kind == KernelKind::Fused32Column) {
+    jit_command << " --length " << key.length;
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||

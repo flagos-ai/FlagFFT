@@ -1085,6 +1085,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
                           std::shared_ptr<CompiledRawNode> n1_fft,
                           std::shared_ptr<CompiledRawNode> n0_fft,
                           std::shared_ptr<JitKernel> perm_210,
+                          std::shared_ptr<JitKernel> perm_201,
                           DeviceAllocation temp1,
                           DeviceAllocation temp2,
                           std::shared_ptr<JitKernel> perm_021 = nullptr,
@@ -1142,6 +1143,40 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_210;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+};
+
+// Compact real boundary with the usual three transposes.  The final
+// transpose may be folded into a leaf n0 store when profitable.
+struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
+  CompiledRaw3DRealRTRTNode(int64_t n0,
+                            int64_t n1,
+                            int64_t n2,
+                            bool inverse,
+                            std::shared_ptr<CompiledRawNode> n2_real_fft,
+                            std::shared_ptr<CompiledRawNode> n1_fft,
+                            std::shared_ptr<CompiledRawNode> n0_fft,
+                            std::shared_ptr<JitKernel> perm_021,
+                            std::shared_ptr<JitKernel> perm_210,
+                            std::shared_ptr<JitKernel> perm_201,
+                            DeviceAllocation temp1,
+                            DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  bool inverse;
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_201;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };
@@ -1254,6 +1289,11 @@ class TritonCompiler {
  private:
   void configure_single_transform_policies(const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_3d_real_leaf_node(
+      const std::shared_ptr<ThreeDimPlanNode> &node,
+      const FFTRequest &request,
+      int64_t batch,
+      bool inverse);
+  std::shared_ptr<CompiledRawNode> compile_raw_3d_real_rtrt_node(
       const std::shared_ptr<ThreeDimPlanNode> &node,
       const FFTRequest &request,
       int64_t batch,

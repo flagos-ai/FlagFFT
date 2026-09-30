@@ -146,7 +146,7 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         xr = xr + wr * ar - wi * ai
         xi = xi + wr * ai + wi * ar
 
-    for stage in tl.static_range(4):
+    for stage in tl.static_range({bits}):
         partner = idx ^ (1 << stage)
         pr = tl.gather(xr, partner, 0)
         pi = tl.gather(xi, partner, 0)
@@ -155,16 +155,23 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         ai = tl.where(upper, pi, xi)
         br = tl.where(upper, xr, pr)
         bi = tl.where(upper, xi, pi)
-        tw = (col & ((1 << stage) - 1)) * (16 >> (stage + 1))
-        wr = tl.load(tw_r_ptr + tw)
-        wi = tl.load(tw_i_ptr + tw)
-        tr = wr * br - wi * bi
-        ti = wr * bi + wi * br
+        if stage == 0:
+            tr = br
+            ti = bi
+        elif stage == 1:
+            tr = tl.where((col & 1) != 0, {quarter_r}, br)
+            ti = tl.where((col & 1) != 0, {quarter_i}, bi)
+        else:
+            tw = (col & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
-    for stage in tl.static_range(4):
-        partner = idx ^ (16 << stage)
+    for stage in tl.static_range({bits}):
+        partner = idx ^ ({n} << stage)
         pr = tl.gather(xr, partner, 0)
         pi = tl.gather(xi, partner, 0)
         upper = (row & (1 << stage)) != 0
@@ -172,11 +179,18 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         ai = tl.where(upper, pi, xi)
         br = tl.where(upper, xr, pr)
         bi = tl.where(upper, xi, pi)
-        tw = (row & ((1 << stage) - 1)) * (16 >> (stage + 1))
-        wr = tl.load(tw_r_ptr + tw)
-        wi = tl.load(tw_i_ptr + tw)
-        tr = wr * br - wi * bi
-        ti = wr * bi + wi * br
+        if stage == 0:
+            tr = br
+            ti = bi
+        elif stage == 1:
+            tr = tl.where((row & 1) != 0, {quarter_r}, br)
+            ti = tl.where((row & 1) != 0, {quarter_i}, bi)
+        else:
+            tw = (row & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
+            tr = wr * br - wi * bi
+            ti = wr * bi + wi * br
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 

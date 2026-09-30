@@ -475,6 +475,16 @@ def _emit_permuted_store(
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
             f"mask={mask})",
         ]
+    if _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
+        # Keep the register tile in its original (batch, lane) layout.  This
+        # screens whether IX's lowering of tl.trans costs more than scalar
+        # stores for this kernel; the row-to-output mapping is unchanged.
+        address = f"(output_base + {offset}) * perm_k_stride + perm_gbase_vector"
+        return [
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, mask=lane_mask)",
+            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, mask=lane_mask)",
+        ]
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
         mask = ("perm_store_mask" if compact_length is None else
@@ -1731,6 +1741,26 @@ def _emit_stage_block(
                             f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, "
                             f"i{j}, mask=lane_mask)"
                         )
+            elif io_mode == "permuted_r2c":
+                half_n = n // 2 + 1
+                offset = j * math.prod(factors[:len(factors) - 1])
+                base = "output_base_lane" if offset == 0 else f"(output_base_lane + {offset})"
+                if smem_pack == 1:
+                    lines.append(f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {half_n})")
+                    lines.append(
+                        f"{indent}dst_idx{j} = {base} * output_distance + perm_gbase_scalar"
+                    )
+                    lines.append(f"{indent}tl.store(out_ptr + dst_idx{j} * 2, r{j}, mask=compact_mask{j})")
+                    lines.append(f"{indent}tl.store(out_ptr + dst_idx{j} * 2 + 1, i{j}, mask=compact_mask{j})")
+                else:
+                    lines.append(f"{indent}compact_mask{j} = perm_store_mask & ({base} < {half_n})[:, None]")
+                    lines.append(f"{indent}zr{j} = tl.trans(tl.reshape(r{j}, ({smem_pack}, {lane_block})))")
+                    lines.append(f"{indent}zi{j} = tl.trans(tl.reshape(i{j}, ({smem_pack}, {lane_block})))")
+                    lines.append(
+                        f"{indent}dst_idx{j} = {base}[:, None] * output_distance + perm_gbase[None, :]"
+                    )
+                    lines.append(f"{indent}tl.store(out_ptr + dst_idx{j} * 2, zr{j}, mask=compact_mask{j})")
+                    lines.append(f"{indent}tl.store(out_ptr + dst_idx{j} * 2 + 1, zi{j}, mask=compact_mask{j})")
             elif io_mode == "contiguous_r2c":
                 lines.append(
                     f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {n // 2 + 1})"
@@ -2760,6 +2790,7 @@ def _build_leaf_kernel_source_for_io(
         "strided_permuted_store",
         "permuted_r2c",
         "contiguous_r2c",
+        "permuted_r2c",
         "packed_r2c",
         "contiguous_c2r",
         "bluestein_prepare_leaf",
@@ -2785,7 +2816,7 @@ def _build_leaf_kernel_source_for_io(
         )
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
-            plan, real_boundary=io_mode in {"contiguous_r2c", "packed_r2c", "contiguous_c2r"}
+            plan, real_boundary=io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}
         )
     else:
         batch_pack = 1
@@ -3011,6 +3042,13 @@ def _build_leaf_kernel_source_for_io(
                 body.append(f"    perm_gbase = perm_i0 * ({out_length} * perm_span) + perm_i1")
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
+            if batch_pack > 1 and _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
+                body.append("    perm_i0_vector = current_batch // perm_span")
+                body.append("    perm_i1_vector = current_batch - perm_i0_vector * perm_span")
+                if perm_form == "inner":
+                    body.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
+                else:
+                    body.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
             if batch_pack == 1:
                 # Keep the singleton row address scalar.  On MUSA this avoids
                 # a degenerate [1] tensor layout being broadcast into the

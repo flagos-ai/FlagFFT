@@ -206,6 +206,7 @@ LeafIoMode = Literal[
     "strided_permuted_store",
     "permuted_r2c",
     "contiguous_r2c",
+    "permuted_r2c",
     "packed_r2c",
     "contiguous_c2r",
     "bluestein_prepare_leaf",
@@ -749,6 +750,8 @@ def _four_step_col_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
+        return 1
     if _portable_leaf_backend_active():
         return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
@@ -777,6 +780,8 @@ def _four_step_row_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
+        return 1
     if _portable_leaf_backend_active():
         return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
@@ -992,8 +997,10 @@ def _maca_backend_active() -> bool:
 
 
 def _portable_leaf_backend_active() -> bool:
-    """Select the tensor-exchange leaf implementation for IX experiments."""
+    """Select tensor exchange when the backend's TLE shared memory is unavailable."""
     return _maca_backend_active() or (
+        _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1"
+    ) or (
         _ix_backend_active() and _maca_knob("PORTABLE_LEAF") == "1"
     )
 
