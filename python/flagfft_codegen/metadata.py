@@ -130,7 +130,14 @@ def _metadata(
     hcu_full_smem: bool = False,
 ) -> dict[str, Any]:
     if kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}:
-        batch_per_block = permuted_store_batch_pack_for(plan, force_full_smem=hcu_full_smem)
+        final_pack = None
+        if "permuted_store_outer_last_" in kernel_name:
+            requested_final_pack = os.environ.get("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
+            if requested_final_pack != "auto":
+                final_pack = int(requested_final_pack)
+        batch_per_block = permuted_store_batch_pack_for(
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+        )
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(
             plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}

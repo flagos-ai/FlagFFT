@@ -2769,7 +2769,14 @@ def _build_leaf_kernel_source_for_io(
         "rader_finish_leaf",
     }
     if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
-        batch_pack = permuted_store_batch_pack_for(plan, force_full_smem=hcu_full_smem)
+        final_pack = None
+        if _hcu_backend_active() and perm_form == "outer_last":
+            requested_final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
+            if requested_final_pack != "auto":
+                final_pack = int(requested_final_pack)
+        batch_pack = permuted_store_batch_pack_for(
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+        )
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
             plan, real_boundary=io_mode in {"contiguous_r2c", "packed_r2c", "contiguous_c2r"}

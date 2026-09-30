@@ -1605,10 +1605,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     std::shared_ptr<CompiledRawNode> n1_fft =
         compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
     const char *final_warps_override = std::getenv("FLAGFFT_HCU_3D_FINAL_WARPS");
+    const char *final_pack_override = std::getenv("FLAGFFT_HCU_3D_FINAL_PACK");
     const bool final_warps_enabled = request.device_type == "hcu" &&
                                      final_warps_override != nullptr &&
                                      std::string(final_warps_override) != "auto";
-    const std::string n0_perm_form = final_warps_enabled ? "outer_last" : "outer";
+    const bool final_pack_enabled = request.device_type == "hcu" &&
+                                    final_pack_override != nullptr &&
+                                    std::string(final_pack_override) != "auto";
+    const std::string n0_perm_form = final_warps_enabled || final_pack_enabled
+                                         ? "outer_last"
+                                         : "outer";
     std::shared_ptr<CompiledRawNode> n0_fft =
         last_transpose ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
                        : compile_raw_permuted_store_leaf(*n0_leaf,

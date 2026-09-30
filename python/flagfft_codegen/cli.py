@@ -236,6 +236,7 @@ def main() -> None:
         full_smem = os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0")
         u64_load = os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1")
         final_warps = os.getenv("FLAGFFT_HCU_3D_FINAL_WARPS", "auto")
+        final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
         smem_swizzle = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "0")
         swizzle_shift = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5")
         if pair_store not in {"0", "1"}:
@@ -256,6 +257,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_U64_LOAD must be 0 or 1")
         if final_warps not in {"auto", "1", "2", "4", "8"}:
             parser.error("FLAGFFT_HCU_3D_FINAL_WARPS must be auto, 1, 2, 4 or 8")
+        if final_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
+            parser.error("FLAGFFT_HCU_3D_FINAL_PACK must be auto, 1, 2, 4, 8, 16 or 32")
         if smem_swizzle not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE must be 0 or 1")
         if swizzle_shift not in {str(x) for x in range(1, 9)}:
@@ -264,7 +267,7 @@ def main() -> None:
                         f"-fp64-tile-{fp64_tile}-warps-{fused_warps}"
                         f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
                         f"-full-smem-{full_smem}-key-full-{int(args.hcu_3d_full_smem)}"
-                        f"-u64-load-{u64_load}-final-warps-{final_warps}"
+                        f"-u64-load-{u64_load}-final-warps-{final_warps}-final-pack-{final_pack}"
                         f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
