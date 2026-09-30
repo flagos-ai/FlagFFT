@@ -162,6 +162,31 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   // Reuse the radix codelets through the GM Stockham mapping on Ascend.
   // CUDA shared-memory leaf layouts are not used on this path.
   if (request_context().device_type == "npu") {
+    const RequestContext &context = request_context();
+    // For short axes inside a 2D transform, one direct-DFT launch can be
+    // cheaper than launching one Stockham kernel per radix stage. Keep this
+    // limited to FP32 C2C axis plans and make the cutover measurable while the
+    // Ascend policy is being qualified.
+    int64_t npu_2d_direct_dft_max = 0;
+    if (const char *raw = std::getenv("FLAGFFT_NPU_2D_DIRECT_DFT_MAX"); raw != nullptr) {
+      std::size_t parsed = 0;
+      try {
+        npu_2d_direct_dft_max = std::stoll(raw, &parsed);
+      } catch (const std::exception &) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_DIRECT_DFT_MAX must be 0, 64, or 128");
+      }
+      if (parsed != std::string(raw).size() ||
+          (npu_2d_direct_dft_max != 0 && npu_2d_direct_dft_max != 64 &&
+           npu_2d_direct_dft_max != 128)) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_DIRECT_DFT_MAX must be 0, 64, or 128");
+      }
+    }
+    if (context.origin_rank == 2 && context.input_dtype == "complex64" &&
+        context.output_dtype == "complex64" && n > 1 && n <= npu_2d_direct_dft_max) {
+      PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+      return {{node, estimate_direct_dft_cost(n), priority(node)}};
+    }
+
     Factorization factorization = factorize_supported_radices(n);
     // Large prime codelets produce expensive compiler scheduling on CANN 9
     // (radix 13 exceeded several minutes). Keep 13/17/19 on the existing DFT
