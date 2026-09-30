@@ -129,11 +129,11 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       if (trial != nullptr && std::string(trial) == "4x8") return {4, 8};
       if (trial != nullptr && std::string(trial) == "8x4") return {8, 4};
     }
-    // Keep this trial on the direct 2048 axis, not the 2048-point Bluestein
-    // convolution used by the 997-point 3D transform.
-    if (n == 2048 && context.requested_n == n) {
-      const char *trial = std::getenv("FLAGFFT_MACA_3D_N2048_FACTORS");
-      if (trial != nullptr && std::string(trial) == "16x8x16") return {16, 8, 16};
+    // This order retains the 128 collaboration lanes and 4-warps block while
+    // slightly improving the direct C550 2048-point 3D axis. Keep it off the
+    // Bluestein convolution used by the 997-point transform.
+    if (context.device_arch == "102" && n == 2048 && context.requested_n == n) {
+      return {16, 8, 16};
     }
     if (n == 256) {
       const char *trial = std::getenv("FLAGFFT_MACA_3D_N256_FACTORS");
