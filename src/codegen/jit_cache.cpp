@@ -146,14 +146,6 @@ namespace {
     return std::stoll(json.substr(pos, end - pos));
   }
 
-  int64_t json_int_field(const std::string &json, const std::string &field, int64_t fallback) {
-    const std::string key = "\"" + field + "\"";
-    if (json.find(key) == std::string::npos) {
-      return fallback;
-    }
-    return json_int_field(json, field);
-  }
-
   bool json_bool_field(const std::string &json, const std::string &field) {
     const std::string key = "\"" + field + "\"";
     std::size_t pos = json.find(key);
@@ -535,9 +527,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::Transpose3D) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
-  }
-  if (key.kind == KernelKind::DirectDftStrided) {
-    kernel->columns_per_block = json_int_field(artifact_json, "columns_per_block", 1);
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||

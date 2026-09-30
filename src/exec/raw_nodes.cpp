@@ -442,13 +442,7 @@ flagfftResult CompiledRawStridedDirectDftNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i64(outer_stride));
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    int64_t grid_x = context.batch;
-    if (kernel->columns_per_block > 1) {
-      const int64_t matrices = ceil_div(context.batch, outer_stride);
-      const int64_t column_tiles = ceil_div(outer_stride, kernel->columns_per_block);
-      grid_x = matrices * length * column_tiles;
-    }
-    kernel->launch(context.stream, args, grid_x, 1, 1);
+    kernel->launch(context.stream, args, context.batch, 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] StridedDirectDft execute failed: %s\n", e.what());

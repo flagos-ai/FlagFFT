@@ -2162,13 +2162,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   }
 
   // DirectDFT columns use the strided RC path. The NPU source emitter reduces
-  // its live reduction tile to stay within CANN's UB limit and coalesces the
-  // adjacent columns. Keep this experimental path opt-in until its performance
-  // is qualified across 2D shapes.
+  // its live reduction tile to stay within CANN's UB limit.
   if (auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
-      rc_eligible && col_direct &&
-      (request.device_type != "npu" ||
-       env_flag_enabled(std::getenv("FLAGFFT_NPU_2D_STRIDED_DIRECT_DFT")))) {
+      rc_eligible && col_direct) {
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft = compile_raw_strided_direct_dft(*col_direct, request, n1);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
@@ -2288,9 +2284,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   std::shared_ptr<CompiledRawNode> rc_col_fft;
   if (rc_eligible && col_leaf != nullptr) {
     rc_col_fft = compile_raw_strided_leaf(*col_leaf, request, half_n1);
-  } else if (rc_eligible && col_direct != nullptr &&
-             (request.device_type != "npu" ||
-              env_flag_enabled(std::getenv("FLAGFFT_NPU_2D_STRIDED_DIRECT_DFT")))) {
+  } else if (rc_eligible && col_direct != nullptr) {
     rc_col_fft = compile_raw_strided_direct_dft(*col_direct, request, half_n1);
   } else if (rc_eligible && col_four != nullptr) {
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
@@ -2430,9 +2424,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   std::shared_ptr<CompiledRawNode> rc_col_fft;
   if (rc_eligible && col_leaf != nullptr) {
     rc_col_fft = compile_raw_strided_leaf(*col_leaf, request, half_n1);
-  } else if (rc_eligible && col_direct != nullptr &&
-             (request.device_type != "npu" ||
-              env_flag_enabled(std::getenv("FLAGFFT_NPU_2D_STRIDED_DIRECT_DFT")))) {
+  } else if (rc_eligible && col_direct != nullptr) {
     rc_col_fft = compile_raw_strided_direct_dft(*col_direct, request, half_n1);
   } else if (rc_eligible && col_four != nullptr) {
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);

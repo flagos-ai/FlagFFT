@@ -108,7 +108,6 @@ struct JitKernel {
   int64_t rows_per_block = 1;
   int64_t butterflies_per_block = 128;
   int64_t grid_x_override = 0;
-  int64_t columns_per_block = 1;
   bool tle_fused_twiddle = false;
   void *jit_function = nullptr;
   std::mutex mutex;

@@ -31,18 +31,15 @@ def _build_direct_dft_kernel_source(
     *,
     strided: bool = False,
     reduction_tile: int = 32,
-    column_tile: int = 1,
 ) -> tuple[str, str, list[str]]:
     if reduction_tile not in (8, 16, 32):
         raise ValueError("DirectDFT reduction tile must be 8, 16 or 32")
-    if column_tile not in (1, 32, 64) or (not strided and column_tile != 1):
-        raise ValueError("DirectDFT column tile must be 1, 32 or 64 for a strided transform")
     block = lane_block_for(n)
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     suffix = _dtype_suffix(dtype)
     prefix = "direct_idft" if direction == "inverse" else "direct_dft"
     kernel_name = (
-        f"{prefix}_strided_kernel_n{n}_{suffix}_b{block}_c{column_tile}_r{reduction_tile}"
+        f"{prefix}_strided_kernel_n{n}_{suffix}_b{block}_r{reduction_tile}"
         if strided
         else f"{prefix}_kernel_n{n}_{suffix}_b{block}"
     )
@@ -114,52 +111,6 @@ def _build_direct_dft_kernel_source(
                 wi = tl.load(dft_i_ptr + k * {n} + j, mask=mask, other=0.0)
                 {accumulation}
         """
-    if strided and column_tile > 1:
-        coalesced_source = dedent(
-            f"""
-            @triton.jit
-            def {kernel_name}(
-                in_ptr,
-                out_ptr,
-                dft_r_ptr,
-                dft_i_ptr,
-                outer_stride,
-                nbatch,
-            ):
-                pid = tl.program_id(0)
-                columns_per_matrix = tl.cdiv(outer_stride, {column_tile})
-                programs_per_matrix = {n} * columns_per_matrix
-                matrix_index = pid // programs_per_matrix
-                program_in_matrix = pid - matrix_index * programs_per_matrix
-                k = program_in_matrix // columns_per_matrix
-                column_tile_index = program_in_matrix - k * columns_per_matrix
-                columns = column_tile_index * {column_tile} + tl.arange(0, {column_tile})
-                base = matrix_index * ({n} * outer_stride)
-                j_offsets = tl.arange(0, {reduction_tile})[:, None]
-                column_mask = columns < outer_stride
-                acc_r = tl.zeros(({column_tile},), dtype={acc_dtype})
-                acc_i = tl.zeros(({column_tile},), dtype={acc_dtype})
-                for j_base in tl.static_range(0, {n}, {reduction_tile}):
-                    j = j_base + j_offsets
-                    j_mask = j < {n}
-                    src = in_ptr + (base + j * outer_stride + columns[None, :]) * 2
-                    xr = tl.load(src, mask=j_mask & column_mask[None, :], other=0.0)
-                    xi = tl.load(src + 1, mask=j_mask & column_mask[None, :], other=0.0)
-                    twiddle_offsets = j * {n} + k
-                    wr = tl.load(dft_r_ptr + twiddle_offsets, mask=j_mask, other=0.0)
-                    wi = tl.load(dft_i_ptr + twiddle_offsets, mask=j_mask, other=0.0)
-                    acc_r += tl.sum(xr * wr - xi * wi, axis=0)
-                    acc_i += tl.sum(xr * wi + xi * wr, axis=0)
-                dst = out_ptr + (base + k * outer_stride + columns) * 2
-                tl.store(dst, acc_r, mask=column_mask)
-                tl.store(dst + 1, acc_i, mask=column_mask)
-            """
-        )
-        return (
-            kernel_name,
-            coalesced_source,
-            ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "outer_stride", "nbatch"],
-        )
     source = dedent(
         f"""
         @triton.jit
