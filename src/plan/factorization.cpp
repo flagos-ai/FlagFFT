@@ -136,6 +136,10 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       if (trial != nullptr && std::string(trial) == "4x8x8") return {4, 8, 8};
       if (trial != nullptr && std::string(trial) == "4x16x4") return {4, 16, 4};
     }
+    if (n == 2048) {
+      const char *trial = std::getenv("FLAGFFT_MACA_3D_N2048_FACTORS");
+      if (trial != nullptr && std::string(trial) == "8x8x8x4") return {8, 8, 8, 4};
+    }
   }
   // Five radix-two stages cost more than two short codelets for 32^3 axes on
   // S5000. Keep other ranks and devices on their established factorization.
