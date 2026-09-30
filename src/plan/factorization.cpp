@@ -126,6 +126,8 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   if (context.device_type == "maca" && context.origin_rank == 3) {
     if (n == 32) {
       const char *trial = std::getenv("FLAGFFT_MACA_3D_N32_FACTORS");
+      if (trial != nullptr && std::string(trial) == "2x16") return {2, 16};
+      if (trial != nullptr && std::string(trial) == "16x2") return {16, 2};
       if (trial != nullptr && std::string(trial) == "4x8") return {4, 8};
       if (trial != nullptr && std::string(trial) == "8x4") return {8, 4};
     }
