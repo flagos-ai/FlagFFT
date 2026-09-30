@@ -268,20 +268,43 @@ std::string CompiledRawFourStepFusedNode::describe() const {
 flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
                                                     adaptor::DevicePtr output,
                                                     const RawExecutionContext &context) const {
+  const char *stage = "row";
   try {
     const bool fused_twiddle = row_kernel->tle_fused_twiddle;
-    std::vector<JitKernelArg> row_args =
-        fused_twiddle ? raw_kernel_args({input, twiddle.get(), stage1.get()}, row_tables, context.batch)
-                      : raw_kernel_args({input, stage1.get()}, row_tables, context.batch);
-    row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), context.batch, 1);
+    int64_t batch_chunk = context.batch;
+    if (context.request.device_type == "npu") {
+      const int64_t grid_x =
+          std::max(ceil_div(n2, row_kernel->inner_pack), ceil_div(n1, col_kernel->inner_pack));
+      const int64_t max_blocks = adaptor::max_launch_blocks();
+      if (grid_x <= 0 || max_blocks <= 0) {
+        throw std::runtime_error("invalid NPU FourStep launch grid");
+      }
+      batch_chunk = std::max<int64_t>(1, max_blocks / grid_x);
+    }
+    const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+    for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+      const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
+      const auto byte_offset = static_cast<adaptor::DevicePtr>(batch_offset * length * element_bytes);
+      const adaptor::DevicePtr input_chunk = input + byte_offset;
+      const adaptor::DevicePtr stage1_chunk = stage1.get() + byte_offset;
+      const adaptor::DevicePtr output_chunk = output + byte_offset;
 
-    std::vector<JitKernelArg> col_args =
-        fused_twiddle ? raw_kernel_args({stage1.get(), output}, col_tables, context.batch)
-                      : raw_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, context.batch);
-    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
+      std::vector<JitKernelArg> row_args =
+          fused_twiddle ? raw_kernel_args({input_chunk, twiddle.get(), stage1_chunk}, row_tables, chunk_batch)
+                        : raw_kernel_args({input_chunk, stage1_chunk}, row_tables, chunk_batch);
+      row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), chunk_batch, 1);
+
+      stage = "column";
+      std::vector<JitKernelArg> col_args =
+          fused_twiddle
+              ? raw_kernel_args({stage1_chunk, output_chunk}, col_tables, chunk_batch)
+              : raw_kernel_args({stage1_chunk, twiddle.get(), output_chunk}, col_tables, chunk_batch);
+      col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), chunk_batch, 1);
+      stage = "row";
+    }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
-    std::fprintf(stderr, "[flagfft] FourStepFused execute failed: %s\n", e.what());
+    std::fprintf(stderr, "[flagfft] FourStepFused execute failed in %s stage: %s\n", stage, e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }
