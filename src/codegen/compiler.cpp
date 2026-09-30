@@ -1399,33 +1399,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
   }
 
-  // Screen a long-axis hybrid on C550: keep the 2048-point FFT contiguous,
-  // while the two short-axis leaves write the layouts consumed by their next
-  // passes. This replaces two full-cube transposes without paying the
-  // permuted-store cost on the bandwidth-heavy 2048-point leaf. It is opt-in
-  // until the shape-specific C550 A/B and correctness checks are complete.
-  const bool maca_long_hybrid = request.device_type == "maca" &&
-      request.device_arch == "102" && request.input_dtype == "complex64" &&
-      n0 == 128 && n1 == 2048 && n2 == 64 && batch <= 4 &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_HYBRID", false);
-  if (maca_long_hybrid && n2_leaf && n1_leaf && n0_leaf) {
-    auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
-    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
-    auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
-    auto n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
-    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
-    DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
-    return std::make_shared<CompiledRaw3DHybridNode>(n0,
-                                                     n1,
-                                                     n2,
-                                                     std::move(n2_fft),
-                                                     std::move(n1_fft),
-                                                     std::move(n0_fft),
-                                                     std::move(perm_210),
-                                                     std::move(temp1),
-                                                     std::move(temp2));
-  }
-
   // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
   // transpose beats the packed permuted-store leaf.  FP64 measured slower
   // with this exchange, so it stays on the fully fused path.  The short
