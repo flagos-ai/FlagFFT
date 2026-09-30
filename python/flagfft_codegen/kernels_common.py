@@ -314,6 +314,8 @@ def _maca_knob(name: str, default: str = "") -> str:
     tail_default = resource_default(name)
     if tail_default is not None:
         return tail_default
+    if maca_3d_default_enabled() and name == "EXCHANGE":
+        return "direct_all"
     if maca_2d_single_default_enabled() and name == "2D_TRANSPOSE":
         return "packed"
     if maca_1d_batch_default_enabled():
@@ -441,6 +443,8 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
                 return int(short_pack)
         if maca_3d_default_enabled() and len(emitted_leaf_factors(plan)) > 1:
             if plan.length == 64 and plan.dtype == "complex64":
+                return 8
+            if plan.length == 64 and plan.dtype == "complex128":
                 return 8
             if plan.length == 256 and plan.dtype == "complex128":
                 return 2
