@@ -468,6 +468,7 @@ def _emit_permuted_store(
     factors: tuple[int, ...],
     pack: int,
     lane_block: int,
+    dtype: str,
 ) -> list[str]:
     """Store one radix digit with the batch axis made contiguous.
 
@@ -487,7 +488,7 @@ def _emit_permuted_store(
         # that singleton layout with the wrong pointer lanes.  The ordinary
         # one-dimensional tensor is both semantically exact and cheaper.
         address = f"{base} * perm_k_stride + perm_gbase_scalar"
-        if _packed_maca_fp32_complex_io("complex64"):
+        if _packed_maca_fp32_complex_io(dtype):
             return [
                 f"{indent}perm_addr{digit} = {address}",
                 f"{indent}perm_pair{digit} = "
@@ -518,7 +519,7 @@ def _emit_permuted_store(
             f"{indent}tl.store(out_ptr + pair_addr{digit}, pair{digit}, "
             f"mask={mask}[:, :, None])",
         ]
-    if _packed_maca_fp32_complex_io("complex64"):
+    if _packed_maca_fp32_complex_io(dtype):
         return [
             f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
             f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
@@ -1693,7 +1694,9 @@ def _emit_stage_block(
         if is_last:
             if io_mode == "permuted_store":
                 lines.extend(
-                    _emit_permuted_store(indent, j, factors, smem_pack, lane_block)
+                    _emit_permuted_store(
+                        indent, j, factors, smem_pack, lane_block, dtype
+                    )
                 )
                 continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))

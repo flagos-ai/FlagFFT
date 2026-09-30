@@ -124,7 +124,10 @@ def test_permuted_store_launch_grid_matches_generated_batch_pack(kernels, jit_so
 
 
 @pytest.mark.parametrize("pack", [1, 4])
-def test_maca_packed_permuted_store_uses_one_u64_store(kernels, monkeypatch, pack) -> None:
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_maca_packed_permuted_store_is_fp32_only(
+    kernels, monkeypatch, pack, dtype
+) -> None:
     from flagfft_codegen import kernels_leaf
     from flagfft_codegen.backend_profile import (
         BackendProfile,
@@ -152,7 +155,7 @@ def test_maca_packed_permuted_store_uses_one_u64_store(kernels, monkeypatch, pac
         num_warps=2,
         generic_radices=(),
         smem_size=256,
-        dtype="complex64",
+        dtype=dtype,
     )
     try:
         _name, source = kernels._build_leaf_kernel_source_for_io(
@@ -161,9 +164,13 @@ def test_maca_packed_permuted_store_uses_one_u64_store(kernels, monkeypatch, pac
     finally:
         reset_profile(token)
 
-    assert "tl.pointer_type(tl.uint64)" in source
-    assert "tl.store(perm_ptr0, perm_pair0" in source
-    assert "tl.store(out_ptr + perm_addr0 * 2 + 1" not in source
+    if dtype == "complex64":
+        assert "tl.pointer_type(tl.uint64)" in source
+        assert "tl.store(perm_ptr0, perm_pair0" in source
+        assert "tl.store(out_ptr + perm_addr0 * 2 + 1" not in source
+    else:
+        assert "perm_pair0" not in source
+        assert "tl.store(out_ptr + perm_addr0 * 2 + 1" in source
 
 
 def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
