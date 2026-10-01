@@ -249,6 +249,7 @@ def main() -> None:
         final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
         smem_swizzle = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "auto")
         swizzle_shift = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5")
+        factors_256 = os.getenv("FLAGFFT_HCU_3D_256_FACTORS", "auto")
         factors_2048 = os.getenv("FLAGFFT_HCU_3D_2048_FACTORS", "auto")
         if pair_store not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_PAIR_STORE must be 0 or 1")
@@ -281,6 +282,22 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE must be auto, 0 or 1")
         if swizzle_shift not in {str(x) for x in range(1, 9)}:
             parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
+        valid_factors_256 = {
+            "auto",
+            "16,16",
+            "8,32",
+            "32,8",
+            "8,8,4",
+            "4,8,8",
+            "8,4,8",
+            "4,16,4",
+            "4,4,4,4",
+        }
+        if factors_256 not in valid_factors_256:
+            parser.error(
+                "FLAGFFT_HCU_3D_256_FACTORS must be auto, 16,16, 8,32, 32,8, "
+                "8,8,4, 4,8,8, 8,4,8, 4,16,4 or 4,4,4,4"
+            )
         if factors_2048 not in {"auto", "16,16,8", "8,16,16", "16,8,16"}:
             parser.error(
                 "FLAGFFT_HCU_3D_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16"
@@ -292,7 +309,8 @@ def main() -> None:
                         f"-u64-load-{u64_load}-first-pack-{first_pack}-middle-pack-{middle_pack}"
                         f"-mbp-{middle_batch_pack}"
                         f"-final-warps-{final_warps}-final-pack-{final_pack}"
-                        f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
+                        f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}"
+                        f"-f256-{factors_256}")
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
