@@ -235,12 +235,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (key.npu_portable_leaf) {
       const char *exchange = std::getenv("FLAGFFT_NPU_2D_EXCHANGE");
       const char *lane_min = std::getenv("FLAGFFT_NPU_2D_LANE_MIN");
+      const char *batch_pack = std::getenv("FLAGFFT_NPU_2D_BATCH_PACK");
       const char *split_order = std::getenv("FLAGFFT_NPU_2D_SPLIT_ORDER");
       if (exchange == nullptr) exchange = std::getenv("FLAGFFT_MACA_EXCHANGE");
       if (lane_min == nullptr) lane_min = std::getenv("FLAGFFT_MACA_LANE_MIN");
+      if (batch_pack == nullptr) batch_pack = std::getenv("FLAGFFT_MACA_BATCH_PACK");
       if (split_order == nullptr) split_order = std::getenv("FLAGFFT_MACA_SPLIT_ORDER");
       cache_key += ";npu-2d-exchange=" + std::string(exchange != nullptr ? exchange : "auto");
       cache_key += ";npu-2d-lane-min=" + std::string(lane_min != nullptr ? lane_min : "auto");
+      cache_key += ";npu-2d-batch-pack=" + std::string(batch_pack != nullptr ? batch_pack : "auto");
       cache_key += ";npu-2d-split-order=" +
                    std::string(split_order != nullptr ? split_order : "auto");
     }

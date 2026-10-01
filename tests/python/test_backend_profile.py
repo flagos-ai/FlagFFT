@@ -18,16 +18,65 @@ class ProfileTest(unittest.TestCase):
                     "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
                     "FLAGFFT_NPU_2D_EXCHANGE": "transpose",
                     "FLAGFFT_NPU_2D_LANE_MIN": "8",
+                    "FLAGFFT_NPU_2D_BATCH_PACK": "2",
                     "FLAGFFT_MACA_EXCHANGE": "direct",
                     "FLAGFFT_MACA_LANE_MIN": "64",
+                    "FLAGFFT_MACA_BATCH_PACK": "8",
                 },
                 clear=True,
             ):
                 self.assertTrue(_npu_backend_active())
                 self.assertEqual(_maca_knob("EXCHANGE"), "transpose")
                 self.assertEqual(_maca_knob("LANE_MIN", "auto"), "8")
-                self.assertEqual(_maca_knob("BATCH_PACK", "auto"), "auto")
+                self.assertEqual(_maca_knob("BATCH_PACK", "auto"), "2")
         finally:
+            set_codegen_target("")
+
+    def test_npu_portable_leaf_batch_pack_expands_vector_block(self):
+        from pathlib import Path
+        from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+        from flagfft_codegen.metadata import _metadata
+        from flagfft_codegen.target import set_codegen_target
+
+        profile_token = set_profile(
+            self.profile(backend="npu", device_arch="Ascend910B4", warp_size=32)
+        )
+        set_codegen_target("npu:Ascend910B4:1")
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
+                    "FLAGFFT_NPU_2D_EXCHANGE": "transpose",
+                    "FLAGFFT_NPU_2D_LANE_MIN": "8",
+                    "FLAGFFT_NPU_2D_BATCH_PACK": "2",
+                },
+                clear=True,
+            ):
+                plan = LeafPlan(64, (8, 8), 1, 8, 2, (), 64)
+                for io_mode, kernel_type in (
+                    ("contiguous", "leaf"),
+                    ("strided", "leaf_strided"),
+                ):
+                    with self.subTest(io_mode=io_mode):
+                        name, source = _build_leaf_kernel_source_for_io(
+                            plan, io_mode=io_mode
+                        )
+                        metadata = _metadata(
+                            module_path=Path("unused.py"),
+                            kernel_name=name,
+                            arg_names=[],
+                            plan=plan,
+                            kernel_type=kernel_type,
+                            n1=0,
+                            n2=0,
+                            dtype=plan.dtype,
+                        )
+                        self.assertIn("batch_id = pid * 2", source)
+                        self.assertIn("lane_vec = tl.arange(0, 16)", source)
+                        self.assertEqual(metadata["batch_per_block"], 2)
+        finally:
+            reset_profile(profile_token)
             set_codegen_target("")
 
     def test_ix_scoped_default_uses_two_warps_and_recurrence(self):

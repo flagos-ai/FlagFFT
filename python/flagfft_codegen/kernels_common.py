@@ -318,6 +318,7 @@ def _maca_knob(name: str, default: str = "") -> str:
         npu_env_name = {
             "EXCHANGE": "FLAGFFT_NPU_2D_EXCHANGE",
             "LANE_MIN": "FLAGFFT_NPU_2D_LANE_MIN",
+            "BATCH_PACK": "FLAGFFT_NPU_2D_BATCH_PACK",
             "SPLIT_ORDER": "FLAGFFT_NPU_2D_SPLIT_ORDER",
         }.get(name)
         if npu_env_name is not None and npu_env_name in os.environ:
