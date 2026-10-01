@@ -421,7 +421,7 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
     slice_group: int = 2,
     tile_traversal: str = "row",
 ) -> tuple[str, str, list[str], int]:
-    """Emit a paired-complex transpose tile that permutes several slices at once."""
+    """Emit one CTA that sequentially transposes a group of paired-complex slices."""
     if order not in {"021", "210", "201", "120"}:
         raise ValueError(f"unsupported 3D transpose order: {order}")
     if slice_group < 2 or slice_group & (slice_group - 1):
@@ -435,17 +435,33 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
         "201": (s0, s2, s1, s1 * s2, s2, s1, s0 * s1),
         "120": (s1, s2, s0, s2, s1 * s2, s2 * s0, s0),
     }
-    num_slices, rows, cols, src_slice_stride, src_col_stride, dst_slice_stride, dst_row_stride = transpose_descs[order]
+    (
+        num_slices,
+        rows,
+        cols,
+        src_slice_stride,
+        src_col_stride,
+        dst_slice_stride,
+        dst_row_stride,
+    ) = transpose_descs[order]
     tile_cols = (cols + tile - 1) // tile
     tile_rows = (rows + tile - 1) // tile
     tiles_per_slice = tile_cols * tile_rows
-    tile_row_expr = f"tile_in_slice % {tile_rows}" if tile_traversal == "row" else f"tile_in_slice // {tile_cols}"
-    tile_col_expr = f"tile_in_slice // {tile_rows}" if tile_traversal == "row" else f"tile_in_slice % {tile_cols}"
+    tile_row_expr = (
+        f"tile_in_slice % {tile_rows}"
+        if tile_traversal == "row"
+        else f"tile_in_slice // {tile_cols}"
+    )
+    tile_col_expr = (
+        f"tile_in_slice // {tile_rows}"
+        if tile_traversal == "row"
+        else f"tile_in_slice % {tile_cols}"
+    )
     grid_x = ((num_slices + slice_group - 1) // slice_group) * tiles_per_slice
     total_complex = s0 * s1 * s2
     kernel_name = (
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_f32_t{tile}"
-        f"_tile_pair_sliceg{slice_group}"
+        f"_tile_pair_sliceg{slice_group}seq"
         + ("_rmajor" if tile_traversal == "row" else "")
     )
     source = dedent(
@@ -460,42 +476,43 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
             tile_row = {tile_row_expr}
             tile_col = {tile_col_expr}
 
-            slice_offsets = slice_group_idx * {slice_group} + tl.arange(0, {slice_group})
             row_offsets = tile_row * {tile} + tl.arange(0, {tile})
             col_offsets = tile_col * {tile} + tl.arange(0, {tile})
-            slice_mask = slice_offsets < {num_slices}
             row_mask = row_offsets < {rows}
             col_mask = col_offsets < {cols}
-            safe_slices = tl.minimum(slice_offsets, {num_slices - 1})
             safe_rows = tl.minimum(row_offsets, {rows - 1})
             safe_cols = tl.minimum(col_offsets, {cols - 1})
 
-            src_base = (
-                pid_batch * {total_complex}
-                + slice_offsets[:, None, None] * {src_slice_stride}
-                + safe_cols[None, :, None] * {src_col_stride}
-                + safe_rows[None, None, :]
-            )
-            load_mask = slice_mask[:, None, None] & col_mask[None, :, None] & row_mask[None, None, :]
-            src_pair = tl.load(
-                tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
-                mask=load_mask,
-                other=0,
-            )
-            dst_pair = tl.permute(src_pair, 0, 2, 1)
+            for group_offset in tl.static_range(0, {slice_group}):
+                slice_idx = slice_group_idx * {slice_group} + group_offset
+                slice_mask = slice_idx < {num_slices}
+                src_base = (
+                    pid_batch * {total_complex}
+                    + slice_idx * {src_slice_stride}
+                    + safe_cols[:, None] * {src_col_stride}
+                    + safe_rows[None, :]
+                )
+                load_mask = slice_mask & col_mask[:, None] & row_mask[None, :]
+                src_pair = tl.load(
+                    tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
+                    mask=load_mask,
+                    other=0,
+                )
+                dst_pair = tl.trans(src_pair)
 
-            dst_base = (
-                pid_batch * {total_complex}
-                + safe_slices[:, None, None] * {dst_slice_stride}
-                + safe_rows[None, :, None] * {dst_row_stride}
-                + safe_cols[None, None, :]
-            )
-            store_mask = slice_mask[:, None, None] & row_mask[None, :, None] & col_mask[None, None, :]
-            tl.store(
-                tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
-                dst_pair,
-                mask=store_mask,
-            )
+                safe_slice = tl.minimum(slice_idx, {num_slices - 1})
+                dst_base = (
+                    pid_batch * {total_complex}
+                    + safe_slice * {dst_slice_stride}
+                    + safe_rows[:, None] * {dst_row_stride}
+                    + safe_cols[None, :]
+                )
+                store_mask = slice_mask & row_mask[:, None] & col_mask[None, :]
+                tl.store(
+                    tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
+                    dst_pair,
+                    mask=store_mask,
+                )
         """
     )
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
