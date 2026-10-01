@@ -1881,8 +1881,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       std::string(r2c_fused32_setting) != "1") {
     throw std::runtime_error("FLAGFFT_HCU_3D_R2C_FUSED32 must be 0 or 1");
   }
-  if (request.device_type == "hcu" && !inverse && request.real_transform_kind == "r2c" && batch == 1 &&
-      n0 == 32 && n1 == 32 && n2 == 32 && n0_leaf && n1_leaf && n2_leaf && r2c_fused32_setting != nullptr &&
+  const bool r2c_transform = request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z";
+  if (request.device_type == "hcu" && !inverse && r2c_transform && batch == 1 && n0 == 32 && n1 == 32 &&
+      n2 == 32 && n0_leaf && n1_leaf && n2_leaf && r2c_fused32_setting != nullptr &&
       std::string(r2c_fused32_setting) == "1") {
     std::vector<double> tw_r_d(16);
     std::vector<double> tw_i_d(16);
