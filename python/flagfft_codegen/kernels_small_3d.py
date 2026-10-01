@@ -106,12 +106,15 @@ def fused_16_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     return metadata
 
 
-def emit_fused_32_real_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
-    """Emit one fused 32x32 R2C/C2R plane for the small-cube experiment."""
+def _emit_fused_real_plane_kernel(
+    *, n: int, dtype: str, direction: str, out_dir: Path
+) -> dict:
+    """Emit one fused square R2C/C2R plane for a small 3D transform."""
     if direction not in {"forward", "inverse"}:
         raise ValueError("fused real plane direction must be forward or inverse")
+    if n not in {16, 32}:
+        raise ValueError("fused real plane size must be 16 or 32")
     real_kind = "r2c" if direction == "forward" else "c2r"
-    n = 32
     half = n // 2 + 1
     elements = n * n
     stages = n.bit_length() - 1
@@ -138,7 +141,8 @@ def emit_fused_32_real_plane_kernel(*, dtype: str, direction: str, out_dir: Path
     tl.store(out_ptr + dst, xr)
 """
 
-    kernel_name = "fused_32_real_plane_fft_kernel"
+    kernel_name = f"fused_{n}_real_plane_fft_kernel"
+    num_warps = 4 if n == 16 else 8
     source = f"""
 @triton.jit
 def {kernel_name}(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
@@ -186,7 +190,7 @@ def {kernel_name}(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         xi = tl.where(upper, ai - ti, ai + ti)
 {store}
 """
-    name = f"flagfft_jit_fused_32_real_plane_{direction}_{_dtype_suffix(dtype)}"
+    name = f"flagfft_jit_fused_{n}_real_plane_{direction}_{_dtype_suffix(dtype)}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))
@@ -195,13 +199,23 @@ def {kernel_name}(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(args, dtype),
-        "num_warps": 8,
+        "num_warps": num_warps,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
-        "kernel_type": "fused_32_real_plane",
+        "kernel_type": f"fused_{n}_real_plane",
         "dtype": dtype,
         "direction": direction,
     }
     write_text_atomic(out_dir / f"{name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
+
+
+def emit_fused_16_real_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
+    """Emit one fused 16x16 R2C/C2R plane for the small-cube experiment."""
+    return _emit_fused_real_plane_kernel(n=16, dtype=dtype, direction=direction, out_dir=out_dir)
+
+
+def emit_fused_32_real_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
+    """Emit one fused 32x32 R2C/C2R plane for the small-cube experiment."""
+    return _emit_fused_real_plane_kernel(n=32, dtype=dtype, direction=direction, out_dir=out_dir)

@@ -95,6 +95,26 @@ def test_fused_32_real_plane_codegen(dtype, direction, expected_real_kind, tmp_p
         assert "xi = tl.where(reflected, -xi, xi)" in source
 
 
+@pytest.mark.parametrize(
+    ("dtype", "direction", "expected_real_kind"),
+    [("complex64", "forward", "r2c"), ("complex128", "inverse", "c2r")],
+)
+def test_fused_16_real_plane_codegen(dtype, direction, expected_real_kind, tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_16_real_plane_kernel
+
+    metadata = emit_fused_16_real_plane_kernel(dtype=dtype, direction=direction, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    assert metadata["kernel_name"] == "fused_16_real_plane_fft_kernel"
+    assert metadata["num_warps"] == 4
+    assert "tl.arange(0, 256)" in source
+    if expected_real_kind == "r2c":
+        assert "tl.full((256,), 0.0, tl.float32)" in source
+        assert "mask=col < 9" in source
+    else:
+        assert "reflected = rev_col >= 9" in source
+        assert "xi = tl.where(reflected, -xi, xi)" in source
+
+
 def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     plan = kernels.LeafPlan(
         length=16,
@@ -1142,8 +1162,8 @@ def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:
 def test_kernel_registry_is_complete_and_consistent() -> None:
     import flagfft_codegen.registry as registry
 
-    assert len(registry.KERNEL_NAMES) == 47
-    assert len(set(registry.KERNEL_NAMES)) == 47
+    assert len(registry.KERNEL_NAMES) == 48
+    assert len(set(registry.KERNEL_NAMES)) == 48
     assert set(registry.KERNEL_SPECS) == set(registry.KERNEL_NAMES)
 
     for name, spec in registry.KERNEL_SPECS.items():

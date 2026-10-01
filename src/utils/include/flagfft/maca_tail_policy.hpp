@@ -169,7 +169,8 @@ inline std::string maca_tail_codegen_identity(const std::string& mode) {
                            "FLAGFFT_MACA_TRANSPOSE3D", "FLAGFFT_MACA_TRANSPOSE3D_WARPS",
                            "FLAGFFT_MACA_TRANSPOSE3D_FP64", "FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL",
                            "FLAGFFT_MACA_3D_FIRST_STORE",
-                           "FLAGFFT_MACA_3D_R2C_FIRST_STORE"}) {
+                           "FLAGFFT_MACA_3D_R2C_FIRST_STORE",
+                           "FLAGFFT_MACA_3D_REAL_FUSED16"}) {
     const char* value = std::getenv(name);
     identity += std::string(";") + name + "=";
     identity += value ? std::to_string(std::string(value).size()) + ":" + value : "unset";

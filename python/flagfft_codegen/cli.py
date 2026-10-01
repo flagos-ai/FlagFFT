@@ -33,7 +33,11 @@ from .emit import (
     emit_jit_kernel,
 )
 from .metadata import _csv_ints
-from .kernels_small_3d import emit_fused_16_plane_kernel, emit_fused_32_real_plane_kernel
+from .kernels_small_3d import (
+    emit_fused_16_plane_kernel,
+    emit_fused_16_real_plane_kernel,
+    emit_fused_32_real_plane_kernel,
+)
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -319,11 +323,12 @@ def main() -> None:
             out_dir=args.out_dir,
         )
     elif spec.family == SMALL_3D:
-        emitter = (
-            emit_fused_32_real_plane_kernel
-            if args.kernel == "fused_32_real_plane"
-            else emit_fused_16_plane_kernel
-        )
+        small_3d_emitters = {
+            "fused_16_plane": emit_fused_16_plane_kernel,
+            "fused_16_real_plane": emit_fused_16_real_plane_kernel,
+            "fused_32_real_plane": emit_fused_32_real_plane_kernel,
+        }
+        emitter = small_3d_emitters[args.kernel]
         metadata = emitter(dtype=args.dtype, direction=args.direction, out_dir=args.out_dir)
     elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:

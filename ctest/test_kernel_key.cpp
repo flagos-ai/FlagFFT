@@ -49,6 +49,14 @@ TEST(KernelKeyRepr, DistinctKindsWithSameValuesDiffer) {
   EXPECT_NE(reshape, transpose);
 }
 
+TEST(KernelKeyRepr, FusedRealPlaneSizesAndKindsDiffer) {
+  const auto complex = flagfft::KernelKey::fused_16_plane("maca:80:64", "forward", "complex128");
+  const auto real16 = flagfft::KernelKey::fused_16_real_plane("maca:80:64", "forward", "complex128");
+  const auto real32 = flagfft::KernelKey::fused_32_real_plane("maca:80:64", "forward", "complex128");
+  EXPECT_NE(complex.repr(), real16.repr());
+  EXPECT_NE(real16.repr(), real32.repr());
+}
+
 TEST(KernelKeyRepr, RealDirectDftSeparatesBoundaryModesAndPrecision) {
   for (const auto *dtype : {"complex64", "complex128"}) {
     auto complex = flagfft::KernelKey::direct_dft("maca:80:64", "forward", dtype, 23);

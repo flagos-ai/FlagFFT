@@ -1604,10 +1604,42 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
 
-  // For one 32^3 cube, fuse the contiguous real axis and the adjacent
-  // complex axis into a single 2D plane transform. The remaining outer axis
-  // stays on the existing strided leaf. Keep this experiment opt-in until
-  // end-to-end MACA measurements justify a default change.
+  // For a small cube, fuse the contiguous real axis and adjacent complex axis
+  // into one plane transform. The remaining outer axis stays on the existing
+  // strided leaf. The 16^3 variant stays opt-in until measured on MACA.
+  const bool maca_fused_real16 = request.device_type == "maca" &&
+      n0 == 16 && n1 == 16 && n2 == 16 && batch == 1 &&
+      n0_leaf && n1_leaf && n2_leaf &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FUSED16", false);
+  if (maca_fused_real16) {
+    const std::string complex_dtype = complex_dtype_for(request.input_dtype);
+    std::vector<double> tw_r_d(8);
+    std::vector<double> tw_i_d(8);
+    const double sign = inverse ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 8; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 16.0;
+      tw_r_d[k] = std::cos(angle);
+      tw_i_d[k] = std::sin(angle);
+    }
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (complex_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto plane_fft = compile_kernel(KernelKey::fused_16_real_plane(
+        triton_target_for_request(request), request.direction, complex_dtype));
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * (n2 / 2 + 1));
+    DeviceAllocation temp = adaptor::Memory(
+        static_cast<std::size_t>(packed * complex_element_bytes(complex_dtype)));
+    return std::make_shared<CompiledRaw3DFusedRealPlaneNode>(
+        n1, inverse, std::move(plane_fft), std::move(outer_fft),
+        std::move(temp), std::move(tw_r), std::move(tw_i));
+  }
+
   const bool maca_fused_real32 = request.device_type == "maca" &&
       n0 == 32 && n1 == 32 && n2 == 32 && batch == 1 &&
       n0_leaf && n1_leaf && n2_leaf &&
