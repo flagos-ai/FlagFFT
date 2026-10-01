@@ -1003,8 +1003,7 @@ struct CompiledRaw3DStridedNode final : CompiledRawNode {
                            std::shared_ptr<CompiledRawNode> n1_fft,
                            std::shared_ptr<CompiledRawNode> n0_fft,
                            DeviceAllocation temp1,
-                           DeviceAllocation temp2,
-                           bool enable_graph = false);
+                           DeviceAllocation temp2);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1018,13 +1017,6 @@ struct CompiledRaw3DStridedNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> n0_fft;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
-
-  // Optional replay cache for the fixed three-leaf small-cube sequence.
-  mutable std::unique_ptr<adaptor::CudaGraph> graph_;
-  mutable adaptor::DevicePtr graph_in_ = 0;
-  mutable adaptor::DevicePtr graph_out_ = 0;
-  const bool graph_enabled_;
-  mutable bool graph_failed_ = false;
 };
 
 // Large 3D C2C with a long middle axis: contiguous n1 FFT plus one transpose
