@@ -46,24 +46,28 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     row_id = tl.program_id(0)
     batch = row_id // {n}
     row = row_id % {n}
-    # Keep the gather vector at the NPU's safe exchange width.  The Ascend
-    # lowering can address past UB for gathers over a bare 64-element vector;
-    # the regular leaf emitter avoids this by padding its exchange to 128.
-    idx = tl.arange(0, 128)
-    logical_idx = idx & ({n} - 1)
-    valid = idx < {n}
-    rev = tl.full((128,), 0, tl.int32)
+    idx = tl.arange(0, {n})
+    rev = tl.full(({n},), 0, tl.int32)
     for bit in tl.static_range({bits}):
-        rev = (rev << 1) | ((logical_idx >> bit) & 1)
+        rev = (rev << 1) | ((idx >> bit) & 1)
     src = (batch * {n * n} + row * {n} + rev) * 2
-    xr = tl.load(in_ptr + src, mask=valid, other=0.0)
-    xi = tl.load(in_ptr + src + 1, mask=valid, other=0.0)
+    xr = tl.reshape(tl.load(in_ptr + src), (8, 8))
+    xi = tl.reshape(tl.load(in_ptr + src + 1), (8, 8))
+    index = tl.reshape(idx, (8, 8))
+    row_index = index // 8
+    col_index = index % 8
 
     for stage in tl.static_range({bits}):
-        partner = logical_idx ^ (1 << stage)
-        pr = tl.gather(xr, partner, 0)
-        pi = tl.gather(xi, partner, 0)
-        upper = (logical_idx & (1 << stage)) != 0
+        if stage < 3:
+            partner = col_index ^ (1 << stage)
+            pr = tl.gather(xr, partner, 1)
+            pi = tl.gather(xi, partner, 1)
+            upper = (col_index & (1 << stage)) != 0
+        else:
+            partner = row_index ^ (1 << (stage - 3))
+            pr = tl.gather(xr, partner, 0)
+            pi = tl.gather(xi, partner, 0)
+            upper = (row_index & (1 << (stage - 3))) != 0
         ar = tl.where(upper, pr, xr)
         ai = tl.where(upper, pi, xi)
         br = tl.where(upper, xr, pr)
@@ -72,20 +76,22 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
             tr = br
             ti = bi
         elif stage == 1:
-            tr = tl.where((logical_idx & 1) != 0, {quarter_r}, br)
-            ti = tl.where((logical_idx & 1) != 0, {quarter_i}, bi)
+            tr = tl.where((index & 1) != 0, {quarter_r}, br)
+            ti = tl.where((index & 1) != 0, {quarter_i}, bi)
         else:
-            tw = (logical_idx & ((1 << stage) - 1)) * ({n} >> (stage + 1))
-            wr = tl.load(tw_r_ptr + tw, mask=valid, other=0.0)
-            wi = tl.load(tw_i_ptr + tw, mask=valid, other=0.0)
+            tw = (index & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw)
+            wi = tl.load(tw_i_ptr + tw)
             tr = wr * br - wi * bi
             ti = wr * bi + wi * br
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
+    xr = tl.reshape(xr, ({n},))
+    xi = tl.reshape(xi, ({n},))
     dst = {store_expr}
-    tl.store(out_ptr + dst, xr, mask=valid)
-    tl.store(out_ptr + dst + 1, xi, mask=valid)
+    tl.store(out_ptr + dst, xr)
+    tl.store(out_ptr + dst + 1, xi)
 """
     name = f"flagfft_jit_fused_2d_{direction}_{_dtype_suffix(dtype)}_n{n}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -96,9 +102,11 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "module_path": str(module_path),
         "kernel_name": "fused_2d_fft_kernel",
         "signature": _signature(args, dtype),
-        # Keep each program to one row, while using two hardware threads for
-        # the 128-wide exchange vector, matching the working portable leaf.
-        "num_warps": 2,
+        # One NPU program only handles one 64-point vector. Keeping this to
+        # one hardware thread bounds the Ascend UB footprint of the gather
+        # based butterfly network; larger launch groups currently trip an
+        # UB address error on 910B.
+        "num_warps": 1,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
