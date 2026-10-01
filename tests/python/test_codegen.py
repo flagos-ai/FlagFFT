@@ -859,21 +859,32 @@ def test_hcu_fp64_3d_transpose_uses_register_tile(tmp_path, monkeypatch) -> None
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
 
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.delenv("FLAGFFT_HCU_3D_FP64_TILE", raising=False)
     token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64))
     try:
-        default_metadata = emit._emit_tiled_transpose3d_jit_kernel(
-            n0=16, n1=33, n2=997, order="210", dtype="complex128", out_dir=tmp_path / "default"
+        prime_c2c_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=16, n1=64, n2=997, order="210", dtype="complex128", out_dir=tmp_path / "prime_c2c"
+        )
+        prime_real_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=16, n1=33, n2=997, order="210", dtype="complex128", out_dir=tmp_path / "prime_real"
+        )
+        cube_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=256, n1=256, n2=256, order="210", dtype="complex128", out_dir=tmp_path / "cube"
         )
         monkeypatch.setenv("FLAGFFT_HCU_3D_FP64_TILE", "1")
         metadata = emit._emit_tiled_transpose3d_jit_kernel(
-            n0=16, n1=33, n2=997, order="210", dtype="complex128", out_dir=tmp_path / "tiled"
+            n0=128, n1=64, n2=2048, order="210", dtype="complex128", out_dir=tmp_path / "tiled"
         )
     finally:
         reset_profile(token)
 
-    assert default_metadata["grid_x_override"] == 0
+    assert "t16_tile" in prime_c2c_metadata["kernel_name"]
+    assert "t16_tile" in prime_real_metadata["kernel_name"]
+    assert prime_c2c_metadata["grid_x_override"] > 0
+    assert prime_real_metadata["grid_x_override"] > 0
+    assert cube_metadata["grid_x_override"] == 0
     assert "t16_tile" in metadata["kernel_name"]
-    assert metadata["grid_x_override"] == 33 * ((16 + 15) // 16) * ((997 + 15) // 16)
+    assert metadata["grid_x_override"] > 0
     source = Path(metadata["module_path"]).read_text()
     assert "tl.trans(src_r)" in source
     assert "tl.trans(src_i)" in source

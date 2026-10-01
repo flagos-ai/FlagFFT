@@ -780,7 +780,15 @@ def _emit_tiled_transpose3d_jit_kernel(
                 os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "1"
                 or (
                     os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "auto"
-                    and (n0, n1, n2, order) == (256, 256, 129, "021")
+                    # These exact middle-axis transposes benefit from the
+                    # portable 16x16 tile; forcing it for all FP64 shapes
+                    # regresses the much larger 256-cube path.
+                    and (n0, n1, n2, order)
+                    in {
+                        (256, 256, 129, "021"),
+                        (16, 64, 997, "210"),
+                        (16, 33, 997, "210"),
+                    }
                 )
             )
         )
