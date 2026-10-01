@@ -20,23 +20,6 @@
 #include "triton_jit/triton_jit_function.h"
 
 namespace flagfft {
-namespace {
-
-triton_jit::CompileOptions compile_options_for(const JitKernel &kernel) {
-  triton_jit::CompileOptions options;
-  options.num_warps = static_cast<int>(kernel.num_warps);
-  options.num_stages = static_cast<int>(kernel.num_stages);
-#if defined(BACKEND_NPU)
-  const char *auto_vectorize_v2 = std::getenv("FLAGFFT_NPU_2D_AUTOVECTORIZE_V2");
-  if (kernel.npu_portable_leaf && auto_vectorize_v2 != nullptr &&
-      std::string(auto_vectorize_v2) == "1") {
-    options.extra["enable_auto_vectorize_v2"] = "true";
-  }
-#endif
-  return options;
-}
-
-}  // namespace
 
 JitKernelArg JitKernelArg::device(adaptor::DevicePtr value) {
   JitKernelArg arg;
@@ -94,7 +77,8 @@ void JitKernel::compile() {
   jit_function = &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
   function->compile(signature,
-                    compile_options_for(*this),
+                    static_cast<unsigned int>(num_warps),
+                    static_cast<unsigned int>(num_stages),
                     triton_jit::DefaultBackend::get_device_index());
 #endif
 }
@@ -158,7 +142,8 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                                  static_cast<unsigned int>(grid_x),
                                  static_cast<unsigned int>(grid_y),
                                  static_cast<unsigned int>(grid_z),
-                                 compile_options_for(*this),
+                                 static_cast<unsigned int>(num_warps),
+                                 static_cast<unsigned int>(num_stages),
                                  signature,
                                  args.data(),
                                  args.size());
