@@ -799,7 +799,13 @@ def _emit_tiled_transpose3d_jit_kernel(
         elif _hcu_backend_active():
             if dtype == "complex64":
                 tile = int(os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32"))
+                packed_complex = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_U64", "0") == "1"
             pair_store = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1"
+            if packed_complex and pair_store:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_TRANSPOSE_U64 and FLAGFFT_HCU_3D_TRANSPOSE_PAIR "
+                    "are mutually exclusive"
+                )
         (
             kernel_name,
             kernel_source,

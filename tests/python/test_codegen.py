@@ -761,6 +761,29 @@ def test_hcu_tiled_transpose3d_can_store_complex_pairs(kernels) -> None:
     assert "tl.store(out_ptr + pair_base, dst_pair, mask=store_mask[:, :, None])" in source
 
 
+def test_hcu_tiled_transpose3d_can_copy_complex64_as_packed_u64(tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_U64", "1")
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64))
+    try:
+        metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=128, n1=2048, n2=64, order="210", dtype="complex64", out_dir=tmp_path
+        )
+    finally:
+        reset_profile(token)
+
+    source = Path(metadata["module_path"]).read_text()
+    assert metadata["kernel_name"].endswith("_tile_u64")
+    assert "tl.pointer_type(tl.uint64)" in source
+    assert "tl.trans(values)" in source
+    assert "tl.store(dst + dst_base, tl.trans(values), mask=store_mask)" in source
+
+
 def test_fused_16_cube_codegen_resolves_template_parameters(tmp_path) -> None:
     from flagfft_codegen.kernels_small_3d import emit_fused_16_cube_kernel
 
