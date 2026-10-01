@@ -1495,6 +1495,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   }
 
   if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements) {
+    const bool maca_32_cube_graph = request.device_type == "maca" &&
+        n0 == 32 && n1 == 32 && n2 == 32 &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_GRAPH", false) &&
+        !env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS"));
     std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
     std::shared_ptr<CompiledRawNode> n1_fft =
         compile_raw_strided_leaf(*n1_leaf, request, /*outer_stride=*/n2);
@@ -1511,7 +1515,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                       std::move(n1_fft),
                                                       std::move(n0_fft),
                                                       std::move(temp1),
-                                                      std::move(temp2));
+                                                      std::move(temp2),
+                                                      maca_32_cube_graph);
   }
 
   std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
