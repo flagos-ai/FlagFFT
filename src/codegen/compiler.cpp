@@ -2073,8 +2073,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
     } else {
-      const std::string n1_perm_form = hcu_3d_axis_perm_form(
-          request, "FLAGFFT_HCU_3D_MIDDLE_PACK", "inner_middle", "inner");
+      const char *middle_pack_override = std::getenv("FLAGFFT_HCU_3D_MIDDLE_PACK");
+      const bool c2r_cube_middle_pack8 = request.device_type == "hcu" && inverse &&
+                                         request.origin_rank == 3 && batch == 1 &&
+                                         n0 == 256 && n1 == 256 && n2 == 256 &&
+                                         request.input_dtype == "complex64" && n1_leaf &&
+                                         (middle_pack_override == nullptr ||
+                                          std::string(middle_pack_override) == "auto");
+      // A-B-B-A measured a repeatable 3.3% FP32 gain on single-batch 256^3
+      // C2R by packing eight middle-axis transforms per block. Keep the
+      // default specific to this path; other 256^3 operators did not benefit.
+      const std::string n1_perm_form = c2r_cube_middle_pack8
+                                           ? "inner_middle_c2r_cube"
+                                           : hcu_3d_axis_perm_form(
+                                                 request, "FLAGFFT_HCU_3D_MIDDLE_PACK",
+                                                 "inner_middle", "inner");
       n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, n1_perm_form,
                                                 n1_strided_input);
     }

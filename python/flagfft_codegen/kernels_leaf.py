@@ -2808,7 +2808,7 @@ def _build_leaf_kernel_source_for_io(
         raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
-    inner_perm_form = perm_form in {"inner", "inner_middle"}
+    inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
@@ -2844,11 +2844,14 @@ def _build_leaf_kernel_source_for_io(
             pack_knob = {
                 "outer_first": "FLAGFFT_HCU_3D_FIRST_PACK",
                 "inner_middle": "FLAGFFT_HCU_3D_MIDDLE_PACK",
+                "inner_middle_c2r_cube": "FLAGFFT_HCU_3D_MIDDLE_PACK",
                 "outer_last": "FLAGFFT_HCU_3D_FINAL_PACK",
             }.get(perm_form)
             requested_pack = os.getenv(pack_knob, "auto") if pack_knob else "auto"
             if requested_pack != "auto":
                 final_pack = int(requested_pack)
+            elif _hcu_backend_active() and perm_form == "inner_middle_c2r_cube":
+                final_pack = 8
         batch_pack = permuted_store_batch_pack_for(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )

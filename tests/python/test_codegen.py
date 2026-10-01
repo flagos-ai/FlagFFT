@@ -894,6 +894,39 @@ def test_hcu_selected_middle_transposes_default_to_tile16(tmp_path, monkeypatch)
     assert "t32_tile" in long_metadata["kernel_name"]
 
 
+def test_hcu_c2r_cube_middle_pack8_is_narrow_and_overridable(tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.delenv("FLAGFFT_HCU_3D_MIDDLE_PACK", raising=False)
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64))
+    kwargs = dict(
+        kernel="leaf_strided_permuted_store",
+        length=256,
+        factors=(16, 16),
+        lanes=16,
+        num_warps=1,
+        generic_radices=(),
+        smem_size=256,
+        direction="inverse",
+        dtype="complex64",
+        prime_n=0,
+        four_step_n1=0,
+        four_step_n2=0,
+        perm_form="inner_middle_c2r_cube",
+    )
+    try:
+        default = emit.emit_jit_kernel(**kwargs, out_dir=tmp_path / "default")
+        monkeypatch.setenv("FLAGFFT_HCU_3D_MIDDLE_PACK", "4")
+        overridden = emit.emit_jit_kernel(**kwargs, out_dir=tmp_path / "override")
+    finally:
+        reset_profile(token)
+
+    assert default["batch_per_block"] == 8
+    assert "permuted_store_inner_middle_c2r_cube" in default["kernel_name"]
+    assert overridden["batch_per_block"] == 4
+
+
 def test_tiled_transpose3d_tile_selected_only_for_validated_backends(
     kernels, tmp_path, monkeypatch
 ) -> None:

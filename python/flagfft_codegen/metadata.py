@@ -142,6 +142,12 @@ def _metadata(
                 break
         requested_pack = os.environ.get(pack_knob, "auto") if pack_knob else "auto"
         final_pack = int(requested_pack) if requested_pack != "auto" else None
+        if (
+            final_pack is None
+            and current_profile().backend == "hcu"
+            and "permuted_store_inner_middle_c2r_cube_" in kernel_name
+        ):
+            final_pack = 8
         batch_per_block = permuted_store_batch_pack_for(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )
