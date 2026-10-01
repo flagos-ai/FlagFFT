@@ -1462,6 +1462,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       n0 == 128 && n1 == 2048 && n2 == 64;
   const bool maca_first_store_enabled = request.device_type == "maca" &&
       maca_flag_or_default("FLAGFFT_MACA_3D_FIRST_STORE", maca_first_store_default);
+  // For the single-batch long C2C case, let n1 write [n1][n2][n0] directly
+  // and remove the following 210 transpose. The inner permuted-store mapping
+  // folds batch into its row index, so keep this experiment batch-one only.
+  const bool maca_middle_store_enabled = maca_first_store_enabled &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_MIDDLE_STORE", false) &&
+      batch == 1 && n0 == 128 && n1 == 2048 && n2 == 64;
   const bool maca_first_store_fp64_enabled = maca_first_store_enabled &&
       request.device_type == "maca" && request.input_dtype == "complex128";
   const bool first_store_dtype_supported = request.input_dtype == "complex64" ||
@@ -1475,8 +1481,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       n1 >= 4 * std::max(n0, n2) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
-    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
-    auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
+    auto n1_fft = maca_middle_store_enabled
+        ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, n2, "inner")
+        : compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    auto perm_210 = maca_middle_store_enabled
+        ? nullptr
+        : compile_transpose3d_kernel(request, n0, n2, n1, "210");
     const bool maca_long_axis = request.device_type == "maca";
     auto n0_fft = maca_long_axis
         ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
