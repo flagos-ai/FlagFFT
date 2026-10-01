@@ -1378,9 +1378,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
-  const bool maca_32_single_transpose = request.device_type == "maca" && batch == 1 &&
-      n0 == 32 && n1 == 32 && n2 == 32 &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_32_SINGLE_TRANSPOSE", false);
 
   // A 16x16 plane fits in one block. Transform n2 and n1 together so a
   // 16^3 cube needs only one plane launch plus the outer strided leaf.
@@ -1497,8 +1494,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                       std::move(temp2));
   }
 
-  if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements &&
-      !maca_32_single_transpose) {
+  if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements) {
     std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
     std::shared_ptr<CompiledRawNode> n1_fft =
         compile_raw_strided_leaf(*n1_leaf, request, /*outer_stride=*/n2);
@@ -1572,10 +1568,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t n2 = node->n2;
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
-  const bool maca_32_single_transpose = request.device_type == "maca" && batch == 1 &&
-      n0 == 32 && n1 == 32 && n2 == 32 &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_32_SINGLE_TRANSPOSE", false);
-  const bool small = n1_leaf && packed <= 64 * 64 * 64 && !maca_32_single_transpose;
+  const bool small = n1_leaf && packed <= 64 * 64 * 64;
   // Let the n2 leaf produce (n0,half,n1) directly and avoid the first full
   // compact-cube transpose. This is validated for MACA FP32 R2C at this shape;
   // retain the environment override for screening and rollback.
