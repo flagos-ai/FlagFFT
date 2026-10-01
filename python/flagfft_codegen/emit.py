@@ -463,12 +463,19 @@ def _emit_r2c_pointwise_jit_kernel(
             rows_per_block,
         ) = _build_r2c_packed_postprocess_kernel_source(n, dtype)
     elif kernel == "c2r_packed_preprocess":
+        paired_c2r_preprocess = (
+            _hcu_backend_active()
+            and n == 256
+            and os.environ.get("FLAGFFT_HCU_3D_C2R_PREPROCESS_PAIR", "0") == "1"
+        )
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_c2r_packed_preprocess_kernel_source(n, dtype)
+        ) = _build_c2r_packed_preprocess_kernel_source(
+            n, dtype, paired=paired_c2r_preprocess
+        )
     elif kernel == "compact_to_hermitian_full":
         (
             kernel_name,
