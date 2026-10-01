@@ -991,6 +991,30 @@ struct CompiledRaw3DFused16PlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
+// Experimental real 32-cube path: fuse the contiguous real axis and middle
+// complex axis in each plane, then apply the outer strided axis.
+struct CompiledRaw3DFusedRealPlaneNode final : CompiledRawNode {
+  CompiledRaw3DFusedRealPlaneNode(int64_t plane_size,
+                                  bool inverse,
+                                  std::shared_ptr<JitKernel> plane_fft,
+                                  std::shared_ptr<CompiledRawNode> outer_fft,
+                                  DeviceAllocation temp,
+                                  DeviceAllocation tw_r,
+                                  DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t plane_size;
+  bool inverse;
+  std::shared_ptr<JitKernel> plane_fft;
+  std::shared_ptr<CompiledRawNode> outer_fft;
+  DeviceAllocation temp;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 // 3D C2C/Z2Z that runs the n1 and n0 axes as strided leaves on the natural
 // layout instead of permuting the cube between passes: three launches and no
 // full-cube transpose traffic.  Used when both non-contiguous axis plans are
