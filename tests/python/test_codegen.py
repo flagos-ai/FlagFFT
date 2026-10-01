@@ -945,29 +945,6 @@ def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch
     assert "tile_col = tile_in_slice // 4" in source
 
 
-def test_maca_256_cube_two_warp_transpose_uses_independent_output_indices(
-    tmp_path, monkeypatch
-) -> None:
-    from flagfft_codegen import emit, kernels_common
-
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
-    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
-    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "2")
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "row")
-
-    metadata = emit._emit_tiled_transpose3d_jit_kernel(
-        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
-    )
-    source = Path(metadata["module_path"]).read_text()
-
-    assert metadata["kernel_name"].endswith("_rmajor_indidx")
-    assert "dst_row_offsets = tile_row * 16 + tl.arange(0, 16)" in source
-    assert "dst_col_offsets = tile_col * 16 + tl.arange(0, 16)" in source
-    assert "dst_base_src" not in source
-
-
 def test_maca_long_complex64_transpose_defaults_to_row_tile_traversal(
     tmp_path, monkeypatch
 ) -> None:

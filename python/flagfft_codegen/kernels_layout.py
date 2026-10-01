@@ -262,7 +262,6 @@ def _build_tiled_transpose3d_tile_kernel_source(
     pair: bool = False,
     vec_store: bool = False,
     tile_traversal: str = "col",
-    independent_output_indices: bool = False,
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -282,8 +281,6 @@ def _build_tiled_transpose3d_tile_kernel_source(
         raise ValueError("paired tiled 3D transpose requires complex64")
     if vec_store and dtype != "complex128":
         raise ValueError("vector-store tiled 3D transpose requires complex128")
-    if independent_output_indices and (not pair or dtype != "complex64"):
-        raise ValueError("independent output indices require paired complex64 storage")
     if tile_traversal not in {"col", "row"}:
         raise ValueError("tile_traversal must be col or row")
     zero = _zero_other(dtype)
@@ -351,38 +348,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
         + ("_pair" if pair else "")
         + ("_vec" if vec_store else "")
         + ("_rmajor" if tile_traversal == "row" else "")
-        + ("_indidx" if independent_output_indices else "")
     )
-    if independent_output_indices:
-        output_index_source = "    " + dedent(
-            f"""\
-            # Give the output index expressions independent axes so layout
-            # assignment can follow the transposed value tile at the store.
-            dst_row_offsets = tile_row * {tile} + tl.arange(0, {tile})
-            dst_col_offsets = tile_col * {tile} + tl.arange(0, {tile})
-            dst_row_mask = dst_row_offsets < {rows}
-            dst_col_mask = dst_col_offsets < {cols}
-            dst_base = (
-                pid_batch * {total_scalar}
-                + slice_idx * {dst_slice_stride} * {scalar_width}
-                + tl.minimum(dst_row_offsets, {rows - 1})[:, None]
-                * {dst_row_stride} * {scalar_width}
-                + tl.minimum(dst_col_offsets, {cols - 1})[None, :]
-                * {scalar_width}
-            )
-            store_mask = dst_row_mask[:, None] & dst_col_mask[None, :]"""
-        ).replace("\n", "\n    ")
-    else:
-        output_index_source = "    " + dedent(
-            f"""\
-            dst_base = (
-                pid_batch * {total_scalar}
-                + slice_idx * {dst_slice_stride} * {scalar_width}
-                + safe_rows[:, None] * {dst_row_stride} * {scalar_width}
-                + safe_cols[None, :] * {scalar_width}
-            )
-            store_mask = row_mask[:, None] & col_mask[None, :]"""
-        ).replace("\n", "\n    ")
     source = dedent(
         f"""
         @triton.jit
@@ -424,7 +390,13 @@ def _build_tiled_transpose3d_tile_kernel_source(
                 dst_i = tl.trans(src_i)
 
             # Store the tile with the destination-contiguous axis innermost.
-            __OUTPUT_INDEX_SOURCE__
+            dst_base = (
+                pid_batch * {total_scalar}
+                + slice_idx * {dst_slice_stride} * {scalar_width}
+                + safe_rows[:, None] * {dst_row_stride} * {scalar_width}
+                + safe_cols[None, :] * {scalar_width}
+            )
+            store_mask = row_mask[:, None] & col_mask[None, :]
             if {pair}:
                 tl.store(tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base, dst_pair, mask=store_mask)
             elif {vec_store}:
@@ -435,7 +407,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
                 tl.store(out_ptr + dst_base, dst_r, mask=store_mask)
                 tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)
         """
-    ).replace("    __OUTPUT_INDEX_SOURCE__", output_index_source)
+    )
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
 
 
