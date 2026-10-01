@@ -1415,14 +1415,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
   }
 
-  // Experimental MACA-only 32^3 plane fusion. Each CTA computes the n2 and
-  // n1 transforms for one 32x32 plane; the n0 axis remains a separate strided
-  // leaf. Keep this opt-in until both dtype performance and accuracy are
-  // measured on C550.
+  // MACA 32^3 plane fusion. Each CTA computes the n2 and n1 transforms for
+  // one 32x32 plane; the n0 axis remains a separate strided leaf. Keep the
+  // specialization shape- and batch-limited, with an environment rollback.
   const bool maca_fused_c2c32 = request.device_type == "maca" &&
       n0 == 32 && n1 == 32 && n2 == 32 && batch == 1 &&
       n0_leaf && n1_leaf && n2_leaf &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_C2C_FUSED32", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2C_FUSED32", true);
   if (maca_fused_c2c32) {
     std::vector<double> tw_r_d(16);
     std::vector<double> tw_i_d(16);
