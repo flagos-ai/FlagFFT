@@ -285,8 +285,6 @@ def main() -> None:
         valid_factors_256 = {
             "auto",
             "16,16",
-            "8,32",
-            "32,8",
             "8,8,4",
             "4,8,8",
             "8,4,8",
@@ -295,7 +293,7 @@ def main() -> None:
         }
         if factors_256 not in valid_factors_256:
             parser.error(
-                "FLAGFFT_HCU_3D_256_FACTORS must be auto, 16,16, 8,32, 32,8, "
+                "FLAGFFT_HCU_3D_256_FACTORS must be auto, 16,16, "
                 "8,8,4, 4,8,8, 8,4,8, 4,16,4 or 4,4,4,4"
             )
         if factors_2048 not in {"auto", "16,16,8", "8,16,16", "16,8,16"}:
