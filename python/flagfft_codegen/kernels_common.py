@@ -439,6 +439,12 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
             return _profile_batch_pack_for(plan)
         if override:
             return _positive_knob("BATCH_PACK", override)
+        npu_pack_override = os.environ.get("FLAGFFT_NPU_2D_LEAF_PACK")
+        if _npu_backend_active() and npu_pack_override is not None:
+            if npu_pack_override not in {"1", "2", "4", "8"}:
+                raise ValueError("FLAGFFT_NPU_2D_LEAF_PACK must be 1, 2, 4 or 8")
+            if plan.dtype == "complex64" and 32 <= plan.length <= 128:
+                return int(npu_pack_override)
         if maca_1d_batch_default_enabled() and plan.length == 16:
             return 1
         # Native 2D only emits these fused real boundary leaves when n0 > 256.
