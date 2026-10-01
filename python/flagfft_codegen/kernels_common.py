@@ -520,19 +520,6 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
                     "FLAGFFT_MACA_3D_PERMSTORE_PACK must be 1, 2, 4, 8, 16, 32 or auto"
                 )
             target_pack = int(override)
-            # Screening-only escape hatch for the 256-point fused-store leaf.
-            # The generated C550 pack-8 kernel uses 16 KiB dynamic shared
-            # memory, so pack-16 is expected to remain below the device's
-            # 64 KiB limit. Keep the normal 48 KiB policy unchanged; the
-            # candidate is explicitly selected and its compiled resource use
-            # must be checked before benchmarking.
-            if (
-                override == "16"
-                and plan.dtype == "complex64"
-                and plan.length == 256
-                and plan.smem_size == 256
-            ):
-                smem_pack = max(smem_pack, 16)
     if _mthreads_backend_active():
         override = os.getenv("FLAGFFT_MUSA_3D_PACK")
         if override is not None and override != "auto":
