@@ -781,7 +781,21 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_traversal not in {"col", "row"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL must be col or row")
-    maca_slice_group = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "1")
+    maca_slice_group_default = (
+        "2"
+        if (
+            _declared_backend() == "maca"
+            and dtype == "complex64"
+            and maca_mode == "pair16"
+            and maca_warps == "8"
+            and maca_traversal == "row"
+            and (n0, n1, n2) == (256, 256, 256)
+        )
+        else "1"
+    )
+    maca_slice_group = os.environ.get(
+        "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", maca_slice_group_default
+    )
     if maca_slice_group not in {"1", "2"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP must be 1 or 2")
     maca_grouped_slice_tile = (
