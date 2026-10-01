@@ -764,7 +764,6 @@ def _emit_tiled_transpose3d_jit_kernel(
     dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
-    num_warps = 4
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -801,9 +800,6 @@ def _emit_tiled_transpose3d_jit_kernel(
             if dtype == "complex64":
                 tile = int(os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32"))
                 packed_complex = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_U64", "0") == "1"
-                num_warps = int(os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_WARPS", "4"))
-                if num_warps not in {2, 4, 8}:
-                    raise ValueError("FLAGFFT_HCU_3D_TRANSPOSE_WARPS must be 2, 4 or 8")
             pair_store = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1"
             if packed_complex and pair_store:
                 raise ValueError(
@@ -833,7 +829,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": num_warps,
+        "num_warps": 4,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": arg_names,
