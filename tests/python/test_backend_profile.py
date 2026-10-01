@@ -6,12 +6,12 @@ from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
 
 
 class ProfileTest(unittest.TestCase):
-    def test_npu_2d_leaf_warps_override_is_scoped_and_validated(self):
+    def test_npu_2d_leaf_join_exchange_is_scoped_and_validated(self):
         import os
-        from pathlib import Path
 
         from flagfft_codegen.kernels_common import LeafPlan
-        from flagfft_codegen.metadata import _metadata
+        from flagfft_codegen.kernels_common import _maca_knob
+        from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
         from flagfft_codegen.target import set_codegen_target
 
         profile = BackendProfile.from_device(
@@ -31,38 +31,24 @@ class ProfileTest(unittest.TestCase):
                 os.environ,
                 {
                     "FLAGFFT_NPU_2D_LEAF_CONTEXT": "1",
-                    "FLAGFFT_NPU_2D_LEAF_WARPS": "4",
+                    "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
+                    "FLAGFFT_NPU_2D_LEAF_EXCHANGE": "join",
                 },
             ):
-                metadata = _metadata(
-                    module_path=Path("unused.py"),
-                    kernel_name="fft_kernel_8_8_l8_b128",
-                    arg_names=[],
-                    plan=plan,
-                    kernel_type="leaf",
-                    n1=0,
-                    n2=0,
-                    dtype="complex64",
+                self.assertEqual(_maca_knob("EXCHANGE"), "join")
+                _, source = _build_leaf_kernel_source_for_io(
+                    plan, io_mode="contiguous"
                 )
-                self.assertEqual(metadata["num_warps"], 4)
+                self.assertIn("tl.gather(exchange_joined_r, exchange_joined_index, 0)", source)
             with patch.dict(
                 os.environ,
                 {
                     "FLAGFFT_NPU_2D_LEAF_CONTEXT": "1",
-                    "FLAGFFT_NPU_2D_LEAF_WARPS": "3",
+                    "FLAGFFT_NPU_2D_LEAF_EXCHANGE": "transpose",
                 },
             ):
-                with self.assertRaisesRegex(ValueError, "must be 1, 2, 4 or 8"):
-                    _metadata(
-                        module_path=Path("unused.py"),
-                        kernel_name="fft_kernel_8_8_l8_b128",
-                        arg_names=[],
-                        plan=plan,
-                        kernel_type="leaf",
-                        n1=0,
-                        n2=0,
-                        dtype="complex64",
-                    )
+                with self.assertRaisesRegex(ValueError, "must be auto or join"):
+                    _maca_knob("EXCHANGE")
         finally:
             reset_profile(profile_token)
             set_codegen_target("")

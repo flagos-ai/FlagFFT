@@ -295,14 +295,27 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
 
 
 def _maca_knob(name: str, default: str = "") -> str:
-    """Read a MACA code-generation override.
+    """Read a backend-specific code-generation override.
 
     The native compiler scopes the measured 1D single, 1D batch and 2D single
     policies. The 2D scope also covers batched row/column kernels. These
     supply defaults while preserving an explicit environment override for
     A/B testing and rollback.
-    Direct Python code-generation calls remain on the historical defaults.
+    NPU's rank-2 leaf exchange has a separate, opt-in join override. Direct
+    Python code-generation calls remain on the historical defaults.
     """
+    if (
+        _npu_backend_active()
+        and os.environ.get("FLAGFFT_NPU_2D_LEAF_CONTEXT") == "1"
+        and name == "EXCHANGE"
+    ):
+        override = os.environ.get("FLAGFFT_NPU_2D_LEAF_EXCHANGE")
+        if override is not None:
+            override = override.strip().lower()
+            if override not in {"auto", "join"}:
+                raise ValueError("FLAGFFT_NPU_2D_LEAF_EXCHANGE must be auto or join")
+            if override == "join":
+                return override
     if _ix_backend_active():
         defaults = {"EXCHANGE": "direct_all", "SPLIT_ORDER": "lsb"}
         if ix_ct_single_default_enabled():
