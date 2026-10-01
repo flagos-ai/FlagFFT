@@ -676,7 +676,8 @@ def test_ascend_cube_dft_kernel_source(kernels) -> None:
         64, "forward", "complex64", cube_transposed=True
     )
     assert transposed_name.startswith("direct_dft_cube_transposed_kernel_n64")
-    assert "out_block = tl.program_id(1)" in transposed_source
+    assert "out = tl.arange(0, 64)" in transposed_source
+    assert "tl.zeros((16, 64), dtype=tl.float32)" in transposed_source
     assert "tl.trans(acc_r)" in transposed_source
     assert "line_offset = line % 64" in transposed_source
     assert transposed_args == ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]

@@ -162,13 +162,12 @@ def _build_cube_dft_kernel_source(
             @triton.jit
             def {kernel_name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
                 line_block = tl.program_id(0)
-                out_block = tl.program_id(1)
                 line = line_block * 16 + tl.arange(0, 16)
-                out = out_block * 16 + tl.arange(0, 16)
+                out = tl.arange(0, 64)
                 k = tl.arange(0, 16)
                 base = line * 64
-                acc_r = tl.zeros((16, 16), dtype=tl.float32)
-                acc_i = tl.zeros((16, 16), dtype=tl.float32)
+                acc_r = tl.zeros((16, 64), dtype=tl.float32)
+                acc_i = tl.zeros((16, 64), dtype=tl.float32)
                 for kk in tl.static_range(4):
                     j = kk * 16 + k
                     line_mask = line < nbatch
@@ -184,7 +183,7 @@ def _build_cube_dft_kernel_source(
                 line_offset = line % 64
                 dst = out_ptr + (batch_index[None, :] * 4096 +
                                  out[:, None] * 64 + line_offset[None, :]) * 2
-                store_mask = line_mask[None, :] & (out[:, None] < 64)
+                store_mask = line_mask[None, :]
                 tl.store(dst, tl.trans(acc_r), mask=store_mask)
                 tl.store(dst + 1, tl.trans(acc_i), mask=store_mask)
             """

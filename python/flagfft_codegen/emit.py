@@ -679,7 +679,7 @@ def emit_jit_kernel(
     if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:
         metadata["batch_per_block"] = 16
     if kernel == "direct_dft_cube_transposed":
-        metadata["grid_y_override"] = 4
+        metadata["grid_y_override"] = 1
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
