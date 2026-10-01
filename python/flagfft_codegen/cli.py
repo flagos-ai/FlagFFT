@@ -241,6 +241,7 @@ def main() -> None:
         transpose_pair = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0")
         transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32")
         transpose_u64 = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_U64", "0")
+        transpose_warps = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_WARPS", "4")
         full_smem = os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0")
         u64_load = os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1")
         first_pack = os.getenv("FLAGFFT_HCU_3D_FIRST_PACK", "auto")
@@ -271,6 +272,8 @@ def main() -> None:
                 "FLAGFFT_HCU_3D_TRANSPOSE_U64 and FLAGFFT_HCU_3D_TRANSPOSE_PAIR "
                 "are mutually exclusive"
             )
+        if transpose_warps not in {"2", "4", "8"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_WARPS must be 2, 4 or 8")
         if full_smem not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_FULL_SMEM must be 0 or 1")
         if u64_load not in {"0", "1"}:
@@ -311,12 +314,13 @@ def main() -> None:
         profile_dir += (f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"
                         f"-fp64-tile-{fp64_tile}-warps-{fused_warps}"
                         f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
-                        f"-tu64-{transpose_u64}"
                         f"-full-smem-{full_smem}-key-full-{int(args.hcu_3d_full_smem)}"
                         f"-u64-load-{u64_load}-first-pack-{first_pack}-middle-pack-{middle_pack}"
                         f"-mbp-{middle_batch_pack}"
                         f"-final-warps-{final_warps}-final-pack-{final_pack}"
                         f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
+        if transpose_u64 != "0" or transpose_warps != "4":
+            profile_dir += f"-tu{transpose_u64}w{transpose_warps}"
         if factors_256 != "auto":
             profile_dir += f"-f{factors_256.replace(',', '')}"
     args.out_dir = args.out_dir / profile_dir
