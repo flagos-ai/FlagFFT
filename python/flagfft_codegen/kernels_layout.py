@@ -411,6 +411,96 @@ def _build_tiled_transpose3d_tile_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
 
 
+def _build_tiled_transpose3d_pair_slice_group_kernel_source(
+    s0: int,
+    s1: int,
+    s2: int,
+    order: str,
+    *,
+    tile: int = 16,
+    slice_group: int = 2,
+    tile_traversal: str = "row",
+) -> tuple[str, str, list[str], int]:
+    """Emit a paired-complex transpose tile that permutes several slices at once."""
+    if order not in {"021", "210", "201", "120"}:
+        raise ValueError(f"unsupported 3D transpose order: {order}")
+    if slice_group < 2 or slice_group & (slice_group - 1):
+        raise ValueError("slice_group must be a power of two greater than one")
+    if tile_traversal not in {"col", "row"}:
+        raise ValueError("tile_traversal must be col or row")
+
+    transpose_descs = {
+        "021": (s0, s2, s1, s1 * s2, s2, s2 * s1, s1),
+        "210": (s1, s2, s0, s2, s1 * s2, s0, s1 * s0),
+        "201": (s0, s2, s1, s1 * s2, s2, s1, s0 * s1),
+        "120": (s1, s2, s0, s2, s1 * s2, s2 * s0, s0),
+    }
+    num_slices, rows, cols, src_slice_stride, src_col_stride, dst_slice_stride, dst_row_stride = transpose_descs[order]
+    tile_cols = (cols + tile - 1) // tile
+    tile_rows = (rows + tile - 1) // tile
+    tiles_per_slice = tile_cols * tile_rows
+    tile_row_expr = f"tile_in_slice % {tile_rows}" if tile_traversal == "row" else f"tile_in_slice // {tile_cols}"
+    tile_col_expr = f"tile_in_slice // {tile_rows}" if tile_traversal == "row" else f"tile_in_slice % {tile_cols}"
+    grid_x = ((num_slices + slice_group - 1) // slice_group) * tiles_per_slice
+    total_complex = s0 * s1 * s2
+    kernel_name = (
+        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_f32_t{tile}"
+        f"_tile_pair_sliceg{slice_group}"
+        + ("_rmajor" if tile_traversal == "row" else "")
+    )
+    source = dedent(
+        f"""\
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, nbatch):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(2)
+
+            slice_group_idx = pid_block // {tiles_per_slice}
+            tile_in_slice = pid_block % {tiles_per_slice}
+            tile_row = {tile_row_expr}
+            tile_col = {tile_col_expr}
+
+            slice_offsets = slice_group_idx * {slice_group} + tl.arange(0, {slice_group})
+            row_offsets = tile_row * {tile} + tl.arange(0, {tile})
+            col_offsets = tile_col * {tile} + tl.arange(0, {tile})
+            slice_mask = slice_offsets < {num_slices}
+            row_mask = row_offsets < {rows}
+            col_mask = col_offsets < {cols}
+            safe_slices = tl.minimum(slice_offsets, {num_slices - 1})
+            safe_rows = tl.minimum(row_offsets, {rows - 1})
+            safe_cols = tl.minimum(col_offsets, {cols - 1})
+
+            src_base = (
+                pid_batch * {total_complex}
+                + slice_offsets[:, None, None] * {src_slice_stride}
+                + safe_cols[None, :, None] * {src_col_stride}
+                + safe_rows[None, None, :]
+            )
+            load_mask = slice_mask[:, None, None] & col_mask[None, :, None] & row_mask[None, None, :]
+            src_pair = tl.load(
+                tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
+                mask=load_mask,
+                other=0,
+            )
+            dst_pair = tl.permute(src_pair, 0, 2, 1)
+
+            dst_base = (
+                pid_batch * {total_complex}
+                + safe_slices[:, None, None] * {dst_slice_stride}
+                + safe_rows[None, :, None] * {dst_row_stride}
+                + safe_cols[None, None, :]
+            )
+            store_mask = slice_mask[:, None, None] & row_mask[None, :, None] & col_mask[None, None, :]
+            tl.store(
+                tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
+                dst_pair,
+                mask=store_mask,
+            )
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
+
+
 def _build_tiled_transpose_kernel_source(
     n0: int, n1: int, dtype: str, tile_size: int = 32,
     *, register_transpose: bool | None = None,
@@ -604,6 +694,7 @@ def _build_tiled_transpose3d_kernel_source(
 __all__ = [
     "_build_reshape_pack_kernel_source",
     "_build_tiled_transpose3d_kernel_source",
+    "_build_tiled_transpose3d_pair_slice_group_kernel_source",
     "_build_tiled_transpose3d_tile_kernel_source",
     "_build_tiled_transpose3d_v2_kernel_source",
     "_build_tiled_transpose_kernel_source",

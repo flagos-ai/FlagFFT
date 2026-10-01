@@ -926,6 +926,23 @@ def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> Non
     assert "safe_cols[None, :] * 2" in source
 
 
+def test_tiled_transpose3d_pair_slice_group_emits_3d_register_tile() -> None:
+    from flagfft_codegen.kernels_layout import (
+        _build_tiled_transpose3d_pair_slice_group_kernel_source,
+    )
+
+    kernel_name, source, _, grid_x = (
+        _build_tiled_transpose3d_pair_slice_group_kernel_source(
+            256, 256, 256, "021", tile=16, slice_group=2, tile_traversal="row"
+        )
+    )
+
+    assert kernel_name.endswith("_t16_tile_pair_sliceg2_rmajor")
+    assert "slice_offsets = slice_group_idx * 2 + tl.arange(0, 2)" in source
+    assert "dst_pair = tl.permute(src_pair, 0, 2, 1)" in source
+    assert grid_x == 128 * 16 * 16
+
+
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit, kernels_common
 
@@ -943,6 +960,30 @@ def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch
     assert metadata["kernel_name"].endswith("_rmajor")
     assert "tile_row = tile_in_slice % 4" in source
     assert "tile_col = tile_in_slice // 4" in source
+
+
+def test_maca_256_cube_pair_slice_group_is_scoped_to_pair16_eight_warps(
+    tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit, kernels_common
+
+    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "row")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "2")
+
+    metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+
+    assert metadata["kernel_name"].endswith("_t16_tile_pair_sliceg2_rmajor")
+    assert metadata["num_warps"] == 8
+    assert metadata["grid_x_override"] == 32768
+    assert "tl.permute(src_pair, 0, 2, 1)" in source
 
 
 def test_maca_long_complex64_transpose_defaults_to_row_tile_traversal(

@@ -42,6 +42,7 @@ from .kernels_layout import (
     _build_packed_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
+    _build_tiled_transpose3d_pair_slice_group_kernel_source,
     _build_tiled_transpose3d_tile_kernel_source,
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
@@ -780,6 +781,18 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_traversal not in {"col", "row"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL must be col or row")
+    maca_slice_group = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "1")
+    if maca_slice_group not in {"1", "2"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP must be 1 or 2")
+    maca_grouped_slice_tile = (
+        _declared_backend() == "maca"
+        and dtype == "complex64"
+        and maca_mode == "pair16"
+        and maca_warps == "8"
+        and maca_traversal == "row"
+        and maca_slice_group == "2"
+        and (n0, n1, n2) == (256, 256, 256)
+    )
     fp64_mode = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
         if _declared_backend() == "maca"
@@ -794,6 +807,16 @@ def _emit_tiled_transpose3d_jit_kernel(
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
+    elif maca_grouped_slice_tile and _portable_transpose3d_supported():
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_pair_slice_group_kernel_source(
+            n0, n1, n2, order, tile=16, slice_group=2,
+            tile_traversal=maca_traversal,
+        )
     elif dtype == "complex64" and _portable_transpose3d_supported() and maca_mode != "v1":
         (
             kernel_name,

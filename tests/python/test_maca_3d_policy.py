@@ -105,7 +105,8 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
     from flagfft_codegen.target import set_codegen_target
 
     for name in ("FLAGFFT_MACA_TRANSPOSE3D", "FLAGFFT_MACA_TRANSPOSE3D_FP64",
-                 "FLAGFFT_MACA_TRANSPOSE3D_WARPS"):
+                 "FLAGFFT_MACA_TRANSPOSE3D_WARPS",
+                 "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP"):
         monkeypatch.delenv(name, raising=False)
     set_codegen_target("maca:102:64")
     try:
