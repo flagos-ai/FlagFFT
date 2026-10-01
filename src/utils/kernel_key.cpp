@@ -744,7 +744,7 @@ std::string KernelKey::repr() const {
       << ";reshape_n2=" << reshape_n2 << ";transpose3d_n0=" << transpose3d_n0
       << ";transpose3d_n1=" << transpose3d_n1 << ";transpose3d_n2=" << transpose3d_n2
       << ";order=" << transpose3d_order << ";perm_form=" << perm_form
-      << ";npu_portable_leaf=" << (npu_portable_leaf ? 1 : 0);
+      << (npu_portable_leaf ? ";npu_portable_leaf=1" : "");
   return out.str();
 }
 
