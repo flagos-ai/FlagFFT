@@ -2227,19 +2227,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   configure_single_transform_policies(request);
-  const char *compact_first_override = std::getenv("FLAGFFT_HCU_3D_C2R_COMPACT_FIRST");
-  if (compact_first_override != nullptr && std::string(compact_first_override) != "0" &&
-      std::string(compact_first_override) != "1") {
-    throw std::runtime_error("FLAGFFT_HCU_3D_C2R_COMPACT_FIRST must be 0 or 1");
-  }
-  const bool hcu_compact_first = request.device_type == "hcu" && compact_first_override != nullptr &&
-                                 std::string(compact_first_override) == "1";
-  // The generic C2R node transforms n0/n1 while the input is still compact,
-  // then expands and runs the contiguous n2 inverse. Keep this as an explicit
-  // HCU experiment against the fused real-leaf path, which expands first.
-  if (!hcu_compact_first) {
-    if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, true)) return leaf_path;
-  }
+  if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, true)) return leaf_path;
   if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, true)) return rtrt_path;
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
