@@ -26,14 +26,14 @@ std::vector<int64_t> parse_maca_3d_2048_factors(const char *raw, int64_t n) {
   std::istringstream input(raw);
   std::string token;
   int64_t product = 1;
-  while (std::getline(input, token, 'x')) {
+  while (std::getline(input, token, ',')) {
     std::istringstream value_stream(token);
     int64_t radix = 0;
     char trailing = '\0';
     if (!(value_stream >> radix) || (value_stream >> trailing) ||
         !contains(kSupportedRadices, radix)) {
       throw std::runtime_error(
-          "FLAGFFT_MACA_3D_N2048_FACTORS must be x-separated supported radices");
+          "FLAGFFT_MACA_3D_N2048_FACTORS must be comma-separated supported radices");
     }
     if (product > n / radix) {
       throw std::runtime_error(
