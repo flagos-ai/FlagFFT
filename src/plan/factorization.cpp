@@ -14,42 +14,7 @@
 
 #include "flagfft/core.hpp"
 
-#include <cstdlib>
-#include <sstream>
-
 namespace flagfft {
-
-namespace {
-
-std::vector<int64_t> parse_maca_3d_2048_factors(const char *raw, int64_t n) {
-  std::vector<int64_t> factors;
-  std::istringstream input(raw);
-  std::string token;
-  int64_t product = 1;
-  while (std::getline(input, token, ',')) {
-    std::istringstream value_stream(token);
-    int64_t radix = 0;
-    char trailing = '\0';
-    if (!(value_stream >> radix) || (value_stream >> trailing) ||
-        !contains(kSupportedRadices, radix)) {
-      throw std::runtime_error(
-          "FLAGFFT_MACA_3D_N2048_FACTORS must be comma-separated supported radices");
-    }
-    if (product > n / radix) {
-      throw std::runtime_error(
-          "FLAGFFT_MACA_3D_N2048_FACTORS must multiply to 2048");
-    }
-    product *= radix;
-    factors.push_back(radix);
-  }
-  if (factors.empty() || product != n) {
-    throw std::runtime_error(
-        "FLAGFFT_MACA_3D_N2048_FACTORS must multiply to 2048");
-  }
-  return factors;
-}
-
-}  // namespace
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
   if (n <= 0) {
@@ -161,10 +126,6 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // slightly improving the direct C550 2048-point 3D axis. Keep it off the
     // Bluestein convolution used by the 997-point transform.
     if (context.device_arch == "102" && n == 2048 && context.requested_n == n) {
-      if (const char *override = std::getenv("FLAGFFT_MACA_3D_N2048_FACTORS");
-          override != nullptr && override[0] != '\0') {
-        return parse_maca_3d_2048_factors(override, n);
-      }
       return {16, 8, 16};
     }
   }
