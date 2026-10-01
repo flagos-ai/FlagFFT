@@ -60,15 +60,6 @@ def _csv_ints(raw: str) -> tuple[int, ...]:
     return tuple(int(part) for part in raw.split(",") if part)
 
 
-def _npu_batch_pack_override(name: str) -> int | None:
-    raw = os.environ.get(name)
-    if raw is None:
-        return None
-    if raw not in {"1", "2", "4", "8"}:
-        raise ValueError(f"{name} must be 1, 2, 4 or 8")
-    return int(raw)
-
-
 def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
     helpers = (
         "import os\n"
@@ -148,23 +139,23 @@ def _metadata(
         # The generated kernel advances batch_id by this pack.  Launch the
         # same number of rows per CTA that the source actually processes.
         batch_per_block = permuted_store_batch_pack_for(plan)
-        if (
-            _npu_backend_active()
-            and os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_STORE") == "1"
-        ):
-            override = _npu_batch_pack_override("FLAGFFT_NPU_2D_TRANSPOSE_PACK")
+        if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_STORE") == "1":
+            override = os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_PACK")
             if override is not None:
-                batch_per_block = override
+                try:
+                    batch_per_block = int(override)
+                except ValueError as exc:
+                    raise ValueError(
+                        "FLAGFFT_NPU_2D_TRANSPOSE_PACK must be 1, 2, 4 or 8"
+                    ) from exc
+                if batch_per_block not in {1, 2, 4, 8}:
+                    raise ValueError("FLAGFFT_NPU_2D_TRANSPOSE_PACK must be 1, 2, 4 or 8")
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(
             plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}
         )
     else:
         batch_per_block = 1
-    if _npu_backend_active() and kernel_type in {"leaf", "leaf_strided"}:
-        override = _npu_batch_pack_override("FLAGFFT_NPU_2D_LEAF_PACK")
-        if override is not None:
-            batch_per_block = override
     stage_lanes = cooperative_stage_lanes_for(plan)
     tle_fused_twiddle = is_four_step_twiddle_eligible(
         kernel_type
