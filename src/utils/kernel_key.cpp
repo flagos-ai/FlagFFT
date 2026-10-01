@@ -725,7 +725,7 @@ bool KernelKey::operator==(const KernelKey &other) const {
          reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2 &&
          transpose3d_n0 == other.transpose3d_n0 && transpose3d_n1 == other.transpose3d_n1 &&
          transpose3d_n2 == other.transpose3d_n2 && transpose3d_order == other.transpose3d_order &&
-         perm_form == other.perm_form;
+         perm_form == other.perm_form && npu_portable_leaf == other.npu_portable_leaf;
 }
 
 std::string KernelKey::repr() const {
@@ -743,7 +743,8 @@ std::string KernelKey::repr() const {
       << ";rader_n=" << rader_n << ";rader_m=" << rader_m << ";reshape_n1=" << reshape_n1
       << ";reshape_n2=" << reshape_n2 << ";transpose3d_n0=" << transpose3d_n0
       << ";transpose3d_n1=" << transpose3d_n1 << ";transpose3d_n2=" << transpose3d_n2
-      << ";order=" << transpose3d_order << ";perm_form=" << perm_form;
+      << ";order=" << transpose3d_order << ";perm_form=" << perm_form
+      << ";npu_portable_leaf=" << (npu_portable_leaf ? 1 : 0);
   return out.str();
 }
 
@@ -772,6 +773,7 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.transpose3d_n2);
   hash_value(seed, key.transpose3d_order);
   hash_value(seed, key.perm_form);
+  hash_value(seed, key.npu_portable_leaf);
   return seed;
 }
 

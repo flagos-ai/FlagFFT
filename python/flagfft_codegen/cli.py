@@ -129,6 +129,11 @@ def main() -> None:
     parser.add_argument("--transpose3d-order", choices=("021", "210", "201", "120"))
     parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--fused-2d-transpose", action="store_true")
+    parser.add_argument(
+        "--npu-portable-leaf",
+        action="store_true",
+        help="use portable exchange for scoped Ascend leaf kernels",
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument(
         "--target", default="", help="Triton backend:architecture:warp_size"
@@ -170,6 +175,8 @@ def main() -> None:
         "--execution-policy", choices=("legacy", "native", "packed", "balanced")
     )
     args = parser.parse_args()
+    if args.npu_portable_leaf:
+        os.environ["FLAGFFT_NPU_FOURSTEP_LEAF"] = "1"
     set_codegen_target(args.target)
     set_maca_1d_single_default(args.maca_1d_single)
     set_maca_1d_batch_default(args.maca_1d_batch)

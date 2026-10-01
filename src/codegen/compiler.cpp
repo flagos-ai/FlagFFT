@@ -27,6 +27,10 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  void mark_npu_2d_portable_leaf(KernelKey &key, const FFTRequest &request) {
+    key.npu_portable_leaf = request.device_type == "npu" && request.origin_rank == 2;
+  }
+
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
                                    const FFTRequest &request,
                                    int64_t batch) {
@@ -965,6 +969,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                   leaf.num_warps,
                                   leaf.generic_radices,
                                   leaf.smem_size);
+  mark_npu_2d_portable_leaf(key, request);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   return std::make_shared<CompiledRawLeafNode>(leaf.length,
                                                std::move(kernel),
@@ -1011,6 +1016,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.generic_radices,
                                                  leaf.smem_size,
                                                  perm_form);
+  mark_npu_2d_portable_leaf(key, request);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   // Same argument shape as the strided leaf: the permutation span rides in the
   // slot that carries outer_stride there, so the node is reused unchanged.
@@ -1033,6 +1039,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const 
                                           leaf.num_warps,
                                           leaf.generic_radices,
                                           leaf.smem_size);
+  mark_npu_2d_portable_leaf(key, request);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   return std::make_shared<CompiledRawStridedLeafNode>(leaf.length,
                                                       outer_stride,
@@ -1093,6 +1100,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
+  mark_npu_2d_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -1108,6 +1116,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
+  mark_npu_2d_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -2346,11 +2355,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
-    const char *npu_real_row_setting = std::getenv("FLAGFFT_NPU_2D_REAL_ROW");
     const bool use_npu_real_row = request.device_type == "npu" &&
                                   has_real_boundary_row_plan(node->row_plan) &&
-                                  npu_real_row_setting != nullptr &&
-                                  std::string(npu_real_row_setting) == "1";
+                                  flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true);
     if (use_npu_real_row) {
       // The strided column path already accepts the compact row-major half
       // spectrum. Let the existing 1D real boundary write that layout
@@ -2509,11 +2516,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
-    const char *npu_real_row_setting = std::getenv("FLAGFFT_NPU_2D_REAL_ROW");
     const bool use_npu_real_row = request.device_type == "npu" &&
                                   has_real_boundary_row_plan(node->row_plan) &&
-                                  npu_real_row_setting != nullptr &&
-                                  std::string(npu_real_row_setting) == "1";
+                                  flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true);
     if (use_npu_real_row) {
       // After the inverse column transform, each compact row is already a
       // valid 1D C2R input. Consume it directly and avoid Hermitian expansion

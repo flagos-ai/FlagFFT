@@ -224,6 +224,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";npu-2d-transpose-pack=" +
                  std::string(transpose_pack != nullptr ? transpose_pack : "auto");
   }
+  if (adaptor::backend_name() == "npu" &&
+      (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
+       key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafR2C ||
+       key.kind == KernelKind::LeafC2R)) {
+    const char *portable_leaf = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+    const bool use_portable_leaf = key.npu_portable_leaf ||
+                                   (portable_leaf != nullptr && std::string(portable_leaf) == "1");
+    cache_key += ";npu-portable-leaf=" + std::string(use_portable_leaf ? "1" : "0");
+  }
   if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
     const char *packed_3d = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");
     cache_key += ";ix-3d-packed-r2c=" + std::string(packed_3d != nullptr &&
@@ -464,6 +473,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --lanes " << key.lanes << " --num-warps " << key.num_warps << " --generic-radices "
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
                 << " --direction " << shell_quote(key.direction);
+    if (key.npu_portable_leaf) {
+      jit_command << " --npu-portable-leaf";
+    }
   }
   if (key.kind == KernelKind::LeafPermutedStore ||
       (key.kind == KernelKind::LeafR2C && key.perm_form == "permuted")) {

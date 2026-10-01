@@ -93,6 +93,7 @@ struct KernelKey {
   int64_t transpose3d_n2 = 0;
   std::string transpose3d_order;
   std::string perm_form = "outer";
+  bool npu_portable_leaf = false;
 
   static KernelKey fused_16_plane(std::string target, std::string direction, std::string dtype);
   static KernelKey fused_32_plane(std::string target, std::string direction, std::string dtype);
