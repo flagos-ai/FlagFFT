@@ -91,7 +91,11 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "module_path": str(module_path),
         "kernel_name": "fused_2d_fft_kernel",
         "signature": _signature(args, dtype),
-        "num_warps": 4,
+        # One NPU program only handles one 64-point vector. Keeping this to
+        # one hardware thread bounds the Ascend UB footprint of the gather
+        # based butterfly network; larger launch groups currently trip an
+        # UB address error on 910B.
+        "num_warps": 1,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
