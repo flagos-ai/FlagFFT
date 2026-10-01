@@ -780,7 +780,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_traversal not in {"col", "row"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL must be col or row")
-    maca_transposed_output_layout = (
+    maca_independent_output_indices = (
         _declared_backend() == "maca"
         and dtype == "complex64"
         and maca_mode == "pair16"
@@ -811,7 +811,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         ) = _build_tiled_transpose3d_tile_kernel_source(
             n0, n1, n2, order, dtype, tile=int(maca_mode[4:]),
             pair=maca_mode.startswith("pair"), tile_traversal=maca_traversal,
-            transposed_output_layout=maca_transposed_output_layout,
+            independent_output_indices=maca_independent_output_indices,
         )
     elif dtype == "complex128" and _declared_backend() == "maca" and fp64_mode != "v1":
         (
