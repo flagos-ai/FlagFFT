@@ -693,6 +693,27 @@ def test_ascend_cube_dft_kernel_source(kernels) -> None:
     ]
 
 
+def test_ascend_cube_2d_tiled_matmul_sources(kernels) -> None:
+    row_name, row_source, row_args = kernels._build_cube_dft_2d_kernel_source(
+        64, "forward", "complex64", column=False
+    )
+    assert row_name.startswith("direct_dft_cube_2d_row_kernel_n64")
+    assert "block_row = tl.program_id(0)" in row_source
+    assert "tile_out = tl.program_id(1)" in row_source
+    assert "tl.dot(xr, wr) - tl.dot(xi, wi)" in row_source
+
+    col_name, col_source, col_args = kernels._build_cube_dft_2d_kernel_source(
+        64, "forward", "complex64", column=True
+    )
+    assert col_name.startswith("direct_dft_cube_2d_col_kernel_n64")
+    assert "batch_index = block_x // 4" in col_source
+    assert "x_offset = batch_index * 4096 + inner[:, None] * 64 + cols[None, :]" in col_source
+    assert "tl.dot(wr, xr) - tl.dot(wi, xi)" in col_source
+    assert row_args == col_args == [
+        "in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"
+    ]
+
+
 def test_strided_leaf_kernel_source_generation(kernels) -> None:
     plan = kernels.LeafPlan(
         length=32,

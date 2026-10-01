@@ -2208,6 +2208,36 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const auto cube_row_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->row_plan);
   const auto cube_col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
   if (n0 == 64 && n1 == 64 && use_npu_2d_cube_dft(request, n0) && cube_row_direct && cube_col_direct) {
+    const char *cube_matmul = std::getenv("FLAGFFT_NPU_2D_CUBE_MATMUL");
+    if (cube_matmul != nullptr && std::string(cube_matmul) == "1") {
+      auto compile_cube_2d_pass = [&](const DirectDFTPlanNode &direct,
+                                      const FFTRequest &pass_request,
+                                      int64_t pass_batch,
+                                      bool column) -> std::shared_ptr<CompiledRawNode> {
+        KernelKey key = KernelKey::direct_dft(triton_target_for_request(pass_request),
+                                              pass_request.direction,
+                                              pass_request.input_dtype,
+                                              direct.length);
+        key.kind = column ? KernelKind::DirectDftCube2DCol : KernelKind::DirectDftCube2DRow;
+        auto kernel = compile_kernel(key);
+        auto tables = build_raw_cube_dft_tables(direct.length, pass_request);
+        DeviceAllocation input_copy = adaptor::Memory(
+            static_cast<std::size_t>(pass_batch * direct.length * element_bytes));
+        return std::make_shared<CompiledRawDirectDftNode>(
+            direct.length, std::move(kernel), std::move(tables), std::move(input_copy));
+      };
+      std::shared_ptr<CompiledRawNode> row_fft =
+          compile_cube_2d_pass(*cube_row_direct, row_request, batch * n0, false);
+      std::shared_ptr<CompiledRawNode> col_fft =
+          compile_cube_2d_pass(*cube_col_direct, col_request, batch * n1, true);
+      DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+      return std::make_shared<CompiledRaw2DRCNode>(n0,
+                                                   n1,
+                                                   std::move(row_fft),
+                                                   std::move(col_fft),
+                                                   std::move(temp1),
+                                                   enable_graph);
+    }
     const char *cube_transpose_kernels = std::getenv("FLAGFFT_NPU_2D_CUBE_TRANSPOSE_KERNELS");
     if (cube_transpose_kernels != nullptr && std::string(cube_transpose_kernels) == "1") {
       // Keep each Cube DFT tile in its native contiguous layout. Move the

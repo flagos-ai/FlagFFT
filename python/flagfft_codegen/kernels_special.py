@@ -248,6 +248,88 @@ def _build_cube_dft_kernel_source(
     return kernel_name, source, arg_names
 
 
+def _build_cube_dft_2d_kernel_source(
+    n: int,
+    direction: Literal["forward", "inverse"],
+    dtype: str,
+    *,
+    column: bool,
+) -> tuple[str, str, list[str]]:
+    """Build one tiled Cube matrix product for a 64x64 C2C transform.
+
+    The row kernel computes ``X * F.T``. The column kernel computes ``F * X``
+    directly from row-major storage, so neither pass needs an intermediate
+    matrix transpose. Each CTA owns a 16x16 output tile; this increases the
+    number of independent Cube programs compared with the one-FFT-per-CTA
+    direct DFT kernel.
+    """
+    del direction  # Direction and normalization are baked into the DFT tables.
+    if n != 64 or dtype != "complex64":
+        raise ValueError("the Ascend 2D Cube DFT kernel supports complex64 length 64 only")
+
+    axis = "col" if column else "row"
+    kernel_name = f"direct_dft_cube_2d_{axis}_kernel_n64_complex64_t16"
+    if column:
+        source = dedent(
+            f"""
+            @triton.jit
+            def {kernel_name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
+                # The host flattens four 16-column tiles per matrix into grid x.
+                block_x = tl.program_id(0)
+                batch_index = block_x // 4
+                tile_col = block_x % 4
+                tile_row = tl.program_id(1)
+                cols = tile_col * 16 + tl.arange(0, 16)
+                rows = tile_row * 16 + tl.arange(0, 16)
+                batch_mask = batch_index < nbatch // 64
+                acc_r = tl.zeros((16, 16), dtype=tl.float32)
+                acc_i = tl.zeros((16, 16), dtype=tl.float32)
+                for kk in tl.static_range(4):
+                    inner = kk * 16 + tl.arange(0, 16)
+                    x_offset = batch_index * 4096 + inner[:, None] * 64 + cols[None, :]
+                    xr = tl.load(in_ptr + x_offset * 2, mask=batch_mask, other=0.0)
+                    xi = tl.load(in_ptr + x_offset * 2 + 1, mask=batch_mask, other=0.0)
+                    dft_offset = rows[:, None] * 64 + inner[None, :]
+                    wr = tl.load(dft_r_ptr + dft_offset)
+                    wi = tl.load(dft_i_ptr + dft_offset)
+                    acc_r += tl.dot(wr, xr) - tl.dot(wi, xi)
+                    acc_i += tl.dot(wr, xi) + tl.dot(wi, xr)
+                dst = out_ptr + batch_index * 4096 + rows[:, None] * 64 + cols[None, :]
+                tl.store(dst * 2, acc_r, mask=batch_mask)
+                tl.store(dst * 2 + 1, acc_i, mask=batch_mask)
+            """
+        )
+    else:
+        source = dedent(
+            f"""
+            @triton.jit
+            def {kernel_name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
+                block_row = tl.program_id(0)
+                tile_out = tl.program_id(1)
+                lines = block_row * 16 + tl.arange(0, 16)
+                outputs = tile_out * 16 + tl.arange(0, 16)
+                line_mask = lines < nbatch
+                acc_r = tl.zeros((16, 16), dtype=tl.float32)
+                acc_i = tl.zeros((16, 16), dtype=tl.float32)
+                for kk in tl.static_range(4):
+                    inner = kk * 16 + tl.arange(0, 16)
+                    x_offset = lines[:, None] * 64 + inner[None, :]
+                    xr = tl.load(in_ptr + x_offset * 2, mask=line_mask[:, None], other=0.0)
+                    xi = tl.load(in_ptr + x_offset * 2 + 1, mask=line_mask[:, None], other=0.0)
+                    dft_offset = inner[:, None] * 64 + outputs[None, :]
+                    wr = tl.load(dft_r_ptr + dft_offset)
+                    wi = tl.load(dft_i_ptr + dft_offset)
+                    acc_r += tl.dot(xr, wr) - tl.dot(xi, wi)
+                    acc_i += tl.dot(xr, wi) + tl.dot(xi, wr)
+                dst = lines[:, None] * 64 + outputs[None, :]
+                tl.store(out_ptr + dst * 2, acc_r, mask=line_mask[:, None])
+                tl.store(out_ptr + dst * 2 + 1, acc_i, mask=line_mask[:, None])
+            """
+        )
+    return kernel_name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+
+
 __all__ = [
     "_build_direct_dft_kernel_source",
+    "_build_cube_dft_2d_kernel_source",
 ]

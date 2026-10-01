@@ -158,6 +158,10 @@ std::string kernel_kind_name(KernelKind kind) {
       return "direct_dft_cube_transposed";
     case KernelKind::DirectDftCubeStrided:
       return "direct_dft_cube_strided";
+    case KernelKind::DirectDftCube2DRow:
+      return "direct_dft_cube_2d_row";
+    case KernelKind::DirectDftCube2DCol:
+      return "direct_dft_cube_2d_col";
     case KernelKind::DirectDftR2C:
       return "direct_dft_r2c";
     case KernelKind::DirectDftC2R:

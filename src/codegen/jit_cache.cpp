@@ -319,6 +319,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::DirectDftCubeStrided:
       kernel_kind = "direct_dft_cube_strided";
       break;
+    case KernelKind::DirectDftCube2DRow:
+      kernel_kind = "direct_dft_cube_2d_row";
+      break;
+    case KernelKind::DirectDftCube2DCol:
+      kernel_kind = "direct_dft_cube_2d_col";
+      break;
     case KernelKind::DirectDftR2C:
       kernel_kind = "direct_dft_r2c";
       break;

@@ -57,7 +57,7 @@ from .kernels_real import (
     _build_r2c_packed_postprocess_kernel_source,
     _build_real_to_complex_kernel_source,
 )
-from .kernels_special import _build_direct_dft_kernel_source
+from .kernels_special import _build_cube_dft_2d_kernel_source, _build_direct_dft_kernel_source
 from .kernels_real import _build_real_direct_dft_kernel_source
 from .kernels_stockham import build_stockham_stage
 from .metadata import _metadata, _module_source, _signature
@@ -605,6 +605,10 @@ def emit_jit_kernel(
             kernel_name, kernel_source, _ = _build_real_direct_dft_kernel_source(
                 length, dtype, inverse=(kernel == "direct_dft_c2r")
             )
+        elif kernel in {"direct_dft_cube_2d_row", "direct_dft_cube_2d_col"}:
+            kernel_name, kernel_source, _ = _build_cube_dft_2d_kernel_source(
+                length, direction, dtype, column=(kernel == "direct_dft_cube_2d_col")
+            )
         else:
             kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
                 length,
@@ -680,6 +684,9 @@ def emit_jit_kernel(
         metadata["batch_per_block"] = 16
     if kernel == "direct_dft_cube_transposed":
         metadata["grid_y_override"] = 1
+    if kernel in {"direct_dft_cube_2d_row", "direct_dft_cube_2d_col"}:
+        metadata["batch_per_block"] = 16
+        metadata["grid_y_override"] = 4
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 

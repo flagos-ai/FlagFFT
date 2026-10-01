@@ -142,6 +142,8 @@ enum class KernelKind {
   DirectDftCube,
   DirectDftCubeTransposed,
   DirectDftCubeStrided,
+  DirectDftCube2DRow,
+  DirectDftCube2DCol,
   DirectDftR2C,
   DirectDftC2R,
   StockhamStage,
