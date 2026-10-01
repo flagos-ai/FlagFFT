@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -925,6 +926,57 @@ def test_hcu_c2r_cube_middle_pack8_is_narrow_and_overridable(tmp_path, monkeypat
     assert default["batch_per_block"] == 8
     assert "permuted_store_inner_middle_c2r_cube" in default["kernel_name"]
     assert overridden["batch_per_block"] == 4
+
+
+def test_hcu_c2r_cube_perm_form_is_supported_by_jit_cli(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from flagfft_codegen import cli
+
+    monkeypatch.delenv("FLAGFFT_HCU_3D_MIDDLE_PACK", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "jit_source",
+            "--kernel",
+            "leaf_strided_permuted_store",
+            "--length",
+            "256",
+            "--factors",
+            "16,16",
+            "--lanes",
+            "16",
+            "--num-warps",
+            "1",
+            "--smem-size",
+            "256",
+            "--direction",
+            "inverse",
+            "--perm-form",
+            "inner_middle_c2r_cube",
+            "--target",
+            "hcu:gfx936:64",
+            "--device-profile",
+            json.dumps(
+                {
+                    "backend": "hcu",
+                    "device_arch": "gfx936",
+                    "warp_size": 64,
+                    "max_threads_per_block": 1024,
+                    "max_dynamic_shared_memory": 65536,
+                }
+            ),
+            "--execution-policy",
+            "native",
+            "--out-dir",
+            str(tmp_path),
+        ],
+    )
+
+    cli.main()
+
+    assert "permuted_store_inner_middle_c2r_cube" in capsys.readouterr().out
 
 
 def test_tiled_transpose3d_tile_selected_only_for_validated_backends(
