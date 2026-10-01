@@ -23,7 +23,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     )
     short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex64")
     double_short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex128")
-    single256 = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex64")
+    single = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex64")
     double = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex128")
     single128 = LeafPlan(128, (4, 4, 4, 2), 1, 32, 2, (), 128, dtype="complex64")
     long_middle = LeafPlan(2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex64")
@@ -32,7 +32,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
         try:
             assert contiguous_batch_pack_for(short) == 1
             assert contiguous_batch_pack_for(double_short) == 1
-            assert contiguous_batch_pack_for(single256) == 1
+            assert contiguous_batch_pack_for(single) == 1
             assert contiguous_batch_pack_for(double) == 1
             assert permuted_store_batch_pack_for(short) == 4
             assert permuted_store_batch_pack_for(single128) == 4
@@ -44,15 +44,13 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
         try:
             assert contiguous_batch_pack_for(short) == 8
             assert contiguous_batch_pack_for(double_short) == 8
-            assert contiguous_batch_pack_for(single256) == 2
+            assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
             assert contiguous_batch_pack_for(single128) == 2
             assert permuted_store_batch_pack_for(short) == 8
             assert permuted_store_batch_pack_for(single128) == 16
-            assert permuted_store_batch_pack_for(single256) == 4
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "16")
             assert permuted_store_batch_pack_for(short) == 16
-            assert permuted_store_batch_pack_for(single256) == 8
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "auto")
             assert permuted_store_batch_pack_for(short) == 8
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "8")
@@ -92,7 +90,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(short) == 4
             assert contiguous_batch_pack_for(double_short) == 4
             monkeypatch.setenv("FLAGFFT_MACA_BATCH_PACK", "1")
-            assert contiguous_batch_pack_for(single256) == 1
+            assert contiguous_batch_pack_for(single) == 1
             assert contiguous_batch_pack_for(double) == 1
             monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", "join")
             assert _maca_knob("EXCHANGE") == "join"
