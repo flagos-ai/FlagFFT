@@ -27,6 +27,7 @@ from .kernels_common import (
     _cooperative_warp_cap,
     _dtype_suffix,
     _maca_knob,
+    _npu_backend_active,
     _portable_leaf_backend_active,
     _ix_backend_active,
     _zero_other,
@@ -128,7 +129,13 @@ def _metadata(
     n2: int,
     dtype: str,
 ) -> dict[str, Any]:
-    if kernel_type == "leaf_permuted_store" and _ix_backend_active():
+    if kernel_type == "leaf_permuted_store" and (
+        _ix_backend_active()
+        or (
+            _npu_backend_active()
+            and os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_STORE") == "1"
+        )
+    ):
         # The generated kernel advances batch_id by this pack.  Launch the
         # same number of rows per CTA that the source actually processes.
         batch_per_block = permuted_store_batch_pack_for(plan)

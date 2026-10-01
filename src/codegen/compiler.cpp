@@ -2167,6 +2167,32 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                    batch);
   }
 
+  // For small Ascend C2C matrices, write each 1D leaf pass in transposed
+  // order. The second pass then reads contiguous rows and transposes its
+  // output back to natural matrix order, using the existing TwoDim and raw
+  // leaf nodes without standalone transpose kernels.
+  const char *npu_2d_transpose_store = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
+  const bool use_npu_2d_transpose_store =
+      request.device_type == "npu" && request.origin_rank == 2 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n0 <= 128 && n1 <= 128 && npu_2d_transpose_store != nullptr &&
+      std::string(npu_2d_transpose_store) == "1";
+  auto npu_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+  auto npu_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+  if (use_npu_2d_transpose_store && npu_row_leaf && npu_col_leaf) {
+    std::shared_ptr<CompiledRawNode> row_fft =
+        compile_raw_permuted_store_leaf(*npu_row_leaf, row_request, n0, "outer");
+    std::shared_ptr<CompiledRawNode> col_fft =
+        compile_raw_permuted_store_leaf(*npu_col_leaf, col_request, n1, "outer");
+    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    return std::make_shared<CompiledRaw2DRCNode>(n0,
+                                                 n1,
+                                                 std::move(row_fft),
+                                                 std::move(col_fft),
+                                                 std::move(temp1),
+                                                 enable_graph);
+  }
+
   // RC fast path: when the column FFT is a plain leaf transform, run it
   // directly on the strided matrix columns and skip both transposes.
   const char *npu_leaf64_transpose_setting =
