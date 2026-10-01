@@ -187,6 +187,20 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       //   Col: C2C along n0 (batch*half_n1), row: C2C along n1 (batch*n0)
       // Both use "forward" for R2C, "inverse" for C2R
 
+      auto make_axis_request = [&](const FlagFFTPlanDesc &axis_desc,
+                                   const std::string &direction) {
+        FFTRequest request = request_from_desc(axis_desc, direction, plan->desc.rank);
+        // Preserve the parent real-transform kind for child axes whose
+        // descriptors are C2C. The marker guides plan selection; the axis
+        // descriptor still determines the transform type and data layout.
+        if (real_inverse) {
+          request.real_transform_kind = "c2r";
+        } else if (real_forward) {
+          request.real_transform_kind = "r2c";
+        }
+        return request;
+      };
+
       // Build row descriptor
       FlagFFTPlanDesc row_desc = plan->desc;
       row_desc.rank = 1;
@@ -218,10 +232,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         row_desc.batch = batch * n0;
       }
 
-      FFTRequest row_forward_request = request_from_desc(row_desc, "forward", plan->desc.rank);
+      FFTRequest row_forward_request = make_axis_request(row_desc, "forward");
       PlanNodePtr row_plan = lookup_or_build_root(builder, row_forward_request);
       if (!raw_supported_node(row_plan)) {
-        row_plan = lookup_or_build_root(builder, request_from_desc(row_desc, "inverse", plan->desc.rank));
+        row_plan = lookup_or_build_root(builder, make_axis_request(row_desc, "inverse"));
       }
       if (!raw_supported_node(row_plan)) {
         row_plan = raw_compatible_rader_plan(n1, builder, row_forward_request);
@@ -249,12 +263,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       // For C2R/Z2D, column FFT should be inverse (IFFT)
       // For R2C/D2Z or C2C/Z2Z, column FFT should be forward
       const std::string col_direction = real_inverse ? "inverse" : "forward";
-      FFTRequest col_request = request_from_desc(col_desc, col_direction, plan->desc.rank);
+      FFTRequest col_request = make_axis_request(col_desc, col_direction);
       PlanNodePtr col_plan = lookup_or_build_root(builder, col_request);
       if (!raw_supported_node(col_plan)) {
         col_plan = lookup_or_build_root(
             builder,
-            request_from_desc(col_desc, col_direction == "forward" ? "inverse" : "forward", plan->desc.rank));
+            make_axis_request(col_desc, col_direction == "forward" ? "inverse" : "forward"));
       }
       if (!raw_supported_node(col_plan)) {
         col_plan = raw_compatible_rader_plan(n0, builder, col_request);

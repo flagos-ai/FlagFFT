@@ -167,8 +167,9 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     // than launching a Stockham kernel per radix stage on Ascend. Keep the
     // measured cutover limited to complex FP32 and at most 512 axis transforms;
     // larger batches use Stockham to avoid the direct kernel's quadratic work.
-    // For 2D real transforms, a 64/128-point leaf enables the compact real-row
-    // path in the parent plan, avoiding full-complex row expansion and packing.
+    // The measured 64-point leaf is faster for small 2D C2C, and it enables
+    // the compact real-row path for 2D R2C/C2R. Keep 128-point axes on the
+    // existing policy until their batched performance is competitive.
     int64_t npu_2d_direct_dft_max = 128;
     if (const char *raw = std::getenv("FLAGFFT_NPU_2D_DIRECT_DFT_MAX"); raw != nullptr) {
       std::size_t parsed = 0;
@@ -184,9 +185,11 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
     const bool npu_2d_real_transform = context.real_transform_kind == "r2c" ||
                                        context.real_transform_kind == "c2r";
+    const bool npu_2d_c2c = context.real_transform_kind.empty();
     const bool npu_2d_leaf_explicit = std::getenv("FLAGFFT_NPU_2D_LEAF_LENGTH") != nullptr;
-    int64_t npu_2d_leaf_length =
-        context.origin_rank == 2 && npu_2d_real_transform && (n == 64 || n == 128) ? n : 0;
+    const bool npu_2d_measured_leaf = context.origin_rank == 2 && n == 64 &&
+                                      (npu_2d_real_transform || npu_2d_c2c);
+    int64_t npu_2d_leaf_length = npu_2d_measured_leaf ? n : 0;
     if (const char *raw = std::getenv("FLAGFFT_NPU_2D_LEAF_LENGTH"); raw != nullptr) {
       std::size_t parsed = 0;
       try {
@@ -199,10 +202,10 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       }
     }
     if (context.origin_rank == 2 && context.input_dtype == "complex64" &&
-        context.output_dtype == "complex64" && (npu_2d_real_transform || npu_2d_leaf_explicit) &&
+        context.output_dtype == "complex64" && (npu_2d_measured_leaf || npu_2d_leaf_explicit) &&
         n == npu_2d_leaf_length) {
       std::vector<int64_t> factors = select_leaf_factors(n);
-      if (n == 64 && npu_2d_real_transform) factors = {8, 8};
+      if (n == 64) factors = {8, 8};
       if (const char *raw = std::getenv("FLAGFFT_NPU_2D_LEAF_FACTORS"); raw != nullptr) {
         const std::string spec(raw);
         std::size_t start = 0;
