@@ -320,7 +320,7 @@ def _maca_knob(name: str, default: str = "") -> str:
             "LANE_MIN": "FLAGFFT_NPU_2D_LANE_MIN",
             "SPLIT_ORDER": "FLAGFFT_NPU_2D_SPLIT_ORDER",
         }.get(name)
-        if npu_env_name in os.environ:
+        if npu_env_name is not None and npu_env_name in os.environ:
             return os.environ[npu_env_name].strip().lower()
     env_name = f"FLAGFFT_MACA_{name}"
     if env_name in os.environ:

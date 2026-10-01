@@ -26,6 +26,7 @@ class ProfileTest(unittest.TestCase):
                 self.assertTrue(_npu_backend_active())
                 self.assertEqual(_maca_knob("EXCHANGE"), "transpose")
                 self.assertEqual(_maca_knob("LANE_MIN", "auto"), "8")
+                self.assertEqual(_maca_knob("BATCH_PACK", "auto"), "auto")
         finally:
             set_codegen_target("")
 
