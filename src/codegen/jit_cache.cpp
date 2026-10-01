@@ -508,6 +508,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::Fused2D) {
     jit_command << " --length " << key.length;
+    if (key.perm_form == "transpose") {
+      jit_command << " --fused-2d-transpose";
+    }
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||

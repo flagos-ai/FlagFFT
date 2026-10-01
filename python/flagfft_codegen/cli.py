@@ -128,6 +128,7 @@ def main() -> None:
     parser.add_argument("--transpose3d-n2", type=int, default=0)
     parser.add_argument("--transpose3d-order", choices=("021", "210", "201", "120"))
     parser.add_argument("--tile-size", type=int, default=32)
+    parser.add_argument("--fused-2d-transpose", action="store_true")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument(
         "--target", default="", help="Triton backend:architecture:warp_size"
@@ -309,6 +310,7 @@ def main() -> None:
             n=args.length,
             dtype=args.dtype,
             direction=args.direction,
+            transpose_output=args.fused_2d_transpose,
             out_dir=args.out_dir,
         )
     elif spec.family == SMALL_3D:

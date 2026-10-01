@@ -1707,9 +1707,10 @@ CompiledRaw2DFusedNode::CompiledRaw2DFusedNode(int64_t n0,
                                                int64_t n1,
                                                std::shared_ptr<JitKernel> kernel,
                                                DeviceAllocation tw_r,
-                                               DeviceAllocation tw_i)
+                                               DeviceAllocation tw_i,
+                                               DeviceAllocation temp)
     : n0(n0), n1(n1), kernel(std::move(kernel)),
-      tw_r(std::move(tw_r)), tw_i(std::move(tw_i)) {
+      tw_r(std::move(tw_r)), tw_i(std::move(tw_i)), temp(std::move(temp)) {
 }
 
 std::string CompiledRaw2DFusedNode::describe() const {
@@ -1725,11 +1726,14 @@ flagfftResult CompiledRaw2DFusedNode::execute(adaptor::DevicePtr input,
   try {
     std::vector<JitKernelArg> args = {
         JitKernelArg::device(input),
-        JitKernelArg::device(output),
+        JitKernelArg::device(temp.get()),
         JitKernelArg::device(tw_r.get()),
         JitKernelArg::device(tw_i.get()),
     };
-    kernel->launch(context.stream, args, context.batch, 1, 1);
+    kernel->launch(context.stream, args, context.batch * n0, 1, 1);
+    args[0] = JitKernelArg::device(temp.get());
+    args[1] = JitKernelArg::device(output);
+    kernel->launch(context.stream, args, context.batch * n1, 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] fused 2D execute failed: %s\n", e.what());

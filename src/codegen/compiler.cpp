@@ -2145,10 +2145,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       tw_i[k] = static_cast<float>(std::sin(angle));
     }
     auto kernel = compile_kernel(KernelKey::fused_2d(
-        triton_target_for_request(request), request.direction, request.input_dtype, n0));
+        triton_target_for_request(request), request.direction, request.input_dtype, n0, true));
+    DeviceAllocation temp = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DFusedNode>(
         n0, n1, std::move(kernel), adaptor::Memory::from_floats(tw_r),
-        adaptor::Memory::from_floats(tw_i));
+        adaptor::Memory::from_floats(tw_i), std::move(temp));
   }
 
   // Build col FFT request (axis-0, length=n0, batch=batch*n1)

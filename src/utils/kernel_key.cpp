@@ -88,13 +88,14 @@ KernelKey KernelKey::fused_32_column(std::string target, std::string direction,
 }
 
 KernelKey KernelKey::fused_2d(std::string target, std::string direction,
-                             std::string dtype, int64_t length) {
+                             std::string dtype, int64_t length, bool transpose_output) {
   KernelKey key;
   key.kind = KernelKind::Fused2D;
   key.target = std::move(target);
   key.direction = std::move(direction);
   key.dtype = std::move(dtype);
   key.length = length;
+  key.perm_form = transpose_output ? "transpose" : "rowmajor";
   return key;
 }
 

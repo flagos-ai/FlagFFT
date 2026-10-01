@@ -783,7 +783,8 @@ struct CompiledRaw2DFusedNode final : CompiledRawNode {
                          int64_t n1,
                          std::shared_ptr<JitKernel> kernel,
                          DeviceAllocation tw_r,
-                         DeviceAllocation tw_i);
+                         DeviceAllocation tw_i,
+                         DeviceAllocation temp);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -794,6 +795,7 @@ struct CompiledRaw2DFusedNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   DeviceAllocation tw_r;
   DeviceAllocation tw_i;
+  DeviceAllocation temp;
 };
 
 struct CompiledRaw2DRCNode final : CompiledRawNode {
