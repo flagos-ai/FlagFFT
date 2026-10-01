@@ -961,11 +961,20 @@ def test_maca_long_complex64_transpose_defaults_to_row_tile_traversal(
     )
     assert long_metadata["kernel_name"].endswith("_rmajor")
 
+    cube_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert cube_metadata["kernel_name"].endswith("_rmajor")
+
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "col")
     rollback_metadata = emit._emit_tiled_transpose3d_jit_kernel(
         n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
     )
     assert not rollback_metadata["kernel_name"].endswith("_rmajor")
+    cube_rollback_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert not cube_rollback_metadata["kernel_name"].endswith("_rmajor")
     monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL")
 
     half_metadata = emit._emit_tiled_transpose3d_jit_kernel(

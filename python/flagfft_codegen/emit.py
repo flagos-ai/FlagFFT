@@ -769,7 +769,8 @@ def _emit_tiled_transpose3d_jit_kernel(
     if (
         _declared_backend() == "maca"
         and dtype == "complex64"
-        and tuple(sorted((n0, n1, n2))) == (64, 128, 2048)
+        and tuple(sorted((n0, n1, n2)))
+        in {(64, 128, 2048), (256, 256, 256)}
     ):
         traversal_default = "row"
     maca_traversal = (
