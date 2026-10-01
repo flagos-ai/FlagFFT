@@ -55,12 +55,8 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     src = (batch * {n * n} + row * {n} + rev) * 2
     xr = tl.load(in_ptr + src)
     xi = tl.load(in_ptr + src + 1)
-    xr_exchange = tl.reshape(
-        tl.trans(tl.join(xr, tl.zeros_like(xr)), (1, 0)), (128,)
-    )
-    xi_exchange = tl.reshape(
-        tl.trans(tl.join(xi, tl.zeros_like(xi)), (1, 0)), (128,)
-    )
+    xr_exchange = tl.cat(xr, tl.zeros_like(xr))
+    xi_exchange = tl.cat(xi, tl.zeros_like(xi))
 
     for stage in tl.static_range({bits}):
         partner = idx ^ (1 << stage)
@@ -85,12 +81,8 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
             ti = wr * bi + wi * br
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
-        xr_exchange = tl.reshape(
-            tl.trans(tl.join(xr, tl.zeros_like(xr)), (1, 0)), (128,)
-        )
-        xi_exchange = tl.reshape(
-            tl.trans(tl.join(xi, tl.zeros_like(xi)), (1, 0)), (128,)
-        )
+        xr_exchange = tl.cat(xr, tl.zeros_like(xr))
+        xi_exchange = tl.cat(xi, tl.zeros_like(xi))
 
     dst = {store_expr}
     tl.store(out_ptr + dst, xr)
