@@ -1878,14 +1878,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool small = packed <= 64 * 64 * 64;
   const bool packed_real_boundary =
       !small && hcu_3d_packed_real_boundary_enabled(request, inverse, batch * n0 * n1, n2);
+  const char *c2r_middle_transpose_override = std::getenv("FLAGFFT_HCU_3D_C2R_MIDDLE_TRANSPOSE");
+  const bool c2r_middle_transpose = request.device_type == "hcu" && inverse && !small && batch == 1 &&
+                                    n0 == 128 && n1 == 2048 && n2 == 64 && n1_leaf &&
+                                    c2r_middle_transpose_override != nullptr &&
+                                    std::string(c2r_middle_transpose_override) == "1";
   const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
-  const bool c2r_fused_load_default = !(request.input_dtype == "complex64" && batch >= 4 &&
-                                        n0 == 256 && n1 == 256 && n2 == 256);
-  const bool n1_strided_input = request.device_type == "hcu" && inverse && !small &&
-                                n1_leaf &&
-                                (c2r_fused_load_override == nullptr
-                                     ? c2r_fused_load_default
-                                     : std::string(c2r_fused_load_override) == "1");
+  const bool c2r_fused_load_default =
+      !(request.input_dtype == "complex64" && batch >= 4 && n0 == 256 && n1 == 256 && n2 == 256);
+  const bool n1_strided_input =
+      request.device_type == "hcu" && inverse && !small && n1_leaf && !c2r_middle_transpose &&
+      (c2r_fused_load_override == nullptr ? c2r_fused_load_default
+                                          : std::string(c2r_fused_load_override) == "1");
   const char *real_hybrid_override = std::getenv("FLAGFFT_HCU_3D_REAL_HYBRID");
   const bool real_hybrid = !n1_leaf && request.device_type == "hcu" && !small &&
                            n1 >= 4 * std::max(n0, n2) && fused_3d_store_enabled() &&
@@ -2012,7 +2016,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     if (!n2_permuted && !n1_strided_input) {
       perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
     }
-    if (real_hybrid || r2c_middle_transpose || r2c_cube_middle_transpose) {
+    if (real_hybrid || r2c_middle_transpose || r2c_cube_middle_transpose || c2r_middle_transpose) {
       n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
     } else {
