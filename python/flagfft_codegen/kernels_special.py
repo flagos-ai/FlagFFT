@@ -294,9 +294,9 @@ def _build_cube_dft_2d_kernel_source(
                     wi = tl.load(dft_i_ptr + dft_offset)
                     acc_r += tl.dot(wr, xr) - tl.dot(wi, xi)
                     acc_i += tl.dot(wr, xi) + tl.dot(wi, xr)
-                dst = out_ptr + batch_index * 4096 + rows[:, None] * 64 + cols[None, :]
-                tl.store(dst * 2, acc_r, mask=batch_mask)
-                tl.store(dst * 2 + 1, acc_i, mask=batch_mask)
+                dst = (batch_index * 4096 + rows[:, None] * 64 + cols[None, :]) * 2
+                tl.store(out_ptr + dst, acc_r, mask=batch_mask)
+                tl.store(out_ptr + dst + 1, acc_i, mask=batch_mask)
             """
         )
     else:
@@ -321,9 +321,9 @@ def _build_cube_dft_2d_kernel_source(
                     wi = tl.load(dft_i_ptr + dft_offset)
                     acc_r += tl.dot(xr, wr) - tl.dot(xi, wi)
                     acc_i += tl.dot(xr, wi) + tl.dot(xi, wr)
-                dst = lines[:, None] * 64 + outputs[None, :]
-                tl.store(out_ptr + dst * 2, acc_r, mask=line_mask[:, None])
-                tl.store(out_ptr + dst * 2 + 1, acc_i, mask=line_mask[:, None])
+                dst = (lines[:, None] * 64 + outputs[None, :]) * 2
+                tl.store(out_ptr + dst, acc_r, mask=line_mask[:, None])
+                tl.store(out_ptr + dst + 1, acc_i, mask=line_mask[:, None])
             """
         )
     return kernel_name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
