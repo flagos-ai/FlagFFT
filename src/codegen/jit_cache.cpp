@@ -236,6 +236,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       const char *exchange = std::getenv("FLAGFFT_NPU_2D_EXCHANGE");
       const char *lane_min = std::getenv("FLAGFFT_NPU_2D_LANE_MIN");
       const char *split_order = std::getenv("FLAGFFT_NPU_2D_SPLIT_ORDER");
+      const char *auto_vectorize_v2 = std::getenv("FLAGFFT_NPU_2D_AUTOVECTORIZE_V2");
       if (exchange == nullptr) exchange = std::getenv("FLAGFFT_MACA_EXCHANGE");
       if (lane_min == nullptr) lane_min = std::getenv("FLAGFFT_MACA_LANE_MIN");
       if (split_order == nullptr) split_order = std::getenv("FLAGFFT_MACA_SPLIT_ORDER");
@@ -243,6 +244,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";npu-2d-lane-min=" + std::string(lane_min != nullptr ? lane_min : "auto");
       cache_key += ";npu-2d-split-order=" +
                    std::string(split_order != nullptr ? split_order : "auto");
+      cache_key += ";npu-2d-auto-vectorize-v2=" +
+                   std::string(auto_vectorize_v2 != nullptr && std::string(auto_vectorize_v2) == "1"
+                                   ? "1"
+                                   : "0");
     }
   }
   if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
@@ -579,6 +584,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->binary_dir = json_string_field(artifact_json, "binary_dir");
 #endif
   kernel->signature = json_string_field(artifact_json, "signature");
+  kernel->npu_portable_leaf = key.npu_portable_leaf;
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
   kernel->warp_size = json_int_field(artifact_json, "warp_size");
   kernel->profile_id = json_string_field(artifact_json, "profile_id");
