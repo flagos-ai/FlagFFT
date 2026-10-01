@@ -958,10 +958,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         std::string(packed_fuse_setting) != "1") {
       throw std::runtime_error("FLAGFFT_HCU_3D_C2R_PACKED_FUSE must be 0 or 1");
     }
-    const bool use_packed_fused_leaf =
-        request.device_type == "hcu" && request.origin_rank == 3 && n == 256 &&
-        batch == 256 * 256 && packed_fuse_setting != nullptr &&
-        std::string(packed_fuse_setting) == "1";
+    // HCU A-B-B-A showed a 6.4% FP64 win on the single-batch 256^3 C2R
+    // case, while FP32 was effectively unchanged. Keep the default narrow;
+    // the environment override remains available to measure other cases.
+    const bool packed_fuse_default = request.device_type == "hcu" &&
+                                     request.origin_rank == 3 && n == 256 &&
+                                     batch == 256 * 256 &&
+                                     request.input_dtype == "complex128";
+    const bool packed_fuse_enabled = packed_fuse_setting == nullptr
+                                         ? packed_fuse_default
+                                         : std::string(packed_fuse_setting) == "1";
+    const bool use_packed_fused_leaf = request.device_type == "hcu" &&
+                                       request.origin_rank == 3 && n == 256 &&
+                                       batch == 256 * 256 && packed_fuse_enabled;
     if (use_packed_fused_leaf) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
         KernelKey key = KernelKey::leaf_c2r(
