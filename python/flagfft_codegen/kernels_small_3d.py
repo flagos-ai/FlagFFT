@@ -115,17 +115,43 @@ def fused_{plane_size}_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
 def emit_fused_32_real_plane_kernel(
     *, dtype: str, direction: str, out_dir: Path
 ) -> dict:
-    """Fuse the two inner axes of a 32x32 real-to-complex plane.
-
-    One block reads a real plane, performs a 32-point R2C on its columns and a
-    32-point complex FFT on its rows, then writes the compact natural layout.
-    The remaining outer-axis FFT can consume that layout with its strided leaf.
-    """
+    """Fuse the two inner axes of a 32x32 R2C or C2R plane."""
     if dtype not in {"complex64", "complex128"}:
         raise ValueError("fused real plane requires a complex precision")
-    if direction != "forward":
-        raise ValueError("fused real plane currently supports the forward direction")
+    if direction not in {"forward", "inverse"}:
+        raise ValueError("fused real plane direction must be forward or inverse")
     scalar = "tl.float64" if dtype == "complex128" else "tl.float32"
+    inverse = direction == "inverse"
+    if inverse:
+        input_load = """
+    logical_row = rev_row
+    logical_col = rev_col
+    mirrored = logical_col > 16
+    source_row = tl.where(mirrored, (-logical_row) & 31, logical_row)
+    source_col = tl.where(mirrored, 32 - logical_col, logical_col)
+    src = (plane * 32 * 17 + source_row * 17 + source_col) * 2
+    xr = tl.load(in_ptr + src)
+    xi = tl.load(in_ptr + src + 1)
+    xi = tl.where(mirrored, -xi, xi)
+"""
+        output_store = """
+    dst = plane * 32 * 32 + idx
+    tl.store(out_ptr + dst, xr)
+"""
+        variant = "fused_32_c2r"
+    else:
+        input_load = f"""
+    src = plane * 32 * 32 + rev_row * 32 + rev_col
+    xr = tl.load(in_ptr + src)
+    xi = tl.full((1024,), 0.0, {scalar})
+"""
+        output_store = """
+    keep = col <= 16
+    dst = (plane * 32 * 17 + row * 17 + col) * 2
+    tl.store(out_ptr + dst, xr, mask=keep)
+    tl.store(out_ptr + dst + 1, xi, mask=keep)
+"""
+        variant = "fused_32_r2c"
     source = f"""
 @triton.jit
 def fused_32_real_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
@@ -138,9 +164,7 @@ def fused_32_real_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     for bit in tl.static_range(5):
         rev_row = (rev_row << 1) | ((row >> bit) & 1)
         rev_col = (rev_col << 1) | ((col >> bit) & 1)
-    src = (plane * 1024 + rev_row * 32 + rev_col)
-    xr = tl.load(in_ptr + src)
-    xi = tl.full((1024,), 0.0, {scalar})
+{input_load}
 
     for stage in tl.static_range(5):
         partner = idx ^ (1 << stage)
@@ -159,9 +183,6 @@ def fused_32_real_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
-    keep = col <= 16
-    xr = tl.where(keep, xr, 0.0)
-    xi = tl.where(keep, xi, 0.0)
     for stage in tl.static_range(5):
         partner = idx ^ (32 << stage)
         pr = tl.gather(xr, partner, 0)
@@ -179,11 +200,9 @@ def fused_32_real_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
-    dst = (plane * 32 * 17 + row * 17 + col) * 2
-    tl.store(out_ptr + dst, xr, mask=keep)
-    tl.store(out_ptr + dst + 1, xi, mask=keep)
+{output_store}
 """
-    name = f"flagfft_jit_fused_32_real_plane_{direction}_{_dtype_suffix(dtype)}"
+    name = f"flagfft_jit_{variant}_{direction}_{_dtype_suffix(dtype)}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))

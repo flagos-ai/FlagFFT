@@ -76,12 +76,13 @@ def test_codelet_directory_lives_under_codegen(kernels) -> None:
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
-def test_fused_32_real_plane_kernel_source(tmp_path, dtype) -> None:
+@pytest.mark.parametrize("direction", ["forward", "inverse"])
+def test_fused_32_real_plane_kernel_source(tmp_path, dtype, direction) -> None:
     from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel
 
     metadata = emit_fused_32_real_plane_kernel(
         dtype=dtype,
-        direction="forward",
+        direction=direction,
         out_dir=tmp_path,
     )
     source = Path(metadata["module_path"]).read_text()
@@ -91,9 +92,14 @@ def test_fused_32_real_plane_kernel_source(tmp_path, dtype) -> None:
     assert metadata["kernel_name"] == "fused_32_real_plane_fft_kernel"
     assert metadata["arg_names"] == ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
     assert "idx = tl.arange(0, 1024)" in source
-    assert "keep = col <= 16" in source
-    assert "row * 17 + col" in source
-    assert "mask=keep" in source
+    if direction == "forward":
+        assert "keep = col <= 16" in source
+        assert "row * 17 + col" in source
+        assert "mask=keep" in source
+    else:
+        assert "mirrored = logical_col > 16" in source
+        assert "(-logical_row) & 31" in source
+        assert "dst = plane * 32 * 32 + idx" in source
 
 
 def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:

@@ -1032,18 +1032,19 @@ struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
-// Experimental HCU path for a single 32^3 R2C transform. The fused plane
-// kernel transforms the two inner axes and writes compact natural-order data;
-// the existing strided leaf then transforms the outer axis.
-struct CompiledRaw3DR2CFusedPlaneNode final : CompiledRawNode {
-  CompiledRaw3DR2CFusedPlaneNode(int64_t n0,
-                                 int64_t n1,
-                                 int64_t n2,
-                                 std::shared_ptr<JitKernel> plane_fft,
-                                 std::shared_ptr<CompiledRawNode> outer_fft,
-                                 DeviceAllocation temp,
-                                 DeviceAllocation tw_r,
-                                 DeviceAllocation tw_i);
+// Experimental HCU path for a single 32^3 real transform. The fused plane
+// kernel transforms the two inner axes; the existing strided leaf handles
+// the outer axis before or after it, depending on transform direction.
+struct CompiledRaw3DRealFusedPlaneNode final : CompiledRawNode {
+  CompiledRaw3DRealFusedPlaneNode(int64_t n0,
+                                  int64_t n1,
+                                  int64_t n2,
+                                  bool inverse,
+                                  std::shared_ptr<JitKernel> plane_fft,
+                                  std::shared_ptr<CompiledRawNode> outer_fft,
+                                  DeviceAllocation temp,
+                                  DeviceAllocation tw_r,
+                                  DeviceAllocation tw_i);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1052,6 +1053,7 @@ struct CompiledRaw3DR2CFusedPlaneNode final : CompiledRawNode {
   int64_t n0;
   int64_t n1;
   int64_t n2;
+  bool inverse;
   std::shared_ptr<JitKernel> plane_fft;
   std::shared_ptr<CompiledRawNode> outer_fft;
   DeviceAllocation temp;
