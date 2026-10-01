@@ -18,7 +18,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     profile = set_profile(
         BackendProfile.from_device(
             {"backend": "maca", "device_arch": "102", "warp_size": 64,
-             "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536}
+             "max_threads_per_block": 1024, "max_dynamic_shared_memory": 65536}
         )
     )
     short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex64")
@@ -52,7 +52,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert permuted_store_batch_pack_for(single256) == 4
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "16")
             assert permuted_store_batch_pack_for(short) == 16
-            assert permuted_store_batch_pack_for(single256) == 8
+            assert permuted_store_batch_pack_for(single256) == 16
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "auto")
             assert permuted_store_batch_pack_for(short) == 8
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "8")
