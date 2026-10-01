@@ -27,6 +27,13 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  bool use_npu_2d_cube_dft(const FFTRequest &request, int64_t n) {
+    const char *setting = std::getenv("FLAGFFT_NPU_2D_CUBE_DFT");
+    return setting != nullptr && std::string(setting) == "1" && request.device_type == "npu" &&
+           request.origin_rank == 2 && request.input_dtype == "complex64" &&
+           request.output_dtype == "complex64" && n == 64;
+  }
+
   void mark_npu_2d_portable_leaf(KernelKey &key, const FFTRequest &request) {
     key.npu_portable_leaf = request.device_type == "npu" && request.origin_rank == 2;
   }
@@ -1052,11 +1059,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_direct_dft(
                                                                                 int64_t outer_stride) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::direct_dft_strided(target, request.direction, request.input_dtype, node.length);
+  const bool cube_dft = use_npu_2d_cube_dft(request, node.length);
+  if (cube_dft) key.kind = KernelKind::DirectDftCubeStrided;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   return std::make_shared<CompiledRawStridedDirectDftNode>(node.length,
                                                            outer_stride,
                                                            std::move(kernel),
-                                                           build_raw_direct_dft_tables(node.length, request));
+                                                           cube_dft ? build_raw_cube_dft_tables(node.length, request)
+                                                                    : build_raw_direct_dft_tables(node.length, request));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const DirectDFTPlanNode &node,
@@ -1065,9 +1075,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const Di
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   DeviceAllocation input_copy =
       adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
+  const bool cube_dft = use_npu_2d_cube_dft(request, node.length);
   return std::make_shared<CompiledRawDirectDftNode>(node.length,
                                                     compile_direct_dft_kernel(request, node.length),
-                                                    build_raw_direct_dft_tables(node.length, request),
+                                                    cube_dft ? build_raw_cube_dft_tables(node.length, request)
+                                                             : build_raw_direct_dft_tables(node.length, request),
                                                     std::move(input_copy));
 }
 
@@ -1123,6 +1135,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPla
 std::shared_ptr<JitKernel> TritonCompiler::compile_direct_dft_kernel(const FFTRequest &request, int64_t n) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::direct_dft(target, request.direction, request.input_dtype, n);
+  if (use_npu_2d_cube_dft(request, n)) key.kind = KernelKind::DirectDftCube;
   return compile_kernel(key);
 }
 
@@ -2174,6 +2187,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     col_request.input_shape = {batch, n0};
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_node(node->col_plan, col_request, batch),
                                                    batch);
+  }
+
+  const auto cube_row_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->row_plan);
+  const auto cube_col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
+  if (n0 == 64 && n1 == 64 && use_npu_2d_cube_dft(request, n0) && cube_row_direct && cube_col_direct) {
+    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_strided_direct_dft(*cube_col_direct, request, n1);
+    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    return std::make_shared<CompiledRaw2DRCNode>(n0,
+                                                 n1,
+                                                 std::move(row_fft),
+                                                 std::move(col_fft),
+                                                 std::move(temp1),
+                                                 enable_graph);
   }
 
   // For small Ascend C2C matrices, write each 1D leaf pass in transposed

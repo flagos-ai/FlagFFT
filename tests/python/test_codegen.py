@@ -662,6 +662,27 @@ def test_double_direct_dft_uses_compensated_accumulation(kernels) -> None:
     assert "comp_r =" not in float_source
 
 
+def test_ascend_cube_dft_kernel_source(kernels) -> None:
+    name, source, args = kernels._build_direct_dft_kernel_source(
+        64, "forward", "complex64", cube=True
+    )
+    assert name.startswith("direct_dft_cube_kernel_n64")
+    assert "tl.dot(xr, wr) - tl.dot(xi, wi)" in source
+    assert "tl.dot(xr, wi) + tl.dot(xi, wr)" in source
+    assert "line = line_block * 16 + tl.arange(0, 16)" in source
+    assert args == ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+
+    strided_name, strided_source, strided_args = kernels._build_direct_dft_kernel_source(
+        64, "forward", "complex64", strided=True, cube=True
+    )
+    assert strided_name.startswith("direct_dft_cube_strided_kernel_n64")
+    assert "j[None, :] * outer_stride" in strided_source
+    assert "out[None, :] * outer_stride" in strided_source
+    assert strided_args == [
+        "in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "outer_stride", "nbatch"
+    ]
+
+
 def test_strided_leaf_kernel_source_generation(kernels) -> None:
     plan = kernels.LeafPlan(
         length=32,

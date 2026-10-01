@@ -186,6 +186,17 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     const bool npu_2d_real_transform = context.real_transform_kind == "r2c" ||
                                        context.real_transform_kind == "c2r";
     const bool npu_2d_c2c = context.real_transform_kind.empty();
+    const char *cube_dft_setting = std::getenv("FLAGFFT_NPU_2D_CUBE_DFT");
+    if (cube_dft_setting != nullptr && std::string(cube_dft_setting) != "0" &&
+        std::string(cube_dft_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_NPU_2D_CUBE_DFT must be 0 or 1");
+    }
+    const bool use_cube_dft = cube_dft_setting != nullptr && std::string(cube_dft_setting) == "1";
+    if (use_cube_dft && context.origin_rank == 2 && context.input_dtype == "complex64" &&
+        context.output_dtype == "complex64" && npu_2d_c2c && n == 64 && context.batch <= 512) {
+      PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+      return {{node, estimate_direct_dft_cost(n), priority(node)}};
+    }
     const bool npu_2d_leaf_explicit = std::getenv("FLAGFFT_NPU_2D_LEAF_LENGTH") != nullptr;
     const bool npu_2d_measured_leaf = context.origin_rank == 2 && n == 64 &&
                                       (npu_2d_real_transform || npu_2d_c2c);

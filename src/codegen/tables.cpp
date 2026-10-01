@@ -410,4 +410,26 @@ std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRe
   return tables;
 }
 
+std::vector<DeviceAllocation> build_raw_cube_dft_tables(int64_t n, const FFTRequest &request) {
+  if (dtype_is_double(request.input_dtype)) {
+    throw std::runtime_error("Ascend Cube DFT tables require complex64 input");
+  }
+  std::vector<DeviceAllocation> tables;
+  tables.reserve(2);
+  const auto dft = build_dft_matrix(n, request.direction);
+  std::vector<float> real(static_cast<std::size_t>(n * n));
+  std::vector<float> imag(static_cast<std::size_t>(n * n));
+  for (int64_t output = 0; output < n; ++output) {
+    for (int64_t input = 0; input < n; ++input) {
+      const std::size_t source = static_cast<std::size_t>(output * n + input);
+      const std::size_t destination = static_cast<std::size_t>(input * n + output);
+      real[destination] = dft.first[source];
+      imag[destination] = dft.second[source];
+    }
+  }
+  tables.push_back(adaptor::Memory::from_floats(real));
+  tables.push_back(adaptor::Memory::from_floats(imag));
+  return tables;
+}
+
 }  // namespace flagfft

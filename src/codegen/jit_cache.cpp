@@ -310,6 +310,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::DirectDftStrided:
       kernel_kind = "direct_dft_strided";
       break;
+    case KernelKind::DirectDftCube:
+      kernel_kind = "direct_dft_cube";
+      break;
+    case KernelKind::DirectDftCubeStrided:
+      kernel_kind = "direct_dft_cube_strided";
+      break;
     case KernelKind::DirectDftR2C:
       kernel_kind = "direct_dft_r2c";
       break;
@@ -482,6 +488,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
+      key.kind == KernelKind::DirectDftCube || key.kind == KernelKind::DirectDftCubeStrided ||
       key.kind == KernelKind::DirectDftR2C || key.kind == KernelKind::DirectDftC2R) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
   }

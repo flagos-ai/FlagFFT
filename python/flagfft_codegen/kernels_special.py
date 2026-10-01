@@ -30,7 +30,12 @@ def _build_direct_dft_kernel_source(
     dtype: str,
     *,
     strided: bool = False,
+    cube: bool = False,
 ) -> tuple[str, str, list[str]]:
+    if cube:
+        if n != 64 or dtype != "complex64":
+            raise ValueError("the Ascend Cube DFT kernel supports complex64 length 64 only")
+        return _build_cube_dft_kernel_source(strided=strided)
     block = lane_block_for(n)
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     suffix = _dtype_suffix(dtype)
@@ -141,6 +146,68 @@ def _build_direct_dft_kernel_source(
             else ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
         ),
     )
+
+
+def _build_cube_dft_kernel_source(
+    *, strided: bool = False
+) -> tuple[str, str, list[str]]:
+    """Build the measured 64-point FP32 Cube matmul kernel."""
+    kernel_name = (
+        "direct_dft_cube_strided_kernel_n64_complex64_b16"
+        if strided
+        else "direct_dft_cube_kernel_n64_complex64_b16"
+    )
+    base = (
+        "            batch_index = line // outer_stride\n"
+        "            base = batch_index * (64 * outer_stride) + "
+        "(line - batch_index * outer_stride)\n"
+        if strided
+        else "            base = line * 64\n"
+    )
+    input_offset = (
+        "base[:, None] + j[None, :] * outer_stride"
+        if strided
+        else "base[:, None] + j[None, :]"
+    )
+    output_offset = (
+        "base[:, None] + out[None, :] * outer_stride"
+        if strided
+        else "base[:, None] + out[None, :]"
+    )
+    extra = "            outer_stride,\n" if strided else ""
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr,
+{extra}            nbatch):
+            line_block = tl.program_id(0)
+            line = line_block * 16 + tl.arange(0, 16)
+            out = tl.arange(0, 64)
+            k = tl.arange(0, 16)
+{base}            acc_r = tl.zeros((16, 64), dtype=tl.float32)
+            acc_i = tl.zeros((16, 64), dtype=tl.float32)
+            for kk in tl.static_range(4):
+                j = kk * 16 + k
+                line_mask = line < nbatch
+                xr = tl.load(in_ptr + ({input_offset}) * 2,
+                             mask=line_mask[:, None], other=0.0)
+                xi = tl.load(in_ptr + ({input_offset}) * 2 + 1,
+                             mask=line_mask[:, None], other=0.0)
+                wr = tl.load(dft_r_ptr + j[:, None] * 64 + out[None, :])
+                wi = tl.load(dft_i_ptr + j[:, None] * 64 + out[None, :])
+                acc_r += tl.dot(xr, wr) - tl.dot(xi, wi)
+                acc_i += tl.dot(xr, wi) + tl.dot(xi, wr)
+            dst = out_ptr + ({output_offset}) * 2
+            tl.store(dst, acc_r, mask=line_mask[:, None])
+            tl.store(dst + 1, acc_i, mask=line_mask[:, None])
+        """
+    )
+    arg_names = (
+        ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "outer_stride", "nbatch"]
+        if strided
+        else ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+    )
+    return kernel_name, source, arg_names
 
 
 __all__ = [

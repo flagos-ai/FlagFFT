@@ -442,7 +442,7 @@ flagfftResult CompiledRawStridedDirectDftNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i64(outer_stride));
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    kernel->launch(context.stream, args, context.batch, 1, 1);
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] StridedDirectDft execute failed: %s\n", e.what());
@@ -545,7 +545,7 @@ flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
     }
 
     std::vector<JitKernelArg> args = raw_kernel_args({effective_input, output}, tables, context.batch);
-    kernel->launch(context.stream, args, context.batch, 1, 1);
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] DirectDFT execute failed: %s\n", e.what());
