@@ -51,14 +51,23 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     for bit in tl.static_range({bits}):
         rev = (rev << 1) | ((idx >> bit) & 1)
     src = (batch * {n * n} + row * {n} + rev) * 2
-    xr = tl.load(in_ptr + src)
-    xi = tl.load(in_ptr + src + 1)
+    xr = tl.reshape(tl.load(in_ptr + src), (8, 8))
+    xi = tl.reshape(tl.load(in_ptr + src + 1), (8, 8))
+    index = tl.reshape(idx, (8, 8))
+    row_index = index // 8
+    col_index = index % 8
 
     for stage in tl.static_range({bits}):
-        partner = idx ^ (1 << stage)
-        pr = tl.gather(xr, partner, 0)
-        pi = tl.gather(xi, partner, 0)
-        upper = (idx & (1 << stage)) != 0
+        if stage < 3:
+            partner = col_index ^ (1 << stage)
+            pr = tl.gather(xr, partner, 1)
+            pi = tl.gather(xi, partner, 1)
+            upper = (col_index & (1 << stage)) != 0
+        else:
+            partner = row_index ^ (1 << (stage - 3))
+            pr = tl.gather(xr, partner, 0)
+            pi = tl.gather(xi, partner, 0)
+            upper = (row_index & (1 << (stage - 3))) != 0
         ar = tl.where(upper, pr, xr)
         ai = tl.where(upper, pi, xi)
         br = tl.where(upper, xr, pr)
@@ -67,10 +76,10 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
             tr = br
             ti = bi
         elif stage == 1:
-            tr = tl.where((idx & 1) != 0, {quarter_r}, br)
-            ti = tl.where((idx & 1) != 0, {quarter_i}, bi)
+            tr = tl.where((index & 1) != 0, {quarter_r}, br)
+            ti = tl.where((index & 1) != 0, {quarter_i}, bi)
         else:
-            tw = (idx & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            tw = (index & ((1 << stage) - 1)) * ({n} >> (stage + 1))
             wr = tl.load(tw_r_ptr + tw)
             wi = tl.load(tw_i_ptr + tw)
             tr = wr * br - wi * bi
@@ -78,6 +87,8 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
 
+    xr = tl.reshape(xr, ({n},))
+    xi = tl.reshape(xi, ({n},))
     dst = {store_expr}
     tl.store(out_ptr + dst, xr)
     tl.store(out_ptr + dst + 1, xi)
