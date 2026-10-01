@@ -1177,34 +1177,6 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
-// Experimental 32^3 real path: fuse the n1 and n2 transforms in one plane
-// kernel and leave the independent n0 transform as the second launch.
-struct CompiledRaw3DRealFusedPlaneNode final : CompiledRawNode {
-  CompiledRaw3DRealFusedPlaneNode(int64_t n0,
-                                  int64_t n1,
-                                  int64_t n2,
-                                  bool inverse,
-                                  std::shared_ptr<JitKernel> plane_fft,
-                                  std::shared_ptr<CompiledRawNode> outer_fft,
-                                  DeviceAllocation temp,
-                                  DeviceAllocation tw_r,
-                                  DeviceAllocation tw_i);
-  flagfftResult execute(adaptor::DevicePtr input,
-                        adaptor::DevicePtr output,
-                        const RawExecutionContext &context) const override;
-  std::string describe() const override;
-
-  int64_t n0;
-  int64_t n1;
-  int64_t n2;
-  bool inverse;
-  std::shared_ptr<JitKernel> plane_fft;
-  std::shared_ptr<CompiledRawNode> outer_fft;
-  DeviceAllocation temp;
-  DeviceAllocation tw_r;
-  DeviceAllocation tw_i;
-};
-
 // Compact real boundary with the usual three transposes.  The final
 // transpose may be folded into a leaf n0 store when profitable.
 struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {

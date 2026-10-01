@@ -386,9 +386,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Fused16Cube:
       kernel_kind = "fused_16_cube";
       break;
-    case KernelKind::Fused32RealPlane:
-      kernel_kind = "fused_32_real_plane";
-      break;
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
@@ -502,14 +499,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --transpose3d-n2 " << key.transpose3d_n2 << " --transpose3d-order "
                 << shell_quote(key.transpose3d_order);
   }
-  if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused16Cube ||
-      key.kind == KernelKind::Fused32RealPlane) {
-    jit_command << " --direction " << shell_quote(key.direction) << " --length " << key.length;
+  if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused16Cube) {
+    jit_command << " --direction " << shell_quote(key.direction)
+                << " --length " << key.length;
   }
   if (key.kind == KernelKind::FusedRectPlane) {
-    jit_command << " --direction " << shell_quote(key.direction) << " --fused-plane-n0 " << key.fused_plane_n0
-                << " --fused-plane-n1 " << key.fused_plane_n1 << " --fused-plane-middle "
-                << key.fused_plane_middle;
+    jit_command << " --direction " << shell_quote(key.direction)
+                << " --fused-plane-n0 " << key.fused_plane_n0
+                << " --fused-plane-n1 " << key.fused_plane_n1
+                << " --fused-plane-middle " << key.fused_plane_middle;
   }
   if (key.kind == KernelKind::Fused32Column) {
     jit_command << " --length " << key.length;
