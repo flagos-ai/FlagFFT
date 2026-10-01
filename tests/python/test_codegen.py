@@ -1378,8 +1378,6 @@ def test_hcu_c2r_packed_preprocess_pair_codegen() -> None:
     assert "tl.store(paired_dst, sum_r + prod_i, mask=pair_mask)" in source
     assert "tl.store(paired_dst + 1, -sum_i + prod_r, mask=pair_mask)" in source
     assert "middle = 64" in source
-    assert "middle_idx = tl.where(special_mask, middle, 0)" in source
-    assert "middle_ptr = in_ptr + (safe_rows * input_distance + middle_idx) * 2" in source
 
 
 def _maca_profile():

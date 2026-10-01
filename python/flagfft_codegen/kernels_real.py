@@ -380,22 +380,15 @@ def _build_c2r_packed_preprocess_kernel_source(
                 # range above. Handle it once in the lane for k=0.
                 special_mask = (row_offsets < nbatch) & (col_offsets == 0)
                 middle = {packed // 2}
-                middle_idx = tl.where(special_mask, middle, 0)
-                middle_ptr = in_ptr + (safe_rows * input_distance + middle_idx) * 2
+                middle_ptr = in_ptr + (safe_rows * input_distance + middle) * 2
                 middle_r = tl.load(middle_ptr, mask=special_mask, other={zero})
                 middle_i = tl.load(middle_ptr + 1, mask=special_mask, other={zero})
-                middle_wr = tl.load(
-                    twiddle_ptr + middle_idx * 2, mask=special_mask, other={zero}
-                )
-                middle_wi = tl.load(
-                    twiddle_ptr + middle_idx * 2 + 1,
-                    mask=special_mask,
-                    other={zero},
-                )
+                middle_wr = tl.load(twiddle_ptr + middle * 2, mask=special_mask, other={zero})
+                middle_wi = tl.load(twiddle_ptr + middle * 2 + 1, mask=special_mask, other={zero})
                 middle_diff_i = 2.0 * middle_i
                 middle_prod_r = middle_diff_i * middle_wi
                 middle_prod_i = middle_diff_i * middle_wr
-                middle_dst = out_ptr + (safe_rows * {packed} + middle_idx) * 2
+                middle_dst = out_ptr + (safe_rows * {packed} + middle) * 2
                 tl.store(middle_dst, 2.0 * middle_r - middle_prod_i, mask=special_mask)
                 tl.store(middle_dst + 1, middle_prod_r, mask=special_mask)
             """
