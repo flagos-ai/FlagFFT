@@ -124,11 +124,6 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
   if (context.device_type == "maca" && context.origin_rank == 3) {
-    if (n == 32) {
-      const char *trial = std::getenv("FLAGFFT_MACA_3D_N32_FACTORS");
-      if (trial != nullptr && std::string(trial) == "4x8") return {4, 8};
-      if (trial != nullptr && std::string(trial) == "8x4") return {8, 4};
-    }
     // This order retains the 128 collaboration lanes and 4-warps block while
     // slightly improving the direct C550 2048-point 3D axis. Keep it off the
     // Bluestein convolution used by the 997-point transform.
