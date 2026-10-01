@@ -14,8 +14,6 @@
 
 #include "flagfft/core.hpp"
 
-#include <cstdlib>
-
 namespace flagfft {
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
@@ -129,13 +127,6 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // Bluestein convolution used by the 997-point transform.
     if (context.device_arch == "102" && n == 2048 && context.requested_n == n) {
       return {16, 8, 16};
-    }
-    if (n == 256) {
-      const char *trial = std::getenv("FLAGFFT_MACA_3D_N256_FACTORS");
-      if (trial != nullptr && std::string(trial) == "16x16") return {16, 16};
-      if (trial != nullptr && std::string(trial) == "8x8x4") return {8, 8, 4};
-      if (trial != nullptr && std::string(trial) == "4x8x8") return {4, 8, 8};
-      if (trial != nullptr && std::string(trial) == "4x16x4") return {4, 16, 4};
     }
   }
   // Five radix-two stages cost more than two short codelets for 32^3 axes on
