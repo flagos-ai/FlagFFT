@@ -180,13 +180,23 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         throw std::runtime_error("FLAGFFT_NPU_2D_DIRECT_DFT_MAX must be 0, 64, or 128");
       }
     }
-    const char *npu_2d_leaf64 = std::getenv("FLAGFFT_NPU_2D_LEAF64");
+    int64_t npu_2d_leaf_length = 0;
+    if (const char *raw = std::getenv("FLAGFFT_NPU_2D_LEAF_LENGTH"); raw != nullptr) {
+      std::size_t parsed = 0;
+      try {
+        npu_2d_leaf_length = std::stoll(raw, &parsed);
+      } catch (const std::exception &) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_LENGTH must be a positive integer");
+      }
+      if (parsed != std::string(raw).size() || npu_2d_leaf_length <= 1) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_LENGTH must be a positive integer greater than one");
+      }
+    }
     if (context.origin_rank == 2 && context.input_dtype == "complex64" &&
-        context.output_dtype == "complex64" && n == 64 && npu_2d_leaf64 != nullptr &&
-        std::string(npu_2d_leaf64) == "1") {
+        context.output_dtype == "complex64" && n == npu_2d_leaf_length) {
       const std::vector<int64_t> factors = select_leaf_factors(n);
       if (!should_use_leaf(n, factors)) {
-        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF64 requires a supported 64-point leaf");
+        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_LENGTH requires a supported leaf length");
       }
       PlanNodePtr node = make_leaf_plan(n, factors);
       return {
