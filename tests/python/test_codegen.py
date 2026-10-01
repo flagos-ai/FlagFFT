@@ -1357,29 +1357,6 @@ def test_packed_real_codegen_requires_even_length_and_pairs_bins(kernels) -> Non
         kernels._build_c2r_packed_preprocess_kernel_source(17, "complex128")
 
 
-def test_hcu_c2r_packed_preprocess_pair_codegen() -> None:
-    from flagfft_codegen.kernels_real import _build_c2r_packed_preprocess_kernel_source
-
-    name, source, args, rows_per_block = _build_c2r_packed_preprocess_kernel_source(
-        256, "complex64", paired=True
-    )
-
-    assert name == "_c2r_packed_preprocess_pair_kernel_n256_f32"
-    assert rows_per_block == 4
-    assert args == [
-        "in_ptr",
-        "twiddle_ptr",
-        "out_ptr",
-        "input_distance",
-        "nbatch",
-    ]
-    assert "q = 128 - k" in source
-    assert "pair_mask = mask & (k > 0)" in source
-    assert "tl.store(paired_dst, sum_r + prod_i, mask=pair_mask)" in source
-    assert "tl.store(paired_dst + 1, -sum_i + prod_r, mask=pair_mask)" in source
-    assert "middle = 64" in source
-
-
 def _maca_profile():
     from flagfft_codegen.backend_profile import BackendProfile
 

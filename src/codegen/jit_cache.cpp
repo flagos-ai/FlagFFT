@@ -203,16 +203,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
-  if (key.kind == KernelKind::C2RPackedPreprocess &&
-      adaptor::backend_name() == "hcu" && key.length == 256 &&
-      (key.dtype == "complex64" || key.dtype == "complex128")) {
-    const char *paired_preprocess = std::getenv("FLAGFFT_HCU_3D_C2R_PREPROCESS_PAIR");
-    cache_key += ";hcu-3d-c2r-preprocess-pair=" +
-                 std::string(paired_preprocess != nullptr &&
-                                     std::string(paired_preprocess) == "1"
-                                 ? "1"
-                                 : "0");
-  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");

@@ -318,88 +318,12 @@ def _build_r2c_packed_postprocess_kernel_source(
 
 
 def _build_c2r_packed_preprocess_kernel_source(
-    n: int, dtype: str, *, paired: bool = False
+    n: int, dtype: str
 ) -> tuple[str, list[str], list[str]]:
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
     packed = n // 2
     block = 256
-    if paired:
-        if packed % 2 != 0:
-            raise ValueError("paired packed real FFT requires a length divisible by four")
-        block_cols, rows_per_block = _packed_layout(packed // 2, block)
-        zero = _zero_other(dtype)
-        suffix = _dtype_suffix(dtype)
-        kernel_name = f"_c2r_packed_preprocess_pair_kernel_n{n}_{suffix}"
-        source = dedent(
-            f"""
-            @triton.jit
-            def {kernel_name}(
-                in_ptr,
-                twiddle_ptr,
-                out_ptr,
-                input_distance,
-                nbatch,
-            ):
-                pid_block = tl.program_id(0)
-                pid_batch = tl.program_id(1)
-                row_offsets = pid_batch * {rows_per_block} + tl.arange(0, {rows_per_block})[:, None]
-                col_offsets = pid_block * {block_cols} + tl.arange(0, {block_cols})[None, :]
-                mask = (row_offsets < nbatch) & (col_offsets < {packed // 2})
-                safe_rows = tl.minimum(row_offsets, nbatch - 1)
-                k = tl.minimum(col_offsets, {packed // 2 - 1})
-                q = {packed} - k
-                x_ptr = in_ptr + (safe_rows * input_distance + k) * 2
-                q_ptr = in_ptr + (safe_rows * input_distance + q) * 2
-                xr = tl.load(x_ptr, mask=mask, other={zero})
-                xi = tl.load(x_ptr + 1, mask=mask, other={zero})
-                qr = tl.load(q_ptr, mask=mask, other={zero})
-                qi = -tl.load(q_ptr + 1, mask=mask, other={zero})
-                wr = tl.load(twiddle_ptr + k * 2, mask=mask, other={zero})
-                wi = tl.load(twiddle_ptr + k * 2 + 1, mask=mask, other={zero})
-                sum_r = xr + qr
-                sum_i = xi + qi
-                diff_r = xr - qr
-                diff_i = xi - qi
-                prod_r = diff_r * wr + diff_i * wi
-                prod_i = diff_i * wr - diff_r * wi
-                packed_r = sum_r - prod_i
-                packed_i = sum_i + prod_r
-                dst = out_ptr + (safe_rows * {packed} + k) * 2
-                tl.store(dst, packed_r, mask=mask)
-                tl.store(dst + 1, packed_i, mask=mask)
-
-                # The paired bin uses the conjugate-side sum and product. One
-                # input pair and one twiddle therefore produce both outputs.
-                pair_mask = mask & (k > 0)
-                paired_dst = out_ptr + (safe_rows * {packed} + q) * 2
-                tl.store(paired_dst, sum_r + prod_i, mask=pair_mask)
-                tl.store(paired_dst + 1, -sum_i + prod_r, mask=pair_mask)
-
-                # k=packed/2 is its own pair and is omitted from the vector
-                # range above. Handle it once in the lane for k=0.
-                special_mask = (row_offsets < nbatch) & (col_offsets == 0)
-                middle = {packed // 2}
-                middle_ptr = in_ptr + (safe_rows * input_distance + middle) * 2
-                middle_r = tl.load(middle_ptr, mask=special_mask, other={zero})
-                middle_i = tl.load(middle_ptr + 1, mask=special_mask, other={zero})
-                middle_wr = tl.load(twiddle_ptr + middle * 2, mask=special_mask, other={zero})
-                middle_wi = tl.load(twiddle_ptr + middle * 2 + 1, mask=special_mask, other={zero})
-                middle_diff_i = 2.0 * middle_i
-                middle_prod_r = middle_diff_i * middle_wi
-                middle_prod_i = middle_diff_i * middle_wr
-                middle_dst = out_ptr + (safe_rows * {packed} + middle) * 2
-                tl.store(middle_dst, 2.0 * middle_r - middle_prod_i, mask=special_mask)
-                tl.store(middle_dst + 1, middle_prod_r, mask=special_mask)
-            """
-        )
-        return (
-            kernel_name,
-            source,
-            ["in_ptr", "twiddle_ptr", "out_ptr", "input_distance", "nbatch"],
-            rows_per_block,
-        )
-
     block_cols, rows_per_block = _packed_layout(packed, block)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
