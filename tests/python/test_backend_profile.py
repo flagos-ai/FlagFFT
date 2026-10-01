@@ -6,6 +6,67 @@ from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
 
 
 class ProfileTest(unittest.TestCase):
+    def test_npu_2d_leaf_warps_override_is_scoped_and_validated(self):
+        import os
+        from pathlib import Path
+
+        from flagfft_codegen.kernels_common import LeafPlan
+        from flagfft_codegen.metadata import _metadata
+        from flagfft_codegen.target import set_codegen_target
+
+        profile = BackendProfile.from_device(
+            {
+                "backend": "npu",
+                "device_arch": "Ascend910B4-1",
+                "warp_size": 1,
+                "max_threads_per_block": 65535,
+                "max_dynamic_shared_memory": 196608,
+            }
+        )
+        profile_token = set_profile(profile)
+        set_codegen_target("npu:Ascend910B4-1:1")
+        try:
+            plan = LeafPlan(64, (8, 8), 1, 8, 1, (), 64)
+            with patch.dict(
+                os.environ,
+                {
+                    "FLAGFFT_NPU_2D_LEAF_CONTEXT": "1",
+                    "FLAGFFT_NPU_2D_LEAF_WARPS": "4",
+                },
+            ):
+                metadata = _metadata(
+                    module_path=Path("unused.py"),
+                    kernel_name="fft_kernel_8_8_l8_b128",
+                    arg_names=[],
+                    plan=plan,
+                    kernel_type="leaf",
+                    n1=0,
+                    n2=0,
+                    dtype="complex64",
+                )
+                self.assertEqual(metadata["num_warps"], 4)
+            with patch.dict(
+                os.environ,
+                {
+                    "FLAGFFT_NPU_2D_LEAF_CONTEXT": "1",
+                    "FLAGFFT_NPU_2D_LEAF_WARPS": "3",
+                },
+            ):
+                with self.assertRaisesRegex(ValueError, "must be 1, 2, 4 or 8"):
+                    _metadata(
+                        module_path=Path("unused.py"),
+                        kernel_name="fft_kernel_8_8_l8_b128",
+                        arg_names=[],
+                        plan=plan,
+                        kernel_type="leaf",
+                        n1=0,
+                        n2=0,
+                        dtype="complex64",
+                    )
+        finally:
+            reset_profile(profile_token)
+            set_codegen_target("")
+
     def test_ix_scoped_default_uses_two_warps_and_recurrence(self):
         from pathlib import Path
         from flagfft_codegen.target import set_ix_ct_single_default, reset_ix_ct_single_default, set_codegen_target

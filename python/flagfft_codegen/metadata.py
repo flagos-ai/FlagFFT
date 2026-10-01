@@ -203,6 +203,16 @@ def _metadata(
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
         profile.validate(num_warps)
+    if (
+        _npu_backend_active()
+        and os.environ.get("FLAGFFT_NPU_2D_LEAF_CONTEXT") == "1"
+        and kernel_type in {"leaf", "leaf_strided", "leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}
+    ):
+        override = os.environ.get("FLAGFFT_NPU_2D_LEAF_WARPS")
+        if override is not None:
+            if override not in {"1", "2", "4", "8"}:
+                raise ValueError("FLAGFFT_NPU_2D_LEAF_WARPS must be 1, 2, 4 or 8")
+            num_warps = int(override)
     if (_ix_backend_active() and kernel_type == "leaf_packed_r2c"
             and os.environ.get("FLAGFFT_IX_WARPS") is None):
         # The half-length reconstruction has twice the register work of a
