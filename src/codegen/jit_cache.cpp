@@ -392,6 +392,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Fused32Column:
       kernel_kind = "fused_32_column";
       break;
+    case KernelKind::Fused2D:
+      kernel_kind = "fused_2d";
+      break;
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
@@ -497,10 +500,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32Plane ||
       key.kind == KernelKind::Fused16RealPlane || key.kind == KernelKind::Fused32RealPlane ||
       key.kind == KernelKind::Fused16Cube || key.kind == KernelKind::Fused16RealCube ||
-      key.kind == KernelKind::Fused32Column) {
+      key.kind == KernelKind::Fused32Column || key.kind == KernelKind::Fused2D) {
     jit_command << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::Fused32Column) {
+    jit_command << " --length " << key.length;
+  }
+  if (key.kind == KernelKind::Fused2D) {
     jit_command << " --length " << key.length;
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||

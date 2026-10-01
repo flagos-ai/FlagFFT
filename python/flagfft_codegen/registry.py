@@ -36,6 +36,7 @@ RESHAPE = "reshape"
 TRANSPOSE = "transpose"
 TRANSPOSE3D = "transpose3d"
 SMALL_3D = "small_3d"
+SMALL_2D = "small_2d"
 REAL_POINTWISE = "real_pointwise"
 
 LEAF_LIKE_FAMILIES = frozenset(
@@ -226,6 +227,7 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("twiddle_reshape_pack", RESHAPE, requires=_RESHAPE_FLAGS),
     KernelSpec("tiled_transpose", TRANSPOSE, requires=_RESHAPE_FLAGS),
     KernelSpec("transpose3d", TRANSPOSE3D, requires=_TRANSPOSE3D_FLAGS),
+    KernelSpec("fused_2d", SMALL_2D, requires=("length",)),
     KernelSpec("fused_16_plane", SMALL_3D),
     KernelSpec("fused_32_plane", SMALL_3D),
     KernelSpec("fused_16_real_plane", SMALL_3D),

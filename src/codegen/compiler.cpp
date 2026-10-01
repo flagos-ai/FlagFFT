@@ -2132,6 +2132,25 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                    batch);
   }
 
+  const char *npu_fused_2d = std::getenv("FLAGFFT_NPU_2D_FUSED_RADIX");
+  if (request.device_type == "npu" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && n0 == 64 && n1 == 64 &&
+      npu_fused_2d != nullptr && std::string(npu_fused_2d) == "1") {
+    std::vector<float> tw_r(n0 / 2);
+    std::vector<float> tw_i(n0 / 2);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+    for (int64_t k = 0; k < n0 / 2; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / static_cast<double>(n0);
+      tw_r[k] = static_cast<float>(std::cos(angle));
+      tw_i[k] = static_cast<float>(std::sin(angle));
+    }
+    auto kernel = compile_kernel(KernelKey::fused_2d(
+        triton_target_for_request(request), request.direction, request.input_dtype, n0));
+    return std::make_shared<CompiledRaw2DFusedNode>(
+        n0, n1, std::move(kernel), adaptor::Memory::from_floats(tw_r),
+        adaptor::Memory::from_floats(tw_i));
+  }
+
   // Build col FFT request (axis-0, length=n0, batch=batch*n1)
   FFTRequest col_request = request;
   col_request.fft_length = n0;

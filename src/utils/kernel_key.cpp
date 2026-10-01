@@ -87,6 +87,17 @@ KernelKey KernelKey::fused_32_column(std::string target, std::string direction,
   return key;
 }
 
+KernelKey KernelKey::fused_2d(std::string target, std::string direction,
+                             std::string dtype, int64_t length) {
+  KernelKey key;
+  key.kind = KernelKind::Fused2D;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = length;
+  return key;
+}
+
 KernelKey KernelKey::leaf(std::string target,
                           std::string direction,
                           std::string dtype,

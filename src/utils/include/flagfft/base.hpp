@@ -173,6 +173,7 @@ enum class KernelKind {
   Fused16Cube,
   Fused16RealCube,
   Fused32Column,
+  Fused2D,
   LeafRaderPrepare,
   LeafRaderFinish
 };

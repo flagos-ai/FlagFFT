@@ -220,6 +220,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "fused_16_real_cube";
     case KernelKind::Fused32Column:
       return "fused_32_column";
+    case KernelKind::Fused2D:
+      return "fused_2d";
   }
   return "unknown";
 }

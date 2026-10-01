@@ -1703,6 +1703,41 @@ CompiledRaw2DNode::CompiledRaw2DNode(int64_t n0,
       graph_enabled_(enable_graph) {
 }
 
+CompiledRaw2DFusedNode::CompiledRaw2DFusedNode(int64_t n0,
+                                               int64_t n1,
+                                               std::shared_ptr<JitKernel> kernel,
+                                               DeviceAllocation tw_r,
+                                               DeviceAllocation tw_i)
+    : n0(n0), n1(n1), kernel(std::move(kernel)),
+      tw_r(std::move(tw_r)), tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw2DFusedNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DFused(n0=" << n0 << ", n1=" << n1
+      << ", kernel=" << kernel->execution_description() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DFusedNode::execute(adaptor::DevicePtr input,
+                                              adaptor::DevicePtr output,
+                                              const RawExecutionContext &context) const {
+  try {
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(output),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    kernel->launch(context.stream, args, context.batch, 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] fused 2D execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 std::string CompiledRaw2DNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw2D(n0=" << n0 << ", n1=" << n1

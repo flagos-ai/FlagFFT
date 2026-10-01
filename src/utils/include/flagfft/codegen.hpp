@@ -778,6 +778,24 @@ struct CompiledRaw2DNode final : CompiledRawNode {
   mutable bool graph_failed_ = false;
 };
 
+struct CompiledRaw2DFusedNode final : CompiledRawNode {
+  CompiledRaw2DFusedNode(int64_t n0,
+                         int64_t n1,
+                         std::shared_ptr<JitKernel> kernel,
+                         DeviceAllocation tw_r,
+                         DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  std::shared_ptr<JitKernel> kernel;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 struct CompiledRaw2DRCNode final : CompiledRawNode {
   CompiledRaw2DRCNode(int64_t n0,
                       int64_t n1,

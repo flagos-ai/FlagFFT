@@ -38,6 +38,7 @@ from .kernels_small_3d import (
     emit_fused_32_column_kernel,
     emit_fused_plane_kernel,
 )
+from .kernels_small_2d import emit_fused_2d_kernel
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -49,6 +50,7 @@ from .registry import (
     REAL_POINTWISE,
     RESHAPE,
     SMALL_3D,
+    SMALL_2D,
     STOCKHAM,
     TRANSPOSE,
     TRANSPOSE3D,
@@ -300,6 +302,13 @@ def main() -> None:
             n2=args.transpose3d_n2,
             order=args.transpose3d_order,
             dtype=args.dtype,
+            out_dir=args.out_dir,
+        )
+    elif spec.family == SMALL_2D:
+        metadata = emit_fused_2d_kernel(
+            n=args.length,
+            dtype=args.dtype,
+            direction=args.direction,
             out_dir=args.out_dir,
         )
     elif spec.family == SMALL_3D:
