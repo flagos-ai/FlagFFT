@@ -1930,12 +1930,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
           ? std::string(c2r_fused32_setting) == "1"
           : request.input_dtype == "complex64";
   const bool c2r_transform = request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d";
-  if (request.device_type == "hcu" && inverse && c2r_transform && batch == 1 && n0 == 32 && n1 == 32 &&
-      n2 == 32 && n0_leaf && n1_leaf && n2_leaf && c2r_fused32_enabled) {
+  const char *r2c_fused32_setting = std::getenv("FLAGFFT_HCU_3D_R2C_FUSED32");
+  if (r2c_fused32_setting != nullptr && std::string(r2c_fused32_setting) != "0" &&
+      std::string(r2c_fused32_setting) != "1") {
+    throw std::runtime_error("FLAGFFT_HCU_3D_R2C_FUSED32 must be 0 or 1");
+  }
+  const bool r2c_transform = request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z";
+  const bool r2c_fused32_enabled =
+      r2c_fused32_setting != nullptr && std::string(r2c_fused32_setting) == "1";
+  const bool real_fused32_shape = request.device_type == "hcu" && batch == 1 && n0 == 32 && n1 == 32 &&
+                                  n2 == 32 && n0_leaf && n1_leaf && n2_leaf;
+  const bool c2r_fused32 = inverse && c2r_transform && c2r_fused32_enabled;
+  // Keep R2C opt-in until its 32^3 path has a paired HCU measurement. The
+  // shared plane kernel handles both directions; forward uses a negative
+  // twiddle sign and writes the compact half-spectrum before the outer FFT.
+  const bool r2c_fused32 = !inverse && r2c_transform && r2c_fused32_enabled;
+  if (real_fused32_shape && (c2r_fused32 || r2c_fused32)) {
     std::vector<double> tw_r_d(16);
     std::vector<double> tw_i_d(16);
     for (int64_t k = 0; k < 16; ++k) {
-      const double angle = 2.0 * kPi * static_cast<double>(k) / 32.0;
+      const double sign = inverse ? 1.0 : -1.0;
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
       tw_r_d[static_cast<std::size_t>(k)] = std::cos(angle);
       tw_i_d[static_cast<std::size_t>(k)] = std::sin(angle);
     }

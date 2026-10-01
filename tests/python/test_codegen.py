@@ -92,6 +92,8 @@ def test_fused_32_real_plane_kernel_source(tmp_path, dtype, direction) -> None:
     assert metadata["kernel_type"] == "fused_32_real_plane"
     assert metadata["kernel_name"] == "fused_32_real_plane_fft_kernel"
     assert metadata["arg_names"] == ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
+    expected_variant = "fused_32_r2c" if direction == "forward" else "fused_32_c2r"
+    assert expected_variant in metadata["module_path"]
     assert "idx = tl.arange(0, 1024)" in source
     if direction == "forward":
         assert "keep = col <= 16" in source
