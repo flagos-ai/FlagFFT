@@ -498,7 +498,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
       key.kind == KernelKind::DirectDftCube || key.kind == KernelKind::DirectDftCubeTransposed ||
-      key.kind == KernelKind::DirectDftCubeStrided ||
+      key.kind == KernelKind::DirectDftCubeStrided || key.kind == KernelKind::DirectDftCube2DRow ||
+      key.kind == KernelKind::DirectDftCube2DCol ||
       key.kind == KernelKind::DirectDftR2C || key.kind == KernelKind::DirectDftC2R) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
   }
@@ -571,7 +572,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->profile_id = json_string_field(artifact_json, "profile_id");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
-  if (key.kind == KernelKind::DirectDftCubeTransposed) {
+  if (key.kind == KernelKind::DirectDftCubeTransposed ||
+      key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {
     kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
   }
   if (key.kind == KernelKind::StockhamStage) {
