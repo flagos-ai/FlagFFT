@@ -504,15 +504,15 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
     # pack=16 (4 warps / 256 threads) for the validated 128x2048x64 C2C
     # first-store path, across single/batch and both directions. The smaller
     # block is the likely source; hardware occupancy counters were not
-    # collected. Keep pack=8 as a length-64-only default; length 128 retains
-    # pack=16, while length 256 accepts this explicit screen override only.
+    # collected. Keep this change to rank-3 FP32 length-64 stores; length 128
+    # and ordinary contiguous leaves retain their existing pack choices.
     if (
         _declared_backend() == "maca"
         and maca_3d_default_enabled()
         and plan.dtype == "complex64"
-        and plan.length in {64, 128, 256}
+        and plan.length in {64, 128}
     ):
-        target_pack = {64: 8, 128: 16, 256: 4}[plan.length]
+        target_pack = 8 if plan.length == 64 else 16
         override = os.getenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
         if override is not None and override != "auto":
             if override not in {"1", "2", "4", "8", "16", "32"}:
