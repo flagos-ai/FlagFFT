@@ -490,9 +490,9 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
 def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
     """Batch slots per block for the fused permuted store.
 
-    Four is the FP32 default.  With paired complex stores on MUSA, FP64 pack
-    two was faster on both 256^3 and 128x2048x64; pack eight slowed FP32.
-    Shared memory still caps the selected pack for large leaves.
+    Four is the generic FP32 default.  The validated MACA rank-3 length-64
+    first-store path uses eight slots; MUSA's paired complex FP64 store uses
+    two. Shared memory still caps the selected pack for large leaves.
     """
     profile = current_profile()
     bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
@@ -500,17 +500,19 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
         1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
     )
     target_pack = 2 if _mthreads_backend_active() and _is_double_dtype(plan.dtype) else 4
-    # C550 coalesces each 16-thread subgroup as a 128-byte transaction.  The
-    # permuted store makes batch slots the contiguous axis, so a 16-element
-    # complex64 pack fills one transaction.  Limit this to the MACA rank-3
-    # fused-store path; ordinary contiguous leaves have separate pack tuning.
+    # On C550, pack=8 (2 warps / 128 threads) measured about 1% faster than
+    # pack=16 (4 warps / 256 threads) for the validated 128x2048x64 C2C
+    # first-store path, across single/batch and both directions. The smaller
+    # block is the likely source; hardware occupancy counters were not
+    # collected. Keep this change to rank-3 FP32 length-64 stores; length 128
+    # and ordinary contiguous leaves retain their existing pack choices.
     if (
         _declared_backend() == "maca"
         and maca_3d_default_enabled()
         and plan.dtype == "complex64"
         and plan.length in {64, 128}
     ):
-        target_pack = 16
+        target_pack = 8 if plan.length == 64 else 16
         override = os.getenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
         if override is not None and override != "auto":
             if override not in {"1", "2", "4", "8", "16", "32"}:
