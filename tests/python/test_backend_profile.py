@@ -79,8 +79,9 @@ class ProfileTest(unittest.TestCase):
             reset_profile(profile_token)
             set_codegen_target("")
 
-    def test_npu_transpose_split_exchange_eliminates_leaf_gathers(self):
+    def test_npu_transpose_slice_exchange_eliminates_leaf_gathers(self):
         from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+        from flagfft_codegen.metadata import _module_source
         from flagfft_codegen.target import set_codegen_target
 
         profile_token = set_profile(
@@ -92,7 +93,7 @@ class ProfileTest(unittest.TestCase):
                 "os.environ",
                 {
                     "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
-                    "FLAGFFT_NPU_2D_EXCHANGE": "transpose_split",
+                    "FLAGFFT_NPU_2D_EXCHANGE": "transpose_extract_slice",
                     "FLAGFFT_NPU_2D_LANE_MIN": "8",
                 },
                 clear=True,
@@ -103,9 +104,15 @@ class ProfileTest(unittest.TestCase):
                         _, source = _build_leaf_kernel_source_for_io(
                             plan, io_mode=io_mode
                         )
-                        self.assertIn("tl.split(", source)
+                        self.assertIn("tlex.extract_slice(", source)
                         self.assertIn("tl.trans(", source)
+                        self.assertNotIn("tl.split(", source)
                         self.assertNotIn("tl.gather(", source)
+                        module = _module_source(source)
+                        self.assertIn(
+                            "import triton.language.extra.cann.extension as tlex",
+                            module,
+                        )
         finally:
             reset_profile(profile_token)
             set_codegen_target("")
