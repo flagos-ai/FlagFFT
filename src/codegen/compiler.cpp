@@ -2169,7 +2169,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
   // RC fast path: when the column FFT is a plain leaf transform, run it
   // directly on the strided matrix columns and skip both transposes.
-  if (auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan); rc_eligible && col_leaf) {
+  const char *npu_leaf64_transpose_setting =
+      std::getenv("FLAGFFT_NPU_2D_LEAF64_TRANSPOSE");
+  const bool npu_leaf64_transpose =
+      request.device_type == "npu" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && n0 == 64 && n1 == 64 &&
+      npu_leaf64_transpose_setting != nullptr &&
+      std::string(npu_leaf64_transpose_setting) == "1";
+  if (auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+      rc_eligible && col_leaf && !npu_leaf64_transpose) {
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft = compile_raw_strided_leaf(*col_leaf, request, n1);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
