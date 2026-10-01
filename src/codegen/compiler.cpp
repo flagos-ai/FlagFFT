@@ -52,7 +52,8 @@ namespace {
         reversed = (reversed << 1) | (value & 1);
         value >>= 1;
       }
-      indices[i] = static_cast<uint32_t>(reversed);
+      // AscendC Gather offsets are byte offsets, not element indices.
+      indices[i] = static_cast<uint32_t>(reversed * sizeof(float));
     }
 
     for (int64_t stage = 0; stage < stages; ++stage) {
@@ -71,8 +72,8 @@ namespace {
         const double angle = sign * 2.0 * pi * static_cast<double>(twiddle_offset) /
                              static_cast<double>(length);
         const float negate = upper ? -1.0f : 1.0f;
-        indices[a_base + i] = static_cast<uint32_t>(a);
-        indices[b_base + i] = static_cast<uint32_t>(b);
+        indices[a_base + i] = static_cast<uint32_t>(a * sizeof(float));
+        indices[b_base + i] = static_cast<uint32_t>(b * sizeof(float));
         twiddles[stage * n + i] = negate * static_cast<float>(std::cos(angle));
         twiddles[imag_base + stage * n + i] = negate * static_cast<float>(std::sin(angle));
       }
