@@ -12,7 +12,6 @@ _root_mode = ContextVar("maca_tail_root_mode", default="off")
 _kernel_mode = ContextVar("maca_tail_kernel_mode", default="off")
 ENV_NAMES = (
     "FLAGFFT_MACA_REAL_DFT_REDUCTION", "FLAGFFT_MACA_EXCHANGE",
-    "FLAGFFT_MACA_3D_MIDDLE_STORE", "FLAGFFT_MACA_3D_MIDDLE_STORE_PACK",
     "FLAGFFT_MACA_BATCH_PACK",
     "FLAGFFT_MACA_3D_N64_PACK",
     "FLAGFFT_MACA_3D_PERMSTORE_PACK",
