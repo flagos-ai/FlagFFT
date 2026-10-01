@@ -1881,10 +1881,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       std::string(c2r_fused32_setting) != "1") {
     throw std::runtime_error("FLAGFFT_HCU_3D_C2R_FUSED32 must be 0 or 1");
   }
+  // The 32^3 plane fusion helps FP32, while the FP64 version regresses. Keep
+  // the environment override for experiments and default only complex64.
+  const bool c2r_fused32_enabled =
+      c2r_fused32_setting != nullptr
+          ? std::string(c2r_fused32_setting) == "1"
+          : request.input_dtype == "complex64";
   const bool c2r_transform = request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d";
   if (request.device_type == "hcu" && inverse && c2r_transform && batch == 1 && n0 == 32 && n1 == 32 &&
-      n2 == 32 && n0_leaf && n1_leaf && n2_leaf && c2r_fused32_setting != nullptr &&
-      std::string(c2r_fused32_setting) == "1") {
+      n2 == 32 && n0_leaf && n1_leaf && n2_leaf && c2r_fused32_enabled) {
     std::vector<double> tw_r_d(16);
     std::vector<double> tw_i_d(16);
     for (int64_t k = 0; k < 16; ++k) {

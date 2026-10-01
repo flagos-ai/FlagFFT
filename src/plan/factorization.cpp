@@ -154,7 +154,7 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 2048) {
     const bool c2r_fp64 = (context.origin_real_transform_kind == "c2r" ||
                            context.origin_real_transform_kind == "z2d") &&
-                          context.input_dtype == "complex128";
+                          context.input_dtype == "complex128" && context.requested_n == n;
     const char *fp64_override = c2r_fp64 ? std::getenv("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
     const char *override_value =
         fp64_override != nullptr ? fp64_override : std::getenv("FLAGFFT_HCU_3D_2048_FACTORS");
@@ -164,7 +164,13 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       throw std::runtime_error(
           "FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
     }
-    const std::string choice = override_value == nullptr ? "auto" : override_value;
+    // Restrict the measured C2R FP64 order to a direct 2048-point axis. A
+    // global override also changes Bluestein's internal 2048 FFT for n=997,
+    // where this factor order fails accuracy checks. An explicit "auto"
+    // override retains the planner's previous choice.
+    const std::string choice = override_value == nullptr
+                                   ? (c2r_fp64 ? "8,16,16" : "auto")
+                                   : override_value;
     if (choice == "8,16,16") return {8, 16, 16};
     if (choice == "16,8,16") return {16, 8, 16};
     if (choice == "auto" &&
