@@ -216,10 +216,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "npu") {
     const char *transpose_store = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
     const char *portable_leaf = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+    const char *transpose_pack = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_PACK");
     cache_key += ";npu-2d-transpose-store=" +
                  std::string(transpose_store != nullptr && std::string(transpose_store) == "1" ? "1" : "0");
     cache_key += ";npu-portable-leaf=" +
                  std::string(portable_leaf != nullptr && std::string(portable_leaf) == "1" ? "1" : "0");
+    cache_key += ";npu-2d-transpose-pack=" +
+                 std::string(transpose_pack != nullptr ? transpose_pack : "auto");
   }
   if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
     const char *packed_3d = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");
