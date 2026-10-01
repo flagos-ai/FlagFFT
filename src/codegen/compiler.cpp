@@ -1606,11 +1606,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
 
   // For a small cube, fuse the contiguous real axis and adjacent complex axis
   // into one plane transform. The remaining outer axis stays on the existing
-  // strided leaf. The 16^3 variant stays opt-in until measured on MACA.
+  // strided leaf. Keep the 16^3 path narrow and allow an explicit rollback.
   const bool maca_fused_real16 = request.device_type == "maca" &&
       n0 == 16 && n1 == 16 && n2 == 16 && batch == 1 &&
       n0_leaf && n1_leaf && n2_leaf &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FUSED16", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FUSED16", true);
   if (maca_fused_real16) {
     const std::string complex_dtype = complex_dtype_for(request.input_dtype);
     std::vector<double> tw_r_d(8);
