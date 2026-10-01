@@ -1881,17 +1881,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const char *c2r_middle_transpose_override = std::getenv("FLAGFFT_HCU_3D_C2R_MIDDLE_TRANSPOSE");
   // On the measured long C2R shape, an ordinary contiguous FP32 middle FFT
   // plus a tiled output transpose beats the fused strided/permuted leaf. The
-  // same layout regresses FP64, so keep the default precision-specific. The
-  // cube variant remains opt-in for an independent screen.
-  const bool c2r_long_middle_transpose =
+  // same layout regresses FP64, so keep the policy precision-specific.
+  const bool c2r_middle_transpose =
       request.device_type == "hcu" && inverse && !small && batch == 1 && request.input_dtype == "complex64" &&
       n0 == 128 && n1 == 2048 && n2 == 64 && n1_leaf &&
       (c2r_middle_transpose_override == nullptr || std::string(c2r_middle_transpose_override) != "0");
-  const bool c2r_cube_middle_transpose = request.device_type == "hcu" && inverse && !small && batch == 1 &&
-                                         n0 == 256 && n1 == 256 && n2 == 256 && n1_leaf &&
-                                         c2r_middle_transpose_override != nullptr &&
-                                         std::string(c2r_middle_transpose_override) == "1";
-  const bool c2r_middle_transpose = c2r_long_middle_transpose || c2r_cube_middle_transpose;
   const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
   const bool c2r_fused_load_default =
       !(request.input_dtype == "complex64" && batch >= 4 && n0 == 256 && n1 == 256 && n2 == 256);
