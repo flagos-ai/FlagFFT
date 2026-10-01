@@ -1893,7 +1893,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const char *r2c_middle_transpose_override =
       std::getenv("FLAGFFT_HCU_3D_R2C_MIDDLE_TRANSPOSE");
   const bool r2c_middle_transpose = request.device_type == "hcu" &&
-                                   request.input_dtype == "float32" && !inverse && !small &&
+                                   request.input_dtype == "complex64" && !inverse && !small &&
                                    batch == 1 && n0 == 128 && n1 == 2048 && n2 == 64 &&
                                    n1_leaf &&
                                    (r2c_middle_transpose_override == nullptr ||
