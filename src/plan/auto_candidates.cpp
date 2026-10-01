@@ -194,9 +194,36 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
     if (context.origin_rank == 2 && context.input_dtype == "complex64" &&
         context.output_dtype == "complex64" && n == npu_2d_leaf_length) {
-      const std::vector<int64_t> factors = select_leaf_factors(n);
+      std::vector<int64_t> factors = select_leaf_factors(n);
+      if (const char *raw = std::getenv("FLAGFFT_NPU_2D_LEAF_FACTORS"); raw != nullptr) {
+        const std::string spec(raw);
+        std::size_t start = 0;
+        int64_t product = 1;
+        factors.clear();
+        while (start <= spec.size()) {
+          const std::size_t separator = spec.find('x', start);
+          const std::string token = spec.substr(start, separator - start);
+          std::size_t parsed = 0;
+          int64_t radix = 0;
+          try {
+            radix = std::stoll(token, &parsed);
+          } catch (const std::exception &) {
+            throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_FACTORS must be radices such as 16x8");
+          }
+          if (parsed != token.size() || radix <= 1 || product > n / radix) {
+            throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_FACTORS must multiply to the selected leaf length");
+          }
+          factors.push_back(radix);
+          product *= radix;
+          if (separator == std::string::npos) break;
+          start = separator + 1;
+        }
+        if (product != n) {
+          throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_FACTORS must multiply to the selected leaf length");
+        }
+      }
       if (!should_use_leaf(n, factors)) {
-        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_LENGTH requires a supported leaf length");
+        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_LENGTH requires a supported factorization");
       }
       PlanNodePtr node = make_leaf_plan(n, factors);
       return {
