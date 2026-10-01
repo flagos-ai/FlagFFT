@@ -46,23 +46,24 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     row_id = tl.program_id(0)
     batch = row_id // {n}
     row = row_id % {n}
-    # The portable leaf exchange gathers 64 live indices from a 128-element
-    # padded vector.  Keep the same source/index shape relationship here.
-    idx = tl.arange(0, {n})
-    rev = tl.full(({n},), 0, tl.int32)
+    # Keep the gather vector at the NPU's safe exchange width.  The Ascend
+    # lowering can address past UB for gathers over a bare 64-element vector;
+    # the regular leaf emitter avoids this by padding its exchange to 128.
+    idx = tl.arange(0, 128)
+    logical_idx = idx & ({n} - 1)
+    valid = idx < {n}
+    rev = tl.full((128,), 0, tl.int32)
     for bit in tl.static_range({bits}):
-        rev = (rev << 1) | ((idx >> bit) & 1)
+        rev = (rev << 1) | ((logical_idx >> bit) & 1)
     src = (batch * {n * n} + row * {n} + rev) * 2
-    xr = tl.load(in_ptr + src)
-    xi = tl.load(in_ptr + src + 1)
-    xr_exchange = tl.cat(xr, tl.zeros_like(xr))
-    xi_exchange = tl.cat(xi, tl.zeros_like(xi))
+    xr = tl.load(in_ptr + src, mask=valid, other=0.0)
+    xi = tl.load(in_ptr + src + 1, mask=valid, other=0.0)
 
     for stage in tl.static_range({bits}):
-        partner = idx ^ (1 << stage)
-        pr = tl.gather(xr_exchange, partner, 0)
-        pi = tl.gather(xi_exchange, partner, 0)
-        upper = (idx & (1 << stage)) != 0
+        partner = logical_idx ^ (1 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (logical_idx & (1 << stage)) != 0
         ar = tl.where(upper, pr, xr)
         ai = tl.where(upper, pi, xi)
         br = tl.where(upper, xr, pr)
@@ -71,22 +72,20 @@ def fused_2d_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
             tr = br
             ti = bi
         elif stage == 1:
-            tr = tl.where((idx & 1) != 0, {quarter_r}, br)
-            ti = tl.where((idx & 1) != 0, {quarter_i}, bi)
+            tr = tl.where((logical_idx & 1) != 0, {quarter_r}, br)
+            ti = tl.where((logical_idx & 1) != 0, {quarter_i}, bi)
         else:
-            tw = (idx & ((1 << stage) - 1)) * ({n} >> (stage + 1))
-            wr = tl.load(tw_r_ptr + tw)
-            wi = tl.load(tw_i_ptr + tw)
+            tw = (logical_idx & ((1 << stage) - 1)) * ({n} >> (stage + 1))
+            wr = tl.load(tw_r_ptr + tw, mask=valid, other=0.0)
+            wi = tl.load(tw_i_ptr + tw, mask=valid, other=0.0)
             tr = wr * br - wi * bi
             ti = wr * bi + wi * br
         xr = tl.where(upper, ar - tr, ar + tr)
         xi = tl.where(upper, ai - ti, ai + ti)
-        xr_exchange = tl.cat(xr, tl.zeros_like(xr))
-        xi_exchange = tl.cat(xi, tl.zeros_like(xi))
 
     dst = {store_expr}
-    tl.store(out_ptr + dst, xr)
-    tl.store(out_ptr + dst + 1, xi)
+    tl.store(out_ptr + dst, xr, mask=valid)
+    tl.store(out_ptr + dst + 1, xi, mask=valid)
 """
     name = f"flagfft_jit_fused_2d_{direction}_{_dtype_suffix(dtype)}_n{n}_{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
