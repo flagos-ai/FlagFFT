@@ -261,6 +261,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     tile: int = 32,
     pair: bool = False,
     vec_store: bool = False,
+    tile_traversal: str = "col",
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -280,6 +281,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
         raise ValueError("paired tiled 3D transpose requires complex64")
     if vec_store and dtype != "complex128":
         raise ValueError("vector-store tiled 3D transpose requires complex128")
+    if tile_traversal not in {"col", "row"}:
+        raise ValueError("tile_traversal must be col or row")
     zero = _zero_other(dtype)
     total_complex = s0 * s1 * s2
     scalar_width = 1 if pair else 2
@@ -333,11 +336,18 @@ def _build_tiled_transpose3d_tile_kernel_source(
     tile_cols = (cols + tile - 1) // tile
     tile_rows = (rows + tile - 1) // tile
     tiles_per_slice = tile_cols * tile_rows
+    if tile_traversal == "row":
+        tile_row_expr = f"tile_in_slice % {tile_rows}"
+        tile_col_expr = f"tile_in_slice // {tile_rows}"
+    else:
+        tile_row_expr = f"tile_in_slice // {tile_cols}"
+        tile_col_expr = f"tile_in_slice % {tile_cols}"
     grid_x = num_slices * tiles_per_slice
     kernel_name = (
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}_tile"
         + ("_pair" if pair else "")
         + ("_vec" if vec_store else "")
+        + ("_rmajor" if tile_traversal == "row" else "")
     )
     source = dedent(
         f"""
@@ -352,8 +362,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
 
             slice_idx = pid_block // {tiles_per_slice}
             tile_in_slice = pid_block % {tiles_per_slice}
-            tile_row = tile_in_slice // {tile_cols}
-            tile_col = tile_in_slice % {tile_cols}
+            tile_row = {tile_row_expr}
+            tile_col = {tile_col_expr}
 
             row_offsets = tile_row * {tile} + tl.arange(0, {tile})
             col_offsets = tile_col * {tile} + tl.arange(0, {tile})

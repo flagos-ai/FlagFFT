@@ -765,6 +765,13 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_warps not in {"2", "4", "8"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4 or 8")
+    maca_traversal = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "col")
+        if _declared_backend() == "maca"
+        else "col"
+    )
+    if maca_traversal not in {"col", "row"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL must be col or row")
     fp64_mode = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
         if _declared_backend() == "maca"
@@ -787,7 +794,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
             n0, n1, n2, order, dtype, tile=int(maca_mode[4:]),
-            pair=maca_mode.startswith("pair"),
+            pair=maca_mode.startswith("pair"), tile_traversal=maca_traversal,
         )
     elif dtype == "complex128" and _declared_backend() == "maca" and fp64_mode != "v1":
         (
@@ -797,7 +804,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
             n0, n1, n2, order, dtype, tile=int(fp64_mode[4:6]),
-            vec_store=fp64_mode.endswith("vec"),
+            vec_store=fp64_mode.endswith("vec"), tile_traversal=maca_traversal,
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
