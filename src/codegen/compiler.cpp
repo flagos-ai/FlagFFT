@@ -953,6 +953,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
     const int64_t packed = n / 2;
+    const char *packed_fuse_setting = std::getenv("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
+    if (packed_fuse_setting != nullptr && std::string(packed_fuse_setting) != "0" &&
+        std::string(packed_fuse_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_HCU_3D_C2R_PACKED_FUSE must be 0 or 1");
+    }
+    const bool use_packed_fused_leaf =
+        request.device_type == "hcu" && request.origin_rank == 3 && n == 256 &&
+        batch == 256 * 256 && packed_fuse_setting != nullptr &&
+        std::string(packed_fuse_setting) == "1";
+    if (use_packed_fused_leaf) {
+      if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+        KernelKey key = KernelKey::leaf_c2r(
+            triton_target_for_request(packed_child->request),
+            packed_child->request.direction,
+            packed_child->request.input_dtype,
+            leaf->length,
+            leaf->factors,
+            leaf->lanes,
+            leaf->num_warps,
+            leaf->generic_radices,
+            leaf->smem_size);
+        key.kind = KernelKind::LeafPackedC2R;
+        return std::make_shared<CompiledRawPackedC2RFusedLeafNode>(
+            n,
+            compile_kernel(key),
+            build_raw_packed_real_twiddle(request, n),
+            build_raw_leaf_tables(*leaf, packed_child->request),
+            [node, request, batch]() {
+              TritonCompiler compiler;
+              return compiler.compile_raw_c2r_node(node, request, batch, false);
+            });
+      }
+    }
     DeviceAllocation packed_input = adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
     return std::make_shared<CompiledRawPackedC2RNode>(
         n,

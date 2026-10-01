@@ -183,7 +183,8 @@ enum class KernelKind {
   Fused16RealCube,
   Fused32Column,
   LeafRaderPrepare,
-  LeafRaderFinish
+  LeafRaderFinish,
+  LeafPackedC2R
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

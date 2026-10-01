@@ -647,6 +647,29 @@ struct CompiledRawPackedC2RNode final : CompiledRawNode {
   mutable std::mutex layout_mutex;
 };
 
+// Experimental half-spectrum C2R path that folds packed preprocessing into
+// the input loads of a dense half-length complex leaf.
+struct CompiledRawPackedC2RFusedLeafNode final : CompiledRawNode {
+  CompiledRawPackedC2RFusedLeafNode(
+      int64_t length,
+      std::shared_ptr<JitKernel> kernel,
+      DeviceAllocation twiddle,
+      std::vector<DeviceAllocation> tables,
+      std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t length;
+  std::shared_ptr<JitKernel> kernel;
+  DeviceAllocation twiddle;
+  std::vector<DeviceAllocation> tables;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
+};
+
 struct CompiledRawC2RLeafNode final : CompiledRawNode {
   CompiledRawC2RLeafNode(int64_t length,
                          std::shared_ptr<JitKernel> kernel,

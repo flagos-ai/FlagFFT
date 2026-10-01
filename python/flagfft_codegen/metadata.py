@@ -147,7 +147,9 @@ def _metadata(
         )
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(
-            plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}
+            plan,
+            real_boundary=kernel_type
+            in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r", "leaf_packed_c2r"},
         )
     else:
         batch_per_block = 1

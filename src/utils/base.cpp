@@ -134,6 +134,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "leaf_packed_r2c";
     case KernelKind::LeafC2R:
       return "leaf_c2r";
+    case KernelKind::LeafPackedC2R:
+      return "leaf_packed_c2r";
     case KernelKind::LeafBluestein:
       return "leaf_bluestein";
     case KernelKind::LeafRaderFull:

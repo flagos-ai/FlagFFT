@@ -1660,6 +1660,61 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawPackedC2RFusedLeafNode::CompiledRawPackedC2RFusedLeafNode(
+    int64_t length,
+    std::shared_ptr<JitKernel> kernel,
+    DeviceAllocation twiddle,
+    std::vector<DeviceAllocation> tables,
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+    : length(length),
+      kernel(std::move(kernel)),
+      twiddle(std::move(twiddle)),
+      tables(std::move(tables)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
+}
+
+std::string CompiledRawPackedC2RFusedLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawPackedC2RFusedLeaf(n=" << length << ", packed_n=" << length / 2
+      << ", kernel=" << (kernel ? kernel->execution_description() : "null")
+      << ", tables=" << tables.size() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawPackedC2RFusedLeafNode::execute(
+    adaptor::DevicePtr input,
+    adaptor::DevicePtr output,
+    const RawExecutionContext &context) const {
+  try {
+    const int64_t half = length / 2 + 1;
+    if (context.batch > 1 &&
+        (input == output || (context.output_distance > 0 && context.output_distance != length))) {
+      std::lock_guard<std::mutex> lock(layout_mutex);
+      if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+      if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
+      return layout_fallback->execute(input, output, context);
+    }
+
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
+    std::vector<JitKernelArg> args;
+    args.reserve(3 + tables.size() + 2);
+    args.push_back(JitKernelArg::device(input));
+    args.push_back(JitKernelArg::device(output));
+    args.push_back(JitKernelArg::device(twiddle.get()));
+    for (const DeviceAllocation &table : tables) {
+      args.push_back(JitKernelArg::device(table.get()));
+    }
+    args.push_back(JitKernelArg::i64(input_distance));
+    args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] PackedC2RFusedLeaf execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw2DNode::CompiledRaw2DNode(int64_t n0,
                                      int64_t n1,
                                      std::shared_ptr<CompiledRawNode> row_fft,

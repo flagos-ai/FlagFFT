@@ -1274,6 +1274,31 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}i{j} = tl.load(in_ptr + input_batch_base + 2 * in{j} + 1, mask=lane_mask, other={zero})"
                 )
+            elif io_mode == "packed_c2r":
+                lines.extend(
+                    [
+                        f"{indent}packed_k{j} = tl.where(lane_mask, in{j}, 0)",
+                        f"{indent}packed_q{j} = {n} - packed_k{j}",
+                        f"{indent}packed_x_ptr{j} = in_ptr + (input_batch_base + packed_k{j}) * 2",
+                        f"{indent}packed_q_ptr{j} = in_ptr + (input_batch_base + packed_q{j}) * 2",
+                        f"{indent}packed_xr{j} = tl.load(packed_x_ptr{j}, mask=lane_mask, other={zero})",
+                        f"{indent}packed_xi{j} = tl.load(packed_x_ptr{j} + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_qr{j} = tl.load(packed_q_ptr{j}, mask=lane_mask, other={zero})",
+                        f"{indent}packed_qi{j} = -tl.load(packed_q_ptr{j} + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_wr{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2, mask=lane_mask, other={zero})",
+                        f"{indent}packed_wi{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2 + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_sum_r{j} = packed_xr{j} + packed_qr{j}",
+                        f"{indent}packed_sum_i{j} = packed_xi{j} + packed_qi{j}",
+                        f"{indent}packed_diff_r{j} = packed_xr{j} - packed_qr{j}",
+                        f"{indent}packed_diff_i{j} = packed_xi{j} - packed_qi{j}",
+                        f"{indent}packed_prod_r{j} = packed_diff_r{j} * packed_wr{j} + "
+                        f"packed_diff_i{j} * packed_wi{j}",
+                        f"{indent}packed_prod_i{j} = packed_diff_i{j} * packed_wr{j} - "
+                        f"packed_diff_r{j} * packed_wi{j}",
+                        f"{indent}r{j} = packed_sum_r{j} - packed_prod_i{j}",
+                        f"{indent}i{j} = packed_sum_i{j} + packed_prod_r{j}",
+                    ]
+                )
             elif io_mode == "contiguous_c2r":
                 half_n = n // 2 + 1
                 nyquist_guard = f" | (in{j} == {n // 2})" if n % 2 == 0 else ""
@@ -1718,7 +1743,7 @@ def _emit_stage_block(
                 )
                 continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
-            if io_mode in {"contiguous", "strided", "bluestein_prepare_leaf",
+            if io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
                            "rader_prepare_leaf"}:
                 if io_mode == "strided":
                     lines.append(
@@ -2233,6 +2258,8 @@ def _leaf_kernel_params_for_io(
     )
     if io_mode == "packed_r2c":
         params.insert(2, "packed_twiddle_ptr")
+    elif io_mode == "packed_c2r":
+        params.insert(2, "packed_twiddle_ptr")
     if io_mode == "strided":
         params.append("outer_stride")
     if io_mode in {"permuted_store", "strided_permuted_store"}:
@@ -2260,6 +2287,7 @@ def _leaf_kernel_params_for_io(
         "contiguous_r2c",
         "permuted_r2c",
         "packed_r2c",
+        "packed_c2r",
         "contiguous_c2r",
         "four_step_real_row",
         "four_step_hermitian_row",
@@ -2825,7 +2853,9 @@ def _build_leaf_kernel_source_for_io(
         )
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
-            plan, real_boundary=io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}
+            plan,
+            real_boundary=io_mode
+            in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"},
         )
     else:
         batch_pack = 1
@@ -2925,6 +2955,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name = f"r2c_permuted_store{perm_tag}_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "packed_r2c":
         kernel_name = f"packed_r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "packed_c2r":
+        kernel_name = f"packed_c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
         kernel_name = f"c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_prepare_leaf":
@@ -3028,8 +3060,9 @@ def _build_leaf_kernel_source_for_io(
         if batch_pack == 1:
             if io_mode not in {"strided", "strided_permuted_store"}:
                 body.append(f"    batch_base = current_batch * {n}")
-        if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}:
+        if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
+        if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}:
             body.append("    output_batch_base = current_batch * output_distance")
         if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
             # `perm_gbase` is the output address of each batch slot's row start

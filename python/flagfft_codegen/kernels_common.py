@@ -208,6 +208,7 @@ LeafIoMode = Literal[
     "contiguous_r2c",
     "permuted_r2c",
     "packed_r2c",
+    "packed_c2r",
     "contiguous_c2r",
     "bluestein_prepare_leaf",
     "bluestein_finish_leaf",
