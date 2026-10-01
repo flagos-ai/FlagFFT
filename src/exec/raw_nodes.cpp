@@ -545,7 +545,11 @@ flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
     }
 
     std::vector<JitKernelArg> args = raw_kernel_args({effective_input, output}, tables, context.batch);
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    kernel->launch(context.stream,
+                   args,
+                   ceil_div(context.batch, kernel->batch_per_block),
+                   std::max<int64_t>(1, kernel->grid_y_override),
+                   1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] DirectDFT execute failed: %s\n", e.what());
@@ -1875,16 +1879,18 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
     }
 
     auto run_sequence = [&]() -> flagfftResult {
-      // Step 1: Row FFT (input -> temp1), contiguous along n1.
+      // Step 1: Transform the contiguous input axis into temp1. Some compiled
+      // paths store the result transposed so the second pass can also read
+      // contiguous data.
       RawExecutionContext row_context {context.request, context.stream, batch * n0};
       flagfftResult result = row_fft->execute(input, temp1.get(), row_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
 
-      // Step 2: Column FFT in-place on the row-major matrix.  Each column of
-      // length n0 is a strided 1D FFT with outer stride n1, so no transpose is
-      // needed and the result is already in natural (batch, n0, n1) order.
+      // Step 2: Transform the second axis and let its compiled output layout
+      // produce the natural (batch, n0, n1) result. This is strided for the
+      // portable RC path and contiguous for the transposed Cube path.
       RawExecutionContext col_context {context.request, context.stream, batch * n1};
       result = col_fft->execute(temp1.get(), output, col_context);
       return result;

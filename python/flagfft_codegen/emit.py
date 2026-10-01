@@ -612,6 +612,7 @@ def emit_jit_kernel(
                 dtype,
                 strided=kernel in {"direct_dft_strided", "direct_dft_cube_strided"},
                 cube=kernel in {"direct_dft_cube", "direct_dft_cube_strided"},
+                cube_transposed=kernel == "direct_dft_cube_transposed",
             )
         n1 = 0
         n2 = 0
@@ -675,8 +676,10 @@ def emit_jit_kernel(
     )
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
-    if kernel in {"direct_dft_cube", "direct_dft_cube_strided"}:
+    if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:
         metadata["batch_per_block"] = 16
+    if kernel == "direct_dft_cube_transposed":
+        metadata["grid_y_override"] = 4
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 

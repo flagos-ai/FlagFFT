@@ -173,6 +173,7 @@ def _metadata(
     if kernel_type in {
         "direct_dft",
         "direct_dft_cube",
+        "direct_dft_cube_transposed",
         "direct_dft_cube_strided",
         "direct_dft_r2c",
         "direct_dft_c2r",

@@ -108,6 +108,7 @@ struct JitKernel {
   int64_t rows_per_block = 1;
   int64_t butterflies_per_block = 128;
   int64_t grid_x_override = 0;
+  int64_t grid_y_override = 0;
   bool tle_fused_twiddle = false;
   void *jit_function = nullptr;
   std::mutex mutex;
@@ -1353,6 +1354,9 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> compile_raw_direct_dft(const DirectDFTPlanNode &node,
                                                           const FFTRequest &request,
                                                           int64_t batch);
+  std::shared_ptr<CompiledRawNode> compile_raw_cube_transposed_direct_dft(const DirectDFTPlanNode &node,
+                                                                          const FFTRequest &request,
+                                                                          int64_t batch);
   std::shared_ptr<JitKernel> compile_direct_dft_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<CompiledRawNode> compile_raw_real_direct_dft(const FFTRequest &request,
                                                             bool inverse);

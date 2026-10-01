@@ -154,6 +154,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "direct_dft_strided";
     case KernelKind::DirectDftCube:
       return "direct_dft_cube";
+    case KernelKind::DirectDftCubeTransposed:
+      return "direct_dft_cube_transposed";
     case KernelKind::DirectDftCubeStrided:
       return "direct_dft_cube_strided";
     case KernelKind::DirectDftR2C:

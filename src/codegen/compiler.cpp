@@ -1083,6 +1083,22 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const Di
                                                     std::move(input_copy));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_cube_transposed_direct_dft(
+    const DirectDFTPlanNode &node, const FFTRequest &request, int64_t batch) {
+  const int64_t element_bytes = complex_element_bytes(request.input_dtype);
+  DeviceAllocation input_copy =
+      adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
+  KernelKey key = KernelKey::direct_dft(triton_target_for_request(request),
+                                        request.direction,
+                                        request.input_dtype,
+                                        node.length);
+  key.kind = KernelKind::DirectDftCubeTransposed;
+  return std::make_shared<CompiledRawDirectDftNode>(node.length,
+                                                    compile_kernel(key),
+                                                    build_raw_cube_dft_tables(node.length, request),
+                                                    std::move(input_copy));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_direct_dft(
     const FFTRequest &request, bool inverse) {
   FFTRequest real_request = request;
@@ -2192,8 +2208,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const auto cube_row_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->row_plan);
   const auto cube_col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
   if (n0 == 64 && n1 == 64 && use_npu_2d_cube_dft(request, n0) && cube_row_direct && cube_col_direct) {
-    std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
-    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_strided_direct_dft(*cube_col_direct, request, n1);
+    std::shared_ptr<CompiledRawNode> row_fft =
+        compile_raw_cube_transposed_direct_dft(*cube_row_direct, row_request, batch * n0);
+    std::shared_ptr<CompiledRawNode> col_fft =
+        compile_raw_cube_transposed_direct_dft(*cube_col_direct, col_request, batch * n1);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                  n1,

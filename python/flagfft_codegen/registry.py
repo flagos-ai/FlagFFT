@@ -168,6 +168,7 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("direct_dft", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_strided", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_cube", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_cube_transposed", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_cube_strided", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_r2c", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_c2r", DIRECT_DFT, requires=("length",)),
@@ -356,6 +357,8 @@ def module_name_for(
         return f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "direct_dft_cube":
         return f"flagfft_jit_direct_dft_cube_{direction_tag}_n{length}_{dtype_tag}"
+    if spec.name == "direct_dft_cube_transposed":
+        return f"flagfft_jit_direct_dft_cube_transposed_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "direct_dft_cube_strided":
         return f"flagfft_jit_direct_dft_cube_strided_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name in {"direct_dft_r2c", "direct_dft_c2r"}:
