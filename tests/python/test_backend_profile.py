@@ -79,6 +79,37 @@ class ProfileTest(unittest.TestCase):
             reset_profile(profile_token)
             set_codegen_target("")
 
+    def test_npu_transpose_split_exchange_eliminates_leaf_gathers(self):
+        from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+        from flagfft_codegen.target import set_codegen_target
+
+        profile_token = set_profile(
+            self.profile(backend="npu", device_arch="Ascend910B4", warp_size=32)
+        )
+        set_codegen_target("npu:Ascend910B4:1")
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
+                    "FLAGFFT_NPU_2D_EXCHANGE": "transpose_split",
+                    "FLAGFFT_NPU_2D_LANE_MIN": "8",
+                },
+                clear=True,
+            ):
+                plan = LeafPlan(64, (8, 8), 1, 8, 2, (), 64)
+                for io_mode in ("contiguous", "strided"):
+                    with self.subTest(io_mode=io_mode):
+                        _, source = _build_leaf_kernel_source_for_io(
+                            plan, io_mode=io_mode
+                        )
+                        self.assertIn("tl.split(", source)
+                        self.assertIn("tl.trans(", source)
+                        self.assertNotIn("tl.gather(", source)
+        finally:
+            reset_profile(profile_token)
+            set_codegen_target("")
+
     def test_ix_scoped_default_uses_two_warps_and_recurrence(self):
         from pathlib import Path
         from flagfft_codegen.target import set_ix_ct_single_default, reset_ix_ct_single_default, set_codegen_target

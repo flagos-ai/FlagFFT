@@ -31,6 +31,7 @@ from .kernels_common import (
     _maca_backend_active,
     _mthreads_backend_active,
     _ix_backend_active,
+    _npu_backend_active,
     _portable_leaf_backend_active,
     _maca_knob,
     _non_nvidia_backend_active,
@@ -615,6 +616,33 @@ def _emit_exchange_load(
     ]
 
 
+def _emit_portable_split_exchange_loads(
+    buffer: str, radix: int, lanes: int, stage: int
+) -> list[str]:
+    """Load one codelet from a compact portable tensor using static splits."""
+    lines = []
+    for component in ("r", "i"):
+        root = f"exchange_split_{component}_{stage}"
+        lines.append(
+            f"    {root} = tl.trans(tl.reshape({buffer}_{component}, "
+            f"({radix}, {lanes})), (1, 0))"
+        )
+        leaves = [root]
+        split_level = 0
+        while len(leaves) < radix:
+            next_leaves = []
+            for leaf_index, leaf in enumerate(leaves):
+                left = f"{leaf}_lo{split_level}_{leaf_index}"
+                right = f"{leaf}_hi{split_level}_{leaf_index}"
+                lines.append(f"    {left}, {right} = tl.split({leaf})")
+                next_leaves.extend((left, right))
+            leaves = next_leaves
+            split_level += 1
+        for digit, leaf in enumerate(leaves):
+            lines.append(f"    {component}{digit} = tl.reshape({leaf}, ({lanes},))")
+    return lines
+
+
 def _emit_exchange_store(
     indent: str,
     buffer: str,
@@ -920,7 +948,7 @@ def _emit_portable_exchange(
             register_lane_stride, register_slot_stride,
         )
     if (
-        _maca_knob("EXCHANGE") in {"transpose", "direct", "direct_all"}
+        _maca_knob("EXCHANGE") in {"transpose", "transpose_split", "direct", "direct_all"}
         and _structured_exchange_supported(factors, size, slot_stride, pack)
         and lane_block >= n // radix
     ):
@@ -1104,6 +1132,29 @@ def _emit_stage_block(
     )
 
     lines: list[str] = []
+    split_portable_loads = (
+        portable_exchange
+        and _npu_backend_active()
+        and _maca_knob("EXCHANGE") == "transpose_split"
+        and stage > 0
+        and len(factors) == 2
+        and radix > 1
+        and radix & (radix - 1) == 0
+        and smem_pack == 1
+        and inner_pack == 1
+        and not smem_interleave
+        and not smem_swizzle
+        and groups == 1
+        and current_lanes == lane_block
+        and n == current_lanes * radix
+        and source_buffer is not None
+    )
+    if split_portable_loads:
+        lines.extend(
+            _emit_portable_split_exchange_loads(
+                source_buffer, radix, current_lanes, stage
+            )
+        )
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
     vector_io_allowed = not _non_nvidia_backend_active() or _portable_complex_vector_io()
@@ -1610,19 +1661,20 @@ def _emit_stage_block(
                     )
         else:
             load_index = f"smem_phys{j}" if smem_swizzle else f"phys{j}"
-            lines.extend(
-                _emit_exchange_load(
-                    indent, source_buffer, load_index, j, portable_exchange,
-                    mixed_direct=mixed_direct_load,
-                    direct=(
-                        portable_exchange
-                        and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
-                        and _structured_exchange_supported(
-                            factors, exchange_size, exchange_slot_stride, smem_pack
-                        )
-                    ),
+            if not split_portable_loads:
+                lines.extend(
+                    _emit_exchange_load(
+                        indent, source_buffer, load_index, j, portable_exchange,
+                        mixed_direct=mixed_direct_load,
+                        direct=(
+                            portable_exchange
+                            and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+                            and _structured_exchange_supported(
+                                factors, exchange_size, exchange_slot_stride, smem_pack
+                            )
+                        ),
+                    )
                 )
-            )
             recurrence = (
                 _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
                 and dtype == "complex64"
