@@ -814,6 +814,10 @@ def _emit_tiled_transpose3d_jit_kernel(
                         in {
                             (16, 64, 997, "210"),
                             (16, 33, 997, "210"),
+                            # The FP32 HCU C2R long-axis middle transpose has
+                            # high L1 stalls with tile32; tile16 was 17.8%
+                            # faster in an isolated 128x2048x64 A-B-B-A.
+                            (128, 33, 2048, "210"),
                         }
                         else 32
                     )
