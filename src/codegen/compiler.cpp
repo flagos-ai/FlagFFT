@@ -2208,6 +2208,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const auto cube_row_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->row_plan);
   const auto cube_col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
   if (n0 == 64 && n1 == 64 && use_npu_2d_cube_dft(request, n0) && cube_row_direct && cube_col_direct) {
+    const char *cube_transpose_kernels = std::getenv("FLAGFFT_NPU_2D_CUBE_TRANSPOSE_KERNELS");
+    if (cube_transpose_kernels != nullptr && std::string(cube_transpose_kernels) == "1") {
+      // Keep each Cube DFT tile in its native contiguous layout. Move the
+      // matrix between axes with the existing tiled transpose kernels rather
+      // than lowering tl.trans into each Cube kernel's epilogue.
+      std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
+      std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * n1);
+      auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, n1);
+      auto transpose_inv = compile_tiled_transpose_kernel(request, n1, n0);
+      DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+      DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+      return std::make_shared<CompiledRaw2DNode>(n0,
+                                                 n1,
+                                                 std::move(row_fft),
+                                                 std::move(col_fft),
+                                                 std::move(transpose_fwd),
+                                                 std::move(transpose_inv),
+                                                 std::move(temp1),
+                                                 std::move(temp2),
+                                                 enable_graph);
+    }
     std::shared_ptr<CompiledRawNode> row_fft =
         compile_raw_cube_transposed_direct_dft(*cube_row_direct, row_request, batch * n0);
     std::shared_ptr<CompiledRawNode> col_fft =
