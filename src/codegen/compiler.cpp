@@ -1890,6 +1890,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool real_hybrid = !n1_leaf && request.device_type == "hcu" && !small &&
                            n1 >= 4 * std::max(n0, n2) && fused_3d_store_enabled() &&
                            (real_hybrid_override == nullptr || std::string(real_hybrid_override) != "0");
+  const char *r2c_middle_transpose_override =
+      std::getenv("FLAGFFT_HCU_3D_R2C_MIDDLE_TRANSPOSE");
+  const bool r2c_middle_transpose = request.device_type == "hcu" && !inverse && !small &&
+                                   batch == 1 && n0 == 128 && n1 == 2048 && n2 == 64 &&
+                                   n1_leaf && r2c_middle_transpose_override != nullptr &&
+                                   std::string(r2c_middle_transpose_override) == "1";
   if (!n1_leaf && !real_hybrid) return nullptr;
   if (!small && !fused_3d_store_enabled()) return nullptr;
   const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
@@ -1958,7 +1964,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     if (!n2_permuted && !n1_strided_input) {
       perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
     }
-    if (real_hybrid) {
+    if (real_hybrid || r2c_middle_transpose) {
       n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
     } else {
