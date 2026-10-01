@@ -155,6 +155,36 @@ def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
     assert forward_source != inverse_source
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_packed_c2r_leaf_fuses_preprocess_into_contiguous_input(dtype, kernels) -> None:
+    from flagfft_codegen.kernels_leaf import _leaf_kernel_params_for_io
+
+    plan = kernels.LeafPlan(
+        length=128,
+        factors=(8, 4, 4),
+        remainder=1,
+        lanes=16,
+        num_warps=4,
+        generic_radices=(),
+        smem_size=128,
+        direction="inverse",
+        dtype=dtype,
+    )
+
+    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
+        plan, io_mode="packed_c2r"
+    )
+    args = _leaf_kernel_params_for_io(plan, io_mode="packed_c2r")
+
+    assert kernel_name == f"packed_c2r_leaf_kernel_8_4_4_l16_b32"
+    assert args[:3] == ["in_ptr", "out_ptr", "packed_twiddle_ptr"]
+    assert args[-2:] == ["input_distance", "nbatch"]
+    assert "batch_id = pid *" in source
+    assert "input_batch_base = current_batch * input_distance" in source
+    assert "packed_q0 = 128 - packed_k0" in source
+    assert "packed_sum_r0 - packed_prod_i0" in source
+
+
 def test_four_step_inner_pack_threshold(kernels) -> None:
     assert kernels.four_step_col_inner_pack_for(64, 128) == 1
     assert kernels.four_step_col_inner_pack_for(128, 64) == 4
