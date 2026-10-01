@@ -2311,6 +2311,20 @@ flagfftResult CompiledRaw2DR2CRCNode::execute(adaptor::DevicePtr input,
     const int64_t half_n1 = n1 / 2 + 1;
     const int64_t total_rows = batch * n0;
 
+    if (expand_kernel == nullptr && pack_kernel == nullptr) {
+      // The row child writes the compact half spectrum into scratch. This
+      // keeps exact in-place R2C safe while still avoiding full-complex
+      // expansion and the separate half-spectrum pack kernel.
+      RawExecutionContext row_context {context.request, context.stream, total_rows, n1, half_n1};
+      flagfftResult result = row_fft->execute(input, row_fft_buf.get(), row_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      RawExecutionContext col_context {context.request, context.stream, batch * half_n1};
+      return col_fft->execute(row_fft_buf.get(), output, col_context);
+    }
+
     // Step 1: Expand real input to complex.
     std::vector<JitKernelArg> expand_args = {
         JitKernelArg::device(input),
@@ -2597,6 +2611,14 @@ flagfftResult CompiledRaw2DC2RRCNode::execute(adaptor::DevicePtr input,
     flagfftResult result = col_fft->execute(input, temp_half.get(), col_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+
+    if (expand_kernel == nullptr && pack_kernel == nullptr) {
+      // The compact column result can be consumed directly by each row's
+      // existing 1D C2R boundary. Keep its input in scratch until the final
+      // real output is written so exact in-place C2R remains safe.
+      RawExecutionContext row_context {context.request, context.stream, total_rows, half_n1, n1};
+      return row_fft->execute(temp_half.get(), output, row_context);
     }
 
     // Step 2: Expand half-packed -> full Hermitian.

@@ -2346,6 +2346,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
+    const char *npu_real_row_setting = std::getenv("FLAGFFT_NPU_2D_REAL_ROW");
+    const bool use_npu_real_row = request.device_type == "npu" &&
+                                  has_real_boundary_row_plan(node->row_plan) &&
+                                  npu_real_row_setting != nullptr &&
+                                  std::string(npu_real_row_setting) == "1";
+    if (use_npu_real_row) {
+      // The strided column path already accepts the compact row-major half
+      // spectrum. Let the existing 1D real boundary write that layout
+      // directly, avoiding real-to-complex expansion and half-spectrum pack.
+      std::shared_ptr<CompiledRawNode> row_r2c =
+          compile_raw_r2c_node(node->row_plan, row_request, batch * n0, false);
+      const std::size_t compact_bytes =
+          static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+      DeviceAllocation row_fft_buf = adaptor::Memory(compact_bytes);
+      return std::make_shared<CompiledRaw2DR2CRCNode>(n0,
+                                                      n1,
+                                                      nullptr,
+                                                      std::move(row_r2c),
+                                                      nullptr,
+                                                      std::move(rc_col_fft),
+                                                      std::move(row_fft_buf));
+    }
+
     auto expand_kernel = compile_real_to_complex_kernel(request, n1);
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     auto pack_kernel = compile_r2c_half_pack_kernel(request, n1);
@@ -2486,6 +2509,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
+    const char *npu_real_row_setting = std::getenv("FLAGFFT_NPU_2D_REAL_ROW");
+    const bool use_npu_real_row = request.device_type == "npu" &&
+                                  has_real_boundary_row_plan(node->row_plan) &&
+                                  npu_real_row_setting != nullptr &&
+                                  std::string(npu_real_row_setting) == "1";
+    if (use_npu_real_row) {
+      // After the inverse column transform, each compact row is already a
+      // valid 1D C2R input. Consume it directly and avoid Hermitian expansion
+      // followed by a full C2C inverse and real pack.
+      std::shared_ptr<CompiledRawNode> row_c2r =
+          compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
+      DeviceAllocation temp_half =
+          adaptor::Memory(static_cast<std::size_t>(batch * half_n1 * n0 * element_bytes));
+      return std::make_shared<CompiledRaw2DC2RRCNode>(n0,
+                                                      n1,
+                                                      std::move(rc_col_fft),
+                                                      nullptr,
+                                                      std::move(row_c2r),
+                                                      nullptr,
+                                                      std::move(temp_half),
+                                                      DeviceAllocation {});
+    }
+
     auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n1);
     std::shared_ptr<CompiledRawNode> row_fft = compile_raw_2d_rc_row(node->row_plan, row_request, batch * n0);
     auto pack_kernel = compile_complex_to_real_kernel(request, n1);
