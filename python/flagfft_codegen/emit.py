@@ -805,7 +805,6 @@ def _emit_tiled_transpose3d_jit_kernel(
         and maca_warps == "8"
         and maca_traversal == "row"
         and maca_slice_group == "2"
-        and (n0, n1, n2) == (256, 256, 256)
     )
     fp64_mode = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
