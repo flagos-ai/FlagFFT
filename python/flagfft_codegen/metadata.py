@@ -78,8 +78,6 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
     # features are enabled.
     if "tle." in kernel_source:
         helpers += "import triton.experimental.tle.language as tle\n"
-    if "tlex." in kernel_source:
-        helpers += "import triton.language.extra.cann.extension as tlex\n"
     helpers += "\n"
     utils_path = _CODELET_DIR / "utils.py"
     if utils_path.exists():
