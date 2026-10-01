@@ -269,8 +269,6 @@ def test_permuted_store_pack_masks_only_final_stage_lanes(
 
     assert "lane_mask = base_lane_mask & (lane < 128)" in source
     assert "perm_lane_mask = lane_only < 128" in source
-
-
 def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
     forward = kernels.LeafPlan(
         length=8,
@@ -945,24 +943,6 @@ def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch
     assert metadata["kernel_name"].endswith("_rmajor")
     assert "tile_row = tile_in_slice % 4" in source
     assert "tile_col = tile_in_slice // 4" in source
-
-
-def test_tiled_transpose3d_groups_slices_per_program(kernels) -> None:
-    (
-        kernel_name,
-        source,
-        _,
-        grid_x,
-    ) = kernels._build_tiled_transpose3d_tile_kernel_source(
-        128, 33, 2048, "021", "complex64", tile=16, pair=True, slice_group=4
-    )
-
-    assert kernel_name.endswith("_g4")
-    assert "tl.arange(0, 4)" in source
-    assert "tl.permute(src_pair, (0, 2, 1))" in source
-    assert "safe_slices[:, None, None] * 67584" in source
-    assert "safe_rows[None, :, None] * 33" in source
-    assert grid_x == ((128 + 3) // 4) * ((2048 + 15) // 16) * ((33 + 15) // 16)
 
 
 def test_tiled_transpose3d_tile_selected_only_for_validated_backends(

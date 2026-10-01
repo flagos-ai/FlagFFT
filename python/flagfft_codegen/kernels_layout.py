@@ -262,7 +262,6 @@ def _build_tiled_transpose3d_tile_kernel_source(
     pair: bool = False,
     vec_store: bool = False,
     tile_traversal: str = "col",
-    slice_group: int = 1,
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -284,10 +283,6 @@ def _build_tiled_transpose3d_tile_kernel_source(
         raise ValueError("vector-store tiled 3D transpose requires complex128")
     if tile_traversal not in {"col", "row"}:
         raise ValueError("tile_traversal must be col or row")
-    if slice_group not in {1, 2, 4, 8}:
-        raise ValueError("3D transpose slice_group must be 1, 2, 4 or 8")
-    if slice_group > 1 and (dtype != "complex64" or not pair):
-        raise ValueError("grouped 3D transpose slices require paired complex64 data")
     zero = _zero_other(dtype)
     total_complex = s0 * s1 * s2
     scalar_width = 1 if pair else 2
@@ -347,80 +342,13 @@ def _build_tiled_transpose3d_tile_kernel_source(
     else:
         tile_row_expr = f"tile_in_slice // {tile_cols}"
         tile_col_expr = f"tile_in_slice % {tile_cols}"
-    grid_x = ((num_slices + slice_group - 1) // slice_group) * tiles_per_slice
+    grid_x = num_slices * tiles_per_slice
     kernel_name = (
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}_tile"
         + ("_pair" if pair else "")
         + ("_vec" if vec_store else "")
-        + (f"_g{slice_group}" if slice_group > 1 else "")
         + ("_rmajor" if tile_traversal == "row" else "")
     )
-
-    if slice_group > 1:
-        source = dedent(
-            f"""
-            @triton.jit
-            def {kernel_name}(
-                in_ptr,
-                out_ptr,
-                nbatch,
-            ):
-                pid_block = tl.program_id(0)
-                pid_batch = tl.program_id(2)
-
-                slice_group_idx = pid_block // {tiles_per_slice}
-                tile_in_slice = pid_block % {tiles_per_slice}
-                tile_row = {tile_row_expr}
-                tile_col = {tile_col_expr}
-
-                slice_offsets = slice_group_idx * {slice_group} + tl.arange(0, {slice_group})
-                row_offsets = tile_row * {tile} + tl.arange(0, {tile})
-                col_offsets = tile_col * {tile} + tl.arange(0, {tile})
-                slice_mask = slice_offsets < {num_slices}
-                row_mask = row_offsets < {rows}
-                col_mask = col_offsets < {cols}
-                load_mask = (
-                    slice_mask[:, None, None]
-                    & col_mask[None, :, None]
-                    & row_mask[None, None, :]
-                )
-                safe_slices = tl.minimum(slice_offsets, {num_slices - 1})
-                safe_rows = tl.minimum(row_offsets, {rows - 1})
-                safe_cols = tl.minimum(col_offsets, {cols - 1})
-
-                src_base = (
-                    pid_batch * {total_scalar}
-                    + safe_slices[:, None, None] * {src_slice_stride}
-                    + safe_cols[None, :, None] * {src_col_stride}
-                    + safe_rows[None, None, :]
-                )
-                src_pair = tl.load(
-                    tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
-                    mask=load_mask,
-                    other=0,
-                )
-                dst_pair = tl.permute(src_pair, (0, 2, 1))
-
-                dst_base = (
-                    pid_batch * {total_scalar}
-                    + safe_slices[:, None, None] * {dst_slice_stride}
-                    + safe_rows[None, :, None] * {dst_row_stride}
-                    + safe_cols[None, None, :]
-                )
-                store_mask = (
-                    slice_mask[:, None, None]
-                    & row_mask[None, :, None]
-                    & col_mask[None, None, :]
-                )
-                tl.store(
-                    tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
-                    dst_pair,
-                    mask=store_mask,
-                )
-            """
-        )
-        return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
-
     source = dedent(
         f"""
         @triton.jit
