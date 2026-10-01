@@ -153,7 +153,7 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 2048) {
     const bool c2r_fp64 = (context.real_transform_kind == "c2r" || context.real_transform_kind == "z2d") &&
-                          context.input_dtype == "complex128" && context.output_dtype == "float64";
+                          context.input_dtype == "complex128";
     const char *fp64_override = c2r_fp64 ? std::getenv("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
     const char *override_value =
         fp64_override != nullptr ? fp64_override : std::getenv("FLAGFFT_HCU_3D_2048_FACTORS");
