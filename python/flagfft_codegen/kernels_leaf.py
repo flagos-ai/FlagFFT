@@ -1203,9 +1203,12 @@ def _emit_stage_block(
             _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
         )
         if io_mode in {"permuted_store", "permuted_store_r2c"}:
-            active_lanes = max(stage_lanes) if stage_lanes is not None else lanes
             lines.append(f"{indent}lane_only = tl.arange(0, {lane_block})")
-            lines.append(f"{indent}perm_lane_mask = lane_only < {active_lanes}")
+            # The last stage may use fewer lanes than an earlier stage. The
+            # packed store reshapes its lanes into (lane, batch_slot), so its
+            # mask must match this stage's valid lanes or padded lanes can
+            # overwrite other transforms' output addresses.
+            lines.append(f"{indent}perm_lane_mask = lane_only < {current_lanes}")
             lines.append(
                 f"{indent}lane_only = tl.where(perm_lane_mask, lane_only, 0)"
             )

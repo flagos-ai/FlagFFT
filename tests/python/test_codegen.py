@@ -229,6 +229,48 @@ def test_maca_packed_permuted_store_is_fp32_only(
         assert "tl.store(out_ptr + perm_addr0 * 2 + 1" in source
 
 
+def test_permuted_store_pack_masks_only_final_stage_lanes(
+    kernels, monkeypatch
+) -> None:
+    from flagfft_codegen import kernels_leaf
+    from flagfft_codegen.backend_profile import (
+        BackendProfile,
+        reset_profile,
+        set_profile,
+    )
+
+    profile = BackendProfile.from_device(
+        {
+            "backend": "maca",
+            "device_arch": "102",
+            "warp_size": 64,
+            "max_threads_per_block": 1024,
+            "max_dynamic_shared_memory": 65536,
+        }
+    )
+    token = set_profile(profile)
+    monkeypatch.setattr(kernels_leaf, "permuted_store_batch_pack_for", lambda _plan: 2)
+    plan = kernels.LeafPlan(
+        length=2048,
+        factors=(16, 8, 16),
+        remainder=1,
+        lanes=128,
+        num_warps=4,
+        generic_radices=(),
+        smem_size=2048,
+        dtype="complex64",
+    )
+    try:
+        _name, source = kernels._build_leaf_kernel_source_for_io(
+            plan, io_mode="permuted_store", perm_form="inner"
+        )
+    finally:
+        reset_profile(token)
+
+    assert "lane_mask = base_lane_mask & (lane < 128)" in source
+    assert "perm_lane_mask = lane_only < 128" in source
+
+
 def test_maca_long_middle_store_pack2_uses_device_shared_memory_limit(
     monkeypatch,
 ) -> None:
