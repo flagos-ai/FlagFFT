@@ -2623,6 +2623,47 @@ flagfftResult CompiledRaw3DFused16PlaneNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DFused32PlaneNode::CompiledRaw3DFused32PlaneNode(
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> outer_fft,
+    DeviceAllocation temp,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFused32PlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DFused32Plane(plane_fft=" << plane_fft->execution_description()
+      << ", outer_fft=" << outer_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DFused32PlaneNode::execute(adaptor::DevicePtr input,
+                                                     adaptor::DevicePtr output,
+                                                     const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * 32, 1, 1);
+    RawExecutionContext outer_context {context.request, context.stream, batch * 32 * 32};
+    return outer_fft->execute(temp.get(), output, outer_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused 32-plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DFusedRealPlaneNode::CompiledRaw3DFusedRealPlaneNode(
     int64_t plane_size,
     bool inverse,

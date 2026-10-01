@@ -1415,6 +1415,42 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::move(plane_fft), std::move(outer_fft), std::move(temp), std::move(tw_r), std::move(tw_i));
   }
 
+  // Experimental MACA-only 32^3 plane fusion. Each CTA computes the n2 and
+  // n1 transforms for one 32x32 plane; the n0 axis remains a separate strided
+  // leaf. Keep this opt-in until both dtype performance and accuracy are
+  // measured on C550.
+  const bool maca_fused_c2c32 = request.device_type == "maca" &&
+      n0 == 32 && n1 == 32 && n2 == 32 && batch == 1 &&
+      n0_leaf && n1_leaf && n2_leaf &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2C_FUSED32", false);
+  if (maca_fused_c2c32) {
+    std::vector<double> tw_r_d(16);
+    std::vector<double> tw_i_d(16);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 16; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
+      tw_r_d[k] = std::cos(angle);
+      tw_i_d[k] = std::sin(angle);
+    }
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (request.input_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto plane_fft = compile_kernel(KernelKey::fused_32_plane(
+        triton_target_for_request(request), request.direction, request.input_dtype));
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, n1 * n2);
+    DeviceAllocation temp = adaptor::Memory(
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    return std::make_shared<CompiledRaw3DFused32PlaneNode>(
+        std::move(plane_fft), std::move(outer_fft), std::move(temp),
+        std::move(tw_r), std::move(tw_i));
+  }
+
   // At 128x2048x64, a contiguous n1 leaf plus one tiled transpose beats the
   // packed permuted-store leaf.  On MACA, the same hybrid path wins when it
   // fuses only the first n2 store: under the shared-memory

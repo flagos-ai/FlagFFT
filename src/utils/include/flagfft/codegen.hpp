@@ -991,6 +991,26 @@ struct CompiledRaw3DFused16PlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
+// Experimental 32^3 complex path: fuse the two inner axes in each 32x32
+// plane, then apply the outer strided axis.
+struct CompiledRaw3DFused32PlaneNode final : CompiledRawNode {
+  CompiledRaw3DFused32PlaneNode(std::shared_ptr<JitKernel> plane_fft,
+                                std::shared_ptr<CompiledRawNode> outer_fft,
+                                DeviceAllocation temp,
+                                DeviceAllocation tw_r,
+                                DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  std::shared_ptr<JitKernel> plane_fft;
+  std::shared_ptr<CompiledRawNode> outer_fft;
+  DeviceAllocation temp;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 // Experimental real 32-cube path: fuse the contiguous real axis and middle
 // complex axis in each plane, then apply the outer strided axis.
 struct CompiledRaw3DFusedRealPlaneNode final : CompiledRawNode {
