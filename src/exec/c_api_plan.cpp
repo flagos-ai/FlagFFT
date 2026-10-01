@@ -282,6 +282,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
           (plan->desc.type == FLAGFFT_Z2D || plan->desc.type == FLAGFFT_D2Z || plan->desc.type == FLAGFFT_Z2Z)
               ? FLAGFFT_Z2Z
               : FLAGFFT_C2C;
+      const std::string origin_real_transform_kind =
+          request_from_desc(plan->desc, "forward", plan->desc.rank).real_transform_kind;
 
       // RTRT decomposition: FFT along the innermost axis n2, then the middle
       // axis n1, then the outermost axis n0, with a 3D axis permutation
@@ -301,12 +303,16 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         axis_desc.idist = length;
         axis_desc.odist = length;
         axis_desc.batch = axis_batch;
-        FFTRequest axis_request = request_from_desc(axis_desc, direction, plan->desc.rank);
+        auto make_axis_request = [&](const std::string &axis_direction) {
+          FFTRequest request = request_from_desc(axis_desc, axis_direction, plan->desc.rank);
+          request.origin_real_transform_kind = origin_real_transform_kind;
+          return request;
+        };
+        FFTRequest axis_request = make_axis_request(direction);
         PlanNodePtr axis_plan = lookup_or_build_root(builder, axis_request);
         if (!raw_supported_node(axis_plan)) {
-          axis_plan = lookup_or_build_root(
-              builder,
-              request_from_desc(axis_desc, direction == "forward" ? "inverse" : "forward", plan->desc.rank));
+          axis_plan = lookup_or_build_root(builder,
+                                           make_axis_request(direction == "forward" ? "inverse" : "forward"));
         }
         if (!raw_supported_node(axis_plan)) {
           axis_plan = raw_compatible_rader_plan(length, builder, axis_request);

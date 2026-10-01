@@ -107,6 +107,9 @@ struct FFTRequest {
   // Public real-transform kind, retained while the real request is lowered
   // through complex children. Empty for C2C/Z2Z.
   std::string real_transform_kind;
+  // Public real-transform kind at the decomposed request's root. Axis plans
+  // can be C2C even when they belong to a real 3D transform.
+  std::string origin_real_transform_kind;
   // True only for the dense half-length complex child of a packed real FFT.
   bool packed_real_child = false;
   int64_t normalized_dim = -1;
