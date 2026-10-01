@@ -224,22 +224,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";npu-2d-transpose-pack=" +
                  std::string(transpose_pack != nullptr ? transpose_pack : "auto");
   }
-  const bool npu_contiguous_leaf =
-      key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
-      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafPackedR2C ||
-      key.kind == KernelKind::LeafC2R || key.kind == KernelKind::LeafBluestein ||
-      key.kind == KernelKind::LeafRaderFull || key.kind == KernelKind::LeafRaderPrepare ||
-      key.kind == KernelKind::LeafRaderFinish || key.kind == KernelKind::LeafBluesteinPrepare ||
-      key.kind == KernelKind::LeafBluesteinFinish;
-  if (npu_contiguous_leaf && adaptor::backend_name() == "npu") {
-    const char *portable_leaf = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
-    cache_key += ";npu-portable-leaf=" +
-                 std::string(portable_leaf != nullptr && std::string(portable_leaf) == "1" ? "1" : "0");
-    if (key.length == 64 || key.length == 128) {
-      const char *leaf_pack = std::getenv("FLAGFFT_NPU_2D_LEAF_PACK");
-      cache_key += ";npu-2d-leaf-pack=" + std::string(leaf_pack != nullptr ? leaf_pack : "auto");
-    }
-  }
   if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
     const char *packed_3d = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");
     cache_key += ";ix-3d-packed-r2c=" + std::string(packed_3d != nullptr &&

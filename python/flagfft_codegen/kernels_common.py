@@ -433,12 +433,6 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
-    if _npu_backend_active() and plan.dtype == "complex64" and plan.length in {64, 128}:
-        override = os.environ.get("FLAGFFT_NPU_2D_LEAF_PACK")
-        if override is not None:
-            if override not in {"1", "2", "4", "8"}:
-                raise ValueError("FLAGFFT_NPU_2D_LEAF_PACK must be 1, 2, 4 or 8")
-            return int(override)
     if _portable_leaf_backend_active():
         override = _maca_knob("BATCH_PACK")
         if override == "auto":
