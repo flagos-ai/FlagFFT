@@ -6,56 +6,6 @@ from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
 
 
 class ProfileTest(unittest.TestCase):
-    def test_npu_2d_leaf_exchange_is_scoped_and_validated(self):
-        import os
-
-        from flagfft_codegen.kernels_common import LeafPlan
-        from flagfft_codegen.kernels_common import _maca_knob
-        from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
-        from flagfft_codegen.target import set_codegen_target
-
-        profile = BackendProfile.from_device(
-            {
-                "backend": "npu",
-                "device_arch": "Ascend910B4-1",
-                "warp_size": 1,
-                "max_threads_per_block": 65535,
-                "max_dynamic_shared_memory": 196608,
-            }
-        )
-        profile_token = set_profile(profile)
-        set_codegen_target("npu:Ascend910B4-1:1")
-        try:
-            plan = LeafPlan(64, (8, 8), 1, 8, 1, (), 64)
-            with patch.dict(
-                os.environ,
-                {
-                    "FLAGFFT_NPU_2D_LEAF_CONTEXT": "1",
-                    "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
-                    "FLAGFFT_NPU_2D_LEAF_EXCHANGE": "transpose",
-                },
-            ):
-                self.assertEqual(_maca_knob("EXCHANGE"), "transpose")
-                _, source = _build_leaf_kernel_source_for_io(
-                    plan, io_mode="contiguous"
-                )
-                self.assertIn("exchange_structured_r", source)
-                self.assertIn("tl.trans", source)
-            with patch.dict(
-                os.environ,
-                {
-                    "FLAGFFT_NPU_2D_LEAF_CONTEXT": "1",
-                    "FLAGFFT_NPU_2D_LEAF_EXCHANGE": "join",
-                },
-            ):
-                with self.assertRaisesRegex(
-                    ValueError, "must be auto, transpose, or direct_all"
-                ):
-                    _maca_knob("EXCHANGE")
-        finally:
-            reset_profile(profile_token)
-            set_codegen_target("")
-
     def test_ix_scoped_default_uses_two_warps_and_recurrence(self):
         from pathlib import Path
         from flagfft_codegen.target import set_ix_ct_single_default, reset_ix_ct_single_default, set_codegen_target

@@ -232,9 +232,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const bool use_portable_leaf = key.npu_portable_leaf ||
                                    (portable_leaf != nullptr && std::string(portable_leaf) == "1");
     cache_key += ";npu-portable-leaf=" + std::string(use_portable_leaf ? "1" : "0");
-    const char *npu_2d_exchange = std::getenv("FLAGFFT_NPU_2D_LEAF_EXCHANGE");
-    cache_key += ";npu-2d-leaf-exchange=" +
-                 std::string(npu_2d_exchange != nullptr ? npu_2d_exchange : "auto");
   }
   if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
     const char *packed_3d = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");

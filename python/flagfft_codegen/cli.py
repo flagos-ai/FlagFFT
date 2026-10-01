@@ -177,7 +177,6 @@ def main() -> None:
     args = parser.parse_args()
     if args.npu_portable_leaf:
         os.environ["FLAGFFT_NPU_FOURSTEP_LEAF"] = "1"
-        os.environ["FLAGFFT_NPU_2D_LEAF_CONTEXT"] = "1"
     set_codegen_target(args.target)
     set_maca_1d_single_default(args.maca_1d_single)
     set_maca_1d_batch_default(args.maca_1d_batch)
