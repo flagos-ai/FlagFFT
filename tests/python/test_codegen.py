@@ -791,6 +791,36 @@ def test_fused_rect_plane_codegen_emits_16x64_strided_batches(tmp_path) -> None:
     assert "* 997 + middle" in source
 
 
+def test_fused_32_real_plane_codegen_emits_compact_forward_and_hermitian_inverse(tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel
+
+    forward = emit_fused_32_real_plane_kernel(
+        dtype="complex64", direction="forward", out_dir=tmp_path
+    )
+    forward_source = Path(forward["module_path"]).read_text()
+    forward64 = emit_fused_32_real_plane_kernel(
+        dtype="complex128", direction="forward", out_dir=tmp_path
+    )
+    forward64_source = Path(forward64["module_path"]).read_text()
+    inverse = emit_fused_32_real_plane_kernel(
+        dtype="complex128", direction="inverse", out_dir=tmp_path
+    )
+    inverse_source = Path(inverse["module_path"]).read_text()
+
+    assert forward["kernel_type"] == "fused_32_real_plane"
+    assert forward["signature"] == "*fp32:16,*fp32:16,*fp32:16,*fp32:16"
+    assert "mask = col <= 16" in forward_source
+    assert "tl.arange(0, 1024)" in forward_source
+    assert "tl.full((1024,), 0.0, tl.float32)" in forward_source
+    assert "tl.full((1024,), 0.0, tl.float64)" in forward64_source
+    assert inverse["signature"] == "*fp64:16,*fp64:16,*fp64:16,*fp64:16"
+    compile(forward_source, "fused_32_real_plane_forward.py", "exec")
+    compile(forward64_source, "fused_32_real_plane_forward64.py", "exec")
+    compile(inverse_source, "fused_32_real_plane_inverse.py", "exec")
+    assert "source_row = tl.where(mirrored, (-logical_row) & 31, logical_row)" in inverse_source
+    assert "xi = tl.where(mirrored, -xi, xi)" in inverse_source
+
+
 def test_hcu_tiled_transpose3d_tile_override(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile

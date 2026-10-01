@@ -239,6 +239,7 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("fused_16_plane", SMALL_3D),
     KernelSpec("fused_rect_plane", SMALL_3D),
     KernelSpec("fused_16_cube", SMALL_3D),
+    KernelSpec("fused_32_real_plane", SMALL_3D),
     KernelSpec("real_to_complex", REAL_POINTWISE, requires=("length",)),
     KernelSpec("r2c_half_pack", REAL_POINTWISE, requires=("length",)),
     KernelSpec("r2c_packed_postprocess", REAL_POINTWISE, requires=("length",)),

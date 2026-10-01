@@ -2998,6 +2998,67 @@ flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DRealFusedPlaneNode::CompiledRaw3DRealFusedPlaneNode(int64_t n0,
+                                                                 int64_t n1,
+                                                                 int64_t n2,
+                                                                 bool inverse,
+                                                                 std::shared_ptr<JitKernel> plane_fft,
+                                                                 std::shared_ptr<CompiledRawNode> outer_fft,
+                                                                 DeviceAllocation temp,
+                                                                 DeviceAllocation tw_r,
+                                                                 DeviceAllocation tw_i)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      inverse(inverse),
+      plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DRealFusedPlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DRealFusedPlane(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2 << ", inverse=" << inverse
+      << ", plane_fft=" << plane_fft->execution_description() << ", outer_fft=" << outer_fft->describe()
+      << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DRealFusedPlaneNode::execute(adaptor::DevicePtr input,
+                                                       adaptor::DevicePtr output,
+                                                       const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t half = n2 / 2 + 1;
+    RawExecutionContext outer_context {context.request, context.stream, batch * n1 * half};
+    auto launch_plane = [&](adaptor::DevicePtr plane_input, adaptor::DevicePtr plane_output) {
+      std::vector<JitKernelArg> args = {
+          JitKernelArg::device(plane_input),
+          JitKernelArg::device(plane_output),
+          JitKernelArg::device(tw_r.get()),
+          JitKernelArg::device(tw_i.get()),
+      };
+      plane_fft->launch(context.stream, args, batch * n0, 1, 1);
+    };
+
+    if (!inverse) {
+      launch_plane(input, temp.get());
+      return outer_fft->execute(temp.get(), output, outer_context);
+    }
+
+    flagfftResult result = outer_fft->execute(input, temp.get(), outer_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    launch_plane(temp.get(), output);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D real fused plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
                                                      int64_t n1,
                                                      int64_t n2,
