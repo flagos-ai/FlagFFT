@@ -152,7 +152,17 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     }
   }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 2048) {
-    const char *override_value = std::getenv("FLAGFFT_HCU_3D_2048_FACTORS");
+    const bool c2r_fp64 = (context.real_transform_kind == "c2r" || context.real_transform_kind == "z2d") &&
+                          context.input_dtype == "complex128" && context.output_dtype == "float64";
+    const char *fp64_override = c2r_fp64 ? std::getenv("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
+    const char *override_value =
+        fp64_override != nullptr ? fp64_override : std::getenv("FLAGFFT_HCU_3D_2048_FACTORS");
+    if (fp64_override != nullptr && std::string(fp64_override) != "auto" &&
+        std::string(fp64_override) != "16,16,8" && std::string(fp64_override) != "8,16,16" &&
+        std::string(fp64_override) != "16,8,16") {
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
+    }
     const std::string choice = override_value == nullptr ? "auto" : override_value;
     if (choice == "8,16,16") return {8, 16, 16};
     if (choice == "16,8,16") return {16, 8, 16};
