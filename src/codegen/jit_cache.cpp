@@ -232,6 +232,18 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const bool use_portable_leaf = key.npu_portable_leaf ||
                                    (portable_leaf != nullptr && std::string(portable_leaf) == "1");
     cache_key += ";npu-portable-leaf=" + std::string(use_portable_leaf ? "1" : "0");
+    if (key.npu_portable_leaf) {
+      const char *exchange = std::getenv("FLAGFFT_NPU_2D_EXCHANGE");
+      const char *lane_min = std::getenv("FLAGFFT_NPU_2D_LANE_MIN");
+      const char *split_order = std::getenv("FLAGFFT_NPU_2D_SPLIT_ORDER");
+      if (exchange == nullptr) exchange = std::getenv("FLAGFFT_MACA_EXCHANGE");
+      if (lane_min == nullptr) lane_min = std::getenv("FLAGFFT_MACA_LANE_MIN");
+      if (split_order == nullptr) split_order = std::getenv("FLAGFFT_MACA_SPLIT_ORDER");
+      cache_key += ";npu-2d-exchange=" + std::string(exchange != nullptr ? exchange : "auto");
+      cache_key += ";npu-2d-lane-min=" + std::string(lane_min != nullptr ? lane_min : "auto");
+      cache_key += ";npu-2d-split-order=" +
+                   std::string(split_order != nullptr ? split_order : "auto");
+    }
   }
   if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
     const char *packed_3d = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");

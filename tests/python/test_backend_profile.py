@@ -6,6 +6,29 @@ from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
 
 
 class ProfileTest(unittest.TestCase):
+    def test_npu_2d_leaf_knobs_are_backend_scoped(self):
+        from flagfft_codegen.kernels_common import _maca_knob, _npu_backend_active
+        from flagfft_codegen.target import set_codegen_target
+
+        set_codegen_target("npu:Ascend910B4:1")
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
+                    "FLAGFFT_NPU_2D_EXCHANGE": "transpose",
+                    "FLAGFFT_NPU_2D_LANE_MIN": "8",
+                    "FLAGFFT_MACA_EXCHANGE": "direct",
+                    "FLAGFFT_MACA_LANE_MIN": "64",
+                },
+                clear=True,
+            ):
+                self.assertTrue(_npu_backend_active())
+                self.assertEqual(_maca_knob("EXCHANGE"), "transpose")
+                self.assertEqual(_maca_knob("LANE_MIN", "auto"), "8")
+        finally:
+            set_codegen_target("")
+
     def test_ix_scoped_default_uses_two_warps_and_recurrence(self):
         from pathlib import Path
         from flagfft_codegen.target import set_ix_ct_single_default, reset_ix_ct_single_default, set_codegen_target

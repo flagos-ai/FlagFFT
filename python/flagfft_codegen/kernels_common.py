@@ -314,6 +314,14 @@ def _maca_knob(name: str, default: str = "") -> str:
         if ix_ct_single_tle_default() == 2:
             defaults.update(SMEM_SWIZZLE="1", SMEM_SWIZZLE_SHIFT="5", TLE_INNER_PACK="8", WARPS="4")
         return os.environ.get(f"FLAGFFT_IX_{name}", defaults.get(name, default)).strip().lower()
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
+        npu_env_name = {
+            "EXCHANGE": "FLAGFFT_NPU_2D_EXCHANGE",
+            "LANE_MIN": "FLAGFFT_NPU_2D_LANE_MIN",
+            "SPLIT_ORDER": "FLAGFFT_NPU_2D_SPLIT_ORDER",
+        }.get(name)
+        if npu_env_name in os.environ:
+            return os.environ[npu_env_name].strip().lower()
     env_name = f"FLAGFFT_MACA_{name}"
     if env_name in os.environ:
         return os.environ[env_name].strip().lower()
