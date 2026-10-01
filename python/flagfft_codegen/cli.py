@@ -311,7 +311,7 @@ def main() -> None:
         profile_dir += (f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"
                         f"-fp64-tile-{fp64_tile}-warps-{fused_warps}"
                         f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
-                        f"-tu64-{transpose_u64}"
+                        f"-transpose-u64-{transpose_u64}"
                         f"-full-smem-{full_smem}-key-full-{int(args.hcu_3d_full_smem)}"
                         f"-u64-load-{u64_load}-first-pack-{first_pack}-middle-pack-{middle_pack}"
                         f"-mbp-{middle_batch_pack}"
