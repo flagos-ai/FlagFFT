@@ -309,8 +309,9 @@ def main() -> None:
                         f"-u64-load-{u64_load}-first-pack-{first_pack}-middle-pack-{middle_pack}"
                         f"-mbp-{middle_batch_pack}"
                         f"-final-warps-{final_warps}-final-pack-{final_pack}"
-                        f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}"
-                        f"-f256-{factors_256}")
+                        f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
+        if factors_256 != "auto":
+            profile_dir += f"-f{factors_256.replace(',', '')}"
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
