@@ -188,6 +188,22 @@ struct CompiledRawStridedLeafNode final : CompiledRawNode {
   std::vector<DeviceAllocation> tables;
 };
 
+#if defined(FLAGFFT_BACKEND_NPU)
+struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
+  CompiledRawNpuAivFFT64Node(int64_t stride,
+                             std::shared_ptr<DeviceAllocation> indices,
+                             std::shared_ptr<DeviceAllocation> twiddles);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t stride;
+  std::shared_ptr<DeviceAllocation> indices;
+  std::shared_ptr<DeviceAllocation> twiddles;
+};
+#endif
+
 struct CompiledRawStridedDirectDftNode final : CompiledRawNode {
   CompiledRawStridedDirectDftNode(int64_t length,
                                   int64_t outer_stride,

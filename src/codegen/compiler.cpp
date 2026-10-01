@@ -17,6 +17,7 @@
 #include "flagfft/maca_tail_policy.hpp"
 
 #include <cstdlib>
+#include <cmath>
 #include <optional>
 
 namespace flagfft {
@@ -32,6 +33,50 @@ namespace {
     return setting != nullptr && std::string(setting) == "1" && request.device_type == "npu" &&
            request.origin_rank == 2 && request.input_dtype == "complex64" &&
            request.output_dtype == "complex64" && n == 64;
+  }
+
+  void build_npu_aiv_fft64_tables(const FFTRequest &request,
+                                  std::vector<uint32_t> &indices,
+                                  std::vector<float> &twiddles) {
+    constexpr int64_t n = 64;
+    constexpr int64_t stages = 6;
+    constexpr double pi = 3.141592653589793238462643383279502884;
+    indices.assign(n + 2 * stages * n, 0);
+    twiddles.assign(2 * stages * n, 0.0f);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+
+    for (int64_t i = 0; i < n; ++i) {
+      int64_t value = i;
+      int64_t reversed = 0;
+      for (int64_t bit = 0; bit < stages; ++bit) {
+        reversed = (reversed << 1) | (value & 1);
+        value >>= 1;
+      }
+      indices[i] = static_cast<uint32_t>(reversed);
+    }
+
+    for (int64_t stage = 0; stage < stages; ++stage) {
+      const int64_t length = int64_t{1} << (stage + 1);
+      const int64_t half = length / 2;
+      const int64_t a_base = n + stage * n;
+      const int64_t b_base = n + stages * n + stage * n;
+      const int64_t imag_base = stages * n;
+      for (int64_t i = 0; i < n; ++i) {
+        const int64_t group = (i / length) * length;
+        const int64_t offset = i % length;
+        const bool upper = offset >= half;
+        const int64_t a = group + (upper ? offset - half : offset);
+        const int64_t b = a + half;
+        const int64_t twiddle_offset = offset % half;
+        const double angle = sign * 2.0 * pi * static_cast<double>(twiddle_offset) /
+                             static_cast<double>(length);
+        const float negate = upper ? -1.0f : 1.0f;
+        indices[a_base + i] = static_cast<uint32_t>(a);
+        indices[b_base + i] = static_cast<uint32_t>(b);
+        twiddles[stage * n + i] = negate * static_cast<float>(std::cos(angle));
+        twiddles[imag_base + stage * n + i] = negate * static_cast<float>(std::sin(angle));
+      }
+    }
   }
 
   void mark_npu_2d_portable_leaf(KernelKey &key, const FFTRequest &request) {
@@ -2204,6 +2249,37 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_node(node->col_plan, col_request, batch),
                                                    batch);
   }
+
+#if defined(FLAGFFT_BACKEND_NPU)
+  const char *npu_aiv_fft64 = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV");
+  const bool use_npu_aiv_fft64 =
+      request.device_type == "npu" && request.origin_rank == 2 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n0 == 64 && n1 == 64 && npu_aiv_fft64 != nullptr &&
+      std::string(npu_aiv_fft64) == "1" &&
+      std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
+      std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
+  if (use_npu_aiv_fft64) {
+    std::vector<uint32_t> host_indices;
+    std::vector<float> host_twiddles;
+    build_npu_aiv_fft64_tables(request, host_indices, host_twiddles);
+    auto index_allocation = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+    index_allocation->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+    auto twiddle_allocation = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+    twiddle_allocation->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    std::shared_ptr<CompiledRawNode> row_fft =
+        std::make_shared<CompiledRawNpuAivFFT64Node>(1, index_allocation, twiddle_allocation);
+    std::shared_ptr<CompiledRawNode> col_fft =
+        std::make_shared<CompiledRawNpuAivFFT64Node>(64, index_allocation, twiddle_allocation);
+    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    return std::make_shared<CompiledRaw2DRCNode>(n0,
+                                                 n1,
+                                                 std::move(row_fft),
+                                                 std::move(col_fft),
+                                                 std::move(temp1),
+                                                 enable_graph);
+  }
+#endif
 
   const auto cube_row_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->row_plan);
   const auto cube_col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);

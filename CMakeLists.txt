@@ -159,6 +159,35 @@ set(FLAGFFT_CORE_SOURCES
 
 add_library(flagfft SHARED ${FLAGFFT_CORE_SOURCES})
 add_subdirectory(src/adaptor)
+
+# CANN 9 ships the Ascend C toolchain and runtime helpers in the toolkit.
+# Keep the native AIV leaf isolated to the NPU backend so other builds remain
+# independent of the vendor SDK.  The leaf is opt-in at runtime while its
+# correctness and performance are being evaluated.
+if(BACKEND STREQUAL "NPU")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+        set(_FLAGFFT_ASCEND_ARCH_DIR "aarch64-linux")
+    else()
+        set(_FLAGFFT_ASCEND_ARCH_DIR "x86_64-linux")
+    endif()
+    set(ASCEND_CANN_PACKAGE_PATH "${ASCEND_TOOLKIT_HOME}")
+    set(ASCENDC_CMAKE_DIR
+        "${ASCEND_TOOLKIT_HOME}/${_FLAGFFT_ASCEND_ARCH_DIR}/tikcpp/ascendc_kernel_cmake")
+    if(NOT EXISTS "${ASCENDC_CMAKE_DIR}/ascendc.cmake")
+        message(FATAL_ERROR "Ascend C CMake helpers not found at ${ASCENDC_CMAKE_DIR}")
+    endif()
+    set(SOC_VERSION "Ascend910B4")
+    set(RUN_MODE "npu")
+    set(ASCEND_PYTHON_EXECUTABLE "${Python_EXECUTABLE}")
+    include("${ASCENDC_CMAKE_DIR}/ascendc.cmake")
+    ascendc_library(flagfft_npu_aiv_fft64 STATIC
+        src/adaptor/backend/npu/ascendc_fft64_kernel.cpp)
+    target_sources(flagfft PRIVATE
+        src/adaptor/backend/npu/ascendc_fft64_host.cpp)
+    target_link_libraries(flagfft PRIVATE flagfft_npu_aiv_fft64)
+    target_compile_definitions(flagfft PRIVATE FLAGFFT_BACKEND_NPU=1)
+endif()
+
 target_compile_features(flagfft PUBLIC cxx_std_20)
 target_include_directories(flagfft
     PUBLIC

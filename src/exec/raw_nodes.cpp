@@ -14,9 +14,14 @@
 
 #include "flagfft/core.hpp"
 
+#if defined(FLAGFFT_BACKEND_NPU)
+#include "adaptor/backend/npu/ascendc_fft64.hpp"
+#endif
+
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
+#include <limits>
 #include <sstream>
 
 namespace flagfft {
@@ -412,6 +417,37 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_EXEC_FAILED;
   }
 }
+
+#if defined(FLAGFFT_BACKEND_NPU)
+CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(
+    int64_t stride,
+    std::shared_ptr<DeviceAllocation> indices,
+    std::shared_ptr<DeviceAllocation> twiddles)
+    : stride(stride), indices(std::move(indices)), twiddles(std::move(twiddles)) {
+}
+
+std::string CompiledRawNpuAivFFT64Node::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawNpuAivFFT64(stride=" << stride << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
+                                                  adaptor::DevicePtr output,
+                                                  const RawExecutionContext &context) const {
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
+      (stride != 1 && stride != 64) || indices == nullptr || twiddles == nullptr) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  return adaptor::npu::launch_ascendc_fft64(input,
+                                             output,
+                                             indices->get(),
+                                             twiddles->get(),
+                                             static_cast<int32_t>(context.batch),
+                                             static_cast<int32_t>(stride),
+                                             context.stream);
+}
+#endif
 
 CompiledRawStridedDirectDftNode::CompiledRawStridedDirectDftNode(int64_t length,
                                                                  int64_t outer_stride,

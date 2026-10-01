@@ -701,6 +701,9 @@ def test_ascend_cube_2d_tiled_matmul_sources(kernels) -> None:
     assert "block_row = tl.program_id(0)" in row_source
     assert "tile_out = tl.program_id(1)" in row_source
     assert "tl.dot(xr, wr) - tl.dot(xi, wi)" in row_source
+    assert "dst = (lines[:, None] * 64 + outputs[None, :]) * 2" in row_source
+    assert "tl.store(out_ptr + dst, acc_r" in row_source
+    assert "tl.store(out_ptr + dst + 1, acc_i" in row_source
 
     col_name, col_source, col_args = kernels._build_cube_dft_2d_kernel_source(
         64, "forward", "complex64", column=True
@@ -709,6 +712,9 @@ def test_ascend_cube_2d_tiled_matmul_sources(kernels) -> None:
     assert "batch_index = block_x // 4" in col_source
     assert "x_offset = batch_index * 4096 + inner[:, None] * 64 + cols[None, :]" in col_source
     assert "tl.dot(wr, xr) - tl.dot(wi, xi)" in col_source
+    assert "dst = (batch_index * 4096 + rows[:, None] * 64 + cols[None, :]) * 2" in col_source
+    assert "tl.store(out_ptr + dst, acc_r" in col_source
+    assert "tl.store(out_ptr + dst + 1, acc_i" in col_source
     assert row_args == col_args == [
         "in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"
     ]
