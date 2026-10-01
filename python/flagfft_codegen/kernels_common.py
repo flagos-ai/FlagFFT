@@ -312,9 +312,11 @@ def _maca_knob(name: str, default: str = "") -> str:
         override = os.environ.get("FLAGFFT_NPU_2D_LEAF_EXCHANGE")
         if override is not None:
             override = override.strip().lower()
-            if override not in {"auto", "direct_all"}:
-                raise ValueError("FLAGFFT_NPU_2D_LEAF_EXCHANGE must be auto or direct_all")
-            if override == "direct_all":
+            if override not in {"auto", "transpose", "direct_all"}:
+                raise ValueError(
+                    "FLAGFFT_NPU_2D_LEAF_EXCHANGE must be auto, transpose, or direct_all"
+                )
+            if override in {"transpose", "direct_all"}:
                 return override
     if _ix_backend_active():
         defaults = {"EXCHANGE": "direct_all", "SPLIT_ORDER": "lsb"}

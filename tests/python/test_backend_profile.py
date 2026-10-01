@@ -6,7 +6,7 @@ from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
 
 
 class ProfileTest(unittest.TestCase):
-    def test_npu_2d_leaf_direct_exchange_is_scoped_and_validated(self):
+    def test_npu_2d_leaf_exchange_is_scoped_and_validated(self):
         import os
 
         from flagfft_codegen.kernels_common import LeafPlan
@@ -32,14 +32,15 @@ class ProfileTest(unittest.TestCase):
                 {
                     "FLAGFFT_NPU_2D_LEAF_CONTEXT": "1",
                     "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
-                    "FLAGFFT_NPU_2D_LEAF_EXCHANGE": "direct_all",
+                    "FLAGFFT_NPU_2D_LEAF_EXCHANGE": "transpose",
                 },
             ):
-                self.assertEqual(_maca_knob("EXCHANGE"), "direct_all")
+                self.assertEqual(_maca_knob("EXCHANGE"), "transpose")
                 _, source = _build_leaf_kernel_source_for_io(
                     plan, io_mode="contiguous"
                 )
-                self.assertIn("tl.split", source)
+                self.assertIn("exchange_structured_r", source)
+                self.assertIn("tl.trans", source)
             with patch.dict(
                 os.environ,
                 {
@@ -47,7 +48,9 @@ class ProfileTest(unittest.TestCase):
                     "FLAGFFT_NPU_2D_LEAF_EXCHANGE": "join",
                 },
             ):
-                with self.assertRaisesRegex(ValueError, "must be auto or direct_all"):
+                with self.assertRaisesRegex(
+                    ValueError, "must be auto, transpose, or direct_all"
+                ):
                     _maca_knob("EXCHANGE")
         finally:
             reset_profile(profile_token)
