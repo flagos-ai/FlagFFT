@@ -180,6 +180,19 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         throw std::runtime_error("FLAGFFT_NPU_2D_DIRECT_DFT_MAX must be 0, 64, or 128");
       }
     }
+    const char *npu_2d_leaf64 = std::getenv("FLAGFFT_NPU_2D_LEAF64");
+    if (context.origin_rank == 2 && context.input_dtype == "complex64" &&
+        context.output_dtype == "complex64" && n == 64 && npu_2d_leaf64 != nullptr &&
+        std::string(npu_2d_leaf64) == "1") {
+      const std::vector<int64_t> factors = select_leaf_factors(n);
+      if (!should_use_leaf(n, factors)) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF64 requires a supported 64-point leaf");
+      }
+      PlanNodePtr node = make_leaf_plan(n, factors);
+      return {
+          {node, estimate_leaf_warm_cost(n, factors), priority(node)}
+      };
+    }
     if (context.origin_rank == 2 && context.input_dtype == "complex64" &&
         context.output_dtype == "complex64" && context.batch <= 512 && n > 1 && n <= npu_2d_direct_dft_max) {
       PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
