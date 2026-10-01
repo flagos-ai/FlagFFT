@@ -945,6 +945,40 @@ def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch
     assert "tile_col = tile_in_slice // 4" in source
 
 
+def test_maca_long_complex64_transpose_defaults_to_row_tile_traversal(
+    tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit, kernels_common
+
+    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
+    monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", raising=False)
+
+    long_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert long_metadata["kernel_name"].endswith("_rmajor")
+
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "col")
+    rollback_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert not rollback_metadata["kernel_name"].endswith("_rmajor")
+    monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL")
+
+    half_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=33, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert not half_metadata["kernel_name"].endswith("_rmajor")
+
+    double_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex128", out_dir=tmp_path
+    )
+    assert not double_metadata["kernel_name"].endswith("_rmajor")
+
+
 def test_tiled_transpose3d_tile_selected_only_for_validated_backends(
     kernels, tmp_path, monkeypatch
 ) -> None:

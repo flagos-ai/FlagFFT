@@ -765,8 +765,15 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_warps not in {"2", "4", "8"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4 or 8")
+    traversal_default = "col"
+    if (
+        _declared_backend() == "maca"
+        and dtype == "complex64"
+        and tuple(sorted((n0, n1, n2))) == (64, 128, 2048)
+    ):
+        traversal_default = "row"
     maca_traversal = (
-        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "col")
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", traversal_default)
         if _declared_backend() == "maca"
         else "col"
     )
