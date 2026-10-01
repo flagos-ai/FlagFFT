@@ -526,27 +526,6 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
             if override not in {"1", "2", "4", "8"}:
                 raise ValueError("FLAGFFT_MUSA_3D_PACK must be 1, 2, 4 or 8")
             target_pack = int(override)
-    middle_store_pack = os.getenv("FLAGFFT_MACA_3D_MIDDLE_STORE_PACK")
-    if (
-        _declared_backend() == "maca"
-        and plan.dtype == "complex64"
-        and plan.length == 2048
-        and os.getenv("FLAGFFT_MACA_3D_MIDDLE_STORE") == "1"
-        and middle_store_pack == "2"
-    ):
-        # A 2048-point FP32 leaf needs exactly 64 KiB for two permuted-store
-        # slots when each slot is unpadded. The normal 48 KiB pack budget
-        # conservatively selects one slot; permit this explicit experiment
-        # only when the queried device can launch that exact allocation.
-        required_smem = 4 * lane_block_for(plan.smem_size * 2) * _real_element_bytes(plan.dtype)
-        if (
-            profile.max_dynamic_shared_memory is None
-            or required_smem > profile.max_dynamic_shared_memory
-        ):
-            raise ValueError(
-                "MACA middle-store pack=2 exceeds the device shared-memory limit"
-            )
-        return 2
     return _floor_power_of_two(max(1, min(target_pack, smem_pack)))
 
 

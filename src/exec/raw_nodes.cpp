@@ -2804,7 +2804,6 @@ std::string CompiledRaw3DHybridNode::describe() const {
   oss << "CompiledRaw3DHybrid(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", n2_fft=" << n2_fft->describe() << ", n1_fft=" << n1_fft->describe()
       << ", n0_fft=" << n0_fft->describe()
-      << ", perm_210=" << (perm_210 ? perm_210->execution_description() : "fused-into-n1-store")
       << ", perm_201=" << (perm_201 ? perm_201->execution_description() : "null") << ")";
   return oss.str();
 }
@@ -2823,16 +2822,11 @@ flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) return result;
     result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    if (perm_210) {
-      launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), total, batch);
-    }
-    auto n0_input = perm_210 ? temp1.get() : temp2.get();
-    auto n0_output = perm_201 ? (perm_210 ? temp2.get() : temp1.get()) : output;
-    result = n0_fft->execute(n0_input, n0_output, n0_context);
+    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), total, batch);
+    result = n0_fft->execute(temp1.get(), perm_201 ? temp2.get() : output, n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
     if (perm_201) {
-      auto perm_201_input = perm_210 ? temp2.get() : temp1.get();
-      launch_perm3d(perm_201, context.stream, perm_201_input, output, total, batch);
+      launch_perm3d(perm_201, context.stream, temp2.get(), output, total, batch);
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {

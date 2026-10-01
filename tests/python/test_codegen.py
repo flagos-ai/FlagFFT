@@ -269,56 +269,6 @@ def test_permuted_store_pack_masks_only_final_stage_lanes(
 
     assert "lane_mask = base_lane_mask & (lane < 128)" in source
     assert "perm_lane_mask = lane_only < 128" in source
-
-
-def test_maca_long_middle_store_pack2_uses_device_shared_memory_limit(
-    monkeypatch,
-) -> None:
-    from flagfft_codegen.backend_profile import (
-        BackendProfile,
-        reset_profile,
-        set_profile,
-    )
-    from flagfft_codegen.kernels_common import LeafPlan, permuted_store_batch_pack_for
-
-    plan = LeafPlan(
-        length=2048,
-        factors=(16, 8, 16),
-        remainder=1,
-        lanes=128,
-        num_warps=4,
-        generic_radices=(),
-        smem_size=2048,
-        dtype="complex64",
-    )
-    profile_args = {
-        "backend": "maca",
-        "device_arch": "102",
-        "warp_size": 64,
-        "max_threads_per_block": 1024,
-    }
-    profile = BackendProfile.from_device(
-        {**profile_args, "max_dynamic_shared_memory": 65536}
-    )
-    token = set_profile(profile)
-    monkeypatch.setenv("FLAGFFT_MACA_3D_MIDDLE_STORE", "1")
-    monkeypatch.setenv("FLAGFFT_MACA_3D_MIDDLE_STORE_PACK", "2")
-    try:
-        assert permuted_store_batch_pack_for(plan) == 2
-    finally:
-        reset_profile(token)
-
-    limited_profile = BackendProfile.from_device(
-        {**profile_args, "max_dynamic_shared_memory": 49152}
-    )
-    token = set_profile(limited_profile)
-    try:
-        with pytest.raises(ValueError, match="exceeds the device shared-memory limit"):
-            permuted_store_batch_pack_for(plan)
-    finally:
-        reset_profile(token)
-
-
 def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
     forward = kernels.LeafPlan(
         length=8,

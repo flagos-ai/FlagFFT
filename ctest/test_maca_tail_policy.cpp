@@ -167,12 +167,6 @@ TEST_F(TailPolicy, KernelModeIsNarrowAndCacheSeparatesLegacyTree) {
   setenv("FLAGFFT_MACA_3D_C2C_FUSED32", "1", 1);
   EXPECT_NE(baseline, flagfft::maca_tail_codegen_identity("off"));
   unsetenv("FLAGFFT_MACA_3D_C2C_FUSED32");
-  setenv("FLAGFFT_MACA_3D_MIDDLE_STORE", "1", 1);
-  EXPECT_NE(baseline, flagfft::maca_tail_codegen_identity("off"));
-  setenv("FLAGFFT_MACA_3D_MIDDLE_STORE_PACK", "2", 1);
-  EXPECT_NE(baseline, flagfft::maca_tail_codegen_identity("off"));
-  unsetenv("FLAGFFT_MACA_3D_MIDDLE_STORE");
-  unsetenv("FLAGFFT_MACA_3D_MIDDLE_STORE_PACK");
   EXPECT_EQ(baseline, flagfft::maca_tail_codegen_identity("off"));
 }
 
