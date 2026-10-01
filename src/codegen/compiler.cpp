@@ -1876,6 +1876,46 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
+  const char *r2c_fused32_setting = std::getenv("FLAGFFT_HCU_3D_R2C_FUSED32");
+  if (r2c_fused32_setting != nullptr && std::string(r2c_fused32_setting) != "0" &&
+      std::string(r2c_fused32_setting) != "1") {
+    throw std::runtime_error("FLAGFFT_HCU_3D_R2C_FUSED32 must be 0 or 1");
+  }
+  if (request.device_type == "hcu" && !inverse && request.real_transform_kind == "r2c" && batch == 1 &&
+      n0 == 32 && n1 == 32 && n2 == 32 && n0_leaf && n1_leaf && n2_leaf && r2c_fused32_setting != nullptr &&
+      std::string(r2c_fused32_setting) == "1") {
+    std::vector<double> tw_r_d(16);
+    std::vector<double> tw_i_d(16);
+    for (int64_t k = 0; k < 16; ++k) {
+      const double angle = -2.0 * kPi * static_cast<double>(k) / 32.0;
+      tw_r_d[static_cast<std::size_t>(k)] = std::cos(angle);
+      tw_i_d[static_cast<std::size_t>(k)] = std::sin(angle);
+    }
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (request.input_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto plane_key =
+        KernelKey::fused_32_real_plane(triton_target_for_request(request), "forward", request.input_dtype);
+    auto plane_fft = compile_kernel(plane_key);
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, n1 * half);
+    const std::size_t temp_bytes =
+        static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype));
+    DeviceAllocation temp = adaptor::Memory(temp_bytes);
+    return std::make_shared<CompiledRaw3DR2CFusedPlaneNode>(n0,
+                                                            n1,
+                                                            n2,
+                                                            std::move(plane_fft),
+                                                            std::move(outer_fft),
+                                                            std::move(temp),
+                                                            std::move(tw_r),
+                                                            std::move(tw_i));
+  }
   const bool packed_real_boundary =
       !small && hcu_3d_packed_real_boundary_enabled(request, inverse, batch * n0 * n1, n2);
   const char *c2r_middle_transpose_override = std::getenv("FLAGFFT_HCU_3D_C2R_MIDDLE_TRANSPOSE");

@@ -2782,6 +2782,54 @@ flagfftResult CompiledRaw3DFusedPlaneNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DR2CFusedPlaneNode::CompiledRaw3DR2CFusedPlaneNode(int64_t n0,
+                                                               int64_t n1,
+                                                               int64_t n2,
+                                                               std::shared_ptr<JitKernel> plane_fft,
+                                                               std::shared_ptr<CompiledRawNode> outer_fft,
+                                                               DeviceAllocation temp,
+                                                               DeviceAllocation tw_r,
+                                                               DeviceAllocation tw_i)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DR2CFusedPlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DR2CFusedPlane(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", plane_fft=" << plane_fft->execution_description() << ", outer_fft=" << outer_fft->describe()
+      << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DR2CFusedPlaneNode::execute(adaptor::DevicePtr input,
+                                                      adaptor::DevicePtr output,
+                                                      const RawExecutionContext &context) const {
+  try {
+    const int64_t half = n2 / 2 + 1;
+    const int64_t batch = context.batch;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * n0, 1, 1);
+    RawExecutionContext outer_context {context.request, context.stream, batch * n1 * half};
+    return outer_fft->execute(temp.get(), output, outer_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D R2C fused plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DPrimePlaneNode::CompiledRaw3DPrimePlaneNode(
     int64_t n0,
     int64_t n1,

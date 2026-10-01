@@ -100,6 +100,7 @@ struct KernelKey {
   int64_t hcu_3d_middle_batch_pack = 0;
 
   static KernelKey fused_16_plane(std::string target, std::string direction, std::string dtype);
+  static KernelKey fused_32_real_plane(std::string target, std::string direction, std::string dtype);
   static KernelKey fused_rect_plane(std::string target,
                                     std::string direction,
                                     std::string dtype,

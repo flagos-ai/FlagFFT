@@ -112,6 +112,98 @@ def fused_{plane_size}_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     return metadata
 
 
+def emit_fused_32_real_plane_kernel(
+    *, dtype: str, direction: str, out_dir: Path
+) -> dict:
+    """Fuse the two inner axes of a 32x32 real-to-complex plane.
+
+    One block reads a real plane, performs a 32-point R2C on its columns and a
+    32-point complex FFT on its rows, then writes the compact natural layout.
+    The remaining outer-axis FFT can consume that layout with its strided leaf.
+    """
+    if dtype not in {"complex64", "complex128"}:
+        raise ValueError("fused real plane requires a complex precision")
+    if direction != "forward":
+        raise ValueError("fused real plane currently supports the forward direction")
+    scalar = "tl.float64" if dtype == "complex128" else "tl.float32"
+    source = f"""
+@triton.jit
+def fused_32_real_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
+    plane = tl.program_id(0)
+    idx = tl.arange(0, 1024)
+    row = idx // 32
+    col = idx % 32
+    rev_row = tl.full((1024,), 0, tl.int32)
+    rev_col = tl.full((1024,), 0, tl.int32)
+    for bit in tl.static_range(5):
+        rev_row = (rev_row << 1) | ((row >> bit) & 1)
+        rev_col = (rev_col << 1) | ((col >> bit) & 1)
+    src = (plane * 1024 + rev_row * 32 + rev_col)
+    xr = tl.load(in_ptr + src)
+    xi = tl.full((1024,), 0.0, {scalar})
+
+    for stage in tl.static_range(5):
+        partner = idx ^ (1 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (col & (1 << stage)) != 0
+        ar = tl.where(upper, pr, xr)
+        ai = tl.where(upper, pi, xi)
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        tw = (col & ((1 << stage) - 1)) * (32 >> (stage + 1))
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        tr = wr * br - wi * bi
+        ti = wr * bi + wi * br
+        xr = tl.where(upper, ar - tr, ar + tr)
+        xi = tl.where(upper, ai - ti, ai + ti)
+
+    keep = col <= 16
+    xr = tl.where(keep, xr, 0.0)
+    xi = tl.where(keep, xi, 0.0)
+    for stage in tl.static_range(5):
+        partner = idx ^ (32 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (row & (1 << stage)) != 0
+        ar = tl.where(upper, pr, xr)
+        ai = tl.where(upper, pi, xi)
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        tw = (row & ((1 << stage) - 1)) * (32 >> (stage + 1))
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        tr = wr * br - wi * bi
+        ti = wr * bi + wi * br
+        xr = tl.where(upper, ar - tr, ar + tr)
+        xi = tl.where(upper, ai - ti, ai + ti)
+
+    dst = (plane * 32 * 17 + row * 17 + col) * 2
+    tl.store(out_ptr + dst, xr, mask=keep)
+    tl.store(out_ptr + dst + 1, xi, mask=keep)
+"""
+    name = f"flagfft_jit_fused_32_real_plane_{direction}_{_dtype_suffix(dtype)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{name}.py"
+    write_text_atomic(module_path, _module_source(source))
+    args = ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": "fused_32_real_plane_fft_kernel",
+        "signature": _signature(args, dtype),
+        "num_warps": 4 if _hcu_backend_active() else 8,
+        "num_stages": 1,
+        "batch_per_block": 1,
+        "arg_names": args,
+        "kernel_type": "fused_32_real_plane",
+        "dtype": dtype,
+        "direction": direction,
+    }
+    write_text_atomic(out_dir / f"{name}.json", json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
 def emit_fused_rect_plane_kernel(
     *,
     dtype: str,

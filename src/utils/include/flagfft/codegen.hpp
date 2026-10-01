@@ -1032,6 +1032,33 @@ struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
+// Experimental HCU path for a single 32^3 R2C transform. The fused plane
+// kernel transforms the two inner axes and writes compact natural-order data;
+// the existing strided leaf then transforms the outer axis.
+struct CompiledRaw3DR2CFusedPlaneNode final : CompiledRawNode {
+  CompiledRaw3DR2CFusedPlaneNode(int64_t n0,
+                                 int64_t n1,
+                                 int64_t n2,
+                                 std::shared_ptr<JitKernel> plane_fft,
+                                 std::shared_ptr<CompiledRawNode> outer_fft,
+                                 DeviceAllocation temp,
+                                 DeviceAllocation tw_r,
+                                 DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<JitKernel> plane_fft;
+  std::shared_ptr<CompiledRawNode> outer_fft;
+  DeviceAllocation temp;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 // Experimental HCU path for 16x997x64 C2C: fuse the two short axes in one
 // 16x64 plane kernel, run the 997-point transform on contiguous rows, then
 // restore natural output order with one tiled transpose.

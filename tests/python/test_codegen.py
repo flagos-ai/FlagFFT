@@ -75,6 +75,27 @@ def test_codelet_directory_lives_under_codegen(kernels) -> None:
     assert (kernels._CODELET_DIR / "radix16.py").is_file()
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_fused_32_real_plane_kernel_source(tmp_path, dtype) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel
+
+    metadata = emit_fused_32_real_plane_kernel(
+        dtype=dtype,
+        direction="forward",
+        out_dir=tmp_path,
+    )
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, metadata["module_path"], "exec")
+
+    assert metadata["kernel_type"] == "fused_32_real_plane"
+    assert metadata["kernel_name"] == "fused_32_real_plane_fft_kernel"
+    assert metadata["arg_names"] == ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
+    assert "idx = tl.arange(0, 1024)" in source
+    assert "keep = col <= 16" in source
+    assert "row * 17 + col" in source
+    assert "mask=keep" in source
+
+
 def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     plan = kernels.LeafPlan(
         length=16,

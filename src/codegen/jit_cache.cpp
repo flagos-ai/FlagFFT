@@ -380,6 +380,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Fused16Plane:
       kernel_kind = "fused_16_plane";
       break;
+    case KernelKind::Fused32RealPlane:
+      kernel_kind = "fused_32_real_plane";
+      break;
     case KernelKind::FusedRectPlane:
       kernel_kind = "fused_rect_plane";
       break;
@@ -502,6 +505,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused16Cube) {
     jit_command << " --direction " << shell_quote(key.direction)
                 << " --length " << key.length;
+  }
+  if (key.kind == KernelKind::Fused32RealPlane) {
+    jit_command << " --direction " << shell_quote(key.direction) << " --length " << key.length;
   }
   if (key.kind == KernelKind::FusedRectPlane) {
     jit_command << " --direction " << shell_quote(key.direction)
