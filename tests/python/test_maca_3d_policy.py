@@ -115,7 +115,7 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         fp64 = emit._emit_tiled_transpose3d_jit_kernel(
             n0=256, n1=256, n2=256, order="021", dtype="complex128", out_dir=tmp_path
         )
-        assert fp32["kernel_name"].endswith("_t16_tile_pair")
+        assert fp32["kernel_name"].endswith("_t16_tile_pair_rmajor")
         assert fp32["num_warps"] == 8
         assert fp64["kernel_name"].endswith("_t16_tile_vec")
         assert fp64["num_warps"] == 4
