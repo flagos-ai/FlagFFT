@@ -1611,7 +1611,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool maca_fused_real32 = request.device_type == "maca" &&
       n0 == 32 && n1 == 32 && n2 == 32 && batch == 1 &&
       n0_leaf && n1_leaf && n2_leaf &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FUSED32", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FUSED32", true);
   if (maca_fused_real32) {
     const std::string complex_dtype = complex_dtype_for(request.input_dtype);
     std::vector<double> tw_r_d(16);
