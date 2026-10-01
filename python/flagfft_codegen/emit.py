@@ -756,8 +756,14 @@ def _emit_tiled_transpose3d_jit_kernel(
         if _declared_backend() == "maca"
         else "tile32"
     )
-    if maca_mode not in {"tile16", "tile32", "tile64", "pair16", "pair32", "pair64", "v1"}:
-        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, pair32, pair64 or v1")
+    if maca_mode not in {
+        "tile16", "tile32", "tile64", "pair16", "pair32", "pair64",
+        "pair16g2", "pair16g4", "pair16g8", "v1",
+    }:
+        raise ValueError(
+            "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, pair32, "
+            "pair64, pair16g2, pair16g4, pair16g8 or v1"
+        )
     maca_warps = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8" if dtype == "complex64" else "4")
         if _declared_backend() == "maca"
@@ -772,6 +778,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
+    slice_group = 1
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -780,14 +787,26 @@ def _emit_tiled_transpose3d_jit_kernel(
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
     elif dtype == "complex64" and _portable_transpose3d_supported() and maca_mode != "v1":
+        if (
+            _declared_backend() == "maca"
+            and maca_mode.startswith("pair16g")
+            and sorted((n0, n1, n2)) in ([33, 128, 2048], [64, 128, 2048])
+        ):
+            slice_group = int(maca_mode.removeprefix("pair16g"))
         (
             kernel_name,
             kernel_source,
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=int(maca_mode[4:]),
+            n0,
+            n1,
+            n2,
+            order,
+            dtype,
+            tile=16 if maca_mode.startswith("pair16") else int(maca_mode[4:]),
             pair=maca_mode.startswith("pair"),
+            slice_group=slice_group,
         )
     elif dtype == "complex128" and _declared_backend() == "maca" and fp64_mode != "v1":
         (
@@ -805,7 +824,8 @@ def _emit_tiled_transpose3d_jit_kernel(
         )
         grid_x = 0
     suffix = _dtype_suffix(dtype)
-    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}"
+    group_suffix = f"_g{slice_group}" if slice_group > 1 else ""
+    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}{group_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))
@@ -823,6 +843,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         "transpose3d_n1": int(n1),
         "transpose3d_n2": int(n2),
         "transpose3d_order": order,
+        "transpose3d_slice_group": slice_group,
         "grid_x_override": int(grid_x),
     }
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))

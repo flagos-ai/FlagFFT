@@ -830,6 +830,24 @@ def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> Non
     assert "safe_cols[None, :] * 2" in source
 
 
+def test_tiled_transpose3d_groups_slices_per_program(kernels) -> None:
+    (
+        kernel_name,
+        source,
+        _,
+        grid_x,
+    ) = kernels._build_tiled_transpose3d_tile_kernel_source(
+        128, 33, 2048, "021", "complex64", tile=16, pair=True, slice_group=4
+    )
+
+    assert kernel_name.endswith("_g4")
+    assert "tl.arange(0, 4)" in source
+    assert "tl.permute(src_pair, (0, 2, 1))" in source
+    assert "safe_slices[:, None, None] * 67584" in source
+    assert "safe_rows[None, :, None] * 33" in source
+    assert grid_x == ((128 + 3) // 4) * ((2048 + 15) // 16) * ((33 + 15) // 16)
+
+
 def test_tiled_transpose3d_tile_selected_only_for_validated_backends(
     kernels, tmp_path, monkeypatch
 ) -> None:
