@@ -239,7 +239,7 @@ def main() -> None:
         fp64_tile = os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto")
         fused_warps = os.getenv("FLAGFFT_HCU_3D_FUSED_WARPS", "auto")
         transpose_pair = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0")
-        transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32")
+        transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
         full_smem = os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0")
         u64_load = os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1")
         first_pack = os.getenv("FLAGFFT_HCU_3D_FIRST_PACK", "auto")
@@ -261,8 +261,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_FUSED_WARPS must be 1, 2, 4 or 8")
         if transpose_pair not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_TRANSPOSE_PAIR must be 0 or 1")
-        if transpose_tile not in {"16", "32", "64"}:
-            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be 16, 32 or 64")
+        if transpose_tile not in {"auto", "16", "32", "64"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be auto, 16, 32 or 64")
         if full_smem not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_FULL_SMEM must be 0 or 1")
         if u64_load not in {"0", "1"}:

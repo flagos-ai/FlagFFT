@@ -798,7 +798,19 @@ def _emit_tiled_transpose3d_jit_kernel(
             packed_complex = os.getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE") == "1"
         elif _hcu_backend_active():
             if dtype == "complex64":
-                tile = int(os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "32"))
+                transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
+                if transpose_tile == "auto":
+                    tile = (
+                        16
+                        if (n0, n1, n2, order)
+                        in {
+                            (16, 64, 997, "210"),
+                            (16, 33, 997, "210"),
+                        }
+                        else 32
+                    )
+                else:
+                    tile = int(transpose_tile)
             pair_store = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1"
         (
             kernel_name,
