@@ -760,11 +760,11 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_mode not in {
         "tile16", "tile32", "tile64", "pair16", "pair32", "pair64",
-        "pair16sg2rg2", "v1",
+        "pair16sg2rg2", "pair16sg2rg2par", "v1",
     }:
         raise ValueError(
             "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, "
-            "pair32, pair64, pair16sg2rg2 or v1"
+            "pair32, pair64, pair16sg2rg2, pair16sg2rg2par or v1"
         )
     maca_warps = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8" if dtype == "complex64" else "4")
@@ -823,7 +823,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
-    if maca_mode == "pair16sg2rg2" and _portable_transpose3d_supported():
+    if maca_mode in {"pair16sg2rg2", "pair16sg2rg2par"} and _portable_transpose3d_supported():
         if dtype != "complex64" or maca_warps != "8" or maca_traversal != "row":
             raise ValueError(
                 "pair16sg2rg2 requires complex64, 8 warps and row traversal"
@@ -842,6 +842,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             n0, n1, n2, order, tile=16, slice_group=2,
             row_group=2,
             tile_traversal=maca_traversal,
+            parallel_row_group=maca_mode == "pair16sg2rg2par",
         )
     elif dtype == "complex64" and _transpose3d_v2_supported():
         (
