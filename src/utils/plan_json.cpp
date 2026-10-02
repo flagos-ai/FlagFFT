@@ -154,6 +154,7 @@ nlohmann::json problem_key_to_json(const ProblemKey &key) {
   out["input_layout"] = key.input_layout;
   out["requires_contiguous_copy"] = key.requires_contiguous_copy;
   out["maca_3d_c2c32_single_cube"] = key.maca_3d_c2c32_single_cube;
+  out["maca_3d_c2c16_single_cube"] = key.maca_3d_c2c16_single_cube;
   out["direction"] = key.direction;
   out["hash"] = static_cast<uint64_t>(ProblemKeyHash {}(key));
   return out;

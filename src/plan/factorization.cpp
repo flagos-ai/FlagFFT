@@ -135,6 +135,17 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // participation. Enable the measured 3D single-cube variant narrowly.
     return {4, 4, 2};
   }
+  if (context.maca_3d_c2c16_single_cube && n == 16) {
+    const char *more_lanes = std::getenv("FLAGFFT_MACA_3D_C2C16_MORE_LANES");
+    if (more_lanes != nullptr && std::string(more_lanes) == "1") {
+      // Probe the batch-1 lane-participation effect found in MACA 1D tuning.
+      return {4, 4};
+    }
+    if (more_lanes != nullptr && std::string(more_lanes) != "0") {
+      throw std::runtime_error("FLAGFFT_MACA_3D_C2C16_MORE_LANES must be 0 or 1");
+    }
+    return {16};
+  }
   if (context.device_type == "maca" && context.origin_rank == 3) {
     // This order retains the 128 collaboration lanes and 4-warps block while
     // slightly improving the direct C550 2048-point 3D axis. Keep it off the
