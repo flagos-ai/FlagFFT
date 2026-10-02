@@ -196,9 +196,40 @@ def test_maca_environment_fingerprint_separates_variants():
 
     pack1 = {"FLAGFFT_MACA_3D_N128_PACK": "1"}
     pack4 = {"FLAGFFT_MACA_3D_N128_PACK": "4"}
+    more_lanes = {"FLAGFFT_MACA_3D_C2C32_MORE_LANES": "1"}
     other_backend = {"FLAGFFT_IX_WARPS": "4"}
     assert _maca_environment_fingerprint({}) == ""
     assert _maca_environment_fingerprint(pack1) != _maca_environment_fingerprint(pack4)
     assert _maca_environment_fingerprint(pack1) == _maca_environment_fingerprint(
         {**pack1, **other_backend}
     )
+    assert _maca_environment_fingerprint(more_lanes) != ""
+
+
+def test_maca_3d_c2c32_more_lanes_keeps_candidate_factors(monkeypatch):
+    from flagfft_codegen.kernels_common import emitted_leaf_factors
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.target import set_codegen_target
+
+    profile = set_profile(
+        BackendProfile.from_device(
+            {"backend": "maca", "device_arch": "102", "warp_size": 64,
+             "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536}
+        )
+    )
+    plan = LeafPlan(32, (4, 4, 2), 1, 8, 2, (), 32, dtype="complex128")
+    set_codegen_target("maca:102:64")
+    try:
+        monkeypatch.delenv("FLAGFFT_MACA_3D_C2C32_MORE_LANES", raising=False)
+        assert emitted_leaf_factors(plan, "strided") == (32,)
+
+        monkeypatch.setenv("FLAGFFT_MACA_3D_C2C32_MORE_LANES", "1")
+        assert emitted_leaf_factors(plan, "strided") == (4, 4, 2)
+        kernel_name, source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="strided"
+        )
+        assert "_kernel_4_4_2_l8_b128" in kernel_name
+        assert "tl.arange(0, 128)" in source
+    finally:
+        set_codegen_target("")
+        reset_profile(profile)

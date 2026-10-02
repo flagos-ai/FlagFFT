@@ -14,6 +14,8 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
+
 namespace flagfft {
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
@@ -121,6 +123,20 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.device_type == "maca" && context.device_arch == "102" &&
+      context.origin_rank == 3 && context.requested_n == n && n == 32 &&
+      context.batch == 1 && context.input_dtype == "complex128" &&
+      context.output_dtype == "complex128") {
+    const char *more_lanes = std::getenv("FLAGFFT_MACA_3D_C2C32_MORE_LANES");
+    if (more_lanes != nullptr && std::string(more_lanes) == "1") {
+      // Screen the 1D batch-1 finding that additional short radix stages can
+      // raise lane participation. The default remains the register codelet.
+      return {4, 4, 2};
+    }
+    if (more_lanes != nullptr && std::string(more_lanes) != "0") {
+      throw std::runtime_error("FLAGFFT_MACA_3D_C2C32_MORE_LANES must be 0 or 1");
+    }
+  }
   if (context.device_type == "maca" && context.origin_rank == 3) {
     // This order retains the 128 collaboration lanes and 4-warps block while
     // slightly improving the direct C550 2048-point 3D axis. Keep it off the

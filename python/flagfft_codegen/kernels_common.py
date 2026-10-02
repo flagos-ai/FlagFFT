@@ -241,6 +241,14 @@ def emitted_leaf_factors(
 ) -> tuple[int, ...]:
     if (
         _portable_leaf_backend_active()
+        and _maca_knob("3D_C2C32_MORE_LANES") == "1"
+        and plan.length == 32
+        and plan.dtype == "complex128"
+        and plan.factors == (4, 4, 2)
+    ):
+        return plan.factors
+    if (
+        _portable_leaf_backend_active()
         and io_mode not in {"bluestein_full_leaf", "rader_full_leaf"}
         and plan.length
         in _NATURAL_ORDER_CODELET_RADICES | _THREAD_LOCAL_MIXED_RADICES | {16}
