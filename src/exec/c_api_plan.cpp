@@ -202,6 +202,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
           (plan->desc.type == FLAGFFT_Z2D || plan->desc.type == FLAGFFT_D2Z || plan->desc.type == FLAGFFT_Z2Z)
               ? FLAGFFT_Z2Z
               : FLAGFFT_C2C;
+      const bool maca_c2c32_single_cube = adaptor::backend_name() == "maca" &&
+                                          plan->desc.device_arch == "102" && plan->desc.type == FLAGFFT_Z2Z &&
+                                          plan->desc.precision == FlagFFTPrecision::Float64 && batch == 1 &&
+                                          n0 == 32 && n1 == 32 && n2 == 32;
 
       // RTRT decomposition: FFT along the innermost axis n2, then the middle
       // axis n1, then the outermost axis n0, with a 3D axis permutation
@@ -222,11 +226,13 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         axis_desc.odist = length;
         axis_desc.batch = axis_batch;
         FFTRequest axis_request = request_from_desc(axis_desc, direction, plan->desc.rank);
+        axis_request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
         PlanNodePtr axis_plan = lookup_or_build_root(builder, axis_request);
         if (!raw_supported_node(axis_plan)) {
-          axis_plan = lookup_or_build_root(
-              builder,
-              request_from_desc(axis_desc, direction == "forward" ? "inverse" : "forward", plan->desc.rank));
+          FFTRequest fallback_request =
+              request_from_desc(axis_desc, direction == "forward" ? "inverse" : "forward", plan->desc.rank);
+          fallback_request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
+          axis_plan = lookup_or_build_root(builder, fallback_request);
         }
         if (!raw_supported_node(axis_plan)) {
           axis_plan = raw_compatible_rader_plan(length, builder, axis_request);

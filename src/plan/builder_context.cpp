@@ -44,12 +44,7 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.origin_rank = request.origin_rank;
   context.requested_n = request.requested_n;
   context.batch = request.batch;
-  const auto &shape = request.input_shape;
-  context.maca_3d_c2c32_single_cube =
-      request.device_type == "maca" && request.origin_rank == 3 && request.batch == 1 &&
-      request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
-      shape.size() == 4 && shape[0] == 1 && shape[1] == 32 && shape[2] == 32 &&
-      shape[3] == 32;
+  context.maca_3d_c2c32_single_cube = request.maca_3d_c2c32_single_cube;
   context.ix_short_single = request.requested_n == 1024 && ix_ct_single_policy_enabled(request);
   context.ix_ct_batch = ix_ct_batch_policy_enabled(request);
   if (request.device_type == adaptor::backend_name()) {

@@ -33,6 +33,7 @@ struct ProblemKey {
   std::vector<int64_t> input_strides;
   std::string input_layout;
   bool requires_contiguous_copy = false;
+  bool maca_3d_c2c32_single_cube = false;
   std::string direction;
 
   static ProblemKey from_request(const FFTRequest &request);
