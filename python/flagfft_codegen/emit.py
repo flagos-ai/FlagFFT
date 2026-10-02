@@ -789,7 +789,10 @@ def _emit_tiled_transpose3d_jit_kernel(
             and maca_mode == "pair16"
             and maca_warps == "8"
             and maca_traversal == "row"
-            and (n0, n1, n2) == (256, 256, 256)
+            and tuple(sorted((n0, n1, n2))) in {
+                (64, 128, 2048),
+                (256, 256, 256),
+            }
         )
         else "1"
     )
