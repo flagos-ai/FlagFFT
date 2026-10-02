@@ -31,6 +31,7 @@ from .artifacts import write_text_atomic
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
+    _declared_backend,
     _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
@@ -773,6 +774,13 @@ def _emit_tiled_transpose3d_jit_kernel(
     dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
+    transpose_warps = 4
+    if _declared_backend() == "npu":
+        raw_warps = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_WARPS")
+        if raw_warps is not None:
+            if raw_warps not in {"4", "8", "16"}:
+                raise ValueError("FLAGFFT_NPU_3D_TRANSPOSE_WARPS must be 4, 8 or 16")
+            transpose_warps = int(raw_warps)
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -805,7 +813,14 @@ def _emit_tiled_transpose3d_jit_kernel(
         )
         grid_x = 0
     suffix = _dtype_suffix(dtype)
-    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}"
+    warp_suffix = f"_w{transpose_warps}" if transpose_warps != 4 else ""
+    if warp_suffix:
+        kernel_name_with_warps = f"{kernel_name}{warp_suffix}"
+        kernel_source = kernel_source.replace(
+            f"def {kernel_name}(", f"def {kernel_name_with_warps}(", 1
+        )
+        kernel_name = kernel_name_with_warps
+    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}{warp_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))
@@ -813,7 +828,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": 4,
+        "num_warps": transpose_warps,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": arg_names,
