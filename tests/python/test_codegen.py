@@ -943,6 +943,47 @@ def test_tiled_transpose3d_pair_slice_group_emits_sequential_2d_register_tiles()
     assert grid_x == 128 * 16 * 16
 
 
+def test_tiled_transpose3d_pair_slice_row_group_emits_independent_tiles() -> None:
+    from flagfft_codegen.kernels_layout import (
+        _build_tiled_transpose3d_pair_slice_row_group_kernel_source,
+    )
+
+    kernel_name, source, _, grid_x = (
+        _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
+            256, 256, 256, "021", tile=16, slice_group=2, row_group=2,
+            tile_traversal="row",
+        )
+    )
+
+    assert kernel_name.endswith("_t16_tile_pair_sliceg2seq_rowg2seq_rmajor")
+    assert "for slice_group_offset in tl.static_range(0, 2):" in source
+    assert "for row_group_offset in tl.static_range(0, 2):" in source
+    assert "dst_pair = tl.trans(src_pair)" in source
+    assert "tile_row_group = tile_in_slice % 8" in source
+    assert grid_x == 128 * 8 * 16
+
+
+def test_maca_pair16_slice_row_group_codegen_is_opt_in(tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit, kernels_common
+
+    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16sg2rg2")
+
+    metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+
+    assert metadata["kernel_name"].endswith(
+        "_t16_tile_pair_sliceg2seq_rowg2seq_rmajor"
+    )
+    assert metadata["num_warps"] == 8
+    assert metadata["grid_x_override"] == 16384
+    assert "for row_group_offset in tl.static_range(0, 2):" in source
+
+
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit, kernels_common
 
