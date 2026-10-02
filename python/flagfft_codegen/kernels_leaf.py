@@ -463,6 +463,61 @@ def _emit_lane_output_base(
     return lines
 
 
+def _emit_grouped_maca_fp32_permuted_store(
+    indent: str,
+    factors: tuple[int, ...],
+    radix: int,
+    pack: int,
+    lane_block: int,
+) -> list[str]:
+    """Transpose a full final radix group once for the MACA FP32 cube path."""
+    lines: list[str] = []
+    pairs = []
+    for digit in range(radix):
+        pair_name = f"perm_group_pair_flat{digit}"
+        pairs.append(pair_name)
+        lines.append(
+            f"{indent}{pair_name} = "
+            f"tl.cast(tl.cast(r{digit}, tl.uint32, bitcast=True), tl.uint64) "
+            f"| (tl.cast(tl.cast(i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)"
+        )
+
+    level = pairs
+    level_id = 0
+    while len(level) > 1:
+        next_level = []
+        for pair_index in range(0, len(level), 2):
+            joined = f"perm_group_join_{level_id}_{pair_index // 2}"
+            lines.append(
+                f"{indent}{joined} = tl.join({level[pair_index]}, {level[pair_index + 1]})"
+            )
+            next_level.append(joined)
+        level = next_level
+        level_id += 1
+
+    lines.extend(
+        [
+            f"{indent}perm_group_pair_raw = tl.reshape({level[0]}, "
+            f"({pack}, {lane_block * radix}))",
+            f"{indent}perm_group_pair_out = tl.trans(perm_group_pair_raw)",
+            f"{indent}perm_group_digit = tl.arange(0, {radix})",
+            f"{indent}perm_group_base = tl.reshape(output_base_lane[:, None] + "
+            f"perm_group_digit[None, :] * {math.prod(factors[:-1])}, "
+            f"({lane_block * radix},))",
+            f"{indent}perm_group_addr = perm_group_base[:, None] * "
+            "perm_k_stride + perm_gbase[None, :]",
+            f"{indent}perm_group_mask = tl.reshape(tl.broadcast_to("
+            f"perm_store_mask[:, None, :], ({lane_block}, {radix}, {pack})), "
+            f"({lane_block * radix}, {pack}))",
+            f"{indent}perm_group_ptr = tl.cast(out_ptr + perm_group_addr * 2, "
+            "tl.pointer_type(tl.uint64))",
+            f"{indent}tl.store(perm_group_ptr, perm_group_pair_out, "
+            "mask=perm_group_mask)",
+        ]
+    )
+    return lines
+
+
 def _emit_permuted_store(
     indent: str,
     digit: int,
@@ -1716,9 +1771,26 @@ def _emit_stage_block(
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
 
+    grouped_maca_cube_store = (
+        is_last
+        and io_mode == "permuted_store"
+        and _packed_maca_fp32_complex_io(dtype)
+        and math.prod(factors) == 256
+        and radix in {2, 4, 8, 16, 32}
+        and smem_pack > 1
+    )
+    if grouped_maca_cube_store:
+        lines.extend(
+            _emit_grouped_maca_fp32_permuted_store(
+                indent, factors, radix, smem_pack, lane_block
+            )
+        )
+
     for j in range(radix):
         if is_last:
             if io_mode in {"permuted_store", "permuted_store_r2c"}:
+                if grouped_maca_cube_store:
+                    continue
                 compact_length = n // 2 + 1 if io_mode == "permuted_store_r2c" else None
                 lines.extend(
                     _emit_permuted_store(

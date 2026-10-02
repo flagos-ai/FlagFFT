@@ -222,11 +222,16 @@ def test_maca_packed_permuted_store_is_fp32_only(
 
     if dtype == "complex64":
         assert "tl.pointer_type(tl.uint64)" in source
-        assert "tl.store(perm_ptr0, perm_pair0" in source
         assert "tl.store(out_ptr + perm_addr0 * 2 + 1" not in source
         if pack > 1:
-            assert "perm_pair0 = tl.trans(tl.reshape(perm_pair_flat0" in source
+            assert "perm_group_pair_out = tl.trans(perm_group_pair_raw)" in source
+            assert "perm_group_pair_flat0 = " in source
+            assert "perm_group_addr = perm_group_base[:, None] * perm_k_stride" in source
+            assert "perm_pair0 = tl.trans(tl.reshape" not in source
             assert "zr0 = tl.trans(tl.reshape(r0" not in source
+            assert "tl.store(perm_group_ptr, perm_group_pair_out" in source
+        else:
+            assert "tl.store(perm_ptr0, perm_pair0" in source
     else:
         assert "perm_pair0" not in source
         assert "tl.store(out_ptr + perm_addr0 * 2 + 1" in source
