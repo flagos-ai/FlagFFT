@@ -1924,6 +1924,17 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
         return result;
       }
 
+#if defined(FLAGFFT_BACKEND_NPU)
+      const char *debug_row = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV_DEBUG_ROW");
+      if (n0 == 64 && n1 == 64 && debug_row != nullptr && std::string(debug_row) == "1" &&
+          row_fft->describe().find("CompiledRawNpuAivFFT64") != std::string::npos) {
+        const std::size_t bytes = static_cast<std::size_t>(batch * n0 * n1) *
+                                  static_cast<std::size_t>(complex_element_bytes(context.request.output_dtype));
+        adaptor::copy_device_to_device(output, temp1.get(), bytes, context.stream);
+        return FLAGFFT_SUCCESS;
+      }
+#endif
+
       // Step 2: Transform the second axis and let its compiled output layout
       // produce the natural (batch, n0, n1) result. This is strided for the
       // portable RC path and contiguous for the transposed Cube path.
