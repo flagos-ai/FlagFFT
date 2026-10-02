@@ -533,8 +533,8 @@ def _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
     if order not in {"021", "210", "201", "120"}:
         raise ValueError(f"unsupported 3D transpose order: {order}")
     for value, name in ((slice_group, "slice_group"), (row_group, "row_group")):
-        if value < 2 or value & (value - 1):
-            raise ValueError(f"{name} must be a power of two greater than one")
+        if value < 1 or value & (value - 1):
+            raise ValueError(f"{name} must be a positive power of two")
     if tile_traversal not in {"col", "row"}:
         raise ValueError("tile_traversal must be col or row")
 
