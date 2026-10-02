@@ -226,6 +226,8 @@ def test_maca_packed_permuted_store_is_fp32_only(
         if pack > 1:
             assert "perm_group_pair_out = tl.trans(perm_group_pair_raw)" in source
             assert "perm_group_pair_flat0 = " in source
+            assert "perm_group_join_0_0 = tl.join(perm_group_pair_flat0, perm_group_pair_flat2)" in source
+            assert "perm_group_join_0_1 = tl.join(perm_group_pair_flat1, perm_group_pair_flat3)" in source
             assert "perm_group_addr = perm_group_base[:, None] * perm_k_stride" in source
             assert "perm_pair0 = tl.trans(tl.reshape" not in source
             assert "zr0 = tl.trans(tl.reshape(r0" not in source

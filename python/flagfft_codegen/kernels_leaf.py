@@ -484,16 +484,19 @@ def _emit_grouped_maca_fp32_permuted_store(
 
     level = pairs
     level_id = 0
-    while len(level) > 1:
+    join_stride = radix // 2
+    while join_stride > 0:
         next_level = []
-        for pair_index in range(0, len(level), 2):
-            joined = f"perm_group_join_{level_id}_{pair_index // 2}"
+        for pair_index in range(join_stride):
+            joined = f"perm_group_join_{level_id}_{pair_index}"
             lines.append(
-                f"{indent}{joined} = tl.join({level[pair_index]}, {level[pair_index + 1]})"
+                f"{indent}{joined} = tl.join({level[pair_index]}, "
+                f"{level[pair_index + join_stride]})"
             )
             next_level.append(joined)
         level = next_level
         level_id += 1
+        join_stride //= 2
 
     lines.extend(
         [
