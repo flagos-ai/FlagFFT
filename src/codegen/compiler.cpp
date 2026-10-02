@@ -1466,14 +1466,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       request.device_type == "maca" && request.input_dtype == "complex128";
   const bool first_store_dtype_supported = request.input_dtype == "complex64" ||
       maca_first_store_fp64_enabled;
+  // Screen the MUSA-style idea of fusing only the first transpose store on a
+  // large cube. Keep it opt-in: the default MACA path still uses standalone
+  // transposes, and the full three-store fusion has already regressed here.
+  const bool maca_cube_first_store_screen = request.device_type == "maca" &&
+      request.input_dtype == "complex64" && n0 == 256 && n1 == 256 && n2 == 256 &&
+      maca_first_store_enabled;
   const bool use_long_axis_hybrid =
       (request.device_type == "musa" && fused_3d_store_enabled()) ||
       maca_first_store_enabled;
   if (use_long_axis_hybrid && first_store_dtype_supported &&
       n2_leaf && n1_leaf && n0_leaf &&
-      n1 >= 1024 &&
-      n1 >= 4 * std::max(n0, n2) &&
-      batch * n0 * n1 * n2 > kStridedMaxElements) {
+      ((n1 >= 1024 && n1 >= 4 * std::max(n0, n2) &&
+        batch * n0 * n1 * n2 > kStridedMaxElements) ||
+       maca_cube_first_store_screen)) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
