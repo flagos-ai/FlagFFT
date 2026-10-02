@@ -259,6 +259,7 @@ def main() -> None:
         swizzle_shift = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5")
         factors_256 = os.getenv("FLAGFFT_HCU_3D_256_FACTORS", "auto")
         factors_2048 = os.getenv("FLAGFFT_HCU_3D_2048_FACTORS", "auto")
+        r2c_fp64_factors_2048 = os.getenv("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS", "auto")
         if pair_store not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_PAIR_STORE must be 0 or 1")
         if permuted_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
@@ -308,6 +309,11 @@ def main() -> None:
             parser.error(
                 "FLAGFFT_HCU_3D_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16"
             )
+        if r2c_fp64_factors_2048 not in {"auto", "16,16,8", "8,16,16", "16,8,16"}:
+            parser.error(
+                "FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS must be auto, 16,16,8, "
+                "8,16,16 or 16,8,16"
+            )
         profile_dir += (f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"
                         f"-fp64-tile-{fp64_tile}-warps-{fused_warps}"
                         f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
@@ -318,6 +324,10 @@ def main() -> None:
                         f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
         if factors_256 != "auto":
             profile_dir += f"-f{factors_256.replace(',', '')}"
+        if r2c_fp64_factors_2048 != "auto":
+            profile_dir += (
+                f"-r2c-fp64-2048-f{r2c_fp64_factors_2048.replace(',', '')}"
+            )
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
