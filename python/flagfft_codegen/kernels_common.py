@@ -520,23 +520,6 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
                     "FLAGFFT_MACA_3D_PERMSTORE_PACK must be 1, 2, 4, 8, 16, 32 or auto"
                 )
             target_pack = int(override)
-    # The opt-in 256^3 C2C first-store screen uses the generic permuted-store
-    # pack=4 by default. Let that one experiment lower the store pack without
-    # changing ordinary contiguous leaves or the validated long-axis policy.
-    if (
-        _declared_backend() == "maca"
-        and maca_3d_default_enabled()
-        and plan.dtype == "complex64"
-        and plan.length == 256
-        and os.getenv("FLAGFFT_MACA_3D_FIRST_STORE") == "1"
-    ):
-        override = os.getenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
-        if override is not None and override != "auto":
-            if override not in {"1", "2", "4", "8", "16", "32"}:
-                raise ValueError(
-                    "FLAGFFT_MACA_3D_PERMSTORE_PACK must be 1, 2, 4, 8, 16, 32 or auto"
-                )
-            target_pack = int(override)
     if _mthreads_backend_active():
         override = os.getenv("FLAGFFT_MUSA_3D_PACK")
         if override is not None and override != "auto":
