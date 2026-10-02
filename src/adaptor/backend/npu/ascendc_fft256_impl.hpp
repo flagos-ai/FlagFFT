@@ -199,6 +199,7 @@ class Fft256Aiv {
       swap = current_imag;
       current_imag = next_imag;
       next_imag = swap;
+      PipeBarrier<PIPE_ALL>();
     }
 
     LocalTensor<float> merged = work[8 * group_n];
@@ -227,4 +228,3 @@ class Fft256Aiv {
   uint32_t transform_count_ = 0;
 };
 }  // namespace
-
