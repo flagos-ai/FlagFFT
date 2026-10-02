@@ -123,18 +123,17 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
-  if (context.device_type == "maca" && context.origin_rank == 3 && n == 32 &&
-      context.input_dtype == "complex128" &&
-      context.output_dtype == "complex128") {
+  if (context.maca_3d_c2c32_single_cube && n == 32) {
     const char *more_lanes = std::getenv("FLAGFFT_MACA_3D_C2C32_MORE_LANES");
-    if (more_lanes != nullptr && std::string(more_lanes) == "1") {
-      // Screen the 1D batch-1 finding that additional short radix stages can
-      // raise lane participation. The default remains the register codelet.
-      return {4, 4, 2};
+    if (more_lanes != nullptr && std::string(more_lanes) == "0") {
+      return {32};
     }
-    if (more_lanes != nullptr && std::string(more_lanes) != "0") {
+    if (more_lanes != nullptr && std::string(more_lanes) != "1") {
       throw std::runtime_error("FLAGFFT_MACA_3D_C2C32_MORE_LANES must be 0 or 1");
     }
+    // 1D MACA batch-1 tests found that more short radix stages can raise lane
+    // participation. Enable the measured 3D single-cube variant narrowly.
+    return {4, 4, 2};
   }
   if (context.device_type == "maca" && context.origin_rank == 3) {
     // This order retains the 128 collaboration lanes and 4-warps block while

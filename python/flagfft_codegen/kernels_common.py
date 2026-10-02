@@ -241,7 +241,6 @@ def emitted_leaf_factors(
 ) -> tuple[int, ...]:
     if (
         _portable_leaf_backend_active()
-        and _maca_knob("3D_C2C32_MORE_LANES") == "1"
         and plan.length == 32
         and plan.dtype == "complex128"
         and plan.factors == (4, 4, 2)

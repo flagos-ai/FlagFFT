@@ -26,7 +26,9 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          device_type == other.device_type && device_index == other.device_index &&
          device_arch == other.device_arch && origin_rank == other.origin_rank &&
          requested_n == other.requested_n &&
-         batch == other.batch && ix_short_single == other.ix_short_single &&
+         batch == other.batch &&
+         maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube &&
+         ix_short_single == other.ix_short_single &&
          ix_ct_batch == other.ix_ct_batch &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
@@ -42,6 +44,12 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.origin_rank = request.origin_rank;
   context.requested_n = request.requested_n;
   context.batch = request.batch;
+  const auto &shape = request.input_shape;
+  context.maca_3d_c2c32_single_cube =
+      request.device_type == "maca" && request.origin_rank == 3 && request.batch == 1 &&
+      request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+      shape.size() == 4 && shape[0] == 1 && shape[1] == 32 && shape[2] == 32 &&
+      shape[3] == 32;
   context.ix_short_single = request.requested_n == 1024 && ix_ct_single_policy_enabled(request);
   context.ix_ct_batch = ix_ct_batch_policy_enabled(request);
   if (request.device_type == adaptor::backend_name()) {
