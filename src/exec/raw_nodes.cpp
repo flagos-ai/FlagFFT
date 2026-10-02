@@ -3563,14 +3563,16 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
     const int64_t half = n2 / 2 + 1;
     const int64_t packed = n0 * n1 * half;
     RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
-    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
-    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
+    FFTRequest n1_request = context.request;
+    FFTRequest n0_request = context.request;
     if (context.request.device_type == "npu") {
-      n1_context.request.real_transform_kind.clear();
-      n1_context.request.real_transform = false;
-      n0_context.request.real_transform_kind.clear();
-      n0_context.request.real_transform = false;
+      n1_request.real_transform_kind.clear();
+      n1_request.real_transform = false;
+      n0_request.real_transform_kind.clear();
+      n0_request.real_transform = false;
     }
+    RawExecutionContext n1_context {n1_request, context.stream, batch * n0 * half};
+    RawExecutionContext n0_context {n0_request, context.stream, batch * n1 * half};
     const bool has_perm_021 = perm_021 != nullptr || !npu_transpose_indices.empty();
     const bool has_perm_210 = perm_210 != nullptr || !npu_transpose_indices.empty();
     const bool has_perm_201 = perm_201 != nullptr || !npu_transpose_indices.empty();
