@@ -813,13 +813,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                                                   const FFTRequest &request) {
   std::string target = triton_target_for_request(request);
   int64_t num_warps = leaf.num_warps;
-  const bool maca_long_2048_c2c_axis =
-      request.device_type == "maca" && request.device_arch == "102" &&
-      request.origin_rank == 3 && !request.real_transform &&
-      request.requested_n == 2048 && leaf.length == 2048 &&
-      request.input_shape.size() == 2 && request.input_shape[0] == 8192 &&
-      request.input_shape[1] == 2048;
-  if (maca_long_2048_c2c_axis) {
+  if (request.device_type == "maca" && leaf.length == 2048) {
     if (const char *value = std::getenv("FLAGFFT_MACA_3D_N2048_WARPS")) {
       const int64_t override = std::strtoll(value, nullptr, 10);
       if (override != 2 && override != 4) {
