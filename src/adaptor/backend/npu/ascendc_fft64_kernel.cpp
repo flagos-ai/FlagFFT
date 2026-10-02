@@ -225,7 +225,7 @@ class Fft64Aiv {
     DataCopy(twiddle_local, twiddles_, group_twiddle_count);
     PipeBarrier<PIPE_ALL>();
 
-    TransformGroup4(0, source_base);
+    TransformGroup4(0, source_base, false);
   }
 
   __aicore__ inline void ProcessGroup8(uint32_t transform) {
@@ -257,13 +257,14 @@ class Fft64Aiv {
     DataCopy(twiddle_local, twiddles_, kComputeTwiddleCount);
     PipeBarrier<PIPE_ALL>();
 
-    TransformGroup4(0, source_base);
+    TransformGroup4(0, source_base, true);
     const uint32_t second_output_base = source_base + (strided ? 4 : 4 * kN);
-    TransformGroup4(kComputeIndexCount, second_output_base);
+    TransformGroup4(kComputeIndexCount, second_output_base, false);
   }
 
   __aicore__ inline void TransformGroup4(uint32_t input_index_offset,
-                                         uint32_t output_base) {
+                                         uint32_t output_base,
+                                         bool wait_before_reuse) {
     constexpr uint32_t group_n = kComputeGroupN;
     constexpr uint32_t output_index_base = kComputeOutputIndexBase;
     constexpr uint32_t stage_index_base = kComputeStageIndexBase;
@@ -341,7 +342,7 @@ class Fft64Aiv {
       dst.SetGlobalBuffer(output_ptr_ + output_base * 2);
       DataCopy(dst, output_local, 2 * group_n);
     }
-    PipeBarrier<PIPE_ALL>();
+    if (wait_before_reuse) PipeBarrier<PIPE_ALL>();
   }
 
  private:
