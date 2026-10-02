@@ -993,6 +993,17 @@ def test_maca_256_cube_pair_slice_group_is_scoped_to_pair16_eight_warps(
     )
     assert long_metadata["grid_x_override"] == 32768
 
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "4")
+    long_group4 = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    group4_source = Path(long_group4["module_path"]).read_text()
+    assert long_group4["kernel_name"].endswith(
+        "_t16_tile_pair_sliceg4seq_rmajor"
+    )
+    assert long_group4["grid_x_override"] == 16384
+    assert "for group_offset in tl.static_range(0, 4):" in group4_source
+
 
 def test_maca_long_complex64_transpose_defaults_to_row_tile_traversal(
     tmp_path, monkeypatch
