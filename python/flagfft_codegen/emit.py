@@ -799,15 +799,15 @@ def _emit_tiled_transpose3d_jit_kernel(
     maca_slice_group = os.environ.get(
         "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", maca_slice_group_default
     )
-    if maca_slice_group not in {"1", "2"}:
-        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP must be 1 or 2")
+    if maca_slice_group not in {"1", "2", "4"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP must be 1, 2 or 4")
     maca_grouped_slice_tile = (
         _declared_backend() == "maca"
         and dtype == "complex64"
         and maca_mode == "pair16"
         and maca_warps == "8"
         and maca_traversal == "row"
-        and maca_slice_group == "2"
+        and maca_slice_group in {"2", "4"}
     )
     fp64_mode = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
@@ -830,7 +830,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_pair_slice_group_kernel_source(
-            n0, n1, n2, order, tile=16, slice_group=2,
+            n0, n1, n2, order, tile=16, slice_group=int(maca_slice_group),
             tile_traversal=maca_traversal,
         )
     elif dtype == "complex64" and _portable_transpose3d_supported() and maca_mode != "v1":
