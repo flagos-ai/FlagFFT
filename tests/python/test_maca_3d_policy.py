@@ -12,6 +12,7 @@ from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 
 def test_maca_3d_packing_scope_and_override(monkeypatch):
     for name in ("FLAGFFT_MACA_BATCH_PACK", "FLAGFFT_MACA_3D_N64_PACK",
+                 "FLAGFFT_MACA_3D_N2048_PACK",
                  "FLAGFFT_MACA_3D_N128_PACK", "FLAGFFT_MACA_EXCHANGE",
                  "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_3D_PERMSTORE_PACK"):
         monkeypatch.delenv(name, raising=False)
@@ -27,6 +28,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     double = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex128")
     single128 = LeafPlan(128, (4, 4, 4, 2), 1, 32, 2, (), 128, dtype="complex64")
     long_middle = LeafPlan(2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex64")
+    long_middle_f64 = LeafPlan(2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex128")
     try:
         off = set_maca_3d_default(False)
         try:
@@ -47,6 +49,8 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
             assert contiguous_batch_pack_for(single128) == 2
+            assert contiguous_batch_pack_for(long_middle) == 1
+            assert contiguous_batch_pack_for(long_middle_f64) == 1
             assert permuted_store_batch_pack_for(short) == 8
             assert permuted_store_batch_pack_for(single128) == 16
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "16")
@@ -85,6 +89,17 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single128) == 1
             monkeypatch.setenv("FLAGFFT_MACA_3D_N128_PACK", "4")
             assert contiguous_batch_pack_for(single128) == 4
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_PACK", "2")
+            assert contiguous_batch_pack_for(long_middle) == 2
+            assert contiguous_batch_pack_for(long_middle_f64) == 2
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_PACK", "4")
+            try:
+                contiguous_batch_pack_for(long_middle)
+            except ValueError as error:
+                assert "FLAGFFT_MACA_3D_N2048_PACK must be 1 or 2" in str(error)
+            else:
+                raise AssertionError("unsupported MACA n=2048 pack was accepted")
+            monkeypatch.delenv("FLAGFFT_MACA_3D_N2048_PACK")
             assert _maca_knob("EXCHANGE") == "direct_all"
             monkeypatch.setenv("FLAGFFT_MACA_3D_N64_PACK", "4")
             assert contiguous_batch_pack_for(short) == 4
@@ -196,9 +211,12 @@ def test_maca_environment_fingerprint_separates_variants():
 
     pack1 = {"FLAGFFT_MACA_3D_N128_PACK": "1"}
     pack4 = {"FLAGFFT_MACA_3D_N128_PACK": "4"}
+    longpack1 = {"FLAGFFT_MACA_3D_N2048_PACK": "1"}
+    longpack2 = {"FLAGFFT_MACA_3D_N2048_PACK": "2"}
     other_backend = {"FLAGFFT_IX_WARPS": "4"}
     assert _maca_environment_fingerprint({}) == ""
     assert _maca_environment_fingerprint(pack1) != _maca_environment_fingerprint(pack4)
+    assert _maca_environment_fingerprint(longpack1) != _maca_environment_fingerprint(longpack2)
     assert _maca_environment_fingerprint(pack1) == _maca_environment_fingerprint(
         {**pack1, **other_backend}
     )
