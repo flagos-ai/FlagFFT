@@ -2271,23 +2271,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     std::shared_ptr<CompiledRawNode> row_fft =
         std::make_shared<CompiledRawNpuAivFFT64Node>(1, index_allocation, twiddle_allocation);
     std::shared_ptr<CompiledRawNode> col_fft =
-        std::make_shared<CompiledRawNpuAivFFT64Node>(1, index_allocation, twiddle_allocation);
-    // Keep both native AIV FFT leaves contiguous. The existing two-axis node
-    // materializes each transpose, avoiding strided GM stores and repeated
-    // whole-matrix loads for one-program-per-column leaves.
-    auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, n1);
-    auto transpose_inv = compile_tiled_transpose_kernel(request, n1, n0);
+        std::make_shared<CompiledRawNpuAivFFT64Node>(n1, index_allocation, twiddle_allocation);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
-    DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
-    return std::make_shared<CompiledRaw2DNode>(n0,
-                                               n1,
-                                               std::move(row_fft),
-                                               std::move(col_fft),
-                                               std::move(transpose_fwd),
-                                               std::move(transpose_inv),
-                                               std::move(temp1),
-                                               std::move(temp2),
-                                               enable_graph);
+    return std::make_shared<CompiledRaw2DRCNode>(n0,
+                                                 n1,
+                                                 std::move(row_fft),
+                                                 std::move(col_fft),
+                                                 std::move(temp1),
+                                                 enable_graph);
   }
 #endif
 

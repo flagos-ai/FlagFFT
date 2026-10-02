@@ -23,6 +23,7 @@ constexpr uint32_t kLocalIndexCount = kN + 2 * kStages * kN;
 constexpr uint32_t kStageIndexBase = kN;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
+constexpr uint32_t kComplexBytes = 2 * sizeof(float);
 
 class Fft64Aiv {
  public:
@@ -43,17 +44,36 @@ class Fft64Aiv {
     pipe_.InitBuffer(work_buf_, kWorkArrays * kN * sizeof(float));
     pipe_.InitBuffer(index_buf_, kLocalIndexCount * sizeof(uint32_t));
     pipe_.InitBuffer(twiddle_buf_, kTwiddleCount * sizeof(float));
+    pipe_.InitBuffer(output_buf_, 2 * kN * sizeof(float));
   }
 
   __aicore__ inline void Process() {
     const uint32_t transform = GetBlockIdx();
-    if (transform >= transform_count_ || stride_ != 1) return;
+    if (transform >= transform_count_ || (stride_ != 1 && stride_ != kN)) return;
+
+    const bool strided = stride_ == kN;
+    const uint32_t batch_index = transform / kN;
+    const uint32_t column = strided ? transform % kN : 0;
+    const uint32_t source_base = strided ? batch_index * kN * kN + column : transform * kN;
+    const uint32_t output_base = source_base;
 
     GlobalTensor<float> src;
-    src.SetGlobalBuffer(input_ptr_ + transform * kN * 2);
+    src.SetGlobalBuffer(input_ptr_ + source_base * 2);
     LocalTensor<float> input_local = input_buf_.Get<float>();
-    // Copy one interleaved row in a single 32-byte-aligned transfer.
-    DataCopy(input_local, src, 2 * kN);
+    if (strided) {
+      // Read one complex value from each matrix row into a compact local vector.
+      // DataCopyExtParams strides are byte offsets between adjacent blocks.
+      GlobalTensor<uint64_t> src_complex;
+      src_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + source_base * 2));
+      LocalTensor<uint64_t> input_complex = input_local.ReinterpretCast<uint64_t>();
+      const DataCopyExtParams input_params(
+          kN, sizeof(uint64_t), (kN - 1) * kComplexBytes, 0, 0);
+      const DataCopyPadExtParams<uint64_t> input_pad;
+      DataCopyPad(input_complex, src_complex, input_params, input_pad);
+    } else {
+      // Copy one interleaved row in a single contiguous transfer.
+      DataCopy(input_local, src, 2 * kN);
+    }
 
     LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
     LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
@@ -108,11 +128,23 @@ class Fft64Aiv {
       next_imag = swap;
     }
 
+    LocalTensor<float> output_local = output_buf_.Get<float>();
+    Interleave(output_local, output_local[kN], current_real, current_imag, kN);
     PipeBarrier<PIPE_ALL>();
-    for (uint32_t i = 0; i < kN; ++i) {
-      const uint32_t output = (transform * kN + i) * 2;
-      output_ptr_[output] = current_real.GetValue(i);
-      output_ptr_[output + 1] = current_imag.GetValue(i);
+
+    if (strided) {
+      // Pack each complex value into one 8-byte block before the strided MTE3
+      // write. Separate 4-byte real/imaginary bursts are not reliable on AIV.
+      GlobalTensor<uint64_t> dst_complex;
+      dst_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + output_base * 2));
+      LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
+      const DataCopyExtParams output_params(
+          kN, sizeof(uint64_t), 0, (stride_ - 1) * kComplexBytes, 0);
+      DataCopyPad(dst_complex, output_complex, output_params);
+    } else {
+      GlobalTensor<float> dst;
+      dst.SetGlobalBuffer(output_ptr_ + output_base * 2);
+      DataCopy(dst, output_local, 2 * kN);
     }
   }
 
@@ -122,6 +154,7 @@ class Fft64Aiv {
   TBuf<QuePosition::VECCALC> work_buf_;
   TBuf<QuePosition::VECCALC> index_buf_;
   TBuf<QuePosition::VECCALC> twiddle_buf_;
+  TBuf<QuePosition::VECCALC> output_buf_;
   __gm__ float *input_ptr_ = nullptr;
   __gm__ float *output_ptr_ = nullptr;
   GlobalTensor<uint32_t> indices_;

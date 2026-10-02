@@ -436,7 +436,7 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                                   adaptor::DevicePtr output,
                                                   const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
-      stride != 1 || indices == nullptr || twiddles == nullptr) {
+      (stride != 1 && stride != 64) || indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }
   return adaptor::npu::launch_ascendc_fft64(input,
