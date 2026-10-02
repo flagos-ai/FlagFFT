@@ -13,7 +13,8 @@ from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 def test_maca_3d_packing_scope_and_override(monkeypatch):
     for name in ("FLAGFFT_MACA_BATCH_PACK", "FLAGFFT_MACA_3D_N64_PACK",
                  "FLAGFFT_MACA_3D_N128_PACK", "FLAGFFT_MACA_EXCHANGE",
-                 "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_3D_PERMSTORE_PACK"):
+                 "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_3D_PERMSTORE_PACK",
+                 "FLAGFFT_MACA_3D_FIRST_STORE"):
         monkeypatch.delenv(name, raising=False)
     profile = set_profile(
         BackendProfile.from_device(
@@ -49,6 +50,16 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single128) == 2
             assert permuted_store_batch_pack_for(short) == 8
             assert permuted_store_batch_pack_for(single128) == 16
+            # Ordinary cube FFT leaves keep pack=2; only the explicit
+            # first-store screen exposes the 256-point permuted-store pack.
+            assert permuted_store_batch_pack_for(single) == 4
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "2")
+            assert permuted_store_batch_pack_for(single) == 4
+            monkeypatch.setenv("FLAGFFT_MACA_3D_FIRST_STORE", "1")
+            assert permuted_store_batch_pack_for(single) == 2
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "auto")
+            assert permuted_store_batch_pack_for(single) == 4
+            monkeypatch.delenv("FLAGFFT_MACA_3D_FIRST_STORE")
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "16")
             assert permuted_store_batch_pack_for(short) == 16
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "auto")
