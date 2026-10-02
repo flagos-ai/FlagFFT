@@ -80,24 +80,6 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                           return build_auto_node(length, heuristic);
                                         });
   }
-  const char *maca_3d_2048_four_step = std::getenv("FLAGFFT_MACA_3D_2048_FOUR_STEP");
-  const bool maca_long_c2c_fp64_four_step =
-      maca_3d_2048_four_step != nullptr && std::string(maca_3d_2048_four_step) == "1" &&
-      request.device_type == "maca" && request.device_arch == "102" && request.origin_rank == 3 &&
-      request.raw_dim == 1 && request.input_dtype == "complex128" &&
-      request.output_dtype == "complex128" && n == 2048 && request.requested_n == 2048 &&
-      request.batch == 8192 && request.input_shape.size() == 2 &&
-      request.input_shape[0] == 8192 && request.input_shape[1] == 2048;
-  if (maca_long_c2c_fp64_four_step) {
-    // Screen a lower-resource decomposition for the single-batch C2C long
-    // axis. The 8192 batch count is n0*n2 for 128x2048x64 and keeps this
-    // experiment away from standalone 1D and batched 3D planning.
-    constexpr int64_t n1 = 64;
-    constexpr int64_t n2 = 32;
-    return std::make_shared<FourStepPlanNode>(n, n1, n2,
-                                              build_auto_node(n1, false),
-                                              build_auto_node(n2, false));
-  }
   const char *maca_batch_setting = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const bool maca_batch_c2c = request.device_type == "maca" && request.device_arch == "102" &&
                               request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&
