@@ -15,7 +15,9 @@ flagfftResult launch_ascendc_fft_small(int32_t length,
                                        DevicePtr indices,
                                        DevicePtr twiddles,
                                        int32_t block_count,
+                                       int32_t group_size,
                                        int32_t stride,
+                                       int32_t mode,
                                        StreamHandle stream);
 
 }  // namespace flagfft::adaptor::npu

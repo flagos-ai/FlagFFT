@@ -813,15 +813,21 @@ namespace {
                                       int64_t group_size,
                                       bool strided_columns,
                                       std::vector<uint32_t> &indices,
-                                      std::vector<float> &twiddles) {
+                                      std::vector<float> &twiddles,
+                                      NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex) {
     const int64_t stages = static_cast<int64_t>(std::log2(static_cast<double>(n)));
     const int64_t group_n = n * group_size;
     const int64_t output_index_base = group_n;
     const int64_t stage_a_base = 3 * group_n;
     const int64_t stage_b_base = stage_a_base + stages * group_n;
+    const int64_t index_count = (3 + 2 * stages) * group_n;
+    const int64_t inverse_imag_index_base = index_count;
+    const int64_t twiddle_count = 2 * stages * group_n;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign((3 + 2 * stages) * group_n, 0);
-    twiddles.assign(2 * stages * group_n, 0.0f);
+    const bool real_forward = mode == NpuAivFFTSmallMode::RealForward;
+    const bool real_inverse = mode == NpuAivFFTSmallMode::RealInverse;
+    indices.assign(index_count + (real_inverse ? group_n : 0), 0);
+    twiddles.assign(twiddle_count + (real_inverse ? group_n : 0), 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
     for (int64_t group = 0; group < group_size; ++group) {
@@ -832,14 +838,26 @@ namespace {
           reversed = (reversed << 1) | (value & 1);
           value >>= 1;
         }
-        const int64_t source_complex = strided_columns
-            ? reversed * group_size + group
-            : group * n + reversed;
-        indices[group * n + i] =
-            static_cast<uint32_t>(source_complex * 2 * sizeof(float));
+        const int64_t destination = group * n + i;
+        if (real_forward) {
+          indices[destination] = static_cast<uint32_t>((group * n + reversed) * sizeof(float));
+        } else if (real_inverse) {
+          const int64_t compact_bin = reversed <= n / 2 ? reversed : n - reversed;
+          const int64_t compact_complex = group * (n / 2 + 1) + compact_bin;
+          indices[destination] = static_cast<uint32_t>(2 * compact_complex * sizeof(float));
+          indices[inverse_imag_index_base + destination] =
+              static_cast<uint32_t>((2 * compact_complex + 1) * sizeof(float));
+          twiddles[twiddle_count + destination] = reversed > n / 2 ? -1.0f : 1.0f;
+        } else {
+          const int64_t source_complex =
+              strided_columns ? reversed * group_size + group : group * n + reversed;
+          indices[destination] =
+              static_cast<uint32_t>(strided_columns && group_size == 1 ? reversed * 8 * sizeof(float)
+                                                                       : source_complex * 2 * sizeof(float));
+        }
 
         for (int64_t stage = 0; stage < stages; ++stage) {
-          const int64_t length = int64_t{1} << (stage + 1);
+          const int64_t length = int64_t {1} << (stage + 1);
           const int64_t half = length / 2;
           const int64_t butterfly_group = (i / length) * length;
           const int64_t offset = i % length;
@@ -847,51 +865,66 @@ namespace {
           const int64_t a = butterfly_group + (upper ? offset - half : offset);
           const int64_t b = a + half;
           const int64_t twiddle_offset = offset % half;
-          const double angle = sign * 2.0 * pi * static_cast<double>(twiddle_offset) /
-                               static_cast<double>(length);
+          const double angle =
+              sign * 2.0 * pi * static_cast<double>(twiddle_offset) / static_cast<double>(length);
           const float negate = upper ? -1.0f : 1.0f;
-          const int64_t destination = group * n + i;
           const int64_t table_index = stage * group_n + destination;
-          indices[stage_a_base + table_index] =
-              static_cast<uint32_t>((group * n + a) * sizeof(float));
-          indices[stage_b_base + table_index] =
-              static_cast<uint32_t>((group * n + b) * sizeof(float));
+          indices[stage_a_base + table_index] = static_cast<uint32_t>((group * n + a) * sizeof(float));
+          indices[stage_b_base + table_index] = static_cast<uint32_t>((group * n + b) * sizeof(float));
           twiddles[table_index] = negate * static_cast<float>(std::cos(angle));
-          twiddles[stages * group_n + table_index] =
-              negate * static_cast<float>(std::sin(angle));
+          twiddles[stages * group_n + table_index] = negate * static_cast<float>(std::sin(angle));
         }
       }
     }
 
-    for (int64_t i = 0; i < 2 * group_n; ++i) {
-      const int64_t component = i % 2;
-      int64_t source_index = 0;
-      if (strided_columns) {
-        const int64_t row = i / (2 * group_size);
-        const int64_t column = (i / 2) % group_size;
-        source_index = column * n + row + component * group_n;
-      } else {
-        const int64_t transform = i / (2 * n);
-        const int64_t point = (i / 2) % n;
-        source_index = transform * n + point + component * group_n;
+    if (real_forward) {
+      int64_t output_index = 0;
+      const int64_t half = n / 2 + 1;
+      for (int64_t row = 0; row < group_size; ++row) {
+        for (int64_t bin = 0; bin < half; ++bin) {
+          const int64_t source_real = row * n + bin;
+          const int64_t source_imag = source_real + group_n;
+          indices[output_index_base + output_index++] = static_cast<uint32_t>(source_real * sizeof(float));
+          indices[output_index_base + output_index++] = static_cast<uint32_t>(source_imag * sizeof(float));
+        }
       }
-      indices[output_index_base + i] =
-          static_cast<uint32_t>(source_index * sizeof(float));
+    } else if (!real_inverse) {
+      for (int64_t i = 0; i < 2 * group_n; ++i) {
+        const int64_t component = i % 2;
+        int64_t source_index = 0;
+        if (strided_columns) {
+          const int64_t row = i / (2 * group_size);
+          const int64_t column = (i / 2) % group_size;
+          source_index = column * n + row + component * group_n;
+        } else {
+          const int64_t transform = i / (2 * n);
+          const int64_t point = (i / 2) % n;
+          source_index = transform * n + point + component * group_n;
+        }
+        indices[output_index_base + i] = static_cast<uint32_t>(source_index * sizeof(float));
+      }
     }
   }
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft_small_child(
-      const FFTRequest &request, int64_t n, int64_t stride, int64_t group_size) {
+      const FFTRequest &request,
+      int64_t n,
+      int64_t stride,
+      int64_t group_size,
+      NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex) {
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
-    build_npu_aiv_fft_small_tables(
-        request, n, group_size, stride != 1, host_indices, host_twiddles);
+    build_npu_aiv_fft_small_tables(request, n, group_size, stride != 1, host_indices, host_twiddles, mode);
     auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
     indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
     auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
     twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
-    return std::make_shared<CompiledRawNpuAivFFTSmallNode>(
-        n, stride, group_size, std::move(indices), std::move(twiddles));
+    return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n,
+                                                           stride,
+                                                           group_size,
+                                                           std::move(indices),
+                                                           std::move(twiddles),
+                                                           mode);
   }
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft64_child(const FFTRequest &request,
@@ -903,20 +936,21 @@ namespace {
     if (group_size == 1) {
       build_npu_aiv_fft64_tables(request, host_indices, host_twiddles, mode);
     } else {
-      build_npu_aiv_fft64_group_tables(
-          request, group_size, stride != 1, host_indices, host_twiddles, mode);
+      build_npu_aiv_fft64_group_tables(request, group_size, stride != 1, host_indices, host_twiddles, mode);
     }
 
     auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
     indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
     auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
     twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
-    return std::make_shared<CompiledRawNpuAivFFT64Node>(stride, group_size, std::move(indices),
-                                                       std::move(twiddles), mode);
+    return std::make_shared<CompiledRawNpuAivFFT64Node>(stride,
+                                                        group_size,
+                                                        std::move(indices),
+                                                        std::move(twiddles),
+                                                        mode);
   }
 
-  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft128_child(const FFTRequest &request,
-                                                             int32_t group_size) {
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft128_child(const FFTRequest &request, int32_t group_size) {
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     build_npu_aiv_fft128_group_tables(
@@ -1281,16 +1315,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   configure_single_transform_policies(request);
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
-    const bool use_npu_3d_aiv_small = request.device_type == "npu" &&
-        request.origin_rank == 3 && request.real_transform_kind.empty() &&
+    const bool use_npu_3d_aiv_small =
+        request.device_type == "npu" && request.origin_rank == 3 && request.real_transform_kind.empty() &&
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-        (leaf->length == 16 || leaf->length == 32) &&
-        flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
+        (leaf->length == 16 || leaf->length == 32) && flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
     if (use_npu_3d_aiv_small) {
-      const int64_t group_size = leaf->length == 16 ? 8 : 4;
-      if (batch % group_size == 0) {
-        return make_npu_aiv_fft_small_child(request, leaf->length, 1, group_size);
-      }
+      const int64_t preferred_group = leaf->length == 16 ? 8 : 4;
+      const int64_t group_size = batch % preferred_group == 0 ? preferred_group : 1;
+      return make_npu_aiv_fft_small_child(request, leaf->length, 1, group_size);
     }
     const char *npu_3d_aiv128 = std::getenv("FLAGFFT_NPU_3D_AIV128");
     const bool use_npu_3d_aiv128 = request.device_type == "npu" && request.origin_rank == 3 &&
@@ -2086,16 +2118,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const 
                                                                           const FFTRequest &request,
                                                                           int64_t outer_stride) {
 #if defined(FLAGFFT_BACKEND_NPU)
-  const bool use_npu_3d_aiv_small = request.device_type == "npu" &&
-      request.origin_rank == 3 && request.real_transform_kind.empty() &&
+  const bool use_npu_3d_aiv_small =
+      request.device_type == "npu" && request.origin_rank == 3 && request.real_transform_kind.empty() &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      (leaf.length == 16 || leaf.length == 32) &&
-      flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
+      (leaf.length == 16 || leaf.length == 32) && flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
   if (use_npu_3d_aiv_small) {
-    const int64_t group_size = leaf.length == 16 ? 8 : 4;
-    if (outer_stride % group_size == 0) {
-      return make_npu_aiv_fft_small_child(request, leaf.length, outer_stride, group_size);
-    }
+    const int64_t preferred_group = leaf.length == 16 ? 8 : 4;
+    const int64_t group_size = outer_stride % preferred_group == 0 ? preferred_group : 1;
+    return make_npu_aiv_fft_small_child(request, leaf.length, outer_stride, group_size);
   }
 #endif
   std::string target = triton_target_for_request(request);
@@ -2906,7 +2936,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       ix_real_fused_override != nullptr && std::string(ix_real_fused_override) == "1";
   const char *npu_3d_real_leaf = std::getenv("FLAGFFT_NPU_3D_LEAF");
-  const bool npu_real_leaf_screen = request.device_type == "npu" && request.origin_rank == 3 &&
+  const bool npu_real_leaf_screen =
+      request.device_type == "npu" && request.origin_rank == 3 &&
       (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
       npu_3d_real_leaf != nullptr && std::string(npu_3d_real_leaf) == "1";
   if (request.device_type != "musa" && !ix_real_leaf_screen && !ix_real_fused_screen &&
@@ -2923,6 +2954,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
   if (ix_real_leaf_screen && !ix_real_fused_screen && !small) return nullptr;
+  // Large Ascend real transforms use the generic compact 3D route below,
+  // whose explicit transpose can run as the native AIV tile kernel. The
+  // generic permuted-store leaf path has no qualified Ascend schedule.
+  if (npu_real_leaf_screen && !small) return nullptr;
   if (!small && !fused_3d_store_enabled() && !ix_real_fused_screen) return nullptr;
 
   FFTRequest n2_request = request;
@@ -3009,9 +3044,26 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
         std::move(tw_r_dev), std::move(tw_i_dev));
   }
 
-  auto n2_real_fft = inverse
-      ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
-      : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  const int64_t n2_batch = batch * n0 * n1;
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+#if defined(FLAGFFT_BACKEND_NPU)
+  const bool use_npu_small_real = request.device_type == "npu" && (n2 == 16 || n2 == 32) &&
+                                  n2_leaf->length == n2 && flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
+  if (use_npu_small_real) {
+    const int64_t preferred_group = n2 == 16 ? 8 : 4;
+    const int64_t group_size = n2_batch % preferred_group == 0 ? preferred_group : 1;
+    n2_real_fft = make_npu_aiv_fft_small_child(
+        n2_request,
+        n2,
+        1,
+        group_size,
+        inverse ? NpuAivFFTSmallMode::RealInverse : NpuAivFFTSmallMode::RealForward);
+  }
+#endif
+  if (!n2_real_fft) {
+    n2_real_fft = inverse ? compile_raw_c2r_node(node->n2_plan, n2_request, n2_batch, false)
+                          : compile_raw_r2c_node(node->n2_plan, n2_request, n2_batch, false);
+  }
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_021;
@@ -3193,6 +3245,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
   n2_request.input_strides = {n2, 1};
   n2_request.requested_n = n2;
   n2_request.batch = batch * n0 * n1;
+  n2_request.real_transform_kind.clear();
+  n2_request.real_transform = false;
 
   FFTRequest n1_request = request;
   n1_request.fft_length = n1;
@@ -3200,6 +3254,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
   n1_request.input_strides = {n1, 1};
   n1_request.requested_n = n1;
   n1_request.batch = batch * n0 * half;
+  n1_request.real_transform_kind.clear();
+  n1_request.real_transform = false;
 
   FFTRequest n0_request = request;
   n0_request.fft_length = n0;
@@ -3207,6 +3263,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
   n0_request.input_strides = {n0, 1};
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
+  n0_request.real_transform_kind.clear();
+  n0_request.real_transform = false;
 
   auto expand_kernel = compile_real_to_complex_kernel(request, n2);
   std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
@@ -3215,9 +3273,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
   std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
 
   // (n0,n1,half) -021-> (n0,half,n1) -210-> (n1,half,n0) -201-> (n0,n1,half).
-  auto perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
-  auto perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
-  auto perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
+  std::vector<DeviceAllocation> npu_transpose_indices;
+  std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_201;
+  if (npu_3d_native_transpose_enabled(request)) {
+    npu_transpose_indices = build_npu_3d_transpose_indices();
+  } else {
+    perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+    perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
+    perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
+  }
 
   DeviceAllocation row_fft_buf =
       adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
@@ -3237,7 +3303,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
                                                 std::move(perm_201),
                                                 std::move(row_fft_buf),
                                                 std::move(temp1),
-                                                std::move(temp2));
+                                                std::move(temp2),
+                                                std::move(npu_transpose_indices));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
@@ -3259,6 +3326,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
   n0_request.input_strides = {n0, 1};
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
+  n0_request.real_transform_kind.clear();
+  n0_request.real_transform = false;
 
   FFTRequest n1_request = request;
   n1_request.fft_length = n1;
@@ -3266,6 +3335,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
   n1_request.input_strides = {n1, 1};
   n1_request.requested_n = n1;
   n1_request.batch = batch * n0 * half;
+  n1_request.real_transform_kind.clear();
+  n1_request.real_transform = false;
 
   FFTRequest n2_request = request;
   n2_request.fft_length = n2;
@@ -3273,6 +3344,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
   n2_request.input_strides = {n2, 1};
   n2_request.requested_n = n2;
   n2_request.batch = batch * n0 * n1;
+  n2_request.real_transform_kind.clear();
+  n2_request.real_transform = false;
 
   std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
   std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
@@ -3281,9 +3354,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
   auto pack_kernel = compile_complex_to_real_kernel(request, n2);
 
   // (n0,n1,half) -120-> (n1,half,n0) -210-> (n0,half,n1) -021-> (n0,n1,half).
-  auto perm_120 = compile_transpose3d_kernel(request, n0, n1, half, "120");
-  auto perm_210 = compile_transpose3d_kernel(request, n1, half, n0, "210");
-  auto perm_021 = compile_transpose3d_kernel(request, n0, half, n1, "021");
+  std::vector<DeviceAllocation> npu_transpose_indices;
+  std::shared_ptr<JitKernel> perm_120;
+  std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_021;
+  if (npu_3d_native_transpose_enabled(request)) {
+    npu_transpose_indices = build_npu_3d_transpose_indices();
+  } else {
+    perm_120 = compile_transpose3d_kernel(request, n0, n1, half, "120");
+    perm_210 = compile_transpose3d_kernel(request, n1, half, n0, "210");
+    perm_021 = compile_transpose3d_kernel(request, n0, half, n1, "021");
+  }
 
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));
   DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));
@@ -3302,11 +3383,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
                                                 std::move(pack_kernel),
                                                 std::move(temp1),
                                                 std::move(temp2),
-                                                std::move(full_buf));
+                                                std::move(full_buf),
+                                                std::move(npu_transpose_indices));
 }
 
-std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_rc_row(
-    const PlanNodePtr &node, const FFTRequest &request, int64_t batch) {
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_rc_row(const PlanNodePtr &node,
+                                                                       const FFTRequest &request,
+                                                                       int64_t batch) {
   const Maca2dPolicyScope child_scope(
       maca_2d_single_policy_,
       maca_2d_single_policy_ && !(batch > 1 && maca_2d_rc_preserve_batched_row(node)));
