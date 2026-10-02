@@ -123,10 +123,24 @@ class Fft64Aiv {
       next_imag = swap;
     }
 
+    if (stride_ == kN) {
+      // MTE3 performs the strided scatter to GM. Scalar stores from AIV do not
+      // reliably commit this column-major address pattern on 910B.
+      PipeBarrier<PIPE_ALL>();
+      GlobalTensor<float> dst_real;
+      GlobalTensor<float> dst_imag;
+      dst_real.SetGlobalBuffer(output_ptr_ + output_base * 2);
+      dst_imag.SetGlobalBuffer(output_ptr_ + output_base * 2 + 1);
+      const uint32_t destination_gap = (2 * stride_ - 1) * sizeof(float);
+      const DataCopyExtParams output_params(kN, sizeof(float), 0, destination_gap, 0);
+      DataCopyPad(dst_real, current_real, output_params);
+      DataCopyPad(dst_imag, current_imag, output_params);
+      return;
+    }
+
     PipeBarrier<PIPE_ALL>();
     for (uint32_t i = 0; i < kN; ++i) {
-      const uint32_t output =
-          (stride_ == kN ? transform * kN + i : output_base + i * stride_) * 2;
+      const uint32_t output = (output_base + i * stride_) * 2;
       output_ptr_[output] = current_real.GetValue(i);
       output_ptr_[output + 1] = current_imag.GetValue(i);
     }
