@@ -324,10 +324,6 @@ def main() -> None:
                         f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
         if factors_256 != "auto":
             profile_dir += f"-f{factors_256.replace(',', '')}"
-        if r2c_fp64_factors_2048 != "auto":
-            profile_dir += (
-                f"-r2c-fp64-2048-f{r2c_fp64_factors_2048.replace(',', '')}"
-            )
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
