@@ -2492,8 +2492,7 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
                                      std::shared_ptr<JitKernel> perm_210_inv,
                                      std::shared_ptr<JitKernel> perm_021_inv,
                                      DeviceAllocation temp1,
-                                     DeviceAllocation temp2,
-                                     bool final_permuted_store)
+                                     DeviceAllocation temp2)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2507,8 +2506,7 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
       perm_210_inv(std::move(perm_210_inv)),
       perm_021_inv(std::move(perm_021_inv)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)),
-      final_permuted_store(final_permuted_store) {
+      temp2(std::move(temp2)) {
 }
 
 std::string CompiledRaw3DNode::describe() const {
@@ -2519,8 +2517,7 @@ std::string CompiledRaw3DNode::describe() const {
       << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
       << ", perm_021_fwd=" << (perm_021_fwd ? perm_021_fwd->execution_description() : "null")
       << ", perm_210_fwd=" << (perm_210_fwd ? perm_210_fwd->execution_description() : "null")
-      << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null")
-      << ", final_permuted_store=" << (final_permuted_store ? 1 : 0) << ")";
+      << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -2537,19 +2534,6 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * n2};
 
     flagfftResult result;
-    if (final_permuted_store) {
-      // Keep the two contiguous-axis transposes, then let the final n0 leaf
-      // write directly into natural (n0,n1,n2) output order.  The axes
-      // commute, so the same schedule is valid for forward and inverse.
-      result = n2_fft->execute(input, temp1.get(), n2_context);
-      if (result != FLAGFFT_SUCCESS) return result;
-      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
-      result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
-      if (result != FLAGFFT_SUCCESS) return result;
-      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
-      return n0_fft->execute(temp2.get(), output, n0_context);
-    }
-
     if (inverse) {
       // (n0,n1,n2) -> perm(1,2,0) -> (n1,n2,n0), IFFT along n0
       launch_perm3d(perm_120_inv, context.stream, input, temp1.get(), total, batch);
