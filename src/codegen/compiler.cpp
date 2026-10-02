@@ -1127,7 +1127,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
-    if (row_leaf != nullptr && col_leaf != nullptr) {
+    const bool use_npu_3d_native_four_step_children =
+        request.device_type == "npu" && request.origin_rank == 3 &&
+        request.real_transform_kind.empty() && row_leaf != nullptr && col_leaf != nullptr &&
+        flag_or_default("FLAGFFT_NPU_3D_FOURSTEP_NATIVE_CHILDREN", false);
+    if (row_leaf != nullptr && col_leaf != nullptr && !use_npu_3d_native_four_step_children) {
       DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
       DeviceAllocation stage1 =
           adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * element_bytes));

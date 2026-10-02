@@ -294,9 +294,34 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
                                            context.input_distance, context.output_distance)) {
       return FLAGFFT_SUCCESS;
     }
-    std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
+    const bool chunk_npu_3d_complex_leaf = context.request.device_type == "npu" &&
+        context.request.origin_rank == 3 && context.request.real_transform_kind.empty() &&
+        context.request.input_dtype == "complex64" && context.request.output_dtype == "complex64";
+    const int64_t batch_limit = std::max<int64_t>(
+        1, kernel->batch_per_block * block_limit_per_launch());
     auto launch = [&]() {
-      kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+      if (!chunk_npu_3d_complex_leaf || context.batch <= batch_limit) {
+        std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
+        kernel->launch(context.stream,
+                       args,
+                       ceil_div(context.batch, kernel->batch_per_block),
+                       1,
+                       1);
+        return;
+      }
+      const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+      for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_limit) {
+        const int64_t chunk_batch = std::min(batch_limit, context.batch - batch_offset);
+        const adaptor::DevicePtr input_chunk = input + batch_offset * length * element_bytes;
+        const adaptor::DevicePtr output_chunk = output + batch_offset * length * element_bytes;
+        std::vector<JitKernelArg> args = raw_kernel_args(
+            {input_chunk, output_chunk}, tables, chunk_batch);
+        kernel->launch(context.stream,
+                       args,
+                       ceil_div(chunk_batch, kernel->batch_per_block),
+                       1,
+                       1);
+      }
     };
     launch();
     if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,

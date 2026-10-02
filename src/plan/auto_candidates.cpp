@@ -193,9 +193,13 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
     const bool use_npu_3d_leaf = npu_3d_leaf_setting != nullptr &&
                                  std::string(npu_3d_leaf_setting) == "1";
+    // The 32-point Triton leaf generated multi-megabyte MLIR and exceeded the
+    // CANN 9 runner timeout. Keep this screened opt-in leaf route on the
+    // qualified 16/256 sizes; 64 is selected separately by the native AIV64
+    // policy in the 3D plan builder.
     if (use_npu_3d_leaf && context.origin_rank == 3 &&
         context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
-        n <= 256) {
+        (n == 16 || n == 256)) {
       const auto factors = select_leaf_factors(n);
       if (should_use_leaf(n, factors)) {
         PlanNodePtr node = make_leaf_plan(n, factors);
