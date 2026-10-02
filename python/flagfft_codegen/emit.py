@@ -757,8 +757,8 @@ def _emit_tiled_transpose3d_jit_kernel(
         if _declared_backend() == "maca"
         else "tile32"
     )
-    if maca_mode not in {"tile16", "tile32", "tile64", "pair16", "pair32", "pair64", "v1"}:
-        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, pair32, pair64 or v1")
+    if maca_mode not in {"tile16", "tile32", "tile64", "pair16", "pair16x32", "pair32", "pair64", "v1"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, pair16x32, pair32, pair64 or v1")
     maca_warps = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8" if dtype == "complex64" else "4")
         if _declared_backend() == "maca"
@@ -831,6 +831,28 @@ def _emit_tiled_transpose3d_jit_kernel(
             grid_x,
         ) = _build_tiled_transpose3d_pair_slice_group_kernel_source(
             n0, n1, n2, order, tile=16, slice_group=2,
+            tile_traversal=maca_traversal,
+        )
+    elif (
+        maca_mode == "pair16x32"
+        and dtype == "complex64"
+        and _portable_transpose3d_supported()
+    ):
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_tile_kernel_source(
+            n0,
+            n1,
+            n2,
+            order,
+            dtype,
+            tile=16,
+            tile_rows=16,
+            tile_cols=32,
+            pair=True,
             tile_traversal=maca_traversal,
         )
     elif dtype == "complex64" and _portable_transpose3d_supported() and maca_mode != "v1":
