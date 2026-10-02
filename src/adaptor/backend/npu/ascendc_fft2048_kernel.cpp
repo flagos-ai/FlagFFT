@@ -24,6 +24,7 @@ constexpr uint32_t kStageAIndexBase = kInputIndexCount;
 constexpr uint32_t kStageBIndexBase = kStageAIndexBase + kStages * kN;
 constexpr uint32_t kOutputIndexBase = kStageBIndexBase + kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
+constexpr uint32_t kGatherTile = 256;
 
 class Fft2048Aiv {
  public:
@@ -75,8 +76,10 @@ class Fft2048Aiv {
     LocalTensor<float> product1 = work[9 * kN];
     LocalTensor<float> product2 = work[10 * kN];
 
-    Gather(current_real, input_local, index_local, 0, kN);
-    Gather(current_imag, input_local, index_local, sizeof(float), kN);
+    for (uint32_t tile = 0; tile < kN; tile += kGatherTile) {
+      Gather(current_real[tile], input_local, index_local[tile], 0, kGatherTile);
+      Gather(current_imag[tile], input_local, index_local[tile], sizeof(float), kGatherTile);
+    }
     PipeBarrier<PIPE_ALL>();
 
     for (uint32_t stage = 0; stage < kStages; ++stage) {
@@ -90,10 +93,12 @@ class Fft2048Aiv {
       const LocalTensor<float> twiddle_real = twiddle_local;
       const LocalTensor<float> twiddle_imag = twiddle_local[kN];
 
-      Gather(a_real, current_real, stage_a, 0, kN);
-      Gather(a_imag, current_imag, stage_a, 0, kN);
-      Gather(b_real, current_real, stage_b, 0, kN);
-      Gather(b_imag, current_imag, stage_b, 0, kN);
+      for (uint32_t tile = 0; tile < kN; tile += kGatherTile) {
+        Gather(a_real[tile], current_real, stage_a[tile], 0, kGatherTile);
+        Gather(a_imag[tile], current_imag, stage_a[tile], 0, kGatherTile);
+        Gather(b_real[tile], current_real, stage_b[tile], 0, kGatherTile);
+        Gather(b_imag[tile], current_imag, stage_b[tile], 0, kGatherTile);
+      }
 
       Mul(product0, b_real, twiddle_real, kN);
       Mul(product1, b_imag, twiddle_imag, kN);
@@ -121,7 +126,9 @@ class Fft2048Aiv {
     DataCopy(index_local, indices_[kOutputIndexBase], 2 * kN);
     PipeBarrier<PIPE_ALL>();
     LocalTensor<float> output_local = output_buf_.Get<float>();
-    Gather(output_local, input_local, index_local, 0, 2 * kN);
+    for (uint32_t tile = 0; tile < 2 * kN; tile += kGatherTile) {
+      Gather(output_local[tile], input_local, index_local[tile], 0, kGatherTile);
+    }
     PipeBarrier<PIPE_ALL>();
     GlobalTensor<float> dst;
     dst.SetGlobalBuffer(output_ptr_ + transform * 2 * kN);
