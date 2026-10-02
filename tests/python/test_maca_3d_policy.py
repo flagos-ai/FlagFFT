@@ -49,10 +49,6 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single128) == 2
             assert permuted_store_batch_pack_for(short) == 8
             assert permuted_store_batch_pack_for(single128) == 16
-            assert permuted_store_batch_pack_for(single) == 4
-            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "2")
-            assert permuted_store_batch_pack_for(single) == 2
-            monkeypatch.delenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "16")
             assert permuted_store_batch_pack_for(short) == 16
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "auto")
