@@ -526,6 +526,22 @@ def _emit_permuted_store(
             f"{indent}tl.store(out_ptr + pair_addr{digit}, pair{digit}, "
             f"mask={mask}[:, :, None])",
         ]
+    if _packed_maca_fp32_complex_io(dtype) and math.prod(factors) == 256:
+        # The cube final-store path was paying for separate shared-layout
+        # conversions of real and imaginary values before combining them.
+        # Pack the complex bits per thread first, then transpose one 64-bit
+        # tile so the cross-lane conversion moves half as many elements.
+        return [
+            f"{indent}perm_pair_flat{digit} = "
+            f"tl.cast(tl.cast(r{digit}, tl.uint32, bitcast=True), tl.uint64) "
+            f"| (tl.cast(tl.cast(i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)",
+            f"{indent}perm_pair{digit} = tl.trans(tl.reshape(perm_pair_flat{digit}, "
+            f"({pack}, {lane_block})))",
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}perm_ptr{digit} = tl.cast(out_ptr + perm_addr{digit} * 2, "
+            "tl.pointer_type(tl.uint64))",
+            f"{indent}tl.store(perm_ptr{digit}, perm_pair{digit}, mask={mask})",
+        ]
     if _packed_maca_fp32_complex_io(dtype):
         return [
             f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
