@@ -18,6 +18,7 @@
 
 #include <cstdlib>
 #include <cmath>
+#include <array>
 #include <optional>
 #include <utility>
 
@@ -27,6 +28,50 @@ namespace {
   bool flag_or_default(const char *name, bool default_value) {
     const char *value = std::getenv(name);
     return value == nullptr ? default_value : std::string(value) == "1";
+  }
+
+  bool npu_3d_native_transpose_enabled(const FFTRequest &request) {
+    return request.device_type == "npu" && request.origin_rank == 3 &&
+           request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+           flag_or_default("FLAGFFT_NPU_3D_TRANSPOSE", false);
+  }
+
+  std::vector<DeviceAllocation> build_npu_3d_transpose_indices() {
+    constexpr uint32_t kTile = 16;
+    constexpr uint32_t kComplexCount = kTile * kTile * kTile;
+    constexpr uint32_t kFloatCount = 2 * kComplexCount;
+    constexpr std::array<std::array<uint32_t, 3>, 6> kOrders = {{
+        {{0, 2, 1}},  // 021
+        {{2, 1, 0}},  // 210
+        {{2, 0, 1}},  // 201
+        {{1, 2, 0}},  // 120
+        {{1, 0, 2}},  // 102
+        {{0, 1, 2}},  // 012
+    }};
+    std::vector<DeviceAllocation> result;
+    result.reserve(kOrders.size());
+    for (const auto &order : kOrders) {
+      std::vector<uint32_t> indices(kFloatCount);
+      for (uint32_t o0 = 0; o0 < kTile; ++o0) {
+        for (uint32_t o1 = 0; o1 < kTile; ++o1) {
+          for (uint32_t o2 = 0; o2 < kTile; ++o2) {
+            uint32_t input_coords[3] = {0, 0, 0};
+            input_coords[order[0]] = o0;
+            input_coords[order[1]] = o1;
+            input_coords[order[2]] = o2;
+            const uint32_t output_index = (o0 * kTile + o1) * kTile + o2;
+            const uint32_t input_index =
+                (input_coords[0] * kTile + input_coords[1]) * kTile + input_coords[2];
+            indices[2 * output_index] = 2 * input_index * sizeof(float);
+            indices[2 * output_index + 1] = (2 * input_index + 1) * sizeof(float);
+          }
+        }
+      }
+      DeviceAllocation table(indices.size() * sizeof(uint32_t));
+      table.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
+      result.push_back(std::move(table));
+    }
+    return result;
   }
 
   bool use_npu_2d_cube_dft(const FFTRequest &request, int64_t n) {
@@ -2157,12 +2202,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
   // Forward: (n0,n1,n2) -021-> (n0,n2,n1) -210-> (n1,n2,n0) -201-> (n0,n1,n2).
   // Inverse: (n0,n1,n2) -120-> (n1,n2,n0) -210-> (n0,n2,n1) -021-> (n0,n1,n2).
-  auto perm_021_fwd = compile_transpose3d_kernel(request, n0, n1, n2, "021");
-  auto perm_210_fwd = compile_transpose3d_kernel(request, n0, n2, n1, "210");
-  auto perm_201_fwd = compile_transpose3d_kernel(request, n1, n2, n0, "201");
-  auto perm_120_inv = compile_transpose3d_kernel(request, n0, n1, n2, "120");
-  auto perm_210_inv = compile_transpose3d_kernel(request, n1, n2, n0, "210");
-  auto perm_021_inv = compile_transpose3d_kernel(request, n0, n2, n1, "021");
+  std::vector<DeviceAllocation> npu_transpose_indices;
+  std::shared_ptr<JitKernel> perm_021_fwd;
+  std::shared_ptr<JitKernel> perm_210_fwd;
+  std::shared_ptr<JitKernel> perm_201_fwd;
+  std::shared_ptr<JitKernel> perm_120_inv;
+  std::shared_ptr<JitKernel> perm_210_inv;
+  std::shared_ptr<JitKernel> perm_021_inv;
+  if (npu_3d_native_transpose_enabled(request)) {
+    npu_transpose_indices = build_npu_3d_transpose_indices();
+  } else {
+    perm_021_fwd = compile_transpose3d_kernel(request, n0, n1, n2, "021");
+    perm_210_fwd = compile_transpose3d_kernel(request, n0, n2, n1, "210");
+    perm_201_fwd = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+    perm_120_inv = compile_transpose3d_kernel(request, n0, n1, n2, "120");
+    perm_210_inv = compile_transpose3d_kernel(request, n1, n2, n0, "210");
+    perm_021_inv = compile_transpose3d_kernel(request, n0, n2, n1, "021");
+  }
 
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
   DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
@@ -2180,7 +2236,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                              std::move(perm_210_inv),
                                              std::move(perm_021_inv),
                                              std::move(temp1),
-                                             std::move(temp2));
+                                             std::move(temp2),
+                                             std::move(npu_transpose_indices));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(

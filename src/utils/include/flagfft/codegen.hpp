@@ -1048,7 +1048,8 @@ struct CompiledRaw3DNode final : CompiledRawNode {
                     std::shared_ptr<JitKernel> perm_210_inv,
                     std::shared_ptr<JitKernel> perm_021_inv,
                     DeviceAllocation temp1,
-                    DeviceAllocation temp2);
+                    DeviceAllocation temp2,
+                    std::vector<DeviceAllocation> npu_transpose_indices = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1068,6 +1069,7 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> perm_021_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
+  std::vector<DeviceAllocation> npu_transpose_indices;
 };
 
 // Small cubic complex transform: one kernel handles both axes in each plane,

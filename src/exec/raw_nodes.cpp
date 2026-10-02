@@ -17,6 +17,7 @@
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/ascendc_fft64.hpp"
 #include "adaptor/backend/npu/ascendc_fft256.hpp"
+#include "adaptor/backend/npu/ascendc_transpose3d.hpp"
 #endif
 
 #include <algorithm>
@@ -207,6 +208,65 @@ namespace {
       };
       kernel->launch(stream, args, grid_x, 1, count);
     }
+  }
+
+  flagfftResult launch_perm3d_with_optional_npu_native(
+      const std::shared_ptr<JitKernel> &kernel,
+      const std::vector<DeviceAllocation> &npu_indices,
+      adaptor::StreamHandle stream,
+      adaptor::DevicePtr input,
+      adaptor::DevicePtr output,
+      int64_t n0,
+      int64_t n1,
+      int64_t n2,
+      int32_t axis0,
+      int32_t axis1,
+      int32_t axis2,
+      int64_t batch,
+      int64_t element_bytes) {
+#if defined(FLAGFFT_BACKEND_NPU)
+    if (!npu_indices.empty()) {
+      if (npu_indices.size() != 6 || element_bytes != 2 * sizeof(float) ||
+          n0 > std::numeric_limits<int32_t>::max() ||
+          n1 > std::numeric_limits<int32_t>::max() ||
+          n2 > std::numeric_limits<int32_t>::max() ||
+          batch > std::numeric_limits<int32_t>::max()) {
+        return FLAGFFT_INVALID_SIZE;
+      }
+      std::size_t index = 5;
+      if (axis0 == 0 && axis1 == 2 && axis2 == 1) index = 0;       // 021
+      else if (axis0 == 2 && axis1 == 1 && axis2 == 0) index = 1;  // 210
+      else if (axis0 == 2 && axis1 == 0 && axis2 == 1) index = 2;  // 201
+      else if (axis0 == 1 && axis1 == 2 && axis2 == 0) index = 3;  // 120
+      else if (axis0 == 1 && axis1 == 0 && axis2 == 2) index = 4;  // 102
+      const uint64_t per_batch_tiles =
+          static_cast<uint64_t>((n0 + 15) / 16) * ((n1 + 15) / 16) * ((n2 + 15) / 16);
+      const int64_t batch_chunk = std::max<int64_t>(
+          1, static_cast<int64_t>(block_limit_per_launch() / std::max<uint64_t>(1, per_batch_tiles)));
+      const int64_t elements_per_batch = n0 * n1 * n2;
+      for (int64_t batch_offset = 0; batch_offset < batch; batch_offset += batch_chunk) {
+        const int64_t chunk = std::min(batch_chunk, batch - batch_offset);
+        const adaptor::DevicePtr byte_offset = static_cast<adaptor::DevicePtr>(
+            batch_offset * elements_per_batch * element_bytes);
+        const flagfftResult result = adaptor::npu::launch_ascendc_transpose3d(
+            input + byte_offset,
+            output + byte_offset,
+            npu_indices[index].get(),
+            static_cast<int32_t>(n0),
+            static_cast<int32_t>(n1),
+            static_cast<int32_t>(n2),
+            static_cast<int32_t>(chunk),
+            axis0,
+            axis1,
+            axis2,
+            stream);
+        if (result != FLAGFFT_SUCCESS) return result;
+      }
+      return FLAGFFT_SUCCESS;
+    }
+#endif
+    launch_perm3d(kernel, stream, input, output, n0 * n1 * n2, batch, element_bytes);
+    return FLAGFFT_SUCCESS;
   }
 
 }  // namespace
@@ -2849,7 +2909,8 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
                                      std::shared_ptr<JitKernel> perm_210_inv,
                                      std::shared_ptr<JitKernel> perm_021_inv,
                                      DeviceAllocation temp1,
-                                     DeviceAllocation temp2)
+                                     DeviceAllocation temp2,
+                                     std::vector<DeviceAllocation> npu_transpose_indices)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2863,7 +2924,8 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
       perm_210_inv(std::move(perm_210_inv)),
       perm_021_inv(std::move(perm_021_inv)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      npu_transpose_indices(std::move(npu_transpose_indices)) {
 }
 
 std::string CompiledRaw3DNode::describe() const {
@@ -2874,7 +2936,8 @@ std::string CompiledRaw3DNode::describe() const {
       << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
       << ", perm_021_fwd=" << (perm_021_fwd ? perm_021_fwd->execution_description() : "null")
       << ", perm_210_fwd=" << (perm_210_fwd ? perm_210_fwd->execution_description() : "null")
-      << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null") << ")";
+      << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null")
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty()) << ")";
   return oss.str();
 }
 
@@ -2890,25 +2953,49 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * n2};
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * n2};
 
+    auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
+                       adaptor::DevicePtr source,
+                       adaptor::DevicePtr destination,
+                       int64_t d0,
+                       int64_t d1,
+                       int64_t d2,
+                       int32_t axis0,
+                       int32_t axis1,
+                       int32_t axis2) {
+      return launch_perm3d_with_optional_npu_native(kernel,
+                                                     npu_transpose_indices,
+                                                     context.stream,
+                                                     source,
+                                                     destination,
+                                                     d0,
+                                                     d1,
+                                                     d2,
+                                                     axis0,
+                                                     axis1,
+                                                     axis2,
+                                                     batch,
+                                                     complex_element_bytes(context.request.input_dtype));
+    };
+
     flagfftResult result;
     if (inverse) {
       // (n0,n1,n2) -> perm(1,2,0) -> (n1,n2,n0), IFFT along n0
-      launch_perm3d(perm_120_inv, context.stream, input, temp1.get(), total, batch,
-                    complex_element_bytes(context.request.input_dtype));
+      result = permute(perm_120_inv, input, temp1.get(), n0, n1, n2, 1, 2, 0);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n1,n2,n0) -> perm(2,1,0) -> (n0,n2,n1), IFFT along n1
-      launch_perm3d(perm_210_inv, context.stream, temp2.get(), temp1.get(), total, batch,
-                    complex_element_bytes(context.request.input_dtype));
+      result = permute(perm_210_inv, temp2.get(), temp1.get(), n1, n2, n0, 2, 1, 0);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n0,n2,n1) -> perm(0,2,1) -> (n0,n1,n2), IFFT along n2
-      launch_perm3d(perm_021_inv, context.stream, temp2.get(), temp1.get(), total, batch,
-                    complex_element_bytes(context.request.input_dtype));
+      result = permute(perm_021_inv, temp2.get(), temp1.get(), n0, n2, n1, 0, 2, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n2_fft->execute(temp1.get(), output, n2_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
@@ -2920,22 +3007,22 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
         return result;
       }
       // (n0,n1,n2) -> perm(0,2,1) -> (n0,n2,n1), FFT along n1
-      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch,
-                    complex_element_bytes(context.request.input_dtype));
+      result = permute(perm_021_fwd, temp1.get(), temp2.get(), n0, n1, n2, 0, 2, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n0,n2,n1) -> perm(2,1,0) -> (n1,n2,n0), FFT along n0
-      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch,
-                    complex_element_bytes(context.request.input_dtype));
+      result = permute(perm_210_fwd, temp1.get(), temp2.get(), n0, n2, n1, 2, 1, 0);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n1,n2,n0) -> perm(2,0,1) -> (n0,n1,n2)
-      launch_perm3d(perm_201_fwd, context.stream, temp1.get(), output, total, batch,
-                    complex_element_bytes(context.request.input_dtype));
+      result = permute(perm_201_fwd, temp1.get(), output, n1, n2, n0, 2, 0, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
