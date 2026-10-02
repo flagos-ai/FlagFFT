@@ -1915,6 +1915,15 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
     }
 
     auto run_sequence = [&]() -> flagfftResult {
+#if defined(FLAGFFT_BACKEND_NPU)
+      const char *debug_column = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV_DEBUG_COLUMN_ONLY");
+      if (n0 == 64 && n1 == 64 && debug_column != nullptr && std::string(debug_column) == "1" &&
+          col_fft->describe().find("CompiledRawNpuAivFFT64") != std::string::npos) {
+        RawExecutionContext col_context {context.request, context.stream, batch * n1};
+        return col_fft->execute(input, output, col_context);
+      }
+#endif
+
       // Step 1: Transform the contiguous input axis into temp1. Some compiled
       // paths store the result transposed so the second pass can also read
       // contiguous data.
