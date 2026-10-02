@@ -766,6 +766,15 @@ def _emit_tiled_transpose3d_jit_kernel(
             "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, "
             "pair32, pair64, pair16rg2, pair16sg2rg2 or v1"
         )
+    if maca_mode == "pair16sg2rg2" and (
+        dtype != "complex64"
+        or tuple(sorted((n0, n1, n2)))
+        not in {(64, 128, 2048), (256, 256, 256)}
+    ):
+        # The experimental row/slice-group kernel is only validated for
+        # these FP32 shapes. An all-suite environment must leave every other
+        # dtype and shape on the established pair16 path.
+        maca_mode = "pair16"
     if maca_mode == "pair16rg2" and (
         dtype != "complex64" or tuple(sorted((n0, n1, n2))) != (256, 256, 256)
     ):
