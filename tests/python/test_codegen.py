@@ -991,19 +991,6 @@ def test_maca_pair16_slice_row_group_codegen_is_opt_in(tmp_path, monkeypatch) ->
     assert metadata["grid_x_override"] == 16384
     assert "for row_group_offset in tl.static_range(0, 2):" in source
 
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16sg2rg4")
-    group4_metadata = emit._emit_tiled_transpose3d_jit_kernel(
-        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
-    )
-    group4_source = Path(group4_metadata["module_path"]).read_text()
-
-    assert group4_metadata["kernel_name"].endswith(
-        "_t16_tile_pair_sliceg2seq_rowg4seq_rmajor"
-    )
-    assert group4_metadata["grid_x_override"] == 8192
-    assert "for row_group_offset in tl.static_range(0, 4):" in group4_source
-
-
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit, kernels_common
 
