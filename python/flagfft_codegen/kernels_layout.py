@@ -16,7 +16,7 @@ from __future__ import annotations
 
 """Layout kernels: reshape packs and tiled 2D/3D transposes."""
 
-from textwrap import dedent, indent
+from textwrap import dedent
 
 from .kernels_common import _dtype_suffix, _zero_other
 
@@ -479,50 +479,40 @@ def _build_tiled_transpose3d_slice_group_kernel_source(
         + ("_rmajor" if tile_traversal == "row" else "")
     )
     if pair:
-        load_source = dedent(
-            """\
-            src_pair = tl.load(
-                tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
-                mask=load_mask,
-                other=0,
-            )
-            dst_pair = tl.trans(src_pair)
-            """
-        )
-        store_source = dedent(
-            """\
-            tl.store(
-                tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
-                dst_pair,
-                mask=store_mask,
-            )
-            """
-        )
+        load_source = """\
+                src_pair = tl.load(
+                    tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
+                    mask=load_mask,
+                    other=0,
+                )
+                dst_pair = tl.trans(src_pair)
+        """
+        store_source = """\
+                tl.store(
+                    tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
+                    dst_pair,
+                    mask=store_mask,
+                )
+        """
     else:
         zero = _zero_other(dtype)
-        load_source = dedent(
-            f"""\
-            src_r = tl.load(in_ptr + src_base, mask=load_mask, other={zero})
-            src_i = tl.load(in_ptr + src_base + 1, mask=load_mask, other={zero})
-            dst_r = tl.trans(src_r)
-            dst_i = tl.trans(src_i)
-            """
-        )
+        load_source = f"""\
+                src_r = tl.load(in_ptr + src_base, mask=load_mask, other={zero})
+                src_i = tl.load(in_ptr + src_base + 1, mask=load_mask, other={zero})
+                dst_r = tl.trans(src_r)
+                dst_i = tl.trans(src_i)
+        """
         if vec_store:
-            store_source = dedent(
-                """\
+            store_source = """\
                 dst_pair = tl.join(dst_r, dst_i)
                 pair_addr = dst_base[:, :, None] + tl.arange(0, 2)[None, None, :]
                 tl.store(out_ptr + pair_addr, dst_pair, mask=store_mask[:, :, None])
-                """
-            )
+            """
         else:
-            store_source = dedent(
-                """\
+            store_source = """\
                 tl.store(out_ptr + dst_base, dst_r, mask=store_mask)
                 tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)
-                """
-            )
+            """
     source = dedent(
         f"""\
         @triton.jit
@@ -552,7 +542,7 @@ def _build_tiled_transpose3d_slice_group_kernel_source(
                     + safe_rows[None, :] * {scalar_width}
                 )
                 load_mask = slice_mask & col_mask[:, None] & row_mask[None, :]
-                __LOAD_SOURCE__
+                {load_source}
 
                 safe_slice = tl.minimum(slice_idx, {num_slices - 1})
                 dst_base = (
@@ -562,11 +552,9 @@ def _build_tiled_transpose3d_slice_group_kernel_source(
                     + safe_cols[None, :] * {scalar_width}
                 )
                 store_mask = slice_mask & row_mask[:, None] & col_mask[None, :]
-                __STORE_SOURCE__
+                {store_source}
         """
     )
-    source = source.replace("        __LOAD_SOURCE__", indent(load_source, "        "))
-    source = source.replace("        __STORE_SOURCE__", indent(store_source, "        "))
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
 
 
