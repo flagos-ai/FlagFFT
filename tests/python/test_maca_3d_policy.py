@@ -56,9 +56,23 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "8")
             assert permuted_store_batch_pack_for(short) == 8
             assert permuted_store_batch_pack_for(single128) == 8
+            assert permuted_store_batch_pack_for(single) == 8
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "2")
+            assert permuted_store_batch_pack_for(single) == 2
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "4")
+            assert permuted_store_batch_pack_for(single) == 4
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "auto")
+            assert permuted_store_batch_pack_for(single) == 4
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "32")
             assert permuted_store_batch_pack_for(short) == 32
             assert permuted_store_batch_pack_for(single128) == 16
+            monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "16")
+            try:
+                permuted_store_batch_pack_for(single)
+            except ValueError as error:
+                assert "for a 256-point MACA permuted-store leaf" in str(error)
+            else:
+                raise AssertionError("unsupported cube permuted-store pack was accepted")
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "3")
             try:
                 permuted_store_batch_pack_for(short)

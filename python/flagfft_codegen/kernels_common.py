@@ -527,6 +527,23 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
                     "FLAGFFT_MACA_3D_PERMSTORE_PACK must be 1, 2, 4, 8, 16, 32 or auto"
                 )
             target_pack = int(override)
+    # The 256-point cube final-store pack can be screened independently. Keep
+    # its generic pack as the default and only select a candidate explicitly.
+    override = os.getenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
+    if (
+        _declared_backend() == "maca"
+        and maca_3d_default_enabled()
+        and plan.dtype == "complex64"
+        and plan.length == 256
+        and override is not None
+        and override != "auto"
+    ):
+        if override not in {"1", "2", "4", "8"}:
+            raise ValueError(
+                "FLAGFFT_MACA_3D_PERMSTORE_PACK must be 1, 2, 4, 8 or auto "
+                "for a 256-point MACA permuted-store leaf"
+            )
+        target_pack = int(override)
     if _mthreads_backend_active():
         override = os.getenv("FLAGFFT_MUSA_3D_PACK")
         if override is not None and override != "auto":
