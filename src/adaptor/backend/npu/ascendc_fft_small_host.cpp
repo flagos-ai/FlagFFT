@@ -5,7 +5,9 @@
 
 #include <acl/acl_rt.h>
 #include <aclrtlaunch_flagfft_npu_fft16.h>
+#include <aclrtlaunch_flagfft_npu_fft16_g1.h>
 #include <aclrtlaunch_flagfft_npu_fft32.h>
+#include <aclrtlaunch_flagfft_npu_fft32_g1.h>
 
 namespace flagfft::adaptor::npu {
 

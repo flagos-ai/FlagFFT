@@ -184,8 +184,12 @@ if(BACKEND STREQUAL "NPU")
         src/adaptor/backend/npu/ascendc_fft64_kernel.cpp)
     ascendc_library(flagfft_npu_aiv_fft16 STATIC
         src/adaptor/backend/npu/ascendc_fft16_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft16_g1 STATIC
+        src/adaptor/backend/npu/ascendc_fft16_g1_kernel.cpp)
     ascendc_library(flagfft_npu_aiv_fft32 STATIC
         src/adaptor/backend/npu/ascendc_fft32_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft32_g1 STATIC
+        src/adaptor/backend/npu/ascendc_fft32_g1_kernel.cpp)
     ascendc_library(flagfft_npu_aiv_fft128 STATIC
         src/adaptor/backend/npu/ascendc_fft128_kernel.cpp)
     ascendc_library(flagfft_npu_aiv_fft2048 STATIC
@@ -214,7 +218,9 @@ if(BACKEND STREQUAL "NPU")
     target_link_libraries(flagfft PRIVATE
         flagfft_npu_aiv_fft64
         flagfft_npu_aiv_fft16
+        flagfft_npu_aiv_fft16_g1
         flagfft_npu_aiv_fft32
+        flagfft_npu_aiv_fft32_g1
         flagfft_npu_aiv_fft128
         flagfft_npu_aiv_fft2048
         flagfft_npu_aiv_fft256
