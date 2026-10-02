@@ -1311,7 +1311,8 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNodePtr &node,
                                                                   const FFTRequest &request,
-                                                                  int64_t batch) {
+                                                                  int64_t batch,
+                                                                  bool allow_npu_aiv256_transposed_store) {
   configure_single_transform_policies(request);
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -1362,25 +1363,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR requires FLAGFFT_NPU_3D_AIV256_GROUP=8");
       }
       const char *pair_store_setting = std::getenv("FLAGFFT_NPU_3D_AIV256_PAIR_STORE");
-      const bool transposed_store =
+      const bool pair_store_requested =
           pair_store_setting != nullptr && std::string(pair_store_setting) == "1";
       if (pair_store_setting != nullptr && std::string(pair_store_setting) != "0" &&
-          !transposed_store) {
+          !pair_store_requested) {
         throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR_STORE must be 0 or 1");
       }
-      if (transposed_store && (!pair_mode || group_size != 8)) {
+      if (pair_store_requested && (!pair_mode || group_size != 8)) {
         throw std::runtime_error(
             "FLAGFFT_NPU_3D_AIV256_PAIR_STORE requires pair mode and group size 8");
       }
       const char *radix4_setting = std::getenv("FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4");
-      const bool radix4_mode = radix4_setting != nullptr && std::string(radix4_setting) == "1";
-      if (radix4_setting != nullptr && std::string(radix4_setting) != "0" && !radix4_mode) {
+      const bool radix4_requested = radix4_setting != nullptr && std::string(radix4_setting) == "1";
+      if (radix4_setting != nullptr && std::string(radix4_setting) != "0" && !radix4_requested) {
         throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4 must be 0 or 1");
       }
-      if (radix4_mode && (!pair_mode || group_size != 8 || !transposed_store)) {
+      if (radix4_requested && (!pair_mode || group_size != 8 || !pair_store_requested)) {
         throw std::runtime_error(
             "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4 requires pair mode, group size 8, and pair store");
       }
+      // This output layout is only consumed by the C2C ThreeDim pair-store schedule.
+      // Real transforms keep the existing RTRT axis order and ordinary stores.
+      const bool transposed_store = allow_npu_aiv256_transposed_store && pair_store_requested;
+      const bool radix4_mode = allow_npu_aiv256_transposed_store && radix4_requested;
       if (radix4_mode) {
         build_npu_aiv_fft256_pair_radix4_group8_tables(request, host_indices, host_twiddles);
       } else if (pair_mode) {
@@ -1566,7 +1571,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(bluestein->fft_plan);
     auto row_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) : nullptr;
     auto col_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) : nullptr;
-    std::shared_ptr<CompiledRawNode> fft = compile_raw_node(bluestein->fft_plan, child_request, chunk_batch);
+    std::shared_ptr<CompiledRawNode> fft = compile_raw_node(
+        bluestein->fft_plan, child_request, chunk_batch, allow_npu_aiv256_transposed_store);
     DeviceAllocation chirp =
         build_raw_bluestein_chirp(request, bluestein->length, request.direction == "inverse");
     DeviceAllocation b_time = build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
@@ -1776,7 +1782,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
     FFTRequest child_request = forward_child_request(request);
-    std::shared_ptr<CompiledRawNode> fft = compile_raw_node(rader->conv_plan, child_request, batch);
+    std::shared_ptr<CompiledRawNode> fft = compile_raw_node(
+        rader->conv_plan, child_request, batch, allow_npu_aiv256_transposed_store);
     std::shared_ptr<JitKernel> fused_leaf_kernel;
     std::vector<DeviceAllocation> fused_leaf_tables;
     std::shared_ptr<JitKernel> boundary_prepare_kernel;
@@ -3107,11 +3114,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       flag_or_default("FLAGFFT_NPU_3D_AIV64", false);
   const char *ix_rtrt_override = std::getenv("FLAGFFT_IX_3D_REAL_RTRT");
   const bool screen_rtrt = ix_rtrt_override != nullptr && std::string(ix_rtrt_override) == "1";
-  const bool screen_hybrid = (node->n2 == 64 || node->n2 == 256) &&
+  // Keep the real-hybrid screening isolated to its IX implementation.  Its
+  // default-on flag must not select an unqualified store path for Ascend.
+  const bool ix_real_screen = request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64";
+  const bool screen_hybrid = ix_real_screen && (node->n2 == 64 || node->n2 == 256) &&
       flag_or_default("FLAGFFT_IX_3D_REAL_HYBRID", !screen_rtrt);
-  const bool ix_real_rtrt = request.device_type == "ix" && request.device_arch == "71" &&
-      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      (screen_rtrt || screen_hybrid);
+  const bool ix_real_rtrt = ix_real_screen && (screen_rtrt || screen_hybrid);
   if (!npu_real_native && !ix_real_rtrt) return nullptr;
 
   const int64_t n0 = node->n0;
@@ -3130,7 +3139,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       packed > 64 * 64 * 64 &&
       flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_MIDDLE",
                       batch == 1 && n0 == 256 && n1 == 256 && n2 == 256);
-  const bool fused_first = !npu_real_native && !inverse && n2_leaf && (n2 == 64 || n2 == 256) &&
+  const bool fused_first = ix_real_screen && !npu_real_native && !inverse && n2_leaf &&
+      (n2 == 64 || n2 == 256) &&
       packed > 64 * 64 * 64 && flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_FIRST", true);
 
   FFTRequest n2_request = request;
@@ -3187,10 +3197,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   }
   auto n1_fft = fused_middle
       ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner")
-      : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+      : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half,
+                         /*allow_npu_aiv256_transposed_store=*/false);
   auto n0_fft = fused_n0
       ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
-      : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
+      : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half,
+                         /*allow_npu_aiv256_transposed_store=*/false);
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_210;
   std::shared_ptr<JitKernel> perm_201;
@@ -3267,10 +3279,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
   n0_request.real_transform = false;
 
   auto expand_kernel = compile_real_to_complex_kernel(request, n2);
-  std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
+  std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(
+      node->n2_plan, n2_request, batch * n0 * n1,
+      /*allow_npu_aiv256_transposed_store=*/false);
   auto pack_kernel = compile_r2c_half_pack_kernel(request, n2);
-  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
-  std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
+  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(
+      node->n1_plan, n1_request, batch * n0 * half,
+      /*allow_npu_aiv256_transposed_store=*/false);
+  std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(
+      node->n0_plan, n0_request, batch * n1 * half,
+      /*allow_npu_aiv256_transposed_store=*/false);
 
   // (n0,n1,half) -021-> (n0,half,n1) -210-> (n1,half,n0) -201-> (n0,n1,half).
   std::vector<DeviceAllocation> npu_transpose_indices;
@@ -3347,10 +3365,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
   n2_request.real_transform_kind.clear();
   n2_request.real_transform = false;
 
-  std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
-  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+  std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(
+      node->n0_plan, n0_request, batch * n1 * half,
+      /*allow_npu_aiv256_transposed_store=*/false);
+  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(
+      node->n1_plan, n1_request, batch * n0 * half,
+      /*allow_npu_aiv256_transposed_store=*/false);
   auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n2);
-  std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
+  std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(
+      node->n2_plan, n2_request, batch * n0 * n1,
+      /*allow_npu_aiv256_transposed_store=*/false);
   auto pack_kernel = compile_complex_to_real_kernel(request, n2);
 
   // (n0,n1,half) -120-> (n1,half,n0) -210-> (n0,half,n1) -021-> (n0,n1,half).
