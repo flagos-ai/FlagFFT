@@ -13,13 +13,15 @@
 // limitations under the License.
 
 #include "kernel_operator.h"
+#include "kernel_operator_vec_scatter_intf.h"
 
 using namespace AscendC;
 
 namespace {
 constexpr uint32_t kN = 64;
 constexpr uint32_t kStages = 6;
-constexpr uint32_t kLocalIndexCount = kN + 2 * kStages * kN;
+constexpr uint32_t kScatterIndexBase = kN + 2 * kStages * kN;
+constexpr uint32_t kLocalIndexCount = kScatterIndexBase + 2 * kN;
 constexpr uint32_t kStageIndexBase = kN;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
@@ -80,6 +82,7 @@ class Fft64Aiv {
     DataCopy(index_local, indices_, kN);
     DataCopy(index_local[kN], indices_[kStageIndexBase],
              2 * kStages * kN);
+    DataCopy(index_local[kScatterIndexBase], indices_[kScatterIndexBase], 2 * kN);
     DataCopy(twiddle_local, twiddles_, kTwiddleCount);
     PipeBarrier<PIPE_ALL>();
 
@@ -129,7 +132,10 @@ class Fft64Aiv {
     }
 
     LocalTensor<float> output_local = output_buf_.Get<float>();
-    Interleave(output_local, output_local[kN], current_real, current_imag, kN);
+    const LocalTensor<uint32_t> scatter_real_indices = index_local[kScatterIndexBase];
+    const LocalTensor<uint32_t> scatter_imag_indices = index_local[kScatterIndexBase + kN];
+    Scatter(output_local, current_real, scatter_real_indices, 0, kN);
+    Scatter(output_local, current_imag, scatter_imag_indices, 0, kN);
     PipeBarrier<PIPE_ALL>();
 
     if (strided) {
