@@ -41,8 +41,7 @@ namespace {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    const int64_t scatter_base = n + 2 * stages * n;
-    indices.assign(scatter_base + 2 * n, 0);
+    indices.assign(n + 2 * stages * n, 0);
     twiddles.assign(2 * stages * n, 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
@@ -80,11 +79,6 @@ namespace {
       }
     }
 
-    for (int64_t i = 0; i < n; ++i) {
-      // Scatter offsets are byte offsets into the packed local complex vector.
-      indices[scatter_base + i] = static_cast<uint32_t>(2 * i * sizeof(float));
-      indices[scatter_base + n + i] = static_cast<uint32_t>((2 * i + 1) * sizeof(float));
-    }
   }
 
   void mark_npu_2d_portable_leaf(KernelKey &key, const FFTRequest &request) {

@@ -13,15 +13,13 @@
 // limitations under the License.
 
 #include "kernel_operator.h"
-#include "kernel_operator_vec_scatter_intf.h"
 
 using namespace AscendC;
 
 namespace {
 constexpr uint32_t kN = 64;
 constexpr uint32_t kStages = 6;
-constexpr uint32_t kScatterIndexBase = kN + 2 * kStages * kN;
-constexpr uint32_t kLocalIndexCount = kScatterIndexBase + 2 * kN;
+constexpr uint32_t kLocalIndexCount = kN + 2 * kStages * kN;
 constexpr uint32_t kStageIndexBase = kN;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
@@ -82,7 +80,6 @@ class Fft64Aiv {
     DataCopy(index_local, indices_, kN);
     DataCopy(index_local[kN], indices_[kStageIndexBase],
              2 * kStages * kN);
-    DataCopy(index_local[kScatterIndexBase], indices_[kScatterIndexBase], 2 * kN);
     DataCopy(twiddle_local, twiddles_, kTwiddleCount);
     PipeBarrier<PIPE_ALL>();
 
@@ -131,16 +128,15 @@ class Fft64Aiv {
       next_imag = swap;
     }
 
-    LocalTensor<float> output_local = output_buf_.Get<float>();
-    const LocalTensor<uint32_t> scatter_real_indices = index_local[kScatterIndexBase];
-    const LocalTensor<uint32_t> scatter_imag_indices = index_local[kScatterIndexBase + kN];
-    Scatter(output_local, current_real, scatter_real_indices, 0, kN);
-    Scatter(output_local, current_imag, scatter_imag_indices, 0, kN);
-    PipeBarrier<PIPE_ALL>();
-
     if (strided) {
-      // Pack each complex value into one 8-byte block before the strided MTE3
-      // write. Separate 4-byte real/imaginary bursts are not reliable on AIV.
+      // Pack complex values locally before the strided MTE3 write. AIV scalar
+      // stores to this GM column layout are not reliable on 910B.
+      LocalTensor<float> output_local = output_buf_.Get<float>();
+      for (uint32_t i = 0; i < kN; ++i) {
+        output_local.SetValue(2 * i, current_real.GetValue(i));
+        output_local.SetValue(2 * i + 1, current_imag.GetValue(i));
+      }
+      PipeBarrier<PIPE_ALL>();
       GlobalTensor<uint64_t> dst_complex;
       dst_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + output_base * 2));
       LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
@@ -148,9 +144,12 @@ class Fft64Aiv {
           kN, sizeof(uint64_t), 0, (stride_ - 1) * kComplexBytes, 0);
       DataCopyPad(dst_complex, output_complex, output_params);
     } else {
-      GlobalTensor<float> dst;
-      dst.SetGlobalBuffer(output_ptr_ + output_base * 2);
-      DataCopy(dst, output_local, 2 * kN);
+      PipeBarrier<PIPE_ALL>();
+      for (uint32_t i = 0; i < kN; ++i) {
+        const uint32_t output = (output_base + i) * 2;
+        output_ptr_[output] = current_real.GetValue(i);
+        output_ptr_[output + 1] = current_imag.GetValue(i);
+      }
     }
   }
 
