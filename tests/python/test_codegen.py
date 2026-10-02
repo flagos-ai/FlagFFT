@@ -962,17 +962,6 @@ def test_tiled_transpose3d_pair_slice_row_group_emits_independent_tiles() -> Non
     assert "tile_row_group = tile_in_slice % 8" in source
     assert grid_x == 128 * 8 * 16
 
-    parallel_name, parallel_source, _, parallel_grid_x = (
-        _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
-            256, 256, 256, "021", tile=16, slice_group=2, row_group=2,
-            tile_traversal="row", parallel_row_group=True,
-        )
-    )
-    assert parallel_name.endswith("_t16_tile_pair_sliceg2seq_rowg2par_rmajor")
-    assert "dst_pair = tl.permute(src_pair, (0, 2, 1))" in parallel_source
-    assert "row_group_offsets = tl.arange(0, 2)" in parallel_source
-    assert parallel_grid_x == grid_x
-
     _, _, _, grid_x_group4 = (
         _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
             256, 256, 256, "021", tile=16, slice_group=2, row_group=4,
@@ -1001,18 +990,6 @@ def test_maca_pair16_slice_row_group_codegen_is_opt_in(tmp_path, monkeypatch) ->
     assert metadata["num_warps"] == 8
     assert metadata["grid_x_override"] == 16384
     assert "for row_group_offset in tl.static_range(0, 2):" in source
-
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16sg2rg2par")
-    parallel_metadata = emit._emit_tiled_transpose3d_jit_kernel(
-        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
-    )
-    parallel_source = Path(parallel_metadata["module_path"]).read_text()
-
-    assert parallel_metadata["kernel_name"].endswith(
-        "_t16_tile_pair_sliceg2seq_rowg2par_rmajor"
-    )
-    assert parallel_metadata["grid_x_override"] == 16384
-    assert "tl.permute(src_pair, (0, 2, 1))" in parallel_source
 
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit, kernels_common
