@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <optional>
+#include <utility>
 
 namespace flagfft {
 namespace {
@@ -82,6 +83,69 @@ namespace {
       }
     }
 
+  }
+
+  void build_npu_aiv_fft64_group4_tables(const FFTRequest &request,
+                                        std::vector<uint32_t> &indices,
+                                        std::vector<float> &twiddles) {
+    constexpr int64_t n = 64;
+    constexpr int64_t group_cols = 4;
+    constexpr int64_t group_n = n * group_cols;
+    constexpr int64_t stages = 6;
+    constexpr int64_t output_index_base = group_n;
+    constexpr int64_t stage_index_base = 3 * group_n;
+    constexpr int64_t stage_b_index_base = stage_index_base + stages * group_n;
+    constexpr double pi = 3.141592653589793238462643383279502884;
+    indices.assign(3 * group_n + 2 * stages * group_n, 0);
+    twiddles.assign(2 * stages * group_n, 0.0f);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+
+    for (int64_t column = 0; column < group_cols; ++column) {
+      for (int64_t i = 0; i < n; ++i) {
+        int64_t value = i;
+        int64_t reversed = 0;
+        for (int64_t bit = 0; bit < stages; ++bit) {
+          reversed = (reversed << 1) | (value & 1);
+          value >>= 1;
+        }
+        indices[column * n + i] = static_cast<uint32_t>(
+            (reversed * group_cols + column) * 2 * sizeof(float));
+      }
+    }
+
+    for (int64_t i = 0; i < 2 * group_n; ++i) {
+      const int64_t row = i / (2 * group_cols);
+      const int64_t column = (i / 2) % group_cols;
+      const int64_t component = i % 2;
+      const int64_t source_index = column * n + row + component * group_n;
+      indices[output_index_base + i] = static_cast<uint32_t>(source_index * sizeof(float));
+    }
+
+    for (int64_t stage = 0; stage < stages; ++stage) {
+      const int64_t length = int64_t{1} << (stage + 1);
+      const int64_t half = length / 2;
+      for (int64_t column = 0; column < group_cols; ++column) {
+        for (int64_t i = 0; i < n; ++i) {
+          const int64_t group = (i / length) * length;
+          const int64_t offset = i % length;
+          const bool upper = offset >= half;
+          const int64_t a = group + (upper ? offset - half : offset);
+          const int64_t b = a + half;
+          const int64_t twiddle_offset = offset % half;
+          const double angle = sign * 2.0 * pi * static_cast<double>(twiddle_offset) /
+                               static_cast<double>(length);
+          const float negate = upper ? -1.0f : 1.0f;
+          const int64_t destination = column * n + i;
+          const int64_t table_index = stage * group_n + destination;
+          indices[stage_index_base + table_index] =
+              static_cast<uint32_t>((column * n + a) * sizeof(float));
+          indices[stage_b_index_base + table_index] =
+              static_cast<uint32_t>((column * n + b) * sizeof(float));
+          twiddles[table_index] = negate * static_cast<float>(std::cos(angle));
+          twiddles[stages * group_n + table_index] = negate * static_cast<float>(std::sin(angle));
+        }
+      }
+    }
   }
 
   void mark_npu_2d_portable_leaf(KernelKey &key, const FFTRequest &request) {
@@ -2265,17 +2329,35 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64) {
+    const char *column_group_setting = std::getenv("FLAGFFT_NPU_2D_ASCENDC_COL_GROUP");
+    const bool use_column_group4 = column_group_setting != nullptr &&
+                                   std::string(column_group_setting) == "4";
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     build_npu_aiv_fft64_tables(request, host_indices, host_twiddles);
-    auto index_allocation = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
-    index_allocation->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
-    auto twiddle_allocation = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
-    twiddle_allocation->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    auto upload_tables = [](const std::vector<uint32_t> &indices,
+                            const std::vector<float> &twiddles) {
+      auto index_allocation = std::make_shared<DeviceAllocation>(indices.size() * sizeof(uint32_t));
+      index_allocation->copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
+      auto twiddle_allocation = std::make_shared<DeviceAllocation>(twiddles.size() * sizeof(float));
+      twiddle_allocation->copy_from_host(twiddles.data(), twiddles.size() * sizeof(float));
+      return std::make_pair(std::move(index_allocation), std::move(twiddle_allocation));
+    };
+    auto [row_indices, row_twiddles] = upload_tables(host_indices, host_twiddles);
+    std::shared_ptr<DeviceAllocation> col_indices = row_indices;
+    std::shared_ptr<DeviceAllocation> col_twiddles = row_twiddles;
+    int32_t col_group_cols = 1;
+    if (use_column_group4) {
+      build_npu_aiv_fft64_group4_tables(request, host_indices, host_twiddles);
+      auto grouped_tables = upload_tables(host_indices, host_twiddles);
+      col_indices = std::move(grouped_tables.first);
+      col_twiddles = std::move(grouped_tables.second);
+      col_group_cols = 4;
+    }
     std::shared_ptr<CompiledRawNode> row_fft =
-        std::make_shared<CompiledRawNpuAivFFT64Node>(1, index_allocation, twiddle_allocation);
+        std::make_shared<CompiledRawNpuAivFFT64Node>(1, 1, row_indices, row_twiddles);
     std::shared_ptr<CompiledRawNode> col_fft =
-        std::make_shared<CompiledRawNpuAivFFT64Node>(n1, index_allocation, twiddle_allocation);
+        std::make_shared<CompiledRawNpuAivFFT64Node>(n1, col_group_cols, col_indices, col_twiddles);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                  n1,

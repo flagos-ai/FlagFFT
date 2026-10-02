@@ -19,9 +19,16 @@ using namespace AscendC;
 namespace {
 constexpr uint32_t kN = 64;
 constexpr uint32_t kStages = 6;
+constexpr uint32_t kGroupCols = 4;
+constexpr uint32_t kGroupN = kN * kGroupCols;
 constexpr uint32_t kStageIndexBase = 2 * kN;
 constexpr uint32_t kLocalIndexCount = kStageIndexBase + 2 * kStages * kN;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
+constexpr uint32_t kGroupOutputIndexBase = kGroupN;
+constexpr uint32_t kGroupStageIndexBase = 3 * kGroupN;
+constexpr uint32_t kGroupStageBIndexBase = kGroupStageIndexBase + kStages * kGroupN;
+constexpr uint32_t kGroupIndexCount = 3 * kGroupN + 2 * kStages * kGroupN;
+constexpr uint32_t kGroupTwiddleCount = 2 * kStages * kGroupN;
 constexpr uint32_t kWorkArrays = 11;
 constexpr uint32_t kComplexBytes = 2 * sizeof(float);
 
@@ -32,23 +39,27 @@ class Fft64Aiv {
                               GM_ADDR indices,
                               GM_ADDR twiddles,
                               uint32_t transform_count,
-                              uint32_t stride) {
+                              uint32_t stride,
+                              uint32_t group_cols) {
     input_ptr_ = reinterpret_cast<__gm__ float *>(input);
     output_ptr_ = reinterpret_cast<__gm__ float *>(output);
     indices_.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(indices));
     twiddles_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(twiddles));
     transform_count_ = transform_count;
     stride_ = stride;
+    group_cols_ = group_cols;
 
     // Strided DataCopyPad moves each 8-byte complex value through a 32-byte
     // VECIN block, so reserve one block per input point.
-    pipe_.InitBuffer(input_buf_, kN * 8 * sizeof(float));
-    pipe_.InitBuffer(work_buf_, kWorkArrays * kN * sizeof(float));
-    pipe_.InitBuffer(index_buf_, kLocalIndexCount * sizeof(uint32_t));
-    pipe_.InitBuffer(twiddle_buf_, kTwiddleCount * sizeof(float));
+    const bool group4 = stride_ == kN && group_cols_ == kGroupCols;
+    pipe_.InitBuffer(input_buf_, group4 ? kGroupN * 2 * sizeof(float) : kN * 8 * sizeof(float));
+    pipe_.InitBuffer(work_buf_, (group4 ? kWorkArrays * kGroupN : kWorkArrays * kN) * sizeof(float));
+    pipe_.InitBuffer(index_buf_, (group4 ? kGroupIndexCount : kLocalIndexCount) * sizeof(uint32_t));
+    pipe_.InitBuffer(twiddle_buf_, (group4 ? kGroupTwiddleCount : kTwiddleCount) * sizeof(float));
     // MTE3 likewise reads one 8-byte complex value from each 32-byte VECOUT
     // block when emitting a strided column.
-    pipe_.InitBuffer(output_buf_, kN * 8 * sizeof(float));
+    pipe_.InitBuffer(output_buf_, (group4 ? 2 * kGroupN : kN * 8) * sizeof(float));
+    if (group4) pipe_.InitBuffer(merge_buf_, 2 * kGroupN * sizeof(float));
   }
 
   __aicore__ inline void Process() {
@@ -56,6 +67,10 @@ class Fft64Aiv {
     if (transform >= transform_count_ || (stride_ != 1 && stride_ != kN)) return;
 
     const bool strided = stride_ == kN;
+    if (strided && group_cols_ == kGroupCols) {
+      ProcessStridedGroup4(transform);
+      return;
+    }
     const uint32_t batch_index = transform / kN;
     const uint32_t column = strided ? transform % kN : 0;
     const uint32_t source_base = strided ? batch_index * kN * kN + column : transform * kN;
@@ -158,6 +173,91 @@ class Fft64Aiv {
     }
   }
 
+  __aicore__ inline void ProcessStridedGroup4(uint32_t transform) {
+    constexpr uint32_t groups_per_matrix = kN / kGroupCols;
+    const uint32_t batch_index = transform / groups_per_matrix;
+    const uint32_t column_group = transform % groups_per_matrix;
+    const uint32_t source_base = batch_index * kN * kN + column_group * kGroupCols;
+
+    GlobalTensor<uint64_t> src_complex;
+    src_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + source_base * 2));
+    LocalTensor<float> input_local = input_buf_.Get<float>();
+    LocalTensor<uint64_t> input_complex = input_local.ReinterpretCast<uint64_t>();
+    const DataCopyExtParams input_params(
+        kN, kGroupCols * sizeof(uint64_t), (kN - kGroupCols) * kComplexBytes, 0, 0);
+    const DataCopyPadExtParams<uint64_t> input_pad;
+    DataCopyPad(input_complex, src_complex, input_params, input_pad);
+
+    LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
+    LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
+    DataCopy(index_local, indices_, kGroupIndexCount);
+    DataCopy(twiddle_local, twiddles_, kGroupTwiddleCount);
+    PipeBarrier<PIPE_ALL>();
+
+    LocalTensor<float> work = work_buf_.Get<float>();
+    LocalTensor<float> current_real = work[0 * kGroupN];
+    LocalTensor<float> current_imag = work[1 * kGroupN];
+    LocalTensor<float> next_real = work[2 * kGroupN];
+    LocalTensor<float> next_imag = work[3 * kGroupN];
+    LocalTensor<float> a_real = work[4 * kGroupN];
+    LocalTensor<float> a_imag = work[5 * kGroupN];
+    LocalTensor<float> b_real = work[6 * kGroupN];
+    LocalTensor<float> b_imag = work[7 * kGroupN];
+    LocalTensor<float> product0 = work[8 * kGroupN];
+    LocalTensor<float> product1 = work[9 * kGroupN];
+    LocalTensor<float> product2 = work[10 * kGroupN];
+
+    const LocalTensor<uint32_t> input_indices = index_local;
+    Gather(current_real, input_local, input_indices, 0, kGroupN);
+    Gather(current_imag, input_local, input_indices, sizeof(float), kGroupN);
+
+    for (uint32_t stage = 0; stage < kStages; ++stage) {
+      const LocalTensor<uint32_t> stage_a = index_local[kGroupStageIndexBase + stage * kGroupN];
+      const LocalTensor<uint32_t> stage_b = index_local[kGroupStageBIndexBase + stage * kGroupN];
+      const LocalTensor<float> twiddle_real = twiddle_local[stage * kGroupN];
+      const LocalTensor<float> twiddle_imag = twiddle_local[kStages * kGroupN + stage * kGroupN];
+
+      Gather(a_real, current_real, stage_a, 0, kGroupN);
+      Gather(a_imag, current_imag, stage_a, 0, kGroupN);
+      Gather(b_real, current_real, stage_b, 0, kGroupN);
+      Gather(b_imag, current_imag, stage_b, 0, kGroupN);
+
+      Mul(product0, b_real, twiddle_real, kGroupN);
+      Mul(product1, b_imag, twiddle_imag, kGroupN);
+      Sub(product0, product0, product1, kGroupN);
+      Mul(product1, b_real, twiddle_imag, kGroupN);
+      Mul(product2, b_imag, twiddle_real, kGroupN);
+      Add(product1, product1, product2, kGroupN);
+      Add(next_real, a_real, product0, kGroupN);
+      Add(next_imag, a_imag, product1, kGroupN);
+
+      LocalTensor<float> swap = current_real;
+      current_real = next_real;
+      next_real = swap;
+      swap = current_imag;
+      current_imag = next_imag;
+      next_imag = swap;
+    }
+
+    // Merge real and imaginary planes into row-major interleaved output using
+    // the supported Vector gather primitive, then write four adjacent columns
+    // per matrix row in one aligned 32-byte MTE3 chunk.
+    LocalTensor<float> merged = merge_buf_.Get<float>();
+    DataCopy(merged, current_real, kGroupN);
+    DataCopy(merged[kGroupN], current_imag, kGroupN);
+    PipeBarrier<PIPE_ALL>();
+    LocalTensor<float> output_local = output_buf_.Get<float>();
+    Gather(output_local, merged, index_local[kGroupOutputIndexBase], 0, 2 * kGroupN);
+    PipeBarrier<PIPE_ALL>();
+
+    GlobalTensor<uint64_t> dst_complex;
+    dst_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + source_base * 2));
+    LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
+    const DataCopyExtParams output_params(
+        kN, kGroupCols * sizeof(uint64_t), 0, (kN - kGroupCols) * kComplexBytes, 0);
+    DataCopyPad(dst_complex, output_complex, output_params);
+  }
+
  private:
   TPipe pipe_;
   TBuf<QuePosition::VECCALC> input_buf_;
@@ -165,12 +265,14 @@ class Fft64Aiv {
   TBuf<QuePosition::VECCALC> index_buf_;
   TBuf<QuePosition::VECCALC> twiddle_buf_;
   TBuf<QuePosition::VECCALC> output_buf_;
+  TBuf<QuePosition::VECCALC> merge_buf_;
   __gm__ float *input_ptr_ = nullptr;
   __gm__ float *output_ptr_ = nullptr;
   GlobalTensor<uint32_t> indices_;
   GlobalTensor<float> twiddles_;
   uint32_t transform_count_ = 0;
   uint32_t stride_ = 1;
+  uint32_t group_cols_ = 1;
 };
 }  // namespace
 
@@ -179,8 +281,9 @@ extern "C" __global__ __aicore__ void flagfft_npu_fft64(GM_ADDR input,
                                                         GM_ADDR indices,
                                                         GM_ADDR twiddles,
                                                         uint32_t transform_count,
-                                                        uint32_t stride) {
+                                                        uint32_t stride,
+                                                        uint32_t group_cols) {
   Fft64Aiv op;
-  op.Init(input, output, indices, twiddles, transform_count, stride);
+  op.Init(input, output, indices, twiddles, transform_count, stride, group_cols);
   op.Process();
 }
