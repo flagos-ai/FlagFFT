@@ -19,8 +19,9 @@ using namespace AscendC;
 namespace {
 constexpr uint32_t kN = 64;
 constexpr uint32_t kStages = 6;
-constexpr uint32_t kGlobalIndexCount = kN + kN * kN + 2 * kStages * kN;
-constexpr uint32_t kLocalIndexCount = 2 * kN + 2 * kStages * kN;
+constexpr uint32_t kGlobalScatterBase = kN + kN * kN + 2 * kStages * kN;
+constexpr uint32_t kLocalScatterBase = 2 * kN + 2 * kStages * kN;
+constexpr uint32_t kLocalIndexCount = kLocalScatterBase + kN;
 constexpr uint32_t kStageIndexBase = kN + kN * kN;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
@@ -44,6 +45,7 @@ class Fft64Aiv {
     pipe_.InitBuffer(work_buf_, kWorkArrays * kN * sizeof(float));
     pipe_.InitBuffer(index_buf_, kLocalIndexCount * sizeof(uint32_t));
     pipe_.InitBuffer(twiddle_buf_, kTwiddleCount * sizeof(float));
+    pipe_.InitBuffer(scatter_buf_, 2 * kN * 8 * sizeof(float));
   }
 
   __aicore__ inline void Process() {
@@ -75,6 +77,7 @@ class Fft64Aiv {
     }
     DataCopy(index_local[2 * kN], indices_[kStageIndexBase],
              2 * kStages * kN);
+    DataCopy(index_local[kLocalScatterBase], indices_[kGlobalScatterBase], kN);
     DataCopy(twiddle_local, twiddles_, kTwiddleCount);
     PipeBarrier<PIPE_ALL>();
 
@@ -124,6 +127,12 @@ class Fft64Aiv {
       next_imag = swap;
     }
 
+    LocalTensor<float> scatter = scatter_buf_.Get<float>();
+    LocalTensor<float> scatter_real = scatter;
+    LocalTensor<float> scatter_imag = scatter[8 * kN];
+    const LocalTensor<uint32_t> scatter_indices = index_local[kLocalScatterBase];
+    Scatter(scatter_real, current_real, scatter_indices, 0, kN);
+    Scatter(scatter_imag, current_imag, scatter_indices, 0, kN);
     PipeBarrier<PIPE_V>();
     GlobalTensor<float> dst_real;
     GlobalTensor<float> dst_imag;
@@ -131,8 +140,8 @@ class Fft64Aiv {
     dst_imag.SetGlobalBuffer(output_ptr_ + output_base * 2 + 1);
     const uint32_t destination_gap = (2 * stride_ - 1) * sizeof(float);
     const DataCopyExtParams output_params(kN, sizeof(float), 0, destination_gap, 0);
-    DataCopyPad(dst_real, current_real, output_params);
-    DataCopyPad(dst_imag, current_imag, output_params);
+    DataCopyPad(dst_real, scatter_real, output_params);
+    DataCopyPad(dst_imag, scatter_imag, output_params);
   }
 
  private:
@@ -141,6 +150,7 @@ class Fft64Aiv {
   TBuf<QuePosition::VECCALC> work_buf_;
   TBuf<QuePosition::VECCALC> index_buf_;
   TBuf<QuePosition::VECCALC> twiddle_buf_;
+  TBuf<QuePosition::VECCALC> scatter_buf_;
   __gm__ float *input_ptr_ = nullptr;
   __gm__ float *output_ptr_ = nullptr;
   GlobalTensor<uint32_t> indices_;
