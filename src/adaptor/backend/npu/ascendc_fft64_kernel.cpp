@@ -72,7 +72,7 @@ class Fft64Aiv {
   __aicore__ inline void Process() {
     const uint32_t transform = GetBlockIdx();
     if (transform >= transform_count_ || stride_ == 0 ||
-        (group_size_ != 1 && stride_ != kN)) return;
+        (group_size_ != 1 && stride_ != 1 && stride_ != kN)) return;
 
     const bool strided = stride_ != 1;
     if (group_size_ == 4) {
