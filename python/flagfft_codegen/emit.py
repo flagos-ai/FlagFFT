@@ -778,8 +778,8 @@ def _emit_tiled_transpose3d_jit_kernel(
     if _declared_backend() == "npu":
         raw_warps = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_WARPS")
         if raw_warps is not None:
-            if raw_warps not in {"4", "8", "16"}:
-                raise ValueError("FLAGFFT_NPU_3D_TRANSPOSE_WARPS must be 4, 8 or 16")
+            if raw_warps not in {"4", "8"}:
+                raise ValueError("FLAGFFT_NPU_3D_TRANSPOSE_WARPS must be 4 or 8")
             transpose_warps = int(raw_warps)
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
