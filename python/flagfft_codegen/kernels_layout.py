@@ -420,7 +420,6 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
     tile: int = 16,
     slice_group: int = 2,
     tile_traversal: str = "row",
-    cache_mode: str = "default",
 ) -> tuple[str, str, list[str], int]:
     """Emit one CTA that sequentially transposes a group of paired-complex slices."""
     if order not in {"021", "210", "201", "120"}:
@@ -429,8 +428,6 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
         raise ValueError("slice_group must be a power of two greater than one")
     if tile_traversal not in {"col", "row"}:
         raise ValueError("tile_traversal must be col or row")
-    if cache_mode not in {"default", "stream"}:
-        raise ValueError("cache_mode must be default or stream")
 
     transpose_descs = {
         "021": (s0, s2, s1, s1 * s2, s2, s2 * s1, s1),
@@ -466,10 +463,7 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_f32_t{tile}"
         f"_tile_pair_sliceg{slice_group}seq"
         + ("_rmajor" if tile_traversal == "row" else "")
-        + ("_stream" if cache_mode == "stream" else "")
     )
-    load_cache_modifier = ', cache_modifier=".cg"' if cache_mode == "stream" else ""
-    store_cache_modifier = ', cache_modifier=".cs"' if cache_mode == "stream" else ""
     source = dedent(
         f"""\
         @triton.jit
@@ -502,7 +496,7 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
                 src_pair = tl.load(
                     tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
                     mask=load_mask,
-                    other=0{load_cache_modifier},
+                    other=0,
                 )
                 dst_pair = tl.trans(src_pair)
 
@@ -517,7 +511,7 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
                 tl.store(
                     tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
                     dst_pair,
-                    mask=store_mask{store_cache_modifier},
+                    mask=store_mask,
                 )
         """
     )

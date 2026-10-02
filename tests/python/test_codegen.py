@@ -991,44 +991,6 @@ def test_maca_pair16_slice_row_group_codegen_is_opt_in(tmp_path, monkeypatch) ->
     assert metadata["grid_x_override"] == 16384
     assert "for row_group_offset in tl.static_range(0, 2):" in source
 
-
-def test_maca_pair16_stream_cache_codegen(tmp_path, monkeypatch) -> None:
-    from flagfft_codegen import emit, kernels_common
-
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
-    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
-    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8")
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "row")
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "2")
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_CACHE", "stream")
-
-    metadata = emit._emit_tiled_transpose3d_jit_kernel(
-        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
-    )
-    source = Path(metadata["module_path"]).read_text()
-
-    assert metadata["kernel_name"].endswith("_rmajor_stream")
-    assert 'cache_modifier=".cg"' in source
-    assert 'cache_modifier=".cs"' in source
-
-
-def test_maca_stream_cache_codegen_rejects_non_grouped_path(tmp_path, monkeypatch) -> None:
-    from flagfft_codegen import emit, kernels_common
-
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
-    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
-    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "1")
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_CACHE", "stream")
-
-    with pytest.raises(ValueError, match="stream cache mode requires"):
-        emit._emit_tiled_transpose3d_jit_kernel(
-            n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
-        )
-
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit, kernels_common
 
