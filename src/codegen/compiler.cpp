@@ -215,10 +215,10 @@ namespace {
                                            std::vector<float> &twiddles) {
     constexpr int64_t n = 256;
     constexpr int64_t stages = 8;
-    constexpr int64_t group_n = n * group_size;
-    constexpr int64_t output_index_base = group_n;
-    constexpr int64_t stage_a_base = 3 * group_n;
-    constexpr int64_t stage_b_base = stage_a_base + stages * group_n;
+    const int64_t group_n = n * group_size;
+    const int64_t output_index_base = group_n;
+    const int64_t stage_a_base = 3 * group_n;
+    const int64_t stage_b_base = stage_a_base + stages * group_n;
     constexpr double pi = 3.141592653589793238462643383279502884;
     indices.assign(stage_b_base + stages * group_n, 0);
     twiddles.assign(2 * stages * group_n, 0.0f);
