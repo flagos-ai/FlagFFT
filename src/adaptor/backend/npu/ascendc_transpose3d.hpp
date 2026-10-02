@@ -23,6 +23,7 @@ namespace flagfft::adaptor::npu {
 flagfftResult launch_ascendc_transpose3d(DevicePtr input,
                                          DevicePtr output,
                                          DevicePtr indices,
+                                         DevicePtr edge_indices,
                                          int32_t n0,
                                          int32_t n1,
                                          int32_t n2,

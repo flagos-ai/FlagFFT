@@ -49,27 +49,30 @@ namespace {
         {{0, 1, 2}},  // 012
     }};
     std::vector<DeviceAllocation> result;
-    result.reserve(kOrders.size());
-    for (const auto &order : kOrders) {
-      std::vector<uint32_t> indices(kFloatCount);
-      for (uint32_t o0 = 0; o0 < kTile; ++o0) {
-        for (uint32_t o1 = 0; o1 < kTile; ++o1) {
-          for (uint32_t o2 = 0; o2 < kTile; ++o2) {
-            uint32_t input_coords[3] = {0, 0, 0};
-            input_coords[order[0]] = o0;
-            input_coords[order[1]] = o1;
-            input_coords[order[2]] = o2;
-            const uint32_t output_index = (o0 * kTile + o1) * kTile + o2;
-            const uint32_t input_index =
-                (input_coords[0] * kTile + input_coords[1]) * kTile + input_coords[2];
-            indices[2 * output_index] = 2 * input_index * sizeof(float);
-            indices[2 * output_index + 1] = (2 * input_index + 1) * sizeof(float);
+    result.reserve(kOrders.size() * 4);
+    for (uint32_t tail_shift = 0; tail_shift <= 3; ++tail_shift) {
+      for (const auto &order : kOrders) {
+        std::vector<uint32_t> indices(kFloatCount);
+        for (uint32_t o0 = 0; o0 < kTile; ++o0) {
+          for (uint32_t o1 = 0; o1 < kTile; ++o1) {
+            for (uint32_t o2 = 0; o2 < kTile; ++o2) {
+              uint32_t input_coords[3] = {0, 0, 0};
+              input_coords[order[0]] = o0;
+              input_coords[order[1]] = o1;
+              input_coords[order[2]] = o2;
+              if (tail_shift != 0) input_coords[2] = (input_coords[2] + tail_shift) % kTile;
+              const uint32_t output_index = (o0 * kTile + o1) * kTile + o2;
+              const uint32_t input_index =
+                  (input_coords[0] * kTile + input_coords[1]) * kTile + input_coords[2];
+              indices[2 * output_index] = 2 * input_index * sizeof(float);
+              indices[2 * output_index + 1] = (2 * input_index + 1) * sizeof(float);
+            }
           }
         }
+        DeviceAllocation table(indices.size() * sizeof(uint32_t));
+        table.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
+        result.push_back(std::move(table));
       }
-      DeviceAllocation table(indices.size() * sizeof(uint32_t));
-      table.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
-      result.push_back(std::move(table));
     }
     return result;
   }
@@ -3139,11 +3142,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_210;
   std::shared_ptr<JitKernel> perm_201;
-  // The native AIV transpose currently faults on compact real spectra with a
-  // partial complex tile (for n2=64, half=33). Keep those transposes on the
-  // JIT path until the Ascend C edge tile handles sub-tile tails safely.
-  const bool npu_native_transpose = npu_3d_native_transpose_enabled(request) && half % 16 == 0;
-  if (npu_native_transpose) {
+  if (npu_3d_native_transpose_enabled(request)) {
     npu_transpose_indices = build_npu_3d_transpose_indices();
   } else {
     perm_021 = fused_first

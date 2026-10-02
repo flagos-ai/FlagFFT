@@ -229,7 +229,7 @@ namespace {
       int64_t element_bytes) {
 #if defined(FLAGFFT_BACKEND_NPU)
     if (!npu_indices.empty()) {
-      if (npu_indices.size() != 6 || element_bytes != 2 * sizeof(float) ||
+      if (npu_indices.size() != 24 || element_bytes != 2 * sizeof(float) ||
           n0 > std::numeric_limits<int32_t>::max() ||
           n1 > std::numeric_limits<int32_t>::max() ||
           n2 > std::numeric_limits<int32_t>::max() ||
@@ -247,6 +247,11 @@ namespace {
       const int64_t batch_chunk = std::max<int64_t>(
           1, static_cast<int64_t>(block_limit_per_launch() / std::max<uint64_t>(1, per_batch_tiles)));
       const int64_t elements_per_batch = n0 * n1 * n2;
+      const int32_t remainder = static_cast<int32_t>(n2 % 16);
+      const int32_t tail_shift = remainder % 4 == 0
+          ? 0 : ((remainder + 3) / 4) * 4 - remainder;
+      const adaptor::DevicePtr edge_indices = tail_shift == 0
+          ? 0 : npu_indices[6 + (tail_shift - 1) * 6 + index].get();
       for (int64_t batch_offset = 0; batch_offset < batch; batch_offset += batch_chunk) {
         const int64_t chunk = std::min(batch_chunk, batch - batch_offset);
         const adaptor::DevicePtr byte_offset = static_cast<adaptor::DevicePtr>(
@@ -255,6 +260,7 @@ namespace {
             input + byte_offset,
             output + byte_offset,
             npu_indices[index].get(),
+            edge_indices,
             static_cast<int32_t>(n0),
             static_cast<int32_t>(n1),
             static_cast<int32_t>(n2),

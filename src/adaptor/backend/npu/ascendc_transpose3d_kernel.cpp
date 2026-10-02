@@ -26,6 +26,7 @@ class Transpose3DAiv {
   __aicore__ inline void Init(GM_ADDR input,
                               GM_ADDR output,
                               GM_ADDR indices,
+                              GM_ADDR edge_indices,
                               uint32_t n0,
                               uint32_t n1,
                               uint32_t n2,
@@ -36,6 +37,9 @@ class Transpose3DAiv {
     input_ptr_ = reinterpret_cast<__gm__ float *>(input);
     output_ptr_ = reinterpret_cast<__gm__ float *>(output);
     indices_.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(indices));
+    if (edge_indices != nullptr) {
+      edge_indices_.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(edge_indices));
+    }
     dims_[0] = n0;
     dims_[1] = n1;
     dims_[2] = n2;
@@ -85,6 +89,19 @@ class Transpose3DAiv {
     in_valid[axes_[1]] = out_valid[1];
     in_valid[axes_[2]] = out_valid[2];
 
+    // Avoid sub-32-byte GM reads for a short final complex row. Align the
+    // source window to four complex values and use its matching gather table.
+    uint32_t input_tail_shift = 0;
+    if (in_valid[2] < kTile && (in_valid[2] % 4) != 0 && dims_[2] >= 4) {
+      const uint32_t aligned_width = ((in_valid[2] + 3) / 4) * 4;
+      const uint32_t aligned_start = dims_[2] - aligned_width;
+      if (in_start[2] >= aligned_start) {
+        input_tail_shift = in_start[2] - aligned_start;
+        in_start[2] = aligned_start;
+        in_valid[2] = aligned_width;
+      }
+    }
+
     LocalTensor<uint64_t> input_complex = input_buf_.Get<float>().ReinterpretCast<uint64_t>();
     const uint32_t input_block_bytes = in_valid[2] * sizeof(uint64_t);
     const DataCopyPadExtParams<uint64_t> input_pad;
@@ -102,7 +119,11 @@ class Transpose3DAiv {
       DataCopyPad(input_complex[row0 * kTile * kTile], input_global, input_params, input_pad);
     }
     LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
-    DataCopy(index_local, indices_, kTileFloatCount);
+    if (input_tail_shift != 0) {
+      DataCopy(index_local, edge_indices_, kTileFloatCount);
+    } else {
+      DataCopy(index_local, indices_, kTileFloatCount);
+    }
     PipeBarrier<PIPE_ALL>();
 
     LocalTensor<float> input_local = input_buf_.Get<float>();
@@ -135,6 +156,7 @@ class Transpose3DAiv {
   TBuf<TPosition::VECCALC> output_buf_;
   TBuf<TPosition::VECCALC> index_buf_;
   GlobalTensor<uint32_t> indices_;
+  GlobalTensor<uint32_t> edge_indices_;
   __gm__ float *input_ptr_ = nullptr;
   __gm__ float *output_ptr_ = nullptr;
   uint32_t dims_[3] = {0, 0, 0};
@@ -149,6 +171,7 @@ class Transpose3DAiv {
 extern "C" __global__ __aicore__ void flagfft_npu_transpose3d(GM_ADDR input,
                                                                GM_ADDR output,
                                                                GM_ADDR indices,
+                                                               GM_ADDR edge_indices,
                                                                uint32_t n0,
                                                                uint32_t n1,
                                                                uint32_t n2,
@@ -157,6 +180,6 @@ extern "C" __global__ __aicore__ void flagfft_npu_transpose3d(GM_ADDR input,
                                                                uint32_t axis1,
                                                                uint32_t axis2) {
   Transpose3DAiv kernel;
-  kernel.Init(input, output, indices, n0, n1, n2, batch, axis0, axis1, axis2);
+  kernel.Init(input, output, indices, edge_indices, n0, n1, n2, batch, axis0, axis1, axis2);
   kernel.Process();
 }
