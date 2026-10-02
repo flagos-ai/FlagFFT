@@ -22,7 +22,9 @@ constexpr uint32_t kStages = 6;
 constexpr uint32_t kGroupCols = 4;
 constexpr uint32_t kGroupN = kN * kGroupCols;
 constexpr uint32_t kStageIndexBase = 2 * kN;
-constexpr uint32_t kLocalIndexCount = kStageIndexBase + 2 * kStages * kN;
+constexpr uint32_t kOutputIndexBase = kStageIndexBase + 2 * kStages * kN;
+constexpr uint32_t kOutputIndexCount = 2 * kN;
+constexpr uint32_t kLocalIndexCount = kOutputIndexBase + kOutputIndexCount;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kGroupOutputIndexBase = kGroupN;
 constexpr uint32_t kGroupStageIndexBase = 3 * kGroupN;
@@ -99,6 +101,7 @@ class Fft64Aiv {
     DataCopy(index_local, indices_, 2 * kN);
     DataCopy(index_local[kStageIndexBase], indices_[kStageIndexBase],
              2 * kStages * kN);
+    DataCopy(index_local[kOutputIndexBase], indices_[kOutputIndexBase], kOutputIndexCount);
     DataCopy(twiddle_local, twiddles_, kTwiddleCount);
     PipeBarrier<PIPE_ALL>();
 
@@ -164,12 +167,19 @@ class Fft64Aiv {
           kN, sizeof(uint64_t), 0, (stride_ - 1) * kComplexBytes, 0);
       DataCopyPad(dst_complex, output_complex, output_params);
     } else {
+      // Interleave the real and imaginary planes in local memory, then let
+      // MTE3 write the contiguous row instead of issuing scalar GM stores.
       PipeBarrier<PIPE_ALL>();
-      for (uint32_t i = 0; i < kN; ++i) {
-        const uint32_t output = (output_base + i) * 2;
-        output_ptr_[output] = current_real.GetValue(i);
-        output_ptr_[output + 1] = current_imag.GetValue(i);
-      }
+      LocalTensor<float> packed = work[4 * kN];
+      DataCopy(packed, current_real, kN);
+      DataCopy(packed[kN], current_imag, kN);
+      PipeBarrier<PIPE_ALL>();
+      LocalTensor<float> output_local = output_buf_.Get<float>();
+      Gather(output_local, packed, index_local[kOutputIndexBase], 0, kOutputIndexCount);
+      PipeBarrier<PIPE_ALL>();
+      GlobalTensor<float> dst;
+      dst.SetGlobalBuffer(output_ptr_ + output_base * 2);
+      DataCopy(dst, output_local, kOutputIndexCount);
     }
   }
 

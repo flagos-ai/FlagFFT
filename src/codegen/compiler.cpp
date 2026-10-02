@@ -41,8 +41,9 @@ namespace {
                                   std::vector<float> &twiddles) {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
+    constexpr int64_t output_index_base = 2 * n + 2 * stages * n;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign(2 * n + 2 * stages * n, 0);
+    indices.assign(output_index_base + 2 * n, 0);
     twiddles.assign(2 * stages * n, 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
@@ -58,6 +59,13 @@ namespace {
       // A strided DataCopyPad stores each complex point at the start of a
       // 32-byte VECIN block.
       indices[n + i] = static_cast<uint32_t>(reversed * 8 * sizeof(float));
+    }
+
+    for (int64_t i = 0; i < 2 * n; ++i) {
+      const int64_t row = i / 2;
+      const int64_t component = i % 2;
+      indices[output_index_base + i] =
+          static_cast<uint32_t>((row + component * n) * sizeof(float));
     }
 
     for (int64_t stage = 0; stage < stages; ++stage) {
