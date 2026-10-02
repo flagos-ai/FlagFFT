@@ -1200,48 +1200,57 @@ flagfftResult CompiledRawFourStepGenericNode::execute(adaptor::DevicePtr input,
   try {
     const int64_t total = n1 * n2;
     const int64_t reshape_block = 256;
-
-    std::vector<JitKernelArg> reshape_in_args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(stage1.get()),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    reshape_in_kernel->launch(context.stream,
-                              reshape_in_args,
-                              ceil_div(total, reshape_block),
-                              context.batch,
-                              1);
-
-    RawExecutionContext row_context {context.request, context.stream, context.batch * n2};
-    flagfftResult result = row_child->execute(stage1.get(), stage2.get(), row_context);
-    if (result != FLAGFFT_SUCCESS) {
-      return result;
+    const int64_t grid_x = ceil_div(total, reshape_block);
+    int64_t batch_chunk = context.batch;
+    if (context.request.device_type == "npu") {
+      // The input, twiddle and final layout kernels use grid_y=batch. Chunk
+      // large 3D axis batches so grid_x*grid_y stays under the ACL block cap.
+      batch_chunk = std::max<int64_t>(
+          1, std::min(context.batch, block_limit_per_launch() / std::max<int64_t>(1, grid_x)));
     }
+    const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+    for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+      const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
+      const int64_t byte_offset = batch_offset * total * element_bytes;
+      const adaptor::DevicePtr input_chunk = input + byte_offset;
+      const adaptor::DevicePtr output_chunk = output + byte_offset;
+      const adaptor::DevicePtr stage1_chunk = stage1.get() + byte_offset;
+      const adaptor::DevicePtr stage2_chunk = stage2.get() + byte_offset;
 
-    std::vector<JitKernelArg> twiddle_args = {
-        JitKernelArg::device(stage2.get()),
-        JitKernelArg::device(twiddle.get()),
-        JitKernelArg::device(stage1.get()),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    twiddle_reshape_kernel->launch(context.stream,
-                                   twiddle_args,
-                                   ceil_div(total, reshape_block),
-                                   context.batch,
-                                   1);
+      std::vector<JitKernelArg> reshape_in_args = {
+          JitKernelArg::device(input_chunk),
+          JitKernelArg::device(stage1_chunk),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
+      };
+      reshape_in_kernel->launch(context.stream, reshape_in_args, grid_x, chunk_batch, 1);
 
-    RawExecutionContext col_context {context.request, context.stream, context.batch * n1};
-    result = col_child->execute(stage1.get(), stage2.get(), col_context);
-    if (result != FLAGFFT_SUCCESS) {
-      return result;
+      RawExecutionContext row_context {context.request, context.stream, chunk_batch * n2};
+      flagfftResult result = row_child->execute(stage1_chunk, stage2_chunk, row_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      std::vector<JitKernelArg> twiddle_args = {
+          JitKernelArg::device(stage2_chunk),
+          JitKernelArg::device(twiddle.get()),
+          JitKernelArg::device(stage1_chunk),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
+      };
+      twiddle_reshape_kernel->launch(context.stream, twiddle_args, grid_x, chunk_batch, 1);
+
+      RawExecutionContext col_context {context.request, context.stream, chunk_batch * n1};
+      result = col_child->execute(stage1_chunk, stage2_chunk, col_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      std::vector<JitKernelArg> final_args = {
+          JitKernelArg::device(stage2_chunk),
+          JitKernelArg::device(output_chunk),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
+      };
+      final_pack_kernel->launch(context.stream, final_args, grid_x, chunk_batch, 1);
     }
-
-    std::vector<JitKernelArg> final_args = {
-        JitKernelArg::device(stage2.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    final_pack_kernel->launch(context.stream, final_args, ceil_div(total, reshape_block), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] FourStepGeneric execute failed: %s\n", e.what());
