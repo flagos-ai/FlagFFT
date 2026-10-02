@@ -12,21 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#pragma once
+#include "ascendc_fft256_impl.hpp"
 
-#include "adaptor/adaptor.h"
-
-#include <cstdint>
-
-namespace flagfft::adaptor::npu {
-
-flagfftResult launch_ascendc_fft256(DevicePtr input,
-                                    DevicePtr output,
-                                    DevicePtr indices,
-                                    DevicePtr twiddles,
-                                    int32_t transform_count,
-                                    int32_t group_size,
-                                    bool pair_mode,
-                                    StreamHandle stream);
-
-}  // namespace flagfft::adaptor::npu
+extern "C" __global__ __aicore__ void flagfft_npu_fft256_pair_group8(GM_ADDR input,
+                                                                       GM_ADDR output,
+                                                                       GM_ADDR indices,
+                                                                       GM_ADDR twiddles,
+                                                                       uint32_t transform_count) {
+  Fft256Aiv<8, true> op;
+  op.Init(input, output, indices, twiddles, transform_count);
+  op.Process();
+}

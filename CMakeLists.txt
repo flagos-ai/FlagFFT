@@ -188,6 +188,8 @@ if(BACKEND STREQUAL "NPU")
         src/adaptor/backend/npu/ascendc_fft256_group4_kernel.cpp)
     ascendc_library(flagfft_npu_aiv_fft256_group8 STATIC
         src/adaptor/backend/npu/ascendc_fft256_group8_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256_pair_group8 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_pair_group8_kernel.cpp)
     ascendc_library(flagfft_npu_aiv_transpose3d STATIC
         src/adaptor/backend/npu/ascendc_transpose3d_kernel.cpp)
     target_sources(flagfft PRIVATE
@@ -199,6 +201,7 @@ if(BACKEND STREQUAL "NPU")
         flagfft_npu_aiv_fft256
         flagfft_npu_aiv_fft256_group4
         flagfft_npu_aiv_fft256_group8
+        flagfft_npu_aiv_fft256_pair_group8
         flagfft_npu_aiv_transpose3d)
     target_compile_definitions(flagfft PRIVATE FLAGFFT_BACKEND_NPU=1)
 endif()

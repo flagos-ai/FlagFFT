@@ -268,6 +268,93 @@ namespace {
     }
   }
 
+  void build_npu_aiv_fft256_pair_group8_tables(const FFTRequest &request,
+                                               std::vector<uint32_t> &indices,
+                                               std::vector<float> &twiddles) {
+    constexpr int64_t n = 256;
+    constexpr int64_t stages = 8;
+    constexpr int64_t group_size = 8;
+    constexpr int64_t group_n = n * group_size;
+    constexpr int64_t butterflies_per_transform = n / 2;
+    constexpr int64_t half_group = group_n / 2;
+    constexpr int64_t output_index_base = group_n;
+    constexpr int64_t stage_a_base = 3 * group_n;
+    constexpr int64_t stage_b_base = 7 * group_n;
+    constexpr double pi = 3.141592653589793238462643383279502884;
+
+    // The working layout is [butterfly side][pair index][transform].  This
+    // lets each AIV lane compute one butterfly pair and emit both outputs.
+    indices.assign(11 * group_n, 0);
+    twiddles.assign(stages * group_n, 0.0f);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+
+    for (int64_t sample = 0; sample < n; ++sample) {
+      int64_t value = sample;
+      int64_t reversed = 0;
+      for (int64_t bit = 0; bit < stages; ++bit) {
+        reversed = (reversed << 1) | (value & 1);
+        value >>= 1;
+      }
+      for (int64_t group = 0; group < group_size; ++group) {
+        const int64_t lane = sample * group_size + group;
+        const int64_t input_complex = group * n + reversed;
+        indices[lane] = static_cast<uint32_t>(input_complex * 2 * sizeof(float));
+      }
+    }
+
+    for (int64_t group = 0; group < group_size; ++group) {
+      for (int64_t sample = 0; sample < n; ++sample) {
+        const int64_t current_index = sample * group_size + group;
+        const int64_t output_index = (group * n + sample) * 2;
+        indices[output_index_base + output_index] =
+            static_cast<uint32_t>(current_index * sizeof(float));
+        indices[output_index_base + output_index + 1] =
+            static_cast<uint32_t>((group_n + current_index) * sizeof(float));
+      }
+    }
+
+    auto previous_stage_index = [=](int64_t natural_index, int64_t previous_span) {
+      const int64_t previous_half = previous_span / 2;
+      const int64_t offset = natural_index % previous_span;
+      const int64_t side = offset >= previous_half ? 1 : 0;
+      const int64_t pair = (natural_index / previous_span) * previous_half +
+                           (offset % previous_half);
+      return side * (n / 2) + pair;
+    };
+
+    for (int64_t stage = 0; stage < stages; ++stage) {
+      const int64_t span = int64_t{1} << (stage + 1);
+      const int64_t half_span = span / 2;
+      const int64_t previous_span = half_span;
+      for (int64_t pair = 0; pair < butterflies_per_transform; ++pair) {
+        const int64_t butterfly_group = pair / half_span;
+        const int64_t offset = pair % half_span;
+        const int64_t a_natural = butterfly_group * span + offset;
+        const int64_t b_natural = a_natural + half_span;
+        const int64_t a_source = stage == 0
+            ? a_natural
+            : previous_stage_index(a_natural, previous_span);
+        const int64_t b_source = stage == 0
+            ? b_natural
+            : previous_stage_index(b_natural, previous_span);
+        const double angle = sign * 2.0 * pi * static_cast<double>(offset) /
+                             static_cast<double>(span);
+        const float twiddle_real = static_cast<float>(std::cos(angle));
+        const float twiddle_imag = static_cast<float>(std::sin(angle));
+        for (int64_t group = 0; group < group_size; ++group) {
+          const int64_t lane = pair * group_size + group;
+          const int64_t stage_offset = stage * half_group + lane;
+          indices[stage_a_base + stage_offset] =
+              static_cast<uint32_t>((a_source * group_size + group) * sizeof(float));
+          indices[stage_b_base + stage_offset] =
+              static_cast<uint32_t>((b_source * group_size + group) * sizeof(float));
+          twiddles[stage * group_n + lane] = twiddle_real;
+          twiddles[stage * group_n + half_group + lane] = twiddle_imag;
+        }
+      }
+    }
+  }
+
   void build_npu_aiv_fft64_group_tables(const FFTRequest &request,
                                         int64_t group_size,
                                         bool strided_columns,
@@ -810,7 +897,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       }
       std::vector<uint32_t> host_indices;
       std::vector<float> host_twiddles;
-      if (group_size > 1) {
+      const char *pair_setting = std::getenv("FLAGFFT_NPU_3D_AIV256_PAIR");
+      const bool pair_mode = pair_setting != nullptr && std::string(pair_setting) == "1";
+      if (pair_setting != nullptr && std::string(pair_setting) != "0" && !pair_mode) {
+        throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR must be 0 or 1");
+      }
+      if (pair_mode && group_size != 8) {
+        throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR requires FLAGFFT_NPU_3D_AIV256_GROUP=8");
+      }
+      if (pair_mode) {
+        build_npu_aiv_fft256_pair_group8_tables(request, host_indices, host_twiddles);
+      } else if (group_size > 1) {
         build_npu_aiv_fft256_grouped_tables(request, group_size, host_indices, host_twiddles);
       } else {
         build_npu_aiv_fft256_tables(request, host_indices, host_twiddles);
@@ -821,7 +918,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
       return std::make_shared<CompiledRawNpuAivFFT256Node>(std::move(indices),
                                                           std::move(twiddles),
-                                                          group_size);
+                                                          group_size,
+                                                          pair_mode);
     }
     const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
     const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&

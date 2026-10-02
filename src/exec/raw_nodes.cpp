@@ -537,12 +537,17 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
 CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     std::shared_ptr<DeviceAllocation> indices,
     std::shared_ptr<DeviceAllocation> twiddles,
-    int64_t group_size)
-    : indices(std::move(indices)), twiddles(std::move(twiddles)), group_size(group_size) {}
+    int64_t group_size,
+    bool pair_mode)
+    : indices(std::move(indices)),
+      twiddles(std::move(twiddles)),
+      group_size(group_size),
+      pair_mode(pair_mode) {}
 
 std::string CompiledRawNpuAivFFT256Node::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawNpuAivFFT256(group_size=" << group_size << ")";
+  oss << "CompiledRawNpuAivFFT256(group_size=" << group_size
+      << ", pair_mode=" << pair_mode << ")";
   return oss.str();
 }
 
@@ -551,6 +556,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
                                                    const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
       (group_size != 1 && group_size != 4 && group_size != 8) ||
+      (pair_mode && group_size != 8) ||
       context.batch % group_size != 0 ||
       indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
@@ -569,6 +575,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
         twiddles->get(),
         static_cast<int32_t>(chunk_batch),
         static_cast<int32_t>(group_size),
+        pair_mode,
         context.stream);
     if (result != FLAGFFT_SUCCESS) return result;
   }
