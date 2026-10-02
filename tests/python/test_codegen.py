@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import sys
 from pathlib import Path
@@ -941,6 +942,7 @@ def test_tiled_transpose3d_pair_slice_group_emits_sequential_2d_register_tiles()
     assert "for group_offset in tl.static_range(0, 2):" in source
     assert "dst_pair = tl.trans(src_pair)" in source
     assert grid_x == 128 * 16 * 16
+    ast.parse(source)
 
 
 def test_tiled_transpose3d_fp64_slice_group_preserves_vector_store() -> None:
@@ -966,6 +968,7 @@ def test_tiled_transpose3d_fp64_slice_group_preserves_vector_store() -> None:
     assert "dst_pair = tl.join(dst_r, dst_i)" in source
     assert "tl.store(out_ptr + pair_addr, dst_pair" in source
     assert grid_x == 32768
+    ast.parse(source)
 
 
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
