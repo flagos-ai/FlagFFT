@@ -28,6 +28,7 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
                                     int32_t group_size,
                                     bool pair_mode,
                                     bool transposed_store,
+                                    bool radix4_mode,
                                     int32_t output_row_stride,
                                     int32_t output_transform_offset,
                                     StreamHandle stream);

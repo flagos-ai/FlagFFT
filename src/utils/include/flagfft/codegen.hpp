@@ -218,7 +218,8 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
                               std::shared_ptr<DeviceAllocation> twiddles,
                               int64_t group_size = 1,
                               bool pair_mode = false,
-                              bool transposed_store = false);
+                              bool transposed_store = false,
+                              bool radix4_mode = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -229,6 +230,7 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   int64_t group_size;
   bool pair_mode;
   bool transposed_store;
+  bool radix4_mode;
 };
 #endif
 

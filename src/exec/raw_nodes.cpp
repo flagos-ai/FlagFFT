@@ -539,18 +539,21 @@ CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     std::shared_ptr<DeviceAllocation> twiddles,
     int64_t group_size,
     bool pair_mode,
-    bool transposed_store)
+    bool transposed_store,
+    bool radix4_mode)
     : indices(std::move(indices)),
       twiddles(std::move(twiddles)),
       group_size(group_size),
       pair_mode(pair_mode),
-      transposed_store(transposed_store) {}
+      transposed_store(transposed_store),
+      radix4_mode(radix4_mode) {}
 
 std::string CompiledRawNpuAivFFT256Node::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawNpuAivFFT256(group_size=" << group_size
       << ", pair_mode=" << pair_mode
-      << ", transposed_store=" << transposed_store << ")";
+      << ", transposed_store=" << transposed_store
+      << ", radix4_mode=" << radix4_mode << ")";
   return oss.str();
 }
 
@@ -561,11 +564,12 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
       (group_size != 1 && group_size != 4 && group_size != 8) ||
       (pair_mode && group_size != 8) ||
       (transposed_store && !pair_mode) ||
+      (radix4_mode && (!pair_mode || !transposed_store || group_size != 8)) ||
       context.batch % group_size != 0 ||
       indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }
-  const int64_t batch_chunk = (block_limit_per_launch() / group_size) * group_size;
+  const int64_t batch_chunk = block_limit_per_launch() * group_size;
   if (batch_chunk <= 0) return FLAGFFT_INVALID_SIZE;
   const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
   for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
@@ -581,6 +585,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
         static_cast<int32_t>(group_size),
         pair_mode,
         transposed_store,
+        radix4_mode,
         transposed_store ? static_cast<int32_t>(context.batch) : 0,
         transposed_store ? static_cast<int32_t>(batch_offset) : 0,
         context.stream);
