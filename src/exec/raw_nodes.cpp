@@ -16,6 +16,8 @@
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/ascendc_fft64.hpp"
+#include "adaptor/backend/npu/ascendc_fft128.hpp"
+#include "adaptor/backend/npu/ascendc_fft2048.hpp"
 #include "adaptor/backend/npu/ascendc_fft256.hpp"
 #include "adaptor/backend/npu/ascendc_transpose3d.hpp"
 #endif
@@ -557,6 +559,56 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                              static_cast<int32_t>(group_size),
                                              static_cast<int32_t>(mode),
                                              context.stream);
+}
+
+CompiledRawNpuAivFFTNode::CompiledRawNpuAivFFTNode(
+    int64_t length,
+    std::shared_ptr<DeviceAllocation> indices,
+    std::shared_ptr<DeviceAllocation> twiddles,
+    int64_t group_size)
+    : length(length),
+      group_size(group_size),
+      indices(std::move(indices)),
+      twiddles(std::move(twiddles)) {}
+
+std::string CompiledRawNpuAivFFTNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawNpuAivFFT(n=" << length << ", group_size=" << group_size << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
+                                                adaptor::DevicePtr output,
+                                                const RawExecutionContext &context) const {
+  if (context.batch <= 0 || indices == nullptr || twiddles == nullptr ||
+      (length == 128 && group_size != 4 && group_size != 8) ||
+      (length == 2048 && group_size != 1) || (length != 128 && length != 2048) ||
+      context.batch % group_size != 0) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+
+  constexpr int64_t kMaxBlocksPerLaunch = 65535;
+  const int64_t max_transforms_per_launch = kMaxBlocksPerLaunch * group_size;
+  const int64_t element_bytes = 2 * sizeof(float);
+  for (int64_t offset = 0; offset < context.batch; offset += max_transforms_per_launch) {
+    const int64_t chunk = std::min(max_transforms_per_launch, context.batch - offset);
+    if (chunk % group_size != 0) return FLAGFFT_INVALID_SIZE;
+    const adaptor::DevicePtr input_chunk = input + offset * length * element_bytes;
+    const adaptor::DevicePtr output_chunk = output + offset * length * element_bytes;
+    flagfftResult result;
+    if (length == 128) {
+      result = adaptor::npu::launch_ascendc_fft128(
+          input_chunk, output_chunk, indices->get(), twiddles->get(),
+          static_cast<int32_t>(chunk / group_size), 1, static_cast<int32_t>(group_size), 0,
+          context.stream);
+    } else {
+      result = adaptor::npu::launch_ascendc_fft2048(
+          input_chunk, output_chunk, indices->get(), twiddles->get(),
+          static_cast<int32_t>(chunk), context.stream);
+    }
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
 }
 
 CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
