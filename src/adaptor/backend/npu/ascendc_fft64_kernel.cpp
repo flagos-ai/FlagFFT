@@ -20,8 +20,7 @@ namespace {
 constexpr uint32_t kN = 64;
 constexpr uint32_t kStages = 6;
 constexpr uint32_t kStageIndexBase = 2 * kN;
-constexpr uint32_t kScatterIndexBase = kStageIndexBase + 2 * kStages * kN;
-constexpr uint32_t kLocalIndexCount = kScatterIndexBase + 2 * kN;
+constexpr uint32_t kLocalIndexCount = kStageIndexBase + 2 * kStages * kN;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
 constexpr uint32_t kComplexBytes = 2 * sizeof(float);
@@ -85,7 +84,6 @@ class Fft64Aiv {
     DataCopy(index_local, indices_, 2 * kN);
     DataCopy(index_local[kStageIndexBase], indices_[kStageIndexBase],
              2 * kStages * kN);
-    DataCopy(index_local[kScatterIndexBase], indices_[kScatterIndexBase], 2 * kN);
     DataCopy(twiddle_local, twiddles_, kTwiddleCount);
     PipeBarrier<PIPE_ALL>();
 
@@ -136,14 +134,13 @@ class Fft64Aiv {
     }
 
     if (strided) {
-      // Scatter real and imaginary vectors into padded complex VECOUT blocks.
-      // Scatter offsets are byte offsets; each complex value occupies the
-      // first eight bytes of a 32-byte block for the strided MTE3 write.
+      // Pack complex values into padded VECOUT blocks before the strided MTE3
+      // write. AIV scalar stores to this GM column layout are not reliable.
       LocalTensor<float> output_local = output_buf_.Get<float>();
-      const LocalTensor<uint32_t> scatter_real_indices = index_local[kScatterIndexBase];
-      const LocalTensor<uint32_t> scatter_imag_indices = index_local[kScatterIndexBase + kN];
-      Scatter(output_local, current_real, scatter_real_indices, 0, kN);
-      Scatter(output_local, current_imag, scatter_imag_indices, 0, kN);
+      for (uint32_t i = 0; i < kN; ++i) {
+        output_local.SetValue(8 * i, current_real.GetValue(i));
+        output_local.SetValue(8 * i + 1, current_imag.GetValue(i));
+      }
       PipeBarrier<PIPE_ALL>();
       GlobalTensor<uint64_t> dst_complex;
       dst_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + output_base * 2));
