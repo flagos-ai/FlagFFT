@@ -26,6 +26,13 @@ constexpr uint32_t kLocalIndexCount = kOutputIndexBase + kOutputIndexCount;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
 constexpr uint32_t kComplexBytes = 2 * sizeof(float);
+constexpr uint32_t kComputeGroupSize = 4;
+constexpr uint32_t kComputeGroupN = kN * kComputeGroupSize;
+constexpr uint32_t kComputeOutputIndexBase = kComputeGroupN;
+constexpr uint32_t kComputeStageIndexBase = 3 * kComputeGroupN;
+constexpr uint32_t kComputeStageBIndexBase = kComputeStageIndexBase + kStages * kComputeGroupN;
+constexpr uint32_t kComputeIndexCount = 3 * kComputeGroupN + 2 * kStages * kComputeGroupN;
+constexpr uint32_t kComputeTwiddleCount = 2 * kStages * kComputeGroupN;
 
 class Fft64Aiv {
  public:
@@ -47,17 +54,19 @@ class Fft64Aiv {
     // Strided DataCopyPad moves each 8-byte complex value through a 32-byte
     // VECIN block, so reserve one block per input point.
     const bool grouped = group_size_ > 1;
-    const uint32_t group_n = kN * group_size_;
-    const uint32_t group_index_count = 3 * group_n + 2 * kStages * group_n;
-    const uint32_t group_twiddle_count = 2 * kStages * group_n;
-    pipe_.InitBuffer(input_buf_, (grouped ? group_n * 2 : kN * 8) * sizeof(float));
-    pipe_.InitBuffer(work_buf_, (grouped ? kWorkArrays * group_n : kWorkArrays * kN) * sizeof(float));
+    const uint32_t input_group_n = kN * group_size_;
+    const uint32_t compute_group_n = group_size_ == 8 ? kComputeGroupN : input_group_n;
+    const uint32_t group_index_count =
+        kComputeIndexCount + (group_size_ == 8 ? kComputeGroupN : 0);
+    const uint32_t group_twiddle_count = 2 * kStages * compute_group_n;
+    pipe_.InitBuffer(input_buf_, (grouped ? input_group_n * 2 : kN * 8) * sizeof(float));
+    pipe_.InitBuffer(work_buf_, (grouped ? kWorkArrays * compute_group_n : kWorkArrays * kN) * sizeof(float));
     pipe_.InitBuffer(index_buf_, (grouped ? group_index_count : kLocalIndexCount) * sizeof(uint32_t));
     pipe_.InitBuffer(twiddle_buf_, (grouped ? group_twiddle_count : kTwiddleCount) * sizeof(float));
     // MTE3 likewise reads one 8-byte complex value from each 32-byte VECOUT
     // block when emitting a strided column.
-    pipe_.InitBuffer(output_buf_, (grouped ? 2 * group_n : kN * 8) * sizeof(float));
-    if (grouped) pipe_.InitBuffer(merge_buf_, 2 * group_n * sizeof(float));
+    pipe_.InitBuffer(output_buf_, (grouped ? 2 * compute_group_n : kN * 8) * sizeof(float));
+    if (grouped) pipe_.InitBuffer(merge_buf_, 2 * compute_group_n * sizeof(float));
   }
 
   __aicore__ inline void Process() {
@@ -66,11 +75,11 @@ class Fft64Aiv {
 
     const bool strided = stride_ == kN;
     if (group_size_ == 4) {
-      ProcessGroup<4>(transform);
+      ProcessGroup4(transform);
       return;
     }
     if (group_size_ == 8) {
-      ProcessGroup<8>(transform);
+      ProcessGroup8(transform);
       return;
     }
     const uint32_t batch_index = transform / kN;
@@ -183,20 +192,16 @@ class Fft64Aiv {
     }
   }
 
-  template <uint32_t GroupSize>
-  __aicore__ inline void ProcessGroup(uint32_t transform) {
-    constexpr uint32_t group_n = kN * GroupSize;
-    constexpr uint32_t output_index_base = group_n;
-    constexpr uint32_t stage_index_base = 3 * group_n;
-    constexpr uint32_t stage_b_index_base = stage_index_base + kStages * group_n;
-    constexpr uint32_t group_index_count = 3 * group_n + 2 * kStages * group_n;
-    constexpr uint32_t group_twiddle_count = 2 * kStages * group_n;
-    constexpr uint32_t groups_per_matrix = kN / GroupSize;
+  __aicore__ inline void ProcessGroup4(uint32_t transform) {
+    constexpr uint32_t group_n = kComputeGroupN;
+    constexpr uint32_t group_index_count = kComputeIndexCount;
+    constexpr uint32_t group_twiddle_count = kComputeTwiddleCount;
+    constexpr uint32_t groups_per_matrix = kN / kComputeGroupSize;
     const uint32_t batch_index = transform / groups_per_matrix;
     const uint32_t group = transform % groups_per_matrix;
     const bool strided = stride_ == kN;
     const uint32_t source_base = batch_index * kN * kN +
-        (strided ? group * GroupSize : group * GroupSize * kN);
+        (strided ? group * kComputeGroupSize : group * kComputeGroupSize * kN);
 
     LocalTensor<float> input_local = input_buf_.Get<float>();
     if (strided) {
@@ -204,7 +209,8 @@ class Fft64Aiv {
       src_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + source_base * 2));
       LocalTensor<uint64_t> input_complex = input_local.ReinterpretCast<uint64_t>();
       const DataCopyExtParams input_params(
-          kN, GroupSize * sizeof(uint64_t), (kN - GroupSize) * kComplexBytes, 0, 0);
+          kN, kComputeGroupSize * sizeof(uint64_t),
+          (kN - kComputeGroupSize) * kComplexBytes, 0, 0);
       const DataCopyPadExtParams<uint64_t> input_pad;
       DataCopyPad(input_complex, src_complex, input_params, input_pad);
     } else {
@@ -219,7 +225,55 @@ class Fft64Aiv {
     DataCopy(twiddle_local, twiddles_, group_twiddle_count);
     PipeBarrier<PIPE_ALL>();
 
+    TransformGroup4(0, source_base);
+  }
+
+  __aicore__ inline void ProcessGroup8(uint32_t transform) {
+    constexpr uint32_t groups_per_matrix = kN / 8;
+    const uint32_t batch_index = transform / groups_per_matrix;
+    const uint32_t group = transform % groups_per_matrix;
+    const bool strided = stride_ == kN;
+    const uint32_t source_base = batch_index * kN * kN +
+        (strided ? group * 8 : group * 8 * kN);
+
+    LocalTensor<float> input_local = input_buf_.Get<float>();
+    if (strided) {
+      GlobalTensor<uint64_t> src_complex;
+      src_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + source_base * 2));
+      LocalTensor<uint64_t> input_complex = input_local.ReinterpretCast<uint64_t>();
+      const DataCopyExtParams input_params(
+          kN, 8 * sizeof(uint64_t), (kN - 8) * kComplexBytes, 0, 0);
+      const DataCopyPadExtParams<uint64_t> input_pad;
+      DataCopyPad(input_complex, src_complex, input_params, input_pad);
+    } else {
+      GlobalTensor<float> src;
+      src.SetGlobalBuffer(input_ptr_ + source_base * 2);
+      DataCopy(input_local, src, 2 * kN * 8);
+    }
+
+    LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
+    LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
+    DataCopy(index_local, indices_, kComputeIndexCount + kComputeGroupN);
+    DataCopy(twiddle_local, twiddles_, kComputeTwiddleCount);
+    PipeBarrier<PIPE_ALL>();
+
+    TransformGroup4(0, source_base);
+    const uint32_t second_output_base = source_base + (strided ? 4 : 4 * kN);
+    TransformGroup4(kComputeIndexCount, second_output_base);
+  }
+
+  __aicore__ inline void TransformGroup4(uint32_t input_index_offset,
+                                         uint32_t output_base) {
+    constexpr uint32_t group_n = kComputeGroupN;
+    constexpr uint32_t output_index_base = kComputeOutputIndexBase;
+    constexpr uint32_t stage_index_base = kComputeStageIndexBase;
+    constexpr uint32_t stage_b_index_base = kComputeStageBIndexBase;
+    const bool strided = stride_ == kN;
+
+    LocalTensor<float> input_local = input_buf_.Get<float>();
+    LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
     LocalTensor<float> work = work_buf_.Get<float>();
+    LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
     LocalTensor<float> current_real = work[0 * group_n];
     LocalTensor<float> current_imag = work[1 * group_n];
     LocalTensor<float> next_real = work[2 * group_n];
@@ -232,7 +286,7 @@ class Fft64Aiv {
     LocalTensor<float> product1 = work[9 * group_n];
     LocalTensor<float> product2 = work[10 * group_n];
 
-    const LocalTensor<uint32_t> input_indices = index_local;
+    const LocalTensor<uint32_t> input_indices = index_local[input_index_offset];
     Gather(current_real, input_local, input_indices, 0, group_n);
     Gather(current_imag, input_local, input_indices, sizeof(float), group_n);
 
@@ -264,8 +318,8 @@ class Fft64Aiv {
       next_imag = swap;
     }
 
-    // Merge real and imaginary planes and use a Vector gather to form the
-    // grouped rows or adjacent columns in the requested output layout.
+    // Merge the real and imaginary planes and gather them into the requested
+    // grouped row or adjacent-column output layout.
     LocalTensor<float> merged = merge_buf_.Get<float>();
     DataCopy(merged, current_real, group_n);
     DataCopy(merged[group_n], current_imag, group_n);
@@ -276,16 +330,18 @@ class Fft64Aiv {
 
     if (strided) {
       GlobalTensor<uint64_t> dst_complex;
-      dst_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + source_base * 2));
+      dst_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + output_base * 2));
       LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
       const DataCopyExtParams output_params(
-          kN, GroupSize * sizeof(uint64_t), 0, (kN - GroupSize) * kComplexBytes, 0);
+          kN, kComputeGroupSize * sizeof(uint64_t), 0,
+          (kN - kComputeGroupSize) * kComplexBytes, 0);
       DataCopyPad(dst_complex, output_complex, output_params);
     } else {
       GlobalTensor<float> dst;
-      dst.SetGlobalBuffer(output_ptr_ + source_base * 2);
+      dst.SetGlobalBuffer(output_ptr_ + output_base * 2);
       DataCopy(dst, output_local, 2 * group_n);
     }
+    PipeBarrier<PIPE_ALL>();
   }
 
  private:

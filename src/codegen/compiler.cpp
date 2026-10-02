@@ -100,16 +100,18 @@ namespace {
                                         std::vector<float> &twiddles) {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
-    const int64_t group_n = n * group_size;
+    const int64_t compute_group_size = group_size == 8 ? 4 : group_size;
+    const int64_t group_n = n * compute_group_size;
     const int64_t output_index_base = group_n;
     const int64_t stage_index_base = 3 * group_n;
     const int64_t stage_b_index_base = stage_index_base + stages * group_n;
+    const int64_t group_index_count = 3 * group_n + 2 * stages * group_n;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign(3 * group_n + 2 * stages * group_n, 0);
+    indices.assign(group_index_count + (group_size == 8 ? group_n : 0), 0);
     twiddles.assign(2 * stages * group_n, 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
-    for (int64_t group = 0; group < group_size; ++group) {
+    for (int64_t group = 0; group < compute_group_size; ++group) {
       for (int64_t i = 0; i < n; ++i) {
         int64_t value = i;
         int64_t reversed = 0;
@@ -129,8 +131,8 @@ namespace {
       const int64_t component = i % 2;
       int64_t source_index;
       if (strided_columns) {
-        const int64_t row = i / (2 * group_size);
-        const int64_t column = (i / 2) % group_size;
+        const int64_t row = i / (2 * compute_group_size);
+        const int64_t column = (i / 2) % compute_group_size;
         source_index = column * n + row + component * group_n;
       } else {
         const int64_t row_group = i / (2 * n);
@@ -143,7 +145,7 @@ namespace {
     for (int64_t stage = 0; stage < stages; ++stage) {
       const int64_t length = int64_t{1} << (stage + 1);
       const int64_t half = length / 2;
-      for (int64_t transform_group = 0; transform_group < group_size; ++transform_group) {
+      for (int64_t transform_group = 0; transform_group < compute_group_size; ++transform_group) {
         for (int64_t i = 0; i < n; ++i) {
           const int64_t butterfly_group = (i / length) * length;
           const int64_t offset = i % length;
@@ -162,6 +164,27 @@ namespace {
               static_cast<uint32_t>((transform_group * n + b) * sizeof(float));
           twiddles[table_index] = negate * static_cast<float>(std::cos(angle));
           twiddles[stages * group_n + table_index] = negate * static_cast<float>(std::sin(angle));
+        }
+      }
+    }
+
+    if (group_size == 8) {
+      // The block loads an eight-transform tile, but computes two groups of
+      // four sequentially to keep the FFT work/index/twiddle buffers within
+      // the group-of-four UB footprint. Append the second half's input map.
+      for (int64_t group = 0; group < compute_group_size; ++group) {
+        for (int64_t i = 0; i < n; ++i) {
+          int64_t value = i;
+          int64_t reversed = 0;
+          for (int64_t bit = 0; bit < stages; ++bit) {
+            reversed = (reversed << 1) | (value & 1);
+            value >>= 1;
+          }
+          const int64_t input_complex_index = strided_columns
+              ? reversed * group_size + group + compute_group_size
+              : (group + compute_group_size) * n + reversed;
+          indices[group_index_count + group * n + i] =
+              static_cast<uint32_t>(input_complex_index * 2 * sizeof(float));
         }
       }
     }

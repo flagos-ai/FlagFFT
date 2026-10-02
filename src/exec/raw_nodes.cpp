@@ -446,7 +446,7 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
     return FLAGFFT_INVALID_SIZE;
   }
   int32_t transform_count = static_cast<int32_t>(context.batch);
-  if (group_size == 4) {
+  if (group_size > 1) {
     if (transform_count % group_size != 0) return FLAGFFT_INVALID_SIZE;
     transform_count /= static_cast<int32_t>(group_size);
   }
