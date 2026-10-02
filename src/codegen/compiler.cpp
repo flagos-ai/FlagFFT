@@ -1498,6 +1498,40 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(perm_201));
   }
 
+  // Screen a coalesced n1 inner-store on the 256^3 single-batch FP32 C2C
+  // cube.  It can replace perm_210 while leaving both adjacent transposes
+  // unchanged; keep it opt-in until C550 performance evidence is available.
+  const bool maca_cube_middle_store = request.device_type == "maca" && batch == 1 &&
+      n0 == 256 && n1 == 256 && n2 == 256 && n0_leaf && n1_leaf && n2_leaf &&
+      request.input_dtype == "complex64" &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_MIDDLE_STORE", false);
+  if (maca_cube_middle_store) {
+    auto n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
+    auto n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, n2, "inner");
+    auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
+    auto perm_021 = compile_transpose3d_kernel(request, n0, n1, n2, "021");
+    auto perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+    DeviceAllocation temp1 = adaptor::Memory(
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    DeviceAllocation temp2 = adaptor::Memory(
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    return std::make_shared<CompiledRaw3DNode>(n0,
+                                               n1,
+                                               n2,
+                                               std::move(n2_fft),
+                                               std::move(n1_fft),
+                                               std::move(n0_fft),
+                                               std::move(perm_021),
+                                               nullptr,
+                                               std::move(perm_201),
+                                               nullptr,
+                                               nullptr,
+                                               nullptr,
+                                               std::move(temp1),
+                                               std::move(temp2),
+                                               true);
+  }
+
   // Fused fast path: each axis runs as a leaf whose store also applies the
   // permutation the next axis wants, so three FFT passes plus three full-cube
   // transposes collapse into three passes.  Worth it only where the standalone
