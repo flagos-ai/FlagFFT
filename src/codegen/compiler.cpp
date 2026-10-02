@@ -108,6 +108,62 @@ namespace {
 
   }
 
+  void build_npu_aiv_fft256_tables(const FFTRequest &request,
+                                   std::vector<uint32_t> &indices,
+                                   std::vector<float> &twiddles) {
+    constexpr int64_t n = 256;
+    constexpr int64_t stages = 8;
+    constexpr int64_t output_index_base = 2 * n + 2 * stages * n;
+    constexpr double pi = 3.141592653589793238462643383279502884;
+    indices.assign(output_index_base + 2 * n, 0);
+    twiddles.assign(2 * stages * n, 0.0f);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+
+    for (int64_t i = 0; i < n; ++i) {
+      int64_t value = i;
+      int64_t reversed = 0;
+      for (int64_t bit = 0; bit < stages; ++bit) {
+        reversed = (reversed << 1) | (value & 1);
+        value >>= 1;
+      }
+      // Gather offsets are byte offsets into the interleaved complex input.
+      indices[i] = static_cast<uint32_t>(reversed * 2 * sizeof(float));
+      // Preserve the same padded-index table contract as the FFT64 leaf.
+      indices[n + i] = static_cast<uint32_t>(reversed * 8 * sizeof(float));
+    }
+
+    for (int64_t i = 0; i < 2 * n; ++i) {
+      const int64_t row = i / 2;
+      const int64_t component = i % 2;
+      indices[output_index_base + i] =
+          static_cast<uint32_t>((row + component * n) * sizeof(float));
+    }
+
+    for (int64_t stage = 0; stage < stages; ++stage) {
+      const int64_t length = int64_t{1} << (stage + 1);
+      const int64_t half = length / 2;
+      const int64_t a_base = 2 * n + stage * n;
+      const int64_t b_base = 2 * n + stages * n + stage * n;
+      const int64_t imag_base = stages * n;
+      for (int64_t i = 0; i < n; ++i) {
+        const int64_t group = (i / length) * length;
+        const int64_t offset = i % length;
+        const bool upper = offset >= half;
+        const int64_t a = group + (upper ? offset - half : offset);
+        const int64_t b = a + half;
+        const int64_t twiddle_offset = offset % half;
+        const double angle = sign * 2.0 * pi * static_cast<double>(twiddle_offset) /
+                             static_cast<double>(length);
+        const float negate = upper ? -1.0f : 1.0f;
+        indices[a_base + i] = static_cast<uint32_t>(a * sizeof(float));
+        indices[b_base + i] = static_cast<uint32_t>(b * sizeof(float));
+        twiddles[stage * n + i] = negate * static_cast<float>(std::cos(angle));
+        twiddles[imag_base + stage * n + i] =
+            negate * static_cast<float>(std::sin(angle));
+      }
+    }
+  }
+
   void build_npu_aiv_fft64_group_tables(const FFTRequest &request,
                                         int64_t group_size,
                                         bool strided_columns,
@@ -633,6 +689,22 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   configure_single_transform_policies(request);
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    const char *npu_3d_aiv256 = std::getenv("FLAGFFT_NPU_3D_AIV256");
+    const bool use_npu_3d_aiv256 = request.device_type == "npu" && request.origin_rank == 3 &&
+                                   request.input_dtype == "complex64" &&
+                                   request.output_dtype == "complex64" && leaf->length == 256 &&
+                                   npu_3d_aiv256 != nullptr && std::string(npu_3d_aiv256) == "1";
+    if (use_npu_3d_aiv256) {
+      std::vector<uint32_t> host_indices;
+      std::vector<float> host_twiddles;
+      build_npu_aiv_fft256_tables(request, host_indices, host_twiddles);
+      auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+      indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+      auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+      twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+      return std::make_shared<CompiledRawNpuAivFFT256Node>(std::move(indices),
+                                                          std::move(twiddles));
+    }
     const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
     const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
                                   request.input_dtype == "complex64" && request.output_dtype == "complex64" &&

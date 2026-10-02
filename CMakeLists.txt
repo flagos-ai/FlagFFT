@@ -182,9 +182,12 @@ if(BACKEND STREQUAL "NPU")
     include("${ASCENDC_CMAKE_DIR}/ascendc.cmake")
     ascendc_library(flagfft_npu_aiv_fft64 STATIC
         src/adaptor/backend/npu/ascendc_fft64_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_kernel.cpp)
     target_sources(flagfft PRIVATE
-        src/adaptor/backend/npu/ascendc_fft64_host.cpp)
-    target_link_libraries(flagfft PRIVATE flagfft_npu_aiv_fft64)
+        src/adaptor/backend/npu/ascendc_fft64_host.cpp
+        src/adaptor/backend/npu/ascendc_fft256_host.cpp)
+    target_link_libraries(flagfft PRIVATE flagfft_npu_aiv_fft64 flagfft_npu_aiv_fft256)
     target_compile_definitions(flagfft PRIVATE FLAGFFT_BACKEND_NPU=1)
 endif()
 

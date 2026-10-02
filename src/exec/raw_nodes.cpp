@@ -16,6 +16,7 @@
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/ascendc_fft64.hpp"
+#include "adaptor/backend/npu/ascendc_fft256.hpp"
 #endif
 
 #include <algorithm>
@@ -471,6 +472,41 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                              static_cast<int32_t>(group_size),
                                              static_cast<int32_t>(mode),
                                              context.stream);
+}
+
+CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
+    std::shared_ptr<DeviceAllocation> indices,
+    std::shared_ptr<DeviceAllocation> twiddles)
+    : indices(std::move(indices)), twiddles(std::move(twiddles)) {}
+
+std::string CompiledRawNpuAivFFT256Node::describe() const {
+  return "CompiledRawNpuAivFFT256";
+}
+
+flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
+                                                   adaptor::DevicePtr output,
+                                                   const RawExecutionContext &context) const {
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
+      indices == nullptr || twiddles == nullptr) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  const int64_t batch_chunk = block_limit_per_launch();
+  if (batch_chunk <= 0) return FLAGFFT_INVALID_SIZE;
+  const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+  for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+    const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
+    const adaptor::DevicePtr byte_offset =
+        static_cast<adaptor::DevicePtr>(batch_offset * 256 * element_bytes);
+    const flagfftResult result = adaptor::npu::launch_ascendc_fft256(
+        input + byte_offset,
+        output + byte_offset,
+        indices->get(),
+        twiddles->get(),
+        static_cast<int32_t>(chunk_batch),
+        context.stream);
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
 }
 #endif
 
