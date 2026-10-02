@@ -3075,7 +3075,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       packed > 64 * 64 * 64 &&
       flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_MIDDLE",
                       batch == 1 && n0 == 256 && n1 == 256 && n2 == 256);
-  const bool fused_first = !inverse && n2_leaf && (n2 == 64 || n2 == 256) &&
+  const bool fused_first = !npu_real_native && !inverse && n2_leaf && (n2 == 64 || n2 == 256) &&
       packed > 64 * 64 * 64 && flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_FIRST", true);
 
   FFTRequest n2_request = request;
