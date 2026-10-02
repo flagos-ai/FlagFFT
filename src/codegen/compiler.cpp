@@ -3139,7 +3139,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_210;
   std::shared_ptr<JitKernel> perm_201;
-  if (npu_3d_native_transpose_enabled(request)) {
+  // The native AIV transpose currently faults on compact real spectra with a
+  // partial complex tile (for n2=64, half=33). Keep those transposes on the
+  // JIT path until the Ascend C edge tile handles sub-tile tails safely.
+  const bool npu_native_transpose = npu_3d_native_transpose_enabled(request) && half % 16 == 0;
+  if (npu_native_transpose) {
     npu_transpose_indices = build_npu_3d_transpose_indices();
   } else {
     perm_021 = fused_first
