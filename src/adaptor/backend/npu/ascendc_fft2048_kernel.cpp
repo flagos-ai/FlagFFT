@@ -46,7 +46,6 @@ class Fft2048Aiv {
     pipe_.InitBuffer(work_buf_, kWorkArrays * kN * sizeof(float));
     pipe_.InitBuffer(index_buf_, 3 * kN * sizeof(uint32_t));
     pipe_.InitBuffer(twiddle_buf_, 2 * kN * sizeof(float));
-    pipe_.InitBuffer(output_buf_, 2 * kN * sizeof(float));
   }
 
   __aicore__ inline void Process() {
@@ -125,7 +124,8 @@ class Fft2048Aiv {
     DataCopy(input_local[kN], current_imag, kN);
     DataCopy(index_local, indices_[kOutputIndexBase], 2 * kN);
     PipeBarrier<PIPE_ALL>();
-    LocalTensor<float> output_local = output_buf_.Get<float>();
+    // Reuse dead butterfly scratch to reduce per-block UB consumption.
+    LocalTensor<float> output_local = work[4 * kN];
     for (uint32_t tile = 0; tile < 2 * kN; tile += kGatherTile) {
       Gather(output_local[tile], input_local, index_local[tile], 0, kGatherTile);
     }
@@ -141,7 +141,6 @@ class Fft2048Aiv {
   TBuf<QuePosition::VECCALC> work_buf_;
   TBuf<QuePosition::VECCALC> index_buf_;
   TBuf<QuePosition::VECCALC> twiddle_buf_;
-  TBuf<QuePosition::VECCALC> output_buf_;
   __gm__ float *input_ptr_ = nullptr;
   __gm__ float *output_ptr_ = nullptr;
   GlobalTensor<uint32_t> indices_;
