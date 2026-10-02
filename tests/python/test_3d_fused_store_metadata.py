@@ -341,6 +341,46 @@ def test_hcu_smem_swizzle_override_wins_over_auto(monkeypatch, override, dtype, 
         reset_profile(token)
 
 
+@pytest.mark.parametrize(
+    "io_mode,dtype,override,expected",
+    (
+        ("contiguous_r2c", "complex128", "0", False),
+        ("contiguous_r2c", "complex128", "1", True),
+        ("contiguous_r2c", "complex64", "1", False),
+        ("permuted_r2c", "complex128", "1", True),
+    ),
+)
+def test_hcu_r2c_leaf_swizzle_is_opt_in_and_fp64_contiguous_only(
+    monkeypatch, io_mode, dtype, override, expected
+):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", override)
+    token = set_profile(
+        BackendProfile(
+            backend="hcu",
+            device_arch="gfx936",
+            warp_size=64,
+            max_threads_per_block=1024,
+            max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=256,
+            factors=(16, 16),
+            remainder=1,
+            lanes=16,
+            num_warps=1,
+            generic_radices=(),
+            smem_size=256,
+            dtype=dtype,
+        )
+        _, source = _build_leaf_kernel_source_for_io(plan, io_mode=io_mode)
+        assert ("smem_phys0 = logical_phys0 ^" in source) is expected
+    finally:
+        reset_profile(token)
+
+
 @pytest.mark.parametrize("pack", (1, 2, 4, 8, 16, 32))
 def test_hcu_2048_middle_leaf_grid_matches_batch_pack(monkeypatch, pack):
     monkeypatch.setenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", str(pack))

@@ -257,6 +257,7 @@ def main() -> None:
         final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
         smem_swizzle = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "auto")
         swizzle_shift = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5")
+        r2c_leaf_swizzle = os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "0")
         factors_256 = os.getenv("FLAGFFT_HCU_3D_256_FACTORS", "auto")
         factors_2048 = os.getenv("FLAGFFT_HCU_3D_2048_FACTORS", "auto")
         r2c_fp64_factors_2048 = os.getenv("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS", "auto")
@@ -291,6 +292,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE must be auto, 0 or 1")
         if swizzle_shift not in {str(x) for x in range(1, 9)}:
             parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
+        if r2c_leaf_swizzle not in {"0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE must be 0 or 1")
         valid_factors_256 = {
             "auto",
             "16,16",
@@ -317,11 +320,12 @@ def main() -> None:
         profile_dir += (f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"
                         f"-fp64-tile-{fp64_tile}-warps-{fused_warps}"
                         f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
-                        f"-full-smem-{full_smem}-key-full-{int(args.hcu_3d_full_smem)}"
+                        f"-full-{full_smem}-key-{int(args.hcu_3d_full_smem)}"
                         f"-u64-load-{u64_load}-first-pack-{first_pack}-middle-pack-{middle_pack}"
                         f"-mbp-{middle_batch_pack}"
                         f"-final-warps-{final_warps}-final-pack-{final_pack}"
-                        f"-smem-swizzle-{smem_swizzle}-shift-{swizzle_shift}")
+                        f"-swz-{smem_swizzle}-{swizzle_shift}"
+                        f"-r2c-leaf-swizzle-{r2c_leaf_swizzle}")
         if factors_256 != "auto":
             profile_dir += f"-f{factors_256.replace(',', '')}"
     args.out_dir = args.out_dir / profile_dir

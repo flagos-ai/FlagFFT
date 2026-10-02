@@ -1083,6 +1083,16 @@ def _emit_stage_block(
         and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}
         and hcu_swizzle_enabled
     )
+    hcu_r2c_leaf_swizzle = (
+        _hcu_backend_active()
+        and not portable_exchange
+        and n >= 64
+        and n & (n - 1) == 0
+        and io_mode == "contiguous_r2c"
+        and dtype == "complex128"
+        and os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "0") == "1"
+    )
+    hcu_smem_swizzle = hcu_smem_swizzle or hcu_r2c_leaf_swizzle
     smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
