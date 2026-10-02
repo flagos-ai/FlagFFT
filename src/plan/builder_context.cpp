@@ -161,6 +161,58 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n2, false));
     }
   }
+  const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
+  const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
+                                request.raw_dim == 1 && request.input_dtype == "complex64" &&
+                                request.output_dtype == "complex64" && npu_3d_aiv64 != nullptr &&
+                                std::string(npu_3d_aiv64) == "1";
+  if (use_npu_3d_aiv64 && n == 64) {
+    const auto factors = select_leaf_factors(n);
+    if (should_use_leaf(n, factors)) return make_leaf_plan(n, factors);
+  }
+  const char *npu_3d_split = std::getenv("FLAGFFT_NPU_3D_FOURSTEP_SPLIT");
+  if (request.device_type == "npu" && request.origin_rank == 3 && request.raw_dim == 1 &&
+      request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      npu_3d_split != nullptr && *npu_3d_split != '\0') {
+    const std::string spec(npu_3d_split);
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_NPU_3D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t target_length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_NPU_3D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_NPU_3D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (target_length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_NPU_3D_FOURSTEP_SPLIT must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      auto build_3d_child = [&](int64_t length) -> PlanNodePtr {
+        if (use_npu_3d_aiv64 && length == 64) {
+          const auto factors = select_leaf_factors(length);
+          if (should_use_leaf(length, factors)) return make_leaf_plan(length, factors);
+        }
+        if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
+          const auto factors = select_leaf_factors(length);
+          if (!should_use_leaf(length, factors)) {
+            throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_LEAF requires supported leaf children");
+          }
+          return make_leaf_plan(length, factors);
+        }
+        return build_auto_node(length, false);
+      };
+      return std::make_shared<FourStepPlanNode>(n, n1,
+                                                n2, build_3d_child(n1), build_3d_child(n2));
+    }
+  }
   const bool npu_fourstep_operator = request.device_type == "npu" &&
                                      request.raw_dim == 1 && request.origin_rank == 1 &&
                                      request.requested_n == n &&

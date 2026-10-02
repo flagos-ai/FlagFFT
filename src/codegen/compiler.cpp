@@ -632,6 +632,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                                   int64_t batch) {
   configure_single_transform_policies(request);
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+#if defined(FLAGFFT_BACKEND_NPU)
+    const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
+    const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
+                                  request.raw_dim == 1 && request.input_dtype == "complex64" &&
+                                  request.output_dtype == "complex64" && leaf->length == 64 &&
+                                  npu_3d_aiv64 != nullptr && std::string(npu_3d_aiv64) == "1";
+    if (use_npu_3d_aiv64) {
+      const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV64_GROUP");
+      if (group_setting == nullptr) group_setting = "auto";
+      int32_t group_size = npu_aiv_fft64_group_size(group_setting, batch);
+      if (group_size > 1 && batch % group_size != 0) group_size = 1;
+      return make_npu_aiv_fft64_child(request, 1, group_size);
+    }
+#endif
     return compile_raw_leaf(*leaf, request);
   }
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
