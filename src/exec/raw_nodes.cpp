@@ -476,21 +476,25 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
 
 CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     std::shared_ptr<DeviceAllocation> indices,
-    std::shared_ptr<DeviceAllocation> twiddles)
-    : indices(std::move(indices)), twiddles(std::move(twiddles)) {}
+    std::shared_ptr<DeviceAllocation> twiddles,
+    int64_t group_size)
+    : indices(std::move(indices)), twiddles(std::move(twiddles)), group_size(group_size) {}
 
 std::string CompiledRawNpuAivFFT256Node::describe() const {
-  return "CompiledRawNpuAivFFT256";
+  std::ostringstream oss;
+  oss << "CompiledRawNpuAivFFT256(group_size=" << group_size << ")";
+  return oss.str();
 }
 
 flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
                                                    adaptor::DevicePtr output,
                                                    const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
+      (group_size != 1 && group_size != 4) || context.batch % group_size != 0 ||
       indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }
-  const int64_t batch_chunk = block_limit_per_launch();
+  const int64_t batch_chunk = (block_limit_per_launch() / group_size) * group_size;
   if (batch_chunk <= 0) return FLAGFFT_INVALID_SIZE;
   const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
   for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
@@ -503,6 +507,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
         indices->get(),
         twiddles->get(),
         static_cast<int32_t>(chunk_batch),
+        static_cast<int32_t>(group_size),
         context.stream);
     if (result != FLAGFFT_SUCCESS) return result;
   }

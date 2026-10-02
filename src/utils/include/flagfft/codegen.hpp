@@ -215,7 +215,8 @@ struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
 
 struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   CompiledRawNpuAivFFT256Node(std::shared_ptr<DeviceAllocation> indices,
-                              std::shared_ptr<DeviceAllocation> twiddles);
+                              std::shared_ptr<DeviceAllocation> twiddles,
+                              int64_t group_size = 1);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -223,6 +224,7 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
 
   std::shared_ptr<DeviceAllocation> indices;
   std::shared_ptr<DeviceAllocation> twiddles;
+  int64_t group_size;
 };
 #endif
 

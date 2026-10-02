@@ -25,6 +25,7 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
                                     DevicePtr indices,
                                     DevicePtr twiddles,
                                     int32_t transform_count,
+                                    int32_t group_size,
                                     StreamHandle stream);
 
 }  // namespace flagfft::adaptor::npu
