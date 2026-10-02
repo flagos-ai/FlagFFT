@@ -214,15 +214,21 @@ def _metadata(
         num_warps = 2
     if profile.backend == "hcu" and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store"}:
         is_final_axis = "permuted_store_outer_last_" in kernel_name
+        is_middle_axis = "permuted_store_inner_" in kernel_name
         final_warps = os.environ.get("FLAGFFT_HCU_3D_FINAL_WARPS") if is_final_axis else None
+        middle_warps = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_WARPS") if is_middle_axis else None
         fused_warps = os.environ.get("FLAGFFT_HCU_3D_FUSED_WARPS")
         if final_warps not in (None, "auto"):
             fused_warps = final_warps
+        if middle_warps not in (None, "auto"):
+            fused_warps = middle_warps
         if fused_warps is not None:
             try:
                 num_warps = int(fused_warps)
             except ValueError as exc:
-                raise ValueError("FLAGFFT_HCU_3D_FUSED_WARPS must be 1, 2, 4 or 8") from exc
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_FUSED_WARPS, FINAL_WARPS and MIDDLE_WARPS must be 1, 2, 4 or 8"
+                ) from exc
             profile.validate(num_warps)
     return {
         "module_path": str(module_path),

@@ -89,6 +89,47 @@ def test_hcu_permuted_store_warp_override(monkeypatch, warps):
         reset_profile(token)
 
 
+def test_hcu_middle_warp_override_is_scoped_to_inner_permuted_store(monkeypatch):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_FUSED_WARPS", "2")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_MIDDLE_WARPS", "4")
+    token = set_profile(
+        BackendProfile(
+            backend="hcu",
+            device_arch="gfx936",
+            warp_size=64,
+            max_threads_per_block=1024,
+            max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=2048,
+            factors=(8, 16, 16),
+            remainder=1,
+            lanes=128,
+            num_warps=2,
+            generic_radices=(),
+            smem_size=2048,
+            dtype="complex128",
+        )
+        common = {
+            "module_path": Path("generated.py"),
+            "arg_names": ["in_ptr", "out_ptr", "outer_stride", "perm_span", "nbatch"],
+            "plan": plan,
+            "kernel_type": "leaf_strided_permuted_store",
+            "n1": 0,
+            "n2": 0,
+            "dtype": "complex128",
+        }
+        middle = _metadata(kernel_name="permuted_store_inner_ifft_kernel", **common)
+        final = _metadata(kernel_name="permuted_store_outer_last_ifft_kernel", **common)
+        assert middle["num_warps"] == 4
+        assert final["num_warps"] == 2
+    finally:
+        reset_profile(token)
+
+
 @pytest.mark.parametrize("dtype, requested, expected", [
     ("complex64", "16", 16),
     ("complex128", "8", 8),
