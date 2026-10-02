@@ -110,6 +110,10 @@ class Fft2048Aiv {
       swap = current_imag;
       current_imag = next_imag;
       next_imag = swap;
+
+      // The next iteration reloads this stage's index and twiddle tiles into
+      // the same UB buffers. Finish the Vector reads before MTE2 reuses them.
+      PipeBarrier<PIPE_ALL>();
     }
 
     DataCopy(input_local, current_real, kN);
