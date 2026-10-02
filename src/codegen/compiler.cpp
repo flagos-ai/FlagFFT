@@ -270,7 +270,8 @@ namespace {
 
   void build_npu_aiv_fft256_pair_group8_tables(const FFTRequest &request,
                                                std::vector<uint32_t> &indices,
-                                               std::vector<float> &twiddles) {
+                                               std::vector<float> &twiddles,
+                                               bool transposed_output) {
     constexpr int64_t n = 256;
     constexpr int64_t stages = 8;
     constexpr int64_t group_size = 8;
@@ -305,7 +306,8 @@ namespace {
     for (int64_t group = 0; group < group_size; ++group) {
       for (int64_t sample = 0; sample < n; ++sample) {
         const int64_t current_index = sample * group_size + group;
-        const int64_t output_index = (group * n + sample) * 2;
+        const int64_t output_index =
+            (transposed_output ? sample * group_size + group : group * n + sample) * 2;
         indices[output_index_base + output_index] =
             static_cast<uint32_t>(current_index * sizeof(float));
         indices[output_index_base + output_index + 1] =
@@ -905,8 +907,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       if (pair_mode && group_size != 8) {
         throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR requires FLAGFFT_NPU_3D_AIV256_GROUP=8");
       }
+      const char *pair_store_setting = std::getenv("FLAGFFT_NPU_3D_AIV256_PAIR_STORE");
+      const bool transposed_store =
+          pair_store_setting != nullptr && std::string(pair_store_setting) == "1";
+      if (pair_store_setting != nullptr && std::string(pair_store_setting) != "0" &&
+          !transposed_store) {
+        throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR_STORE must be 0 or 1");
+      }
+      if (transposed_store && (!pair_mode || group_size != 8)) {
+        throw std::runtime_error(
+            "FLAGFFT_NPU_3D_AIV256_PAIR_STORE requires pair mode and group size 8");
+      }
       if (pair_mode) {
-        build_npu_aiv_fft256_pair_group8_tables(request, host_indices, host_twiddles);
+        build_npu_aiv_fft256_pair_group8_tables(
+            request, host_indices, host_twiddles, transposed_store);
       } else if (group_size > 1) {
         build_npu_aiv_fft256_grouped_tables(request, group_size, host_indices, host_twiddles);
       } else {
@@ -919,7 +933,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return std::make_shared<CompiledRawNpuAivFFT256Node>(std::move(indices),
                                                           std::move(twiddles),
                                                           group_size,
-                                                          pair_mode);
+                                                          pair_mode,
+                                                          transposed_store);
     }
     const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
     const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
@@ -2122,6 +2137,50 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
+
+#if defined(FLAGFFT_BACKEND_NPU)
+  const char *npu_aiv256_group = std::getenv("FLAGFFT_NPU_3D_AIV256_GROUP");
+  const bool npu_pair_fused_store = request.device_type == "npu" &&
+      request.origin_rank == 3 && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && batch == 1 &&
+      n0 == 256 && n1 == 256 && n2 == 256 &&
+      n0_leaf && n1_leaf && n2_leaf &&
+      n0_leaf->length == 256 && n1_leaf->length == 256 && n2_leaf->length == 256 &&
+      flag_or_default("FLAGFFT_NPU_3D_AIV256", false) &&
+      npu_aiv256_group != nullptr && std::string(npu_aiv256_group) == "8" &&
+      flag_or_default("FLAGFFT_NPU_3D_AIV256_PAIR", false) &&
+      flag_or_default("FLAGFFT_NPU_3D_AIV256_PAIR_STORE", false);
+  if (npu_pair_fused_store) {
+    // The pair-output leaf writes each axis result as [frequency][transform].
+    // Cycling the physical axis order gives these three layouts directly:
+    // [n2,n0,n1] -> [n1,n2,n0] -> [n0,n1,n2]. This retains the existing
+    // ThreeDimPlanNode and three axis children while removing its transpose
+    // launches on this bounded AIV256 path.
+    auto n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
+    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
+    DeviceAllocation temp1 = adaptor::Memory(
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    DeviceAllocation temp2 = adaptor::Memory(
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    return std::make_shared<CompiledRaw3DNode>(n0,
+                                               n1,
+                                               n2,
+                                               std::move(n2_fft),
+                                               std::move(n1_fft),
+                                               std::move(n0_fft),
+                                               nullptr,
+                                               nullptr,
+                                               nullptr,
+                                               nullptr,
+                                               nullptr,
+                                               nullptr,
+                                               std::move(temp1),
+                                               std::move(temp2),
+                                               std::vector<DeviceAllocation>{},
+                                               true);
+  }
+#endif
 
   const bool ix_fused_cube = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&

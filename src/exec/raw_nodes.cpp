@@ -538,16 +538,19 @@ CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     std::shared_ptr<DeviceAllocation> indices,
     std::shared_ptr<DeviceAllocation> twiddles,
     int64_t group_size,
-    bool pair_mode)
+    bool pair_mode,
+    bool transposed_store)
     : indices(std::move(indices)),
       twiddles(std::move(twiddles)),
       group_size(group_size),
-      pair_mode(pair_mode) {}
+      pair_mode(pair_mode),
+      transposed_store(transposed_store) {}
 
 std::string CompiledRawNpuAivFFT256Node::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawNpuAivFFT256(group_size=" << group_size
-      << ", pair_mode=" << pair_mode << ")";
+      << ", pair_mode=" << pair_mode
+      << ", transposed_store=" << transposed_store << ")";
   return oss.str();
 }
 
@@ -557,6 +560,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
       (group_size != 1 && group_size != 4 && group_size != 8) ||
       (pair_mode && group_size != 8) ||
+      (transposed_store && !pair_mode) ||
       context.batch % group_size != 0 ||
       indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
@@ -570,12 +574,15 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
         static_cast<adaptor::DevicePtr>(batch_offset * 256 * element_bytes);
     const flagfftResult result = adaptor::npu::launch_ascendc_fft256(
         input + byte_offset,
-        output + byte_offset,
+        transposed_store ? output : output + byte_offset,
         indices->get(),
         twiddles->get(),
         static_cast<int32_t>(chunk_batch),
         static_cast<int32_t>(group_size),
         pair_mode,
+        transposed_store,
+        transposed_store ? static_cast<int32_t>(context.batch) : 0,
+        transposed_store ? static_cast<int32_t>(batch_offset) : 0,
         context.stream);
     if (result != FLAGFFT_SUCCESS) return result;
   }
@@ -2918,7 +2925,8 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
                                      std::shared_ptr<JitKernel> perm_021_inv,
                                      DeviceAllocation temp1,
                                      DeviceAllocation temp2,
-                                     std::vector<DeviceAllocation> npu_transpose_indices)
+                                     std::vector<DeviceAllocation> npu_transpose_indices,
+                                     bool npu_pair_fused_store)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2933,7 +2941,8 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
       perm_021_inv(std::move(perm_021_inv)),
       temp1(std::move(temp1)),
       temp2(std::move(temp2)),
-      npu_transpose_indices(std::move(npu_transpose_indices)) {
+      npu_transpose_indices(std::move(npu_transpose_indices)),
+      npu_pair_fused_store(npu_pair_fused_store) {
 }
 
 std::string CompiledRaw3DNode::describe() const {
@@ -2945,7 +2954,8 @@ std::string CompiledRaw3DNode::describe() const {
       << ", perm_021_fwd=" << (perm_021_fwd ? perm_021_fwd->execution_description() : "null")
       << ", perm_210_fwd=" << (perm_210_fwd ? perm_210_fwd->execution_description() : "null")
       << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null")
-      << ", npu_native_transpose=" << (!npu_transpose_indices.empty()) << ")";
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
+      << ", npu_pair_fused_store=" << npu_pair_fused_store << ")";
   return oss.str();
 }
 
@@ -2960,6 +2970,14 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * n2};
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * n2};
+
+    if (npu_pair_fused_store) {
+      flagfftResult result = n2_fft->execute(input, temp1.get(), n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return n0_fft->execute(temp2.get(), output, n0_context);
+    }
 
     auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
                        adaptor::DevicePtr source,

@@ -27,19 +27,23 @@ constexpr uint32_t kOutputIndexCount = 2 * kN;
 constexpr uint32_t kLocalIndexCount = kOutputIndexBase + kOutputIndexCount;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 
-template <uint32_t GroupSize, bool PairButterflies = false>
+template <uint32_t GroupSize, bool PairButterflies = false, bool TransposedOutput = false>
 class Fft256Aiv {
  public:
   __aicore__ inline void Init(GM_ADDR input,
                               GM_ADDR output,
                               GM_ADDR indices,
                               GM_ADDR twiddles,
-                              uint32_t transform_count) {
+                              uint32_t transform_count,
+                              uint32_t output_row_stride = 0,
+                              uint32_t output_transform_offset = 0) {
     input_ptr_ = reinterpret_cast<__gm__ float *>(input);
     output_ptr_ = reinterpret_cast<__gm__ float *>(output);
     indices_.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(indices));
     twiddles_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(twiddles));
     transform_count_ = transform_count;
+    output_row_stride_ = output_row_stride;
+    output_transform_offset_ = output_transform_offset;
 
     constexpr uint32_t group_n = kN * GroupSize;
     constexpr uint32_t index_count = PairButterflies ? 4 * group_n :
@@ -299,9 +303,23 @@ class Fft256Aiv {
     LocalTensor<float> output_local = output_buf_.Get<float>();
     Gather(output_local, merged, index_local[output_index_base], 0, 2 * group_n);
     PipeBarrier<PIPE_ALL>();
-    GlobalTensor<float> dst;
-    dst.SetGlobalBuffer(output_ptr_ + transform * 2 * kN);
-    DataCopy(dst, output_local, 2 * group_n);
+    if constexpr (TransposedOutput) {
+      LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
+      GlobalTensor<uint64_t> dst;
+      dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_) +
+                          output_transform_offset_ + transform);
+      const DataCopyExtParams output_params(
+          kN,
+          GroupSize * sizeof(uint64_t),
+          0,
+          (output_row_stride_ - GroupSize) * sizeof(uint64_t),
+          0);
+      DataCopyPad(dst, output_complex, output_params);
+    } else {
+      GlobalTensor<float> dst;
+      dst.SetGlobalBuffer(output_ptr_ + transform * 2 * kN);
+      DataCopy(dst, output_local, 2 * group_n);
+    }
   }
 
  private:
@@ -316,5 +334,7 @@ class Fft256Aiv {
   GlobalTensor<uint32_t> indices_;
   GlobalTensor<float> twiddles_;
   uint32_t transform_count_ = 0;
+  uint32_t output_row_stride_ = 0;
+  uint32_t output_transform_offset_ = 0;
 };
 }  // namespace

@@ -27,6 +27,9 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
                                     int32_t transform_count,
                                     int32_t group_size,
                                     bool pair_mode,
+                                    bool transposed_store,
+                                    int32_t output_row_stride,
+                                    int32_t output_transform_offset,
                                     StreamHandle stream);
 
 }  // namespace flagfft::adaptor::npu

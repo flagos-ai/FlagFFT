@@ -217,7 +217,8 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   CompiledRawNpuAivFFT256Node(std::shared_ptr<DeviceAllocation> indices,
                               std::shared_ptr<DeviceAllocation> twiddles,
                               int64_t group_size = 1,
-                              bool pair_mode = false);
+                              bool pair_mode = false,
+                              bool transposed_store = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -227,6 +228,7 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   std::shared_ptr<DeviceAllocation> twiddles;
   int64_t group_size;
   bool pair_mode;
+  bool transposed_store;
 };
 #endif
 
@@ -1051,7 +1053,8 @@ struct CompiledRaw3DNode final : CompiledRawNode {
                     std::shared_ptr<JitKernel> perm_021_inv,
                     DeviceAllocation temp1,
                     DeviceAllocation temp2,
-                    std::vector<DeviceAllocation> npu_transpose_indices = {});
+                    std::vector<DeviceAllocation> npu_transpose_indices = {},
+                    bool npu_pair_fused_store = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1072,6 +1075,7 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   DeviceAllocation temp1;
   DeviceAllocation temp2;
   std::vector<DeviceAllocation> npu_transpose_indices;
+  bool npu_pair_fused_store;
 };
 
 // Small cubic complex transform: one kernel handles both axes in each plane,
