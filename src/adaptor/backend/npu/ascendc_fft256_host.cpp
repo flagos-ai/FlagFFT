@@ -16,7 +16,7 @@
 
 #include <acl/acl_rt.h>
 #include <aclrtlaunch_flagfft_npu_fft256.h>
-#include <flagfft_npu_aiv_fft256_group4/aclrtlaunch_flagfft_npu_fft256_group4.h>
+#include <aclrtlaunch_flagfft_npu_fft256_group4.h>
 
 namespace flagfft::adaptor::npu {
 
