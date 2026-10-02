@@ -2935,6 +2935,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n1_request.input_strides = {n1, 1};
   n1_request.requested_n = n1;
   n1_request.batch = batch * n0 * half;
+  if (request.device_type == "npu") {
+    n1_request.real_transform_kind.clear();
+    n1_request.real_transform = false;
+  }
 
   FFTRequest n0_request = request;
   n0_request.fft_length = n0;
@@ -2942,6 +2946,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n0_request.input_strides = {n0, 1};
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
+  if (request.device_type == "npu") {
+    n0_request.real_transform_kind.clear();
+    n0_request.real_transform = false;
+  }
 
   const bool fused_real_cube = !inverse && ix_real_leaf_screen && batch == 1 &&
       n0 == 16 && n1 == 16 && n2 == 16 &&
@@ -3037,13 +3045,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
+  const bool npu_real_native = request.device_type == "npu" && request.origin_rank == 3 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
+      node->n2 == 64 && flag_or_default("FLAGFFT_NPU_3D_REAL_NATIVE", false) &&
+      flag_or_default("FLAGFFT_NPU_3D_AIV64", false);
   const char *ix_rtrt_override = std::getenv("FLAGFFT_IX_3D_REAL_RTRT");
   const bool screen_rtrt = ix_rtrt_override != nullptr && std::string(ix_rtrt_override) == "1";
   const bool screen_hybrid = (node->n2 == 64 || node->n2 == 256) &&
       flag_or_default("FLAGFFT_IX_3D_REAL_HYBRID", !screen_rtrt);
-  if (request.device_type != "ix" || request.device_arch != "71" ||
-      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
-      (!screen_rtrt && !screen_hybrid)) return nullptr;
+  const bool ix_real_rtrt = request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      (screen_rtrt || screen_hybrid);
+  if (!npu_real_native && !ix_real_rtrt) return nullptr;
 
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -3053,6 +3067,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
+  if (npu_real_native && !n2_leaf) return nullptr;
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
   // The middle store removes one full-cube transpose for single 256^3 R2C.
   // Batch four and the elongated shape measured slower, so keep this narrow.
@@ -3076,6 +3091,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   n1_request.input_strides = {n1, 1};
   n1_request.requested_n = n1;
   n1_request.batch = batch * n0 * half;
+  if (npu_real_native) {
+    n1_request.real_transform_kind.clear();
+    n1_request.real_transform = false;
+  }
 
   FFTRequest n0_request = request;
   n0_request.fft_length = n0;
@@ -3083,9 +3102,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   n0_request.input_strides = {n0, 1};
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
+  if (npu_real_native) {
+    n0_request.real_transform_kind.clear();
+    n0_request.real_transform = false;
+  }
 
   std::shared_ptr<CompiledRawNode> n2_real_fft;
-  if (fused_first) {
+  std::vector<DeviceAllocation> npu_transpose_indices;
+  if (npu_real_native) {
+    const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV64_GROUP");
+    int32_t group_size = npu_aiv_fft64_real_row_group_size(group_setting, batch * n0 * n1);
+    if ((batch * n0 * n1) % group_size != 0) group_size = 1;
+    n2_real_fft = make_npu_aiv_fft64_child(
+        n2_request, 1, group_size,
+        inverse ? NpuAivFFT64Mode::RealInverse : NpuAivFFT64Mode::RealForward);
+  } else if (fused_first) {
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
                                          n2_request.direction, n2_request.input_dtype,
                                          n2_leaf->length, n2_leaf->factors,
@@ -3105,15 +3136,22 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   auto n0_fft = fused_n0
       ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
       : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half);
-  auto perm_021 = fused_first
-      ? std::shared_ptr<JitKernel>{}
-      : compile_transpose3d_kernel(request, n0, n1, half, "021");
-  auto perm_210 = fused_middle
-      ? std::shared_ptr<JitKernel>{}
-      : compile_transpose3d_kernel(request, n0, half, n1, "210");
-  auto perm_201 = fused_n0
-      ? std::shared_ptr<JitKernel>{}
-      : compile_transpose3d_kernel(request, n1, half, n0, "201");
+  std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_201;
+  if (npu_3d_native_transpose_enabled(request)) {
+    npu_transpose_indices = build_npu_3d_transpose_indices();
+  } else {
+    perm_021 = fused_first
+        ? std::shared_ptr<JitKernel>{}
+        : compile_transpose3d_kernel(request, n0, n1, half, "021");
+    perm_210 = fused_middle
+        ? std::shared_ptr<JitKernel>{}
+        : compile_transpose3d_kernel(request, n0, half, n1, "210");
+    perm_201 = fused_n0
+        ? std::shared_ptr<JitKernel>{}
+        : compile_transpose3d_kernel(request, n1, half, n0, "201");
+  }
 
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
@@ -3129,7 +3167,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
                                                      std::move(perm_210),
                                                      std::move(perm_201),
                                                      std::move(temp1),
-                                                     std::move(temp2));
+                                                     std::move(temp2),
+                                                     std::move(npu_transpose_indices));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(

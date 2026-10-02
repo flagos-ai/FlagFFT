@@ -3525,7 +3525,8 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
     std::shared_ptr<JitKernel> perm_210,
     std::shared_ptr<JitKernel> perm_201,
     DeviceAllocation temp1,
-    DeviceAllocation temp2)
+    DeviceAllocation temp2,
+    std::vector<DeviceAllocation> npu_transpose_indices)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -3537,15 +3538,18 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
       perm_210(std::move(perm_210)),
       perm_201(std::move(perm_201)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      npu_transpose_indices(std::move(npu_transpose_indices)) {
 }
 
 std::string CompiledRaw3DRealRTRTNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DRealRTRT(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
-      << ", inverse=" << inverse << ", fused_first=" << (perm_021 == nullptr)
-      << ", fused_middle=" << (perm_210 == nullptr)
-      << ", fused_n0=" << (perm_201 == nullptr)
+      << ", inverse=" << inverse
+      << ", fused_first=" << (perm_021 == nullptr && npu_transpose_indices.empty())
+      << ", fused_middle=" << (perm_210 == nullptr && npu_transpose_indices.empty())
+      << ", fused_n0=" << (perm_201 == nullptr && npu_transpose_indices.empty())
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
@@ -3561,48 +3565,72 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
+    if (context.request.device_type == "npu") {
+      n1_context.request.real_transform_kind.clear();
+      n1_context.request.real_transform = false;
+      n0_context.request.real_transform_kind.clear();
+      n0_context.request.real_transform = false;
+    }
+    const bool has_perm_021 = perm_021 != nullptr || !npu_transpose_indices.empty();
+    const bool has_perm_210 = perm_210 != nullptr || !npu_transpose_indices.empty();
+    const bool has_perm_201 = perm_201 != nullptr || !npu_transpose_indices.empty();
+    auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
+                       adaptor::DevicePtr source,
+                       adaptor::DevicePtr destination,
+                       int64_t d0,
+                       int64_t d1,
+                       int64_t d2,
+                       int32_t axis0,
+                       int32_t axis1,
+                       int32_t axis2) {
+      return launch_perm3d_with_optional_npu_native(
+          kernel, npu_transpose_indices, context.stream, source, destination,
+          d0, d1, d2, axis0, axis1, axis2, batch,
+          complex_element_bytes(context.request.input_dtype));
+    };
 
     if (!inverse) {
-      if (!perm_021) n2_context.output_distance = n1;
-      flagfftResult result = n2_real_fft->execute(input, perm_021 ? temp1.get() : temp2.get(), n2_context);
+      if (!has_perm_021) n2_context.output_distance = n1;
+      adaptor::DevicePtr n2_output = has_perm_021 ? temp1.get() : temp2.get();
+      flagfftResult result = n2_real_fft->execute(input, n2_output, n2_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      if (perm_021) {
-        launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch,
-                      complex_element_bytes(context.request.input_dtype));
+      if (has_perm_021) {
+        result = permute(perm_021, temp1.get(), temp2.get(), n0, n1, half, 0, 2, 1);
+        if (result != FLAGFFT_SUCCESS) return result;
       }
       result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      if (perm_210) {
-        launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch,
-                      complex_element_bytes(context.request.input_dtype));
+      if (has_perm_210) {
+        result = permute(perm_210, temp1.get(), temp2.get(), n0, half, n1, 2, 1, 0);
+        if (result != FLAGFFT_SUCCESS) return result;
       }
-      adaptor::DevicePtr n0_output = perm_201
-          ? (perm_210 ? temp1.get() : temp2.get()) : output;
-      result = n0_fft->execute(perm_210 ? temp2.get() : temp1.get(),
+      adaptor::DevicePtr n0_output = has_perm_201
+          ? (has_perm_210 ? temp1.get() : temp2.get()) : output;
+      result = n0_fft->execute(has_perm_210 ? temp2.get() : temp1.get(),
                                n0_output, n0_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      if (perm_201) {
-        launch_perm3d(perm_201, context.stream, n0_output, output, packed, batch,
-                      complex_element_bytes(context.request.input_dtype));
+      if (has_perm_201) {
+        result = permute(perm_201, n0_output, output, n1, half, n0, 2, 0, 1);
+        if (result != FLAGFFT_SUCCESS) return result;
       }
       return FLAGFFT_SUCCESS;
     }
 
     // The outer transforms commute, so both use the same compact layouts
     // before the final real inverse along n2.
-    launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch,
-                  complex_element_bytes(context.request.input_dtype));
-    flagfftResult result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    flagfftResult result = permute(perm_021, input, temp1.get(), n0, n1, half, 0, 2, 1);
     if (result != FLAGFFT_SUCCESS) return result;
-    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch,
-                  complex_element_bytes(context.request.input_dtype));
+    result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    result = permute(perm_210, temp2.get(), temp1.get(), n0, half, n1, 2, 1, 0);
+    if (result != FLAGFFT_SUCCESS) return result;
     result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    if (perm_201) {
-      launch_perm3d(perm_201, context.stream, temp2.get(), temp1.get(), packed, batch,
-                    complex_element_bytes(context.request.input_dtype));
+    if (has_perm_201) {
+      result = permute(perm_201, temp2.get(), temp1.get(), n1, half, n0, 2, 0, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
     }
-    return n2_real_fft->execute(perm_201 ? temp1.get() : temp2.get(), output, n2_context);
+    return n2_real_fft->execute(has_perm_201 ? temp1.get() : temp2.get(), output, n2_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D real RTRT execute failed: %s\n", e.what());
     std::fflush(stderr);
