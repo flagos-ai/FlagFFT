@@ -248,6 +248,9 @@ def main() -> None:
         fused_warps = os.getenv("FLAGFFT_HCU_3D_FUSED_WARPS", "auto")
         transpose_pair = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0")
         transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
+        transpose_slice_group = os.getenv(
+            "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP", "auto"
+        )
         full_smem = os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0")
         u64_load = os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1")
         first_pack = os.getenv("FLAGFFT_HCU_3D_FIRST_PACK", "auto")
@@ -273,6 +276,10 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_TRANSPOSE_PAIR must be 0 or 1")
         if transpose_tile not in {"auto", "16", "32", "64"}:
             parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be auto, 16, 32 or 64")
+        if transpose_slice_group not in {"auto", "1", "2"}:
+            parser.error(
+                "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP must be auto, 1 or 2"
+            )
         if full_smem not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_FULL_SMEM must be 0 or 1")
         if u64_load not in {"0", "1"}:
@@ -326,6 +333,8 @@ def main() -> None:
                         f"-final-warps-{final_warps}-final-pack-{final_pack}"
                         f"-swz-{smem_swizzle}-{swizzle_shift}"
                         f"-r2c-leaf-swizzle-{r2c_leaf_swizzle}")
+        if transpose_slice_group != "auto":
+            profile_dir += f"-sg{transpose_slice_group}"
         if factors_256 != "auto":
             profile_dir += f"-f{factors_256.replace(',', '')}"
     args.out_dir = args.out_dir / profile_dir

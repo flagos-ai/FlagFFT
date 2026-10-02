@@ -44,6 +44,7 @@ from .kernels_layout import (
     _build_packed_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
+    _build_tiled_transpose3d_slice_group_kernel_source,
     _build_tiled_transpose3d_tile_kernel_source,
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
@@ -805,6 +806,13 @@ def _emit_tiled_transpose3d_jit_kernel(
                 tile = int(ix_tile)
             packed_complex = os.getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE") == "1"
         elif _hcu_backend_active():
+            transpose_slice_group = os.getenv(
+                "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP", "auto"
+            )
+            if transpose_slice_group not in {"auto", "1", "2"}:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP must be auto, 1 or 2"
+                )
             if dtype == "complex64":
                 transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
                 if transpose_tile == "auto":
@@ -824,15 +832,53 @@ def _emit_tiled_transpose3d_jit_kernel(
                 else:
                     tile = int(transpose_tile)
             pair_store = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1"
-        (
-            kernel_name,
-            kernel_source,
-            arg_names,
-            grid_x,
-        ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=tile,
-            packed_complex=packed_complex, pair_store=pair_store,
-        )
+            if (
+                dtype == "complex64"
+                and transpose_slice_group == "2"
+                and (n0, n1, n2, order) == (128, 64, 2048, "210")
+                and tile == 32
+                and not pair_store
+            ):
+                (
+                    kernel_name,
+                    kernel_source,
+                    arg_names,
+                    grid_x,
+                ) = _build_tiled_transpose3d_slice_group_kernel_source(
+                    n0,
+                    n1,
+                    n2,
+                    order,
+                    dtype,
+                    tile=tile,
+                    slice_group=2,
+                )
+            else:
+                (
+                    kernel_name,
+                    kernel_source,
+                    arg_names,
+                    grid_x,
+                ) = _build_tiled_transpose3d_tile_kernel_source(
+                    n0,
+                    n1,
+                    n2,
+                    order,
+                    dtype,
+                    tile=tile,
+                    packed_complex=packed_complex,
+                    pair_store=pair_store,
+                )
+        else:
+            (
+                kernel_name,
+                kernel_source,
+                arg_names,
+                grid_x,
+            ) = _build_tiled_transpose3d_tile_kernel_source(
+                n0, n1, n2, order, dtype, tile=tile,
+                packed_complex=packed_complex, pair_store=pair_store,
+            )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
             n0, n1, n2, order, dtype

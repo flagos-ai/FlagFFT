@@ -868,6 +868,40 @@ def test_hcu_tiled_transpose3d_tile_override(tmp_path, monkeypatch) -> None:
     assert metadata["grid_x_override"] > 0
 
 
+def test_hcu_long_c2c_transpose_slice_group_is_sequential_and_narrow(
+    tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP", "2")
+    monkeypatch.delenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", raising=False)
+    monkeypatch.delenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", raising=False)
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64))
+    try:
+        long_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=128, n1=64, n2=2048, order="210", dtype="complex64",
+            out_dir=tmp_path / "long",
+        )
+        prime_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=16, n1=64, n2=997, order="210", dtype="complex64",
+            out_dir=tmp_path / "prime",
+        )
+    finally:
+        reset_profile(token)
+
+    source = Path(long_metadata["module_path"]).read_text()
+    assert long_metadata["kernel_name"].endswith("_t32_tile_sliceg2seq")
+    assert long_metadata["grid_x_override"] == 8192
+    assert "for group_offset in tl.static_range(0, 2):" in source
+    assert "src_r = tl.load(in_ptr + src_base" in source
+    assert "dst_r = tl.trans(src_r)" in source
+    assert "tl.store(out_ptr + dst_base + 1, dst_i" in source
+    assert "sliceg2seq" not in prime_metadata["kernel_name"]
+    assert prime_metadata["kernel_name"].endswith("_t16_tile")
+
+
 def test_hcu_selected_middle_transposes_default_to_tile16(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
