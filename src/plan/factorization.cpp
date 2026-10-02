@@ -123,9 +123,8 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
-  if (context.device_type == "maca" && context.device_arch == "102" &&
-      context.origin_rank == 3 && context.requested_n == n && n == 32 &&
-      context.batch == 1 && context.input_dtype == "complex128" &&
+  if (context.device_type == "maca" && context.origin_rank == 3 && n == 32 &&
+      context.input_dtype == "complex128" &&
       context.output_dtype == "complex128") {
     const char *more_lanes = std::getenv("FLAGFFT_MACA_3D_C2C32_MORE_LANES");
     if (more_lanes != nullptr && std::string(more_lanes) == "1") {
