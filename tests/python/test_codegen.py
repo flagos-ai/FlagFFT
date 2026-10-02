@@ -854,6 +854,33 @@ def test_tiled_transpose3d_falls_back_to_v1_for_unvalidated_backends(
     assert "t32_tile" not in metadata["kernel_name"]
 
 
+def test_tiled_transpose3d_uses_portable_tile_on_ascend(kernels, tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    token = set_profile(
+        BackendProfile(
+            backend="npu",
+            device_arch="Ascend910B4",
+            warp_size=1,
+            max_threads_per_block=65535,
+        )
+    )
+    try:
+        assert emit._portable_transpose3d_supported()
+        metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=256, n1=256, n2=256, order="021", dtype="complex64", out_dir=tmp_path
+        )
+    finally:
+        reset_profile(token)
+
+    assert "t32_tile" in metadata["kernel_name"]
+    source = Path(metadata["module_path"]).read_text()
+    assert "tl.trans(src_r)" in source
+    assert "tl.trans(src_i)" in source
+
+
 def test_strided_four_step_row_kernel_source_generation(kernels) -> None:
     plan = kernels.LeafPlan(
         length=128,

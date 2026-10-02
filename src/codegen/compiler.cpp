@@ -298,8 +298,12 @@ namespace {
   }
 #endif
 
-  void mark_npu_2d_portable_leaf(KernelKey &key, const FFTRequest &request) {
-    key.npu_portable_leaf = request.device_type == "npu" && request.origin_rank == 2;
+  void mark_npu_portable_leaf(KernelKey &key, const FFTRequest &request) {
+    const char *npu_3d_leaf = std::getenv("FLAGFFT_NPU_3D_LEAF");
+    const bool allow_3d_leaf = request.origin_rank == 3 && npu_3d_leaf != nullptr &&
+                               std::string(npu_3d_leaf) == "1";
+    key.npu_portable_leaf = request.device_type == "npu" &&
+                            (request.origin_rank == 2 || allow_3d_leaf);
   }
 
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
@@ -1240,7 +1244,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                   leaf.num_warps,
                                   leaf.generic_radices,
                                   leaf.smem_size);
-  mark_npu_2d_portable_leaf(key, request);
+  mark_npu_portable_leaf(key, request);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   return std::make_shared<CompiledRawLeafNode>(leaf.length,
                                                std::move(kernel),
@@ -1287,7 +1291,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.generic_radices,
                                                  leaf.smem_size,
                                                  perm_form);
-  mark_npu_2d_portable_leaf(key, request);
+  mark_npu_portable_leaf(key, request);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   // Same argument shape as the strided leaf: the permutation span rides in the
   // slot that carries outer_stride there, so the node is reused unchanged.
@@ -1310,7 +1314,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const 
                                           leaf.num_warps,
                                           leaf.generic_radices,
                                           leaf.smem_size);
-  mark_npu_2d_portable_leaf(key, request);
+  mark_npu_portable_leaf(key, request);
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   return std::make_shared<CompiledRawStridedLeafNode>(leaf.length,
                                                       outer_stride,
@@ -1392,7 +1396,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
-  mark_npu_2d_portable_leaf(key, request);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -1408,7 +1412,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
-  mark_npu_2d_portable_leaf(key, request);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -2035,7 +2039,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool ix_real_fused_screen = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       ix_real_fused_override != nullptr && std::string(ix_real_fused_override) == "1";
-  if (request.device_type != "musa" && !ix_real_leaf_screen && !ix_real_fused_screen) return nullptr;
+  const char *npu_3d_real_leaf = std::getenv("FLAGFFT_NPU_3D_LEAF");
+  const bool npu_real_leaf_screen = request.device_type == "npu" && request.origin_rank == 3 &&
+      (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
+      npu_3d_real_leaf != nullptr && std::string(npu_3d_real_leaf) == "1";
+  if (request.device_type != "musa" && !ix_real_leaf_screen && !ix_real_fused_screen &&
+      !npu_real_leaf_screen) return nullptr;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);

@@ -191,15 +191,21 @@ namespace {
                      adaptor::DevicePtr input,
                      adaptor::DevicePtr output,
                      int64_t elements_per_batch,
-                     int64_t batch) {
+                     int64_t batch,
+                     int64_t element_bytes) {
     const int64_t grid_x =
         kernel->grid_x_override > 0 ? kernel->grid_x_override : ceil_div(elements_per_batch, kPerm3dBlock);
-    std::vector<JitKernelArg> args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(output),
-        JitKernelArg::i32(static_cast<int32_t>(batch)),
-    };
-    kernel->launch(stream, args, grid_x, 1, batch);
+    const int64_t batch_chunk = std::max<int64_t>(1, block_limit_per_launch() / std::max<int64_t>(1, grid_x));
+    for (int64_t batch_offset = 0; batch_offset < batch; batch_offset += batch_chunk) {
+      const int64_t count = std::min(batch_chunk, batch - batch_offset);
+      const int64_t byte_offset = batch_offset * elements_per_batch * element_bytes;
+      std::vector<JitKernelArg> args = {
+          JitKernelArg::device(input + byte_offset),
+          JitKernelArg::device(output + byte_offset),
+          JitKernelArg::i32(static_cast<int32_t>(count)),
+      };
+      kernel->launch(stream, args, grid_x, 1, count);
+    }
   }
 
 }  // namespace
@@ -2837,19 +2843,22 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
     flagfftResult result;
     if (inverse) {
       // (n0,n1,n2) -> perm(1,2,0) -> (n1,n2,n0), IFFT along n0
-      launch_perm3d(perm_120_inv, context.stream, input, temp1.get(), total, batch);
+      launch_perm3d(perm_120_inv, context.stream, input, temp1.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
       result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n1,n2,n0) -> perm(2,1,0) -> (n0,n2,n1), IFFT along n1
-      launch_perm3d(perm_210_inv, context.stream, temp2.get(), temp1.get(), total, batch);
+      launch_perm3d(perm_210_inv, context.stream, temp2.get(), temp1.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
       result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n0,n2,n1) -> perm(0,2,1) -> (n0,n1,n2), IFFT along n2
-      launch_perm3d(perm_021_inv, context.stream, temp2.get(), temp1.get(), total, batch);
+      launch_perm3d(perm_021_inv, context.stream, temp2.get(), temp1.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
       result = n2_fft->execute(temp1.get(), output, n2_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
@@ -2861,19 +2870,22 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
         return result;
       }
       // (n0,n1,n2) -> perm(0,2,1) -> (n0,n2,n1), FFT along n1
-      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
+      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
       result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n0,n2,n1) -> perm(2,1,0) -> (n1,n2,n0), FFT along n0
-      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
+      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
       result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n1,n2,n0) -> perm(2,0,1) -> (n0,n1,n2)
-      launch_perm3d(perm_201_fwd, context.stream, temp1.get(), output, total, batch);
+      launch_perm3d(perm_201_fwd, context.stream, temp1.get(), output, total, batch,
+                    complex_element_bytes(context.request.input_dtype));
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
@@ -3095,10 +3107,14 @@ flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) return result;
     result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), total, batch);
+    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), total, batch,
+                  complex_element_bytes(context.request.input_dtype));
     result = n0_fft->execute(temp1.get(), perm_201 ? temp2.get() : output, n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    if (perm_201) launch_perm3d(perm_201, context.stream, temp2.get(), output, total, batch);
+    if (perm_201) {
+      launch_perm3d(perm_201, context.stream, temp2.get(), output, total, batch,
+                    complex_element_bytes(context.request.input_dtype));
+    }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D hybrid execute failed: %s\n", e.what());
@@ -3159,7 +3175,8 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
       if (fused_store) {
         // n1 wants contiguous rows in (n0,half,n1) order.  Its store and
         // the n0 store both apply the following layout change.
-        launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch);
+        launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
         result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       } else {
         result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
@@ -3171,7 +3188,8 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
     // Axes commute, so the compact n1/n0 transforms can precede the real
     // inverse n2 boundary.  This also keeps the compact cube throughout.
     if (fused_store) {
-      launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch);
+      launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch,
+                    complex_element_bytes(context.request.input_dtype));
       result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     } else {
       result = n1_fft->execute(input, temp1.get(), n1_context);
@@ -3241,28 +3259,42 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
       if (!perm_021) n2_context.output_distance = n1;
       flagfftResult result = n2_real_fft->execute(input, perm_021 ? temp1.get() : temp2.get(), n2_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      if (perm_021) launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch);
+      if (perm_021) {
+        launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+      }
       result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      if (perm_210) launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch);
+      if (perm_210) {
+        launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+      }
       adaptor::DevicePtr n0_output = perm_201
           ? (perm_210 ? temp1.get() : temp2.get()) : output;
       result = n0_fft->execute(perm_210 ? temp2.get() : temp1.get(),
                                n0_output, n0_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      if (perm_201) launch_perm3d(perm_201, context.stream, n0_output, output, packed, batch);
+      if (perm_201) {
+        launch_perm3d(perm_201, context.stream, n0_output, output, packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+      }
       return FLAGFFT_SUCCESS;
     }
 
     // The outer transforms commute, so both use the same compact layouts
     // before the final real inverse along n2.
-    launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch);
+    launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch,
+                  complex_element_bytes(context.request.input_dtype));
     flagfftResult result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch);
+    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch,
+                  complex_element_bytes(context.request.input_dtype));
     result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    if (perm_201) launch_perm3d(perm_201, context.stream, temp2.get(), temp1.get(), packed, batch);
+    if (perm_201) {
+      launch_perm3d(perm_201, context.stream, temp2.get(), temp1.get(), packed, batch,
+                    complex_element_bytes(context.request.input_dtype));
+    }
     return n2_real_fft->execute(perm_201 ? temp1.get() : temp2.get(), output, n2_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D real RTRT execute failed: %s\n", e.what());
@@ -3368,7 +3400,8 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
 
     // Step 4: (n0,n1,half) -> (n0,half,n1), FFT along n1.
     const int64_t packed = n0 * n1 * half;
-    launch_perm3d(perm_021, context.stream, output, temp1.get(), packed, batch);
+    launch_perm3d(perm_021, context.stream, output, temp1.get(), packed, batch,
+                  complex_element_bytes(context.request.input_dtype));
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
     result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) {
@@ -3376,7 +3409,8 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     }
 
     // Step 5: (n0,half,n1) -> (n1,half,n0), FFT along n0.
-    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch);
+    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch,
+                  complex_element_bytes(context.request.input_dtype));
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
     result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) {
@@ -3384,7 +3418,8 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     }
 
     // Step 6: (n1,half,n0) -> (n0,n1,half) natural output layout.
-    launch_perm3d(perm_201, context.stream, temp2.get(), output, packed, batch);
+    launch_perm3d(perm_201, context.stream, temp2.get(), output, packed, batch,
+                  complex_element_bytes(context.request.input_dtype));
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D R2C execute failed: %s\n", e.what());
@@ -3447,7 +3482,8 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     const int64_t packed = n0 * n1 * half;
 
     // Step 1: (n0,n1,half) -> (n1,half,n0), IFFT along n0.
-    launch_perm3d(perm_120, context.stream, input, temp1.get(), packed, batch);
+    launch_perm3d(perm_120, context.stream, input, temp1.get(), packed, batch,
+                  complex_element_bytes(context.request.input_dtype));
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
     flagfftResult result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) {
@@ -3455,7 +3491,8 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     }
 
     // Step 2: (n1,half,n0) -> (n0,half,n1), IFFT along n1.
-    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch);
+    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch,
+                  complex_element_bytes(context.request.input_dtype));
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
     result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) {
@@ -3463,7 +3500,8 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     }
 
     // Step 3: (n0,half,n1) -> (n0,n1,half), expand half -> full Hermitian.
-    launch_perm3d(perm_021, context.stream, temp2.get(), temp1.get(), packed, batch);
+    launch_perm3d(perm_021, context.stream, temp2.get(), temp1.get(), packed, batch,
+                  complex_element_bytes(context.request.input_dtype));
     launch_grid_y_chunks(ceil_div(n2, block),
                          total_rows,
                          expand_kernel->rows_per_block,
