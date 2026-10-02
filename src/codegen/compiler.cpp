@@ -41,7 +41,8 @@ namespace {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign(2 * n + 2 * stages * n, 0);
+    const int64_t scatter_base = 2 * n + 2 * stages * n;
+    indices.assign(scatter_base + 2 * n, 0);
     twiddles.assign(2 * stages * n, 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
@@ -80,6 +81,12 @@ namespace {
         twiddles[stage * n + i] = negate * static_cast<float>(std::cos(angle));
         twiddles[imag_base + stage * n + i] = negate * static_cast<float>(std::sin(angle));
       }
+    }
+
+    for (int64_t i = 0; i < n; ++i) {
+      // Scatter addresses are byte offsets into padded VECOUT complex blocks.
+      indices[scatter_base + i] = static_cast<uint32_t>(i * 8 * sizeof(float));
+      indices[scatter_base + n + i] = static_cast<uint32_t>(i * 8 * sizeof(float) + sizeof(float));
     }
 
   }
