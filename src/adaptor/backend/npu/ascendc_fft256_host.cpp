@@ -18,9 +18,6 @@
 #include <aclrtlaunch_flagfft_npu_fft256.h>
 #include <aclrtlaunch_flagfft_npu_fft256_group4.h>
 #include <aclrtlaunch_flagfft_npu_fft256_group8.h>
-#include <aclrtlaunch_flagfft_npu_fft256_group8_fma.h>
-
-#include <cstdlib>
 
 namespace flagfft::adaptor::npu {
 
@@ -36,26 +33,14 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
   const uint32_t block_dim = static_cast<uint32_t>(transform_count / group_size);
   uint32_t status = 0;
   if (group_size == 8) {
-    const char *fma_mode = std::getenv("FLAGFFT_NPU_3D_AIV256_FMA");
-    if (fma_mode != nullptr && fma_mode[0] == '1' && fma_mode[1] == '\0') {
-      status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft256_group8_fma)(
-          block_dim,
-          reinterpret_cast<void *>(stream),
-          reinterpret_cast<uint8_t *>(input),
-          reinterpret_cast<uint8_t *>(output),
-          reinterpret_cast<uint8_t *>(indices),
-          reinterpret_cast<uint8_t *>(twiddles),
-          static_cast<uint32_t>(transform_count));
-    } else {
-      status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft256_group8)(
-          block_dim,
-          reinterpret_cast<void *>(stream),
-          reinterpret_cast<uint8_t *>(input),
-          reinterpret_cast<uint8_t *>(output),
-          reinterpret_cast<uint8_t *>(indices),
-          reinterpret_cast<uint8_t *>(twiddles),
-          static_cast<uint32_t>(transform_count));
-    }
+    status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft256_group8)(
+        block_dim,
+        reinterpret_cast<void *>(stream),
+        reinterpret_cast<uint8_t *>(input),
+        reinterpret_cast<uint8_t *>(output),
+        reinterpret_cast<uint8_t *>(indices),
+        reinterpret_cast<uint8_t *>(twiddles),
+        static_cast<uint32_t>(transform_count));
   } else if (group_size == 4) {
     status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft256_group4)(
         block_dim,
