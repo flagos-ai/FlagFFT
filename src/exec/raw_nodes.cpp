@@ -436,7 +436,7 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                                   adaptor::DevicePtr output,
                                                   const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
-      (stride != 1 && stride != 64) || indices == nullptr || twiddles == nullptr) {
+      stride != 1 || indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }
   return adaptor::npu::launch_ascendc_fft64(input,
@@ -1915,15 +1915,6 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
     }
 
     auto run_sequence = [&]() -> flagfftResult {
-#if defined(FLAGFFT_BACKEND_NPU)
-      const char *debug_column = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV_DEBUG_COLUMN_ONLY");
-      if (n0 == 64 && n1 == 64 && debug_column != nullptr && std::string(debug_column) == "1" &&
-          col_fft->describe().find("CompiledRawNpuAivFFT64") != std::string::npos) {
-        RawExecutionContext col_context {context.request, context.stream, batch * n1};
-        return col_fft->execute(input, output, col_context);
-      }
-#endif
-
       // Step 1: Transform the contiguous input axis into temp1. Some compiled
       // paths store the result transposed so the second pass can also read
       // contiguous data.
@@ -1932,17 +1923,6 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
-
-#if defined(FLAGFFT_BACKEND_NPU)
-      const char *debug_row = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV_DEBUG_ROW");
-      if (n0 == 64 && n1 == 64 && debug_row != nullptr && std::string(debug_row) == "1" &&
-          row_fft->describe().find("CompiledRawNpuAivFFT64") != std::string::npos) {
-        const std::size_t bytes = static_cast<std::size_t>(batch * n0 * n1) *
-                                  static_cast<std::size_t>(complex_element_bytes(context.request.output_dtype));
-        adaptor::copy_device_to_device(output, temp1.get(), bytes, context.stream);
-        return FLAGFFT_SUCCESS;
-      }
-#endif
 
       // Step 2: Transform the second axis and let its compiled output layout
       // produce the natural (batch, n0, n1) result. This is strided for the

@@ -41,7 +41,7 @@ namespace {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign(n + n * n + 2 * stages * n, 0);
+    indices.assign(n + 2 * stages * n, 0);
     twiddles.assign(2 * stages * n, 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
@@ -56,20 +56,11 @@ namespace {
       indices[i] = static_cast<uint32_t>(reversed * 2 * sizeof(float));
     }
 
-    for (int64_t column = 0; column < n; ++column) {
-      const int64_t column_base = n + column * n;
-      for (int64_t i = 0; i < n; ++i) {
-        const int64_t reversed = indices[i] / (2 * sizeof(float));
-        indices[column_base + i] =
-            static_cast<uint32_t>((reversed * n + column) * 2 * sizeof(float));
-      }
-    }
-
     for (int64_t stage = 0; stage < stages; ++stage) {
       const int64_t length = int64_t{1} << (stage + 1);
       const int64_t half = length / 2;
-      const int64_t a_base = n + n * n + stage * n;
-      const int64_t b_base = n + n * n + stages * n + stage * n;
+      const int64_t a_base = n + stage * n;
+      const int64_t b_base = n + stages * n + stage * n;
       const int64_t imag_base = stages * n;
       for (int64_t i = 0; i < n; ++i) {
         const int64_t group = (i / length) * length;
@@ -2280,14 +2271,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     std::shared_ptr<CompiledRawNode> row_fft =
         std::make_shared<CompiledRawNpuAivFFT64Node>(1, index_allocation, twiddle_allocation);
     std::shared_ptr<CompiledRawNode> col_fft =
-        std::make_shared<CompiledRawNpuAivFFT64Node>(64, index_allocation, twiddle_allocation);
+        std::make_shared<CompiledRawNpuAivFFT64Node>(1, index_allocation, twiddle_allocation);
+    // Keep both native AIV FFT leaves contiguous. The existing two-axis node
+    // materializes each transpose, avoiding strided GM stores and repeated
+    // whole-matrix loads for one-program-per-column leaves.
+    auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, n1);
+    auto transpose_inv = compile_tiled_transpose_kernel(request, n1, n0);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
-    return std::make_shared<CompiledRaw2DRCNode>(n0,
-                                                 n1,
-                                                 std::move(row_fft),
-                                                 std::move(col_fft),
-                                                 std::move(temp1),
-                                                 enable_graph);
+    DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    return std::make_shared<CompiledRaw2DNode>(n0,
+                                               n1,
+                                               std::move(row_fft),
+                                               std::move(col_fft),
+                                               std::move(transpose_fwd),
+                                               std::move(transpose_inv),
+                                               std::move(temp1),
+                                               std::move(temp2),
+                                               enable_graph);
   }
 #endif
 

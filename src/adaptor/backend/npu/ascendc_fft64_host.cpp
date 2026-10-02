@@ -26,7 +26,7 @@ flagfftResult launch_ascendc_fft64(DevicePtr input,
                                    int32_t transform_count,
                                    int32_t stride,
                                    StreamHandle stream) {
-  if (transform_count <= 0 || stride <= 0) return FLAGFFT_INVALID_SIZE;
+  if (transform_count <= 0 || stride != 1) return FLAGFFT_INVALID_SIZE;
   const uint32_t status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft64)(static_cast<uint32_t>(transform_count),
                                                                  reinterpret_cast<void *>(stream),
                                                                  reinterpret_cast<uint8_t *>(input),
