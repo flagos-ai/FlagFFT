@@ -94,19 +94,6 @@ class Fft64Aiv {
     Gather(current_real, input_local, input_indices, 0, kN);
     Gather(current_imag, input_local, input_indices, sizeof(float), kN);
 
-    // Temporary column-input diagnostic: store each gathered vector compactly
-    // so its values can be checked independently of the FFT stages and strided
-    // output stores.
-    if (stride_ == kN) {
-      PipeBarrier<PIPE_ALL>();
-      for (uint32_t i = 0; i < kN; ++i) {
-        const uint32_t output = (transform * kN + i) * 2;
-        output_ptr_[output] = current_real.GetValue(i);
-        output_ptr_[output + 1] = current_imag.GetValue(i);
-      }
-      return;
-    }
-
     for (uint32_t stage = 0; stage < kStages; ++stage) {
       const LocalTensor<uint32_t> stage_a = index_local[2 * kN + stage * kN];
       const LocalTensor<uint32_t> stage_b =
