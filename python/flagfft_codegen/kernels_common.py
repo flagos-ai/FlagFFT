@@ -433,6 +433,12 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
     if _portable_leaf_backend_active():
+        if maca_3d_default_enabled() and plan.length == 2048:
+            long_axis_pack = os.getenv("FLAGFFT_MACA_3D_N2048_PACK")
+            if long_axis_pack is not None:
+                if long_axis_pack not in {"1", "2"}:
+                    raise ValueError("FLAGFFT_MACA_3D_N2048_PACK must be 1 or 2")
+                return int(long_axis_pack)
         override = _maca_knob("BATCH_PACK")
         if override == "auto":
             return _profile_batch_pack_for(plan)
