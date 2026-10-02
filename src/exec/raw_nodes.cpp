@@ -421,18 +421,18 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
 #if defined(FLAGFFT_BACKEND_NPU)
 CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(
     int64_t stride,
-    int64_t group_cols,
+    int64_t group_size,
     std::shared_ptr<DeviceAllocation> indices,
     std::shared_ptr<DeviceAllocation> twiddles)
     : stride(stride),
-      group_cols(group_cols),
+      group_size(group_size),
       indices(std::move(indices)),
       twiddles(std::move(twiddles)) {
 }
 
 std::string CompiledRawNpuAivFFT64Node::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawNpuAivFFT64(stride=" << stride << ", group_cols=" << group_cols << ")";
+  oss << "CompiledRawNpuAivFFT64(stride=" << stride << ", group_size=" << group_size << ")";
   return oss.str();
 }
 
@@ -440,14 +440,14 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                                   adaptor::DevicePtr output,
                                                   const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
-      (stride != 1 && stride != 64) || (group_cols != 1 && group_cols != 4) ||
-      (stride == 1 && group_cols != 1) || indices == nullptr || twiddles == nullptr) {
+      (stride != 1 && stride != 64) || (group_size != 1 && group_size != 4) ||
+      indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }
   int32_t transform_count = static_cast<int32_t>(context.batch);
-  if (stride == 64 && group_cols == 4) {
-    if (transform_count % group_cols != 0) return FLAGFFT_INVALID_SIZE;
-    transform_count /= static_cast<int32_t>(group_cols);
+  if (group_size == 4) {
+    if (transform_count % group_size != 0) return FLAGFFT_INVALID_SIZE;
+    transform_count /= static_cast<int32_t>(group_size);
   }
   return adaptor::npu::launch_ascendc_fft64(input,
                                              output,
@@ -455,7 +455,7 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                              twiddles->get(),
                                              transform_count,
                                              static_cast<int32_t>(stride),
-                                             static_cast<int32_t>(group_cols),
+                                             static_cast<int32_t>(group_size),
                                              context.stream);
 }
 #endif
