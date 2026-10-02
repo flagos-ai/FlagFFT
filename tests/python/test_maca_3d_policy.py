@@ -198,7 +198,6 @@ def test_maca_environment_fingerprint_separates_variants():
     pack4 = {"FLAGFFT_MACA_3D_N128_PACK": "4"}
     more_lanes = {"FLAGFFT_MACA_3D_C2C32_MORE_LANES": "1"}
     default_lanes = {"FLAGFFT_MACA_3D_C2C32_MORE_LANES": "0"}
-    more_lanes_16 = {"FLAGFFT_MACA_3D_C2C16_MORE_LANES": "1"}
     other_backend = {"FLAGFFT_IX_WARPS": "4"}
     assert _maca_environment_fingerprint({}) == ""
     assert _maca_environment_fingerprint(pack1) != _maca_environment_fingerprint(pack4)
@@ -209,7 +208,6 @@ def test_maca_environment_fingerprint_separates_variants():
     assert _maca_environment_fingerprint(more_lanes) != _maca_environment_fingerprint(
         default_lanes
     )
-    assert _maca_environment_fingerprint(more_lanes_16) != ""
 
 
 def test_maca_3d_c2c32_more_lanes_keeps_candidate_factors(monkeypatch):

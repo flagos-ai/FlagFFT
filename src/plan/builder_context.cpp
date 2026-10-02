@@ -28,7 +28,6 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          requested_n == other.requested_n &&
          batch == other.batch &&
          maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube &&
-         maca_3d_c2c16_single_cube == other.maca_3d_c2c16_single_cube &&
          ix_short_single == other.ix_short_single &&
          ix_ct_batch == other.ix_ct_batch &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
@@ -46,7 +45,6 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.requested_n = request.requested_n;
   context.batch = request.batch;
   context.maca_3d_c2c32_single_cube = request.maca_3d_c2c32_single_cube;
-  context.maca_3d_c2c16_single_cube = request.maca_3d_c2c16_single_cube;
   context.ix_short_single = request.requested_n == 1024 && ix_ct_single_policy_enabled(request);
   context.ix_ct_batch = ix_ct_batch_policy_enabled(request);
   if (request.device_type == adaptor::backend_name()) {

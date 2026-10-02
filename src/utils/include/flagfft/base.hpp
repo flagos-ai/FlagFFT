@@ -113,8 +113,6 @@ struct FFTRequest {
   // policies can distinguish a single 32^3 FP64 C2C cube from arbitrary
   // length-32 batched transforms.
   bool maca_3d_c2c32_single_cube = false;
-  // Experimental 16^3 counterpart, limited to single-batch FP64 C2C.
-  bool maca_3d_c2c16_single_cube = false;
   int64_t normalized_dim = -1;
   std::string norm = "backward";
   std::string input_dtype;

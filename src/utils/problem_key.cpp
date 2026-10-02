@@ -33,7 +33,6 @@ ProblemKey ProblemKey::from_request(const FFTRequest &request) {
       request.input_layout,
       request.requires_contiguous_copy,
       request.maca_3d_c2c32_single_cube,
-      request.maca_3d_c2c16_single_cube,
       request.direction,
   };
 }
@@ -45,8 +44,7 @@ bool ProblemKey::operator==(const ProblemKey &other) const {
          device_type == other.device_type && device_index == other.device_index &&
          device_arch == other.device_arch && input_strides == other.input_strides &&
          input_layout == other.input_layout && requires_contiguous_copy == other.requires_contiguous_copy &&
-         maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube &&
-         maca_3d_c2c16_single_cube == other.maca_3d_c2c16_single_cube && direction == other.direction;
+         maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube && direction == other.direction;
 }
 
 std::string ProblemKey::repr() const {
@@ -61,8 +59,7 @@ std::string ProblemKey::repr() const {
       << ";input_dtype=" << input_dtype << ";output_dtype=" << output_dtype << ";device=" << device_type
       << ":" << device_index << ";arch=" << device_arch << ";layout=" << input_layout
       << ";requires_contiguous_copy=" << (requires_contiguous_copy ? "true" : "false")
-      << ";maca_3d_c2c32_single_cube=" << (maca_3d_c2c32_single_cube ? "true" : "false")
-      << ";maca_3d_c2c16_single_cube=" << (maca_3d_c2c16_single_cube ? "true" : "false") << ";shape=[";
+      << ";maca_3d_c2c32_single_cube=" << (maca_3d_c2c32_single_cube ? "true" : "false") << ";shape=[";
   for (std::size_t i = 0; i < input_shape.size(); ++i) {
     if (i != 0) {
       out << ",";
@@ -100,7 +97,6 @@ std::size_t ProblemKeyHash::operator()(const ProblemKey &key) const {
   hash_value(seed, key.input_layout);
   hash_value(seed, key.requires_contiguous_copy);
   hash_value(seed, key.maca_3d_c2c32_single_cube);
-  hash_value(seed, key.maca_3d_c2c16_single_cube);
   hash_value(seed, key.direction);
   return seed;
 }
