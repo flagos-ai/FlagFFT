@@ -178,12 +178,12 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       throw std::runtime_error(
           "FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
     }
-    // Restrict the measured C2R FP64 order to a direct 2048-point axis. A
-    // global override also changes Bluestein's internal 2048 FFT for n=997,
-    // where this factor order fails accuracy checks. An explicit "auto"
+    // Restrict the measured FP64 real-transform order to a direct 2048-point
+    // axis. A global override also changes Bluestein's internal 2048 FFT for
+    // n=997, where this factor order fails accuracy checks. An explicit "auto"
     // override retains the planner's previous choice.
     const std::string choice = override_value == nullptr
-                                   ? (c2r_fp64 ? "8,16,16" : "auto")
+                                   ? ((c2r_fp64 || r2c_fp64) ? "8,16,16" : "auto")
                                    : override_value;
     if (choice == "8,16,16") return {8, 16, 16};
     if (choice == "16,8,16") return {16, 8, 16};
