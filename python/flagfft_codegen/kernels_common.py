@@ -429,7 +429,9 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
     return max(pack, min(_portable_exchange_max_pack(), _next_power_of_two(needed)))
 
 
-def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
+def contiguous_batch_pack_for(
+    plan: LeafPlan, *, real_boundary: bool = False, prime_n: int = 0
+) -> int:
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
     if _portable_leaf_backend_active():
@@ -445,6 +447,18 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
                     raise ValueError("FLAGFFT_MACA_3D_N64_PACK must be 1, 2, 4, 8, 16 or 32")
                 return int(short_pack)
         if maca_3d_default_enabled() and len(emitted_leaf_factors(plan)) > 1:
+            # A 3D 997-point Bluestein transform has 1024 independent 2048-point
+            # convolutions. Screen packing only its prepare/finish boundary
+            # leaves; the direct 2048 axis has a separate, already rejected
+            # pack=2 result.
+            if plan.length == 2048 and prime_n == 997:
+                prime_pack = os.getenv("FLAGFFT_MACA_3D_PRIME_2048_PACK")
+                if prime_pack is not None:
+                    if prime_pack not in {"1", "2"}:
+                        raise ValueError(
+                            "FLAGFFT_MACA_3D_PRIME_2048_PACK must be 1 or 2"
+                        )
+                    return int(prime_pack)
             if plan.length == 64 and plan.dtype == "complex64":
                 return 8
             if plan.length == 64 and plan.dtype == "complex128":

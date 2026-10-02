@@ -2785,7 +2785,13 @@ def _build_leaf_kernel_source_for_io(
         batch_pack = permuted_store_batch_pack_for(plan)
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
-            plan, real_boundary=io_mode in {"contiguous_r2c", "packed_r2c", "contiguous_c2r"}
+            plan,
+            real_boundary=io_mode in {"contiguous_r2c", "packed_r2c", "contiguous_c2r"},
+            prime_n=(
+                prime_n
+                if io_mode in {"bluestein_prepare_leaf", "bluestein_finish_leaf"}
+                else 0
+            ),
         )
     else:
         batch_pack = 1
