@@ -203,6 +203,12 @@ def _metadata(
         # normal leaf. Four warps caused a large batch-64 regression on V150;
         # the measured two-warp launch retains the one-kernel benefit.
         num_warps = 2
+    if maca_backend and plan.length == 2048:
+        warp_override = _maca_knob("3D_N2048_WARPS")
+        if warp_override:
+            if warp_override not in {"2", "4"}:
+                raise ValueError("FLAGFFT_MACA_3D_N2048_WARPS must be 2 or 4")
+            num_warps = int(warp_override)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

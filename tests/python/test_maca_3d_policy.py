@@ -7,6 +7,7 @@ from flagfft_codegen.kernels_common import (
     contiguous_batch_pack_for,
     permuted_store_batch_pack_for,
 )
+from flagfft_codegen.metadata import _metadata
 from flagfft_codegen.target import (
     reset_maca_3d_c2c32_single_cube,
     reset_maca_3d_default,
@@ -151,6 +152,41 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert _maca_knob("EXCHANGE") == "join"
         finally:
             reset_maca_3d_default(on)
+    finally:
+        reset_profile(profile)
+
+
+def test_maca_long_2048_warp_override(monkeypatch, tmp_path):
+    profile = set_profile(
+        BackendProfile.from_device(
+            {"backend": "maca", "device_arch": "102", "warp_size": 64,
+             "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536}
+        )
+    )
+    plan = LeafPlan(2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex128")
+    kwargs = dict(
+        module_path=tmp_path / "leaf.py",
+        kernel_name="fft_leaf",
+        arg_names=["in_ptr", "out_ptr"],
+        plan=plan,
+        kernel_type="leaf",
+        n1=0,
+        n2=0,
+        dtype="complex128",
+    )
+    try:
+        monkeypatch.delenv("FLAGFFT_MACA_3D_N2048_WARPS", raising=False)
+        baseline_warps = _metadata(**kwargs)["num_warps"]
+        assert baseline_warps >= 4
+        monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_WARPS", "2")
+        assert _metadata(**kwargs)["num_warps"] == 2
+        monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_WARPS", "3")
+        try:
+            _metadata(**kwargs)
+        except ValueError as error:
+            assert "must be 2 or 4" in str(error)
+        else:
+            raise AssertionError("unsupported MACA 2048-point warp count was accepted")
     finally:
         reset_profile(profile)
 
