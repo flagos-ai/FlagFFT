@@ -138,7 +138,8 @@ class Fft64Aiv {
 
     PipeBarrier<PIPE_ALL>();
     for (uint32_t i = 0; i < kN; ++i) {
-      const uint32_t output = (output_base + i * stride_) * 2;
+      const uint32_t output =
+          (stride_ == kN ? transform * kN + i : output_base + i * stride_) * 2;
       output_ptr_[output] = current_real.GetValue(i);
       output_ptr_[output + 1] = current_imag.GetValue(i);
     }
