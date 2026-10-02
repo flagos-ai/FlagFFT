@@ -616,28 +616,60 @@ std::string CompiledRawNpuAivFFT64Node::describe() const {
 flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                                   adaptor::DevicePtr output,
                                                   const RawExecutionContext &context) const {
-  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
-      stride <= 0 ||
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() || stride <= 0 ||
       (group_size != 1 && group_size != 4 && group_size != 8) ||
-      (group_size != 1 && stride != 1 && stride != 64) ||
-      (mode != NpuAivFFT64Mode::Complex && stride != 1) ||
-      indices == nullptr || twiddles == nullptr) {
+      (group_size != 1 && stride != 1 && stride != 64) || (mode != NpuAivFFT64Mode::Complex && stride != 1) ||
+      context.batch % group_size != 0 || indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }
-  int32_t transform_count = static_cast<int32_t>(context.batch);
-  if (group_size > 1) {
-    if (transform_count % group_size != 0) return FLAGFFT_INVALID_SIZE;
-    transform_count /= static_cast<int32_t>(group_size);
+
+  constexpr int64_t kMaxBlocksPerLaunch = 65535;
+  constexpr int64_t kFftLength = 64;
+  constexpr int64_t kComplexBytes = 2 * sizeof(float);
+  const int64_t blocks = context.batch / group_size;
+  // Grouped FFT64 blocks index rows/columns relative to a 64-point matrix.
+  // Each launch restarts GetBlockIdx() at zero, so every non-final chunk must
+  // begin on a complete matrix-group boundary. A single-transform strided
+  // column launch likewise needs to restart at column zero.
+  const int64_t blocks_per_matrix_group =
+      group_size > 1 ? kFftLength / group_size : (stride == kFftLength ? kFftLength : 1);
+  const int64_t max_blocks_per_launch =
+      (kMaxBlocksPerLaunch / blocks_per_matrix_group) * blocks_per_matrix_group;
+
+  for (int64_t block_offset = 0; block_offset < blocks; block_offset += max_blocks_per_launch) {
+    const int64_t chunk_blocks = std::min(max_blocks_per_launch, blocks - block_offset);
+    const int64_t transform_offset = block_offset * group_size;
+    int64_t input_offset = 0;
+    int64_t output_offset = 0;
+    if (mode == NpuAivFFT64Mode::RealForward) {
+      input_offset = transform_offset * kFftLength * sizeof(float);
+      output_offset = transform_offset * (kFftLength / 2 + 1) * kComplexBytes;
+    } else if (mode == NpuAivFFT64Mode::RealInverse) {
+      input_offset = transform_offset * (kFftLength / 2 + 1) * kComplexBytes;
+      output_offset = transform_offset * kFftLength * sizeof(float);
+    } else if (stride == kFftLength) {
+      // For grouped columns, align the chunk start to a matrix group above;
+      // this is the flattened offset of the first column in that group.
+      const int64_t matrix_offset = (transform_offset / kFftLength) * kFftLength * kFftLength;
+      input_offset = (matrix_offset + transform_offset % kFftLength) * kComplexBytes;
+      output_offset = input_offset;
+    } else {
+      input_offset = transform_offset * kFftLength * kComplexBytes;
+      output_offset = input_offset;
+    }
+
+    const flagfftResult result = adaptor::npu::launch_ascendc_fft64(input + input_offset,
+                                                                    output + output_offset,
+                                                                    indices->get(),
+                                                                    twiddles->get(),
+                                                                    static_cast<int32_t>(chunk_blocks),
+                                                                    static_cast<int32_t>(stride),
+                                                                    static_cast<int32_t>(group_size),
+                                                                    static_cast<int32_t>(mode),
+                                                                    context.stream);
+    if (result != FLAGFFT_SUCCESS) return result;
   }
-  return adaptor::npu::launch_ascendc_fft64(input,
-                                             output,
-                                             indices->get(),
-                                             twiddles->get(),
-                                             transform_count,
-                                             static_cast<int32_t>(stride),
-                                             static_cast<int32_t>(group_size),
-                                             static_cast<int32_t>(mode),
-                                             context.stream);
+  return FLAGFFT_SUCCESS;
 }
 
 CompiledRawNpuAivFFTNode::CompiledRawNpuAivFFTNode(
