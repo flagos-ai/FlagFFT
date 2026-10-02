@@ -1500,11 +1500,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
   // Cube screen: keep the two transposes needed to make n1 and n0 contiguous,
   // then fuse the final layout restoration into the n0 leaf's output store.
-  // The opt-in is restricted to single-batch 256^3 C2C pending paired
-  // correctness and performance evidence.
+  // The opt-in is restricted to single-batch FP32 256^3 C2C. The final
+  // permuted-store output pack is screened separately from the FFT plan.
   const bool maca_cube_final_store = request.device_type == "maca" && batch == 1 &&
       n0 == 256 && n1 == 256 && n2 == 256 && n0_leaf && n1_leaf && n2_leaf &&
-      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == "complex64" &&
       maca_flag_or_default("FLAGFFT_MACA_3D_FINAL_STORE", false);
   if (maca_cube_final_store) {
     auto n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
