@@ -760,13 +760,13 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if maca_mode not in {
         "tile16", "tile32", "tile64", "pair16", "pair32", "pair64",
-        "pair16rg2", "pair16sg2rg2", "v1",
+        "pair16rg2", "pair16sg2rg2", "pair16sg2rg4", "v1",
     }:
         raise ValueError(
             "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, "
-            "pair32, pair64, pair16rg2, pair16sg2rg2 or v1"
+            "pair32, pair64, pair16rg2, pair16sg2rg2, pair16sg2rg4 or v1"
         )
-    if maca_mode == "pair16sg2rg2" and (
+    if maca_mode in {"pair16sg2rg2", "pair16sg2rg4"} and (
         dtype != "complex64"
         or tuple(sorted((n0, n1, n2)))
         not in {(64, 128, 2048), (256, 256, 256)}
@@ -853,16 +853,17 @@ def _emit_tiled_transpose3d_jit_kernel(
             row_group=2,
             tile_traversal=maca_traversal,
         )
-    elif maca_mode == "pair16sg2rg2" and _portable_transpose3d_supported():
+    elif maca_mode in {"pair16sg2rg2", "pair16sg2rg4"} and _portable_transpose3d_supported():
         if dtype != "complex64" or maca_warps != "8" or maca_traversal != "row":
             raise ValueError(
-                "pair16sg2rg2 requires complex64, 8 warps and row traversal"
+                f"{maca_mode} requires complex64, 8 warps and row traversal"
             )
         if tuple(sorted((n0, n1, n2))) not in {
             (64, 128, 2048),
             (256, 256, 256),
         }:
-            raise ValueError("pair16sg2rg2 is only screened for the MACA cube and long shapes")
+            raise ValueError(f"{maca_mode} is only screened for the MACA cube and long shapes")
+        row_group = 2 if maca_mode == "pair16sg2rg2" else 4
         (
             kernel_name,
             kernel_source,
@@ -870,7 +871,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             grid_x,
         ) = _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
             n0, n1, n2, order, tile=16, slice_group=2,
-            row_group=2,
+            row_group=row_group,
             tile_traversal=maca_traversal,
         )
     elif dtype == "complex64" and _transpose3d_v2_supported():
