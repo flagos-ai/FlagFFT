@@ -411,19 +411,28 @@ def _build_tiled_transpose3d_tile_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
 
 
-def _build_tiled_transpose3d_pair_slice_group_kernel_source(
+def _build_tiled_transpose3d_slice_group_kernel_source(
     s0: int,
     s1: int,
     s2: int,
     order: str,
     *,
+    dtype: str,
     tile: int = 16,
     slice_group: int = 2,
+    pair: bool = False,
+    vec_store: bool = False,
     tile_traversal: str = "row",
 ) -> tuple[str, str, list[str], int]:
-    """Emit one CTA that sequentially transposes a group of paired-complex slices."""
+    """Emit one CTA that sequentially transposes a group of complex slices."""
     if order not in {"021", "210", "201", "120"}:
         raise ValueError(f"unsupported 3D transpose order: {order}")
+    if dtype not in {"complex64", "complex128"}:
+        raise ValueError("slice-group transpose requires a complex dtype")
+    if pair and dtype != "complex64":
+        raise ValueError("paired slice-group transpose requires complex64")
+    if vec_store and dtype != "complex128":
+        raise ValueError("vector-store slice-group transpose requires complex128")
     if slice_group < 2 or slice_group & (slice_group - 1):
         raise ValueError("slice_group must be a power of two greater than one")
     if tile_traversal not in {"col", "row"}:
@@ -444,6 +453,7 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
         dst_slice_stride,
         dst_row_stride,
     ) = transpose_descs[order]
+    scalar_width = 1 if pair else 2
     tile_cols = (cols + tile - 1) // tile
     tile_rows = (rows + tile - 1) // tile
     tiles_per_slice = tile_cols * tile_rows
@@ -459,11 +469,50 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
     )
     grid_x = ((num_slices + slice_group - 1) // slice_group) * tiles_per_slice
     total_complex = s0 * s1 * s2
+    total_scalar = total_complex * scalar_width
+    suffix = _dtype_suffix(dtype)
     kernel_name = (
-        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_f32_t{tile}"
-        f"_tile_pair_sliceg{slice_group}seq"
+        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}_tile"
+        + ("_pair" if pair else "")
+        + ("_vec" if vec_store else "")
+        + f"_sliceg{slice_group}seq"
         + ("_rmajor" if tile_traversal == "row" else "")
     )
+    if pair:
+        load_source = """\
+                src_pair = tl.load(
+                    tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
+                    mask=load_mask,
+                    other=0,
+                )
+                dst_pair = tl.trans(src_pair)
+        """
+        store_source = """\
+                tl.store(
+                    tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
+                    dst_pair,
+                    mask=store_mask,
+                )
+        """
+    else:
+        zero = _zero_other(dtype)
+        load_source = f"""\
+                src_r = tl.load(in_ptr + src_base, mask=load_mask, other={zero})
+                src_i = tl.load(in_ptr + src_base + 1, mask=load_mask, other={zero})
+                dst_r = tl.trans(src_r)
+                dst_i = tl.trans(src_i)
+        """
+        if vec_store:
+            store_source = """\
+                dst_pair = tl.join(dst_r, dst_i)
+                pair_addr = dst_base[:, :, None] + tl.arange(0, 2)[None, None, :]
+                tl.store(out_ptr + pair_addr, dst_pair, mask=store_mask[:, :, None])
+            """
+        else:
+            store_source = """\
+                tl.store(out_ptr + dst_base, dst_r, mask=store_mask)
+                tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)
+            """
     source = dedent(
         f"""\
         @triton.jit
@@ -487,35 +536,50 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
                 slice_idx = slice_group_idx * {slice_group} + group_offset
                 slice_mask = slice_idx < {num_slices}
                 src_base = (
-                    pid_batch * {total_complex}
-                    + slice_idx * {src_slice_stride}
-                    + safe_cols[:, None] * {src_col_stride}
-                    + safe_rows[None, :]
+                    pid_batch * {total_scalar}
+                    + slice_idx * {src_slice_stride} * {scalar_width}
+                    + safe_cols[:, None] * {src_col_stride} * {scalar_width}
+                    + safe_rows[None, :] * {scalar_width}
                 )
                 load_mask = slice_mask & col_mask[:, None] & row_mask[None, :]
-                src_pair = tl.load(
-                    tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
-                    mask=load_mask,
-                    other=0,
-                )
-                dst_pair = tl.trans(src_pair)
+                {load_source}
 
                 safe_slice = tl.minimum(slice_idx, {num_slices - 1})
                 dst_base = (
-                    pid_batch * {total_complex}
-                    + safe_slice * {dst_slice_stride}
-                    + safe_rows[:, None] * {dst_row_stride}
-                    + safe_cols[None, :]
+                    pid_batch * {total_scalar}
+                    + safe_slice * {dst_slice_stride} * {scalar_width}
+                    + safe_rows[:, None] * {dst_row_stride} * {scalar_width}
+                    + safe_cols[None, :] * {scalar_width}
                 )
                 store_mask = slice_mask & row_mask[:, None] & col_mask[None, :]
-                tl.store(
-                    tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
-                    dst_pair,
-                    mask=store_mask,
-                )
+                {store_source}
         """
     )
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
+
+
+def _build_tiled_transpose3d_pair_slice_group_kernel_source(
+    s0: int,
+    s1: int,
+    s2: int,
+    order: str,
+    *,
+    tile: int = 16,
+    slice_group: int = 2,
+    tile_traversal: str = "row",
+) -> tuple[str, str, list[str], int]:
+    """Emit a sequential slice-group transpose for packed complex64 tiles."""
+    return _build_tiled_transpose3d_slice_group_kernel_source(
+        s0,
+        s1,
+        s2,
+        order,
+        dtype="complex64",
+        tile=tile,
+        slice_group=slice_group,
+        pair=True,
+        tile_traversal=tile_traversal,
+    )
 
 
 def _build_tiled_transpose_kernel_source(
@@ -712,6 +776,7 @@ __all__ = [
     "_build_reshape_pack_kernel_source",
     "_build_tiled_transpose3d_kernel_source",
     "_build_tiled_transpose3d_pair_slice_group_kernel_source",
+    "_build_tiled_transpose3d_slice_group_kernel_source",
     "_build_tiled_transpose3d_tile_kernel_source",
     "_build_tiled_transpose3d_v2_kernel_source",
     "_build_tiled_transpose_kernel_source",
