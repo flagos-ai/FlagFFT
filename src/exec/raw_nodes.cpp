@@ -440,7 +440,8 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                                   adaptor::DevicePtr output,
                                                   const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
-      (stride != 1 && stride != 64) || (group_size != 1 && group_size != 4) ||
+      (stride != 1 && stride != 64) ||
+      (group_size != 1 && group_size != 4 && group_size != 8) ||
       indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }

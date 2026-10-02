@@ -93,17 +93,17 @@ namespace {
 
   }
 
-  void build_npu_aiv_fft64_group4_tables(const FFTRequest &request,
+  void build_npu_aiv_fft64_group_tables(const FFTRequest &request,
+                                        int64_t group_size,
                                         bool strided_columns,
                                         std::vector<uint32_t> &indices,
                                         std::vector<float> &twiddles) {
     constexpr int64_t n = 64;
-    constexpr int64_t group_size = 4;
-    constexpr int64_t group_n = n * group_size;
     constexpr int64_t stages = 6;
-    constexpr int64_t output_index_base = group_n;
-    constexpr int64_t stage_index_base = 3 * group_n;
-    constexpr int64_t stage_b_index_base = stage_index_base + stages * group_n;
+    const int64_t group_n = n * group_size;
+    const int64_t output_index_base = group_n;
+    const int64_t stage_index_base = 3 * group_n;
+    const int64_t stage_b_index_base = stage_index_base + stages * group_n;
     constexpr double pi = 3.141592653589793238462643383279502884;
     indices.assign(3 * group_n + 2 * stages * group_n, 0);
     twiddles.assign(2 * stages * group_n, 0.0f);
@@ -2348,12 +2348,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64) {
+    auto parse_group_size = [](const char *setting) {
+      if (setting == nullptr) return int32_t{1};
+      const std::string value(setting);
+      if (value == "4") return int32_t{4};
+      if (value == "8") return int32_t{8};
+      return int32_t{1};
+    };
     const char *row_group_setting = std::getenv("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP");
-    const bool use_row_group4 = row_group_setting != nullptr &&
-                                std::string(row_group_setting) == "4";
     const char *column_group_setting = std::getenv("FLAGFFT_NPU_2D_ASCENDC_COL_GROUP");
-    const bool use_column_group4 = column_group_setting != nullptr &&
-                                   std::string(column_group_setting) == "4";
+    const int32_t row_group_size = parse_group_size(row_group_setting);
+    const int32_t col_group_size = parse_group_size(column_group_setting);
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     build_npu_aiv_fft64_tables(request, host_indices, host_twiddles);
@@ -2368,23 +2373,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     auto [base_indices, base_twiddles] = upload_tables(host_indices, host_twiddles);
     std::shared_ptr<DeviceAllocation> row_indices = base_indices;
     std::shared_ptr<DeviceAllocation> row_twiddles = base_twiddles;
-    int32_t row_group_size = 1;
-    if (use_row_group4) {
-      build_npu_aiv_fft64_group4_tables(request, false, host_indices, host_twiddles);
+    if (row_group_size > 1) {
+      build_npu_aiv_fft64_group_tables(request, row_group_size, false, host_indices, host_twiddles);
       auto grouped_tables = upload_tables(host_indices, host_twiddles);
       row_indices = std::move(grouped_tables.first);
       row_twiddles = std::move(grouped_tables.second);
-      row_group_size = 4;
     }
     std::shared_ptr<DeviceAllocation> col_indices = base_indices;
     std::shared_ptr<DeviceAllocation> col_twiddles = base_twiddles;
-    int32_t col_group_size = 1;
-    if (use_column_group4) {
-      build_npu_aiv_fft64_group4_tables(request, true, host_indices, host_twiddles);
+    if (col_group_size > 1) {
+      build_npu_aiv_fft64_group_tables(request, col_group_size, true, host_indices, host_twiddles);
       auto grouped_tables = upload_tables(host_indices, host_twiddles);
       col_indices = std::move(grouped_tables.first);
       col_twiddles = std::move(grouped_tables.second);
-      col_group_size = 4;
     }
     std::shared_ptr<CompiledRawNode> row_fft =
         std::make_shared<CompiledRawNpuAivFFT64Node>(1, row_group_size, row_indices, row_twiddles);
