@@ -38,13 +38,14 @@ namespace {
 
   void build_npu_aiv_fft64_tables(const FFTRequest &request,
                                   std::vector<uint32_t> &indices,
-                                  std::vector<float> &twiddles) {
+                                  std::vector<float> &twiddles,
+                                  NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex) {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
     constexpr int64_t output_index_base = 2 * n + 2 * stages * n;
     constexpr double pi = 3.141592653589793238462643383279502884;
     indices.assign(output_index_base + 2 * n, 0);
-    twiddles.assign(2 * stages * n, 0.0f);
+    twiddles.assign(2 * stages * n + (mode == NpuAivFFT64Mode::RealInverse ? n : 0), 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
     for (int64_t i = 0; i < n; ++i) {
@@ -54,18 +55,32 @@ namespace {
         reversed = (reversed << 1) | (value & 1);
         value >>= 1;
       }
-      // Gather offsets are byte offsets into the interleaved complex input.
-      indices[i] = static_cast<uint32_t>(reversed * 2 * sizeof(float));
-      // A strided DataCopyPad stores each complex point at the start of a
-      // 32-byte VECIN block.
-      indices[n + i] = static_cast<uint32_t>(reversed * 8 * sizeof(float));
+      if (mode == NpuAivFFT64Mode::RealForward) {
+        indices[i] = static_cast<uint32_t>(reversed * sizeof(float));
+      } else if (mode == NpuAivFFT64Mode::RealInverse) {
+        const int64_t compact_bin = reversed <= n / 2 ? reversed : n - reversed;
+        const int64_t compact_scalar = 2 * compact_bin;
+        indices[i] = static_cast<uint32_t>(compact_scalar * sizeof(float));
+        indices[n + i] = static_cast<uint32_t>((compact_scalar + 1) * sizeof(float));
+        twiddles[2 * stages * n + i] = reversed > n / 2 ? -1.0f : 1.0f;
+      } else {
+        // Gather offsets are byte offsets into the interleaved complex input.
+        indices[i] = static_cast<uint32_t>(reversed * 2 * sizeof(float));
+        // A strided DataCopyPad stores each complex point at the start of a
+        // 32-byte VECIN block.
+        indices[n + i] = static_cast<uint32_t>(reversed * 8 * sizeof(float));
+      }
     }
 
     for (int64_t i = 0; i < 2 * n; ++i) {
       const int64_t row = i / 2;
       const int64_t component = i % 2;
-      indices[output_index_base + i] =
-          static_cast<uint32_t>((row + component * n) * sizeof(float));
+      if (mode == NpuAivFFT64Mode::RealInverse) {
+        if (i < n) indices[output_index_base + i] = static_cast<uint32_t>(i * sizeof(float));
+      } else {
+        indices[output_index_base + i] =
+            static_cast<uint32_t>((row + component * n) * sizeof(float));
+      }
     }
 
     for (int64_t stage = 0; stage < stages; ++stage) {
@@ -97,7 +112,8 @@ namespace {
                                         int64_t group_size,
                                         bool strided_columns,
                                         std::vector<uint32_t> &indices,
-                                        std::vector<float> &twiddles) {
+                                        std::vector<float> &twiddles,
+                                        NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex) {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
     const int64_t compute_group_size = group_size == 8 ? 4 : group_size;
@@ -107,8 +123,16 @@ namespace {
     const int64_t stage_b_index_base = stage_index_base + stages * group_n;
     const int64_t group_index_count = 3 * group_n + 2 * stages * group_n;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign(group_index_count + (group_size == 8 ? group_n : 0), 0);
-    twiddles.assign(2 * stages * group_n, 0.0f);
+    const int64_t second_input_base = group_index_count;
+    const int64_t imag_input_base = group_index_count + (group_size == 8 ? group_n : 0);
+    indices.assign(imag_input_base +
+                       (mode == NpuAivFFT64Mode::RealInverse
+                            ? group_n * (group_size == 8 ? 2 : 1)
+                            : 0),
+                   0);
+    twiddles.assign(2 * stages * group_n +
+                        (mode == NpuAivFFT64Mode::RealInverse ? group_n : 0),
+                    0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
     for (int64_t group = 0; group < compute_group_size; ++group) {
@@ -119,27 +143,58 @@ namespace {
           reversed = (reversed << 1) | (value & 1);
           value >>= 1;
         }
-        const int64_t input_complex_index = strided_columns
-            ? reversed * group_size + group
-            : group * n + reversed;
-        indices[group * n + i] =
-            static_cast<uint32_t>(input_complex_index * 2 * sizeof(float));
+        if (mode == NpuAivFFT64Mode::RealForward) {
+          indices[group * n + i] =
+              static_cast<uint32_t>((group * n + reversed) * sizeof(float));
+        } else if (mode == NpuAivFFT64Mode::RealInverse) {
+          const int64_t compact_bin = reversed <= n / 2 ? reversed : n - reversed;
+          const int64_t compact_complex_index = group * (n / 2 + 1) + compact_bin;
+          const int64_t destination = group * n + i;
+          indices[destination] =
+              static_cast<uint32_t>(2 * compact_complex_index * sizeof(float));
+          indices[imag_input_base + destination] =
+              static_cast<uint32_t>((2 * compact_complex_index + 1) * sizeof(float));
+          twiddles[2 * stages * group_n + destination] =
+              reversed > n / 2 ? -1.0f : 1.0f;
+        } else {
+          const int64_t input_complex_index = strided_columns
+              ? reversed * group_size + group
+              : group * n + reversed;
+          indices[group * n + i] =
+              static_cast<uint32_t>(input_complex_index * 2 * sizeof(float));
+        }
       }
     }
 
-    for (int64_t i = 0; i < 2 * group_n; ++i) {
-      const int64_t component = i % 2;
-      int64_t source_index;
-      if (strided_columns) {
-        const int64_t row = i / (2 * compute_group_size);
-        const int64_t column = (i / 2) % compute_group_size;
-        source_index = column * n + row + component * group_n;
-      } else {
-        const int64_t row_group = i / (2 * n);
-        const int64_t point = (i / 2) % n;
-        source_index = row_group * n + point + component * group_n;
+    if (mode == NpuAivFFT64Mode::RealInverse) {
+      for (int64_t i = 0; i < group_n; ++i) {
+        indices[output_index_base + i] = static_cast<uint32_t>(i * sizeof(float));
       }
-      indices[output_index_base + i] = static_cast<uint32_t>(source_index * sizeof(float));
+    } else if (mode == NpuAivFFT64Mode::RealForward) {
+      int64_t output_index = 0;
+      for (int64_t row = 0; row < compute_group_size; ++row) {
+        for (int64_t bin = 0; bin <= n / 2; ++bin) {
+          indices[output_index_base + output_index++] =
+              static_cast<uint32_t>((row * n + bin) * sizeof(float));
+          indices[output_index_base + output_index++] =
+              static_cast<uint32_t>((row * n + bin + group_n) * sizeof(float));
+        }
+      }
+    } else {
+      for (int64_t i = 0; i < 2 * group_n; ++i) {
+        const int64_t component = i % 2;
+        int64_t source_index;
+        if (strided_columns) {
+          const int64_t row = i / (2 * compute_group_size);
+          const int64_t column = (i / 2) % compute_group_size;
+          source_index = column * n + row + component * group_n;
+        } else {
+          const int64_t row_group = i / (2 * n);
+          const int64_t point = (i / 2) % n;
+          source_index = row_group * n + point + component * group_n;
+        }
+        indices[output_index_base + i] = static_cast<uint32_t>(source_index * sizeof(float));
+      }
     }
 
     for (int64_t stage = 0; stage < stages; ++stage) {
@@ -180,11 +235,25 @@ namespace {
             reversed = (reversed << 1) | (value & 1);
             value >>= 1;
           }
-          const int64_t input_complex_index = strided_columns
-              ? reversed * group_size + group + compute_group_size
-              : (group + compute_group_size) * n + reversed;
-          indices[group_index_count + group * n + i] =
-              static_cast<uint32_t>(input_complex_index * 2 * sizeof(float));
+          if (mode == NpuAivFFT64Mode::RealForward) {
+            indices[second_input_base + group * n + i] =
+                static_cast<uint32_t>(((group + compute_group_size) * n + reversed) * sizeof(float));
+          } else if (mode == NpuAivFFT64Mode::RealInverse) {
+            const int64_t compact_bin = reversed <= n / 2 ? reversed : n - reversed;
+            const int64_t compact_complex_index =
+                (group + compute_group_size) * (n / 2 + 1) + compact_bin;
+            const int64_t destination = group * n + i;
+            indices[second_input_base + destination] =
+                static_cast<uint32_t>(2 * compact_complex_index * sizeof(float));
+            indices[imag_input_base + group_n + destination] =
+                static_cast<uint32_t>((2 * compact_complex_index + 1) * sizeof(float));
+          } else {
+            const int64_t input_complex_index = strided_columns
+                ? reversed * group_size + group + compute_group_size
+                : (group + compute_group_size) * n + reversed;
+            indices[second_input_base + group * n + i] =
+                static_cast<uint32_t>(input_complex_index * 2 * sizeof(float));
+          }
         }
       }
     }
@@ -193,13 +262,15 @@ namespace {
 #if defined(FLAGFFT_BACKEND_NPU)
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft64_child(const FFTRequest &request,
                                                             int64_t stride,
-                                                            int32_t group_size) {
+                                                            int32_t group_size,
+                                                            NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex) {
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     if (group_size == 1) {
-      build_npu_aiv_fft64_tables(request, host_indices, host_twiddles);
+      build_npu_aiv_fft64_tables(request, host_indices, host_twiddles, mode);
     } else {
-      build_npu_aiv_fft64_group_tables(request, group_size, stride != 1, host_indices, host_twiddles);
+      build_npu_aiv_fft64_group_tables(
+          request, group_size, stride != 1, host_indices, host_twiddles, mode);
     }
 
     auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
@@ -207,7 +278,7 @@ namespace {
     auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
     twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
     return std::make_shared<CompiledRawNpuAivFFT64Node>(stride, group_size, std::move(indices),
-                                                       std::move(twiddles));
+                                                       std::move(twiddles), mode);
   }
 
   int32_t npu_aiv_fft64_group_size(const char *setting, int64_t batch) {
@@ -217,6 +288,13 @@ namespace {
     if (value == "4") return 4;
     if (value == "8") return 8;
     return 1;
+  }
+
+  int32_t npu_aiv_fft64_real_row_group_size(const char *setting, int64_t batch) {
+    const int32_t group_size = npu_aiv_fft64_group_size(setting, batch);
+    // Compact rows contain 33 complex values. Grouping at least four rows
+    // keeps AIV transfers aligned while preserving the compact layout.
+    return group_size == 1 ? (batch > 1 ? 8 : 4) : group_size;
   }
 #endif
 
@@ -2666,19 +2744,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64_real) {
-    const int32_t row_group_size = npu_aiv_fft64_group_size(
+    const int32_t row_group_size = npu_aiv_fft64_real_row_group_size(
         std::getenv("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP"), batch);
-    auto expand_kernel = compile_real_to_complex_kernel(request, n1);
-    auto row_fft = make_npu_aiv_fft64_child(request, 1, row_group_size);
-    auto pack_kernel = compile_r2c_half_pack_kernel(request, n1);
+    auto row_fft = make_npu_aiv_fft64_child(
+        request, 1, row_group_size, NpuAivFFT64Mode::RealForward);
     auto col_fft = make_npu_aiv_fft64_child(request, half_n1, 1);
     DeviceAllocation row_fft_buf(
-        static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+        static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes));
     return std::make_shared<CompiledRaw2DR2CRCNode>(n0,
                                                     n1,
-                                                    std::move(expand_kernel),
+                                                    nullptr,
                                                     std::move(row_fft),
-                                                    std::move(pack_kernel),
+                                                    nullptr,
                                                     std::move(col_fft),
                                                     std::move(row_fft_buf));
   }
@@ -2857,24 +2934,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64_real) {
-    const int32_t row_group_size = npu_aiv_fft64_group_size(
+    const int32_t row_group_size = npu_aiv_fft64_real_row_group_size(
         std::getenv("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP"), batch);
     auto col_fft = make_npu_aiv_fft64_child(request, half_n1, 1);
-    auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n1);
-    auto row_fft = make_npu_aiv_fft64_child(request, 1, row_group_size);
-    auto pack_kernel = compile_complex_to_real_kernel(request, n1);
+    auto row_fft = make_npu_aiv_fft64_child(
+        request, 1, row_group_size, NpuAivFFT64Mode::RealInverse);
     DeviceAllocation temp_half(
         static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes));
-    DeviceAllocation temp_full(
-        static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DC2RRCNode>(n0,
                                                     n1,
                                                     std::move(col_fft),
-                                                    std::move(expand_kernel),
+                                                    nullptr,
                                                     std::move(row_fft),
-                                                    std::move(pack_kernel),
+                                                    nullptr,
                                                     std::move(temp_half),
-                                                    std::move(temp_full));
+                                                    DeviceAllocation{});
   }
 #endif
 

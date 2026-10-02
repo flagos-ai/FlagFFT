@@ -26,10 +26,12 @@ flagfftResult launch_ascendc_fft64(DevicePtr input,
                                    int32_t transform_count,
                                    int32_t stride,
                                    int32_t group_size,
+                                   int32_t mode,
                                    StreamHandle stream) {
   if (transform_count <= 0 || stride <= 0 ||
       (group_size != 1 && group_size != 4 && group_size != 8) ||
-      (group_size != 1 && stride != 1 && stride != 64)) {
+      (group_size != 1 && stride != 1 && stride != 64) ||
+      mode < 0 || mode > 2 || (mode != 0 && stride != 1)) {
     return FLAGFFT_INVALID_SIZE;
   }
   const uint32_t status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft64)(static_cast<uint32_t>(transform_count),
@@ -40,7 +42,8 @@ flagfftResult launch_ascendc_fft64(DevicePtr input,
                                                                  reinterpret_cast<uint8_t *>(twiddles),
                                                                  static_cast<uint32_t>(transform_count),
                                                                  static_cast<uint32_t>(stride),
-                                                                 static_cast<uint32_t>(group_size));
+                                                                 static_cast<uint32_t>(group_size),
+                                                                 static_cast<uint32_t>(mode));
   return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
 }
 

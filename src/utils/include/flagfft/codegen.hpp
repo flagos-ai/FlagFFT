@@ -188,12 +188,19 @@ struct CompiledRawStridedLeafNode final : CompiledRawNode {
   std::vector<DeviceAllocation> tables;
 };
 
+enum class NpuAivFFT64Mode : int32_t {
+  Complex = 0,
+  RealForward = 1,
+  RealInverse = 2,
+};
+
 #if defined(FLAGFFT_BACKEND_NPU)
 struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
   CompiledRawNpuAivFFT64Node(int64_t stride,
                              int64_t group_size,
                              std::shared_ptr<DeviceAllocation> indices,
-                             std::shared_ptr<DeviceAllocation> twiddles);
+                             std::shared_ptr<DeviceAllocation> twiddles,
+                             NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -201,6 +208,7 @@ struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
 
   int64_t stride;
   int64_t group_size;
+  NpuAivFFT64Mode mode;
   std::shared_ptr<DeviceAllocation> indices;
   std::shared_ptr<DeviceAllocation> twiddles;
 };

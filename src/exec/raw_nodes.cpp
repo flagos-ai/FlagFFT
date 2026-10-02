@@ -423,9 +423,11 @@ CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(
     int64_t stride,
     int64_t group_size,
     std::shared_ptr<DeviceAllocation> indices,
-    std::shared_ptr<DeviceAllocation> twiddles)
+    std::shared_ptr<DeviceAllocation> twiddles,
+    NpuAivFFT64Mode mode)
     : stride(stride),
       group_size(group_size),
+      mode(mode),
       indices(std::move(indices)),
       twiddles(std::move(twiddles)) {
 }
@@ -433,6 +435,8 @@ CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(
 std::string CompiledRawNpuAivFFT64Node::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawNpuAivFFT64(stride=" << stride << ", group_size=" << group_size << ")";
+  if (mode == NpuAivFFT64Mode::RealForward) oss << "[r2c-row]";
+  if (mode == NpuAivFFT64Mode::RealInverse) oss << "[c2r-row]";
   return oss.str();
 }
 
@@ -443,6 +447,7 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
       stride <= 0 ||
       (group_size != 1 && group_size != 4 && group_size != 8) ||
       (group_size != 1 && stride != 1 && stride != 64) ||
+      (mode != NpuAivFFT64Mode::Complex && stride != 1) ||
       indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }
@@ -458,6 +463,7 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                              transform_count,
                                              static_cast<int32_t>(stride),
                                              static_cast<int32_t>(group_size),
+                                             static_cast<int32_t>(mode),
                                              context.stream);
 }
 #endif
