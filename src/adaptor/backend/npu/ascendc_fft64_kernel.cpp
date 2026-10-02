@@ -19,7 +19,9 @@ using namespace AscendC;
 namespace {
 constexpr uint32_t kN = 64;
 constexpr uint32_t kStages = 6;
-constexpr uint32_t kIndexCount = kN + 2 * kStages * kN;
+constexpr uint32_t kGlobalIndexCount = kN + kN * kN + 2 * kStages * kN;
+constexpr uint32_t kLocalIndexCount = 2 * kN + 2 * kStages * kN;
+constexpr uint32_t kStageIndexBase = kN + kN * kN;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
 
@@ -38,9 +40,9 @@ class Fft64Aiv {
     transform_count_ = transform_count;
     stride_ = stride;
 
-    pipe_.InitBuffer(input_queue_, 1, 2 * kN * sizeof(float));
+    pipe_.InitBuffer(input_buf_, kN * kN * 2 * sizeof(float));
     pipe_.InitBuffer(work_buf_, kWorkArrays * kN * sizeof(float));
-    pipe_.InitBuffer(index_buf_, kIndexCount * sizeof(uint32_t));
+    pipe_.InitBuffer(index_buf_, kLocalIndexCount * sizeof(uint32_t));
     pipe_.InitBuffer(twiddle_buf_, kTwiddleCount * sizeof(float));
   }
 
@@ -48,25 +50,29 @@ class Fft64Aiv {
     const uint32_t transform = GetBlockIdx();
     if (transform >= transform_count_) return;
 
-    const uint32_t base = stride_ == 1 ? transform * kN : (transform / kN) * kN * kN + transform % kN;
-    GlobalTensor<float> src_real;
-    GlobalTensor<float> src_imag;
-    src_real.SetGlobalBuffer(input_ptr_ + base * 2);
-    src_imag.SetGlobalBuffer(input_ptr_ + base * 2 + 1);
-
-    const uint32_t source_gap = (2 * stride_ - 1) * sizeof(float);
-    const DataCopyExtParams input_params(kN, sizeof(float), source_gap, 0, 0);
-    const DataCopyPadExtParams<float> no_padding(false, 0, 0, 0.0f);
-
-    LocalTensor<float> input_local = input_queue_.AllocTensor<float>();
-    DataCopyPad(input_local[0], src_real, input_params, no_padding);
-    DataCopyPad(input_local[kN], src_imag, input_params, no_padding);
-    input_queue_.EnQue(input_local);
-    input_local = input_queue_.DeQue<float>();
+    const uint32_t source_base = stride_ == 1 ? transform * kN : (transform / kN) * kN * kN;
+    GlobalTensor<float> src;
+    src.SetGlobalBuffer(input_ptr_ + source_base * 2);
+    LocalTensor<float> input_local = input_buf_.Get<float>();
+    if (stride_ == 1) {
+      // Copy one interleaved row in a single 32-byte-aligned transfer.
+      DataCopy(input_local, src, 2 * kN);
+    } else {
+      // Load the contiguous matrix, then gather this transform's column from UB.
+      DataCopy(input_local, src, 2 * kN * kN);
+    }
 
     LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
     LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
-    DataCopy(index_local, indices_, kIndexCount);
+    DataCopy(index_local, indices_, kN);
+    const uint32_t column = transform % kN;
+    if (stride_ == 1) {
+      DataCopy(index_local[kN], indices_, kN);
+    } else {
+      DataCopy(index_local[kN], indices_[kN + column * kN], kN);
+    }
+    DataCopy(index_local[2 * kN], indices_[kStageIndexBase],
+             2 * kStages * kN);
     DataCopy(twiddle_local, twiddles_, kTwiddleCount);
     PipeBarrier<PIPE_ALL>();
 
@@ -83,13 +89,14 @@ class Fft64Aiv {
     LocalTensor<float> product1 = work[9 * kN];
     LocalTensor<float> product2 = work[10 * kN];
 
-    Gather(current_real, input_local[0], index_local, 0, kN);
-    Gather(current_imag, input_local[kN], index_local, 0, kN);
-    input_queue_.FreeTensor(input_local);
+    const LocalTensor<uint32_t> input_indices = stride_ == 1 ? index_local : index_local[kN];
+    Gather(current_real, input_local, input_indices, 0, kN);
+    Gather(current_imag, input_local, input_indices, sizeof(float), kN);
 
     for (uint32_t stage = 0; stage < kStages; ++stage) {
-      const LocalTensor<uint32_t> stage_a = index_local[kN + stage * kN];
-      const LocalTensor<uint32_t> stage_b = index_local[kN + kStages * kN + stage * kN];
+      const LocalTensor<uint32_t> stage_a = index_local[2 * kN + stage * kN];
+      const LocalTensor<uint32_t> stage_b =
+          index_local[2 * kN + kStages * kN + stage * kN];
       const LocalTensor<float> twiddle_real = twiddle_local[stage * kN];
       const LocalTensor<float> twiddle_imag = twiddle_local[kStages * kN + stage * kN];
 
@@ -128,7 +135,7 @@ class Fft64Aiv {
 
  private:
   TPipe pipe_;
-  TQue<QuePosition::VECIN, 1> input_queue_;
+  TBuf<QuePosition::VECCALC> input_buf_;
   TBuf<QuePosition::VECCALC> work_buf_;
   TBuf<QuePosition::VECCALC> index_buf_;
   TBuf<QuePosition::VECCALC> twiddle_buf_;

@@ -41,7 +41,7 @@ namespace {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign(n + 2 * stages * n, 0);
+    indices.assign(n + n * n + 2 * stages * n, 0);
     twiddles.assign(2 * stages * n, 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
@@ -52,15 +52,24 @@ namespace {
         reversed = (reversed << 1) | (value & 1);
         value >>= 1;
       }
-      // AscendC Gather offsets are byte offsets, not element indices.
-      indices[i] = static_cast<uint32_t>(reversed * sizeof(float));
+      // Gather offsets are byte offsets into the interleaved complex input.
+      indices[i] = static_cast<uint32_t>(reversed * 2 * sizeof(float));
+    }
+
+    for (int64_t column = 0; column < n; ++column) {
+      const int64_t column_base = n + column * n;
+      for (int64_t i = 0; i < n; ++i) {
+        const int64_t reversed = indices[i] / (2 * sizeof(float));
+        indices[column_base + i] =
+            static_cast<uint32_t>((reversed * n + column) * 2 * sizeof(float));
+      }
     }
 
     for (int64_t stage = 0; stage < stages; ++stage) {
       const int64_t length = int64_t{1} << (stage + 1);
       const int64_t half = length / 2;
-      const int64_t a_base = n + stage * n;
-      const int64_t b_base = n + stages * n + stage * n;
+      const int64_t a_base = n + n * n + stage * n;
+      const int64_t b_base = n + n * n + stages * n + stage * n;
       const int64_t imag_base = stages * n;
       for (int64_t i = 0; i < n; ++i) {
         const int64_t group = (i / length) * length;
