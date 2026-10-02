@@ -1013,6 +1013,12 @@ def test_maca_pair16_row_group_only_codegen_screen(tmp_path, monkeypatch) -> Non
     assert "for slice_group_offset in tl.static_range(0, 1):" in source
     assert "for row_group_offset in tl.static_range(0, 2):" in source
 
+    fp64_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex128", out_dir=tmp_path
+    )
+    assert fp64_metadata["kernel_name"].endswith("_t16_tile_vec")
+    assert fp64_metadata["num_warps"] == 4
+
 
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit, kernels_common

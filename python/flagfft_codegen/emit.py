@@ -766,6 +766,12 @@ def _emit_tiled_transpose3d_jit_kernel(
             "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, "
             "pair32, pair64, pair16rg2, pair16sg2rg2 or v1"
         )
+    if maca_mode == "pair16rg2" and (
+        dtype != "complex64" or tuple(sorted((n0, n1, n2))) != (256, 256, 256)
+    ):
+        # This screen only specializes the FP32 cube. Let an all-suite run
+        # keep unrelated dtypes and shapes on their regular transpose policy.
+        maca_mode = "pair16"
     maca_warps = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8" if dtype == "complex64" else "4")
         if _declared_backend() == "maca"
