@@ -2660,7 +2660,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   const char *npu_aiv_fft64 = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV");
   const bool use_npu_aiv_fft64_real =
       request.device_type == "npu" && request.origin_rank == 2 &&
-      request.input_dtype == "float32" && request.output_dtype == "complex64" &&
+      request.real_transform_kind == "r2c" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" &&
       n0 == 64 && n1 == 64 && npu_aiv_fft64 != nullptr && std::string(npu_aiv_fft64) == "1" &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
@@ -2850,7 +2851,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   const char *npu_aiv_fft64 = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV");
   const bool use_npu_aiv_fft64_real =
       request.device_type == "npu" && request.origin_rank == 2 &&
-      request.input_dtype == "complex64" && request.output_dtype == "float32" &&
+      request.real_transform_kind == "c2r" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" &&
       n0 == 64 && n1 == 64 && npu_aiv_fft64 != nullptr && std::string(npu_aiv_fft64) == "1" &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
