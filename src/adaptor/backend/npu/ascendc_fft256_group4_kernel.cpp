@@ -14,12 +14,12 @@
 
 #include "ascendc_fft256_impl.hpp"
 
-extern "C" __global__ __aicore__ void flagfft_npu_fft256(GM_ADDR input,
-                                                          GM_ADDR output,
-                                                          GM_ADDR indices,
-                                                          GM_ADDR twiddles,
-                                                          uint32_t transform_count) {
-  Fft256Aiv<1> op;
+extern "C" __global__ __aicore__ void flagfft_npu_fft256_group4(GM_ADDR input,
+                                                                 GM_ADDR output,
+                                                                 GM_ADDR indices,
+                                                                 GM_ADDR twiddles,
+                                                                 uint32_t transform_count) {
+  Fft256Aiv<4> op;
   op.Init(input, output, indices, twiddles, transform_count);
   op.Process();
 }
