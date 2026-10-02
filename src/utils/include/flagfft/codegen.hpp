@@ -949,7 +949,8 @@ struct CompiledRaw3DNode final : CompiledRawNode {
                     std::shared_ptr<JitKernel> perm_210_inv,
                     std::shared_ptr<JitKernel> perm_021_inv,
                     DeviceAllocation temp1,
-                    DeviceAllocation temp2);
+                    DeviceAllocation temp2,
+                    bool final_permuted_store = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -969,6 +970,7 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> perm_021_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
+  bool final_permuted_store = false;
 };
 
 // Small 16^3 complex transform: one kernel handles both axes in each 16x16
