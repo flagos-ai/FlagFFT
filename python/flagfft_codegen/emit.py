@@ -31,6 +31,7 @@ from .artifacts import write_text_atomic
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
+    _hcu_backend_active,
     _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
@@ -43,6 +44,7 @@ from .kernels_layout import (
     _build_packed_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
+    _build_tiled_transpose3d_slice_group_kernel_source,
     _build_tiled_transpose3d_tile_kernel_source,
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
@@ -543,6 +545,7 @@ def emit_jit_kernel(
     four_step_n1: int,
     four_step_n2: int,
     perm_form: str = "outer",
+    hcu_full_smem: bool = False,
     out_dir: Path,
 ) -> dict[str, Any]:
     if (kernel == "leaf_packed_r2c" and _ix_backend_active()
@@ -585,6 +588,7 @@ def emit_jit_kernel(
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
             perm_form=perm_form,
+            hcu_full_smem=hcu_full_smem,
         )
         n1 = four_step_n1 if spec.is_four_step else 0
         n2 = four_step_n2 if spec.is_four_step else 0
@@ -677,6 +681,7 @@ def emit_jit_kernel(
         n1=n1,
         n2=n2,
         dtype=dtype,
+        hcu_full_smem=hcu_full_smem,
     )
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
@@ -754,7 +759,7 @@ def _transpose3d_v2_supported() -> bool:
 # Backends whose 3D correctness and performance have been validated with the
 # portable register-tile transpose.  Each backend is added here after its own
 # validation; the remaining non-NVIDIA targets keep the previous v1 kernel.
-_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca", "musa"})
+_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca", "musa", "hcu"})
 
 
 def _portable_transpose3d_supported() -> bool:
@@ -780,9 +785,31 @@ def _emit_tiled_transpose3d_jit_kernel(
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
-    elif dtype == "complex64" and _portable_transpose3d_supported():
-        tile = 32
+    elif _portable_transpose3d_supported() and (
+        dtype == "complex64"
+        or (
+            dtype == "complex128"
+            and _hcu_backend_active()
+            and (
+                os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "1"
+                or (
+                    os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "auto"
+                    # These exact middle-axis transposes benefit from the
+                    # portable 16x16 tile; forcing it for all FP64 shapes
+                    # regresses the much larger 256-cube path.
+                    and (n0, n1, n2, order)
+                    in {
+                        (256, 256, 129, "021"),
+                        (16, 64, 997, "210"),
+                        (16, 33, 997, "210"),
+                    }
+                )
+            )
+        )
+    ):
+        tile = 32 if dtype == "complex64" else 16
         packed_complex = False
+        pair_store = False
         if _ix_backend_active():
             tile = 16
             ix_tile = os.getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE")
@@ -791,14 +818,80 @@ def _emit_tiled_transpose3d_jit_kernel(
                     raise ValueError("FLAGFFT_IX_3D_TRANSPOSE_TILE must be 8, 16 or 32")
                 tile = int(ix_tile)
             packed_complex = os.getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE") == "1"
-        (
-            kernel_name,
-            kernel_source,
-            arg_names,
-            grid_x,
-        ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=tile, packed_complex=packed_complex
-        )
+        elif _hcu_backend_active():
+            transpose_slice_group = os.getenv(
+                "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP", "auto"
+            )
+            if transpose_slice_group not in {"auto", "1", "2"}:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP must be auto, 1 or 2"
+                )
+            if dtype == "complex64":
+                transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
+                if transpose_tile == "auto":
+                    tile = (
+                        16
+                        if (n0, n1, n2, order)
+                        in {
+                            (16, 64, 997, "210"),
+                            (16, 33, 997, "210"),
+                            # The FP32 HCU C2R long-axis middle transpose has
+                            # high L1 stalls with tile32; tile16 was 17.8%
+                            # faster in an isolated 128x2048x64 A-B-B-A.
+                            (128, 33, 2048, "210"),
+                        }
+                        else 32
+                    )
+                else:
+                    tile = int(transpose_tile)
+            pair_store = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1"
+            if (
+                dtype == "complex64"
+                and transpose_slice_group == "2"
+                and (n0, n1, n2, order) == (128, 64, 2048, "210")
+                and tile == 32
+                and not pair_store
+            ):
+                (
+                    kernel_name,
+                    kernel_source,
+                    arg_names,
+                    grid_x,
+                ) = _build_tiled_transpose3d_slice_group_kernel_source(
+                    n0,
+                    n1,
+                    n2,
+                    order,
+                    dtype,
+                    tile=tile,
+                    slice_group=2,
+                )
+            else:
+                (
+                    kernel_name,
+                    kernel_source,
+                    arg_names,
+                    grid_x,
+                ) = _build_tiled_transpose3d_tile_kernel_source(
+                    n0,
+                    n1,
+                    n2,
+                    order,
+                    dtype,
+                    tile=tile,
+                    packed_complex=packed_complex,
+                    pair_store=pair_store,
+                )
+        else:
+            (
+                kernel_name,
+                kernel_source,
+                arg_names,
+                grid_x,
+            ) = _build_tiled_transpose3d_tile_kernel_source(
+                n0, n1, n2, order, dtype, tile=tile,
+                packed_complex=packed_complex, pair_store=pair_store,
+            )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
             n0, n1, n2, order, dtype

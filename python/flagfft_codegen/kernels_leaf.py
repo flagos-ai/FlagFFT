@@ -28,6 +28,7 @@ from .kernels_common import (
     LeafIoMode,
     LeafPlan,
     _is_double_dtype,
+    _hcu_backend_active,
     _maca_backend_active,
     _mthreads_backend_active,
     _ix_backend_active,
@@ -86,7 +87,9 @@ def _portable_complex_vector_io() -> bool:
     natively, without the ``ld.global.v2`` inline asm that the MetaX plugin
     cannot compile.
     """
-    return _maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"}
+    return (
+        (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
+    )
 
 
 def _emit_vectorized_complex_load(
@@ -443,6 +446,7 @@ def _emit_permuted_store(
     factors: tuple[int, ...],
     pack: int,
     lane_block: int,
+    compact_length: int | None = None,
 ) -> list[str]:
     """Store one radix digit with the batch axis made contiguous.
 
@@ -462,12 +466,14 @@ def _emit_permuted_store(
         # that singleton layout with the wrong pointer lanes.  The ordinary
         # one-dimensional tensor is both semantically exact and cheaper.
         address = f"{base} * perm_k_stride + perm_gbase_scalar"
+        mask = ("lane_mask" if compact_length is None else
+                f"(lane_mask & ({base} < {compact_length}))")
         return [
             f"{indent}perm_addr{digit} = {address}",
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, "
-            f"mask=lane_mask)",
+            f"mask={mask})",
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
-            f"mask=lane_mask)",
+            f"mask={mask})",
         ]
     if _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
         # Keep the register tile in its original (batch, lane) layout.  This
@@ -481,10 +487,11 @@ def _emit_permuted_store(
         ]
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
-        mask = "perm_store_mask"
+        mask = ("perm_store_mask" if compact_length is None else
+                f"(perm_store_mask & ({base} < {compact_length})[:, None])")
     pair_store = (
         (_mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1")
-        or (_ix_backend_active() and os.getenv("FLAGFFT_IX_3D_PAIR_STORE") == "1")
+        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1") == "1")
     )
     if pair_store:
         return [
@@ -1062,7 +1069,39 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
-    smem_swizzle = fuse_twiddle_into_row or (
+    hcu_swizzle_override = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE")
+    hcu_swizzle_default = dtype == "complex128" and n >= 64
+    hcu_swizzle_enabled = (
+        hcu_swizzle_default
+        if hcu_swizzle_override in (None, "auto")
+        else hcu_swizzle_override == "1"
+    )
+    hcu_smem_swizzle = (
+        _hcu_backend_active()
+        and not portable_exchange
+        and n & (n - 1) == 0
+        and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}
+        and hcu_swizzle_enabled
+    )
+    hcu_r2c_leaf_swizzle = (
+        _hcu_backend_active()
+        and not portable_exchange
+        and n >= 64
+        and n & (n - 1) == 0
+        and io_mode == "contiguous_r2c"
+        and dtype == "complex128"
+        # The default covers only the profiled 256-point FP64 R2C leaf.
+        # Other lengths remain available for explicit screening via =1.
+        and (
+            os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "auto") == "1"
+            or (
+                os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "auto") == "auto"
+                and n == 256
+            )
+        )
+    )
+    hcu_smem_swizzle = hcu_smem_swizzle or hcu_r2c_leaf_swizzle
+    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
@@ -1076,6 +1115,10 @@ def _emit_stage_block(
         swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
         if not 1 <= swizzle_shift <= 8:
             raise ValueError("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
+    if hcu_smem_swizzle:
+        swizzle_shift = int(os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5"))
+        if not 1 <= swizzle_shift <= 8:
+            raise ValueError("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
     is_last = stage == len(factors) - 1
     source_buffer = (
         None
@@ -1121,7 +1164,11 @@ def _emit_stage_block(
     vectorized_complex_io = (
         io_mode in {"contiguous", "contiguous_c2r", "permuted_store"}
         or vectorized_four_step_complex_io
-    ) and vector_io_allowed
+    ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
+    hcu_u64_load = (
+        _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
+        and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1") == "1"
+    )
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
     vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
@@ -1159,7 +1206,7 @@ def _emit_stage_block(
         lines.extend(
             _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
         )
-        if io_mode in {"permuted_store", "permuted_r2c"}:
+        if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
             active_lanes = max(stage_lanes) if stage_lanes is not None else lanes
             lines.append(f"{indent}lane_only = tl.arange(0, {lane_block})")
             lines.append(f"{indent}perm_lane_mask = lane_only < {active_lanes}")
@@ -1191,7 +1238,20 @@ def _emit_stage_block(
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             if io_mode in {"contiguous", "permuted_store"}:
-                if vectorized_complex_io:
+                if hcu_u64_load:
+                    lines.append(
+                        f"{indent}packed{j} = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.uint64)) "
+                        f"+ batch_base + in{j}, mask=lane_mask, other=0)"
+                    )
+                    lines.append(
+                        f"{indent}r{j} = tl.cast(tl.cast(packed{j} & 0xffffffff, tl.uint32), "
+                        "tl.float32, bitcast=True)"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.cast(tl.cast(packed{j} >> 32, tl.uint32), "
+                        "tl.float32, bitcast=True)"
+                    )
+                elif vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_load(
                             indent,
@@ -1210,13 +1270,14 @@ def _emit_stage_block(
                         f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, "
                         f"mask=lane_mask, other={zero})"
                     )
-            elif io_mode == "strided":
+            elif io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
                 lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2, "
+                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * {stride}) * 2, "
                     f"mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2 + 1, "
+                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j} * {stride}) * 2 + 1, "
                     f"mask=lane_mask, other={zero})"
                 )
             elif io_mode in {"contiguous_r2c", "permuted_r2c"}:
@@ -1230,6 +1291,31 @@ def _emit_stage_block(
                 )
                 lines.append(
                     f"{indent}i{j} = tl.load(in_ptr + input_batch_base + 2 * in{j} + 1, mask=lane_mask, other={zero})"
+                )
+            elif io_mode == "packed_c2r":
+                lines.extend(
+                    [
+                        f"{indent}packed_k{j} = tl.where(lane_mask, in{j}, 0)",
+                        f"{indent}packed_q{j} = {n} - packed_k{j}",
+                        f"{indent}packed_x_ptr{j} = in_ptr + (input_batch_base + packed_k{j}) * 2",
+                        f"{indent}packed_q_ptr{j} = in_ptr + (input_batch_base + packed_q{j}) * 2",
+                        f"{indent}packed_xr{j} = tl.load(packed_x_ptr{j}, mask=lane_mask, other={zero})",
+                        f"{indent}packed_xi{j} = tl.load(packed_x_ptr{j} + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_qr{j} = tl.load(packed_q_ptr{j}, mask=lane_mask, other={zero})",
+                        f"{indent}packed_qi{j} = -tl.load(packed_q_ptr{j} + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_wr{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2, mask=lane_mask, other={zero})",
+                        f"{indent}packed_wi{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2 + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_sum_r{j} = packed_xr{j} + packed_qr{j}",
+                        f"{indent}packed_sum_i{j} = packed_xi{j} + packed_qi{j}",
+                        f"{indent}packed_diff_r{j} = packed_xr{j} - packed_qr{j}",
+                        f"{indent}packed_diff_i{j} = packed_xi{j} - packed_qi{j}",
+                        f"{indent}packed_prod_r{j} = packed_diff_r{j} * packed_wr{j} + "
+                        f"packed_diff_i{j} * packed_wi{j}",
+                        f"{indent}packed_prod_i{j} = packed_diff_i{j} * packed_wr{j} - "
+                        f"packed_diff_r{j} * packed_wi{j}",
+                        f"{indent}r{j} = packed_sum_r{j} - packed_prod_i{j}",
+                        f"{indent}i{j} = packed_sum_i{j} + packed_prod_r{j}",
+                    ]
                 )
             elif io_mode == "contiguous_c2r":
                 half_n = n // 2 + 1
@@ -1666,13 +1752,16 @@ def _emit_stage_block(
 
     for j in range(radix):
         if is_last:
-            if io_mode == "permuted_store":
+            if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
                 lines.extend(
-                    _emit_permuted_store(indent, j, factors, smem_pack, lane_block)
+                    _emit_permuted_store(
+                        indent, j, factors, smem_pack, lane_block,
+                        compact_length=(n // 2 + 1 if io_mode == "permuted_r2c" else None),
+                    )
                 )
                 continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
-            if io_mode in {"contiguous", "strided", "bluestein_prepare_leaf",
+            if io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
                            "rader_prepare_leaf"}:
                 if io_mode == "strided":
                     lines.append(
@@ -2187,9 +2276,11 @@ def _leaf_kernel_params_for_io(
     )
     if io_mode == "packed_r2c":
         params.insert(2, "packed_twiddle_ptr")
+    elif io_mode == "packed_c2r":
+        params.insert(2, "packed_twiddle_ptr")
     if io_mode == "strided":
         params.append("outer_stride")
-    if io_mode == "permuted_store":
+    if io_mode in {"permuted_store", "strided_permuted_store"}:
         params.append("perm_span")
     if io_mode == "bluestein_prepare_leaf":
         params.insert(1, "chirp_ptr")
@@ -2214,6 +2305,7 @@ def _leaf_kernel_params_for_io(
         "contiguous_r2c",
         "permuted_r2c",
         "packed_r2c",
+        "packed_c2r",
         "contiguous_c2r",
         "four_step_real_row",
         "four_step_hermitian_row",
@@ -2230,6 +2322,8 @@ def _leaf_kernel_params_for_io(
         params.append("output_distance")
     if io_mode in {"four_step_row_strided", "four_step_col_strided"}:
         params.append("outer_stride")
+    if io_mode == "permuted_r2c":
+        params.append("perm_span")
     params.append("nbatch")
     return params
 
@@ -2707,6 +2801,7 @@ def _build_leaf_kernel_source_for_io(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
     perm_form: str = "outer",
+    hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
     kernel_io_mode = io_mode
     bluestein_real_kind = ""
@@ -2731,6 +2826,7 @@ def _build_leaf_kernel_source_for_io(
         raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
+    inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
@@ -2746,9 +2842,12 @@ def _build_leaf_kernel_source_for_io(
         "contiguous",
         "strided",
         "permuted_store",
+        "strided_permuted_store",
+        "permuted_r2c",
         "contiguous_r2c",
         "permuted_r2c",
         "packed_r2c",
+        "packed_c2r",
         "contiguous_c2r",
         "bluestein_prepare_leaf",
         "bluestein_finish_leaf",
@@ -2757,11 +2856,28 @@ def _build_leaf_kernel_source_for_io(
         "rader_prepare_leaf",
         "rader_finish_leaf",
     }
-    if io_mode == "permuted_store":
-        batch_pack = permuted_store_batch_pack_for(plan)
+    if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
+        final_pack = None
+        if _hcu_backend_active():
+            pack_knob = {
+                "outer_first": "FLAGFFT_HCU_3D_FIRST_PACK",
+                "inner_middle": "FLAGFFT_HCU_3D_MIDDLE_PACK",
+                "inner_middle_c2r_cube": "FLAGFFT_HCU_3D_MIDDLE_PACK",
+                "outer_last": "FLAGFFT_HCU_3D_FINAL_PACK",
+            }.get(perm_form)
+            requested_pack = os.getenv(pack_knob, "auto") if pack_knob else "auto"
+            if requested_pack != "auto":
+                final_pack = int(requested_pack)
+            elif _hcu_backend_active() and perm_form == "inner_middle_c2r_cube":
+                final_pack = 8
+        batch_pack = permuted_store_batch_pack_for(
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+        )
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
-            plan, real_boundary=io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}
+            plan,
+            real_boundary=io_mode
+            in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"},
         )
     else:
         batch_pack = 1
@@ -2856,8 +2972,13 @@ def _build_leaf_kernel_source_for_io(
         )
     elif io_mode == "contiguous_r2c":
         kernel_name = f"r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "permuted_r2c":
+        perm_tag = f"_{perm_form}" if perm_form != "outer" else ""
+        kernel_name = f"r2c_permuted_store{perm_tag}_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "packed_r2c":
         kernel_name = f"packed_r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "packed_c2r":
+        kernel_name = f"packed_c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
         kernel_name = f"c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_prepare_leaf":
@@ -2877,7 +2998,7 @@ def _build_leaf_kernel_source_for_io(
             f"{kernel_io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
             f"_l{plan.lanes}_b{lane_block}"
         )
-    elif io_mode == "permuted_store":
+    elif io_mode in {"permuted_store", "strided_permuted_store"}:
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = (
             f"permuted_store_{perm_form}_{kernel_prefix}_kernel_{suffix}"
@@ -2918,22 +3039,23 @@ def _build_leaf_kernel_source_for_io(
             body.append("    current_batch = batch_id")
             body.append("    lane = lane_vec")
             body.append(f"    lane_mask = lane < {active_lanes}")
-            if io_mode == "permuted_store" and perm_form == "inner":
+            if io_mode in {"permuted_store", "strided_permuted_store"} and inner_perm_form:
                 # The packed path derives perm_base from pid below.  With one
                 # batch slot, pid already is the row index, but the common
                 # inner-form address equations still consume this name.
                 body.append("    perm_base = batch_id")
-            if io_mode == "strided":
-                body.append("    batch_index = current_batch // outer_stride")
+            if io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
+                body.append(f"    batch_index = current_batch // {stride}")
                 body.append(
-                    f"    batch_base = batch_index * ({n} * outer_stride) + "
-                    "(current_batch - batch_index * outer_stride)"
+                    f"    batch_base = batch_index * ({n} * {stride}) + "
+                    f"(current_batch - batch_index * {stride})"
                 )
         else:
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
             body.append("    current_batch = batch_id + batch_slot")
-            if io_mode == "permuted_store" and perm_form == "inner":
+            if io_mode in {"permuted_store", "strided_permuted_store"} and inner_perm_form:
                 # This pass permutes an axis whose output position is scaled by
                 # the *other* cube dimension, so a block has to span that
                 # dimension rather than consecutive rows: its rows are strided
@@ -2947,37 +3069,30 @@ def _build_leaf_kernel_source_for_io(
             body.append(
                 f"    lane_mask = (lane < {active_lanes}) & (current_batch < nbatch)"
             )
-            if io_mode == "strided":
-                body.append("    batch_index = current_batch // outer_stride")
+            if io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
+                body.append(f"    batch_index = current_batch // {stride}")
                 body.append(
-                    f"    batch_base = batch_index * ({n} * outer_stride) + "
-                    "(current_batch - batch_index * outer_stride)"
+                    f"    batch_base = batch_index * ({n} * {stride}) + "
+                    f"(current_batch - batch_index * {stride})"
                 )
             else:
                 body.append(f"    batch_base = current_batch * {n}")
             body.append(f"    smem_offset = batch_slot * {smem_slot_stride}")
         if batch_pack == 1:
-            if io_mode != "strided":
+            if io_mode not in {"strided", "strided_permuted_store"}:
                 body.append(f"    batch_base = current_batch * {n}")
-        if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}:
+        if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
+        if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}:
             body.append("    output_batch_base = current_batch * output_distance")
-        if io_mode == "permuted_r2c":
-            body.append(f"    perm_slot = tl.arange(0, {batch_pack})")
-            body.append("    perm_batch = batch_id + perm_slot")
-            body.append("    perm_outer = perm_batch // output_distance")
-            body.append("    perm_inner = perm_batch - perm_outer * output_distance")
-            body.append(f"    perm_gbase = perm_outer * ({n // 2 + 1} * output_distance) + perm_inner")
-            body.append("    perm_mask = perm_batch < nbatch")
-            if batch_pack == 1:
-                body.append("    perm_gbase_scalar = tl.sum(perm_gbase, 0)")
-        if io_mode == "permuted_store":
+        if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}:
             # `perm_gbase` is the output address of each batch slot's row start
             # and `perm_k_stride` the stride of the FFT output index; the store
             # adds the two.  The two forms differ in which of the row index's
             # two mixed-radix parts gets scaled by the output layout.
             body.append(f"    perm_slot = tl.arange(0, {batch_pack})")
-            if perm_form == "inner":
+            if inner_perm_form:
                 body.append("    perm_batch = perm_base + perm_slot * perm_span")
                 body.append("    perm_i0 = perm_batch // perm_span")
                 body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
@@ -2987,7 +3102,8 @@ def _build_leaf_kernel_source_for_io(
                 body.append("    perm_batch = batch_id + perm_slot")
                 body.append("    perm_i0 = perm_batch // perm_span")
                 body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
-                body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
+                out_length = n // 2 + 1 if io_mode == "permuted_r2c" else n
+                body.append(f"    perm_gbase = perm_i0 * ({out_length} * perm_span) + perm_i1")
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
             if batch_pack > 1 and _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
@@ -3001,7 +3117,7 @@ def _build_leaf_kernel_source_for_io(
                 # Keep the singleton row address scalar.  On MUSA this avoids
                 # a degenerate [1] tensor layout being broadcast into the
                 # lane-shaped store pointer.
-                if perm_form == "inner":
+                if inner_perm_form:
                     body.append("    perm_batch_scalar = perm_base")
                 else:
                     body.append("    perm_batch_scalar = batch_id")
@@ -3010,15 +3126,16 @@ def _build_leaf_kernel_source_for_io(
                     "    perm_i1_scalar = perm_batch_scalar - "
                     "perm_i0_scalar * perm_span"
                 )
-                if perm_form == "inner":
+                if inner_perm_form:
                     body.append(
                         "    perm_gbase_scalar = perm_i1_scalar * "
                         "(nbatch // perm_span) + perm_i0_scalar"
                     )
                 else:
+                    out_length = n // 2 + 1 if io_mode == "permuted_r2c" else n
                     body.append(
                         f"    perm_gbase_scalar = perm_i0_scalar * "
-                        f"({n} * perm_span) + perm_i1_scalar"
+                        f"({out_length} * perm_span) + perm_i1_scalar"
                     )
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:

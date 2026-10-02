@@ -124,12 +124,18 @@ std::string kernel_kind_name(KernelKind kind) {
       return "leaf_strided";
     case KernelKind::LeafPermutedStore:
       return "leaf_permuted_store";
+    case KernelKind::LeafStridedPermutedStore:
+      return "leaf_strided_permuted_store";
     case KernelKind::LeafR2C:
       return "leaf_r2c";
+    case KernelKind::LeafR2CPermutedStore:
+      return "leaf_r2c_permuted_store";
     case KernelKind::LeafPackedR2C:
       return "leaf_packed_r2c";
     case KernelKind::LeafC2R:
       return "leaf_c2r";
+    case KernelKind::LeafPackedC2R:
+      return "leaf_packed_c2r";
     case KernelKind::LeafBluestein:
       return "leaf_bluestein";
     case KernelKind::LeafRaderFull:
@@ -218,6 +224,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "transpose3d";
     case KernelKind::Fused16Plane:
       return "fused_16_plane";
+    case KernelKind::FusedRectPlane:
+      return "fused_rect_plane";
     case KernelKind::Fused32Plane:
       return "fused_32_plane";
     case KernelKind::Fused16RealPlane:

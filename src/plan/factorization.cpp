@@ -124,9 +124,83 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
-  // Five radix-two stages cost more than two short codelets for 32^3 axes on
-  // S5000. Keep other ranks and devices on their established factorization.
-  if (context.device_type == "musa" && context.origin_rank == 3 && n == 32) {
+  if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
+    const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
+    if (override_value != nullptr) {
+      const std::string choice(override_value);
+      if (choice == "auto" || choice == "16,16") return {16, 16};
+      if (choice == "8,8,4") return {8, 8, 4};
+      if (choice == "4,8,8") return {4, 8, 8};
+      if (choice == "8,4,8") return {8, 4, 8};
+      if (choice == "4,16,4") return {4, 16, 4};
+      if (choice == "4,4,4,4") return {4, 4, 4, 4};
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_256_FACTORS must be auto, 16,16, 8,8,4, 4,8,8, 8,4,8, 4,16,4 or 4,4,4,4");
+    }
+  }
+  if (context.device_type == "hcu" && context.origin_rank == 3 && n == 128) {
+    if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_128_FACTORS")) {
+      const std::string choice(override_value);
+      if (choice == "4,4,8") return {4, 4, 8};
+      if (choice == "4,8,4") return {4, 8, 4};
+      if (choice == "8,8,2") return {8, 8, 2};
+      if (choice == "16,8") return {16, 8};
+      if (choice == "8,16") return {8, 16};
+      if (choice != "auto") {
+        throw std::runtime_error("FLAGFFT_HCU_3D_128_FACTORS must be auto, 4,4,8, 4,8,4, 8,8,2, 16,8 or 8,16");
+      }
+    }
+  }
+  if (context.device_type == "hcu" && context.origin_rank == 3 && n == 2048) {
+    const bool c2r_fp64 = (context.origin_real_transform_kind == "c2r" ||
+                           context.origin_real_transform_kind == "z2d") &&
+                          context.input_dtype == "complex128" && context.requested_n == n;
+    const bool r2c_fp64 = (context.origin_real_transform_kind == "r2c" ||
+                           context.origin_real_transform_kind == "d2z") &&
+                          context.input_dtype == "complex128" && context.requested_n == n;
+    const char *c2r_fp64_override =
+        c2r_fp64 ? std::getenv("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
+    const char *r2c_fp64_override =
+        r2c_fp64 ? std::getenv("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS") : nullptr;
+    const char *fp64_override =
+        r2c_fp64_override != nullptr ? r2c_fp64_override : c2r_fp64_override;
+    const char *override_value =
+        fp64_override != nullptr ? fp64_override : std::getenv("FLAGFFT_HCU_3D_2048_FACTORS");
+    if (c2r_fp64_override != nullptr && std::string(c2r_fp64_override) != "auto" &&
+        std::string(c2r_fp64_override) != "16,16,8" && std::string(c2r_fp64_override) != "8,16,16" &&
+        std::string(c2r_fp64_override) != "16,8,16") {
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
+    }
+    if (r2c_fp64_override != nullptr && std::string(r2c_fp64_override) != "auto" &&
+        std::string(r2c_fp64_override) != "16,16,8" && std::string(r2c_fp64_override) != "8,16,16" &&
+        std::string(r2c_fp64_override) != "16,8,16") {
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
+    }
+    // Restrict the measured FP64 real-transform order to a direct 2048-point
+    // axis. A global override also changes Bluestein's internal 2048 FFT for
+    // n=997, where this factor order fails accuracy checks. An explicit "auto"
+    // override retains the planner's previous choice.
+    const std::string choice = override_value == nullptr
+                                   ? ((c2r_fp64 || r2c_fp64) ? "8,16,16" : "auto")
+                                   : override_value;
+    if (choice == "8,16,16") return {8, 16, 16};
+    if (choice == "16,8,16") return {16, 8, 16};
+    if (choice == "auto" &&
+        (context.real_transform_kind == "r2c" || context.real_transform_kind == "c2r")) {
+      // This order improves the measured HCU long-axis single real paths and
+      // does not perturb C2C's default order.
+      return {8, 16, 16};
+    }
+    if (choice != "auto" && choice != "16,16,8") {
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
+    }
+  }
+  // Use two short codelets for 32^3 axes instead of five radix-two stages.
+  if ((context.device_type == "musa" || context.device_type == "hcu") &&
+      context.origin_rank == 3 && n == 32) {
     return {4, 8};
   }
   const char *ix_3d_32_factors = std::getenv("FLAGFFT_IX_3D_32_FACTORS");
@@ -178,8 +252,27 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // batch leaf on V150. The code generator separately selects tensor exchange.
     return {8, 8, 4, 4};
   }
-  if (context.device_type == "hcu" && context.origin_rank <= 1 &&
+  if (context.device_type == "hcu" &&
+      (context.origin_rank <= 1 || context.origin_rank == 3) &&
       context.requested_n == n && n == 16) {
+    if (context.origin_rank == 3) {
+      if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_16_FACTORS")) {
+        const std::string choice(override_value);
+        if (choice == "4,4") return {4, 4};
+        if (choice == "2,2,2,2") return {2, 2, 2, 2};
+        if (choice == "4,2,2") return {4, 2, 2};
+        if (choice == "2,2,4") return {2, 2, 4};
+        if (choice == "2,8") return {2, 8};
+        if (choice == "8,2") return {8, 2};
+        if (choice != "16") {
+          throw std::runtime_error("FLAGFFT_HCU_3D_16_FACTORS must be 16, 4,4, 2,2,2,2, 4,2,2, 2,2,4, 2,8 or 8,2");
+        }
+      } else if (context.batch >= 10000) {
+        // Long-axis 3D plans run enough short outer FFTs to amortize the
+        // extra exchange; small 16^3 cubes keep the direct codelet.
+        return {4, 4};
+      }
+    }
     // The direct radix-16 codelet avoids a shared-memory round trip.
     return {16};
   }

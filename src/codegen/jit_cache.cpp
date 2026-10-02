@@ -281,14 +281,23 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::LeafPermutedStore:
       kernel_kind = "leaf_permuted_store";
       break;
+    case KernelKind::LeafStridedPermutedStore:
+      kernel_kind = "leaf_strided_permuted_store";
+      break;
     case KernelKind::LeafR2C:
       kernel_kind = "leaf_r2c";
+      break;
+    case KernelKind::LeafR2CPermutedStore:
+      kernel_kind = "leaf_r2c_permuted_store";
       break;
     case KernelKind::LeafPackedR2C:
       kernel_kind = "leaf_packed_r2c";
       break;
     case KernelKind::LeafC2R:
       kernel_kind = "leaf_c2r";
+      break;
+    case KernelKind::LeafPackedC2R:
+      kernel_kind = "leaf_packed_c2r";
       break;
     case KernelKind::LeafBluestein:
       kernel_kind = key.perm_form == "outer" ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form;
@@ -424,14 +433,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Fused16Plane:
       kernel_kind = "fused_16_plane";
       break;
-    case KernelKind::Fused32Plane:
-      kernel_kind = "fused_32_plane";
-      break;
-    case KernelKind::Fused16RealPlane:
-      kernel_kind = "fused_16_real_plane";
-      break;
     case KernelKind::Fused32RealPlane:
       kernel_kind = "fused_32_real_plane";
+      break;
+    case KernelKind::FusedRectPlane:
+      kernel_kind = "fused_rect_plane";
       break;
     case KernelKind::Fused16Cube:
       kernel_kind = "fused_16_cube";
@@ -463,6 +469,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  if (key.target.rfind("hcu:", 0) == 0) {
+    jit_command << "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK="
+                << (key.hcu_3d_middle_batch_pack > 0
+                        ? std::to_string(key.hcu_3d_middle_batch_pack)
+                        : std::string("auto"))
+                << " ";
+  }
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(request_dir.string()) << " --dtype "
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "
@@ -487,8 +500,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 #endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafPermutedStore ||
-      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafPackedR2C ||
+      key.kind == KernelKind::LeafStridedPermutedStore ||
+      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafR2CPermutedStore ||
+      key.kind == KernelKind::LeafPackedR2C ||
       key.kind == KernelKind::LeafC2R ||
+      key.kind == KernelKind::LeafPackedC2R ||
       key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafRaderFull ||
       key.kind == KernelKind::LeafRaderPrepare || key.kind == KernelKind::LeafRaderFinish ||
       key.kind == KernelKind::LeafBluesteinPrepare ||
@@ -508,9 +524,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     }
   }
   if (key.kind == KernelKind::LeafPermutedStore ||
-      (key.kind == KernelKind::LeafR2C && key.perm_form == "permuted")) {
+      key.kind == KernelKind::LeafStridedPermutedStore ||
+      key.kind == KernelKind::LeafR2CPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
+  if (key.hcu_full_smem) jit_command << " --hcu-3d-full-smem";
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
       key.kind == KernelKind::DirectDftCube || key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCubeStrided || key.kind == KernelKind::DirectDftCube2DRow ||
@@ -555,9 +573,19 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32Plane ||
       key.kind == KernelKind::Fused16RealPlane || key.kind == KernelKind::Fused32RealPlane ||
-      key.kind == KernelKind::Fused16Cube || key.kind == KernelKind::Fused16RealCube ||
-      key.kind == KernelKind::Fused32Column || key.kind == KernelKind::Fused2D) {
+      key.kind == KernelKind::FusedRectPlane || key.kind == KernelKind::Fused16Cube ||
+      key.kind == KernelKind::Fused16RealCube || key.kind == KernelKind::Fused32Column ||
+      key.kind == KernelKind::Fused2D) {
     jit_command << " --direction " << shell_quote(key.direction);
+  }
+  if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32RealPlane ||
+      key.kind == KernelKind::Fused16Cube) {
+    jit_command << " --length " << key.length;
+  }
+  if (key.kind == KernelKind::FusedRectPlane) {
+    jit_command << " --fused-plane-n0 " << key.fused_plane_n0
+                << " --fused-plane-n1 " << key.fused_plane_n1
+                << " --fused-plane-middle " << key.fused_plane_middle;
   }
   if (key.kind == KernelKind::Fused32Column) {
     jit_command << " --length " << key.length;

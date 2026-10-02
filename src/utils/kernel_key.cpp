@@ -26,26 +26,6 @@ KernelKey KernelKey::fused_16_plane(std::string target, std::string direction, s
   return key;
 }
 
-KernelKey KernelKey::fused_32_plane(std::string target, std::string direction, std::string dtype) {
-  KernelKey key;
-  key.kind = KernelKind::Fused32Plane;
-  key.target = std::move(target);
-  key.direction = std::move(direction);
-  key.dtype = std::move(dtype);
-  key.length = 32;
-  return key;
-}
-
-KernelKey KernelKey::fused_16_real_plane(std::string target, std::string direction, std::string dtype) {
-  KernelKey key;
-  key.kind = KernelKind::Fused16RealPlane;
-  key.target = std::move(target);
-  key.direction = std::move(direction);
-  key.dtype = std::move(dtype);
-  key.length = 16;
-  return key;
-}
-
 KernelKey KernelKey::fused_32_real_plane(std::string target, std::string direction, std::string dtype) {
   KernelKey key;
   key.kind = KernelKind::Fused32RealPlane;
@@ -53,6 +33,23 @@ KernelKey KernelKey::fused_32_real_plane(std::string target, std::string directi
   key.direction = std::move(direction);
   key.dtype = std::move(dtype);
   key.length = 32;
+  return key;
+}
+
+KernelKey KernelKey::fused_rect_plane(std::string target,
+                                      std::string direction,
+                                      std::string dtype,
+                                      int64_t plane_n0,
+                                      int64_t plane_n1,
+                                      int64_t middle_size) {
+  KernelKey key;
+  key.kind = KernelKind::FusedRectPlane;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.fused_plane_n0 = plane_n0;
+  key.fused_plane_n1 = plane_n1;
+  key.fused_plane_middle = middle_size;
   return key;
 }
 
@@ -725,7 +722,11 @@ bool KernelKey::operator==(const KernelKey &other) const {
          reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2 &&
          transpose3d_n0 == other.transpose3d_n0 && transpose3d_n1 == other.transpose3d_n1 &&
          transpose3d_n2 == other.transpose3d_n2 && transpose3d_order == other.transpose3d_order &&
-         perm_form == other.perm_form && npu_portable_leaf == other.npu_portable_leaf;
+         fused_plane_n0 == other.fused_plane_n0 && fused_plane_n1 == other.fused_plane_n1 &&
+         fused_plane_middle == other.fused_plane_middle &&
+         perm_form == other.perm_form && npu_portable_leaf == other.npu_portable_leaf &&
+         hcu_full_smem == other.hcu_full_smem &&
+         hcu_3d_middle_batch_pack == other.hcu_3d_middle_batch_pack;
 }
 
 std::string KernelKey::repr() const {
@@ -743,8 +744,12 @@ std::string KernelKey::repr() const {
       << ";rader_n=" << rader_n << ";rader_m=" << rader_m << ";reshape_n1=" << reshape_n1
       << ";reshape_n2=" << reshape_n2 << ";transpose3d_n0=" << transpose3d_n0
       << ";transpose3d_n1=" << transpose3d_n1 << ";transpose3d_n2=" << transpose3d_n2
+      << ";fused_plane_n0=" << fused_plane_n0 << ";fused_plane_n1=" << fused_plane_n1
+      << ";fused_plane_middle=" << fused_plane_middle
       << ";order=" << transpose3d_order << ";perm_form=" << perm_form
-      << (npu_portable_leaf ? ";npu_portable_leaf=1" : "");
+      << ";npu_portable_leaf=" << npu_portable_leaf
+      << ";hcu_full_smem=" << hcu_full_smem
+      << ";hcu_3d_middle_batch_pack=" << hcu_3d_middle_batch_pack;
   return out.str();
 }
 
@@ -771,9 +776,14 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.transpose3d_n0);
   hash_value(seed, key.transpose3d_n1);
   hash_value(seed, key.transpose3d_n2);
+  hash_value(seed, key.fused_plane_n0);
+  hash_value(seed, key.fused_plane_n1);
+  hash_value(seed, key.fused_plane_middle);
   hash_value(seed, key.transpose3d_order);
   hash_value(seed, key.perm_form);
   hash_value(seed, key.npu_portable_leaf);
+  hash_value(seed, key.hcu_full_smem);
+  hash_value(seed, key.hcu_3d_middle_batch_pack);
   return seed;
 }
 

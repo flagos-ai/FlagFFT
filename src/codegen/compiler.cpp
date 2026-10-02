@@ -302,6 +302,45 @@ namespace {
     key.npu_portable_leaf = request.device_type == "npu" && request.origin_rank == 2;
   }
 
+  std::string hcu_3d_final_axis_perm_form(const FFTRequest &request) {
+    if (request.device_type != "hcu") return "outer";
+    for (const char *name : {"FLAGFFT_HCU_3D_FINAL_WARPS", "FLAGFFT_HCU_3D_FINAL_PACK"}) {
+      const char *value = std::getenv(name);
+      if (value != nullptr && std::string(value) != "auto") return "outer_last";
+    }
+    return "outer";
+  }
+
+  std::string hcu_3d_axis_perm_form(const FFTRequest &request,
+                                    const char *pack_knob,
+                                    const char *tagged_form,
+                                    const char *default_form) {
+    const char *value = std::getenv(pack_knob);
+    return request.device_type == "hcu" && value != nullptr && std::string(value) != "auto"
+               ? tagged_form
+               : default_form;
+  }
+
+  bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request,
+                                           bool inverse,
+                                           int64_t batch,
+                                           int64_t length) {
+    // The half-length boundary helped C2R, while it displaced the faster
+    // permuted-store R2C path. Keep this experiment inverse-only.
+    if (request.device_type != "hcu" || request.origin_rank != 3) return false;
+    const char *setting = std::getenv("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY");
+    if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY must be 0 or 1");
+    }
+    if (!inverse || (request.input_dtype != "complex64" && request.input_dtype != "complex128")) {
+      return false;
+    }
+    if (setting != nullptr) return std::string(setting) == "1";
+    // In rank-3 C2R, this boundary request batches n0*n1 rows. The only
+    // qualified case so far is the single-batch 256^3 cube.
+    return length == 256 && batch == 256 * 256;
+  }
+
   bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
                                    const FFTRequest &request,
                                    int64_t batch) {
@@ -339,9 +378,10 @@ namespace {
                                                           int64_t batch,
                                                           bool inverse) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
-    const bool force = setting != nullptr && std::string(setting) == "1";
-    const bool disable = setting != nullptr && std::string(setting) == "0";
     const int64_t n = request.requested_n;
+    const bool force = (setting != nullptr && std::string(setting) == "1") ||
+                       hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
+    const bool disable = setting != nullptr && std::string(setting) == "0";
     if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") || n <= 0 ||
         n % 2 != 0) {
       return std::nullopt;
@@ -760,6 +800,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_musa_3d_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
                                            request.input_dtype == "complex128" && request.origin_rank == 3 &&
                                            bluestein->length == 997 && batch <= 4096;
+    const char *hcu_full_leaf_override = std::getenv("FLAGFFT_HCU_3D_BLUESTEIN_FULL_LEAF");
+    const bool use_hcu_3d_fp64_full_leaf = request.device_type == "hcu" &&
+                                          request.input_dtype == "complex128" && request.origin_rank == 3 &&
+                                          bluestein->length == 997 && batch <= 4096 &&
+                                          (hcu_full_leaf_override == nullptr ||
+                                           std::string(hcu_full_leaf_override) != "0");
     // MACA's portable register exchange is compiled separately for each FFT.
     // Combining both FFTs makes this plugin's optimization prohibitively slow.
     const bool allow_bluestein_fusion = request.device_type != "maca";
@@ -779,7 +825,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
-         use_musa_3d_fp64_full_leaf) &&
+         use_musa_3d_fp64_full_leaf || use_hcu_3d_fp64_full_leaf) &&
         leaf != nullptr;
     // Batched S5000 FP64 convolutions can fuse the boundary when both
     // leaves fit the bounds below and the complete batch fits the existing
@@ -1182,6 +1228,48 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
     const int64_t packed = n / 2;
+    const char *packed_fuse_setting = std::getenv("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
+    if (packed_fuse_setting != nullptr && std::string(packed_fuse_setting) != "0" &&
+        std::string(packed_fuse_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_HCU_3D_C2R_PACKED_FUSE must be 0 or 1");
+    }
+    // HCU A-B-B-A showed a 6.4% FP64 win on the single-batch 256^3 C2R
+    // case, while FP32 was effectively unchanged. Keep the default narrow;
+    // the environment override remains available to measure other cases.
+    const bool packed_fuse_default = request.device_type == "hcu" &&
+                                     request.origin_rank == 3 && n == 256 &&
+                                     batch == 256 * 256 &&
+                                     request.input_dtype == "complex128";
+    const bool packed_fuse_enabled = packed_fuse_setting == nullptr
+                                         ? packed_fuse_default
+                                         : std::string(packed_fuse_setting) == "1";
+    const bool use_packed_fused_leaf = request.device_type == "hcu" &&
+                                       request.origin_rank == 3 && n == 256 &&
+                                       batch == 256 * 256 && packed_fuse_enabled;
+    if (use_packed_fused_leaf) {
+      if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+        KernelKey key = KernelKey::leaf_c2r(
+            triton_target_for_request(packed_child->request),
+            packed_child->request.direction,
+            packed_child->request.input_dtype,
+            leaf->length,
+            leaf->factors,
+            leaf->lanes,
+            leaf->num_warps,
+            leaf->generic_radices,
+            leaf->smem_size);
+        key.kind = KernelKind::LeafPackedC2R;
+        return std::make_shared<CompiledRawPackedC2RFusedLeafNode>(
+            n,
+            compile_kernel(key),
+            build_raw_packed_real_twiddle(request, n),
+            build_raw_leaf_tables(*leaf, packed_child->request),
+            [node, request, batch]() {
+              TritonCompiler compiler;
+              return compiler.compile_raw_c2r_node(node, request, batch, false);
+            });
+      }
+    }
     DeviceAllocation packed_input = adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
     return std::make_shared<CompiledRawPackedC2RNode>(
         n,
@@ -1241,6 +1329,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                   leaf.generic_radices,
                                   leaf.smem_size);
   mark_npu_2d_portable_leaf(key, request);
+  key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   return std::make_shared<CompiledRawLeafNode>(leaf.length,
                                                std::move(kernel),
@@ -1250,7 +1339,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
                                                                                 const FFTRequest &request,
                                                                                 int64_t perm_span,
-                                                                                const std::string &perm_form) {
+                                                                                const std::string &perm_form,
+                                                                                bool strided_input) {
   std::string target = triton_target_for_request(request);
   // The fused store vectorizes along the batch slots. FP64 length-256 uses a
   // smaller pack than FP32, and one warp measured faster than two on S5000.
@@ -1287,7 +1377,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.generic_radices,
                                                  leaf.smem_size,
                                                  perm_form);
+  if (strided_input) key.kind = KernelKind::LeafStridedPermutedStore;
   mark_npu_2d_portable_leaf(key, request);
+  const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
+  // Forcing FP64 256-point stores to use the full 64 KiB shared-memory pack
+  // raised latency by about 10% on HCU 256^3 C2C, for both batch=1 and batch=4.
+  // Keep the larger pack available as an explicit experiment, but default to
+  // the occupancy-friendly 48 KiB policy.
+  const bool full_smem_enabled =
+      full_smem_override != nullptr && std::string(full_smem_override) == "1";
+  key.hcu_full_smem = request.device_type == "hcu" && request.origin_rank == 3 &&
+                      !request.real_transform && request.input_dtype == "complex128" &&
+                      leaf.length == 256 && full_smem_enabled;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   // Same argument shape as the strided leaf: the permutation span rides in the
   // slot that carries outer_stride there, so the node is reused unchanged.
@@ -1796,6 +1897,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   n1_request.input_strides = {n1, 1};
   n1_request.requested_n = n1;
   n1_request.batch = batch * n0 * n2;
+  if (request.device_type == "hcu" && request.input_dtype == "complex64" && n1 == 2048 &&
+      std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan)) {
+    const char *middle_batch_pack = std::getenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK");
+    if (middle_batch_pack != nullptr && *middle_batch_pack != '\0' &&
+        std::string(middle_batch_pack) != "auto") {
+      const int64_t pack = std::stoll(middle_batch_pack);
+      if (pack != 1 && pack != 2 && pack != 4 && pack != 8 && pack != 16 && pack != 32) {
+        throw std::runtime_error(
+            "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4, 8, 16 or 32");
+      }
+      n1_request.hcu_3d_middle_batch_pack = pack;
+    }
+  }
 
   FFTRequest n0_request = request;
   n0_request.fft_length = n0;
@@ -1816,50 +1930,51 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
-
-  const bool ix_fused_cube = request.device_type == "ix" && request.device_arch == "71" &&
-      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      batch == 1 && n0 == 16 && n1 == 16 && n2 == 16 &&
-      n0_leaf && n1_leaf && n2_leaf &&
-      flag_or_default("FLAGFFT_IX_3D_FUSED16_CUBE", true);
-  if (ix_fused_cube) {
-    std::vector<float> tw_r(16);
-    std::vector<float> tw_i(16);
+  // A small square plane fits in one block. Transform n2 and n1 together,
+  // then run the outer strided leaf in a second launch.
+  const bool small_plane_backend = request.device_type == "musa" || request.device_type == "hcu";
+  const char *fused16_override = std::getenv(request.device_type == "hcu"
+                                                  ? "FLAGFFT_HCU_3D_FUSED16"
+                                                  : "FLAGFFT_MUSA_3D_FUSED16");
+  const char *fused32_override = std::getenv("FLAGFFT_HCU_3D_FUSED32");
+  const bool fused16 = small_plane_backend && n0 == 16 && n1 == 16 && n2 == 16 &&
+                       (fused16_override == nullptr || std::string(fused16_override) != "0");
+  const bool fused32 = request.device_type == "hcu" && n0 == 32 && n1 == 32 && n2 == 32 &&
+                       (fused32_override == nullptr || std::string(fused32_override) != "0");
+  const char *fused_cube_override = std::getenv("FLAGFFT_HCU_3D_FUSED16_CUBE");
+  const bool fused_cube = request.device_type == "hcu" && n0 == 16 && n1 == 16 && n2 == 16 &&
+                          batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
+                          (fused_cube_override == nullptr || std::string(fused_cube_override) != "0");
+  if (fused_cube) {
+    std::vector<double> tw_r_d(16);
+    std::vector<double> tw_i_d(16);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
     for (int64_t k = 0; k < 16; ++k) {
       const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 16.0;
-      tw_r[k] = static_cast<float>(std::cos(angle));
-      tw_i[k] = static_cast<float>(std::sin(angle));
+      tw_r_d[static_cast<std::size_t>(k)] = std::cos(angle);
+      tw_i_d[static_cast<std::size_t>(k)] = std::sin(angle);
     }
-    auto kernel = compile_kernel(KernelKey::fused_16_cube(
-        triton_target_for_request(request), request.direction, request.input_dtype));
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (request.input_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto key = KernelKey::fused_16_cube(
+        triton_target_for_request(request), request.direction, request.input_dtype);
     return std::make_shared<CompiledRaw3DFusedCubeNode>(
-        std::move(kernel), adaptor::Memory::from_floats(tw_r),
-        adaptor::Memory::from_floats(tw_i));
+        compile_kernel(key), std::move(tw_r), std::move(tw_i));
   }
-
-  // A small plane fits in one block. Transform n2 and n1 together so a
-  // cube needs only one plane launch plus the outer strided leaf.
-  const char *fused16_override = std::getenv("FLAGFFT_MUSA_3D_FUSED16");
-  const bool fused16_enabled =
-      (request.device_type == "musa" &&
-       (fused16_override == nullptr || std::string(fused16_override) != "0")) ||
-      (request.device_type == "ix" && request.device_arch == "71" &&
-       request.input_dtype == "complex64" && request.output_dtype == request.input_dtype &&
-       flag_or_default("FLAGFFT_IX_3D_FUSED16", true));
-  const bool fused32_enabled = request.device_type == "ix" && request.device_arch == "71" &&
-      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      flag_or_default("FLAGFFT_IX_3D_FUSED32", true);
-  const int64_t fused_size = fused16_enabled && n0 == 16 && n1 == 16 && n2 == 16 ? 16 :
-      fused32_enabled && n0 == 32 && n1 == 32 && n2 == 32 ? 32 : 0;
-  if (fused_size != 0 &&
-      batch <= 4 && n0_leaf && n1_leaf && n2_leaf) {
-    std::vector<double> tw_r_d(fused_size / 2);
-    std::vector<double> tw_i_d(fused_size / 2);
+  if ((fused16 || fused32) && batch <= 4 && n0_leaf && n1_leaf && n2_leaf) {
+    const int64_t plane_size = n0;
+    std::vector<double> tw_r_d(static_cast<std::size_t>(plane_size / 2));
+    std::vector<double> tw_i_d(static_cast<std::size_t>(plane_size / 2));
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
-    for (int64_t k = 0; k < fused_size / 2; ++k) {
-      const double angle = sign * 2.0 * kPi * static_cast<double>(k) /
-          static_cast<double>(fused_size);
+    for (int64_t k = 0; k < plane_size / 2; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / static_cast<double>(plane_size);
       tw_r_d[k] = std::cos(angle);
       tw_i_d[k] = std::sin(angle);
     }
@@ -1872,59 +1987,99 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
       tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
     }
-    auto plane_key = fused_size == 16
-        ? KernelKey::fused_16_plane(triton_target_for_request(request), request.direction,
-                                    request.input_dtype)
-        : KernelKey::fused_32_plane(triton_target_for_request(request), request.direction,
-                                    request.input_dtype);
+    KernelKey plane_key = KernelKey::fused_16_plane(
+        triton_target_for_request(request), request.direction, request.input_dtype);
+    plane_key.length = plane_size;
     auto plane_fft = compile_kernel(plane_key);
-    std::shared_ptr<CompiledRawNode> outer_fft;
-    const bool ix_column = fused_size == 32 && request.device_type == "ix" &&
-        request.device_arch == "71" && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", true);
-    if (ix_column) {
-      auto column_kernel = compile_kernel(KernelKey::fused_32_column(
-          triton_target_for_request(request), request.direction, request.input_dtype));
-      outer_fft = std::make_shared<CompiledRaw3DColumnNode>(
-          fused_size * fused_size, 16, std::move(column_kernel),
-          adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end())),
-          adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end())));
-    } else {
-      outer_fft = compile_raw_strided_leaf(*n0_leaf, request, fused_size * fused_size);
-    }
-    DeviceAllocation temp = adaptor::Memory(
-        static_cast<std::size_t>(batch * fused_size * fused_size * fused_size * element_bytes));
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, plane_size * plane_size);
+    DeviceAllocation temp = adaptor::Memory(static_cast<std::size_t>(
+        batch * plane_size * plane_size * plane_size * element_bytes));
     return std::make_shared<CompiledRaw3DFusedPlaneNode>(
-        fused_size, fused_size * fused_size, std::move(plane_fft),
-        std::move(outer_fft), std::move(temp),
+        plane_size, std::move(plane_fft), std::move(outer_fft), std::move(temp),
         std::move(tw_r), std::move(tw_i));
   }
 
-  // At 128x2048x64 in MUSA FP32, a contiguous n1 leaf plus one tiled
-  // transpose beats the packed permuted-store leaf.  FP64 measured slower
-  // with this exchange, so it stays on the fully fused path.  The short
-  // outer axes keep their fused stores, and the axes commute for inverse.
-  const bool musa_hybrid = request.device_type == "musa" && request.input_dtype == "complex64" &&
-      fused_3d_store_enabled() && n1 >= 1024 && n1 >= 4 * std::max(n0, n2);
-  const bool ix_hybrid = request.device_type == "ix" && request.device_arch == "71" &&
-      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      (n2 == 64 || n2 == 256) && flag_or_default("FLAGFFT_IX_3D_HYBRID", true);
-  // IX also screens the prime middle axis: its non-leaf FFT still consumes
-  // contiguous rows, while the short outer leaves can fold two permutations.
-  if ((musa_hybrid || ix_hybrid) && n2_leaf && n0_leaf &&
-      (n1_leaf || ix_hybrid) &&
-      batch * n0 * n1 * n2 > kStridedMaxElements) {
-    const char *ix_last_transpose = std::getenv("FLAGFFT_IX_3D_HYBRID_LAST_TRANSPOSE");
-    const bool final_transpose = ix_hybrid && ix_last_transpose != nullptr &&
-                                 std::string(ix_last_transpose) == "1";
-    auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
+  const char *prime_plane_override = std::getenv("FLAGFFT_HCU_3D_PRIME_PLANE");
+  const bool prime_plane_enabled = prime_plane_override != nullptr &&
+                                   std::string(prime_plane_override) == "1";
+  const bool hcu_prime_plane = request.device_type == "hcu" && batch == 1 &&
+                               n0 == 16 && n1 == 997 && n2 == 64 &&
+                               std::dynamic_pointer_cast<BluesteinPlanNode>(node->n1_plan) !=
+                                   nullptr &&
+                               prime_plane_enabled;
+  if (hcu_prime_plane) {
+    std::vector<double> tw_r_d(32);
+    std::vector<double> tw_i_d(32);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 32; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 64.0;
+      tw_r_d[static_cast<std::size_t>(k)] = std::cos(angle);
+      tw_i_d[static_cast<std::size_t>(k)] = std::sin(angle);
+    }
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (request.input_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto plane_key = KernelKey::fused_rect_plane(
+        triton_target_for_request(request), request.direction, request.input_dtype, n0, n2, n1);
+    auto plane_fft = compile_kernel(plane_key);
+    auto middle_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    auto output_transpose = compile_transpose3d_kernel(request, n0, n2, n1, "021");
+    const std::size_t temp_bytes = static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(temp_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(temp_bytes);
+    return std::make_shared<CompiledRaw3DPrimePlaneNode>(
+        n0, n1, n2, std::move(plane_fft), std::move(middle_fft),
+        std::move(output_transpose), std::move(temp1), std::move(temp2),
+        std::move(tw_r), std::move(tw_i));
+  }
+
+  // A long middle axis can run contiguously before one tiled transpose.
+  // This also permits a non-leaf middle axis such as the 997-point Bluestein
+  // plan while the short outer axes retain their fused stores.
+  const bool elongated_3d = n1 >= 4 * std::max(n0, n2) &&
+                            batch * n0 * n1 * n2 > kStridedMaxElements;
+  const bool musa_hybrid = request.device_type == "musa" &&
+                           request.input_dtype == "complex64" && n1_leaf && n1 >= 1024;
+  const char *hcu_hybrid_override = std::getenv("FLAGFFT_HCU_3D_HYBRID");
+  const bool hcu_hybrid = request.device_type == "hcu" &&
+                          (hcu_hybrid_override == nullptr || std::string(hcu_hybrid_override) != "0");
+  if (n2_leaf && n0_leaf && fused_3d_store_enabled() && elongated_3d &&
+      (musa_hybrid || hcu_hybrid)) {
+    const char *first_transpose_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_FIRST_TRANSPOSE");
+    const bool first_transpose = request.device_type == "hcu" &&
+                                 first_transpose_override != nullptr &&
+                                 std::string(first_transpose_override) == "1";
+    const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_LAST_TRANSPOSE");
+    const bool last_transpose_default = request.input_dtype == "complex128" && n0 >= 64;
+    const bool last_transpose = request.device_type == "hcu" && n0 >= 64 &&
+                                (last_transpose_override == nullptr
+                                     ? last_transpose_default
+                                     : std::string(last_transpose_override) == "1");
+    const std::string n2_perm_form = hcu_3d_axis_perm_form(
+        request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
+    const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
+    auto n2_fft = first_transpose
+        ? compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1)
+        : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, n2_perm_form);
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
-    auto n0_fft = final_transpose
+    std::shared_ptr<JitKernel> perm_021;
+    if (first_transpose) {
+      perm_021 = compile_transpose3d_kernel(request, n0, n1, n2, "021");
+    }
+    auto n0_fft = last_transpose
         ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
-        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
-    auto perm_201 = final_transpose
-        ? compile_transpose3d_kernel(request, n1, n2, n0, "201")
-        : std::shared_ptr<JitKernel>{};
+        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, n0_perm_form);
+    std::shared_ptr<JitKernel> perm_201;
+    if (last_transpose) {
+      perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+    }
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     return std::make_shared<CompiledRaw3DHybridNode>(n0,
@@ -1934,9 +2089,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(n1_fft),
                                                      std::move(n0_fft),
                                                      std::move(perm_210),
-                                                     std::move(perm_201),
                                                      std::move(temp1),
-                                                     std::move(temp2));
+                                                     std::move(temp2),
+                                                     std::move(perm_021),
+                                                     std::move(perm_201));
   }
 
   // Fused fast path: each axis runs as a leaf whose store also applies the
@@ -1950,16 +2106,40 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // below, whose win there is already established, so the two are disjoint.
   if (n2_leaf && n1_leaf && n0_leaf && fused_3d_store_enabled() &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
+    const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_LAST_TRANSPOSE");
+    const bool last_transpose_default = request.device_type == "hcu" &&
+                                        request.input_dtype == "complex128" &&
+                                        n0 == 256 && n1 == 256 && n2 == 256 && batch <= 4;
+    const bool last_transpose = request.device_type == "hcu" &&
+                                (last_transpose_override == nullptr
+                                     ? last_transpose_default
+                                     : std::string(last_transpose_override) == "1");
+    const std::string n2_perm_form = hcu_3d_axis_perm_form(
+        request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
+    const std::string n1_perm_form = hcu_3d_axis_perm_form(
+        request, "FLAGFFT_HCU_3D_MIDDLE_PACK", "inner_middle", "inner");
     std::shared_ptr<CompiledRawNode> n2_fft =
-        compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, "outer");
+        compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, n2_perm_form);
     std::shared_ptr<CompiledRawNode> n1_fft =
-        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, "inner");
+        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, n1_perm_form);
+    const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
     std::shared_ptr<CompiledRawNode> n0_fft =
-        compile_raw_permuted_store_leaf(*n0_leaf, n0_request, /*perm_span=*/n1 * n2, "outer");
+        last_transpose ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
+                       : compile_raw_permuted_store_leaf(*n0_leaf,
+                                                         n0_request,
+                                                         /*perm_span=*/n1 * n2,
+                                                         n0_perm_form);
 
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
 
+    if (last_transpose) {
+      auto perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+      return std::make_shared<CompiledRaw3DHybridNode>(
+          n0, n1, n2, std::move(n2_fft), std::move(n1_fft), std::move(n0_fft),
+          std::shared_ptr<JitKernel>{}, std::move(temp1), std::move(temp2),
+          std::shared_ptr<JitKernel>{}, std::move(perm_201));
+    }
     return std::make_shared<CompiledRaw3DStridedNode>(n0,
                                                       n1,
                                                       n2,
@@ -2027,19 +2207,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
-  // Screen IX's small strided and large fused-store real paths separately.
-  const char *ix_real_fused_override = std::getenv("FLAGFFT_IX_3D_REAL_FUSED");
-  const bool ix_real_leaf_screen = request.device_type == "ix" && request.device_arch == "71" &&
-      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      flag_or_default("FLAGFFT_IX_3D_REAL_LEAF", true);
-  const bool ix_real_fused_screen = request.device_type == "ix" && request.device_arch == "71" &&
-      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      ix_real_fused_override != nullptr && std::string(ix_real_fused_override) == "1";
-  if (request.device_type != "musa" && !ix_real_leaf_screen && !ix_real_fused_screen) return nullptr;
+  // A non-leaf middle axis can stay in the compact real layout on HCU.
+  if (request.device_type != "musa" && request.device_type != "hcu") return nullptr;
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
-  if (!n2_leaf || !n1_leaf || !n0_leaf) return nullptr;
+  if (!n2_leaf || !n0_leaf) return nullptr;
 
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -2047,8 +2220,117 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
-  if (ix_real_leaf_screen && !ix_real_fused_screen && !small) return nullptr;
-  if (!small && !fused_3d_store_enabled() && !ix_real_fused_screen) return nullptr;
+  const char *c2r_fused32_setting = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED32");
+  if (c2r_fused32_setting != nullptr && std::string(c2r_fused32_setting) != "0" &&
+      std::string(c2r_fused32_setting) != "1") {
+    throw std::runtime_error("FLAGFFT_HCU_3D_C2R_FUSED32 must be 0 or 1");
+  }
+  // The 32^3 plane fusion helps FP32, while the FP64 version regresses. Keep
+  // the environment override for experiments and default only complex64.
+  const bool c2r_fused32_enabled =
+      c2r_fused32_setting != nullptr
+          ? std::string(c2r_fused32_setting) == "1"
+          : request.input_dtype == "complex64";
+  const bool c2r_transform = request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d";
+  const char *r2c_fused32_setting = std::getenv("FLAGFFT_HCU_3D_R2C_FUSED32");
+  if (r2c_fused32_setting != nullptr && std::string(r2c_fused32_setting) != "0" &&
+      std::string(r2c_fused32_setting) != "1") {
+    throw std::runtime_error("FLAGFFT_HCU_3D_R2C_FUSED32 must be 0 or 1");
+  }
+  const bool r2c_transform = request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z";
+  const bool r2c_fused32_enabled =
+      r2c_fused32_setting != nullptr && std::string(r2c_fused32_setting) == "1";
+  const bool real_fused32_shape = request.device_type == "hcu" && batch == 1 && n0 == 32 && n1 == 32 &&
+                                  n2 == 32 && n0_leaf && n1_leaf && n2_leaf;
+  const bool c2r_fused32 = inverse && c2r_transform && c2r_fused32_enabled;
+  // Keep R2C opt-in until its 32^3 path has a paired HCU measurement. The
+  // shared plane kernel handles both directions; forward uses a negative
+  // twiddle sign and writes the compact half-spectrum before the outer FFT.
+  const bool r2c_fused32 = !inverse && r2c_transform && r2c_fused32_enabled;
+  if (real_fused32_shape && (c2r_fused32 || r2c_fused32)) {
+    std::vector<double> tw_r_d(16);
+    std::vector<double> tw_i_d(16);
+    for (int64_t k = 0; k < 16; ++k) {
+      const double sign = inverse ? 1.0 : -1.0;
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
+      tw_r_d[static_cast<std::size_t>(k)] = std::cos(angle);
+      tw_i_d[static_cast<std::size_t>(k)] = std::sin(angle);
+    }
+    DeviceAllocation tw_r;
+    DeviceAllocation tw_i;
+    if (request.input_dtype == "complex128") {
+      tw_r = adaptor::Memory::from_doubles(tw_r_d);
+      tw_i = adaptor::Memory::from_doubles(tw_i_d);
+    } else {
+      tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
+      tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
+    }
+    auto plane_key = KernelKey::fused_32_real_plane(triton_target_for_request(request),
+                                                    request.direction,
+                                                    request.input_dtype);
+    auto plane_fft = compile_kernel(plane_key);
+    FFTRequest outer_request = request;
+    outer_request.fft_length = n0;
+    outer_request.input_shape = {batch * n1 * half, n0};
+    outer_request.input_strides = {n0, 1};
+    outer_request.requested_n = n0;
+    outer_request.batch = batch * n1 * half;
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, outer_request, n1 * half);
+    const std::size_t temp_bytes =
+        static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype));
+    DeviceAllocation temp = adaptor::Memory(temp_bytes);
+    return std::make_shared<CompiledRaw3DRealFusedPlaneNode>(n0,
+                                                             n1,
+                                                             n2,
+                                                             inverse,
+                                                             std::move(plane_fft),
+                                                             std::move(outer_fft),
+                                                             std::move(temp),
+                                                             std::move(tw_r),
+                                                             std::move(tw_i));
+  }
+  const bool packed_real_boundary =
+      !small && hcu_3d_packed_real_boundary_enabled(request, inverse, batch * n0 * n1, n2);
+  const char *c2r_middle_transpose_override = std::getenv("FLAGFFT_HCU_3D_C2R_MIDDLE_TRANSPOSE");
+  // On the measured long C2R shape, an ordinary contiguous FP32 middle FFT
+  // plus a tiled output transpose beats the fused strided/permuted leaf. The
+  // same layout was not measured for FP64. Keep the default FP32-only, while
+  // allowing an explicit 1 to screen FP64 without enabling it by default.
+  const bool c2r_middle_transpose_shape = request.device_type == "hcu" && inverse && !small &&
+                                          batch == 1 && n0 == 128 && n1 == 2048 && n2 == 64 &&
+                                          n1_leaf;
+  const bool c2r_middle_transpose =
+      c2r_middle_transpose_shape &&
+      (c2r_middle_transpose_override == nullptr
+           ? request.input_dtype == "complex64"
+           : std::string(c2r_middle_transpose_override) == "1");
+  const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
+  const bool c2r_fused_load_default =
+      !(request.input_dtype == "complex64" && batch >= 4 && n0 == 256 && n1 == 256 && n2 == 256);
+  const bool n1_strided_input =
+      request.device_type == "hcu" && inverse && !small && n1_leaf && !c2r_middle_transpose &&
+      (c2r_fused_load_override == nullptr ? c2r_fused_load_default
+                                          : std::string(c2r_fused_load_override) == "1");
+  const char *real_hybrid_override = std::getenv("FLAGFFT_HCU_3D_REAL_HYBRID");
+  const bool real_hybrid = !n1_leaf && request.device_type == "hcu" && !small &&
+                           n1 >= 4 * std::max(n0, n2) && fused_3d_store_enabled() &&
+                           (real_hybrid_override == nullptr || std::string(real_hybrid_override) != "0");
+  const char *r2c_middle_transpose_override =
+      std::getenv("FLAGFFT_HCU_3D_R2C_MIDDLE_TRANSPOSE");
+  const bool r2c_middle_transpose_shape = request.device_type == "hcu" && !inverse && !small &&
+                                          batch == 1 && n0 == 128 && n1 == 2048 && n2 == 64 &&
+                                          n1_leaf;
+  // Keep the measured FP32 route as the default, but permit an explicit FP64
+  // screen on the same long-axis shape. The override is opt-in and does not
+  // change plans for other shapes or the automatic FP64 plan.
+  const bool r2c_middle_transpose =
+      r2c_middle_transpose_shape &&
+      (r2c_middle_transpose_override == nullptr
+           ? request.input_dtype == "complex64"
+           : std::string(r2c_middle_transpose_override) == "1");
+  if (!n1_leaf && !real_hybrid) return nullptr;
+  if (!small && !fused_3d_store_enabled()) return nullptr;
+  const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
 
   FFTRequest n2_request = request;
   n2_request.fft_length = n2;
@@ -2071,67 +2353,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * half;
 
-  const bool fused_real_cube = !inverse && ix_real_leaf_screen && batch == 1 &&
-      n0 == 16 && n1 == 16 && n2 == 16 &&
-      flag_or_default("FLAGFFT_IX_3D_REAL_FUSED16_CUBE", true);
-  if (fused_real_cube) {
-    std::vector<float> tw_r(16);
-    std::vector<float> tw_i(16);
-    for (int64_t k = 0; k < 16; ++k) {
-      const double angle = -2.0 * kPi * static_cast<double>(k) / 16.0;
-      tw_r[k] = static_cast<float>(std::cos(angle));
-      tw_i[k] = static_cast<float>(std::sin(angle));
-    }
-    auto kernel = compile_kernel(KernelKey::fused_16_real_cube(
-        triton_target_for_request(request), request.direction, request.input_dtype));
-    return std::make_shared<CompiledRaw3DFusedCubeNode>(
-        std::move(kernel), adaptor::Memory::from_floats(tw_r),
-        adaptor::Memory::from_floats(tw_i));
+  const char *r2c_permute_override = std::getenv("FLAGFFT_HCU_3D_R2C_PERMUTED_STORE");
+  const bool r2c_fp64_cube_prefers_transpose =
+      request.device_type == "hcu" && request.input_dtype == "complex128" && batch == 1 &&
+      n0 == 256 && n1 == 256 && n2 == 256;
+  const bool r2c_permute_default = !r2c_fp64_cube_prefers_transpose;
+  const bool n2_permuted = request.device_type == "hcu" && !inverse && !small &&
+                           !packed_real_boundary &&
+                           n1_leaf &&
+                           (r2c_permute_override == nullptr
+                                ? r2c_permute_default
+                                : std::string(r2c_permute_override) != "0");
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+  if (n2_permuted) {
+    KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
+                                        n2_request.direction, n2_request.input_dtype,
+                                        n2_leaf->length, n2_leaf->factors, n2_leaf->lanes,
+                                        n2_leaf->num_warps, n2_leaf->generic_radices,
+                                        n2_leaf->smem_size);
+    key.kind = KernelKind::LeafR2CPermutedStore;
+    key.perm_form = hcu_3d_axis_perm_form(
+        request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
+    n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
+        n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
+        DeviceAllocation{}, n1);
+  } else {
+    n2_real_fft = inverse
+        ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, packed_real_boundary)
+        : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, packed_real_boundary);
   }
-
-  const bool fused_real_plane = !inverse && ix_real_leaf_screen && small && batch <= 4 &&
-      n0 == n1 && n1 == n2 && (n0 == 16 || n0 == 32) &&
-      flag_or_default("FLAGFFT_IX_3D_REAL_FUSED_PLANE", true);
-  if (fused_real_plane) {
-    std::vector<float> tw_r(n0 / 2);
-    std::vector<float> tw_i(n0 / 2);
-    for (int64_t k = 0; k < n0 / 2; ++k) {
-      const double angle = -2.0 * kPi * static_cast<double>(k) / static_cast<double>(n0);
-      tw_r[k] = static_cast<float>(std::cos(angle));
-      tw_i[k] = static_cast<float>(std::sin(angle));
-    }
-    auto key = n0 == 16
-        ? KernelKey::fused_16_real_plane(triton_target_for_request(request), request.direction,
-                                         request.input_dtype)
-        : KernelKey::fused_32_real_plane(triton_target_for_request(request), request.direction,
-                                         request.input_dtype);
-    auto plane_fft = compile_kernel(key);
-    std::shared_ptr<CompiledRawNode> outer_fft;
-    if (n0 == 32 && flag_or_default("FLAGFFT_IX_3D_32_COLUMN", true)) {
-      const int64_t columns = batch == 1 && flag_or_default("FLAGFFT_IX_3D_REAL_COLUMN8", true) ? 8 : 16;
-      auto column_kernel = compile_kernel(KernelKey::fused_32_column(
-          triton_target_for_request(request), request.direction, request.input_dtype, columns));
-      outer_fft = std::make_shared<CompiledRaw3DColumnNode>(
-          n1 * half, columns, std::move(column_kernel),
-          adaptor::Memory::from_floats(tw_r), adaptor::Memory::from_floats(tw_i));
-    } else {
-      outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
-    }
-    DeviceAllocation temp = adaptor::Memory(
-        static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype)));
-    DeviceAllocation tw_r_dev = adaptor::Memory::from_floats(tw_r);
-    DeviceAllocation tw_i_dev = adaptor::Memory::from_floats(tw_i);
-    return std::make_shared<CompiledRaw3DFusedPlaneNode>(
-        n0, n1 * half, std::move(plane_fft), std::move(outer_fft), std::move(temp),
-        std::move(tw_r_dev), std::move(tw_i_dev));
-  }
-
-  auto n2_real_fft = inverse
-      ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
-      : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_210;
   if (small) {
     n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
     n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
@@ -2139,9 +2393,32 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     // The first permutation makes n1 rows contiguous.  Each following leaf
     // writes in the layout consumed by the next axis, leaving natural compact
     // (n0,n1,half) order after n0.
-    perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
-    n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner");
-    n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
+    if (!n2_permuted && !n1_strided_input) {
+      perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
+    }
+    if (real_hybrid || r2c_middle_transpose || c2r_middle_transpose) {
+      n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+      perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
+    } else {
+      const char *middle_pack_override = std::getenv("FLAGFFT_HCU_3D_MIDDLE_PACK");
+      const bool c2r_cube_middle_pack8 = request.device_type == "hcu" && inverse &&
+                                         request.origin_rank == 3 && batch == 1 &&
+                                         n0 == 256 && n1 == 256 && n2 == 256 &&
+                                         request.input_dtype == "complex64" && n1_leaf &&
+                                         (middle_pack_override == nullptr ||
+                                          std::string(middle_pack_override) == "auto");
+      // A-B-B-A measured a repeatable 3.3% FP32 gain on single-batch 256^3
+      // C2R by packing eight middle-axis transforms per block. Keep the
+      // default specific to this path; other 256^3 operators did not benefit.
+      const std::string n1_perm_form = c2r_cube_middle_pack8
+                                           ? "inner_middle_c2r_cube"
+                                           : hcu_3d_axis_perm_form(
+                                                 request, "FLAGFFT_HCU_3D_MIDDLE_PACK",
+                                                 "inner_middle", "inner");
+      n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, n1_perm_form,
+                                                n1_strided_input);
+    }
+    n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, n0_perm_form);
   }
 
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -2152,12 +2429,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                                      n2,
                                                      inverse,
                                                      !small,
+                                                     n2_permuted,
+                                                     n1_strided_input,
                                                      std::move(n2_real_fft),
                                                      std::move(n1_fft),
                                                      std::move(n0_fft),
                                                      std::move(perm_021),
                                                      std::move(temp1),
-                                                     std::move(temp2));
+                                                     std::move(temp2),
+                                                     std::move(perm_210));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(

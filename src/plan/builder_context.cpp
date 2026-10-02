@@ -24,6 +24,7 @@ namespace flagfft {
 bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
   return input_dtype == other.input_dtype && output_dtype == other.output_dtype &&
          real_transform_kind == other.real_transform_kind &&
+         origin_real_transform_kind == other.origin_real_transform_kind &&
          device_type == other.device_type && device_index == other.device_index &&
          device_arch == other.device_arch && origin_rank == other.origin_rank &&
          requested_n == other.requested_n &&
@@ -37,6 +38,7 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.input_dtype = request.input_dtype;
   context.output_dtype = request.output_dtype;
   context.real_transform_kind = request.real_transform_kind;
+  context.origin_real_transform_kind = request.origin_real_transform_kind;
   context.device_type = request.device_type;
   context.device_index = request.device_index;
   context.device_arch = request.device_arch;

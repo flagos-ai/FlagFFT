@@ -35,8 +35,9 @@ from .emit import (
 from .metadata import _csv_ints
 from .kernels_small_3d import (
     emit_fused_16_cube_kernel,
-    emit_fused_32_column_kernel,
-    emit_fused_plane_kernel,
+    emit_fused_16_plane_kernel,
+    emit_fused_32_real_plane_kernel,
+    emit_fused_rect_plane_kernel,
 )
 from .kernels_small_2d import emit_fused_2d_kernel
 from .artifacts import write_text_atomic
@@ -113,10 +114,18 @@ def main() -> None:
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument(
         "--perm-form",
-        choices=("outer", "inner", "permuted"),
+        choices=(
+            "outer",
+            "inner",
+            "outer_first",
+            "inner_middle",
+            "inner_middle_c2r_cube",
+            "outer_last",
+        ),
         default="outer",
         help="axis placement for the permuted store's fused permutation",
     )
+    parser.add_argument("--hcu-3d-full-smem", action="store_true")
     parser.add_argument("--bluestein-n", type=int)
     parser.add_argument("--bluestein-m", type=int)
     parser.add_argument("--rader-n", type=int)
@@ -127,6 +136,9 @@ def main() -> None:
     parser.add_argument("--transpose3d-n1", type=int, default=0)
     parser.add_argument("--transpose3d-n2", type=int, default=0)
     parser.add_argument("--transpose3d-order", choices=("021", "210", "201", "120"))
+    parser.add_argument("--fused-plane-n0", type=int, default=0)
+    parser.add_argument("--fused-plane-n1", type=int, default=0)
+    parser.add_argument("--fused-plane-middle", type=int, default=0)
     parser.add_argument("--tile-size", type=int, default=32)
     parser.add_argument("--fused-2d-transpose", action="store_true")
     parser.add_argument(
@@ -239,6 +251,102 @@ def main() -> None:
         if permuted_pack not in {"auto", "1", "2", "4", "8"}:
             parser.error("FLAGFFT_MUSA_3D_PACK must be auto, 1, 2, 4 or 8")
         profile_dir += f"-musa-3d-pair-store-{pair_store}-pack-{permuted_pack}"
+    if profile.backend == "hcu":
+        pair_store = os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1")
+        permuted_pack = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
+        fp64_tile = os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto")
+        fused_warps = os.getenv("FLAGFFT_HCU_3D_FUSED_WARPS", "auto")
+        transpose_pair = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0")
+        transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
+        transpose_slice_group = os.getenv(
+            "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP", "auto"
+        )
+        full_smem = os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0")
+        u64_load = os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1")
+        first_pack = os.getenv("FLAGFFT_HCU_3D_FIRST_PACK", "auto")
+        middle_pack = os.getenv("FLAGFFT_HCU_3D_MIDDLE_PACK", "auto")
+        middle_batch_pack = os.getenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
+        final_warps = os.getenv("FLAGFFT_HCU_3D_FINAL_WARPS", "auto")
+        final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
+        smem_swizzle = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "auto")
+        swizzle_shift = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5")
+        r2c_leaf_swizzle = os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "auto")
+        factors_256 = os.getenv("FLAGFFT_HCU_3D_256_FACTORS", "auto")
+        factors_2048 = os.getenv("FLAGFFT_HCU_3D_2048_FACTORS", "auto")
+        r2c_fp64_factors_2048 = os.getenv("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS", "auto")
+        if pair_store not in {"0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_PAIR_STORE must be 0 or 1")
+        if permuted_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
+            parser.error("FLAGFFT_HCU_3D_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+        if fp64_tile not in {"auto", "0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_FP64_TILE must be auto, 0 or 1")
+        if fused_warps not in {"auto", "1", "2", "4", "8"}:
+            parser.error("FLAGFFT_HCU_3D_FUSED_WARPS must be 1, 2, 4 or 8")
+        if transpose_pair not in {"0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_PAIR must be 0 or 1")
+        if transpose_tile not in {"auto", "16", "32", "64"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be auto, 16, 32 or 64")
+        if transpose_slice_group not in {"auto", "1", "2"}:
+            parser.error(
+                "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP must be auto, 1 or 2"
+            )
+        if full_smem not in {"0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_FULL_SMEM must be 0 or 1")
+        if u64_load not in {"0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_U64_LOAD must be 0 or 1")
+        valid_packs = {"auto", "1", "2", "4", "8", "16", "32"}
+        if first_pack not in valid_packs:
+            parser.error("FLAGFFT_HCU_3D_FIRST_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+        if middle_pack not in valid_packs:
+            parser.error("FLAGFFT_HCU_3D_MIDDLE_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+        if middle_batch_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
+            parser.error("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+        if final_warps not in {"auto", "1", "2", "4", "8"}:
+            parser.error("FLAGFFT_HCU_3D_FINAL_WARPS must be auto, 1, 2, 4 or 8")
+        if final_pack not in {"auto", "1", "2", "4", "8", "16", "32"}:
+            parser.error("FLAGFFT_HCU_3D_FINAL_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+        if smem_swizzle not in {"auto", "0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE must be auto, 0 or 1")
+        if swizzle_shift not in {str(x) for x in range(1, 9)}:
+            parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
+        if r2c_leaf_swizzle not in {"auto", "0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE must be auto, 0 or 1")
+        valid_factors_256 = {
+            "auto",
+            "16,16",
+            "8,8,4",
+            "4,8,8",
+            "8,4,8",
+            "4,16,4",
+            "4,4,4,4",
+        }
+        if factors_256 not in valid_factors_256:
+            parser.error(
+                "FLAGFFT_HCU_3D_256_FACTORS must be auto, 16,16, "
+                "8,8,4, 4,8,8, 8,4,8, 4,16,4 or 4,4,4,4"
+            )
+        if factors_2048 not in {"auto", "16,16,8", "8,16,16", "16,8,16"}:
+            parser.error(
+                "FLAGFFT_HCU_3D_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16"
+            )
+        if r2c_fp64_factors_2048 not in {"auto", "16,16,8", "8,16,16", "16,8,16"}:
+            parser.error(
+                "FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS must be auto, 16,16,8, "
+                "8,16,16 or 16,8,16"
+            )
+        profile_dir += (f"-hcu-3d-pair-store-{pair_store}-pack-{permuted_pack}"
+                        f"-fp64-tile-{fp64_tile}-warps-{fused_warps}"
+                        f"-transpose-pair-{transpose_pair}-transpose-tile-{transpose_tile}"
+                        f"-full-{full_smem}-key-{int(args.hcu_3d_full_smem)}"
+                        f"-u64-load-{u64_load}-first-pack-{first_pack}-middle-pack-{middle_pack}"
+                        f"-mbp-{middle_batch_pack}"
+                        f"-final-warps-{final_warps}-final-pack-{final_pack}"
+                        f"-swz-{smem_swizzle}-{swizzle_shift}"
+                        f"-r2c-leaf-swizzle-{r2c_leaf_swizzle}")
+        if transpose_slice_group != "auto":
+            profile_dir += f"-sg{transpose_slice_group}"
+        if factors_256 != "auto":
+            profile_dir += f"-f{factors_256.replace(',', '')}"
     args.out_dir = args.out_dir / profile_dir
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
@@ -321,22 +429,27 @@ def main() -> None:
             out_dir=args.out_dir,
         )
     elif spec.family == SMALL_3D:
-        if args.kernel == "fused_32_column":
-            metadata = emit_fused_32_column_kernel(
-                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
-                columns=args.length or 16,
-            )
-        elif args.kernel.endswith("cube"):
+        if args.kernel == "fused_16_cube":
             metadata = emit_fused_16_cube_kernel(
-                real_input="real" in args.kernel,
-                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+            )
+        elif args.kernel == "fused_32_real_plane":
+            metadata = emit_fused_32_real_plane_kernel(
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+            )
+        elif args.kernel == "fused_rect_plane":
+            metadata = emit_fused_rect_plane_kernel(
+                dtype=args.dtype,
+                direction=args.direction,
+                out_dir=args.out_dir,
+                plane_n0=args.fused_plane_n0,
+                plane_n1=args.fused_plane_n1,
+                middle_size=args.fused_plane_middle,
             )
         else:
-            metadata = emit_fused_plane_kernel(
-                n=16 if args.kernel.startswith("fused_16_") else 32,
-                real_input="real" in args.kernel,
+            metadata = emit_fused_16_plane_kernel(
                 dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
-                target=args.target,
+                plane_size=args.length or 16,
             )
     elif spec.family == REAL_POINTWISE:
         if args.length is None or args.length <= 0:
@@ -391,6 +504,7 @@ def main() -> None:
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,
+            hcu_full_smem=args.hcu_3d_full_smem,
             out_dir=args.out_dir,
         )
     else:

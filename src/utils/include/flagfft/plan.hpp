@@ -157,6 +157,7 @@ class PlanBuilder {
     std::string input_dtype;
     std::string output_dtype;
     std::string real_transform_kind;
+    std::string origin_real_transform_kind;
     std::string device_type;
     int64_t device_index = -1;
     std::string device_arch;

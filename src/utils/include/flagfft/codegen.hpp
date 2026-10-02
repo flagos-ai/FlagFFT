@@ -143,7 +143,6 @@ struct CompiledRawGraphNode final : CompiledRawNode {
   mutable std::unique_ptr<adaptor::CudaGraph> graph;
   mutable adaptor::DevicePtr graph_input = 0;
   mutable adaptor::DevicePtr graph_output = 0;
-  mutable int64_t graph_batch = 0;
   mutable bool graph_failed = false;
 };
 
@@ -562,7 +561,8 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   CompiledRawR2CLeafNode(int64_t length,
                          std::shared_ptr<JitKernel> kernel,
                          std::vector<DeviceAllocation> tables,
-                         DeviceAllocation twiddle = {});
+                         DeviceAllocation twiddle = {},
+                         int64_t perm_span = 0);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -572,6 +572,7 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
   DeviceAllocation twiddle;
+  int64_t perm_span;
   mutable Raw1DGraphState graph_state;
 };
 
@@ -668,6 +669,29 @@ struct CompiledRawPackedC2RNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> fft;
   DeviceAllocation twiddle;
   DeviceAllocation packed_input;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
+};
+
+// Experimental half-spectrum C2R path that folds packed preprocessing into
+// the input loads of a dense half-length complex leaf.
+struct CompiledRawPackedC2RFusedLeafNode final : CompiledRawNode {
+  CompiledRawPackedC2RFusedLeafNode(
+      int64_t length,
+      std::shared_ptr<JitKernel> kernel,
+      DeviceAllocation twiddle,
+      std::vector<DeviceAllocation> tables,
+      std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t length;
+  std::shared_ptr<JitKernel> kernel;
+  DeviceAllocation twiddle;
+  std::vector<DeviceAllocation> tables;
   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
   mutable std::shared_ptr<CompiledRawNode> layout_fallback;
   mutable std::mutex layout_mutex;
@@ -1056,23 +1080,21 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
-// Small cubic complex transform: one kernel handles both axes in each plane,
-// then the outer axis uses the existing strided leaf.
+// Small 16^3 complex transform: one kernel handles both axes in each 16x16
+// plane, then the outer axis uses the existing strided leaf.
 struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
-  CompiledRaw3DFusedPlaneNode(int64_t n,
-                              int64_t outer_rows_per_cube,
-                              std::shared_ptr<JitKernel> plane_fft,
-                              std::shared_ptr<CompiledRawNode> outer_fft,
-                              DeviceAllocation temp,
-                              DeviceAllocation tw_r,
-                              DeviceAllocation tw_i);
+  CompiledRaw3DFusedPlaneNode(int64_t plane_size,
+                                std::shared_ptr<JitKernel> plane_fft,
+                                std::shared_ptr<CompiledRawNode> outer_fft,
+                                DeviceAllocation temp,
+                                DeviceAllocation tw_r,
+                                DeviceAllocation tw_i);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
 
-  int64_t n;
-  int64_t outer_rows_per_cube;
+  int64_t plane_size;
   std::shared_ptr<JitKernel> plane_fft;
   std::shared_ptr<CompiledRawNode> outer_fft;
   DeviceAllocation temp;
@@ -1080,33 +1102,76 @@ struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
-struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
-  CompiledRaw3DFusedCubeNode(std::shared_ptr<JitKernel> kernel,
-                             DeviceAllocation tw_r,
-                             DeviceAllocation tw_i);
+// Experimental HCU path for a single 32^3 real transform. The fused plane
+// kernel transforms the two inner axes; the existing strided leaf handles
+// the outer axis before or after it, depending on transform direction.
+struct CompiledRaw3DRealFusedPlaneNode final : CompiledRawNode {
+  CompiledRaw3DRealFusedPlaneNode(int64_t n0,
+                                  int64_t n1,
+                                  int64_t n2,
+                                  bool inverse,
+                                  std::shared_ptr<JitKernel> plane_fft,
+                                  std::shared_ptr<CompiledRawNode> outer_fft,
+                                  DeviceAllocation temp,
+                                  DeviceAllocation tw_r,
+                                  DeviceAllocation tw_i);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
 
-  std::shared_ptr<JitKernel> kernel;
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  bool inverse;
+  std::shared_ptr<JitKernel> plane_fft;
+  std::shared_ptr<CompiledRawNode> outer_fft;
+  DeviceAllocation temp;
   DeviceAllocation tw_r;
   DeviceAllocation tw_i;
 };
 
-struct CompiledRaw3DColumnNode final : CompiledRawNode {
-  CompiledRaw3DColumnNode(int64_t outer_stride, int64_t columns,
-                          std::shared_ptr<JitKernel> kernel,
-                          DeviceAllocation tw_r,
-                          DeviceAllocation tw_i);
+// Experimental HCU path for 16x997x64 C2C: fuse the two short axes in one
+// 16x64 plane kernel, run the 997-point transform on contiguous rows, then
+// restore natural output order with one tiled transpose.
+struct CompiledRaw3DPrimePlaneNode final : CompiledRawNode {
+  CompiledRaw3DPrimePlaneNode(int64_t n0,
+                              int64_t n1,
+                              int64_t n2,
+                              std::shared_ptr<JitKernel> plane_fft,
+                              std::shared_ptr<CompiledRawNode> middle_fft,
+                              std::shared_ptr<JitKernel> output_transpose,
+                              DeviceAllocation temp1,
+                              DeviceAllocation temp2,
+                              DeviceAllocation tw_r,
+                              DeviceAllocation tw_i);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
 
-  int64_t outer_stride;
-  int64_t columns;
-  std::shared_ptr<JitKernel> kernel;
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<JitKernel> plane_fft;
+  std::shared_ptr<CompiledRawNode> middle_fft;
+  std::shared_ptr<JitKernel> output_transpose;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
+struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
+  CompiledRaw3DFusedCubeNode(std::shared_ptr<JitKernel> fft,
+                            DeviceAllocation tw_r,
+                            DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  std::shared_ptr<JitKernel> fft;
   DeviceAllocation tw_r;
   DeviceAllocation tw_i;
 };
@@ -1140,7 +1205,8 @@ struct CompiledRaw3DStridedNode final : CompiledRawNode {
 };
 
 // Large 3D C2C with a long middle axis: contiguous n1 FFT plus one transpose
-// can cost less than the fused n1 store, while n2 and n0 keep their fused stores.
+// can cost less than the fused n1 store.  The first n2 pass may also use a
+// separate transpose when its fused store is less efficient.
 struct CompiledRaw3DHybridNode final : CompiledRawNode {
   CompiledRaw3DHybridNode(int64_t n0,
                           int64_t n1,
@@ -1149,9 +1215,10 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
                           std::shared_ptr<CompiledRawNode> n1_fft,
                           std::shared_ptr<CompiledRawNode> n0_fft,
                           std::shared_ptr<JitKernel> perm_210,
-                          std::shared_ptr<JitKernel> perm_201,
                           DeviceAllocation temp1,
-                          DeviceAllocation temp2);
+                          DeviceAllocation temp2,
+                          std::shared_ptr<JitKernel> perm_021 = nullptr,
+                          std::shared_ptr<JitKernel> perm_201 = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1164,26 +1231,30 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_201;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };
 
-// Real 3D leaf path.  The innermost axis reads/writes the compact real
-// boundary directly.  The other two axes either run on the natural layout
-// (small cubes) or fuse their output permutations (large cubes).
+// Compact real 3D path.  The innermost axis reads/writes the real boundary
+// directly.  A non-leaf middle axis can run between two transposes while the
+// outer leaf still fuses its final permutation.
 struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   CompiledRaw3DRealLeafNode(int64_t n0,
                             int64_t n1,
                             int64_t n2,
                             bool inverse,
                             bool fused_store,
+                            bool n2_permuted,
+                            bool n1_strided_input,
                             std::shared_ptr<CompiledRawNode> n2_real_fft,
                             std::shared_ptr<CompiledRawNode> n1_fft,
                             std::shared_ptr<CompiledRawNode> n0_fft,
                             std::shared_ptr<JitKernel> perm_021,
                             DeviceAllocation temp1,
-                            DeviceAllocation temp2);
+                            DeviceAllocation temp2,
+                            std::shared_ptr<JitKernel> perm_210 = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1194,10 +1265,13 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   int64_t n2;
   bool inverse;
   bool fused_store;
+  bool n2_permuted;
+  bool n1_strided_input;
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
   std::shared_ptr<JitKernel> perm_021;
+  std::shared_ptr<JitKernel> perm_210;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };
@@ -1368,9 +1442,10 @@ class TritonCompiler {
 
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
-                                                                   const FFTRequest &request,
-                                                                   int64_t perm_span,
-                                                                   const std::string &perm_form);
+                                                                    const FFTRequest &request,
+                                                                    int64_t perm_span,
+                                                                    const std::string &perm_form,
+                                                                    bool strided_input = false);
   std::shared_ptr<CompiledRawNode> compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t outer_stride);

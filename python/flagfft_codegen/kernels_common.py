@@ -203,9 +203,12 @@ LeafIoMode = Literal[
     "contiguous",
     "strided",
     "permuted_store",
+    "strided_permuted_store",
+    "permuted_r2c",
     "contiguous_r2c",
     "permuted_r2c",
     "packed_r2c",
+    "packed_c2r",
     "contiguous_c2r",
     "bluestein_prepare_leaf",
     "bluestein_finish_leaf",
@@ -440,6 +443,14 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 
 
 def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
+    if _hcu_backend_active() and plan.length == 2048:
+        middle_batch_pack = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
+        if middle_batch_pack != "auto":
+            if middle_batch_pack not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4, 8, 16 or 32"
+                )
+            return int(middle_batch_pack)
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
     if _portable_leaf_backend_active():
@@ -474,7 +485,9 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
     return _profile_batch_pack_for(plan)
 
 
-def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
+def permuted_store_batch_pack_for(
+    plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None
+) -> int:
     """Batch slots per block for the fused permuted store.
 
     Four is the FP32 default.  With paired complex stores on MUSA, FP64 pack
@@ -493,12 +506,31 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
             if override not in {"1", "2", "4", "8"}:
                 raise ValueError("FLAGFFT_MUSA_3D_PACK must be 1, 2, 4 or 8")
             target_pack = int(override)
-    if _ix_backend_active():
-        override = os.getenv("FLAGFFT_IX_3D_PACK")
+    if _hcu_backend_active():
+        if force_full_smem:
+            target_pack = 8
+        override = os.getenv("FLAGFFT_HCU_3D_PACK")
         if override is not None and override != "auto":
-            if override not in {"1", "2", "4", "8"}:
-                raise ValueError("FLAGFFT_IX_3D_PACK must be 1, 2, 4 or 8")
+            if override not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError("FLAGFFT_HCU_3D_PACK must be 1, 2, 4, 8, 16 or 32")
             target_pack = int(override)
+        if pack_override is not None:
+            if pack_override not in {1, 2, 4, 8, 16, 32}:
+                raise ValueError("HCU final-axis pack must be 1, 2, 4, 8, 16 or 32")
+            target_pack = pack_override
+        if ((force_full_smem or os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0") == "1")
+                and len(plan.factors) == 2):
+            # The normal 48 KiB budget preserves occupancy.  For this HCU
+            # two-stage experiment, admit a pack only when its exchange fits
+            # the queried 64 KiB dynamic shared-memory limit.  Three-stage
+            # leaves use more buffers; the ordinary budget remains in force.
+            smem_limit = profile.shared_budget(64 * 1024)
+            smem_pack = max(
+                (pack for pack in (1, 2, 4, 8, 16, 32)
+                 if lane_block_for((plan.smem_size + (1 if pack >= 4 else 0)) * pack)
+                 * 2 * _real_element_bytes(plan.dtype) <= smem_limit),
+                default=1,
+            )
     return _floor_power_of_two(max(1, min(target_pack, smem_pack)))
 
 

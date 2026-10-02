@@ -26,6 +26,7 @@ from .kernels_common import (
     LeafPlan,
     _cooperative_warp_cap,
     _dtype_suffix,
+    _hcu_backend_active,
     _maca_knob,
     _npu_backend_active,
     _portable_leaf_backend_active,
@@ -128,8 +129,34 @@ def _metadata(
     n1: int,
     n2: int,
     dtype: str,
+    hcu_full_smem: bool = False,
 ) -> dict[str, Any]:
-    if kernel_type == "leaf_permuted_store" and (
+    if (
+        current_profile().backend == "hcu"
+        and kernel_type
+        in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
+    ):
+        pack_knob = None
+        for tag, knob in (
+            ("outer_first", "FLAGFFT_HCU_3D_FIRST_PACK"),
+            ("inner_middle", "FLAGFFT_HCU_3D_MIDDLE_PACK"),
+            ("outer_last", "FLAGFFT_HCU_3D_FINAL_PACK"),
+        ):
+            if f"permuted_store_{tag}_" in kernel_name:
+                pack_knob = knob
+                break
+        requested_pack = os.environ.get(pack_knob, "auto") if pack_knob else "auto"
+        final_pack = int(requested_pack) if requested_pack != "auto" else None
+        if (
+            final_pack is None
+            and current_profile().backend == "hcu"
+            and "permuted_store_inner_middle_c2r_cube_" in kernel_name
+        ):
+            final_pack = 8
+        batch_per_block = permuted_store_batch_pack_for(
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+        )
+    elif kernel_type == "leaf_permuted_store" and (
         _ix_backend_active()
         or (
             _npu_backend_active()
@@ -152,7 +179,9 @@ def _metadata(
                     raise ValueError("FLAGFFT_NPU_2D_TRANSPOSE_PACK must be 1, 2, 4 or 8")
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(
-            plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}
+            plan,
+            real_boundary=kernel_type
+            in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r", "leaf_packed_c2r"},
         )
     else:
         batch_per_block = 1
@@ -216,6 +245,24 @@ def _metadata(
         # normal leaf. Four warps caused a large batch-64 regression on V150;
         # the measured two-warp launch retains the one-kernel benefit.
         num_warps = 2
+    if profile.backend == "hcu" and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store"}:
+        is_final_axis = "permuted_store_outer_last_" in kernel_name
+        is_middle_axis = "permuted_store_inner_" in kernel_name
+        final_warps = os.environ.get("FLAGFFT_HCU_3D_FINAL_WARPS") if is_final_axis else None
+        middle_warps = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_WARPS") if is_middle_axis else None
+        fused_warps = os.environ.get("FLAGFFT_HCU_3D_FUSED_WARPS")
+        if final_warps not in (None, "auto"):
+            fused_warps = final_warps
+        if middle_warps not in (None, "auto"):
+            fused_warps = middle_warps
+        if fused_warps is not None:
+            try:
+                num_warps = int(fused_warps)
+            except ValueError as exc:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_FUSED_WARPS, FINAL_WARPS and MIDDLE_WARPS must be 1, 2, 4 or 8"
+                ) from exc
+            profile.validate(num_warps)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

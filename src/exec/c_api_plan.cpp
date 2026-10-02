@@ -13,7 +13,6 @@
 // limitations under the License.
 #include <cstdio>
 #include <cstdlib>
-#include <string>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
@@ -297,6 +296,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
           (plan->desc.type == FLAGFFT_Z2D || plan->desc.type == FLAGFFT_D2Z || plan->desc.type == FLAGFFT_Z2Z)
               ? FLAGFFT_Z2Z
               : FLAGFFT_C2C;
+      const std::string origin_real_transform_kind =
+          request_from_desc(plan->desc, "forward", plan->desc.rank).real_transform_kind;
 
       // RTRT decomposition: FFT along the innermost axis n2, then the middle
       // axis n1, then the outermost axis n0, with a 3D axis permutation
@@ -316,12 +317,16 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         axis_desc.idist = length;
         axis_desc.odist = length;
         axis_desc.batch = axis_batch;
-        FFTRequest axis_request = request_from_desc(axis_desc, direction, plan->desc.rank);
+        auto make_axis_request = [&](const std::string &axis_direction) {
+          FFTRequest request = request_from_desc(axis_desc, axis_direction, plan->desc.rank);
+          request.origin_real_transform_kind = origin_real_transform_kind;
+          return request;
+        };
+        FFTRequest axis_request = make_axis_request(direction);
         PlanNodePtr axis_plan = lookup_or_build_root(builder, axis_request);
         if (!raw_supported_node(axis_plan)) {
-          axis_plan = lookup_or_build_root(
-              builder,
-              request_from_desc(axis_desc, direction == "forward" ? "inverse" : "forward", plan->desc.rank));
+          axis_plan = lookup_or_build_root(builder,
+                                           make_axis_request(direction == "forward" ? "inverse" : "forward"));
         }
         if (!raw_supported_node(axis_plan)) {
           axis_plan = raw_compatible_rader_plan(length, builder, axis_request);
@@ -412,29 +417,27 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse =
             compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
       }
-      const char *ix_graph = std::getenv("FLAGFFT_IX_3D_GRAPH");
-      const char *ix_large_graph = std::getenv("FLAGFFT_IX_3D_GRAPH_LARGE");
-      const bool small_graph = (ix_graph == nullptr || (ix_graph[0] == '1' && ix_graph[1] == '\0')) &&
-          three_dim->n0 <= 32 && three_dim->n1 <= 32 && three_dim->n2 <= 32;
-      const bool large_graph = ix_large_graph != nullptr && ix_large_graph[0] == '1' &&
-          ix_large_graph[1] == '\0';
-      const char *ix_prime_graph = std::getenv("FLAGFFT_IX_3D_PRIME_GRAPH");
-      const bool prime_graph =
-          (ix_prime_graph == nullptr || (ix_prime_graph[0] == '1' && ix_prime_graph[1] == '\0')) &&
-          three_dim->n0 == 16 && three_dim->n1 == 997 && three_dim->n2 == 64 &&
-          plan->desc.batch == 1 &&
-          (plan->desc.type == FLAGFFT_C2C || plan->desc.type == FLAGFFT_R2C);
-      const bool screen_ix_graph = adaptor::backend_name() == "ix" &&
-          plan->executable.forward_request.device_arch == "71" &&
-          (small_graph || large_graph || prime_graph) &&
-          std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr && plan->desc.batch <= 4 &&
-          (plan->desc.type == FLAGFFT_C2C || plan->desc.type == FLAGFFT_R2C ||
-           plan->desc.type == FLAGFFT_C2R);
-      // Capturing a single fused cube kernel costs more than its direct launch.
-      const bool single_cube =
-          std::dynamic_pointer_cast<CompiledRaw3DFusedCubeNode>(plan->executable.forward) != nullptr ||
-          std::dynamic_pointer_cast<CompiledRaw3DFusedCubeNode>(plan->executable.inverse) != nullptr;
-      if (screen_ix_graph && !single_cube) {
+      const char *graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH");
+      const char *large_graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH_LARGE");
+      const int64_t graph_max_elements = large_graph_override != nullptr &&
+                                          std::string(large_graph_override) == "1"
+                                              ? 4 * 1024 * 1024
+                                              : 64 * 64 * 64;
+      const bool real_transform = plan->desc.type == FLAGFFT_R2C ||
+                                  plan->desc.type == FLAGFFT_D2Z ||
+                                  plan->desc.type == FLAGFFT_C2R ||
+                                  plan->desc.type == FLAGFFT_Z2D;
+      const bool hcu_prime_real_graph =
+          plan->executable.forward_request.device_type == "hcu" && real_transform &&
+          plan->desc.batch == 1 && three_dim->n0 == 16 && three_dim->n1 == 997 &&
+          three_dim->n2 == 64;
+      const int64_t total_elements =
+          plan->desc.batch * three_dim->n0 * three_dim->n1 * three_dim->n2;
+      const bool graph_allowed = plan->executable.forward_request.device_type == "hcu" &&
+                                 (total_elements <= graph_max_elements || hcu_prime_real_graph) &&
+                                 std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
+                                 (graph_override == nullptr || std::string(graph_override) != "0");
+      if (graph_allowed) {
         if (plan->executable.forward) {
           plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
         }
