@@ -2250,9 +2250,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
 #if defined(FLAGFFT_BACKEND_NPU)
   const char *npu_aiv256_group = std::getenv("FLAGFFT_NPU_3D_AIV256_GROUP");
+  const bool npu_pair_radix4 = flag_or_default("FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4", false);
   const bool npu_pair_fused_store = request.device_type == "npu" &&
       request.origin_rank == 3 && request.input_dtype == "complex64" &&
-      request.output_dtype == "complex64" && batch == 1 &&
+      request.output_dtype == "complex64" && batch > 0 && (batch == 1 || npu_pair_radix4) &&
       n0 == 256 && n1 == 256 && n2 == 256 &&
       n0_leaf && n1_leaf && n2_leaf &&
       n0_leaf->length == 256 && n1_leaf->length == 256 && n2_leaf->length == 256 &&
@@ -2261,14 +2262,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       flag_or_default("FLAGFFT_NPU_3D_AIV256_PAIR", false) &&
       flag_or_default("FLAGFFT_NPU_3D_AIV256_PAIR_STORE", false);
   if (npu_pair_fused_store) {
-    // The pair-output leaf writes each axis result as [frequency][transform].
+    // The pair-output leaf writes each axis result as [batch][frequency][transform].
     // Cycling the physical axis order gives these three layouts directly:
-    // [n2,n0,n1] -> [n1,n2,n0] -> [n0,n1,n2]. This retains the existing
-    // ThreeDimPlanNode and three axis children while removing its transpose
-    // launches on this bounded AIV256 path.
+    // [n2,n0,n1] -> [n1,n2,n0] -> [n0,n1,n2], with the outer batch preserved.
+    // This retains the existing ThreeDimPlanNode and three axis children while
+    // removing its transpose launches on this bounded AIV256 path.
     auto n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
+    if (npu_pair_radix4) {
+      const auto set_row_stride = [](
+          const std::shared_ptr<CompiledRawNode> &child, int64_t row_stride) {
+        auto aiv_fft = std::dynamic_pointer_cast<CompiledRawNpuAivFFT256Node>(child);
+        if (!aiv_fft || !aiv_fft->radix4_mode || !aiv_fft->transposed_store ||
+            aiv_fft->group_size != 8) {
+          throw std::runtime_error(
+              "3D AIV256 radix-4 fused store requires radix-4 group-of-eight children");
+        }
+        aiv_fft->transposed_output_row_stride = row_stride;
+      };
+      set_row_stride(n2_fft, n0 * n1);
+      set_row_stride(n1_fft, n0 * n2);
+      set_row_stride(n0_fft, n1 * n2);
+    }
     DeviceAllocation temp1 = adaptor::Memory(
         static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     DeviceAllocation temp2 = adaptor::Memory(

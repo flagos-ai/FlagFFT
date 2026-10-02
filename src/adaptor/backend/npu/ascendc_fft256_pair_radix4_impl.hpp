@@ -194,10 +194,14 @@ class Fft256AivPairRadix4Group8 {
                                           0,
                                           (output_row_stride_ - kRadix4GroupSize) * sizeof(uint64_t),
                                           0);
+    const uint64_t transform_global = static_cast<uint64_t>(output_transform_offset_) + transform;
+    const uint64_t output_batch = transform_global / output_row_stride_;
+    const uint64_t output_transform = transform_global % output_row_stride_;
+    const uint64_t output_batch_offset = output_batch * output_row_stride_ * kRadix4N;
     for (uint32_t slot = 0; slot < 4; ++slot) {
       GlobalTensor<uint64_t> dst;
-      dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_) + output_transform_offset_ +
-                          transform + slot * kOutputRowsPerPair * output_row_stride_);
+      dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_) + output_batch_offset +
+                          output_transform + slot * kOutputRowsPerPair * output_row_stride_);
       DataCopyPad(dst, output_complex[slot * kRadix4Quarter], output_params);
     }
   }

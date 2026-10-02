@@ -219,7 +219,8 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
                               int64_t group_size = 1,
                               bool pair_mode = false,
                               bool transposed_store = false,
-                              bool radix4_mode = false);
+                              bool radix4_mode = false,
+                              int64_t transposed_output_row_stride = 0);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -231,6 +232,7 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   bool pair_mode;
   bool transposed_store;
   bool radix4_mode;
+  int64_t transposed_output_row_stride;
 };
 #endif
 

@@ -540,20 +540,23 @@ CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     int64_t group_size,
     bool pair_mode,
     bool transposed_store,
-    bool radix4_mode)
+    bool radix4_mode,
+    int64_t transposed_output_row_stride)
     : indices(std::move(indices)),
       twiddles(std::move(twiddles)),
       group_size(group_size),
       pair_mode(pair_mode),
       transposed_store(transposed_store),
-      radix4_mode(radix4_mode) {}
+      radix4_mode(radix4_mode),
+      transposed_output_row_stride(transposed_output_row_stride) {}
 
 std::string CompiledRawNpuAivFFT256Node::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawNpuAivFFT256(group_size=" << group_size
       << ", pair_mode=" << pair_mode
       << ", transposed_store=" << transposed_store
-      << ", radix4_mode=" << radix4_mode << ")";
+      << ", radix4_mode=" << radix4_mode
+      << ", transposed_output_row_stride=" << transposed_output_row_stride << ")";
   return oss.str();
 }
 
@@ -567,6 +570,13 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
       (radix4_mode && (!pair_mode || !transposed_store || group_size != 8)) ||
       context.batch % group_size != 0 ||
       indices == nullptr || twiddles == nullptr) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  const int64_t output_row_stride =
+      transposed_output_row_stride > 0 ? transposed_output_row_stride : context.batch;
+  if (transposed_store && (output_row_stride < group_size ||
+                           output_row_stride > std::numeric_limits<int32_t>::max() ||
+                           output_row_stride % group_size != 0)) {
     return FLAGFFT_INVALID_SIZE;
   }
   const int64_t batch_chunk = block_limit_per_launch() * group_size;
@@ -586,7 +596,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
         pair_mode,
         transposed_store,
         radix4_mode,
-        transposed_store ? static_cast<int32_t>(context.batch) : 0,
+        transposed_store ? static_cast<int32_t>(output_row_stride) : 0,
         transposed_store ? static_cast<int32_t>(batch_offset) : 0,
         context.stream);
     if (result != FLAGFFT_SUCCESS) return result;

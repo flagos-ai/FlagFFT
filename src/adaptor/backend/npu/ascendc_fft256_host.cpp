@@ -39,8 +39,8 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
   if (transform_count <= 0 || (group_size != 1 && group_size != 4 && group_size != 8) ||
       (pair_mode && group_size != 8) || (transposed_store && !pair_mode) ||
       (radix4_mode && (!pair_mode || !transposed_store || group_size != 8)) ||
-      (transposed_store && output_row_stride < transform_count) ||
-      output_transform_offset < 0 || transform_count % group_size != 0) {
+      (transposed_store && output_row_stride < group_size) || output_transform_offset < 0 ||
+      transform_count % group_size != 0) {
     return FLAGFFT_INVALID_SIZE;
   }
   const uint32_t block_dim = static_cast<uint32_t>(transform_count / group_size);
