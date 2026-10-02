@@ -816,6 +816,17 @@ def _emit_tiled_transpose3d_jit_kernel(
         and maca_traversal == "row"
         and maca_slice_group == "2"
     )
+    maca_transpose_cache = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_CACHE", "default")
+        if _declared_backend() == "maca"
+        else "default"
+    )
+    if maca_transpose_cache not in {"default", "stream"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_CACHE must be default or stream")
+    if maca_transpose_cache == "stream" and not maca_grouped_slice_tile:
+        raise ValueError(
+            "stream cache mode requires the MACA complex64 pair16/8-warps/row/slice-group=2 path"
+        )
     fp64_mode = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
         if _declared_backend() == "maca"
@@ -859,6 +870,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         ) = _build_tiled_transpose3d_pair_slice_group_kernel_source(
             n0, n1, n2, order, tile=16, slice_group=2,
             tile_traversal=maca_traversal,
+            cache_mode=maca_transpose_cache,
         )
     elif dtype == "complex64" and _portable_transpose3d_supported() and maca_mode != "v1":
         (
