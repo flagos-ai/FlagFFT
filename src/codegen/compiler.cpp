@@ -2371,17 +2371,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64) {
-    auto parse_group_size = [](const char *setting) {
+    auto parse_group_size = [](const char *setting, int64_t batch) {
       if (setting == nullptr) return int32_t{1};
       const std::string value(setting);
+      // A single matrix benefits from four-way groups, while the row and
+      // column profiles show that batch workloads benefit from eight-way
+      // tiling. Keep this choice local to the existing FFT64 leaf plans.
+      if (value == "auto") return batch > 1 ? int32_t{8} : int32_t{4};
       if (value == "4") return int32_t{4};
       if (value == "8") return int32_t{8};
       return int32_t{1};
     };
     const char *row_group_setting = std::getenv("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP");
     const char *column_group_setting = std::getenv("FLAGFFT_NPU_2D_ASCENDC_COL_GROUP");
-    const int32_t row_group_size = parse_group_size(row_group_setting);
-    const int32_t col_group_size = parse_group_size(column_group_setting);
+    const int32_t row_group_size = parse_group_size(row_group_setting, batch);
+    const int32_t col_group_size = parse_group_size(column_group_setting, batch);
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     build_npu_aiv_fft64_tables(request, host_indices, host_twiddles);
