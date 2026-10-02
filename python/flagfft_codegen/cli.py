@@ -260,7 +260,7 @@ def main() -> None:
         final_pack = os.getenv("FLAGFFT_HCU_3D_FINAL_PACK", "auto")
         smem_swizzle = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE", "auto")
         swizzle_shift = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5")
-        r2c_leaf_swizzle = os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "0")
+        r2c_leaf_swizzle = os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "auto")
         factors_256 = os.getenv("FLAGFFT_HCU_3D_256_FACTORS", "auto")
         factors_2048 = os.getenv("FLAGFFT_HCU_3D_2048_FACTORS", "auto")
         r2c_fp64_factors_2048 = os.getenv("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS", "auto")
@@ -299,8 +299,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE must be auto, 0 or 1")
         if swizzle_shift not in {str(x) for x in range(1, 9)}:
             parser.error("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
-        if r2c_leaf_swizzle not in {"0", "1"}:
-            parser.error("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE must be 0 or 1")
+        if r2c_leaf_swizzle not in {"auto", "0", "1"}:
+            parser.error("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE must be auto, 0 or 1")
         valid_factors_256 = {
             "auto",
             "16,16",

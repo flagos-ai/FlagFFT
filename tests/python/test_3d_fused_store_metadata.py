@@ -342,18 +342,24 @@ def test_hcu_smem_swizzle_override_wins_over_auto(monkeypatch, override, dtype, 
 
 
 @pytest.mark.parametrize(
-    "io_mode,dtype,override,expected",
+    "io_mode,dtype,override,length,expected",
     (
-        ("contiguous_r2c", "complex128", "0", False),
-        ("contiguous_r2c", "complex128", "1", True),
-        ("contiguous_r2c", "complex64", "1", False),
-        ("permuted_r2c", "complex128", "1", True),
+        ("contiguous_r2c", "complex128", "0", 256, False),
+        ("contiguous_r2c", "complex128", "1", 256, True),
+        ("contiguous_r2c", "complex128", "auto", 256, True),
+        ("contiguous_r2c", "complex128", None, 256, True),
+        ("contiguous_r2c", "complex128", "auto", 64, False),
+        ("contiguous_r2c", "complex64", "1", 256, False),
+        ("permuted_r2c", "complex128", "1", 256, True),
     ),
 )
-def test_hcu_r2c_leaf_swizzle_is_opt_in_and_fp64_contiguous_only(
-    monkeypatch, io_mode, dtype, override, expected
+def test_hcu_r2c_leaf_swizzle_default_is_narrow_and_fp64_contiguous_only(
+    monkeypatch, io_mode, dtype, override, length, expected
 ):
-    monkeypatch.setenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", override)
+    if override is None:
+        monkeypatch.delenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", raising=False)
+    else:
+        monkeypatch.setenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", override)
     token = set_profile(
         BackendProfile(
             backend="hcu",
@@ -366,8 +372,8 @@ def test_hcu_r2c_leaf_swizzle_is_opt_in_and_fp64_contiguous_only(
     )
     try:
         plan = LeafPlan(
-            length=256,
-            factors=(16, 16),
+            length=length,
+            factors=(16, 16) if length == 256 else (8, 8),
             remainder=1,
             lanes=16,
             num_warps=1,

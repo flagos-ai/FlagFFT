@@ -1090,7 +1090,15 @@ def _emit_stage_block(
         and n & (n - 1) == 0
         and io_mode == "contiguous_r2c"
         and dtype == "complex128"
-        and os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "0") == "1"
+        # The default covers only the profiled 256-point FP64 R2C leaf.
+        # Other lengths remain available for explicit screening via =1.
+        and (
+            os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "auto") == "1"
+            or (
+                os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "auto") == "auto"
+                and n == 256
+            )
+        )
     )
     hcu_smem_swizzle = hcu_smem_swizzle or hcu_r2c_leaf_swizzle
     smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or (
