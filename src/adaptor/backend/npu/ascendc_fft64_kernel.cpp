@@ -51,6 +51,8 @@ class Fft64Aiv {
     if (transform >= transform_count_) return;
 
     const uint32_t source_base = stride_ == 1 ? transform * kN : (transform / kN) * kN * kN;
+    const uint32_t output_base =
+        stride_ == 1 ? transform * kN : (transform / kN) * kN * kN + transform % kN;
     GlobalTensor<float> src;
     src.SetGlobalBuffer(input_ptr_ + source_base * 2);
     LocalTensor<float> input_local = input_buf_.Get<float>();
@@ -125,8 +127,8 @@ class Fft64Aiv {
     PipeBarrier<PIPE_V>();
     GlobalTensor<float> dst_real;
     GlobalTensor<float> dst_imag;
-    dst_real.SetGlobalBuffer(output_ptr_ + base * 2);
-    dst_imag.SetGlobalBuffer(output_ptr_ + base * 2 + 1);
+    dst_real.SetGlobalBuffer(output_ptr_ + output_base * 2);
+    dst_imag.SetGlobalBuffer(output_ptr_ + output_base * 2 + 1);
     const uint32_t destination_gap = (2 * stride_ - 1) * sizeof(float);
     const DataCopyExtParams output_params(kN, sizeof(float), 0, destination_gap, 0);
     DataCopyPad(dst_real, current_real, output_params);
