@@ -27,7 +27,7 @@ constexpr uint32_t kOutputIndexCount = 2 * kN;
 constexpr uint32_t kLocalIndexCount = kOutputIndexBase + kOutputIndexCount;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 
-template <uint32_t GroupSize>
+template <uint32_t GroupSize, bool UseFma = false>
 class Fft256Aiv {
  public:
   __aicore__ inline void Init(GM_ADDR input,
@@ -45,7 +45,8 @@ class Fft256Aiv {
     constexpr uint32_t index_count = GroupSize == 1 ? kLocalIndexCount : 5 * group_n;
     constexpr uint32_t twiddle_count = GroupSize == 1 ? kTwiddleCount : 2 * group_n;
     pipe_.InitBuffer(input_buf_, 2 * group_n * sizeof(float));
-    pipe_.InitBuffer(work_buf_, 11 * group_n * sizeof(float));
+    constexpr uint32_t work_vectors = UseFma ? 10 : 11;
+    pipe_.InitBuffer(work_buf_, work_vectors * group_n * sizeof(float));
     pipe_.InitBuffer(index_buf_, index_count * sizeof(uint32_t));
     pipe_.InitBuffer(twiddle_buf_, twiddle_count * sizeof(float));
     pipe_.InitBuffer(output_buf_, 2 * group_n * sizeof(float));
@@ -56,7 +57,11 @@ class Fft256Aiv {
     if (transform >= transform_count_) return;
 
     if constexpr (GroupSize == 4 || GroupSize == 8) {
-      ProcessGrouped(transform);
+      if constexpr (UseFma) {
+        ProcessGroupedFma(transform);
+      } else {
+        ProcessGrouped(transform);
+      }
       return;
     }
 
@@ -200,6 +205,88 @@ class Fft256Aiv {
       current_imag = next_imag;
       next_imag = swap;
       PipeBarrier<PIPE_ALL>();
+    }
+
+    LocalTensor<float> merged = work[8 * group_n];
+    DataCopy(merged, current_real, group_n);
+    DataCopy(merged[group_n], current_imag, group_n);
+    PipeBarrier<PIPE_ALL>();
+    LocalTensor<float> output_local = output_buf_.Get<float>();
+    Gather(output_local, merged, index_local[output_index_base], 0, 2 * group_n);
+    PipeBarrier<PIPE_ALL>();
+    GlobalTensor<float> dst;
+    dst.SetGlobalBuffer(output_ptr_ + transform * 2 * kN);
+    DataCopy(dst, output_local, 2 * group_n);
+  }
+
+  __aicore__ inline void ProcessGroupedFma(uint32_t transform) {
+    constexpr uint32_t group_n = kN * GroupSize;
+    constexpr uint32_t output_index_base = group_n;
+    constexpr uint32_t stage_a_local = 3 * group_n;
+    constexpr uint32_t stage_b_local = 4 * group_n;
+    constexpr uint32_t stage_a_global = 3 * group_n;
+    constexpr uint32_t stage_b_global = 11 * group_n;
+
+    GlobalTensor<float> src;
+    src.SetGlobalBuffer(input_ptr_ + transform * 2 * kN);
+    LocalTensor<float> input_local = input_buf_.Get<float>();
+    DataCopy(input_local, src, 2 * group_n);
+
+    LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
+    DataCopy(index_local, indices_, group_n);
+    DataCopy(index_local[output_index_base], indices_[output_index_base], 2 * group_n);
+    PipeBarrier<PIPE_ALL>();
+
+    LocalTensor<float> work = work_buf_.Get<float>();
+    LocalTensor<float> current_real = work[0 * group_n];
+    LocalTensor<float> current_imag = work[1 * group_n];
+    LocalTensor<float> spare_real = work[2 * group_n];
+    LocalTensor<float> spare_imag = work[3 * group_n];
+    LocalTensor<float> a_real = work[4 * group_n];
+    LocalTensor<float> a_imag = work[5 * group_n];
+    LocalTensor<float> b_real = work[6 * group_n];
+    LocalTensor<float> b_imag = work[7 * group_n];
+    LocalTensor<float> product0 = work[8 * group_n];
+    LocalTensor<float> product1 = work[9 * group_n];
+
+    Gather(current_real, input_local, index_local, 0, group_n);
+    Gather(current_imag, input_local, index_local, sizeof(float), group_n);
+
+    LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
+    for (uint32_t stage = 0; stage < kStages; ++stage) {
+      const uint32_t stage_offset = stage * group_n;
+      DataCopy(index_local[stage_a_local], indices_[stage_a_global + stage_offset], group_n);
+      DataCopy(index_local[stage_b_local], indices_[stage_b_global + stage_offset], group_n);
+      DataCopy(twiddle_local, twiddles_[stage_offset], group_n);
+      DataCopy(twiddle_local[group_n], twiddles_[kStages * group_n + stage_offset], group_n);
+      PipeBarrier<PIPE_ALL>();
+
+      Gather(a_real, current_real, index_local[stage_a_local], 0, group_n);
+      Gather(a_imag, current_imag, index_local[stage_a_local], 0, group_n);
+      Gather(b_real, current_real, index_local[stage_b_local], 0, group_n);
+      Gather(b_imag, current_imag, index_local[stage_b_local], 0, group_n);
+
+      // Keep the complex multiply in six vector operations: two cross-product
+      // multiplies, two fused multiply-adds, and the final real/imaginary
+      // combination. FusedMulAdd computes dst = dst * src0 + src1.
+      Mul(product0, b_imag, twiddle_local[group_n], group_n);
+      Mul(product1, b_real, twiddle_local[group_n], group_n);
+      FusedMulAdd(b_real, twiddle_local, a_real, group_n);
+      Sub(b_real, b_real, product0, group_n);
+      FusedMulAdd(b_imag, twiddle_local, a_imag, group_n);
+      Add(b_imag, b_imag, product1, group_n);
+      PipeBarrier<PIPE_ALL>();
+
+      LocalTensor<float> old_current_real = current_real;
+      LocalTensor<float> old_current_imag = current_imag;
+      current_real = b_real;
+      current_imag = b_imag;
+      b_real = spare_real;
+      b_imag = spare_imag;
+      spare_real = a_real;
+      spare_imag = a_imag;
+      a_real = old_current_real;
+      a_imag = old_current_imag;
     }
 
     LocalTensor<float> merged = work[8 * group_n];
