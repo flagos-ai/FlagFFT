@@ -805,6 +805,92 @@ namespace {
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
+  void build_npu_aiv_fft_small_tables(const FFTRequest &request,
+                                      int64_t n,
+                                      int64_t group_size,
+                                      bool strided_columns,
+                                      std::vector<uint32_t> &indices,
+                                      std::vector<float> &twiddles) {
+    const int64_t stages = static_cast<int64_t>(std::log2(static_cast<double>(n)));
+    const int64_t group_n = n * group_size;
+    const int64_t output_index_base = group_n;
+    const int64_t stage_a_base = 3 * group_n;
+    const int64_t stage_b_base = stage_a_base + stages * group_n;
+    constexpr double pi = 3.141592653589793238462643383279502884;
+    indices.assign((3 + 2 * stages) * group_n, 0);
+    twiddles.assign(2 * stages * group_n, 0.0f);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+
+    for (int64_t group = 0; group < group_size; ++group) {
+      for (int64_t i = 0; i < n; ++i) {
+        int64_t value = i;
+        int64_t reversed = 0;
+        for (int64_t bit = 0; bit < stages; ++bit) {
+          reversed = (reversed << 1) | (value & 1);
+          value >>= 1;
+        }
+        const int64_t source_complex = strided_columns
+            ? reversed * group_size + group
+            : group * n + reversed;
+        indices[group * n + i] =
+            static_cast<uint32_t>(source_complex * 2 * sizeof(float));
+
+        for (int64_t stage = 0; stage < stages; ++stage) {
+          const int64_t length = int64_t{1} << (stage + 1);
+          const int64_t half = length / 2;
+          const int64_t butterfly_group = (i / length) * length;
+          const int64_t offset = i % length;
+          const bool upper = offset >= half;
+          const int64_t a = butterfly_group + (upper ? offset - half : offset);
+          const int64_t b = a + half;
+          const int64_t twiddle_offset = offset % half;
+          const double angle = sign * 2.0 * pi * static_cast<double>(twiddle_offset) /
+                               static_cast<double>(length);
+          const float negate = upper ? -1.0f : 1.0f;
+          const int64_t destination = group * n + i;
+          const int64_t table_index = stage * group_n + destination;
+          indices[stage_a_base + table_index] =
+              static_cast<uint32_t>((group * n + a) * sizeof(float));
+          indices[stage_b_base + table_index] =
+              static_cast<uint32_t>((group * n + b) * sizeof(float));
+          twiddles[table_index] = negate * static_cast<float>(std::cos(angle));
+          twiddles[stages * group_n + table_index] =
+              negate * static_cast<float>(std::sin(angle));
+        }
+      }
+    }
+
+    for (int64_t i = 0; i < 2 * group_n; ++i) {
+      const int64_t component = i % 2;
+      int64_t source_index = 0;
+      if (strided_columns) {
+        const int64_t row = i / (2 * group_size);
+        const int64_t column = (i / 2) % group_size;
+        source_index = column * n + row + component * group_n;
+      } else {
+        const int64_t transform = i / (2 * n);
+        const int64_t point = (i / 2) % n;
+        source_index = transform * n + point + component * group_n;
+      }
+      indices[output_index_base + i] =
+          static_cast<uint32_t>(source_index * sizeof(float));
+    }
+  }
+
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft_small_child(
+      const FFTRequest &request, int64_t n, int64_t stride, int64_t group_size) {
+    std::vector<uint32_t> host_indices;
+    std::vector<float> host_twiddles;
+    build_npu_aiv_fft_small_tables(
+        request, n, group_size, stride != 1, host_indices, host_twiddles);
+    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    return std::make_shared<CompiledRawNpuAivFFTSmallNode>(
+        n, stride, group_size, std::move(indices), std::move(twiddles));
+  }
+
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft64_child(const FFTRequest &request,
                                                             int64_t stride,
                                                             int32_t group_size,
@@ -1192,6 +1278,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   configure_single_transform_policies(request);
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    const bool use_npu_3d_aiv_small = request.device_type == "npu" &&
+        request.origin_rank == 3 && request.real_transform_kind.empty() &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        (leaf->length == 16 || leaf->length == 32) &&
+        flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
+    if (use_npu_3d_aiv_small) {
+      const int64_t group_size = leaf->length == 16 ? 8 : 4;
+      if (batch % group_size == 0) {
+        return make_npu_aiv_fft_small_child(request, leaf->length, 1, group_size);
+      }
+    }
     const char *npu_3d_aiv128 = std::getenv("FLAGFFT_NPU_3D_AIV128");
     const bool use_npu_3d_aiv128 = request.device_type == "npu" && request.origin_rank == 3 &&
                                    request.input_dtype == "complex64" &&
@@ -1985,6 +2082,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                                           const FFTRequest &request,
                                                                           int64_t outer_stride) {
+#if defined(FLAGFFT_BACKEND_NPU)
+  const bool use_npu_3d_aiv_small = request.device_type == "npu" &&
+      request.origin_rank == 3 && request.real_transform_kind.empty() &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      (leaf.length == 16 || leaf.length == 32) &&
+      flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
+  if (use_npu_3d_aiv_small) {
+    const int64_t group_size = leaf.length == 16 ? 8 : 4;
+    if (outer_stride % group_size == 0) {
+      return make_npu_aiv_fft_small_child(request, leaf.length, outer_stride, group_size);
+    }
+  }
+#endif
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_strided(target,
                                           request.direction,

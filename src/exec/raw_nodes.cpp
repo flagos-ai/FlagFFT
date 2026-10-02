@@ -16,6 +16,7 @@
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/ascendc_fft64.hpp"
+#include "adaptor/backend/npu/ascendc_fft_small.hpp"
 #include "adaptor/backend/npu/ascendc_fft128.hpp"
 #include "adaptor/backend/npu/ascendc_fft2048.hpp"
 #include "adaptor/backend/npu/ascendc_fft256.hpp"
@@ -524,6 +525,57 @@ CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(
       mode(mode),
       indices(std::move(indices)),
       twiddles(std::move(twiddles)) {
+}
+
+CompiledRawNpuAivFFTSmallNode::CompiledRawNpuAivFFTSmallNode(
+    int64_t length,
+    int64_t stride,
+    int64_t group_size,
+    std::shared_ptr<DeviceAllocation> indices,
+    std::shared_ptr<DeviceAllocation> twiddles)
+    : length(length),
+      stride(stride),
+      group_size(group_size),
+      indices(std::move(indices)),
+      twiddles(std::move(twiddles)) {}
+
+std::string CompiledRawNpuAivFFTSmallNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawNpuAivFFTSmall(n=" << length << ", stride=" << stride
+      << ", group_size=" << group_size << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawNpuAivFFTSmallNode::execute(
+    adaptor::DevicePtr input,
+    adaptor::DevicePtr output,
+    const RawExecutionContext &context) const {
+  const int64_t expected_group = length == 16 ? 8 : length == 32 ? 4 : 0;
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
+      (length != 16 && length != 32) || group_size != expected_group || stride <= 0 ||
+      (stride != 1 && (stride < group_size || stride % group_size != 0)) ||
+      context.batch % group_size != 0 || indices == nullptr || twiddles == nullptr) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+
+  constexpr int64_t kMaxBlocksPerLaunch = 65535;
+  const int64_t blocks = context.batch / group_size;
+  const int64_t element_bytes = 2 * sizeof(float);
+  for (int64_t block_offset = 0; block_offset < blocks;
+       block_offset += kMaxBlocksPerLaunch) {
+    const int64_t chunk_blocks = std::min(kMaxBlocksPerLaunch, blocks - block_offset);
+    const int64_t transform_offset = block_offset * group_size;
+    const int64_t pointer_offset = stride == 1
+        ? transform_offset * length * element_bytes
+        : (transform_offset / stride) * length * stride * element_bytes +
+              (transform_offset % stride) * element_bytes;
+    const flagfftResult result = adaptor::npu::launch_ascendc_fft_small(
+        static_cast<int32_t>(length), input + pointer_offset, output + pointer_offset,
+        indices->get(), twiddles->get(), static_cast<int32_t>(chunk_blocks),
+        static_cast<int32_t>(stride), context.stream);
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
 }
 
 std::string CompiledRawNpuAivFFT64Node::describe() const {
