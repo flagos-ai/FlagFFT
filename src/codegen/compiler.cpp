@@ -100,14 +100,15 @@ namespace {
                                         std::vector<float> &twiddles) {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
-    const int64_t compute_group_size = group_size == 8 ? 4 : group_size;
+    const int64_t compute_group_size = group_size > 4 ? 4 : group_size;
     const int64_t group_n = n * compute_group_size;
     const int64_t output_index_base = group_n;
     const int64_t stage_index_base = 3 * group_n;
     const int64_t stage_b_index_base = stage_index_base + stages * group_n;
     const int64_t group_index_count = 3 * group_n + 2 * stages * group_n;
+    const int64_t compute_group_count = group_size / compute_group_size;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign(group_index_count + (group_size == 8 ? group_n : 0), 0);
+    indices.assign(group_index_count + (compute_group_count - 1) * group_n, 0);
     twiddles.assign(2 * stages * group_n, 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
@@ -168,23 +169,27 @@ namespace {
       }
     }
 
-    if (group_size == 8) {
-      // The block loads an eight-transform tile, but computes two groups of
-      // four sequentially to keep the FFT work/index/twiddle buffers within
-      // the group-of-four UB footprint. Append the second half's input map.
-      for (int64_t group = 0; group < compute_group_size; ++group) {
-        for (int64_t i = 0; i < n; ++i) {
-          int64_t value = i;
-          int64_t reversed = 0;
-          for (int64_t bit = 0; bit < stages; ++bit) {
-            reversed = (reversed << 1) | (value & 1);
-            value >>= 1;
+    if (compute_group_count > 1) {
+      // Load a wider tile, then compute successive four-transform chunks to
+      // keep the FFT work/index/twiddle buffers within the group-of-four UB
+      // footprint. Append one input map for each later chunk.
+      for (int64_t chunk = 1; chunk < compute_group_count; ++chunk) {
+        for (int64_t group = 0; group < compute_group_size; ++group) {
+          for (int64_t i = 0; i < n; ++i) {
+            int64_t value = i;
+            int64_t reversed = 0;
+            for (int64_t bit = 0; bit < stages; ++bit) {
+              reversed = (reversed << 1) | (value & 1);
+              value >>= 1;
+            }
+            const int64_t input_complex_index = strided_columns
+                ? reversed * group_size + group + chunk * compute_group_size
+                : (group + chunk * compute_group_size) * n + reversed;
+            const int64_t destination = group_index_count +
+                (chunk - 1) * group_n + group * n + i;
+            indices[destination] =
+                static_cast<uint32_t>(input_complex_index * 2 * sizeof(float));
           }
-          const int64_t input_complex_index = strided_columns
-              ? reversed * group_size + group + compute_group_size
-              : (group + compute_group_size) * n + reversed;
-          indices[group_index_count + group * n + i] =
-              static_cast<uint32_t>(input_complex_index * 2 * sizeof(float));
         }
       }
     }
@@ -2380,6 +2385,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       if (value == "auto") return batch > 1 ? int32_t{8} : int32_t{4};
       if (value == "4") return int32_t{4};
       if (value == "8") return int32_t{8};
+      if (value == "16") return int32_t{16};
       return int32_t{1};
     };
     const char *row_group_setting = std::getenv("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP");

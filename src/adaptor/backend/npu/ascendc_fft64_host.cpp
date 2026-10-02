@@ -28,7 +28,7 @@ flagfftResult launch_ascendc_fft64(DevicePtr input,
                                    int32_t group_size,
                                    StreamHandle stream) {
   if (transform_count <= 0 || (stride != 1 && stride != 64) ||
-      (group_size != 1 && group_size != 4 && group_size != 8)) {
+      (group_size != 1 && group_size != 4 && group_size != 8 && group_size != 16)) {
     return FLAGFFT_INVALID_SIZE;
   }
   const uint32_t status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft64)(static_cast<uint32_t>(transform_count),

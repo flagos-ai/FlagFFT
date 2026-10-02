@@ -55,9 +55,13 @@ class Fft64Aiv {
     // VECIN block, so reserve one block per input point.
     const bool grouped = group_size_ > 1;
     const uint32_t input_group_n = kN * group_size_;
-    const uint32_t compute_group_n = group_size_ == 8 ? kComputeGroupN : input_group_n;
-    const uint32_t group_index_count =
-        kComputeIndexCount + (group_size_ == 8 ? kComputeGroupN : 0);
+    const uint32_t compute_group_n = group_size_ > kComputeGroupSize
+        ? kComputeGroupN
+        : input_group_n;
+    const uint32_t group_count = group_size_ / kComputeGroupSize;
+    const uint32_t group_index_count = group_size_ > kComputeGroupSize
+        ? kComputeIndexCount + (group_count - 1) * kComputeGroupN
+        : kComputeIndexCount;
     const uint32_t group_twiddle_count = 2 * kStages * compute_group_n;
     pipe_.InitBuffer(input_buf_, (grouped ? input_group_n * 2 : kN * 8) * sizeof(float));
     pipe_.InitBuffer(work_buf_, (grouped ? kWorkArrays * compute_group_n : kWorkArrays * kN) * sizeof(float));
@@ -78,8 +82,8 @@ class Fft64Aiv {
       ProcessGroup4(transform);
       return;
     }
-    if (group_size_ == 8) {
-      ProcessGroup8(transform);
+    if (group_size_ > kComputeGroupSize) {
+      ProcessGrouped(transform);
       return;
     }
     const uint32_t batch_index = transform / kN;
@@ -228,13 +232,14 @@ class Fft64Aiv {
     TransformGroup4(0, source_base, false);
   }
 
-  __aicore__ inline void ProcessGroup8(uint32_t transform) {
-    constexpr uint32_t groups_per_matrix = kN / 8;
+  __aicore__ inline void ProcessGrouped(uint32_t transform) {
+    const uint32_t groups_per_matrix = kN / group_size_;
+    const uint32_t compute_group_count = group_size_ / kComputeGroupSize;
     const uint32_t batch_index = transform / groups_per_matrix;
     const uint32_t group = transform % groups_per_matrix;
     const bool strided = stride_ == kN;
     const uint32_t source_base = batch_index * kN * kN +
-        (strided ? group * 8 : group * 8 * kN);
+        (strided ? group * group_size_ : group * group_size_ * kN);
 
     LocalTensor<float> input_local = input_buf_.Get<float>();
     if (strided) {
@@ -242,24 +247,32 @@ class Fft64Aiv {
       src_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + source_base * 2));
       LocalTensor<uint64_t> input_complex = input_local.ReinterpretCast<uint64_t>();
       const DataCopyExtParams input_params(
-          kN, 8 * sizeof(uint64_t), (kN - 8) * kComplexBytes, 0, 0);
+          kN, group_size_ * sizeof(uint64_t),
+          (kN - group_size_) * kComplexBytes, 0, 0);
       const DataCopyPadExtParams<uint64_t> input_pad;
       DataCopyPad(input_complex, src_complex, input_params, input_pad);
     } else {
       GlobalTensor<float> src;
       src.SetGlobalBuffer(input_ptr_ + source_base * 2);
-      DataCopy(input_local, src, 2 * kN * 8);
+      DataCopy(input_local, src, 2 * kN * group_size_);
     }
 
     LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
     LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
-    DataCopy(index_local, indices_, kComputeIndexCount + kComputeGroupN);
+    const uint32_t group_index_count =
+        kComputeIndexCount + (compute_group_count - 1) * kComputeGroupN;
+    DataCopy(index_local, indices_, group_index_count);
     DataCopy(twiddle_local, twiddles_, kComputeTwiddleCount);
     PipeBarrier<PIPE_ALL>();
 
-    TransformGroup4(0, source_base, true);
-    const uint32_t second_output_base = source_base + (strided ? 4 : 4 * kN);
-    TransformGroup4(kComputeIndexCount, second_output_base, false);
+    for (uint32_t chunk = 0; chunk < compute_group_count; ++chunk) {
+      const uint32_t input_index_offset = chunk == 0
+          ? 0
+          : kComputeIndexCount + (chunk - 1) * kComputeGroupN;
+      const uint32_t output_base = source_base +
+          (strided ? chunk * kComputeGroupSize : chunk * kComputeGroupSize * kN);
+      TransformGroup4(input_index_offset, output_base, chunk + 1 < compute_group_count);
+    }
   }
 
   __aicore__ inline void TransformGroup4(uint32_t input_index_offset,
