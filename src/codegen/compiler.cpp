@@ -635,8 +635,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 #if defined(FLAGFFT_BACKEND_NPU)
     const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
     const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
-                                  request.raw_dim == 1 && request.input_dtype == "complex64" &&
-                                  request.output_dtype == "complex64" && leaf->length == 64 &&
+                                  request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+                                  leaf->length == 64 &&
                                   npu_3d_aiv64 != nullptr && std::string(npu_3d_aiv64) == "1";
     if (use_npu_3d_aiv64) {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV64_GROUP");
