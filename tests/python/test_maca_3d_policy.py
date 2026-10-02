@@ -11,10 +11,16 @@ from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 
 
 def test_maca_3d_packing_scope_and_override(monkeypatch):
-    for name in ("FLAGFFT_MACA_BATCH_PACK", "FLAGFFT_MACA_3D_N64_PACK",
-                 "FLAGFFT_MACA_3D_N128_PACK", "FLAGFFT_MACA_EXCHANGE",
-                 "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_3D_PERMSTORE_PACK",
-                 "FLAGFFT_MACA_3D_FINAL_STORE"):
+    for name in (
+        "FLAGFFT_MACA_BATCH_PACK",
+        "FLAGFFT_MACA_3D_N64_PACK",
+        "FLAGFFT_MACA_3D_N32_FP64_PACK",
+        "FLAGFFT_MACA_3D_N128_PACK",
+        "FLAGFFT_MACA_EXCHANGE",
+        "FLAGFFT_MACA_VEC_IO",
+        "FLAGFFT_MACA_3D_PERMSTORE_PACK",
+        "FLAGFFT_MACA_3D_FINAL_STORE",
+    ):
         monkeypatch.delenv(name, raising=False)
     profile = set_profile(
         BackendProfile.from_device(
@@ -24,6 +30,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     )
     short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex64")
     double_short = LeafPlan(64, (4, 4, 4), 1, 16, 2, (), 64, dtype="complex128")
+    double32 = LeafPlan(32, (4, 4, 2), 1, 8, 2, (), 32, dtype="complex128")
     single = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex64")
     double = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex128")
     single128 = LeafPlan(128, (4, 4, 4, 2), 1, 32, 2, (), 128, dtype="complex64")
@@ -33,6 +40,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
         try:
             assert contiguous_batch_pack_for(short) == 1
             assert contiguous_batch_pack_for(double_short) == 1
+            assert contiguous_batch_pack_for(double32) == 1
             assert contiguous_batch_pack_for(single) == 1
             assert contiguous_batch_pack_for(double) == 1
             assert permuted_store_batch_pack_for(short) == 4
@@ -45,9 +53,20 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
         try:
             assert contiguous_batch_pack_for(short) == 8
             assert contiguous_batch_pack_for(double_short) == 8
+            assert contiguous_batch_pack_for(double32) == 8
             assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
             assert contiguous_batch_pack_for(single128) == 2
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "4")
+            assert contiguous_batch_pack_for(double32) == 4
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "3")
+            try:
+                contiguous_batch_pack_for(double32)
+            except ValueError as error:
+                assert "must be 1, 2, 4 or 8" in str(error)
+            else:
+                raise AssertionError("unsupported MACA 32-point FP64 pack was accepted")
+            monkeypatch.delenv("FLAGFFT_MACA_3D_N32_FP64_PACK")
             assert permuted_store_batch_pack_for(short) == 8
             assert permuted_store_batch_pack_for(single128) == 16
             assert permuted_store_batch_pack_for(single) == 4

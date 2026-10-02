@@ -456,6 +456,13 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
                 return 8
             if plan.length == 64 and plan.dtype == "complex128":
                 return 8
+            if plan.length == 32 and plan.dtype == "complex128":
+                pack_32_fp64 = os.getenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "8")
+                if pack_32_fp64 not in {"1", "2", "4", "8"}:
+                    raise ValueError(
+                        "FLAGFFT_MACA_3D_N32_FP64_PACK must be 1, 2, 4 or 8"
+                    )
+                return int(pack_32_fp64)
             if plan.length == 128:
                 pack_128 = os.getenv("FLAGFFT_MACA_3D_N128_PACK", "2")
                 if pack_128 not in {"1", "2", "4"}:
