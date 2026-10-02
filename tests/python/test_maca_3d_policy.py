@@ -7,7 +7,12 @@ from flagfft_codegen.kernels_common import (
     contiguous_batch_pack_for,
     permuted_store_batch_pack_for,
 )
-from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
+from flagfft_codegen.target import (
+    reset_maca_3d_c2c32_single_cube,
+    reset_maca_3d_default,
+    set_maca_3d_c2c32_single_cube,
+    set_maca_3d_default,
+)
 
 
 def test_maca_3d_packing_scope_and_override(monkeypatch):
@@ -53,19 +58,24 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
         try:
             assert contiguous_batch_pack_for(short) == 8
             assert contiguous_batch_pack_for(double_short) == 8
-            assert contiguous_batch_pack_for(double32) == 8
+            assert contiguous_batch_pack_for(double32) == 1
             assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
             assert contiguous_batch_pack_for(single128) == 2
-            monkeypatch.setenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "4")
-            assert contiguous_batch_pack_for(double32) == 4
-            monkeypatch.setenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "3")
+            single_cube = set_maca_3d_c2c32_single_cube(True)
             try:
-                contiguous_batch_pack_for(double32)
-            except ValueError as error:
-                assert "must be 1, 2, 4 or 8" in str(error)
-            else:
-                raise AssertionError("unsupported MACA 32-point FP64 pack was accepted")
+                assert contiguous_batch_pack_for(double32) == 8
+                monkeypatch.setenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "4")
+                assert contiguous_batch_pack_for(double32) == 4
+                monkeypatch.setenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "3")
+                try:
+                    contiguous_batch_pack_for(double32)
+                except ValueError as error:
+                    assert "must be 1, 2, 4 or 8" in str(error)
+                else:
+                    raise AssertionError("unsupported MACA 32-point FP64 pack was accepted")
+            finally:
+                reset_maca_3d_c2c32_single_cube(single_cube)
             monkeypatch.delenv("FLAGFFT_MACA_3D_N32_FP64_PACK")
             assert permuted_store_batch_pack_for(short) == 8
             assert permuted_store_batch_pack_for(single128) == 16

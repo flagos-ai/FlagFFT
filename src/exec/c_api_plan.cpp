@@ -262,6 +262,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
           std::make_shared<ThreeDimPlanNode>(n0, n1, n2, ThreeDimStrategy::RTRT, n2_plan, n1_plan, n0_plan);
       plan->executable.forward_request = request_from_desc(plan->desc, "forward");
       plan->executable.inverse_request = request_from_desc(plan->desc, "inverse");
+      plan->executable.forward_request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
+      plan->executable.inverse_request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
     } else {
       // 1D FFT: original path
       plan->executable.forward_request = request_from_desc(plan->desc, "forward");

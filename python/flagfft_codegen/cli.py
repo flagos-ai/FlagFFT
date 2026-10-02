@@ -61,6 +61,7 @@ from .target import (
     set_maca_1d_batch_default,
     set_maca_2d_single_default,
     set_maca_3d_default,
+    set_maca_3d_c2c32_single_cube,
 )
 from .maca_tail_policy import set_maca_tail_mode, variant_suffix
 
@@ -171,6 +172,8 @@ def main() -> None:
     )
     parser.add_argument("--maca-3d", action="store_true",
                         help="enable scoped MACA rank-3 axis packing")
+    parser.add_argument("--maca-3d-c2c32-single-cube", action="store_true",
+                        help="enable the MACA single-cube FP64 C2C 32^3 packing policy")
     parser.add_argument(
         "--compile-script",
         type=Path,
@@ -195,6 +198,7 @@ def main() -> None:
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
     set_maca_3d_default(args.maca_3d)
+    set_maca_3d_c2c32_single_cube(args.maca_3d_c2c32_single_cube)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}

@@ -236,6 +236,8 @@ namespace {
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
   maca_3d_policy_ = request.device_type == "maca" && request.origin_rank == 3;
+  maca_3d_c2c32_single_cube_policy_ = request.device_type == "maca" &&
+                                      request.maca_3d_c2c32_single_cube;
   ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
   ix_ct_batch_policy_ = ix_ct_batch_policy_enabled(request);
   ix_real_single_pack_ = request.device_type == "ix" && request.device_arch == "71" &&
@@ -1442,7 +1444,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     }
     auto plane_fft = compile_kernel(KernelKey::fused_32_plane(
         triton_target_for_request(request), request.direction, request.input_dtype));
-    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, n1 * n2);
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * n2);
     DeviceAllocation temp = adaptor::Memory(
         static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
     return std::make_shared<CompiledRaw3DFused32PlaneNode>(

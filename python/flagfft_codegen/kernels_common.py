@@ -33,6 +33,7 @@ from .target import (
     maca_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
     maca_3d_default_enabled,
+    maca_3d_c2c32_single_cube_enabled,
 )
 from .maca_tail_policy import resource_default
 
@@ -456,7 +457,11 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
                 return 8
             if plan.length == 64 and plan.dtype == "complex128":
                 return 8
-            if plan.length == 32 and plan.dtype == "complex128":
+            if (plan.length == 32 and plan.dtype == "complex128"
+                    and maca_3d_c2c32_single_cube_enabled()):
+                # This shape-specific policy was measured on the outer
+                # strided leaf of a single 32^3 FP64 C2C transform. Batched
+                # length-32 transforms keep the normal rank-3 pack.
                 pack_32_fp64 = os.getenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "8")
                 if pack_32_fp64 not in {"1", "2", "4", "8"}:
                     raise ValueError(
