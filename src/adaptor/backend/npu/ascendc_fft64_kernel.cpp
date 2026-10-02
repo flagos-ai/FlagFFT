@@ -71,9 +71,10 @@ class Fft64Aiv {
 
   __aicore__ inline void Process() {
     const uint32_t transform = GetBlockIdx();
-    if (transform >= transform_count_ || (stride_ != 1 && stride_ != kN)) return;
+    if (transform >= transform_count_ || stride_ == 0 ||
+        (group_size_ != 1 && stride_ != kN)) return;
 
-    const bool strided = stride_ == kN;
+    const bool strided = stride_ != 1;
     if (group_size_ == 4) {
       ProcessGroup4(transform);
       return;
@@ -82,9 +83,10 @@ class Fft64Aiv {
       ProcessGroup8(transform);
       return;
     }
-    const uint32_t batch_index = transform / kN;
-    const uint32_t column = strided ? transform % kN : 0;
-    const uint32_t source_base = strided ? batch_index * kN * kN + column : transform * kN;
+    const uint32_t batch_index = strided ? transform / stride_ : transform / kN;
+    const uint32_t column = strided ? transform % stride_ : 0;
+    const uint32_t source_base =
+        strided ? batch_index * kN * stride_ + column : transform * kN;
     const uint32_t output_base = source_base;
 
     GlobalTensor<float> src;
@@ -96,8 +98,7 @@ class Fft64Aiv {
       GlobalTensor<uint64_t> src_complex;
       src_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + source_base * 2));
       LocalTensor<uint64_t> input_complex = input_local.ReinterpretCast<uint64_t>();
-      const DataCopyExtParams input_params(
-          kN, sizeof(uint64_t), (kN - 1) * kComplexBytes, 0, 0);
+      const DataCopyExtParams input_params(kN, sizeof(uint64_t), (stride_ - 1) * kComplexBytes, 0, 0);
       const DataCopyPadExtParams<uint64_t> input_pad;
       DataCopyPad(input_complex, src_complex, input_params, input_pad);
     } else {

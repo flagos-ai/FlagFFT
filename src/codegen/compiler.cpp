@@ -190,6 +190,36 @@ namespace {
     }
   }
 
+#if defined(FLAGFFT_BACKEND_NPU)
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft64_child(const FFTRequest &request,
+                                                            int64_t stride,
+                                                            int32_t group_size) {
+    std::vector<uint32_t> host_indices;
+    std::vector<float> host_twiddles;
+    if (group_size == 1) {
+      build_npu_aiv_fft64_tables(request, host_indices, host_twiddles);
+    } else {
+      build_npu_aiv_fft64_group_tables(request, group_size, stride != 1, host_indices, host_twiddles);
+    }
+
+    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    return std::make_shared<CompiledRawNpuAivFFT64Node>(stride, group_size, std::move(indices),
+                                                       std::move(twiddles));
+  }
+
+  int32_t npu_aiv_fft64_group_size(const char *setting, int64_t batch) {
+    if (setting == nullptr) return 1;
+    const std::string value(setting);
+    if (value == "auto") return batch > 1 ? 8 : 4;
+    if (value == "4") return 4;
+    if (value == "8") return 8;
+    return 1;
+  }
+#endif
+
   void mark_npu_2d_portable_leaf(KernelKey &key, const FFTRequest &request) {
     key.npu_portable_leaf = request.device_type == "npu" && request.origin_rank == 2;
   }
@@ -2626,6 +2656,33 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                                    batch);
   }
 
+#if defined(FLAGFFT_BACKEND_NPU)
+  const char *npu_aiv_fft64 = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV");
+  const bool use_npu_aiv_fft64_real =
+      request.device_type == "npu" && request.origin_rank == 2 &&
+      request.input_dtype == "float32" && request.output_dtype == "complex64" &&
+      n0 == 64 && n1 == 64 && npu_aiv_fft64 != nullptr && std::string(npu_aiv_fft64) == "1" &&
+      std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
+      std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
+  if (use_npu_aiv_fft64_real) {
+    const int32_t row_group_size = npu_aiv_fft64_group_size(
+        std::getenv("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP"), batch);
+    auto expand_kernel = compile_real_to_complex_kernel(request, n1);
+    auto row_fft = make_npu_aiv_fft64_child(request, 1, row_group_size);
+    auto pack_kernel = compile_r2c_half_pack_kernel(request, n1);
+    auto col_fft = make_npu_aiv_fft64_child(request, half_n1, 1);
+    DeviceAllocation row_fft_buf(
+        static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    return std::make_shared<CompiledRaw2DR2CRCNode>(n0,
+                                                    n1,
+                                                    std::move(expand_kernel),
+                                                    std::move(row_fft),
+                                                    std::move(pack_kernel),
+                                                    std::move(col_fft),
+                                                    std::move(row_fft_buf));
+  }
+#endif
+
   // MACA FP32 path: compile the innermost real boundary directly so
   // the 2D schedule does not materialize a full complex row matrix merely to
   // discard its Hermitian half.  Restrict this to row plans that the existing
@@ -2788,6 +2845,36 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_c2r_node(node->row_plan, row_request, batch),
                                                    batch);
   }
+
+#if defined(FLAGFFT_BACKEND_NPU)
+  const char *npu_aiv_fft64 = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV");
+  const bool use_npu_aiv_fft64_real =
+      request.device_type == "npu" && request.origin_rank == 2 &&
+      request.input_dtype == "complex64" && request.output_dtype == "float32" &&
+      n0 == 64 && n1 == 64 && npu_aiv_fft64 != nullptr && std::string(npu_aiv_fft64) == "1" &&
+      std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
+      std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
+  if (use_npu_aiv_fft64_real) {
+    const int32_t row_group_size = npu_aiv_fft64_group_size(
+        std::getenv("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP"), batch);
+    auto col_fft = make_npu_aiv_fft64_child(request, half_n1, 1);
+    auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n1);
+    auto row_fft = make_npu_aiv_fft64_child(request, 1, row_group_size);
+    auto pack_kernel = compile_complex_to_real_kernel(request, n1);
+    DeviceAllocation temp_half(
+        static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes));
+    DeviceAllocation temp_full(
+        static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    return std::make_shared<CompiledRaw2DC2RRCNode>(n0,
+                                                    n1,
+                                                    std::move(col_fft),
+                                                    std::move(expand_kernel),
+                                                    std::move(row_fft),
+                                                    std::move(pack_kernel),
+                                                    std::move(temp_half),
+                                                    std::move(temp_full));
+  }
+#endif
 
   // Symmetric MACA FP32 path.  The column inverse and compact-layout
   // transposes run first; the existing 1D C2R boundary node then consumes the
