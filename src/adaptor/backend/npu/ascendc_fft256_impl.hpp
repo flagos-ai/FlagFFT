@@ -55,8 +55,8 @@ class Fft256Aiv {
     const uint32_t transform = GetBlockIdx() * GroupSize;
     if (transform >= transform_count_) return;
 
-    if constexpr (GroupSize == 4) {
-      ProcessGroup4(transform);
+    if constexpr (GroupSize == 4 || GroupSize == 8) {
+      ProcessGrouped(transform);
       return;
     }
 
@@ -136,7 +136,7 @@ class Fft256Aiv {
     DataCopy(dst, output_local, kOutputIndexCount);
   }
 
-  __aicore__ inline void ProcessGroup4(uint32_t transform) {
+  __aicore__ inline void ProcessGrouped(uint32_t transform) {
     constexpr uint32_t group_n = kN * GroupSize;
     constexpr uint32_t output_index_base = group_n;
     constexpr uint32_t stage_a_local = 3 * group_n;

@@ -209,12 +209,12 @@ namespace {
     }
   }
 
-  void build_npu_aiv_fft256_group4_tables(const FFTRequest &request,
-                                          std::vector<uint32_t> &indices,
-                                          std::vector<float> &twiddles) {
+  void build_npu_aiv_fft256_grouped_tables(const FFTRequest &request,
+                                           int64_t group_size,
+                                           std::vector<uint32_t> &indices,
+                                           std::vector<float> &twiddles) {
     constexpr int64_t n = 256;
     constexpr int64_t stages = 8;
-    constexpr int64_t group_size = 4;
     constexpr int64_t group_n = n * group_size;
     constexpr int64_t output_index_base = group_n;
     constexpr int64_t stage_a_base = 3 * group_n;
@@ -803,13 +803,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       int64_t group_size = 1;
       if (group_setting != nullptr && std::string(group_setting) == "4") {
         group_size = 4;
+      } else if (group_setting != nullptr && std::string(group_setting) == "8") {
+        group_size = 8;
       } else if (group_setting != nullptr && std::string(group_setting) != "1") {
-        throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_GROUP must be 1 or 4");
+        throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_GROUP must be 1, 4, or 8");
       }
       std::vector<uint32_t> host_indices;
       std::vector<float> host_twiddles;
-      if (group_size == 4) {
-        build_npu_aiv_fft256_group4_tables(request, host_indices, host_twiddles);
+      if (group_size > 1) {
+        build_npu_aiv_fft256_grouped_tables(request, group_size, host_indices, host_twiddles);
       } else {
         build_npu_aiv_fft256_tables(request, host_indices, host_twiddles);
       }
