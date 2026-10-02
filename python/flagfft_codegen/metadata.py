@@ -127,19 +127,12 @@ def _metadata(
     n1: int,
     n2: int,
     dtype: str,
-    prime_n: int = 0,
 ) -> dict[str, Any]:
     if kernel_type in {"leaf_permuted_store", "leaf_r2c_permuted_store"}:
         batch_per_block = permuted_store_batch_pack_for(plan)
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(
-            plan,
-            real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"},
-            prime_n=(
-                prime_n
-                if kernel_type in {"leaf_bluestein_prepare", "leaf_bluestein_finish"}
-                else 0
-            ),
+            plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r"}
         )
     else:
         batch_per_block = 1

@@ -662,7 +662,6 @@ def emit_jit_kernel(
         n1=n1,
         n2=n2,
         dtype=dtype,
-        prime_n=prime_n,
     )
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block

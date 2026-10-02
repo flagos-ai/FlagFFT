@@ -12,7 +12,6 @@ from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
 
 def test_maca_3d_packing_scope_and_override(monkeypatch):
     for name in ("FLAGFFT_MACA_BATCH_PACK", "FLAGFFT_MACA_3D_N64_PACK",
-                 "FLAGFFT_MACA_3D_PRIME_2048_PACK",
                  "FLAGFFT_MACA_3D_N128_PACK", "FLAGFFT_MACA_EXCHANGE",
                  "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_3D_PERMSTORE_PACK"):
         monkeypatch.delenv(name, raising=False)
@@ -28,7 +27,6 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     double = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex128")
     single128 = LeafPlan(128, (4, 4, 4, 2), 1, 32, 2, (), 128, dtype="complex64")
     long_middle = LeafPlan(2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex64")
-    prime_middle = LeafPlan(2048, (16, 16, 8), 1, 128, 4, (), 2048, dtype="complex128")
     try:
         off = set_maca_3d_default(False)
         try:
@@ -49,35 +47,6 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             assert contiguous_batch_pack_for(single) == 2
             assert contiguous_batch_pack_for(double) == 2
             assert contiguous_batch_pack_for(single128) == 2
-            assert contiguous_batch_pack_for(prime_middle, prime_n=997) == 1
-            monkeypatch.setenv("FLAGFFT_MACA_3D_PRIME_2048_PACK", "2")
-            assert contiguous_batch_pack_for(prime_middle, prime_n=997) == 2
-            assert contiguous_batch_pack_for(prime_middle) == 1
-            from pathlib import Path
-
-            from flagfft_codegen.metadata import _metadata
-
-            metadata = _metadata(
-                module_path=Path("candidate.py"),
-                kernel_name="bluestein_prepare_leaf_kernel",
-                arg_names=["in_ptr"],
-                plan=prime_middle,
-                kernel_type="leaf_bluestein_prepare",
-                n1=0,
-                n2=0,
-                dtype="complex128",
-                prime_n=997,
-            )
-            assert metadata["batch_per_block"] == 2
-            assert metadata["num_warps"] == 8
-            monkeypatch.setenv("FLAGFFT_MACA_3D_PRIME_2048_PACK", "4")
-            try:
-                contiguous_batch_pack_for(prime_middle, prime_n=997)
-            except ValueError as error:
-                assert "FLAGFFT_MACA_3D_PRIME_2048_PACK must be 1 or 2" in str(error)
-            else:
-                raise AssertionError("unsupported MACA 3D prime pack was accepted")
-            monkeypatch.delenv("FLAGFFT_MACA_3D_PRIME_2048_PACK")
             assert permuted_store_batch_pack_for(short) == 8
             assert permuted_store_batch_pack_for(single128) == 16
             monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "16")
