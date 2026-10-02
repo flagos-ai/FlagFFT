@@ -85,21 +85,22 @@ class Transpose3DAiv {
     in_valid[axes_[1]] = out_valid[1];
     in_valid[axes_[2]] = out_valid[2];
 
-    const uint64_t input_offset = static_cast<uint64_t>(batch_index) * volume_ +
-        static_cast<uint64_t>(in_start[0]) * dims_[1] * dims_[2] +
-        static_cast<uint64_t>(in_start[1]) * dims_[2] + in_start[2];
-    GlobalTensor<uint64_t> input_global;
-    input_global.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + 2 * input_offset));
     LocalTensor<uint64_t> input_complex = input_buf_.Get<float>().ReinterpretCast<uint64_t>();
-    const uint32_t input_rows = in_valid[0] * in_valid[1];
     const uint32_t input_block_bytes = in_valid[2] * sizeof(uint64_t);
-    const DataCopyExtParams input_params(input_rows,
-                                         input_block_bytes,
-                                         (dims_[2] - in_valid[2]) * sizeof(uint64_t),
-                                         (kTile - in_valid[2]) * sizeof(uint64_t),
-                                         0);
     const DataCopyPadExtParams<uint64_t> input_pad;
-    DataCopyPad(input_complex, input_global, input_params, input_pad);
+    for (uint32_t row0 = 0; row0 < in_valid[0]; ++row0) {
+      const uint64_t input_offset = static_cast<uint64_t>(batch_index) * volume_ +
+          static_cast<uint64_t>(in_start[0] + row0) * dims_[1] * dims_[2] +
+          static_cast<uint64_t>(in_start[1]) * dims_[2] + in_start[2];
+      GlobalTensor<uint64_t> input_global;
+      input_global.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + 2 * input_offset));
+      const DataCopyExtParams input_params(in_valid[1],
+                                           input_block_bytes,
+                                           (dims_[2] - in_valid[2]) * sizeof(uint64_t),
+                                           (kTile - in_valid[2]) * sizeof(uint64_t),
+                                           0);
+      DataCopyPad(input_complex[row0 * kTile * kTile], input_global, input_params, input_pad);
+    }
     LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
     DataCopy(index_local, indices_, kTileFloatCount);
     PipeBarrier<PIPE_ALL>();
@@ -109,20 +110,23 @@ class Transpose3DAiv {
     Gather(output_local, input_local, index_local, 0, kTileFloatCount);
     PipeBarrier<PIPE_ALL>();
 
-    const uint64_t output_offset = static_cast<uint64_t>(batch_index) * volume_ +
-        static_cast<uint64_t>(out_start[0]) * out_dims_[1] * out_dims_[2] +
-        static_cast<uint64_t>(out_start[1]) * out_dims_[2] + out_start[2];
-    GlobalTensor<uint64_t> output_global;
-    output_global.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + 2 * output_offset));
     LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
-    const uint32_t output_rows = out_valid[0] * out_valid[1];
     const uint32_t output_block_bytes = out_valid[2] * sizeof(uint64_t);
-    const DataCopyExtParams output_params(output_rows,
-                                          output_block_bytes,
-                                          (kTile - out_valid[2]) * sizeof(uint64_t),
-                                          (out_dims_[2] - out_valid[2]) * sizeof(uint64_t),
-                                          0);
-    DataCopyPad(output_global, output_complex, output_params);
+    for (uint32_t row0 = 0; row0 < out_valid[0]; ++row0) {
+      const uint64_t output_offset = static_cast<uint64_t>(batch_index) * volume_ +
+          static_cast<uint64_t>(out_start[0] + row0) * out_dims_[1] * out_dims_[2] +
+          static_cast<uint64_t>(out_start[1]) * out_dims_[2] + out_start[2];
+      GlobalTensor<uint64_t> output_global;
+      output_global.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + 2 * output_offset));
+      const DataCopyExtParams output_params(out_valid[1],
+                                            output_block_bytes,
+                                            (kTile - out_valid[2]) * sizeof(uint64_t),
+                                            (out_dims_[2] - out_valid[2]) * sizeof(uint64_t),
+                                            0);
+      DataCopyPad(output_global,
+                  output_complex[row0 * kTile * kTile],
+                  output_params);
+    }
   }
 
  private:
