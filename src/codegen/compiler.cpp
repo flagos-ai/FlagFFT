@@ -1464,6 +1464,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       maca_flag_or_default("FLAGFFT_MACA_3D_FIRST_STORE", maca_first_store_default);
   const bool maca_first_store_fp64_enabled = maca_first_store_enabled &&
       request.device_type == "maca" && request.input_dtype == "complex128";
+  // Opt-in cube screen: test whether saving one full-volume transpose by
+  // fusing the first store is viable for the transpose-dominated 256^3
+  // C2C path. Keep the production default on the validated long-axis shapes.
+  const bool maca_cube_first_store_screen = maca_first_store_enabled &&
+      request.device_type == "maca" && batch == 1 &&
+      n0 == 256 && n1 == 256 && n2 == 256;
   const bool first_store_dtype_supported = request.input_dtype == "complex64" ||
       maca_first_store_fp64_enabled;
   const bool use_long_axis_hybrid =
@@ -1471,8 +1477,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       maca_first_store_enabled;
   if (use_long_axis_hybrid && first_store_dtype_supported &&
       n2_leaf && n1_leaf && n0_leaf &&
-      n1 >= 1024 &&
-      n1 >= 4 * std::max(n0, n2) &&
+      ((n1 >= 1024 && n1 >= 4 * std::max(n0, n2)) ||
+       maca_cube_first_store_screen) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
