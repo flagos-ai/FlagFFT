@@ -19,8 +19,8 @@ using namespace AscendC;
 namespace {
 constexpr uint32_t kN = 64;
 constexpr uint32_t kStages = 6;
-constexpr uint32_t kLocalIndexCount = kN + 2 * kStages * kN;
-constexpr uint32_t kStageIndexBase = kN;
+constexpr uint32_t kStageIndexBase = 2 * kN;
+constexpr uint32_t kLocalIndexCount = kStageIndexBase + 2 * kStages * kN;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
 constexpr uint32_t kComplexBytes = 2 * sizeof(float);
@@ -40,11 +40,15 @@ class Fft64Aiv {
     transform_count_ = transform_count;
     stride_ = stride;
 
-    pipe_.InitBuffer(input_buf_, kN * 2 * sizeof(float));
+    // Strided DataCopyPad moves each 8-byte complex value through a 32-byte
+    // VECIN block, so reserve one block per input point.
+    pipe_.InitBuffer(input_buf_, kN * 8 * sizeof(float));
     pipe_.InitBuffer(work_buf_, kWorkArrays * kN * sizeof(float));
     pipe_.InitBuffer(index_buf_, kLocalIndexCount * sizeof(uint32_t));
     pipe_.InitBuffer(twiddle_buf_, kTwiddleCount * sizeof(float));
-    pipe_.InitBuffer(output_buf_, 2 * kN * sizeof(float));
+    // MTE3 likewise reads one 8-byte complex value from each 32-byte VECOUT
+    // block when emitting a strided column.
+    pipe_.InitBuffer(output_buf_, kN * 8 * sizeof(float));
   }
 
   __aicore__ inline void Process() {
@@ -61,8 +65,8 @@ class Fft64Aiv {
     src.SetGlobalBuffer(input_ptr_ + source_base * 2);
     LocalTensor<float> input_local = input_buf_.Get<float>();
     if (strided) {
-      // Read one complex value from each matrix row into a compact local vector.
-      // DataCopyExtParams strides are byte offsets between adjacent blocks.
+      // Read one complex value from each matrix row into padded VECIN blocks.
+      // DataCopyExtParams strides are byte offsets for the GM source operand.
       GlobalTensor<uint64_t> src_complex;
       src_complex.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(input_ptr_ + source_base * 2));
       LocalTensor<uint64_t> input_complex = input_local.ReinterpretCast<uint64_t>();
@@ -77,8 +81,8 @@ class Fft64Aiv {
 
     LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
     LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
-    DataCopy(index_local, indices_, kN);
-    DataCopy(index_local[kN], indices_[kStageIndexBase],
+    DataCopy(index_local, indices_, 2 * kN);
+    DataCopy(index_local[kStageIndexBase], indices_[kStageIndexBase],
              2 * kStages * kN);
     DataCopy(twiddle_local, twiddles_, kTwiddleCount);
     PipeBarrier<PIPE_ALL>();
@@ -96,13 +100,14 @@ class Fft64Aiv {
     LocalTensor<float> product1 = work[9 * kN];
     LocalTensor<float> product2 = work[10 * kN];
 
-    Gather(current_real, input_local, index_local, 0, kN);
-    Gather(current_imag, input_local, index_local, sizeof(float), kN);
+    const LocalTensor<uint32_t> input_indices = strided ? index_local[kN] : index_local;
+    Gather(current_real, input_local, input_indices, 0, kN);
+    Gather(current_imag, input_local, input_indices, sizeof(float), kN);
 
     for (uint32_t stage = 0; stage < kStages; ++stage) {
-      const LocalTensor<uint32_t> stage_a = index_local[kN + stage * kN];
+      const LocalTensor<uint32_t> stage_a = index_local[kStageIndexBase + stage * kN];
       const LocalTensor<uint32_t> stage_b =
-          index_local[kN + kStages * kN + stage * kN];
+          index_local[kStageIndexBase + kStages * kN + stage * kN];
       const LocalTensor<float> twiddle_real = twiddle_local[stage * kN];
       const LocalTensor<float> twiddle_imag = twiddle_local[kStages * kN + stage * kN];
 
@@ -129,12 +134,12 @@ class Fft64Aiv {
     }
 
     if (strided) {
-      // Pack complex values locally before the strided MTE3 write. AIV scalar
-      // stores to this GM column layout are not reliable on 910B.
+      // Pack complex values into padded VECOUT blocks before the strided MTE3
+      // write. AIV scalar stores to this GM column layout are not reliable.
       LocalTensor<float> output_local = output_buf_.Get<float>();
       for (uint32_t i = 0; i < kN; ++i) {
-        output_local.SetValue(2 * i, current_real.GetValue(i));
-        output_local.SetValue(2 * i + 1, current_imag.GetValue(i));
+        output_local.SetValue(8 * i, current_real.GetValue(i));
+        output_local.SetValue(8 * i + 1, current_imag.GetValue(i));
       }
       PipeBarrier<PIPE_ALL>();
       GlobalTensor<uint64_t> dst_complex;

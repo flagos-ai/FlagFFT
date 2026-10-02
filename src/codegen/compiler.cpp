@@ -41,7 +41,7 @@ namespace {
     constexpr int64_t n = 64;
     constexpr int64_t stages = 6;
     constexpr double pi = 3.141592653589793238462643383279502884;
-    indices.assign(n + 2 * stages * n, 0);
+    indices.assign(2 * n + 2 * stages * n, 0);
     twiddles.assign(2 * stages * n, 0.0f);
     const double sign = request.direction == "inverse" ? 1.0 : -1.0;
 
@@ -54,13 +54,16 @@ namespace {
       }
       // Gather offsets are byte offsets into the interleaved complex input.
       indices[i] = static_cast<uint32_t>(reversed * 2 * sizeof(float));
+      // A strided DataCopyPad stores each complex point at the start of a
+      // 32-byte VECIN block.
+      indices[n + i] = static_cast<uint32_t>(reversed * 8 * sizeof(float));
     }
 
     for (int64_t stage = 0; stage < stages; ++stage) {
       const int64_t length = int64_t{1} << (stage + 1);
       const int64_t half = length / 2;
-      const int64_t a_base = n + stage * n;
-      const int64_t b_base = n + stages * n + stage * n;
+      const int64_t a_base = 2 * n + stage * n;
+      const int64_t b_base = 2 * n + stages * n + stage * n;
       const int64_t imag_base = stages * n;
       for (int64_t i = 0; i < n; ++i) {
         const int64_t group = (i / length) * length;
