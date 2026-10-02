@@ -43,7 +43,6 @@ from .kernels_layout import (
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
     _build_tiled_transpose3d_pair_slice_group_kernel_source,
-    _build_tiled_transpose3d_slice_group_kernel_source,
     _build_tiled_transpose3d_tile_kernel_source,
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
@@ -817,14 +816,6 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
-    maca_grouped_slice_tile_fp64 = (
-        _declared_backend() == "maca"
-        and dtype == "complex128"
-        and fp64_mode == "tile16vec"
-        and maca_warps == "4"
-        and maca_slice_group == "2"
-        and tuple(sorted((n0, n1, n2))) == (64, 128, 2048)
-    )
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -840,23 +831,6 @@ def _emit_tiled_transpose3d_jit_kernel(
             grid_x,
         ) = _build_tiled_transpose3d_pair_slice_group_kernel_source(
             n0, n1, n2, order, tile=16, slice_group=2,
-            tile_traversal=maca_traversal,
-        )
-    elif maca_grouped_slice_tile_fp64:
-        (
-            kernel_name,
-            kernel_source,
-            arg_names,
-            grid_x,
-        ) = _build_tiled_transpose3d_slice_group_kernel_source(
-            n0,
-            n1,
-            n2,
-            order,
-            dtype=dtype,
-            tile=16,
-            slice_group=2,
-            vec_store=True,
             tile_traversal=maca_traversal,
         )
     elif dtype == "complex64" and _portable_transpose3d_supported() and maca_mode != "v1":

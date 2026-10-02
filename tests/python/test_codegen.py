@@ -943,31 +943,6 @@ def test_tiled_transpose3d_pair_slice_group_emits_sequential_2d_register_tiles()
     assert grid_x == 128 * 16 * 16
 
 
-def test_tiled_transpose3d_fp64_slice_group_preserves_vector_store() -> None:
-    from flagfft_codegen.kernels_layout import (
-        _build_tiled_transpose3d_slice_group_kernel_source,
-    )
-
-    kernel_name, source, _, grid_x = _build_tiled_transpose3d_slice_group_kernel_source(
-        128,
-        2048,
-        64,
-        "201",
-        dtype="complex128",
-        tile=16,
-        slice_group=2,
-        vec_store=True,
-        tile_traversal="col",
-    )
-
-    assert kernel_name.endswith("_f64_t16_tile_vec_sliceg2seq")
-    assert "for group_offset in tl.static_range(0, 2):" in source
-    assert "src_r = tl.load(in_ptr + src_base" in source
-    assert "dst_pair = tl.join(dst_r, dst_i)" in source
-    assert "tl.store(out_ptr + pair_addr, dst_pair" in source
-    assert grid_x == 32768
-
-
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit, kernels_common
 
