@@ -18,6 +18,7 @@ using namespace AscendC;
 
 namespace {
 constexpr uint32_t kTile = 16;
+constexpr uint32_t kTileDataBlocks = kTile * sizeof(uint64_t) / 32;
 constexpr uint32_t kTileComplexCount = kTile * kTile * kTile;
 constexpr uint32_t kTileFloatCount = 2 * kTileComplexCount;
 
@@ -114,7 +115,7 @@ class Transpose3DAiv {
       const DataCopyExtParams input_params(in_valid[1],
                                            input_block_bytes,
                                            (dims_[2] - in_valid[2]) * sizeof(uint64_t),
-                                           (kTile - in_valid[2]) * sizeof(uint64_t),
+                                           kTileDataBlocks - (in_valid[2] + 3) / 4,
                                            0);
       DataCopyPad(input_complex[row0 * kTile * kTile], input_global, input_params, input_pad);
     }
@@ -141,7 +142,7 @@ class Transpose3DAiv {
       output_global.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + 2 * output_offset));
       const DataCopyExtParams output_params(out_valid[1],
                                             output_block_bytes,
-                                            (kTile - out_valid[2]) * sizeof(uint64_t),
+                                            kTileDataBlocks - (out_valid[2] + 3) / 4,
                                             (out_dims_[2] - out_valid[2]) * sizeof(uint64_t),
                                             0);
       DataCopyPad(output_global,
