@@ -198,6 +198,26 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
           "FLAGFFT_HCU_3D_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
     }
   }
+  if (context.maca_3d_c2c32_single_cube && n == 32) {
+    const char *more_lanes = std::getenv("FLAGFFT_MACA_3D_C2C32_MORE_LANES");
+    if (more_lanes != nullptr && std::string(more_lanes) == "0") {
+      return {32};
+    }
+    if (more_lanes != nullptr && std::string(more_lanes) != "1") {
+      throw std::runtime_error("FLAGFFT_MACA_3D_C2C32_MORE_LANES must be 0 or 1");
+    }
+    // 1D MACA batch-1 tests found that more short radix stages can raise lane
+    // participation. Enable the measured 3D single-cube variant narrowly.
+    return {4, 4, 2};
+  }
+  if (context.device_type == "maca" && context.origin_rank == 3) {
+    // This order retains the 128 collaboration lanes and 4-warps block while
+    // slightly improving the direct C550 2048-point 3D axis. Keep it off the
+    // Bluestein convolution used by the 997-point transform.
+    if (context.device_arch == "102" && n == 2048 && context.requested_n == n) {
+      return {16, 8, 16};
+    }
+  }
   // Use two short codelets for 32^3 axes instead of five radix-two stages.
   if ((context.device_type == "musa" || context.device_type == "hcu") &&
       context.origin_rank == 3 && n == 32) {

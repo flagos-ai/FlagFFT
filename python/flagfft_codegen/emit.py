@@ -46,6 +46,8 @@ from .kernels_layout import (
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
     _build_tiled_transpose3d_slice_group_kernel_source,
+    _build_tiled_transpose3d_pair_slice_group_kernel_source,
+    _build_tiled_transpose3d_pair_slice_row_group_kernel_source,
     _build_tiled_transpose3d_tile_kernel_source,
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
@@ -808,14 +810,180 @@ def _emit_tiled_transpose3d_jit_kernel(
             if raw_warps not in {"4", "8"}:
                 raise ValueError("FLAGFFT_NPU_3D_TRANSPOSE_WARPS must be 4 or 8")
             transpose_warps = int(raw_warps)
-    if dtype == "complex64" and _transpose3d_v2_supported():
+
+    if _declared_backend() == "maca":
+        maca_mode_default = (
+            "pair16sg2rg2"
+            if dtype == "complex64" and tuple(sorted((n0, n1, n2))) == (256, 256, 256)
+            else "pair16"
+        )
+        maca_mode = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", maca_mode_default)
+    else:
+        maca_mode = "tile32"
+    if maca_mode not in {
+        "tile16", "tile32", "tile64", "pair16", "pair32", "pair64", "pair64x16",
+        "pair16rg2", "pair16sg2rg2", "v1",
+    }:
+        raise ValueError(
+            "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, "
+            "pair32, pair64, pair64x16, pair16rg2, pair16sg2rg2 or v1"
+        )
+    if maca_mode == "pair16sg2rg2" and (
+        dtype != "complex64"
+        or tuple(sorted((n0, n1, n2)))
+        not in {(64, 128, 2048), (256, 256, 256)}
+    ):
+        # The experimental row/slice-group kernel is only validated for
+        # these FP32 shapes. An all-suite environment must leave every other
+        # dtype and shape on the established pair16 path.
+        maca_mode = "pair16"
+    if maca_mode == "pair16rg2" and (
+        dtype != "complex64" or tuple(sorted((n0, n1, n2))) != (256, 256, 256)
+    ):
+        # This screen only specializes the FP32 cube. Let an all-suite run
+        # keep unrelated dtypes and shapes on their regular transpose policy.
+        maca_mode = "pair16"
+    pair64_cube_1024_candidate = (
+        _declared_backend() == "maca"
+        and maca_mode in {"pair64", "pair64x16"}
+        and dtype == "complex64"
+        and tuple(sorted((n0, n1, n2))) == (256, 256, 256)
+        and os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS") == "16"
+    )
+    maca_warps = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8" if dtype == "complex64" else "4")
+        if _declared_backend() == "maca"
+        else "4"
+    )
+    if maca_warps == "16" and not pair64_cube_1024_candidate:
+        # Keep a broad transpose screen from leaking its 1024-thread CTA
+        # setting into other dtypes and shapes. The vendor-matched tile is a
+        # narrowly scoped FP32 cube experiment only.
+        maca_mode = "pair16"
+        maca_warps = "8" if dtype == "complex64" else "4"
+    if maca_warps not in {"2", "4", "8", "16"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4, 8 or the scoped pair64 cube value 16")
+    traversal_default = "col"
+    if (
+        _declared_backend() == "maca"
+        and dtype == "complex64"
+        and tuple(sorted((n0, n1, n2)))
+        in {(64, 128, 2048), (256, 256, 256)}
+    ):
+        traversal_default = "row"
+    maca_traversal = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", traversal_default)
+        if _declared_backend() == "maca"
+        else "col"
+    )
+    if maca_traversal not in {"col", "row"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL must be col or row")
+    maca_slice_group_default = (
+        "2"
+        if (
+            _declared_backend() == "maca"
+            and dtype == "complex64"
+            and maca_mode == "pair16"
+            and maca_warps == "8"
+            and maca_traversal == "row"
+            and tuple(sorted((n0, n1, n2))) in {
+                (64, 128, 2048),
+                (256, 256, 256),
+            }
+        )
+        else "1"
+    )
+    maca_slice_group = os.environ.get(
+        "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", maca_slice_group_default
+    )
+    if maca_slice_group not in {"1", "2"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP must be 1 or 2")
+    maca_grouped_slice_tile = (
+        _declared_backend() == "maca"
+        and dtype == "complex64"
+        and maca_mode == "pair16"
+        and maca_warps == "8"
+        and maca_traversal == "row"
+        and maca_slice_group == "2"
+    )
+    fp64_mode = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
+        if _declared_backend() == "maca"
+        else "v1"
+    )
+    if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
+    if maca_mode == "pair64x16" and _portable_transpose3d_supported():
+        if dtype != "complex64" or maca_warps != "16" or maca_traversal != "row":
+            raise ValueError("pair64x16 requires complex64, 16 warps and row traversal")
+        if tuple(sorted((n0, n1, n2))) != (256, 256, 256):
+            raise ValueError("pair64x16 is only screened for the MACA 256^3 cube")
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=(64, 16), pair=True,
+            tile_traversal=maca_traversal,
+        )
+    elif maca_mode == "pair16rg2" and _portable_transpose3d_supported():
+        if dtype != "complex64" or maca_warps != "8" or maca_traversal != "row":
+            raise ValueError("pair16rg2 requires complex64, 8 warps and row traversal")
+        if tuple(sorted((n0, n1, n2))) != (256, 256, 256):
+            raise ValueError("pair16rg2 is only screened for the MACA 256^3 cube")
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
+            n0, n1, n2, order, tile=16, slice_group=1,
+            row_group=2,
+            tile_traversal=maca_traversal,
+        )
+    elif maca_mode == "pair16sg2rg2" and _portable_transpose3d_supported():
+        if dtype != "complex64" or maca_warps != "8" or maca_traversal != "row":
+            raise ValueError(
+                "pair16sg2rg2 requires complex64, 8 warps and row traversal"
+            )
+        if tuple(sorted((n0, n1, n2))) not in {
+            (64, 128, 2048),
+            (256, 256, 256),
+        }:
+            raise ValueError("pair16sg2rg2 is only screened for the MACA cube and long shapes")
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
+            n0, n1, n2, order, tile=16, slice_group=2,
+            row_group=2,
+            tile_traversal=maca_traversal,
+        )
+    elif dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
             kernel_source,
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
-    elif _portable_transpose3d_supported() and (
+    elif maca_grouped_slice_tile and _portable_transpose3d_supported():
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_pair_slice_group_kernel_source(
+            n0, n1, n2, order, tile=16, slice_group=2, tile_traversal=maca_traversal
+        )
+    elif dtype == "complex64" and _declared_backend() == "maca" and _portable_transpose3d_supported() and maca_mode != "v1":
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=int(maca_mode[4:]), pair=maca_mode.startswith("pair"),
+            tile_traversal=maca_traversal
+        )
+    elif dtype == "complex128" and _declared_backend() == "maca" and fp64_mode != "v1":
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=int(fp64_mode[4:6]),
+            vec_store=fp64_mode.endswith("vec"), tile_traversal=maca_traversal
+        )
+    elif _declared_backend() != "maca" and _portable_transpose3d_supported() and (
         dtype == "complex64"
         or (
             dtype == "complex128"
@@ -824,11 +992,7 @@ def _emit_tiled_transpose3d_jit_kernel(
                 os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "1"
                 or (
                     os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "auto"
-                    # These exact middle-axis transposes benefit from the
-                    # portable 16x16 tile; forcing it for all FP64 shapes
-                    # regresses the much larger 256-cube path.
-                    and (n0, n1, n2, order)
-                    in {
+                    and (n0, n1, n2, order) in {
                         (256, 256, 129, "021"),
                         (16, 64, 997, "210"),
                         (16, 33, 997, "210"),
@@ -943,7 +1107,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": transpose_warps,
+        "num_warps": int(maca_warps) if _declared_backend() == "maca" else transpose_warps,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": arg_names,

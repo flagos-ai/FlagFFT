@@ -258,9 +258,12 @@ def _build_tiled_transpose3d_tile_kernel_source(
     s2: int,
     order: str,
     dtype: str,
-    tile: int = 32,
+    tile: int | tuple[int, int] = 32,
     packed_complex: bool = False,
     pair_store: bool = False,
+    pair: bool = False,
+    vec_store: bool = False,
+    tile_traversal: str = "col",
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -278,9 +281,25 @@ def _build_tiled_transpose3d_tile_kernel_source(
         raise ValueError("tiled 3D transpose requires a complex dtype")
     if packed_complex and dtype != "complex64":
         raise ValueError("packed 3D transpose requires complex64")
+    if pair and dtype != "complex64":
+        raise ValueError("paired tiled 3D transpose requires complex64")
+    if vec_store and dtype != "complex128":
+        raise ValueError("vector-store tiled 3D transpose requires complex128")
+    if tile_traversal not in {"col", "row"}:
+        raise ValueError("tile_traversal must be col or row")
+    if isinstance(tile, tuple):
+        tile_rows, tile_cols = tile
+        if tile_rows <= 0 or tile_cols <= 0:
+            raise ValueError("transpose tile dimensions must be positive")
+        tile_name = f"{tile_rows}x{tile_cols}"
+    else:
+        tile_rows = tile_cols = tile
+        tile_name = str(tile)
     zero = _zero_other(dtype)
     total_complex = s0 * s1 * s2
     total_float = total_complex * 2
+    scalar_width = 1 if pair else 2
+    total_scalar = total_complex * scalar_width
     transpose_descs = {
         "021": dict(
             num_slices=s0,
@@ -327,23 +346,39 @@ def _build_tiled_transpose3d_tile_kernel_source(
     src_col_stride = desc["src_col_stride"]
     dst_slice_stride = desc["dst_slice_stride"]
     dst_row_stride = desc["dst_row_stride"]
-    tile_cols = (cols + tile - 1) // tile
-    tile_rows = (rows + tile - 1) // tile
-    tiles_per_slice = tile_cols * tile_rows
+    num_tile_cols = (cols + tile_cols - 1) // tile_cols
+    num_tile_rows = (rows + tile_rows - 1) // tile_rows
+    tiles_per_slice = num_tile_cols * num_tile_rows
+    if tile_traversal == "row":
+        tile_row_expr = f"tile_in_slice % {num_tile_rows}"
+        tile_col_expr = f"tile_in_slice // {num_tile_rows}"
+    else:
+        tile_row_expr = f"tile_in_slice // {num_tile_cols}"
+        tile_col_expr = f"tile_in_slice % {num_tile_cols}"
     grid_x = num_slices * tiles_per_slice
     kernel_name = (
-        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}_tile"
-        f"{'_u64' if packed_complex else ''}"
-        f"{'_pair' if pair_store else ''}"
+        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile_name}_tile"
+        + ("_u64" if packed_complex else "")
+        + ("_pair" if pair or pair_store else "")
+        + ("_vec" if vec_store else "")
+        + ("_rmajor" if tile_traversal == "row" else "")
     )
-    store_lines = (
-        "dst_pair = tl.join(dst_r, dst_i)\n"
-        "            pair_base = dst_base[:, :, None] + tl.arange(0, 2)[None, None, :]\n"
-        "            tl.store(out_ptr + pair_base, dst_pair, mask=store_mask[:, :, None])"
-        if pair_store else
-        "tl.store(out_ptr + dst_base, dst_r, mask=store_mask)\n"
-        "            tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)"
-    )
+    if pair:
+        store_lines = (
+            "tl.store(tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base, "
+            "dst_pair, mask=store_mask)"
+        )
+    elif pair_store or vec_store:
+        store_lines = (
+            "dst_pair = tl.join(dst_r, dst_i)\n"
+            "            pair_base = dst_base[:, :, None] + tl.arange(0, 2)[None, None, :]\n"
+            "            tl.store(out_ptr + pair_base, dst_pair, mask=store_mask[:, :, None])"
+        )
+    else:
+        store_lines = (
+            "tl.store(out_ptr + dst_base, dst_r, mask=store_mask)\n"
+            "            tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)"
+        )
     if packed_complex:
         load_store = f"""
             src = in_ptr.to(tl.pointer_type(tl.uint64))
@@ -363,6 +398,26 @@ def _build_tiled_transpose3d_tile_kernel_source(
             )
             store_mask = row_mask[:, None] & col_mask[None, :]
             tl.store(dst + dst_base, tl.trans(values), mask=store_mask)
+        """
+    elif pair:
+        load_store = f"""
+            src_base = (
+                pid_batch * {total_scalar}
+                + slice_idx * {src_slice_stride} * {scalar_width}
+                + safe_cols[:, None] * {src_col_stride} * {scalar_width}
+                + safe_rows[None, :] * {scalar_width}
+            )
+            src_pair = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
+                               mask=load_mask, other=0)
+            dst_pair = tl.trans(src_pair)
+            dst_base = (
+                pid_batch * {total_scalar}
+                + slice_idx * {dst_slice_stride} * {scalar_width}
+                + safe_rows[:, None] * {dst_row_stride} * {scalar_width}
+                + safe_cols[None, :] * {scalar_width}
+            )
+            store_mask = row_mask[:, None] & col_mask[None, :]
+            {store_lines}
         """
     else:
         load_store = f"""
@@ -400,11 +455,11 @@ def _build_tiled_transpose3d_tile_kernel_source(
 
             slice_idx = pid_block // {tiles_per_slice}
             tile_in_slice = pid_block % {tiles_per_slice}
-            tile_row = tile_in_slice // {tile_cols}
-            tile_col = tile_in_slice % {tile_cols}
+            tile_row = {tile_row_expr}
+            tile_col = {tile_col_expr}
 
-            row_offsets = tile_row * {tile} + tl.arange(0, {tile})
-            col_offsets = tile_col * {tile} + tl.arange(0, {tile})
+            row_offsets = tile_row * {tile_rows} + tl.arange(0, {tile_rows})
+            col_offsets = tile_col * {tile_cols} + tl.arange(0, {tile_cols})
             row_mask = row_offsets < {rows}
             col_mask = col_offsets < {cols}
             load_mask = col_mask[:, None] & row_mask[None, :]
@@ -627,6 +682,455 @@ def _build_packed_transpose_kernel_source(
     )
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
 
+def _build_tiled_transpose3d_pair_slice_group_kernel_source(
+    s0: int,
+    s1: int,
+    s2: int,
+    order: str,
+    *,
+    tile: int = 16,
+    slice_group: int = 2,
+    tile_traversal: str = "row",
+) -> tuple[str, str, list[str], int]:
+    """Emit one CTA that sequentially transposes a group of paired-complex slices."""
+    if order not in {"021", "210", "201", "120"}:
+        raise ValueError(f"unsupported 3D transpose order: {order}")
+    if slice_group < 2 or slice_group & (slice_group - 1):
+        raise ValueError("slice_group must be a power of two greater than one")
+    if tile_traversal not in {"col", "row"}:
+        raise ValueError("tile_traversal must be col or row")
+
+    transpose_descs = {
+        "021": (s0, s2, s1, s1 * s2, s2, s2 * s1, s1),
+        "210": (s1, s2, s0, s2, s1 * s2, s0, s1 * s0),
+        "201": (s0, s2, s1, s1 * s2, s2, s1, s0 * s1),
+        "120": (s1, s2, s0, s2, s1 * s2, s2 * s0, s0),
+    }
+    (
+        num_slices,
+        rows,
+        cols,
+        src_slice_stride,
+        src_col_stride,
+        dst_slice_stride,
+        dst_row_stride,
+    ) = transpose_descs[order]
+    tile_cols = (cols + tile - 1) // tile
+    tile_rows = (rows + tile - 1) // tile
+    tiles_per_slice = tile_cols * tile_rows
+    tile_row_expr = (
+        f"tile_in_slice % {tile_rows}"
+        if tile_traversal == "row"
+        else f"tile_in_slice // {tile_cols}"
+    )
+    tile_col_expr = (
+        f"tile_in_slice // {tile_rows}"
+        if tile_traversal == "row"
+        else f"tile_in_slice % {tile_cols}"
+    )
+    grid_x = ((num_slices + slice_group - 1) // slice_group) * tiles_per_slice
+    total_complex = s0 * s1 * s2
+    kernel_name = (
+        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_f32_t{tile}"
+        f"_tile_pair_sliceg{slice_group}seq"
+        + ("_rmajor" if tile_traversal == "row" else "")
+    )
+    source = dedent(
+        f"""\
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, nbatch):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(2)
+
+            slice_group_idx = pid_block // {tiles_per_slice}
+            tile_in_slice = pid_block % {tiles_per_slice}
+            tile_row = {tile_row_expr}
+            tile_col = {tile_col_expr}
+
+            row_offsets = tile_row * {tile} + tl.arange(0, {tile})
+            col_offsets = tile_col * {tile} + tl.arange(0, {tile})
+            row_mask = row_offsets < {rows}
+            col_mask = col_offsets < {cols}
+            safe_rows = tl.minimum(row_offsets, {rows - 1})
+            safe_cols = tl.minimum(col_offsets, {cols - 1})
+
+            for group_offset in tl.static_range(0, {slice_group}):
+                slice_idx = slice_group_idx * {slice_group} + group_offset
+                slice_mask = slice_idx < {num_slices}
+                src_base = (
+                    pid_batch * {total_complex}
+                    + slice_idx * {src_slice_stride}
+                    + safe_cols[:, None] * {src_col_stride}
+                    + safe_rows[None, :]
+                )
+                load_mask = slice_mask & col_mask[:, None] & row_mask[None, :]
+                src_pair = tl.load(
+                    tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
+                    mask=load_mask,
+                    other=0,
+                )
+                dst_pair = tl.trans(src_pair)
+
+                safe_slice = tl.minimum(slice_idx, {num_slices - 1})
+                dst_base = (
+                    pid_batch * {total_complex}
+                    + safe_slice * {dst_slice_stride}
+                    + safe_rows[:, None] * {dst_row_stride}
+                    + safe_cols[None, :]
+                )
+                store_mask = slice_mask & row_mask[:, None] & col_mask[None, :]
+                tl.store(
+                    tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
+                    dst_pair,
+                    mask=store_mask,
+                )
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
+
+
+def _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
+    s0: int,
+    s1: int,
+    s2: int,
+    order: str,
+    *,
+    tile: int = 16,
+    slice_group: int = 2,
+    row_group: int = 2,
+    tile_traversal: str = "row",
+) -> tuple[str, str, list[str], int]:
+    """Emit one CTA that serially transposes slice and row groups of 16x16 tiles."""
+    if order not in {"021", "210", "201", "120"}:
+        raise ValueError(f"unsupported 3D transpose order: {order}")
+    for value, name in ((slice_group, "slice_group"), (row_group, "row_group")):
+        if value < 1 or value & (value - 1):
+            raise ValueError(f"{name} must be a positive power of two")
+    if tile_traversal not in {"col", "row"}:
+        raise ValueError("tile_traversal must be col or row")
+
+    transpose_descs = {
+        "021": (s0, s2, s1, s1 * s2, s2, s2 * s1, s1),
+        "210": (s1, s2, s0, s2, s1 * s2, s0, s1 * s0),
+        "201": (s0, s2, s1, s1 * s2, s2, s1, s0 * s1),
+        "120": (s1, s2, s0, s2, s1 * s2, s2 * s0, s0),
+    }
+    (
+        num_slices,
+        rows,
+        cols,
+        src_slice_stride,
+        src_col_stride,
+        dst_slice_stride,
+        dst_row_stride,
+    ) = transpose_descs[order]
+    tile_cols = (cols + tile - 1) // tile
+    tile_rows = (rows + tile - 1) // tile
+    row_groups = (tile_rows + row_group - 1) // row_group
+    tiles_per_slice = tile_cols * row_groups
+    if tile_traversal == "row":
+        tile_row_group_expr = f"tile_in_slice % {row_groups}"
+        tile_col_expr = f"tile_in_slice // {row_groups}"
+    else:
+        tile_row_group_expr = f"tile_in_slice // {tile_cols}"
+        tile_col_expr = f"tile_in_slice % {tile_cols}"
+    grid_x = (
+        (num_slices + slice_group - 1) // slice_group
+    ) * tiles_per_slice
+    total_complex = s0 * s1 * s2
+    kernel_name = (
+        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_f32_t{tile}"
+        f"_tile_pair_sliceg{slice_group}seq_rowg{row_group}seq"
+        + ("_rmajor" if tile_traversal == "row" else "")
+    )
+    source = dedent(
+        f"""\
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, nbatch):
+            pid_block = tl.program_id(0)
+            pid_batch = tl.program_id(2)
+
+            slice_group_idx = pid_block // {tiles_per_slice}
+            tile_in_slice = pid_block % {tiles_per_slice}
+            tile_row_group = {tile_row_group_expr}
+            tile_col = {tile_col_expr}
+
+            col_offsets = tile_col * {tile} + tl.arange(0, {tile})
+            col_mask = col_offsets < {cols}
+            safe_cols = tl.minimum(col_offsets, {cols - 1})
+
+            for slice_group_offset in tl.static_range(0, {slice_group}):
+                slice_idx = slice_group_idx * {slice_group} + slice_group_offset
+                slice_mask = slice_idx < {num_slices}
+                safe_slice = tl.minimum(slice_idx, {num_slices - 1})
+                for row_group_offset in tl.static_range(0, {row_group}):
+                    tile_row = tile_row_group * {row_group} + row_group_offset
+                    row_offsets = tile_row * {tile} + tl.arange(0, {tile})
+                    row_mask = row_offsets < {rows}
+                    safe_rows = tl.minimum(row_offsets, {rows - 1})
+                    src_base = (
+                        pid_batch * {total_complex}
+                        + slice_idx * {src_slice_stride}
+                        + safe_cols[:, None] * {src_col_stride}
+                        + safe_rows[None, :]
+                    )
+                    load_mask = slice_mask & col_mask[:, None] & row_mask[None, :]
+                    src_pair = tl.load(
+                        tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src_base,
+                        mask=load_mask,
+                        other=0,
+                    )
+                    dst_pair = tl.trans(src_pair)
+
+                    dst_base = (
+                        pid_batch * {total_complex}
+                        + safe_slice * {dst_slice_stride}
+                        + safe_rows[:, None] * {dst_row_stride}
+                        + safe_cols[None, :]
+                    )
+                    store_mask = slice_mask & row_mask[:, None] & col_mask[None, :]
+                    tl.store(
+                        tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst_base,
+                        dst_pair,
+                        mask=store_mask,
+                    )
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"], grid_x
+
+
+def _build_tiled_transpose_kernel_source(
+    n0: int, n1: int, dtype: str, tile_size: int = 32,
+    *, register_transpose: bool | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Emit a tiled (batch, M=n0, N=n1) -> (batch, N, M) transpose kernel.
+
+    Decomposes the matrix into tile_size x tile_size blocks across the grid — each
+    program loads one coalesced tile from global memory, transposes it in registers
+    with tl.trans, and writes it back with coalesced stores.
+    """
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    total_complex = n0 * n1
+    total_float = total_complex * 2  # interleaved complex: 2 floats per element
+    kernel_name = f"_tiled_transpose_kernel_n{n0}_{n1}_{suffix}"
+    use_register_transpose = (
+        total_complex <= 128 * 1024
+        if register_transpose is None else register_transpose
+    )
+    if use_register_transpose:
+        transpose_lines = (
+            "\n            # Transpose the register tile so the flattened store axis is the\n"
+            "            # contiguous destination row.\n"
+            "            src_real = tl.trans(src_real)\n"
+            "            src_imag = tl.trans(src_imag)\n"
+            f"            row_mask_t = row_offsets[None, :] < {n0}\n"
+            f"            col_mask_t = col_offsets[:, None] < {n1}\n"
+            "            mask = col_mask_t & row_mask_t\n"
+        )
+        dst_offsets_expr = f"(safe_col[:, None] * {n0} + safe_row[None, :]) * 2"
+    else:
+        transpose_lines = ""
+        dst_offsets_expr = f"(safe_col[None, :] * {n0} + safe_row[:, None]) * 2"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            nbatch,
+        ):
+            # Program IDs
+            pid_tile_col = tl.program_id(0)
+            pid_tile_row = tl.program_id(1)
+            pid_batch = tl.program_id(2)
+
+            # Tile offsets
+            tile_row_start = pid_tile_row * {tile_size}
+            tile_col_start = pid_tile_col * {tile_size}
+
+            # Row and column offsets within tile
+            row_offsets = tile_row_start + tl.arange(0, {tile_size})
+            col_offsets = tile_col_start + tl.arange(0, {tile_size})
+
+            # Mask for valid elements
+            row_mask = row_offsets < {n0}
+            col_mask = col_offsets < {n1}
+            mask = row_mask[:, None] & col_mask[None, :]
+
+            # Clamp offsets to valid range to avoid out-of-bounds addresses
+            safe_row = tl.minimum(row_offsets, {n0 - 1})
+            safe_col = tl.minimum(col_offsets, {n1 - 1})
+
+            # Source element offsets in floats (row-major: batch * n0 * n1 * 2 + (row * n1 + col) * 2)
+            src_elem_offsets = pid_batch * {total_float} + (safe_row[:, None] * {n1} + safe_col[None, :]) * 2
+
+            # Load from source (complex elements are interleaved: real, imag)
+            src_real = tl.load(in_ptr + src_elem_offsets, mask=mask, other={zero})
+            src_imag = tl.load(in_ptr + src_elem_offsets + 1, mask=mask, other={zero})
+
+            {transpose_lines}
+
+            # Destination element offsets in floats (transposed: batch * n0 * n1 * 2 + (col * n0 + row) * 2)
+            dst_elem_offsets = pid_batch * {total_float} + {dst_offsets_expr}
+
+            # Store to destination (transposed)
+            tl.store(out_ptr + dst_elem_offsets, src_real, mask=mask)
+            tl.store(out_ptr + dst_elem_offsets + 1, src_imag, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
+def _build_packed_transpose_kernel_source(
+    n0: int, n1: int, tile_size: int = 32
+) -> tuple[str, str, list[str]]:
+    """Transpose complex64 bitwise with one 64-bit load/store per element.
+
+    No arithmetic is performed on the payload. Explicit masks preserve tails
+    without duplicate stores, including an odd half-spectrum row pitch.
+    """
+    kernel_name = f"_packed_transpose_kernel_n{n0}_{n1}_t{tile_size}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, nbatch):
+            row = tl.program_id(1) * {tile_size} + tl.arange(0, {tile_size})
+            col = tl.program_id(0) * {tile_size} + tl.arange(0, {tile_size})
+            batch = tl.program_id(2)
+            src = in_ptr.to(tl.pointer_type(tl.uint64))
+            dst = out_ptr.to(tl.pointer_type(tl.uint64))
+            value = tl.load(
+                src + batch * {n0 * n1} + row[:, None] * {n1} + col[None, :],
+                mask=(row[:, None] < {n0}) & (col[None, :] < {n1}) & (batch < nbatch),
+                other=0,
+            )
+            value = tl.trans(value)
+            tl.store(
+                dst + batch * {n0 * n1} + col[:, None] * {n0} + row[None, :],
+                value,
+                mask=(col[:, None] < {n1}) & (row[None, :] < {n0}) & (batch < nbatch),
+            )
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+def _build_tiled_transpose_kernel_source(
+    n0: int, n1: int, dtype: str, tile_size: int = 32,
+    *, register_transpose: bool | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Emit a tiled (batch, M=n0, N=n1) -> (batch, N, M) transpose kernel.
+
+    Decomposes the matrix into tile_size x tile_size blocks across the grid — each
+    program loads one coalesced tile from global memory, transposes it in registers
+    with tl.trans, and writes it back with coalesced stores.
+    """
+    zero = _zero_other(dtype)
+    suffix = _dtype_suffix(dtype)
+    total_complex = n0 * n1
+    total_float = total_complex * 2  # interleaved complex: 2 floats per element
+    kernel_name = f"_tiled_transpose_kernel_n{n0}_{n1}_{suffix}"
+    use_register_transpose = (
+        total_complex <= 128 * 1024
+        if register_transpose is None else register_transpose
+    )
+    if use_register_transpose:
+        transpose_lines = (
+            "\n            # Transpose the register tile so the flattened store axis is the\n"
+            "            # contiguous destination row.\n"
+            "            src_real = tl.trans(src_real)\n"
+            "            src_imag = tl.trans(src_imag)\n"
+            f"            row_mask_t = row_offsets[None, :] < {n0}\n"
+            f"            col_mask_t = col_offsets[:, None] < {n1}\n"
+            "            mask = col_mask_t & row_mask_t\n"
+        )
+        dst_offsets_expr = f"(safe_col[:, None] * {n0} + safe_row[None, :]) * 2"
+    else:
+        transpose_lines = ""
+        dst_offsets_expr = f"(safe_col[None, :] * {n0} + safe_row[:, None]) * 2"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(
+            in_ptr,
+            out_ptr,
+            nbatch,
+        ):
+            # Program IDs
+            pid_tile_col = tl.program_id(0)
+            pid_tile_row = tl.program_id(1)
+            pid_batch = tl.program_id(2)
+
+            # Tile offsets
+            tile_row_start = pid_tile_row * {tile_size}
+            tile_col_start = pid_tile_col * {tile_size}
+
+            # Row and column offsets within tile
+            row_offsets = tile_row_start + tl.arange(0, {tile_size})
+            col_offsets = tile_col_start + tl.arange(0, {tile_size})
+
+            # Mask for valid elements
+            row_mask = row_offsets < {n0}
+            col_mask = col_offsets < {n1}
+            mask = row_mask[:, None] & col_mask[None, :]
+
+            # Clamp offsets to valid range to avoid out-of-bounds addresses
+            safe_row = tl.minimum(row_offsets, {n0 - 1})
+            safe_col = tl.minimum(col_offsets, {n1 - 1})
+
+            # Source element offsets in floats (row-major: batch * n0 * n1 * 2 + (row * n1 + col) * 2)
+            src_elem_offsets = pid_batch * {total_float} + (safe_row[:, None] * {n1} + safe_col[None, :]) * 2
+
+            # Load from source (complex elements are interleaved: real, imag)
+            src_real = tl.load(in_ptr + src_elem_offsets, mask=mask, other={zero})
+            src_imag = tl.load(in_ptr + src_elem_offsets + 1, mask=mask, other={zero})
+
+            {transpose_lines}
+
+            # Destination element offsets in floats (transposed: batch * n0 * n1 * 2 + (col * n0 + row) * 2)
+            dst_elem_offsets = pid_batch * {total_float} + {dst_offsets_expr}
+
+            # Store to destination (transposed)
+            tl.store(out_ptr + dst_elem_offsets, src_real, mask=mask)
+            tl.store(out_ptr + dst_elem_offsets + 1, src_imag, mask=mask)
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
+def _build_packed_transpose_kernel_source(
+    n0: int, n1: int, tile_size: int = 32
+) -> tuple[str, str, list[str]]:
+    """Transpose complex64 bitwise with one 64-bit load/store per element.
+
+    No arithmetic is performed on the payload. Explicit masks preserve tails
+    without duplicate stores, including an odd half-spectrum row pitch.
+    """
+    kernel_name = f"_packed_transpose_kernel_n{n0}_{n1}_t{tile_size}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, nbatch):
+            row = tl.program_id(1) * {tile_size} + tl.arange(0, {tile_size})
+            col = tl.program_id(0) * {tile_size} + tl.arange(0, {tile_size})
+            batch = tl.program_id(2)
+            src = in_ptr.to(tl.pointer_type(tl.uint64))
+            dst = out_ptr.to(tl.pointer_type(tl.uint64))
+            value = tl.load(
+                src + batch * {n0 * n1} + row[:, None] * {n1} + col[None, :],
+                mask=(row[:, None] < {n0}) & (col[None, :] < {n1}) & (batch < nbatch),
+                other=0,
+            )
+            value = tl.trans(value)
+            tl.store(
+                dst + batch * {n0 * n1} + col[:, None] * {n0} + row[None, :],
+                value,
+                mask=(col[:, None] < {n1}) & (row[None, :] < {n0}) & (batch < nbatch),
+            )
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
 
 def _build_tiled_transpose3d_kernel_source(
     s0: int, s1: int, s2: int, order: str, dtype: str, block: int = 1024
@@ -705,6 +1209,8 @@ __all__ = [
     "_build_reshape_pack_kernel_source",
     "_build_tiled_transpose3d_kernel_source",
     "_build_tiled_transpose3d_slice_group_kernel_source",
+    "_build_tiled_transpose3d_pair_slice_group_kernel_source",
+    "_build_tiled_transpose3d_pair_slice_row_group_kernel_source",
     "_build_tiled_transpose3d_tile_kernel_source",
     "_build_tiled_transpose3d_v2_kernel_source",
     "_build_tiled_transpose_kernel_source",

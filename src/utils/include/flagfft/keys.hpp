@@ -33,6 +33,7 @@ struct ProblemKey {
   std::vector<int64_t> input_strides;
   std::string input_layout;
   bool requires_contiguous_copy = false;
+  bool maca_3d_c2c32_single_cube = false;
   std::string direction;
 
   static ProblemKey from_request(const FFTRequest &request);
@@ -114,6 +115,8 @@ struct KernelKey {
                                    int64_t columns = 16);
   static KernelKey fused_2d(std::string target, std::string direction, std::string dtype,
                             int64_t length, bool transpose_output = false);
+  static KernelKey fused_32_plane(std::string target, std::string direction, std::string dtype);
+  static KernelKey fused_16_real_plane(std::string target, std::string direction, std::string dtype);
 
   static KernelKey leaf(std::string target,
                         std::string direction,
@@ -152,6 +155,16 @@ struct KernelKey {
                             int64_t num_warps,
                             std::vector<int64_t> generic_radices,
                             int64_t smem_size);
+  static KernelKey leaf_r2c_permuted_store(std::string target,
+                                           std::string direction,
+                                           std::string dtype,
+                                           int64_t length,
+                                           std::vector<int64_t> factors,
+                                           int64_t lanes,
+                                           int64_t num_warps,
+                                           std::vector<int64_t> generic_radices,
+                                           int64_t smem_size,
+                                           std::string perm_form);
   static KernelKey leaf_c2r(std::string target,
                             std::string direction,
                             std::string dtype,

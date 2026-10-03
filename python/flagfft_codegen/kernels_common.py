@@ -32,6 +32,8 @@ from .target import (
     maca_1d_single_default_enabled,
     maca_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
+    maca_3d_default_enabled,
+    maca_3d_c2c32_single_cube_enabled,
 )
 from .maca_tail_policy import resource_default
 
@@ -250,6 +252,13 @@ def emitted_leaf_factors(
 ) -> tuple[int, ...]:
     if (
         _portable_leaf_backend_active()
+        and plan.length == 32
+        and plan.dtype == "complex128"
+        and plan.factors == (4, 4, 2)
+    ):
+        return plan.factors
+    if (
+        _portable_leaf_backend_active()
         and io_mode not in {"bluestein_full_leaf", "rader_full_leaf"}
         and plan.length
         in _NATURAL_ORDER_CODELET_RADICES | _THREAD_LOCAL_MIXED_RADICES | {16}
@@ -300,8 +309,8 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
 def _maca_knob(name: str, default: str = "") -> str:
     """Read a MACA code-generation override.
 
-    The native compiler scopes the measured 1D single, 1D batch and 2D single
-    policies. The 2D scope also covers batched row/column kernels. These
+    The native compiler scopes measured 1D single, 1D batch, 2D single and
+    3D policies. The 2D scope also covers batched row/column kernels. These
     supply defaults while preserving an explicit environment override for
     A/B testing and rollback.
     Direct Python code-generation calls remain on the historical defaults.
@@ -332,6 +341,11 @@ def _maca_knob(name: str, default: str = "") -> str:
     tail_default = resource_default(name)
     if tail_default is not None:
         return tail_default
+    if maca_3d_default_enabled():
+        if name == "EXCHANGE":
+            return "direct_all"
+        if name == "VEC_IO":
+            return "packed"
     if maca_2d_single_default_enabled() and name == "2D_TRANSPOSE":
         return "packed"
     if maca_1d_batch_default_enabled():
@@ -459,6 +473,40 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
             return _profile_batch_pack_for(plan)
         if override:
             return _positive_knob("BATCH_PACK", override)
+        if plan.length == 64 and len(emitted_leaf_factors(plan)) > 1:
+            short_pack = os.getenv("FLAGFFT_MACA_3D_N64_PACK")
+            if short_pack is not None:
+                if short_pack not in {"1", "2", "4", "8", "16", "32"}:
+                    raise ValueError("FLAGFFT_MACA_3D_N64_PACK must be 1, 2, 4, 8, 16 or 32")
+                return int(short_pack)
+        if maca_3d_default_enabled() and len(emitted_leaf_factors(plan)) > 1:
+            if plan.length == 64 and plan.dtype == "complex64":
+                return 8
+            if plan.length == 64 and plan.dtype == "complex128":
+                return 8
+            if (plan.length == 32 and plan.dtype == "complex128"
+                    and maca_3d_c2c32_single_cube_enabled()):
+                # This shape-specific policy was measured on the outer
+                # strided leaf of a single 32^3 FP64 C2C transform. Batched
+                # length-32 transforms keep the normal rank-3 pack.
+                pack_32_fp64 = os.getenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "8")
+                if pack_32_fp64 not in {"1", "2", "4", "8"}:
+                    raise ValueError(
+                        "FLAGFFT_MACA_3D_N32_FP64_PACK must be 1, 2, 4 or 8"
+                    )
+                return int(pack_32_fp64)
+            if plan.length == 128:
+                pack_128 = os.getenv("FLAGFFT_MACA_3D_N128_PACK", "2")
+                if pack_128 not in {"1", "2", "4"}:
+                    raise ValueError("FLAGFFT_MACA_3D_N128_PACK must be 1, 2 or 4")
+                return int(pack_128)
+            # On C550, the 256-point FP32 3D leaf runs with a 128-thread
+            # block.  Packing two transforms fills that block and halves the
+            # CTA count; a paired GPU measurement improved 256^3 C2C by 10%.
+            if plan.length == 256 and plan.dtype == "complex64":
+                return 2
+            if plan.length == 256 and plan.dtype == "complex128":
+                return 2
         if maca_1d_batch_default_enabled() and plan.length == 16:
             return 1
         # Native 2D only emits these fused real boundary leaves when n0 > 256.
@@ -490,9 +538,9 @@ def permuted_store_batch_pack_for(
 ) -> int:
     """Batch slots per block for the fused permuted store.
 
-    Four is the FP32 default.  With paired complex stores on MUSA, FP64 pack
-    two was faster on both 256^3 and 128x2048x64; pack eight slowed FP32.
-    Shared memory still caps the selected pack for large leaves.
+    Four is the generic FP32 default.  The validated MACA rank-3 length-64
+    first-store path uses eight slots; MUSA's paired complex FP64 store uses
+    two. Shared memory still caps the selected pack for large leaves.
     """
     profile = current_profile()
     bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
@@ -500,6 +548,33 @@ def permuted_store_batch_pack_for(
         1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
     )
     target_pack = 2 if _mthreads_backend_active() and _is_double_dtype(plan.dtype) else 4
+    # On C550, pack=8 (2 warps / 128 threads) measured about 1% faster than
+    # pack=16 (4 warps / 256 threads) for the validated 128x2048x64 C2C
+    # first-store path, across single/batch and both directions. The smaller
+    # block is the likely source; hardware occupancy counters were not
+    # collected. Keep this change to rank-3 FP32 length-64 stores; length 128
+    # and ordinary contiguous leaves retain their existing pack choices.
+    final_store_cube = (
+        plan.length == 256
+        and os.getenv("FLAGFFT_MACA_3D_FINAL_STORE") == "1"
+    )
+    if (
+        _declared_backend() == "maca"
+        and maca_3d_default_enabled()
+        and plan.dtype == "complex64"
+        and (plan.length in {64, 128} or final_store_cube)
+    ):
+        target_pack = 8 if plan.length == 64 else 16 if plan.length == 128 else 4
+        override = os.getenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
+        if override is not None and override != "auto":
+            allowed = {"1", "2", "4", "8", "16", "32"}
+            if final_store_cube:
+                allowed = {"1", "2", "4", "8"}
+            if override not in allowed:
+                raise ValueError(
+                    "FLAGFFT_MACA_3D_PERMSTORE_PACK must be 1, 2, 4, 8, 16, 32 or auto"
+                )
+            target_pack = int(override)
     if _mthreads_backend_active():
         override = os.getenv("FLAGFFT_MUSA_3D_PACK")
         if override is not None and override != "auto":

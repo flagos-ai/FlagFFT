@@ -1789,8 +1789,8 @@ std::string CompiledRawR2CLeafNode::describe() const {
   oss << "CompiledRawR2CLeaf(n=" << length
       << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
-      << ", module=" << (kernel ? kernel->module_path : "null")
-      << ", tables=" << tables.size() << ", perm_span=" << perm_span << ")";
+      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size()
+      << ", perm_span=" << perm_span << ")";
   return oss.str();
 }
 
@@ -1819,8 +1819,11 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
       args.push_back(JitKernelArg::device(table.get()));
     }
     args.push_back(JitKernelArg::i64(input_distance));
-    args.push_back(JitKernelArg::i64(output_distance));
-    if (perm_span > 0) args.push_back(JitKernelArg::i64(perm_span));
+    if (perm_span > 0) {
+      args.push_back(JitKernelArg::i64(perm_span));
+    } else {
+      args.push_back(JitKernelArg::i64(output_distance));
+    }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
     auto launch = [&]() {
       kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
@@ -3253,6 +3256,40 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
       npu_pair_fused_store(npu_pair_fused_store) {
 }
 
+CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
+                                     int64_t n1,
+                                     int64_t n2,
+                                     std::shared_ptr<CompiledRawNode> n2_fft,
+                                     std::shared_ptr<CompiledRawNode> n1_fft,
+                                     std::shared_ptr<CompiledRawNode> n0_fft,
+                                     std::shared_ptr<JitKernel> perm_021_fwd,
+                                     std::shared_ptr<JitKernel> perm_210_fwd,
+                                     std::shared_ptr<JitKernel> perm_201_fwd,
+                                     std::shared_ptr<JitKernel> perm_120_inv,
+                                     std::shared_ptr<JitKernel> perm_210_inv,
+                                     std::shared_ptr<JitKernel> perm_021_inv,
+                                     DeviceAllocation temp1,
+                                     DeviceAllocation temp2,
+                                     bool final_permuted_store)
+    : CompiledRaw3DNode(n0,
+                        n1,
+                        n2,
+                        std::move(n2_fft),
+                        std::move(n1_fft),
+                        std::move(n0_fft),
+                        std::move(perm_021_fwd),
+                        std::move(perm_210_fwd),
+                        std::move(perm_201_fwd),
+                        std::move(perm_120_inv),
+                        std::move(perm_210_inv),
+                        std::move(perm_021_inv),
+                        std::move(temp1),
+                        std::move(temp2),
+                        std::vector<DeviceAllocation>{},
+                        false) {
+  this->final_permuted_store = final_permuted_store;
+}
+
 std::string CompiledRaw3DNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3D(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
@@ -3263,7 +3300,8 @@ std::string CompiledRaw3DNode::describe() const {
       << ", perm_210_fwd=" << (perm_210_fwd ? perm_210_fwd->execution_description() : "null")
       << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null")
       << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
-      << ", npu_pair_fused_store=" << npu_pair_fused_store << ")";
+      << ", npu_pair_fused_store=" << npu_pair_fused_store
+      << ", final_permuted_store=" << (final_permuted_store ? 1 : 0) << ")";
   return oss.str();
 }
 
@@ -3312,6 +3350,19 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
     };
 
     flagfftResult result;
+    if (final_permuted_store) {
+      // Keep the two contiguous-axis transposes, then let the final n0 leaf
+      // write directly into natural (n0,n1,n2) output order.  The axes
+      // commute, so the same schedule is valid for forward and inverse.
+      result = n2_fft->execute(input, temp1.get(), n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
+      result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
+      return n0_fft->execute(temp2.get(), output, n0_context);
+    }
+
     if (inverse) {
       // (n0,n1,n2) -> perm(1,2,0) -> (n1,n2,n0), IFFT along n0
       result = permute(perm_120_inv, input, temp1.get(), n0, n1, n2, 1, 2, 0);
@@ -3557,6 +3608,105 @@ flagfftResult CompiledRaw3DFusedCubeNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DFused32PlaneNode::CompiledRaw3DFused32PlaneNode(
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> outer_fft,
+    DeviceAllocation temp,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFused32PlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DFused32Plane(plane_fft=" << plane_fft->execution_description()
+      << ", outer_fft=" << outer_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DFused32PlaneNode::execute(adaptor::DevicePtr input,
+                                                     adaptor::DevicePtr output,
+                                                     const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * 32, 1, 1);
+    RawExecutionContext outer_context {context.request, context.stream, batch * 32 * 32};
+    return outer_fft->execute(temp.get(), output, outer_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused 32-plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DFusedRealPlaneNode::CompiledRaw3DFusedRealPlaneNode(
+    int64_t plane_size,
+    bool inverse,
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> outer_fft,
+    DeviceAllocation temp,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : plane_size(plane_size),
+      inverse(inverse),
+      plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFusedRealPlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DFusedRealPlane(plane_size=" << plane_size
+      << ", inverse=" << (inverse ? "true" : "false")
+      << ", plane_fft=" << plane_fft->execution_description()
+      << ", outer_fft=" << outer_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DFusedRealPlaneNode::execute(adaptor::DevicePtr input,
+                                                       adaptor::DevicePtr output,
+                                                       const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t half = plane_size / 2 + 1;
+    RawExecutionContext outer_context {context.request, context.stream, batch * plane_size * half};
+    const adaptor::DevicePtr plane_input = inverse ? temp.get() : input;
+    const adaptor::DevicePtr plane_output = inverse ? output : temp.get();
+
+    if (inverse) {
+      flagfftResult result = outer_fft->execute(input, temp.get(), outer_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+    }
+
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(plane_input),
+        JitKernelArg::device(plane_output),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * plane_size, 1, 1);
+
+    if (!inverse) return outer_fft->execute(temp.get(), output, outer_context);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused real plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DStridedNode::CompiledRaw3DStridedNode(int64_t n0,
                                                    int64_t n1,
                                                    int64_t n2,
@@ -3643,7 +3793,8 @@ std::string CompiledRaw3DHybridNode::describe() const {
       << ", middle_transpose=" << (perm_210 != nullptr)
       << ", last_transpose=" << (perm_201 != nullptr)
       << ", n2_fft=" << n2_fft->describe() << ", n1_fft=" << n1_fft->describe()
-      << ", n0_fft=" << n0_fft->describe() << ")";
+      << ", n0_fft=" << n0_fft->describe()
+      << ", perm_201=" << (perm_201 ? perm_201->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -3691,20 +3842,21 @@ flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
   }
 }
 
-CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
-                                                     int64_t n1,
-                                                     int64_t n2,
-                                                     bool inverse,
-                                                     bool fused_store,
-                                                     bool n2_permuted,
-                                                     bool n1_strided_input,
-                                                     std::shared_ptr<CompiledRawNode> n2_real_fft,
-                                                     std::shared_ptr<CompiledRawNode> n1_fft,
-                                                     std::shared_ptr<CompiledRawNode> n0_fft,
-                                                     std::shared_ptr<JitKernel> perm_021,
-                                                     DeviceAllocation temp1,
-                                                     DeviceAllocation temp2,
-                                                     std::shared_ptr<JitKernel> perm_210)
+CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(
+    int64_t n0,
+    int64_t n1,
+    int64_t n2,
+    bool inverse,
+    bool fused_store,
+    bool n2_permuted,
+    bool n1_strided_input,
+    std::shared_ptr<CompiledRawNode> n2_real_fft,
+    std::shared_ptr<CompiledRawNode> n1_fft,
+    std::shared_ptr<CompiledRawNode> n0_fft,
+    std::shared_ptr<JitKernel> perm_021,
+    DeviceAllocation temp1,
+    DeviceAllocation temp2,
+    std::shared_ptr<JitKernel> perm_210)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -3712,6 +3864,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
       fused_store(fused_store),
       n2_permuted(n2_permuted),
       n1_strided_input(n1_strided_input),
+      layout(Layout::Legacy),
       n2_real_fft(std::move(n2_real_fft)),
       n1_fft(std::move(n1_fft)),
       n0_fft(std::move(n0_fft)),
@@ -3721,11 +3874,46 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(int64_t n0,
       temp2(std::move(temp2)) {
 }
 
+CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(
+    int64_t n0,
+    int64_t n1,
+    int64_t n2,
+    bool inverse,
+    Layout layout,
+    std::shared_ptr<CompiledRawNode> n2_real_fft,
+    std::shared_ptr<CompiledRawNode> n1_fft,
+    std::shared_ptr<CompiledRawNode> n0_fft,
+    std::shared_ptr<JitKernel> perm_first,
+    std::shared_ptr<JitKernel> perm_second,
+    std::shared_ptr<JitKernel> perm_third,
+    DeviceAllocation temp1,
+    DeviceAllocation temp2,
+    std::shared_ptr<JitKernel> perm_210)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      inverse(inverse),
+      fused_store(layout == Layout::FusedStore),
+      n2_permuted(layout == Layout::R2CFirstStore),
+      n1_strided_input(false),
+      layout(layout),
+      n2_real_fft(std::move(n2_real_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      perm_021(perm_first),
+      perm_210(perm_second ? perm_second : std::move(perm_210)),
+      perm_first(std::move(perm_first)),
+      perm_second(std::move(perm_second)),
+      perm_third(std::move(perm_third)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
 std::string CompiledRaw3DRealLeafNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRaw3DRealLeaf(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
-      << ", inverse=" << inverse << ", fused_store=" << fused_store
-      << ", n2_permuted=" << n2_permuted
+      << ", inverse=" << inverse << ", layout=" << static_cast<int>(layout)
+      << ", fused_store=" << fused_store << ", n2_permuted=" << n2_permuted
       << ", n1_strided_input=" << n1_strided_input
       << ", middle_transpose=" << (perm_210 != nullptr)
       << ", n2_real_fft=" << n2_real_fft->describe()
@@ -3745,13 +3933,69 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
     flagfftResult result;
 
+    if (layout != Layout::Legacy) {
+      if (!inverse) {
+        if (layout == Layout::R2CFirstStore) {
+          result = n2_real_fft->execute(input, temp2.get(), n2_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch);
+          result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch);
+          return FLAGFFT_SUCCESS;
+        }
+
+        result = n2_real_fft->execute(input, temp1.get(), n2_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        if (layout == Layout::FusedStore || layout == Layout::Transposed) {
+          launch_perm3d(perm_first, context.stream, temp1.get(), temp2.get(), packed, batch);
+          result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          if (layout == Layout::Transposed) {
+            launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch);
+            result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+            if (result != FLAGFFT_SUCCESS) return result;
+            launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch);
+            return FLAGFFT_SUCCESS;
+          }
+          return n0_fft->execute(temp1.get(), output, n0_context);
+        }
+        result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        return n0_fft->execute(temp2.get(), output, n0_context);
+      }
+
+      if (layout == Layout::FusedStore) {
+        launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch);
+        result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        return n2_real_fft->execute(temp1.get(), output, n2_context);
+      }
+      if (layout == Layout::Transposed) {
+        launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch);
+        result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        launch_perm3d(perm_second, context.stream, temp2.get(), temp1.get(), packed, batch);
+        result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        launch_perm3d(perm_third, context.stream, temp2.get(), temp1.get(), packed, batch);
+        return n2_real_fft->execute(temp1.get(), output, n2_context);
+      }
+      result = n1_fft->execute(input, temp1.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return n2_real_fft->execute(temp2.get(), output, n2_context);
+    }
+
     if (!inverse) {
-      // The optional fused store produces (n0,half,n1) directly.
       result = n2_real_fft->execute(input, n2_permuted ? temp2.get() : temp1.get(), n2_context);
       if (result != FLAGFFT_SUCCESS) return result;
       if (fused_store) {
-        // n1 wants contiguous rows in (n0,half,n1) order.  Its store and
-        // the n0 store both apply the following layout change.
         if (!n2_permuted) {
           launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch,
                         complex_element_bytes(context.request.input_dtype));
@@ -3769,8 +4013,6 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
                              (fused_store ? temp1.get() : temp2.get()), output, n0_context);
     }
 
-    // Axes commute, so the compact n1/n0 transforms can precede the real
-    // inverse n2 boundary.  This also keeps the compact cube throughout.
     if (fused_store) {
       if (!n1_strided_input) {
         launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch,

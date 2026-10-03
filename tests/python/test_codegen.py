@@ -105,6 +105,63 @@ def test_fused_32_real_plane_kernel_source(tmp_path, dtype, direction) -> None:
         assert "dst = plane * 32 * 32 + idx" in source
 
 
+
+@pytest.mark.parametrize(
+    ("dtype", "direction", "expected_real_kind"),
+    [("complex64", "forward", "r2c"), ("complex128", "inverse", "c2r")],
+)
+def test_fused_32_real_plane_codegen(dtype, direction, expected_real_kind, tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel
+
+    metadata = emit_fused_32_real_plane_kernel(dtype=dtype, direction=direction, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    assert metadata["kernel_name"] == "fused_32_real_plane_fft_kernel"
+    assert metadata["num_warps"] == 8
+    assert "tl.arange(0, 1024)" in source
+    if expected_real_kind == "r2c":
+        assert "tl.full((1024,), 0.0, tl.float32)" in source
+        assert "mask=col < 17" in source
+    else:
+        assert "reflected = rev_col >= 17" in source
+        assert "xi = tl.where(reflected, -xi, xi)" in source
+
+
+@pytest.mark.parametrize(
+    ("dtype", "direction", "expected_real_kind"),
+    [("complex64", "forward", "r2c"), ("complex128", "inverse", "c2r")],
+)
+def test_fused_16_real_plane_codegen(dtype, direction, expected_real_kind, tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_16_real_plane_kernel
+
+    metadata = emit_fused_16_real_plane_kernel(dtype=dtype, direction=direction, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    assert metadata["kernel_name"] == "fused_16_real_plane_fft_kernel"
+    assert metadata["num_warps"] == 4
+    assert "tl.arange(0, 256)" in source
+    if expected_real_kind == "r2c":
+        assert "tl.full((256,), 0.0, tl.float32)" in source
+        assert "mask=col < 9" in source
+    else:
+        assert "reflected = rev_col >= 9" in source
+        assert "xi = tl.where(reflected, -xi, xi)" in source
+
+
+@pytest.mark.parametrize(
+    ("dtype", "direction"),
+    [("complex64", "forward"), ("complex128", "inverse")],
+)
+def test_fused_32_plane_codegen(dtype, direction, tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_32_plane_kernel
+
+    metadata = emit_fused_32_plane_kernel(dtype=dtype, direction=direction, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    assert metadata["kernel_name"] == "fused_32_plane_fft_kernel"
+    assert metadata["kernel_type"] == "fused_32_plane"
+    assert metadata["num_warps"] == 8
+    assert "tl.arange(0, 1024)" in source
+    assert source.count("tl.static_range(5)") == 3
+
+
 def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     plan = kernels.LeafPlan(
         length=16,
@@ -125,6 +182,134 @@ def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     assert "nbatch" in source
 
 
+def test_permuted_store_launch_grid_matches_generated_batch_pack(kernels, jit_source, tmp_path) -> None:
+    plan = kernels.LeafPlan(
+        length=256,
+        factors=(4, 4, 4, 4),
+        remainder=1,
+        lanes=64,
+        num_warps=2,
+        generic_radices=(),
+        smem_size=256,
+    )
+    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
+        plan, io_mode="permuted_store", perm_form="outer"
+    )
+    metadata = jit_source._metadata(
+        module_path=tmp_path / "unused.py",
+        kernel_name=kernel_name,
+        arg_names=["in_ptr", "out_ptr", "nbatch", "perm_span"],
+        plan=plan,
+        kernel_type="leaf_permuted_store",
+        n1=0,
+        n2=0,
+        dtype=plan.dtype,
+    )
+
+    assert metadata["batch_per_block"] == 4
+    assert "batch_id = pid * 4" in source
+
+
+@pytest.mark.parametrize("pack", [1, 4])
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_maca_packed_permuted_store_is_fp32_only(
+    kernels, monkeypatch, pack, dtype
+) -> None:
+    from flagfft_codegen import kernels_leaf
+    from flagfft_codegen.backend_profile import (
+        BackendProfile,
+        reset_profile,
+        set_profile,
+    )
+
+    profile = BackendProfile.from_device(
+        {
+            "backend": "maca",
+            "device_arch": "102",
+            "warp_size": 64,
+            "max_threads_per_block": 1024,
+            "max_dynamic_shared_memory": 65536,
+        }
+    )
+    token = set_profile(profile)
+    monkeypatch.setenv("FLAGFFT_MACA_VEC_IO", "packed")
+    monkeypatch.setattr(kernels_leaf, "permuted_store_batch_pack_for", lambda _plan: pack)
+    plan = kernels.LeafPlan(
+        length=256,
+        factors=(4, 4, 4, 4),
+        remainder=1,
+        lanes=64,
+        num_warps=2,
+        generic_radices=(),
+        smem_size=256,
+        dtype=dtype,
+    )
+    try:
+        _name, source = kernels._build_leaf_kernel_source_for_io(
+            plan, io_mode="permuted_store", perm_form="outer"
+        )
+    finally:
+        reset_profile(token)
+
+    if dtype == "complex64":
+        assert "tl.pointer_type(tl.uint64)" in source
+        assert "tl.store(out_ptr + perm_addr0 * 2 + 1" not in source
+        if pack > 1:
+            assert "perm_group_pair_out = tl.trans(perm_group_pair_raw)" in source
+            assert "perm_group_pair_flat0 = " in source
+            assert "perm_group_join_0_0 = tl.join(perm_group_pair_flat0, perm_group_pair_flat2)" in source
+            assert "perm_group_join_0_1 = tl.join(perm_group_pair_flat1, perm_group_pair_flat3)" in source
+            assert "perm_group_addr = perm_group_base[:, None] * perm_k_stride" in source
+            assert "perm_pair0 = tl.trans(tl.reshape" not in source
+            assert "zr0 = tl.trans(tl.reshape(r0" not in source
+            assert "tl.store(perm_group_ptr, perm_group_pair_out" in source
+        else:
+            assert "tl.store(perm_ptr0, perm_pair0" in source
+    else:
+        assert "perm_pair0" not in source
+        assert "tl.store(out_ptr + perm_addr0 * 2 + 1" in source
+
+
+def test_permuted_store_pack_masks_only_final_stage_lanes(
+    kernels, monkeypatch
+) -> None:
+    from flagfft_codegen import kernels_leaf
+    from flagfft_codegen.backend_profile import (
+        BackendProfile,
+        reset_profile,
+        set_profile,
+    )
+
+    profile = BackendProfile.from_device(
+        {
+            "backend": "maca",
+            "device_arch": "102",
+            "warp_size": 64,
+            "max_threads_per_block": 1024,
+            "max_dynamic_shared_memory": 65536,
+        }
+    )
+    token = set_profile(profile)
+    monkeypatch.setattr(kernels_leaf, "permuted_store_batch_pack_for", lambda _plan: 2)
+    plan = kernels.LeafPlan(
+        length=2048,
+        factors=(16, 8, 16),
+        remainder=1,
+        lanes=128,
+        num_warps=4,
+        generic_radices=(),
+        smem_size=2048,
+        dtype="complex64",
+    )
+    try:
+        _name, source = kernels._build_leaf_kernel_source_for_io(
+            plan, io_mode="permuted_store", perm_form="inner"
+        )
+    finally:
+        reset_profile(token)
+
+    assert "lane_mask = base_lane_mask & (lane < 128)" in source
+    assert "perm_lane_mask = lane_only < 128" in source
 def test_inverse_leaf_kernel_source_is_directional(kernels) -> None:
     forward = kernels.LeafPlan(
         length=8,
@@ -1071,6 +1256,200 @@ def test_hcu_c2r_cube_perm_form_is_supported_by_jit_cli(
     cli.main()
 
     assert "permuted_store_inner_middle_c2r_cube" in capsys.readouterr().out
+
+
+
+def test_tiled_transpose3d_pair_slice_group_emits_sequential_2d_register_tiles() -> None:
+    from flagfft_codegen.kernels_layout import (
+        _build_tiled_transpose3d_pair_slice_group_kernel_source,
+    )
+
+    kernel_name, source, _, grid_x = (
+        _build_tiled_transpose3d_pair_slice_group_kernel_source(
+            256, 256, 256, "021", tile=16, slice_group=2, tile_traversal="row"
+        )
+    )
+
+    assert kernel_name.endswith("_t16_tile_pair_sliceg2seq_rmajor")
+    assert "for group_offset in tl.static_range(0, 2):" in source
+    assert "dst_pair = tl.trans(src_pair)" in source
+    assert grid_x == 128 * 16 * 16
+
+
+def test_tiled_transpose3d_pair_slice_row_group_emits_independent_tiles() -> None:
+    from flagfft_codegen.kernels_layout import (
+        _build_tiled_transpose3d_pair_slice_row_group_kernel_source,
+    )
+
+    kernel_name, source, _, grid_x = (
+        _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
+            256, 256, 256, "021", tile=16, slice_group=2, row_group=2,
+            tile_traversal="row",
+        )
+    )
+
+    assert kernel_name.endswith("_t16_tile_pair_sliceg2seq_rowg2seq_rmajor")
+    assert "for slice_group_offset in tl.static_range(0, 2):" in source
+    assert "for row_group_offset in tl.static_range(0, 2):" in source
+    assert "dst_pair = tl.trans(src_pair)" in source
+    assert "tile_row_group = tile_in_slice % 8" in source
+    assert grid_x == 128 * 8 * 16
+
+    _, _, _, grid_x_group4 = (
+        _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
+            256, 256, 256, "021", tile=16, slice_group=2, row_group=4,
+            tile_traversal="row",
+        )
+    )
+    assert grid_x_group4 == 128 * 4 * 16
+
+
+def test_maca_pair16_slice_row_group_codegen_is_opt_in(tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit, kernels_common
+
+    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16sg2rg2")
+
+    metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+
+    assert metadata["kernel_name"].endswith(
+        "_t16_tile_pair_sliceg2seq_rowg2seq_rmajor"
+    )
+    assert metadata["num_warps"] == 8
+    assert metadata["grid_x_override"] == 16384
+    assert "for row_group_offset in tl.static_range(0, 2):" in source
+
+    fp64_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex128", out_dir=tmp_path
+    )
+    assert fp64_metadata["kernel_name"].endswith("_tile_vec")
+
+
+def test_maca_pair16_row_group_only_codegen_screen(tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit, kernels_common
+
+    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16rg2")
+
+    metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+
+    assert metadata["kernel_name"].endswith(
+        "_t16_tile_pair_sliceg1seq_rowg2seq_rmajor"
+    )
+    assert metadata["num_warps"] == 8
+    assert metadata["grid_x_override"] == 32768
+    assert "for slice_group_offset in tl.static_range(0, 1):" in source
+    assert "for row_group_offset in tl.static_range(0, 2):" in source
+
+    fp64_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex128", out_dir=tmp_path
+    )
+    assert fp64_metadata["kernel_name"].endswith("_t16_tile_vec")
+    assert fp64_metadata["num_warps"] == 4
+
+
+def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit, kernels_common
+
+    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "row")
+
+    metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+
+    assert metadata["kernel_name"].endswith("_rmajor")
+    assert "tile_row = tile_in_slice % 4" in source
+    assert "tile_col = tile_in_slice // 4" in source
+
+
+def test_maca_256_cube_pair_slice_group_is_scoped_to_pair16_eight_warps(
+    tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit, kernels_common
+
+    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "row")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "2")
+
+    metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+
+    assert metadata["kernel_name"].endswith("_t16_tile_pair_sliceg2seq_rmajor")
+    assert metadata["num_warps"] == 8
+    assert metadata["grid_x_override"] == 32768
+    assert "for group_offset in tl.static_range(0, 2):" in source
+
+    long_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert long_metadata["kernel_name"].endswith(
+        "_t16_tile_pair_sliceg2seq_rmajor"
+    )
+    assert long_metadata["grid_x_override"] == 32768
+
+
+def test_maca_long_complex64_transpose_defaults_to_row_tile_traversal(
+    tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit, kernels_common
+
+    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
+    monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", raising=False)
+
+    long_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert long_metadata["kernel_name"].endswith("_rmajor")
+
+    cube_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert cube_metadata["kernel_name"].endswith("_rmajor")
+
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", "col")
+    rollback_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert not rollback_metadata["kernel_name"].endswith("_rmajor")
+    cube_rollback_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert not cube_rollback_metadata["kernel_name"].endswith("_rmajor")
+    monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL")
+
+    half_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=33, order="201", dtype="complex64", out_dir=tmp_path
+    )
+    assert not half_metadata["kernel_name"].endswith("_rmajor")
+
+    double_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=128, n1=2048, n2=64, order="201", dtype="complex128", out_dir=tmp_path
+    )
+    assert not double_metadata["kernel_name"].endswith("_rmajor")
 
 
 def test_tiled_transpose3d_tile_selected_only_for_validated_backends(

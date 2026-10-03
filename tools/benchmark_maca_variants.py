@@ -145,6 +145,46 @@ def measure(case, build, root, variant, overrides, args, env_base):
     return record
 
 
+def summarize_records(records, variants):
+    """Summarize one aggregated measurement record per case and variant."""
+    summary = {}
+    for case in sorted({record["case"] for record in records}):
+        per_variant = {}
+        for name, _ in variants:
+            trials = [
+                record for record in records
+                if record["case"] == case and record["variant"] == name
+            ]
+            # measure() already folds --repeats timing runs into its median and
+            # spread, then emits exactly one record for the variant.
+            if len(trials) == 1 and trials[0]["status"] == "passed":
+                record = trials[0]
+                per_variant[name] = {
+                    "median_ms": float(record["flagfft_ms"]),
+                    "platform_ms": float(record["platform_ms"]),
+                    "plan": record["plan"],
+                }
+        baseline = per_variant.get(variants[0][0], {}).get("median_ms")
+        baseline_relative = None
+        if variants[0][0] in per_variant:
+            data = per_variant[variants[0][0]]
+            baseline_relative = data["platform_ms"] / data["median_ms"]
+        summary[case] = {
+            "variants": per_variant,
+            "speedup_vs_baseline": {
+                name: baseline / data["median_ms"]
+                for name, data in per_variant.items()
+                if baseline and name != variants[0][0]
+            },
+            "reference_normalized_speedup_vs_baseline": {
+                name: (data["platform_ms"] / data["median_ms"]) / baseline_relative
+                for name, data in per_variant.items()
+                if baseline_relative and name != variants[0][0]
+            },
+        }
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=Path("build"))
@@ -222,35 +262,7 @@ def main():
             print(f"[{index}/{len(cases)}] {acceptance.case_name(case)}", flush=True)
     acceptance.write_json(root / "records.json", records)
 
-    summary = {}
-    for case in sorted({r["case"] for r in records}):
-        per_variant = {}
-        for name, _ in variants:
-            trials = [r for r in records if r["case"] == case and r["variant"] == name]
-            if len(trials) == args.repeats and all(r["status"] == "passed" for r in trials):
-                per_variant[name] = {
-                    "median_ms": float(np.median([r["flagfft_ms"] for r in trials])),
-                    "platform_ms": float(np.median([r["platform_ms"] for r in trials])),
-                    "plan": trials[0]["plan"],
-                }
-        baseline = per_variant.get(variants[0][0], {}).get("median_ms")
-        baseline_relative = None
-        if variants[0][0] in per_variant:
-            data = per_variant[variants[0][0]]
-            baseline_relative = data["platform_ms"] / data["median_ms"]
-        summary[case] = {
-            "variants": per_variant,
-            "speedup_vs_baseline": {
-                name: baseline / data["median_ms"]
-                for name, data in per_variant.items()
-                if baseline and name != variants[0][0]
-            },
-            "reference_normalized_speedup_vs_baseline": {
-                name: (data["platform_ms"] / data["median_ms"]) / baseline_relative
-                for name, data in per_variant.items()
-                if baseline_relative and name != variants[0][0]
-            },
-        }
+    summary = summarize_records(records, variants)
     acceptance.write_json(root / "summary.json", summary)
     print(f"\nwrote {root/'summary.json'}")
 

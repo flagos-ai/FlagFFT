@@ -94,7 +94,9 @@ _SPECS: tuple[KernelSpec, ...] = (
         "leaf_r2c", CT_LEAF, io_mode="contiguous_r2c", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(
-        "leaf_r2c_permuted_store", CT_LEAF, io_mode="permuted_r2c",
+        "leaf_r2c_permuted_store",
+        CT_LEAF,
+        io_mode="permuted_store_r2c",
         requires=_BASE_LEAF_FLAGS,
     ),
     KernelSpec(
@@ -250,6 +252,8 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("fused_32_real_plane", SMALL_3D),
     KernelSpec("fused_rect_plane", SMALL_3D),
     KernelSpec("fused_16_cube", SMALL_3D),
+    KernelSpec("fused_32_plane", SMALL_3D),
+    KernelSpec("fused_16_real_plane", SMALL_3D),
     KernelSpec("real_to_complex", REAL_POINTWISE, requires=("length",)),
     KernelSpec("r2c_half_pack", REAL_POINTWISE, requires=("length",)),
     KernelSpec("r2c_packed_postprocess", REAL_POINTWISE, requires=("length",)),
@@ -383,7 +387,7 @@ def module_name_for(
             f"flagfft_jit_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
         )
-    if spec.name in {"leaf_permuted_store", "leaf_strided_permuted_store"}:
+    if spec.name in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}:
         return (
             f"flagfft_jit_{spec.name}_{perm_form}_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"

@@ -109,6 +109,11 @@ class BackendProfile:
 
     def validate(self, num_warps):
         legal_warps = (1, 2, 4, 8, 16) if self.backend == "ix" else (1, 2, 4, 8)
+        # C550 reports a 1024-thread block limit. Keep planning at its measured
+        # 8-warp ceiling, but permit an explicit 16-warp kernel for targeted
+        # transpose experiments that match the vendor library's CTA shape.
+        if self.backend == "maca" and self.max_threads_per_block >= 1024:
+            legal_warps = (*legal_warps, 16)
         if (
             num_warps not in legal_warps
             or num_warps * self.warp_size > self.max_threads_per_block

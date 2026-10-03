@@ -298,6 +298,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
               : FLAGFFT_C2C;
       const std::string origin_real_transform_kind =
           request_from_desc(plan->desc, "forward", plan->desc.rank).real_transform_kind;
+      const bool maca_c2c32_single_cube = adaptor::backend_name() == "maca" &&
+                                          plan->desc.device_arch == "102" && plan->desc.type == FLAGFFT_Z2Z &&
+                                          plan->desc.precision == FlagFFTPrecision::Float64 && batch == 1 &&
+                                          n0 == 32 && n1 == 32 && n2 == 32;
 
       // RTRT decomposition: FFT along the innermost axis n2, then the middle
       // axis n1, then the outermost axis n0, with a 3D axis permutation
@@ -320,6 +324,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         auto make_axis_request = [&](const std::string &axis_direction) {
           FFTRequest request = request_from_desc(axis_desc, axis_direction, plan->desc.rank);
           request.origin_real_transform_kind = origin_real_transform_kind;
+          request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
           return request;
         };
         FFTRequest axis_request = make_axis_request(direction);
@@ -356,6 +361,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
           std::make_shared<ThreeDimPlanNode>(n0, n1, n2, ThreeDimStrategy::RTRT, n2_plan, n1_plan, n0_plan);
       plan->executable.forward_request = request_from_desc(plan->desc, "forward");
       plan->executable.inverse_request = request_from_desc(plan->desc, "inverse");
+      plan->executable.forward_request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
+      plan->executable.inverse_request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
     } else {
       // 1D FFT: original path
       plan->executable.forward_request = request_from_desc(plan->desc, "forward");

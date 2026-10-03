@@ -38,6 +38,8 @@ from .kernels_small_3d import (
     emit_fused_16_plane_kernel,
     emit_fused_32_real_plane_kernel,
     emit_fused_rect_plane_kernel,
+    emit_fused_16_real_plane_kernel,
+    emit_fused_32_plane_kernel,
 )
 from .kernels_small_2d import emit_fused_2d_kernel
 from .artifacts import write_text_atomic
@@ -62,6 +64,8 @@ from .target import (
     set_maca_1d_single_default,
     set_maca_1d_batch_default,
     set_maca_2d_single_default,
+    set_maca_3d_default,
+    set_maca_3d_c2c32_single_cube,
 )
 from .maca_tail_policy import set_maca_tail_mode, variant_suffix
 
@@ -82,6 +86,18 @@ def _toolchain_version() -> str:
         except metadata.PackageNotFoundError:
             continue
     return "unspecified"
+
+
+def _maca_environment_fingerprint(environment: dict[str, str] | None = None) -> str:
+    """Separate generated MACA artifacts for explicit resource-policy overrides."""
+    import hashlib
+
+    values = os.environ if environment is None else environment
+    overrides = {key: value for key, value in values.items() if key.startswith("FLAGFFT_MACA_")}
+    if not overrides:
+        return ""
+    payload = json.dumps(overrides, sort_keys=True).encode()
+    return hashlib.sha256(payload).hexdigest()[:12]
 
 
 def main() -> None:
@@ -175,6 +191,10 @@ def main() -> None:
         action="store_true",
         help="enable the MACA rank-2 FP32 batch-1 code-generation policy",
     )
+    parser.add_argument("--maca-3d", action="store_true",
+                        help="enable scoped MACA rank-3 axis packing")
+    parser.add_argument("--maca-3d-c2c32-single-cube", action="store_true",
+                        help="enable the MACA single-cube FP64 C2C 32^3 packing policy")
     parser.add_argument(
         "--compile-script",
         type=Path,
@@ -200,6 +220,8 @@ def main() -> None:
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
+    set_maca_3d_default(args.maca_3d)
+    set_maca_3d_c2c32_single_cube(args.maca_3d_c2c32_single_cube)
     if args.device_profile:
         device = json.loads(args.device_profile)
         default_policies = {"ix": "balanced", "hcu": "native"}
@@ -243,6 +265,10 @@ def main() -> None:
         profile_dir += (
             "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
+        profile_dir += "-maca-3d" if args.maca_3d else "-maca-3d-off"
+        maca_env_fingerprint = _maca_environment_fingerprint()
+        if maca_env_fingerprint:
+            profile_dir += f"-maca-env-{maca_env_fingerprint}"
     if profile.backend == "musa":
         pair_store = os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_MUSA_3D_PACK", "auto")
@@ -435,6 +461,14 @@ def main() -> None:
             )
         elif args.kernel == "fused_32_real_plane":
             metadata = emit_fused_32_real_plane_kernel(
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+            )
+        elif args.kernel == "fused_32_plane":
+            metadata = emit_fused_32_plane_kernel(
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+            )
+        elif args.kernel == "fused_16_real_plane":
+            metadata = emit_fused_16_real_plane_kernel(
                 dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
             )
         elif args.kernel == "fused_rect_plane":

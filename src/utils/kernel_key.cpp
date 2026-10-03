@@ -96,6 +96,26 @@ KernelKey KernelKey::fused_2d(std::string target, std::string direction,
   return key;
 }
 
+KernelKey KernelKey::fused_32_plane(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused32Plane;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 32;
+  return key;
+}
+
+KernelKey KernelKey::fused_16_real_plane(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused16RealPlane;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 16;
+  return key;
+}
+
 KernelKey KernelKey::leaf(std::string target,
                           std::string direction,
                           std::string dtype,
@@ -187,6 +207,30 @@ KernelKey KernelKey::leaf_r2c(std::string target,
                                   std::move(generic_radices),
                                   smem_size);
   key.kind = KernelKind::LeafR2C;
+  return key;
+}
+
+KernelKey KernelKey::leaf_r2c_permuted_store(std::string target,
+                                             std::string direction,
+                                             std::string dtype,
+                                             int64_t length,
+                                             std::vector<int64_t> factors,
+                                             int64_t lanes,
+                                             int64_t num_warps,
+                                             std::vector<int64_t> generic_radices,
+                                             int64_t smem_size,
+                                             std::string perm_form) {
+  KernelKey key = KernelKey::leaf_r2c(std::move(target),
+                                      std::move(direction),
+                                      std::move(dtype),
+                                      length,
+                                      std::move(factors),
+                                      lanes,
+                                      num_warps,
+                                      std::move(generic_radices),
+                                      smem_size);
+  key.kind = KernelKind::LeafR2CPermutedStore;
+  key.perm_form = std::move(perm_form);
   return key;
 }
 

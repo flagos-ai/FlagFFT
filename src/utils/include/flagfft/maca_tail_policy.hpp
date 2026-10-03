@@ -159,11 +159,23 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
 inline std::string maca_tail_codegen_identity(const std::string& mode) {
   std::string identity = ";maca-tail-v1=" + mode;
   for (const char* name : {"FLAGFFT_MACA_REAL_DFT_REDUCTION", "FLAGFFT_MACA_EXCHANGE",
+                           "FLAGFFT_MACA_BATCH_PACK", "FLAGFFT_MACA_3D_N64_PACK",
+                           "FLAGFFT_MACA_3D_N32_FP64_PACK",
+                           "FLAGFFT_MACA_3D_PERMSTORE_PACK",
                            "FLAGFFT_MACA_FP64_REGISTER_PACK", "FLAGFFT_MACA_INNER_PACK",
                            "FLAGFFT_MACA_MAX_WARPS", "FLAGFFT_MACA_SPLIT_ORDER",
                            "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_LANE_MIN",
                            "FLAGFFT_MACA_MIXED_EXCHANGE", "FLAGFFT_MACA_RADER_FULL_LEAF",
-                           "FLAGFFT_MACA_RADER_BOUNDARY_LEAF", "FLAGFFT_MACA_RADER_VEC_IO"}) {
+                           "FLAGFFT_MACA_RADER_BOUNDARY_LEAF", "FLAGFFT_MACA_RADER_VEC_IO",
+                           "FLAGFFT_MACA_TRANSPOSE3D", "FLAGFFT_MACA_TRANSPOSE3D_WARPS",
+                           "FLAGFFT_MACA_TRANSPOSE3D_FP64", "FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL",
+                           "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP",
+                           "FLAGFFT_MACA_3D_FIRST_STORE",
+                           "FLAGFFT_MACA_3D_FINAL_STORE",
+                           "FLAGFFT_MACA_3D_R2C_FIRST_STORE",
+                           "FLAGFFT_MACA_3D_REAL_FUSED16",
+                           "FLAGFFT_MACA_3D_C2C_FUSED32",
+                           "FLAGFFT_MACA_3D_C2C32_MORE_LANES"}) {
     const char* value = std::getenv(name);
     identity += std::string(";") + name + "=";
     identity += value ? std::to_string(std::string(value).size()) + ":" + value : "unset";

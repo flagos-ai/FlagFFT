@@ -156,7 +156,7 @@ def _metadata(
         batch_per_block = permuted_store_batch_pack_for(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )
-    elif kernel_type == "leaf_permuted_store" and (
+    elif kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"} and (
         _ix_backend_active()
         or (
             _npu_backend_active()
@@ -177,6 +177,11 @@ def _metadata(
                     ) from exc
                 if batch_per_block not in {1, 2, 4, 8}:
                     raise ValueError("FLAGFFT_NPU_2D_TRANSPOSE_PACK must be 1, 2, 4 or 8")
+    elif (
+        current_profile().backend == "maca"
+        and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
+    ):
+        batch_per_block = permuted_store_batch_pack_for(plan)
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
         batch_per_block = contiguous_batch_pack_for(
             plan,
@@ -236,6 +241,20 @@ def _metadata(
     if maca_backend:
         # One warp triggers unsupported shuffle lowering in multi-stage leaves.
         num_warps = max(2, num_warps)
+        warp_override = _maca_knob("WARPS")
+        if warp_override:
+            try:
+                requested_warps = int(warp_override)
+            except ValueError:
+                raise ValueError(
+                    f"FLAGFFT_MACA_WARPS must be 2, 4 or 8, got {warp_override!r}"
+                ) from None
+            if requested_warps not in {2, 4, 8}:
+                raise ValueError(
+                    f"FLAGFFT_MACA_WARPS must be 2, 4 or 8, got {requested_warps}"
+                )
+            profile.validate(requested_warps)
+            num_warps = requested_warps
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
         profile.validate(num_warps)
