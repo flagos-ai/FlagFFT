@@ -1286,6 +1286,35 @@ def test_jit_r2c_pointwise_source_metadata(jit_source, tmp_path) -> None:
         "input_distance",
         "nbatch",
     ]
+
+
+def test_npu_256_real_pointwise_groups_rows(jit_source, tmp_path) -> None:
+    kernels = (
+        "real_to_complex",
+        "r2c_half_pack",
+        "compact_to_hermitian_full",
+        "complex_to_real",
+    )
+    for kernel in kernels:
+        metadata = jit_source._emit_r2c_pointwise_jit_kernel(
+            kernel=kernel,
+            n=256,
+            dtype="complex64",
+            out_dir=tmp_path / "npu",
+            target="npu:Ascend910B4:1",
+        )
+        assert metadata["rows_per_block"] == 8
+        source = Path(metadata["module_path"]).read_text()
+        assert "pid_batch * 8" in source
+
+    portable = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel="compact_to_hermitian_full",
+        n=256,
+        dtype="complex64",
+        out_dir=tmp_path / "portable",
+        target="cuda:90:32",
+    )
+    assert portable["rows_per_block"] == 1
     assert (tmp_path / "flagfft_jit_c2r_packed_preprocess_n18_f64.py").is_file()
 
 

@@ -440,21 +440,23 @@ def _emit_r2c_pointwise_jit_kernel(
     n: int,
     dtype: str,
     out_dir: Path,
+    target: str = "",
 ) -> dict[str, Any]:
+    elements_per_program = 2048 if target.startswith("npu:") and n == 256 else 256
     if kernel == "real_to_complex":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_real_to_complex_kernel_source(n, dtype)
+        ) = _build_real_to_complex_kernel_source(n, dtype, elements_per_program)
     elif kernel == "r2c_half_pack":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_r2c_half_pack_kernel_source(n, dtype)
+        ) = _build_r2c_half_pack_kernel_source(n, dtype, elements_per_program)
     elif kernel == "r2c_packed_postprocess":
         (
             kernel_name,
@@ -475,14 +477,14 @@ def _emit_r2c_pointwise_jit_kernel(
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_compact_to_hermitian_full_kernel_source(n, dtype)
+        ) = _build_compact_to_hermitian_full_kernel_source(n, dtype, elements_per_program)
     elif kernel == "complex_to_real":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_complex_to_real_kernel_source(n, dtype)
+        ) = _build_complex_to_real_kernel_source(n, dtype, elements_per_program)
     else:
         raise ValueError(f"unsupported R2C pointwise kernel kind: {kernel}")
 
@@ -510,6 +512,8 @@ def _emit_r2c_pointwise_jit_kernel(
         "kernel_type": kernel,
         "dtype": dtype,
         "length": int(n),
+        # `block` is the column extent used by raw_nodes.cpp to build grid.x;
+        # `rows_per_block` carries the NPU 256-point row grouping in grid.y.
         "block": 256,
         "rows_per_block": int(rows_per_block),
     }
