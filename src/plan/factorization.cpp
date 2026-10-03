@@ -136,6 +136,21 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     return {4, 4, 2};
   }
   if (context.device_type == "maca" && context.origin_rank == 3) {
+    const char *n128_single_factors = std::getenv("FLAGFFT_MACA_3D_N128_844");
+    if (context.device_arch == "102" && n == 128 && context.requested_n == n &&
+        (context.input_dtype == "complex64" || context.input_dtype == "complex128") &&
+        context.input_dtype == context.output_dtype && n128_single_factors != nullptr) {
+      const std::string setting(n128_single_factors);
+      if (setting == "1") {
+        // The MACA 1D single-transform screen favored [8,4,4] over the
+        // four-stage [4,4,4,2] leaf. Keep the 3D n=128-axis check opt-in:
+        // the surrounding 3D plan gives this leaf a large transform batch.
+        return {8, 4, 4};
+      }
+      if (setting != "0") {
+        throw std::runtime_error("FLAGFFT_MACA_3D_N128_844 must be 0 or 1");
+      }
+    }
     // This order retains the 128 collaboration lanes and 4-warps block while
     // slightly improving the direct C550 2048-point 3D axis. Keep it off the
     // Bluestein convolution used by the 997-point transform.
