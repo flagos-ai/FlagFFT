@@ -442,7 +442,25 @@ def _emit_r2c_pointwise_jit_kernel(
     out_dir: Path,
     target: str = "",
 ) -> dict[str, Any]:
-    elements_per_program = 2048 if target.startswith("npu:") and n == 256 else 256
+    elements_per_program = 256
+    num_warps = _RESHAPE_NUM_WARPS
+    if target.startswith("npu:") and n == 256:
+        # AIV conversion kernels are sensitive to work per block. Keep the
+        # profiled one-row/four-thread layout as the default; expose narrow
+        # experiment knobs so rows and block threads can be measured without
+        # changing other targets or kernel families.
+        rows_text = os.getenv("FLAGFFT_NPU_3D_REAL_POINTWISE_ROWS", "1")
+        warps_text = os.getenv("FLAGFFT_NPU_3D_REAL_POINTWISE_WARPS", "4")
+        try:
+            rows_per_program = int(rows_text)
+            num_warps = int(warps_text)
+        except ValueError as exc:
+            raise ValueError("NPU 256-point real pointwise rows/warps must be integers") from exc
+        if rows_per_program not in {1, 2, 4, 8}:
+            raise ValueError("NPU 256-point real pointwise rows must be one of 1, 2, 4, 8")
+        if num_warps not in {4, 8, 16, 32}:
+            raise ValueError("NPU 256-point real pointwise warps must be one of 4, 8, 16, 32")
+        elements_per_program *= rows_per_program
     if kernel == "real_to_complex":
         (
             kernel_name,
@@ -505,7 +523,7 @@ def _emit_r2c_pointwise_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": _RESHAPE_NUM_WARPS,
+        "num_warps": num_warps,
         "num_stages": _RESHAPE_NUM_STAGES,
         "batch_per_block": 1,
         "arg_names": arg_names,
@@ -513,7 +531,7 @@ def _emit_r2c_pointwise_jit_kernel(
         "dtype": dtype,
         "length": int(n),
         # `block` is the column extent used by raw_nodes.cpp to build grid.x;
-        # `rows_per_block` carries the NPU 256-point row grouping in grid.y.
+        # `rows_per_block` carries the selected row grouping in grid.y.
         "block": 256,
         "rows_per_block": int(rows_per_block),
     }

@@ -1288,13 +1288,15 @@ def test_jit_r2c_pointwise_source_metadata(jit_source, tmp_path) -> None:
     ]
 
 
-def test_npu_256_real_pointwise_groups_rows(jit_source, tmp_path) -> None:
+def test_npu_256_real_pointwise_layout_is_tunable(jit_source, tmp_path, monkeypatch) -> None:
     kernels = (
         "real_to_complex",
         "r2c_half_pack",
         "compact_to_hermitian_full",
         "complex_to_real",
     )
+    monkeypatch.delenv("FLAGFFT_NPU_3D_REAL_POINTWISE_ROWS", raising=False)
+    monkeypatch.delenv("FLAGFFT_NPU_3D_REAL_POINTWISE_WARPS", raising=False)
     for kernel in kernels:
         metadata = jit_source._emit_r2c_pointwise_jit_kernel(
             kernel=kernel,
@@ -1303,9 +1305,23 @@ def test_npu_256_real_pointwise_groups_rows(jit_source, tmp_path) -> None:
             out_dir=tmp_path / "npu",
             target="npu:Ascend910B4:1",
         )
-        assert metadata["rows_per_block"] == 8
+        assert metadata["rows_per_block"] == 1
+        assert metadata["num_warps"] == 4
         source = Path(metadata["module_path"]).read_text()
-        assert "pid_batch * 8" in source
+        assert "pid_batch * 1" in source
+
+    monkeypatch.setenv("FLAGFFT_NPU_3D_REAL_POINTWISE_ROWS", "8")
+    monkeypatch.setenv("FLAGFFT_NPU_3D_REAL_POINTWISE_WARPS", "16")
+    grouped = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel="compact_to_hermitian_full",
+        n=256,
+        dtype="complex64",
+        out_dir=tmp_path / "npu-grouped",
+        target="npu:Ascend910B4:1",
+    )
+    assert grouped["rows_per_block"] == 8
+    assert grouped["num_warps"] == 16
+    assert "pid_batch * 8" in Path(grouped["module_path"]).read_text()
 
     portable = jit_source._emit_r2c_pointwise_jit_kernel(
         kernel="compact_to_hermitian_full",
