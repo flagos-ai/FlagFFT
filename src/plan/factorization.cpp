@@ -136,21 +136,10 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     return {4, 4, 2};
   }
   if (context.device_type == "maca" && context.origin_rank == 3) {
-    // Keep the default 3D long-axis factorization measured on C550. The
-    // opt-in candidate raises the cooperation width to 256 lanes using the
-    // 1D MACA batch-1 lane heuristic as a starting point; it is screened only
-    // for direct rank-3 length-2048 leaves.
-    if (context.device_arch == "102" && n == 2048 && context.requested_n == n &&
-        context.real_transform_kind.empty() &&
-        context.input_dtype == context.output_dtype && context.batch == 8192) {
-      const char *more_lanes = std::getenv("FLAGFFT_MACA_3D_N2048_MORE_LANES");
-      if (more_lanes != nullptr && std::string(more_lanes) == "1") {
-        return {8, 8, 8, 4};
-      }
-      if (more_lanes != nullptr && std::string(more_lanes) != "0") {
-        throw std::runtime_error(
-            "FLAGFFT_MACA_3D_N2048_MORE_LANES must be 0 or 1");
-      }
+    // This order retains the 128 collaboration lanes and 4-warps block while
+    // slightly improving the direct C550 2048-point 3D axis. Keep it off the
+    // Bluestein convolution used by the 997-point transform.
+    if (context.device_arch == "102" && n == 2048 && context.requested_n == n) {
       return {16, 8, 16};
     }
   }
