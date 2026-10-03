@@ -805,7 +805,9 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
                            output_row_stride % group_size != 0)) {
     return FLAGFFT_INVALID_SIZE;
   }
-  const int64_t batch_chunk = block_limit_per_launch() * group_size;
+  const int64_t batch_chunk = mode == NpuAivFFT256Mode::Complex
+      ? block_limit_per_launch() * group_size
+      : context.batch;
   if (batch_chunk <= 0) return FLAGFFT_INVALID_SIZE;
   const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
   const int64_t real_bytes = element_bytes / 2;
