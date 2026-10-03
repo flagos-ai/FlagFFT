@@ -753,11 +753,15 @@ def _emit_tiled_transpose3d_jit_kernel(
 ) -> dict[str, Any]:
     from .kernels_common import _declared_backend
 
-    maca_mode = (
-        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
-        if _declared_backend() == "maca"
-        else "tile32"
-    )
+    if _declared_backend() == "maca":
+        maca_mode_default = (
+            "pair16sg2rg2"
+            if dtype == "complex64" and tuple(sorted((n0, n1, n2))) == (256, 256, 256)
+            else "pair16"
+        )
+        maca_mode = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", maca_mode_default)
+    else:
+        maca_mode = "tile32"
     if maca_mode not in {
         "tile16", "tile32", "tile64", "pair16", "pair32", "pair64",
         "pair16rg2", "pair16sg2rg2", "v1",
