@@ -620,7 +620,8 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                                                   adaptor::DevicePtr output,
                                                   const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() || stride <= 0 ||
-      (group_size != 1 && group_size != 4 && group_size != 8) ||
+      (group_size != 1 && group_size != 4 && group_size != 8 &&
+       !(radix4_pair && (group_size == 16 || group_size == 32))) ||
       (group_size != 1 && stride != 1 && stride != 64) || (mode != NpuAivFFT64Mode::Complex && stride != 1) ||
       context.batch % group_size != 0 || indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
@@ -711,7 +712,7 @@ flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   if (context.batch <= 0 || indices == nullptr || twiddles == nullptr ||
-      (length == 128 && group_size != 4 && group_size != 8) ||
+      (length == 128 && group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) ||
       (length == 2048 && group_size != 1) || (length != 128 && length != 2048) ||
       context.batch % group_size != 0) {
     return FLAGFFT_INVALID_SIZE;

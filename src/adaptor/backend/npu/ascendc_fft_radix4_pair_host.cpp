@@ -15,10 +15,13 @@
 #include "adaptor/backend/npu/ascendc_fft_radix4_pair.hpp"
 
 #include <acl/acl_rt.h>
+#include <aclrtlaunch_flagfft_npu_fft128_radix4_pair_g16.h>
 #include <aclrtlaunch_flagfft_npu_fft128_radix4_pair_g4.h>
 #include <aclrtlaunch_flagfft_npu_fft128_radix4_pair_g8.h>
 #include <aclrtlaunch_flagfft_npu_fft2048_radix4_pair_g1.h>
 #include <aclrtlaunch_flagfft_npu_fft64_radix4_pair_g1.h>
+#include <aclrtlaunch_flagfft_npu_fft64_radix4_pair_g16.h>
+#include <aclrtlaunch_flagfft_npu_fft64_radix4_pair_g32.h>
 #include <aclrtlaunch_flagfft_npu_fft64_radix4_pair_g4.h>
 #include <aclrtlaunch_flagfft_npu_fft64_radix4_pair_g8.h>
 
@@ -72,6 +75,24 @@ flagfftResult launch_ascendc_fft_radix4_pair(int32_t length,
                                                                    twiddle_bytes,
                                                                    block_count,
                                                                    static_cast<uint32_t>(mode));
+  } else if (length == 64 && group_size == 16) {
+    status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft64_radix4_pair_g16)(block_count,
+                                                                    reinterpret_cast<void *>(stream),
+                                                                    input_bytes,
+                                                                    output_bytes,
+                                                                    index_bytes,
+                                                                    twiddle_bytes,
+                                                                    block_count,
+                                                                    static_cast<uint32_t>(mode));
+  } else if (length == 64 && group_size == 32) {
+    status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft64_radix4_pair_g32)(block_count,
+                                                                    reinterpret_cast<void *>(stream),
+                                                                    input_bytes,
+                                                                    output_bytes,
+                                                                    index_bytes,
+                                                                    twiddle_bytes,
+                                                                    block_count,
+                                                                    static_cast<uint32_t>(mode));
   } else if (length == 128 && group_size == 4) {
     status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft128_radix4_pair_g4)(block_count,
                                                                     reinterpret_cast<void *>(stream),
@@ -90,6 +111,15 @@ flagfftResult launch_ascendc_fft_radix4_pair(int32_t length,
                                                                     twiddle_bytes,
                                                                     block_count,
                                                                     static_cast<uint32_t>(mode));
+  } else if (length == 128 && group_size == 16) {
+    status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft128_radix4_pair_g16)(block_count,
+                                                                     reinterpret_cast<void *>(stream),
+                                                                     input_bytes,
+                                                                     output_bytes,
+                                                                     index_bytes,
+                                                                     twiddle_bytes,
+                                                                     block_count,
+                                                                     static_cast<uint32_t>(mode));
   } else if (length == 2048 && group_size == 1 && mode == 0) {
     status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft2048_radix4_pair_g1)(block_count,
                                                                      reinterpret_cast<void *>(stream),

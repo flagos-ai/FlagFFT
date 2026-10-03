@@ -29,8 +29,11 @@
 FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft64_radix4_pair_g4, 64, 4)
 FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft64_radix4_pair_g8, 64, 8)
 FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft64_radix4_pair_g1, 64, 1)
+FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft64_radix4_pair_g16, 64, 16)
+FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft64_radix4_pair_g32, 64, 32)
 FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft128_radix4_pair_g4, 128, 4)
 FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft128_radix4_pair_g8, 128, 8)
+FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft128_radix4_pair_g16, 128, 16)
 FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL(flagfft_npu_fft2048_radix4_pair_g1, 2048, 1)
 
 #undef FLAGFFT_DEFINE_RADIX4_PAIR_KERNEL

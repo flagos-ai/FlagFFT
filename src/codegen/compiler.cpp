@@ -1186,6 +1186,16 @@ namespace {
     return 1;
   }
 
+  int32_t npu_aiv_fft_radix4_pair_group_size(const char *setting, int64_t batch, int32_t maximum_group_size) {
+    if (setting == nullptr || std::string(setting) == "auto") return batch > 1 ? 8 : 4;
+    const std::string value(setting);
+    if (value == "4") return 4;
+    if (value == "8") return 8;
+    if (value == "16" && maximum_group_size >= 16) return 16;
+    if (value == "32" && maximum_group_size >= 32) return 32;
+    return 1;
+  }
+
   int32_t npu_aiv_fft64_real_row_group_size(const char *setting, int64_t batch) {
     const int32_t group_size = npu_aiv_fft64_group_size(setting, batch);
     // Compact rows contain 33 complex values. Grouping at least four rows
@@ -1546,10 +1556,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    npu_3d_aiv128 != nullptr && std::string(npu_3d_aiv128) == "1";
     if (use_npu_3d_aiv128 && batch % 4 == 0) {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV128_GROUP");
-      int32_t group_size = npu_aiv_fft64_group_size(group_setting, batch);
-      if (group_size != 4 && group_size != 8) group_size = 8;
-      if (batch % group_size != 0) group_size = batch % 4 == 0 ? 4 : 8;
       const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
+                                       : npu_aiv_fft64_group_size(group_setting, batch);
+      if (group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) group_size = 8;
+      if (batch % group_size != 0) group_size = batch % 8 == 0 ? 8 : 4;
       if (batch % group_size == 0) {
         return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
       }
@@ -1632,9 +1643,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     if (use_npu_3d_aiv64) {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV64_GROUP");
       if (group_setting == nullptr) group_setting = "auto";
-      int32_t group_size = npu_aiv_fft64_group_size(group_setting, batch);
-      if (group_size > 1 && batch % group_size != 0) group_size = 1;
       const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 32)
+                                       : npu_aiv_fft64_group_size(group_setting, batch);
+      if (group_size > 1 && batch % group_size != 0) {
+        group_size = batch % 8 == 0 ? 8 : batch % 4 == 0 ? 4 : 1;
+      }
       return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
@@ -1652,10 +1666,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    flag_or_default("FLAGFFT_NPU_3D_AIV128", false);
     if (use_npu_3d_aiv128 && batch % 4 == 0) {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV128_GROUP");
-      int32_t group_size = npu_aiv_fft64_group_size(group_setting, batch);
-      if (group_size != 4 && group_size != 8) group_size = 8;
-      if (batch % group_size != 0) group_size = 4;
       const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
+                                       : npu_aiv_fft64_group_size(group_setting, batch);
+      if (group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) group_size = 8;
+      if (batch % group_size != 0) group_size = batch % 8 == 0 ? 8 : 4;
       if (batch % group_size == 0) {
         return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
       }
@@ -3390,9 +3405,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   std::vector<DeviceAllocation> npu_transpose_indices;
   if (npu_real_native) {
     const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV64_GROUP");
-    int32_t group_size = npu_aiv_fft64_real_row_group_size(group_setting, batch * n0 * n1);
-    if ((batch * n0 * n1) % group_size != 0) group_size = 1;
+    const int64_t real_batch = batch * n0 * n1;
     const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+    int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, real_batch, 32)
+                                     : npu_aiv_fft64_real_row_group_size(group_setting, real_batch);
+    if ((batch * n0 * n1) % group_size != 0) group_size = 1;
     n2_real_fft =
         make_npu_aiv_fft64_child(n2_request,
                                  1,
