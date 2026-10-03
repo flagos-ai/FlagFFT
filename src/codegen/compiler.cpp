@@ -4489,9 +4489,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
                                          n2_leaf->length, n2_leaf->factors,
                                          n2_leaf->lanes, n2_leaf->num_warps,
                                          n2_leaf->generic_radices, n2_leaf->smem_size);
-    key.perm_form = "permuted";
+    // The first-axis fusion replaces the 021 transpose, so the R2C leaf must
+    // write its compact rows directly in that transposed layout.
+    key.kind = KernelKind::LeafR2CPermutedStore;
+    key.perm_form = "outer";
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
-        n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request));
+        n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
+        DeviceAllocation{}, n1);
   } else {
     n2_real_fft = inverse
         ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
