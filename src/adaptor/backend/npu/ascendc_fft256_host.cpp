@@ -57,8 +57,10 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
       ? kMaxRealBlocksPerLaunch
       : logical_block_dim;
   if (mode == 1 || mode == 2) {
-    std::fprintf(stderr, "fft256 real launch mode=%d transforms=%d logical_blocks=%u block_dim=%u\\n",
-                 mode, transform_count, logical_block_dim, block_dim);
+    std::fprintf(stderr,
+                 "fft256 real launch mode=%d transforms=%d logical_blocks=%u block_dim=%u input=%p output=%p\\n",
+                 mode, transform_count, logical_block_dim, block_dim,
+                 reinterpret_cast<void *>(input), reinterpret_cast<void *>(output));
   }
   uint32_t status = 0;
   if (mode == 1) {
