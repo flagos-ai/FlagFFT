@@ -15,7 +15,6 @@
 #include "flagfft/core.hpp"
 
 #if defined(FLAGFFT_BACKEND_NPU)
-#include <acl/acl_rt.h>
 #include "adaptor/backend/npu/ascendc_fft128.hpp"
 #include "adaptor/backend/npu/ascendc_fft2048.hpp"
 #include "adaptor/backend/npu/ascendc_fft256.hpp"
@@ -28,7 +27,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
-#include <fstream>
 #include <limits>
 #include <sstream>
 
@@ -3702,14 +3700,6 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
           complex_element_bytes(context.request.input_dtype));
     };
 
-    const char *npu_row_only_debug = std::getenv("FLAGFFT_NPU_3D_DEBUG_REAL_ROW_ONLY");
-    if (inverse && context.request.device_type == "npu" && npu_row_only_debug != nullptr &&
-        std::string(npu_row_only_debug) == "1") {
-      // Diagnostic hook: input is expected to have the outer inverse transforms
-      // already applied, so this runs only the final real row transform.
-      return n2_real_fft->execute(input, output, n2_context);
-    }
-
     if (!inverse) {
       if (!has_perm_021) n2_context.output_distance = n1;
       adaptor::DevicePtr n2_output = has_perm_021 ? temp1.get() : temp2.get();
@@ -3751,55 +3741,8 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
       result = permute(perm_201, temp2.get(), temp1.get(), n1, half, n0, 2, 0, 1);
       if (result != FLAGFFT_SUCCESS) return result;
     }
-    const char *dump_c2r_row_input =
-        std::getenv("FLAGFFT_NPU_3D_DEBUG_DUMP_C2R_ROW_INPUT");
-    if (inverse && context.request.device_type == "npu" && dump_c2r_row_input != nullptr &&
-        std::string(dump_c2r_row_input) == "1") {
-      const aclError sync_status =
-          aclrtSynchronizeStream(reinterpret_cast<aclrtStream>(context.stream));
-      if (sync_status != ACL_SUCCESS) {
-        throw std::runtime_error("failed to synchronize before NPU C2R row input dump");
-      }
-      const std::size_t row_input_floats =
-          static_cast<std::size_t>(batch * n0 * n1 * half * 2);
-      std::vector<float> row_input(row_input_floats);
-      const DeviceAllocation &row_buffer = has_perm_201 ? temp1 : temp2;
-      row_buffer.copy_to_host(row_input.data(), row_input.size() * sizeof(float));
-      const char *path = std::getenv("FLAGFFT_NPU_3D_DEBUG_C2R_ROW_INPUT_PATH");
-      std::ofstream dump(path != nullptr ? path : "/tmp/npu3d_c2r_row_input.bin",
-                         std::ios::binary | std::ios::trunc);
-      dump.write(reinterpret_cast<const char *>(row_input.data()),
-                 static_cast<std::streamsize>(row_input.size() * sizeof(float)));
-      if (!dump) throw std::runtime_error("failed to write NPU 3D C2R row input dump");
-    }
     result = n2_real_fft->execute(has_perm_201 ? temp1.get() : temp2.get(), output, n2_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    const char *dump_c2r_output = std::getenv("FLAGFFT_NPU_3D_DEBUG_DUMP_C2R_OUTPUT");
-    if (inverse && context.request.device_type == "npu" && dump_c2r_output != nullptr &&
-        std::string(dump_c2r_output) == "1") {
-      const aclError sync_status =
-          aclrtSynchronizeStream(reinterpret_cast<aclrtStream>(context.stream));
-      if (sync_status != ACL_SUCCESS) {
-        throw std::runtime_error("failed to synchronize before NPU C2R output dump");
-      }
-      const std::size_t output_elements =
-          static_cast<std::size_t>(batch * n0 * n1 * n2);
-      std::vector<float> output_snapshot(output_elements);
-      const aclError copy_status = aclrtMemcpy(output_snapshot.data(),
-                                               output_snapshot.size() * sizeof(float),
-                                               reinterpret_cast<void *>(output),
-                                               output_snapshot.size() * sizeof(float),
-                                               ACL_MEMCPY_DEVICE_TO_HOST);
-      if (copy_status != ACL_SUCCESS) {
-        throw std::runtime_error("failed to copy NPU 3D C2R output to host");
-      }
-      const char *path = std::getenv("FLAGFFT_NPU_3D_DEBUG_C2R_OUTPUT_PATH");
-      std::ofstream dump(path != nullptr ? path : "/tmp/npu3d_c2r_output.bin",
-                         std::ios::binary | std::ios::trunc);
-      dump.write(reinterpret_cast<const char *>(output_snapshot.data()),
-                 static_cast<std::streamsize>(output_snapshot.size() * sizeof(float)));
-      if (!dump) throw std::runtime_error("failed to write NPU 3D C2R output dump");
-    }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D real RTRT execute failed: %s\n", e.what());
