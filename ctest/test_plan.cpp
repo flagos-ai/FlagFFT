@@ -244,7 +244,7 @@ TEST(Plan1D, HcuSingleC2rFourStepSplitOverride) {
     }
   } restore{saved};
 
-  setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", "524288:1024", 1);
+  unsetenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
   flagfft::FFTRequest request;
   request.device_type = "hcu";
   request.device_arch = "gfx936";
@@ -252,13 +252,20 @@ TEST(Plan1D, HcuSingleC2rFourStepSplitOverride) {
   request.raw_dim = request.origin_rank = 1;
   request.real_transform = true;
   request.real_transform_kind = request.origin_real_transform_kind = "z2d";
-  request.fft_length = request.requested_n = 524288;
+  request.n = request.fft_length = request.requested_n = 340200;
   request.input_dtype = "complex128";
   request.output_dtype = "float64";
   request.batch = 1;
 
   flagfft::PlanBuilder builder;
-  auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(524288, request));
+  auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 567);
+  EXPECT_EQ(plan->n2, 600);
+
+  setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", "524288:1024", 1);
+  request.n = request.fft_length = request.requested_n = 524288;
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(524288, request));
   ASSERT_NE(plan, nullptr);
   EXPECT_EQ(plan->n1, 1024);
   EXPECT_EQ(plan->n2, 512);

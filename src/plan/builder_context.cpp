@@ -111,6 +111,14 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n1, false), build_auto_node(n2, false));
     }
   }
+  if (hcu_single_c2r_root && n == 340200) {
+    // The measured 567x600 pair uses lane-richer leaves than the automatic
+    // 504x675 pair and improves both HCU C2R precisions.
+    constexpr int64_t n1 = 567;
+    constexpr int64_t n2 = 600;
+    return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                              build_auto_node(n1, false), build_auto_node(n2, false));
+  }
   // An opt-in split lets Ascend qualify the existing generic FourStep path
   // with Stockham/Bluestein children before changing its automatic policy.
   // Scope the override to the requested 1D root, never a convolution child.
