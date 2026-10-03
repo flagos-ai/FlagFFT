@@ -301,12 +301,11 @@ def test_maca_pair64_1024_cube_transpose_screen(tmp_path, monkeypatch):
     from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
     from flagfft_codegen.target import set_codegen_target
 
-    profile = set_profile(
-        BackendProfile.from_device(
-            {"backend": "maca", "device_arch": "102", "warp_size": 64,
-             "max_threads_per_block": 1024, "max_dynamic_shared_memory": 65536}
-        )
+    profile = BackendProfile.from_device(
+        {"backend": "maca", "device_arch": "102", "warp_size": 64,
+         "max_threads_per_block": 1024, "max_dynamic_shared_memory": 65536}
     )
+    token = set_profile(profile)
     set_codegen_target("maca:102:64")
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair64")
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "16")
@@ -318,6 +317,18 @@ def test_maca_pair64_1024_cube_transpose_screen(tmp_path, monkeypatch):
         assert candidate["kernel_name"].endswith("_t64_tile_pair_rmajor")
         assert candidate["num_warps"] == 16
         assert candidate["grid_x_override"] == 4096
+        profile.validate(candidate["num_warps"])
+
+        limited = BackendProfile.from_device(
+            {"backend": "maca", "device_arch": "102", "warp_size": 64,
+             "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536}
+        )
+        try:
+            limited.validate(candidate["num_warps"])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("16-warp launch exceeded a 512-thread device limit")
 
         # A full-matrix environment must leave FP64 on its existing transpose
         # path and must not carry the 1024-thread launch into another dtype.
@@ -329,4 +340,4 @@ def test_maca_pair64_1024_cube_transpose_screen(tmp_path, monkeypatch):
         assert control["num_warps"] == 4
     finally:
         set_codegen_target("")
-        reset_profile(profile)
+        reset_profile(token)
