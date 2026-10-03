@@ -15,6 +15,7 @@
 #include "flagfft/core.hpp"
 
 #if defined(FLAGFFT_BACKEND_NPU)
+#include <acl/acl_rt.h>
 #include "adaptor/backend/npu/ascendc_fft128.hpp"
 #include "adaptor/backend/npu/ascendc_fft2048.hpp"
 #include "adaptor/backend/npu/ascendc_fft256.hpp"
@@ -3754,6 +3755,11 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
         std::getenv("FLAGFFT_NPU_3D_DEBUG_DUMP_C2R_ROW_INPUT");
     if (inverse && context.request.device_type == "npu" && dump_c2r_row_input != nullptr &&
         std::string(dump_c2r_row_input) == "1") {
+      const aclError sync_status =
+          aclrtSynchronizeStream(reinterpret_cast<aclrtStream>(context.stream));
+      if (sync_status != ACL_SUCCESS) {
+        throw std::runtime_error("failed to synchronize before NPU C2R row input dump");
+      }
       const std::size_t row_input_floats =
           static_cast<std::size_t>(batch * n0 * n1 * half * 2);
       std::vector<float> row_input(row_input_floats);
