@@ -15,11 +15,12 @@
 #include "flagfft/core.hpp"
 
 #if defined(FLAGFFT_BACKEND_NPU)
-#include "adaptor/backend/npu/ascendc_fft64.hpp"
-#include "adaptor/backend/npu/ascendc_fft_small.hpp"
 #include "adaptor/backend/npu/ascendc_fft128.hpp"
 #include "adaptor/backend/npu/ascendc_fft2048.hpp"
 #include "adaptor/backend/npu/ascendc_fft256.hpp"
+#include "adaptor/backend/npu/ascendc_fft64.hpp"
+#include "adaptor/backend/npu/ascendc_fft_radix4_pair.hpp"
+#include "adaptor/backend/npu/ascendc_fft_small.hpp"
 #include "adaptor/backend/npu/ascendc_transpose3d.hpp"
 #endif
 
@@ -520,15 +521,16 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
 }
 
 #if defined(FLAGFFT_BACKEND_NPU)
-CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(
-    int64_t stride,
-    int64_t group_size,
-    std::shared_ptr<DeviceAllocation> indices,
-    std::shared_ptr<DeviceAllocation> twiddles,
-    NpuAivFFT64Mode mode)
+CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(int64_t stride,
+                                                       int64_t group_size,
+                                                       std::shared_ptr<DeviceAllocation> indices,
+                                                       std::shared_ptr<DeviceAllocation> twiddles,
+                                                       NpuAivFFT64Mode mode,
+                                                       bool radix4_pair)
     : stride(stride),
       group_size(group_size),
       mode(mode),
+      radix4_pair(radix4_pair),
       indices(std::move(indices)),
       twiddles(std::move(twiddles)) {
 }
@@ -607,7 +609,8 @@ flagfftResult CompiledRawNpuAivFFTSmallNode::execute(adaptor::DevicePtr input,
 
 std::string CompiledRawNpuAivFFT64Node::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawNpuAivFFT64(stride=" << stride << ", group_size=" << group_size << ")";
+  oss << "CompiledRawNpuAivFFT64(stride=" << stride << ", group_size=" << group_size
+      << ", radix4_pair=" << radix4_pair << ")";
   if (mode == NpuAivFFT64Mode::RealForward) oss << "[r2c-row]";
   if (mode == NpuAivFFT64Mode::RealInverse) oss << "[c2r-row]";
   return oss.str();
@@ -658,33 +661,49 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
       output_offset = input_offset;
     }
 
-    const flagfftResult result = adaptor::npu::launch_ascendc_fft64(input + input_offset,
-                                                                    output + output_offset,
-                                                                    indices->get(),
-                                                                    twiddles->get(),
-                                                                    static_cast<int32_t>(chunk_blocks),
-                                                                    static_cast<int32_t>(stride),
-                                                                    static_cast<int32_t>(group_size),
-                                                                    static_cast<int32_t>(mode),
-                                                                    context.stream);
+    const adaptor::DevicePtr input_chunk = input + input_offset;
+    const adaptor::DevicePtr output_chunk = output + output_offset;
+    const flagfftResult result =
+        radix4_pair
+            ? adaptor::npu::launch_ascendc_fft_radix4_pair(64,
+                                                           input_chunk,
+                                                           output_chunk,
+                                                           indices->get(),
+                                                           twiddles->get(),
+                                                           static_cast<int32_t>(chunk_blocks * group_size),
+                                                           static_cast<int32_t>(group_size),
+                                                           static_cast<int32_t>(mode),
+                                                           context.stream)
+            : adaptor::npu::launch_ascendc_fft64(input_chunk,
+                                                 output_chunk,
+                                                 indices->get(),
+                                                 twiddles->get(),
+                                                 static_cast<int32_t>(chunk_blocks),
+                                                 static_cast<int32_t>(stride),
+                                                 static_cast<int32_t>(group_size),
+                                                 static_cast<int32_t>(mode),
+                                                 context.stream);
     if (result != FLAGFFT_SUCCESS) return result;
   }
   return FLAGFFT_SUCCESS;
 }
 
-CompiledRawNpuAivFFTNode::CompiledRawNpuAivFFTNode(
-    int64_t length,
-    std::shared_ptr<DeviceAllocation> indices,
-    std::shared_ptr<DeviceAllocation> twiddles,
-    int64_t group_size)
+CompiledRawNpuAivFFTNode::CompiledRawNpuAivFFTNode(int64_t length,
+                                                   std::shared_ptr<DeviceAllocation> indices,
+                                                   std::shared_ptr<DeviceAllocation> twiddles,
+                                                   int64_t group_size,
+                                                   bool radix4_pair)
     : length(length),
       group_size(group_size),
+      radix4_pair(radix4_pair),
       indices(std::move(indices)),
-      twiddles(std::move(twiddles)) {}
+      twiddles(std::move(twiddles)) {
+}
 
 std::string CompiledRawNpuAivFFTNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawNpuAivFFT(n=" << length << ", group_size=" << group_size << ")";
+  oss << "CompiledRawNpuAivFFT(n=" << length << ", group_size=" << group_size
+      << ", radix4_pair=" << radix4_pair << ")";
   return oss.str();
 }
 
@@ -707,7 +726,17 @@ flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
     const adaptor::DevicePtr input_chunk = input + offset * length * element_bytes;
     const adaptor::DevicePtr output_chunk = output + offset * length * element_bytes;
     flagfftResult result;
-    if (length == 128) {
+    if (radix4_pair) {
+      result = adaptor::npu::launch_ascendc_fft_radix4_pair(static_cast<int32_t>(length),
+                                                            input_chunk,
+                                                            output_chunk,
+                                                            indices->get(),
+                                                            twiddles->get(),
+                                                            static_cast<int32_t>(chunk),
+                                                            static_cast<int32_t>(group_size),
+                                                            0,
+                                                            context.stream);
+    } else if (length == 128) {
       result = adaptor::npu::launch_ascendc_fft128(
           input_chunk, output_chunk, indices->get(), twiddles->get(),
           static_cast<int32_t>(chunk / group_size), 1, static_cast<int32_t>(group_size), 0,

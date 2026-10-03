@@ -202,7 +202,8 @@ struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
                              int64_t group_size,
                              std::shared_ptr<DeviceAllocation> indices,
                              std::shared_ptr<DeviceAllocation> twiddles,
-                             NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex);
+                             NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex,
+                             bool radix4_pair = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -211,6 +212,7 @@ struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
   int64_t stride;
   int64_t group_size;
   NpuAivFFT64Mode mode;
+  bool radix4_pair;
   std::shared_ptr<DeviceAllocation> indices;
   std::shared_ptr<DeviceAllocation> twiddles;
 };
@@ -239,7 +241,8 @@ struct CompiledRawNpuAivFFTNode final : CompiledRawNode {
   CompiledRawNpuAivFFTNode(int64_t length,
                            std::shared_ptr<DeviceAllocation> indices,
                            std::shared_ptr<DeviceAllocation> twiddles,
-                           int64_t group_size = 1);
+                           int64_t group_size = 1,
+                           bool radix4_pair = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -247,6 +250,7 @@ struct CompiledRawNpuAivFFTNode final : CompiledRawNode {
 
   int64_t length;
   int64_t group_size;
+  bool radix4_pair;
   std::shared_ptr<DeviceAllocation> indices;
   std::shared_ptr<DeviceAllocation> twiddles;
 };

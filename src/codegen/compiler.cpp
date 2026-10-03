@@ -927,13 +927,183 @@ namespace {
                                                            mode);
   }
 
+  void build_npu_aiv_fft_radix4_pair_tables(const FFTRequest &request,
+                                            int64_t n,
+                                            int64_t group_size,
+                                            NpuAivFFT64Mode mode,
+                                            std::vector<uint32_t> &indices,
+                                            std::vector<float> &twiddles) {
+    int64_t stages = 0;
+    for (int64_t value = n; value > 1; value >>= 1) ++stages;
+    const int64_t pair_count = stages / 2;
+    const int64_t group_n = n * group_size;
+    const int64_t quarter_group = group_n / 4;
+    const int64_t pair_index_count = pair_count * 4 * quarter_group;
+    const int64_t output_index_base = pair_index_count;
+    const int64_t leftover_index_base = output_index_base + 2 * group_n;
+    const int64_t expand_index_base = leftover_index_base + 2 * group_n;
+    const int64_t pair_twiddle_count = pair_count * 6 * quarter_group;
+    const int64_t leftover_twiddle_base = pair_twiddle_count;
+    const int64_t expand_sign_base = leftover_twiddle_base + 2 * group_n;
+    const int64_t half_spectrum = n / 2 + 1;
+    constexpr double pi = 3.141592653589793238462643383279502884;
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+
+    indices.assign(expand_index_base + 3 * group_n, 0);
+    twiddles.assign(expand_sign_base + group_n, 0.0f);
+
+    auto bit_reverse = [stages](int64_t value) {
+      int64_t reversed = 0;
+      for (int64_t bit = 0; bit < stages; ++bit) {
+        reversed = (reversed << 1) | (value & 1);
+        value >>= 1;
+      }
+      return reversed;
+    };
+    auto previous_stage_index = [=](int64_t natural_index, int64_t previous_span) {
+      const int64_t previous_quarter = previous_span / 4;
+      const int64_t offset = natural_index % previous_span;
+      const int64_t slot = offset / previous_quarter;
+      const int64_t previous_group =
+          (natural_index / previous_span) * previous_quarter + offset % previous_quarter;
+      return slot * quarter_group + previous_group * group_size;
+    };
+
+    for (int64_t pair = 0; pair < pair_count; ++pair) {
+      const int64_t first_stage = pair * 2;
+      const int64_t half = int64_t {1} << first_stage;
+      const int64_t span = 4 * half;
+      const int64_t pair_index_base = pair * 4 * quarter_group;
+      const int64_t pair_twiddle_base = pair * 6 * quarter_group;
+      const int64_t previous_span = int64_t {1} << first_stage;
+
+      for (int64_t block = 0; block < n / span; ++block) {
+        for (int64_t j = 0; j < half; ++j) {
+          const int64_t quartet = block * half + j;
+          const int64_t natural[4] = {
+              block * span + j,
+              block * span + j + half,
+              block * span + j + 2 * half,
+              block * span + j + 3 * half,
+          };
+          const int64_t lane_base = quartet * group_size;
+          const double angles[3] = {
+              sign * 2.0 * pi * static_cast<double>(j) / static_cast<double>(2 * half),
+              sign * 2.0 * pi * static_cast<double>(j) / static_cast<double>(4 * half),
+              sign * 2.0 * pi * static_cast<double>(j + half) / static_cast<double>(4 * half),
+          };
+          for (int64_t transform = 0; transform < group_size; ++transform) {
+            const int64_t lane = lane_base + transform;
+            for (int64_t twiddle = 0; twiddle < 3; ++twiddle) {
+              twiddles[pair_twiddle_base + (twiddle * 2) * quarter_group + lane] =
+                  static_cast<float>(std::cos(angles[twiddle]));
+              twiddles[pair_twiddle_base + (twiddle * 2 + 1) * quarter_group + lane] =
+                  static_cast<float>(std::sin(angles[twiddle]));
+            }
+
+            for (int64_t input = 0; input < 4; ++input) {
+              const int64_t natural_index = natural[input];
+              int64_t source_element = 0;
+              if (pair == 0) {
+                const int64_t reversed = bit_reverse(natural_index);
+                if (mode == NpuAivFFT64Mode::Complex) {
+                  source_element = (transform * n + reversed) * 2;
+                } else {
+                  // Real forward reads the input vector. Real inverse first
+                  // expands the compact spectrum into planar local vectors.
+                  source_element = transform * n + reversed;
+                }
+              } else {
+                const int64_t offset = natural_index % previous_span;
+                const int64_t slot = offset / (previous_span / 4);
+                const int64_t previous_group =
+                    (natural_index / previous_span) * (previous_span / 4) + offset % (previous_span / 4);
+                source_element = slot * quarter_group + previous_group * group_size + transform;
+              }
+              const int64_t lane = lane_base + transform;
+              indices[pair_index_base + input * quarter_group + lane] =
+                  static_cast<uint32_t>(source_element * sizeof(float));
+            }
+          }
+        }
+      }
+    }
+
+    const bool has_leftover_stage = (stages & 1) != 0;
+    const int64_t previous_span = int64_t {1} << (pair_count * 2);
+    for (int64_t transform = 0; transform < group_size; ++transform) {
+      for (int64_t sample = 0; sample < n; ++sample) {
+        int64_t source = 0;
+        if (has_leftover_stage) {
+          source = transform * n + sample;
+        } else {
+          const int64_t slot = sample / (n / 4);
+          const int64_t quartet = sample % (n / 4);
+          source = slot * quarter_group + quartet * group_size + transform;
+        }
+
+        if (mode == NpuAivFFT64Mode::RealInverse) {
+          indices[output_index_base + transform * n + sample] = static_cast<uint32_t>(source * sizeof(float));
+        } else {
+          const int64_t output_sample_count = mode == NpuAivFFT64Mode::RealForward ? half_spectrum : n;
+          if (sample >= output_sample_count) continue;
+          const int64_t output_complex = transform * output_sample_count + sample;
+          const int64_t output_scalar = 2 * output_complex;
+          indices[output_index_base + output_scalar] = static_cast<uint32_t>(source * sizeof(float));
+          indices[output_index_base + output_scalar + 1] =
+              static_cast<uint32_t>((group_n + source) * sizeof(float));
+        }
+      }
+    }
+
+    if (has_leftover_stage) {
+      const int64_t half = n / 2;
+      for (int64_t transform = 0; transform < group_size; ++transform) {
+        for (int64_t sample = 0; sample < n; ++sample) {
+          const bool upper = sample >= half;
+          const int64_t j = upper ? sample - half : sample;
+          const int64_t a = j;
+          const int64_t b = a + half;
+          const int64_t source_a = previous_stage_index(a, previous_span) + transform;
+          const int64_t source_b = previous_stage_index(b, previous_span) + transform;
+          const int64_t table_index = transform * n + sample;
+          indices[leftover_index_base + table_index] = static_cast<uint32_t>(source_a * sizeof(float));
+          indices[leftover_index_base + group_n + table_index] =
+              static_cast<uint32_t>(source_b * sizeof(float));
+          const double angle = sign * 2.0 * pi * static_cast<double>(j) / static_cast<double>(n);
+          const float negate = upper ? -1.0f : 1.0f;
+          twiddles[leftover_twiddle_base + table_index] = negate * static_cast<float>(std::cos(angle));
+          twiddles[leftover_twiddle_base + group_n + table_index] =
+              negate * static_cast<float>(std::sin(angle));
+        }
+      }
+    }
+
+    if (mode == NpuAivFFT64Mode::RealInverse) {
+      for (int64_t transform = 0; transform < group_size; ++transform) {
+        for (int64_t sample = 0; sample < n; ++sample) {
+          const int64_t bin = sample <= n / 2 ? sample : n - sample;
+          const int64_t compact_complex = transform * half_spectrum + bin;
+          const int64_t index = transform * n + sample;
+          indices[expand_index_base + index] = static_cast<uint32_t>((2 * compact_complex) * sizeof(float));
+          indices[expand_index_base + group_n + index] =
+              static_cast<uint32_t>((2 * compact_complex + 1) * sizeof(float));
+          twiddles[expand_sign_base + index] = sample <= n / 2 ? 1.0f : -1.0f;
+        }
+      }
+    }
+  }
+
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft64_child(const FFTRequest &request,
                                                             int64_t stride,
                                                             int32_t group_size,
-                                                            NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex) {
+                                                            NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex,
+                                                            bool radix4_pair = false) {
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
-    if (group_size == 1) {
+    if (radix4_pair) {
+      build_npu_aiv_fft_radix4_pair_tables(request, 64, group_size, mode, host_indices, host_twiddles);
+    } else if (group_size == 1) {
       build_npu_aiv_fft64_tables(request, host_indices, host_twiddles, mode);
     } else {
       build_npu_aiv_fft64_group_tables(request, group_size, stride != 1, host_indices, host_twiddles, mode);
@@ -947,20 +1117,64 @@ namespace {
                                                         group_size,
                                                         std::move(indices),
                                                         std::move(twiddles),
-                                                        mode);
+                                                        mode,
+                                                        radix4_pair);
   }
 
-  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft128_child(const FFTRequest &request, int32_t group_size) {
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft128_child(const FFTRequest &request,
+                                                             int32_t group_size,
+                                                             bool radix4_pair = false) {
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
-    build_npu_aiv_fft128_group_tables(
-        request, group_size, false, host_indices, host_twiddles, NpuAivFFT64Mode::Complex);
+    if (radix4_pair) {
+      build_npu_aiv_fft_radix4_pair_tables(request,
+                                           128,
+                                           group_size,
+                                           NpuAivFFT64Mode::Complex,
+                                           host_indices,
+                                           host_twiddles);
+    } else {
+      build_npu_aiv_fft128_group_tables(request,
+                                        group_size,
+                                        false,
+                                        host_indices,
+                                        host_twiddles,
+                                        NpuAivFFT64Mode::Complex);
+    }
     auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
     indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
     auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
     twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
-    return std::make_shared<CompiledRawNpuAivFFTNode>(128, std::move(indices), std::move(twiddles),
-                                                      group_size);
+    return std::make_shared<CompiledRawNpuAivFFTNode>(128,
+                                                      std::move(indices),
+                                                      std::move(twiddles),
+                                                      group_size,
+                                                      radix4_pair);
+  }
+
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft2048_child(const FFTRequest &request,
+                                                              bool radix4_pair = false) {
+    std::vector<uint32_t> host_indices;
+    std::vector<float> host_twiddles;
+    if (radix4_pair) {
+      build_npu_aiv_fft_radix4_pair_tables(request,
+                                           2048,
+                                           1,
+                                           NpuAivFFT64Mode::Complex,
+                                           host_indices,
+                                           host_twiddles);
+    } else {
+      build_npu_aiv_fft2048_tables(request, host_indices, host_twiddles);
+    }
+    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    return std::make_shared<CompiledRawNpuAivFFTNode>(2048,
+                                                      std::move(indices),
+                                                      std::move(twiddles),
+                                                      1,
+                                                      radix4_pair);
   }
 
   int32_t npu_aiv_fft64_group_size(const char *setting, int64_t batch) {
@@ -1335,7 +1549,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       int32_t group_size = npu_aiv_fft64_group_size(group_setting, batch);
       if (group_size != 4 && group_size != 8) group_size = 8;
       if (batch % group_size != 0) group_size = batch % 4 == 0 ? 4 : 8;
-      if (batch % group_size == 0) return make_npu_aiv_fft128_child(request, group_size);
+      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      if (batch % group_size == 0) {
+        return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
+      }
     }
     const char *npu_3d_aiv256 = std::getenv("FLAGFFT_NPU_3D_AIV256");
     const bool use_npu_3d_aiv256 = request.device_type == "npu" && request.origin_rank == 3 &&
@@ -1417,7 +1634,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       if (group_setting == nullptr) group_setting = "auto";
       int32_t group_size = npu_aiv_fft64_group_size(group_setting, batch);
       if (group_size > 1 && batch % group_size != 0) group_size = 1;
-      return make_npu_aiv_fft64_child(request, 1, group_size);
+      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
     return compile_raw_leaf(*leaf, request);
@@ -1437,7 +1655,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       int32_t group_size = npu_aiv_fft64_group_size(group_setting, batch);
       if (group_size != 4 && group_size != 8) group_size = 8;
       if (batch % group_size != 0) group_size = 4;
-      if (batch % group_size == 0) return make_npu_aiv_fft128_child(request, group_size);
+      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      if (batch % group_size == 0) {
+        return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
+      }
     }
     const bool use_npu_3d_aiv2048 = request.device_type == "npu" && request.origin_rank == 3 &&
                                     request.real_transform_kind.empty() &&
@@ -1445,15 +1666,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                     request.output_dtype == "complex64" && stockham->length == 2048 &&
                                     flag_or_default("FLAGFFT_NPU_3D_AIV2048", false);
     if (use_npu_3d_aiv2048) {
-      std::vector<uint32_t> host_indices;
-      std::vector<float> host_twiddles;
-      build_npu_aiv_fft2048_tables(request, host_indices, host_twiddles);
-      auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
-      indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
-      auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
-      twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
-      return std::make_shared<CompiledRawNpuAivFFTNode>(2048, std::move(indices),
-                                                       std::move(twiddles));
+      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      return make_npu_aiv_fft2048_child(request, radix4_pair);
     }
 #endif
     std::vector<std::shared_ptr<JitKernel>> kernels;
@@ -3178,9 +3392,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV64_GROUP");
     int32_t group_size = npu_aiv_fft64_real_row_group_size(group_setting, batch * n0 * n1);
     if ((batch * n0 * n1) % group_size != 0) group_size = 1;
-    n2_real_fft = make_npu_aiv_fft64_child(
-        n2_request, 1, group_size,
-        inverse ? NpuAivFFT64Mode::RealInverse : NpuAivFFT64Mode::RealForward);
+    const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+    n2_real_fft =
+        make_npu_aiv_fft64_child(n2_request,
+                                 1,
+                                 group_size,
+                                 inverse ? NpuAivFFT64Mode::RealInverse : NpuAivFFT64Mode::RealForward,
+                                 radix4_pair);
   } else if (fused_first) {
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
                                          n2_request.direction, n2_request.input_dtype,
