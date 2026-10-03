@@ -173,10 +173,14 @@ install(TARGETS flagfft triton_jit
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-# The bundled libtriton_jit imports its Python helpers (standalone_compile)
-# from <prefix>/share/triton_jit/scripts relative to its own library path.
+# The bundled libtriton_jit imports its Python helpers (gen_ssig,
+# standalone_compile) by module name; packaging/common/flagfft-triton-jit.pth
+# puts this directory on sys.path. Keep them under a FlagFFT-private prefix:
+# the bundled copy may diverge from the standalone libtriton-jit package,
+# and sharing <prefix>/share/triton_jit/scripts with it made the two
+# packages conflict on the same files.
 install(DIRECTORY deps/libtriton_jit/scripts/
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/triton_jit/scripts"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/flagfft/triton_jit/scripts"
         FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.

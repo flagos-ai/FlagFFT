@@ -45,7 +45,7 @@ override_dh_auto_install:
 	test -n "$$flagfft_lib"; \
 	test -n "$$helper_lib"; \
 	test -f debian/tmp/usr/lib/python3/dist-packages/flagfft_codegen/jit_source.py; \
-	test -f debian/tmp/usr/share/triton_jit/scripts/standalone_compile.py; \
+	test -f debian/tmp/usr/share/flagfft/triton_jit/scripts/standalone_compile.py; \
 	test -f packaging/common/flagfft-triton-jit.pth; \
 	readelf -d "$$flagfft_lib" | grep -q '\[libflagfft_triton_jit.so\]'; \
 	! readelf -d "$$flagfft_lib" | grep -q '\[libtriton_jit.so\]'
