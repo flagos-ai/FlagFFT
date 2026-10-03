@@ -342,6 +342,7 @@ class Fft256Aiv {
       GlobalTensor<float> dst;
       dst.SetGlobalBuffer(output_ptr_ + transform * kN);
       DataCopy(dst, output_local, group_n);
+      PipeBarrier<PIPE_ALL>();
     } else {
       Gather(output_local, merged, index_local[output_index_base], 0, 2 * group_n);
       PipeBarrier<PIPE_ALL>();
