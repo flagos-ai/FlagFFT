@@ -20,6 +20,7 @@ using namespace AscendC;
 
 namespace {
 constexpr uint32_t kN = 256;
+constexpr uint32_t kRealBlocksPerLaunch = 40;
 constexpr uint32_t kStages = 8;
 constexpr uint32_t kStageIndexBase = 2 * kN;
 constexpr uint32_t kOutputIndexBase = kStageIndexBase + 2 * kStages * kN;
@@ -71,8 +72,7 @@ class Fft256Aiv {
 
     if constexpr (PairButterflies) {
       if constexpr (RealForward || RealInverse) {
-        const uint32_t block_stride = GetBlockNum() * GroupSize;
-        if (block_stride == 0) return;
+        const uint32_t block_stride = kRealBlocksPerLaunch * GroupSize;
         for (uint32_t row = transform; row < transform_count_; row += block_stride) {
           ProcessPairGroup8(row);
         }
