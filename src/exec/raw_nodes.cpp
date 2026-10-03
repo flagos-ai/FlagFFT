@@ -3698,6 +3698,14 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
           complex_element_bytes(context.request.input_dtype));
     };
 
+    const char *npu_row_only_debug = std::getenv("FLAGFFT_NPU_3D_DEBUG_REAL_ROW_ONLY");
+    if (inverse && context.request.device_type == "npu" && npu_row_only_debug != nullptr &&
+        std::string(npu_row_only_debug) == "1") {
+      // Diagnostic hook: input is expected to have the outer inverse transforms
+      // already applied, so this runs only the final real row transform.
+      return n2_real_fft->execute(input, output, n2_context);
+    }
+
     if (!inverse) {
       if (!has_perm_021) n2_context.output_distance = n1;
       adaptor::DevicePtr n2_output = has_perm_021 ? temp1.get() : temp2.get();
