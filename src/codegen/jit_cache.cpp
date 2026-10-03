@@ -435,6 +435,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Fused16Plane:
       kernel_kind = "fused_16_plane";
       break;
+    case KernelKind::Fused16RealPlane:
+      kernel_kind = "fused_16_real_plane";
+      break;
     case KernelKind::Fused32Plane:
       kernel_kind = "fused_32_plane";
       break;
