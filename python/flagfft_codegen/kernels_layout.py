@@ -419,15 +419,21 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
     *,
     tile: int = 16,
     slice_group: int = 2,
+    tile_rows_extent: int | None = None,
+    tile_cols_extent: int | None = None,
     tile_traversal: str = "row",
 ) -> tuple[str, str, list[str], int]:
-    """Emit one CTA that sequentially transposes a group of paired-complex slices."""
+    """Emit one CTA that sequentially transposes paired-complex slice tiles."""
     if order not in {"021", "210", "201", "120"}:
         raise ValueError(f"unsupported 3D transpose order: {order}")
     if slice_group < 2 or slice_group & (slice_group - 1):
         raise ValueError("slice_group must be a power of two greater than one")
     if tile_traversal not in {"col", "row"}:
         raise ValueError("tile_traversal must be col or row")
+    tile_rows_extent = tile if tile_rows_extent is None else tile_rows_extent
+    tile_cols_extent = tile if tile_cols_extent is None else tile_cols_extent
+    if tile_rows_extent < 1 or tile_cols_extent < 1:
+        raise ValueError("tile extents must be positive")
 
     transpose_descs = {
         "021": (s0, s2, s1, s1 * s2, s2, s2 * s1, s1),
@@ -444,23 +450,28 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
         dst_slice_stride,
         dst_row_stride,
     ) = transpose_descs[order]
-    tile_cols = (cols + tile - 1) // tile
-    tile_rows = (rows + tile - 1) // tile
-    tiles_per_slice = tile_cols * tile_rows
+    col_tile_count = (cols + tile_cols_extent - 1) // tile_cols_extent
+    row_tile_count = (rows + tile_rows_extent - 1) // tile_rows_extent
+    tiles_per_slice = col_tile_count * row_tile_count
     tile_row_expr = (
-        f"tile_in_slice % {tile_rows}"
+        f"tile_in_slice % {row_tile_count}"
         if tile_traversal == "row"
-        else f"tile_in_slice // {tile_cols}"
+        else f"tile_in_slice // {col_tile_count}"
     )
     tile_col_expr = (
-        f"tile_in_slice // {tile_rows}"
+        f"tile_in_slice // {row_tile_count}"
         if tile_traversal == "row"
-        else f"tile_in_slice % {tile_cols}"
+        else f"tile_in_slice % {col_tile_count}"
     )
     grid_x = ((num_slices + slice_group - 1) // slice_group) * tiles_per_slice
     total_complex = s0 * s1 * s2
+    tile_name = (
+        f"t{tile}"
+        if tile_rows_extent == tile_cols_extent == tile
+        else f"t{tile_rows_extent}x{tile_cols_extent}"
+    )
     kernel_name = (
-        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_f32_t{tile}"
+        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_f32_{tile_name}"
         f"_tile_pair_sliceg{slice_group}seq"
         + ("_rmajor" if tile_traversal == "row" else "")
     )
@@ -476,8 +487,8 @@ def _build_tiled_transpose3d_pair_slice_group_kernel_source(
             tile_row = {tile_row_expr}
             tile_col = {tile_col_expr}
 
-            row_offsets = tile_row * {tile} + tl.arange(0, {tile})
-            col_offsets = tile_col * {tile} + tl.arange(0, {tile})
+            row_offsets = tile_row * {tile_rows_extent} + tl.arange(0, {tile_rows_extent})
+            col_offsets = tile_col * {tile_cols_extent} + tl.arange(0, {tile_cols_extent})
             row_mask = row_offsets < {rows}
             col_mask = col_offsets < {cols}
             safe_rows = tl.minimum(row_offsets, {rows - 1})
