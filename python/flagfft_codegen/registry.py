@@ -216,7 +216,6 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("transpose3d", TRANSPOSE3D, requires=_TRANSPOSE3D_FLAGS),
     KernelSpec("fused_16_plane", SMALL_3D),
     KernelSpec("fused_32_plane", SMALL_3D),
-    KernelSpec("fused_256_transpose", SMALL_3D),
     KernelSpec("fused_16_real_plane", SMALL_3D),
     KernelSpec("fused_32_real_plane", SMALL_3D),
     KernelSpec("real_to_complex", REAL_POINTWISE, requires=("length",)),

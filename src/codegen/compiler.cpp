@@ -1453,50 +1453,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::move(tw_r), std::move(tw_i));
   }
 
-  // Experimental cube path: compute the contiguous n2 FFT in 16-row tiles
-  // and store directly in the layout consumed by the n1 FFT. This replaces
-  // the standalone 021 transpose while preserving coalesced tile stores.
-  const bool maca_fused_c2c256_transpose =
-      request.device_type == "maca" && n0 == 256 && n1 == 256 && n2 == 256 && batch <= 4 &&
-      request.input_dtype == "complex64" && n0_leaf && n1_leaf && n2_leaf &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_C2C_FUSED256_TRANSPOSE", false);
-  if (maca_fused_c2c256_transpose) {
-    auto fused_n2_transpose =
-        compile_kernel(KernelKey::fused_256_transpose(triton_target_for_request(request),
-                                                      request.direction,
-                                                      request.input_dtype));
-    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
-    auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
-    auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
-    auto perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
-
-    std::vector<double> tw_r_d(128);
-    std::vector<double> tw_i_d(128);
-    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
-    for (int64_t k = 0; k < 128; ++k) {
-      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 256.0;
-      tw_r_d[k] = std::cos(angle);
-      tw_i_d[k] = std::sin(angle);
-    }
-    DeviceAllocation tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
-    DeviceAllocation tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
-    const std::size_t bytes = static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes);
-    DeviceAllocation temp1 = adaptor::Memory(bytes);
-    DeviceAllocation temp2 = adaptor::Memory(bytes);
-    return std::make_shared<CompiledRaw3DFusedAxisTransposeNode>(n0,
-                                                                 n1,
-                                                                 n2,
-                                                                 std::move(fused_n2_transpose),
-                                                                 std::move(n1_fft),
-                                                                 std::move(n0_fft),
-                                                                 std::move(perm_210),
-                                                                 std::move(perm_201),
-                                                                 std::move(temp1),
-                                                                 std::move(temp2),
-                                                                 std::move(tw_r),
-                                                                 std::move(tw_i));
-  }
-
   // At 128x2048x64, a contiguous n1 leaf plus one tiled transpose beats the
   // packed permuted-store leaf.  On MACA, the same hybrid path wins when it
   // fuses only the first n2 store: under the shared-memory
