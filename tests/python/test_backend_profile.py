@@ -407,7 +407,7 @@ class ProfileTest(unittest.TestCase):
         finally:
             reset_profile(token)
 
-    def test_hcu_four_step_pack_uses_unpadded_shared_stride(self):
+    def test_hcu_four_step_pack_preserves_fp64_lds_residency(self):
         from flagfft_codegen.kernels_common import (
             four_step_col_inner_pack_for,
             four_step_row_inner_pack_for,
@@ -425,21 +425,29 @@ class ProfileTest(unittest.TestCase):
         )
         token = set_profile(profile)
         try:
-            # Two transforms occupy exactly four 1024-element FP64 shared
-            # arrays per slot: 64 KiB. The generic extra-element padding used
-            # to reject pack=2 by 64 bytes, leaving half of each HCU wave idle.
-            plan = LeafPlan(
+            # FP32 pack four fills the 64 KiB budget and improved the measured
+            # large C2R cases. FP64 pack two also fills 64 KiB, but reduced
+            # residency and regressed n=524288, so keep its conservative bound.
+            single_precision = LeafPlan(
+                1024, (32, 32), 1, 32, 1, (), 1024, dtype="complex64"
+            )
+            self.assertEqual(
+                four_step_row_inner_pack_for(512, 1024, "complex64", single_precision), 4
+            )
+            self.assertEqual(
+                four_step_col_inner_pack_for(512, 1024, "complex64", single_precision), 4
+            )
+
+            double_precision = LeafPlan(
                 1024, (32, 32), 1, 32, 1, (), 1024, dtype="complex128"
             )
             self.assertEqual(
-                four_step_row_inner_pack_for(512, 1024, "complex128", plan), 2
+                four_step_row_inner_pack_for(512, 1024, "complex128", double_precision), 1
             )
             self.assertEqual(
-                four_step_col_inner_pack_for(512, 1024, "complex128", plan), 2
+                four_step_col_inner_pack_for(512, 1024, "complex128", double_precision), 1
             )
 
-            # The same policy still caps a leaf whose two slots need more than
-            # the device's 64 KiB dynamic shared-memory budget.
             oversized = LeafPlan(
                 2048, (32, 32, 2), 1, 32, 1, (), 2048, dtype="complex128"
             )

@@ -857,11 +857,16 @@ def _bounded_inner_pack(
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
-    # Four-step kernels use an unpadded shared-memory stride between packed
-    # transforms (batch_pack is always one here).  The generic leaf bound's
-    # one-element padding made a 1024-point FP64 leaf miss pack=2 by 64 bytes
-    # on HCU, despite the generated layout using exactly 64 KiB at that pack.
-    extra_smem_elements = 0 if current_profile().backend == "hcu" else 1
+    # HCU's FP32 1024-point leaves benefit from using the exact unpadded
+    # four-step stride: pack four fills 64 KiB and improved the measured
+    # large C2R cases.  Keep the generic 64-byte margin for FP64; pack two
+    # also fills all 64 KiB there, but the measured n=524288 case regressed
+    # from 0.32x to 0.26x as LDS residency fell.
+    extra_smem_elements = (
+        0
+        if current_profile().backend == "hcu" and not _is_double_dtype(dtype)
+        else 1
+    )
     return _bounded_inner_pack(
         _four_step_col_inner_pack_for(n1, n2, dtype, plan),
         plan,
@@ -872,7 +877,11 @@ def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
 def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
-    extra_smem_elements = 0 if current_profile().backend == "hcu" else 1
+    extra_smem_elements = (
+        0
+        if current_profile().backend == "hcu" and not _is_double_dtype(dtype)
+        else 1
+    )
     return _bounded_inner_pack(
         _four_step_row_inner_pack_for(n1, n2, dtype, plan),
         plan,
