@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include <limits>
 #include <sstream>
 
@@ -3748,6 +3749,22 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
     if (has_perm_201) {
       result = permute(perm_201, temp2.get(), temp1.get(), n1, half, n0, 2, 0, 1);
       if (result != FLAGFFT_SUCCESS) return result;
+    }
+    const char *dump_c2r_row_input =
+        std::getenv("FLAGFFT_NPU_3D_DEBUG_DUMP_C2R_ROW_INPUT");
+    if (inverse && context.request.device_type == "npu" && dump_c2r_row_input != nullptr &&
+        std::string(dump_c2r_row_input) == "1") {
+      const std::size_t row_input_floats =
+          static_cast<std::size_t>(batch * n0 * n1 * half * 2);
+      std::vector<float> row_input(row_input_floats);
+      const DeviceAllocation &row_buffer = has_perm_201 ? temp1 : temp2;
+      row_buffer.copy_to_host(row_input.data(), row_input.size() * sizeof(float));
+      const char *path = std::getenv("FLAGFFT_NPU_3D_DEBUG_C2R_ROW_INPUT_PATH");
+      std::ofstream dump(path != nullptr ? path : "/tmp/npu3d_c2r_row_input.bin",
+                         std::ios::binary | std::ios::trunc);
+      dump.write(reinterpret_cast<const char *>(row_input.data()),
+                 static_cast<std::streamsize>(row_input.size() * sizeof(float)));
+      if (!dump) throw std::runtime_error("failed to write NPU 3D C2R row input dump");
     }
     return n2_real_fft->execute(has_perm_201 ? temp1.get() : temp2.get(), output, n2_context);
   } catch (const std::exception &e) {
