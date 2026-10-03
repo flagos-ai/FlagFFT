@@ -32,6 +32,7 @@ from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
     _hcu_backend_active,
+    _declared_backend,
     _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
@@ -441,21 +442,41 @@ def _emit_r2c_pointwise_jit_kernel(
     n: int,
     dtype: str,
     out_dir: Path,
+    target: str = "",
 ) -> dict[str, Any]:
+    elements_per_program = 256
+    num_warps = _RESHAPE_NUM_WARPS
+    if target.startswith("npu:") and n == 256:
+        # AIV conversion kernels are sensitive to work per block. Keep the
+        # profiled one-row/four-thread layout as the default; expose narrow
+        # experiment knobs so rows and block threads can be measured without
+        # changing other targets or kernel families.
+        rows_text = os.getenv("FLAGFFT_NPU_3D_REAL_POINTWISE_ROWS", "1")
+        warps_text = os.getenv("FLAGFFT_NPU_3D_REAL_POINTWISE_WARPS", "4")
+        try:
+            rows_per_program = int(rows_text)
+            num_warps = int(warps_text)
+        except ValueError as exc:
+            raise ValueError("NPU 256-point real pointwise rows/warps must be integers") from exc
+        if rows_per_program not in {1, 2, 4, 8}:
+            raise ValueError("NPU 256-point real pointwise rows must be one of 1, 2, 4, 8")
+        if num_warps not in {4, 8, 16, 32}:
+            raise ValueError("NPU 256-point real pointwise warps must be one of 4, 8, 16, 32")
+        elements_per_program *= rows_per_program
     if kernel == "real_to_complex":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_real_to_complex_kernel_source(n, dtype)
+        ) = _build_real_to_complex_kernel_source(n, dtype, elements_per_program)
     elif kernel == "r2c_half_pack":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_r2c_half_pack_kernel_source(n, dtype)
+        ) = _build_r2c_half_pack_kernel_source(n, dtype, elements_per_program)
     elif kernel == "r2c_packed_postprocess":
         (
             kernel_name,
@@ -476,14 +497,14 @@ def _emit_r2c_pointwise_jit_kernel(
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_compact_to_hermitian_full_kernel_source(n, dtype)
+        ) = _build_compact_to_hermitian_full_kernel_source(n, dtype, elements_per_program)
     elif kernel == "complex_to_real":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_complex_to_real_kernel_source(n, dtype)
+        ) = _build_complex_to_real_kernel_source(n, dtype, elements_per_program)
     else:
         raise ValueError(f"unsupported R2C pointwise kernel kind: {kernel}")
 
@@ -504,13 +525,15 @@ def _emit_r2c_pointwise_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": _RESHAPE_NUM_WARPS,
+        "num_warps": num_warps,
         "num_stages": _RESHAPE_NUM_STAGES,
         "batch_per_block": 1,
         "arg_names": arg_names,
         "kernel_type": kernel,
         "dtype": dtype,
         "length": int(n),
+        # `block` is the column extent used by raw_nodes.cpp to build grid.x;
+        # `rows_per_block` carries the selected row grouping in grid.y.
         "block": 256,
         "rows_per_block": int(rows_per_block),
     }
@@ -759,7 +782,7 @@ def _transpose3d_v2_supported() -> bool:
 # Backends whose 3D correctness and performance have been validated with the
 # portable register-tile transpose.  Each backend is added here after its own
 # validation; the remaining non-NVIDIA targets keep the previous v1 kernel.
-_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca", "musa", "hcu"})
+_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca", "musa", "hcu", "npu"})
 
 
 def _portable_transpose3d_supported() -> bool:
@@ -778,6 +801,13 @@ def _emit_tiled_transpose3d_jit_kernel(
     dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
+    transpose_warps = 4
+    if _declared_backend() == "npu":
+        raw_warps = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_WARPS")
+        if raw_warps is not None:
+            if raw_warps not in {"4", "8"}:
+                raise ValueError("FLAGFFT_NPU_3D_TRANSPOSE_WARPS must be 4 or 8")
+            transpose_warps = int(raw_warps)
     if dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -898,7 +928,14 @@ def _emit_tiled_transpose3d_jit_kernel(
         )
         grid_x = 0
     suffix = _dtype_suffix(dtype)
-    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}"
+    warp_suffix = f"_w{transpose_warps}" if transpose_warps != 4 else ""
+    if warp_suffix:
+        kernel_name_with_warps = f"{kernel_name}{warp_suffix}"
+        kernel_source = kernel_source.replace(
+            f"def {kernel_name}(", f"def {kernel_name_with_warps}(", 1
+        )
+        kernel_name = kernel_name_with_warps
+    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}{warp_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))
@@ -906,7 +943,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": 4,
+        "num_warps": transpose_warps,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": arg_names,

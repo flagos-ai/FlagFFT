@@ -459,6 +459,7 @@ def main() -> None:
             n=args.length,
             dtype=args.dtype,
             out_dir=args.out_dir,
+            target=args.target,
         )
     elif spec.family in {DIRECT_DFT, STOCKHAM}:
         if args.length is None or args.length <= 0:

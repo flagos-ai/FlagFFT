@@ -1153,6 +1153,33 @@ def test_tiled_transpose3d_falls_back_to_v1_for_unvalidated_backends(
     assert "t32_tile" not in metadata["kernel_name"]
 
 
+def test_tiled_transpose3d_uses_portable_tile_on_ascend(kernels, tmp_path, monkeypatch) -> None:
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
+    token = set_profile(
+        BackendProfile(
+            backend="npu",
+            device_arch="Ascend910B4",
+            warp_size=1,
+            max_threads_per_block=65535,
+        )
+    )
+    try:
+        assert emit._portable_transpose3d_supported()
+        metadata = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=256, n1=256, n2=256, order="021", dtype="complex64", out_dir=tmp_path
+        )
+    finally:
+        reset_profile(token)
+
+    assert "t32_tile" in metadata["kernel_name"]
+    source = Path(metadata["module_path"]).read_text()
+    assert "tl.trans(src_r)" in source
+    assert "tl.trans(src_i)" in source
+
+
 def test_strided_four_step_row_kernel_source_generation(kernels) -> None:
     plan = kernels.LeafPlan(
         length=128,
@@ -1559,6 +1586,51 @@ def test_jit_r2c_pointwise_source_metadata(jit_source, tmp_path) -> None:
         "input_distance",
         "nbatch",
     ]
+
+
+def test_npu_256_real_pointwise_layout_is_tunable(jit_source, tmp_path, monkeypatch) -> None:
+    kernels = (
+        "real_to_complex",
+        "r2c_half_pack",
+        "compact_to_hermitian_full",
+        "complex_to_real",
+    )
+    monkeypatch.delenv("FLAGFFT_NPU_3D_REAL_POINTWISE_ROWS", raising=False)
+    monkeypatch.delenv("FLAGFFT_NPU_3D_REAL_POINTWISE_WARPS", raising=False)
+    for kernel in kernels:
+        metadata = jit_source._emit_r2c_pointwise_jit_kernel(
+            kernel=kernel,
+            n=256,
+            dtype="complex64",
+            out_dir=tmp_path / "npu",
+            target="npu:Ascend910B4:1",
+        )
+        assert metadata["rows_per_block"] == 1
+        assert metadata["num_warps"] == 4
+        source = Path(metadata["module_path"]).read_text()
+        assert "pid_batch * 1" in source
+
+    monkeypatch.setenv("FLAGFFT_NPU_3D_REAL_POINTWISE_ROWS", "8")
+    monkeypatch.setenv("FLAGFFT_NPU_3D_REAL_POINTWISE_WARPS", "16")
+    grouped = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel="compact_to_hermitian_full",
+        n=256,
+        dtype="complex64",
+        out_dir=tmp_path / "npu-grouped",
+        target="npu:Ascend910B4:1",
+    )
+    assert grouped["rows_per_block"] == 8
+    assert grouped["num_warps"] == 16
+    assert "pid_batch * 8" in Path(grouped["module_path"]).read_text()
+
+    portable = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel="compact_to_hermitian_full",
+        n=256,
+        dtype="complex64",
+        out_dir=tmp_path / "portable",
+        target="cuda:90:32",
+    )
+    assert portable["rows_per_block"] == 1
     assert (tmp_path / "flagfft_jit_c2r_packed_preprocess_n18_f64.py").is_file()
 
 
