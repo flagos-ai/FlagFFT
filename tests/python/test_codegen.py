@@ -162,6 +162,34 @@ def test_fused_32_plane_codegen(dtype, direction, tmp_path) -> None:
     assert source.count("tl.static_range(5)") == 3
 
 
+@pytest.mark.parametrize(
+    ("dtype", "direction"),
+    [("complex64", "forward"), ("complex128", "inverse")],
+)
+def test_fused_32_column_codegen(dtype, direction, tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_32_column_kernel
+
+    metadata = emit_fused_32_column_kernel(dtype=dtype, direction=direction, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    assert metadata["kernel_name"] == "fused_32_column_fft_kernel"
+    assert metadata["kernel_type"] == "fused_32_column"
+    assert "tl.arange(0, 512)" in source
+    assert "col = tile * 16 + idx % 16" in source
+
+
+def test_fused_32_column_cli_dispatch(tmp_path, monkeypatch, capsys) -> None:
+    from flagfft_codegen.cli import main
+
+    monkeypatch.setattr(sys, "argv", [
+        "jit_source", "--kernel", "fused_32_column", "--dtype", "complex64",
+        "--direction", "forward", "--target", "corex:71:64", "--out-dir", str(tmp_path),
+    ])
+    main()
+    metadata = json.loads(capsys.readouterr().out)
+    assert metadata["kernel_type"] == "fused_32_column"
+    assert Path(metadata["module_path"]).is_file()
+
+
 def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     plan = kernels.LeafPlan(
         length=16,
@@ -1792,6 +1820,7 @@ def test_kernel_registry_is_complete_and_consistent() -> None:
     assert len(set(registry.KERNEL_NAMES)) == len(registry.KERNEL_NAMES)
     assert len(registry.KERNEL_NAMES) == len(registry.KERNEL_SPECS)
     assert "leaf_strided_permuted_store" in registry.KERNEL_NAMES
+    assert "fused_32_column" in registry.KERNEL_NAMES
     assert set(registry.KERNEL_SPECS) == set(registry.KERNEL_NAMES)
 
     for name, spec in registry.KERNEL_SPECS.items():
