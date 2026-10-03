@@ -24,10 +24,12 @@ namespace flagfft {
 bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
   return input_dtype == other.input_dtype && output_dtype == other.output_dtype &&
          real_transform_kind == other.real_transform_kind &&
-         origin_real_transform_kind == other.origin_real_transform_kind && device_type == other.device_type &&
-         device_index == other.device_index && device_arch == other.device_arch &&
-         origin_rank == other.origin_rank && requested_n == other.requested_n && batch == other.batch &&
-         ix_short_single == other.ix_short_single && ix_ct_batch == other.ix_ct_batch &&
+         origin_real_transform_kind == other.origin_real_transform_kind &&
+         device_type == other.device_type && device_index == other.device_index &&
+         device_arch == other.device_arch && origin_rank == other.origin_rank &&
+         requested_n == other.requested_n &&
+         batch == other.batch && ix_short_single == other.ix_short_single &&
+         ix_ct_batch == other.ix_ct_batch &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
 
@@ -81,7 +83,8 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       request.device_type == "hcu" && request.raw_dim == 1 && request.origin_rank == 1 &&
       request.requested_n == n && request.real_transform &&
       (request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d" ||
-       request.origin_real_transform_kind == "c2r" || request.origin_real_transform_kind == "z2d");
+       request.origin_real_transform_kind == "c2r" ||
+       request.origin_real_transform_kind == "z2d");
   const char *hcu_c2r_split = std::getenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
   if (hcu_single_c2r_root && hcu_c2r_split != nullptr && *hcu_c2r_split != '\0') {
     const std::string spec(hcu_c2r_split);
@@ -104,19 +107,15 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT n1 must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      return std::make_shared<FourStepPlanNode>(n,
-                                                n1,
-                                                n2,
-                                                build_auto_node(n1, false),
-                                                build_auto_node(n2, false));
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
     }
   }
   // An opt-in split lets Ascend qualify the existing generic FourStep path
   // with Stockham/Bluestein children before changing its automatic policy.
   // Scope the override to the requested 1D root, never a convolution child.
   const char *npu_split = std::getenv("FLAGFFT_NPU_FOURSTEP_SPLIT");
-  if (request.device_type == "npu" && request.origin_rank == 1 && npu_split != nullptr &&
-      *npu_split != '\0') {
+  if (request.device_type == "npu" && request.origin_rank == 1 && npu_split != nullptr && *npu_split != '\0') {
     const std::string spec(npu_split);
     const auto separator = spec.find(':');
     if (separator == std::string::npos) {
@@ -144,17 +143,12 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         if (!should_use_leaf(n1, row_factors) || !should_use_leaf(n2, col_factors)) {
           throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_LEAF requires two supported leaf lengths");
         }
-        return std::make_shared<FourStepPlanNode>(n,
-                                                  n1,
-                                                  n2,
+        return std::make_shared<FourStepPlanNode>(n, n1, n2,
                                                   make_leaf_plan(n1, row_factors),
                                                   make_leaf_plan(n2, col_factors));
       }
-      return std::make_shared<FourStepPlanNode>(n,
-                                                n1,
-                                                n2,
-                                                build_auto_node(n1, false),
-                                                build_auto_node(n2, false));
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
     }
   }
   // Let 2D axis plans reuse the existing FourStep plan and fused-leaf
@@ -204,50 +198,37 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n2, false));
     }
   }
-  const bool npu_fourstep_operator =
-      request.device_type == "npu" && request.raw_dim == 1 && request.origin_rank == 1 &&
-      request.requested_n == n && (request.input_dtype == "complex64" || request.output_dtype == "complex64");
+  const bool npu_fourstep_operator = request.device_type == "npu" &&
+                                     request.raw_dim == 1 && request.origin_rank == 1 &&
+                                     request.requested_n == n &&
+                                     (request.input_dtype == "complex64" ||
+                                      request.output_dtype == "complex64");
   if (npu_fourstep_operator) {
     // Keep the existing 1D FourStep operator family on a FourStep plan root
     // for every transform type and batch mode. These splits also avoid making
     // the full root a Bluestein convolution for the largest awkward lengths.
     int64_t n1 = 0;
     switch (n) {
-      case 16384:
-        n1 = 128;
-        break;
-      case 46189:
-        n1 = 209;
-        break;
-      case 185640:
-        n1 = 420;
-        break;
-      case 340200:
-        n1 = 567;
-        break;
-      case 524288:
-        n1 = 512;
-        break;
-      case 663000:
-        n1 = 663;
-        break;
-      default:
-        break;
+      case 16384: n1 = 128; break;
+      case 46189: n1 = 209; break;
+      case 185640: n1 = 420; break;
+      case 340200: n1 = 567; break;
+      case 524288: n1 = 512; break;
+      case 663000: n1 = 663; break;
+      default: break;
     }
     if (n1 != 0) {
       const int64_t n2 = n / n1;
-      return std::make_shared<FourStepPlanNode>(n,
-                                                n1,
-                                                n2,
-                                                build_auto_node(n1, false),
-                                                build_auto_node(n2, false));
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
     }
   }
   const auto experiments = detail::maca_tail_plans(n, request, false);
   if (!experiments.empty()) {
-    return detail::build_maca_tail_plan(n, experiments.front(), [&](int64_t length, bool heuristic) {
-      return build_auto_node(length, heuristic);
-    });
+    return detail::build_maca_tail_plan(n, experiments.front(),
+                                        [&](int64_t length, bool heuristic) {
+                                          return build_auto_node(length, heuristic);
+                                        });
   }
   const char *maca_batch_setting = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const bool maca_batch_c2c = request.device_type == "maca" && request.device_arch == "102" &&
@@ -259,11 +240,8 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     // The measured batch splits distribute the C550 column stage more evenly.
     const int64_t n1 = n == 16384 ? 256 : 884;
     const int64_t n2 = n / n1;
-    return std::make_shared<FourStepPlanNode>(n,
-                                              n1,
-                                              n2,
-                                              build_auto_node(n1, false),
-                                              build_auto_node(n2, false));
+    return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                              build_auto_node(n1, false), build_auto_node(n2, false));
   }
   return build_auto_node(n, true);
 }

@@ -43,12 +43,10 @@ TEST(Plan1D, IxCtSinglePolicyScope) {
   struct Restore {
     std::optional<std::string> value;
     ~Restore() {
-      if (value)
-        setenv("FLAGFFT_IX_CT_SINGLE", value->c_str(), 1);
-      else
-        unsetenv("FLAGFFT_IX_CT_SINGLE");
+      if (value) setenv("FLAGFFT_IX_CT_SINGLE", value->c_str(), 1);
+      else unsetenv("FLAGFFT_IX_CT_SINGLE");
     }
-  } restore {saved};
+  } restore{saved};
   unsetenv("FLAGFFT_IX_CT_SINGLE");
   flagfft::FFTRequest request;
   request.device_type = "ix";
@@ -117,15 +115,15 @@ TEST(Plan1D, IxCtSinglePolicyScope) {
   small_request.n = small_request.fft_length = small_request.requested_n = 1024;
   auto optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
   ASSERT_NE(optimized, nullptr);
-  EXPECT_EQ(optimized->factors, (std::vector<int64_t> {16, 8, 8}));
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{16, 8, 8}));
   setenv("FLAGFFT_IX_CT_SINGLE", "0", 1);
   auto baseline = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
   ASSERT_NE(baseline, nullptr);
-  EXPECT_EQ(baseline->factors, (std::vector<int64_t> {8, 8, 4, 4}));
+  EXPECT_EQ(baseline->factors, (std::vector<int64_t>{8, 8, 4, 4}));
   setenv("FLAGFFT_IX_CT_SINGLE", "1", 1);
   optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, small_request));
   ASSERT_NE(optimized, nullptr);
-  EXPECT_EQ(optimized->factors, (std::vector<int64_t> {16, 8, 8}));
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{16, 8, 8}));
   setenv("FLAGFFT_IX_CT_SINGLE", "invalid", 1);
   EXPECT_THROW(flagfft::ix_ct_single_policy_enabled(request), std::runtime_error);
   EXPECT_THROW(flagfft::ix_packed_real_policy_enabled(packed), std::runtime_error);
@@ -138,12 +136,10 @@ TEST(Plan1D, IxCtBatchPolicyScope) {
   struct Restore {
     std::optional<std::string> value;
     ~Restore() {
-      if (value)
-        setenv("FLAGFFT_IX_CT_BATCH", value->c_str(), 1);
-      else
-        unsetenv("FLAGFFT_IX_CT_BATCH");
+      if (value) setenv("FLAGFFT_IX_CT_BATCH", value->c_str(), 1);
+      else unsetenv("FLAGFFT_IX_CT_BATCH");
     }
-  } restore {saved};
+  } restore{saved};
   unsetenv("FLAGFFT_IX_CT_BATCH");
 
   flagfft::FFTRequest request;
@@ -196,12 +192,12 @@ TEST(Plan1D, IxCtBatchPolicyScope) {
   flagfft::PlanBuilder builder;
   auto optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
   ASSERT_NE(optimized, nullptr);
-  EXPECT_EQ(optimized->factors, (std::vector<int64_t> {8, 8, 4, 4}));
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{8, 8, 4, 4}));
   setenv("FLAGFFT_IX_CT_BATCH", "0", 1);
   EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(request));
   auto baseline = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
   ASSERT_NE(baseline, nullptr);
-  EXPECT_EQ(baseline->factors, (std::vector<int64_t> {32, 32}));
+  EXPECT_EQ(baseline->factors, (std::vector<int64_t>{32, 32}));
   setenv("FLAGFFT_IX_CT_BATCH", "invalid", 1);
   EXPECT_THROW(flagfft::ix_ct_batch_policy_enabled(request), std::runtime_error);
 }
@@ -223,16 +219,16 @@ TEST(Plan1D, IxFp32RealBatchFactors) {
       auto plan = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(shape, request));
       ASSERT_NE(plan, nullptr);
       if (shape == 1024)
-        EXPECT_EQ(plan->factors, (std::vector<int64_t> {8, 4, 8, 4}));
+        EXPECT_EQ(plan->factors, (std::vector<int64_t>{8, 4, 8, 4}));
       else
-        EXPECT_EQ(plan->factors, (std::vector<int64_t> {16, 8, 16}));
+        EXPECT_EQ(plan->factors, (std::vector<int64_t>{16, 8, 16}));
     }
   }
   request.real_transform_kind.clear();
   request.n = request.fft_length = request.requested_n = 1024;
   auto complex_plan = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
   ASSERT_NE(complex_plan, nullptr);
-  EXPECT_EQ(complex_plan->factors, (std::vector<int64_t> {8, 8, 4, 4}));
+  EXPECT_EQ(complex_plan->factors, (std::vector<int64_t>{8, 8, 4, 4}));
 }
 
 TEST(Plan1D, HcuSingleC2rFourStepSplitOverride) {
@@ -243,12 +239,10 @@ TEST(Plan1D, HcuSingleC2rFourStepSplitOverride) {
   struct Restore {
     std::optional<std::string> value;
     ~Restore() {
-      if (value)
-        setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", value->c_str(), 1);
-      else
-        unsetenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+      if (value) setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", value->c_str(), 1);
+      else unsetenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
     }
-  } restore {saved};
+  } restore{saved};
 
   setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", "524288:1024", 1);
   flagfft::FFTRequest request;
