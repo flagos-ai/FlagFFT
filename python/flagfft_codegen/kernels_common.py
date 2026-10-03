@@ -453,14 +453,6 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
                     raise ValueError("FLAGFFT_MACA_3D_N64_PACK must be 1, 2, 4, 8, 16 or 32")
                 return int(short_pack)
         if maca_3d_default_enabled() and len(emitted_leaf_factors(plan)) > 1:
-            if plan.length == 2048 and plan.dtype == "complex64":
-                pack_2048 = os.getenv("FLAGFFT_MACA_3D_N2048_FP32_PACK")
-                if pack_2048 is not None:
-                    if pack_2048 not in {"1", "2"}:
-                        raise ValueError(
-                            "FLAGFFT_MACA_3D_N2048_FP32_PACK must be 1 or 2"
-                        )
-                    return int(pack_2048)
             if plan.length == 64 and plan.dtype == "complex64":
                 return 8
             if plan.length == 64 and plan.dtype == "complex128":
