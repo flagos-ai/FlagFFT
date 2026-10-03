@@ -20,7 +20,6 @@ using namespace AscendC;
 
 namespace {
 constexpr uint32_t kN = 256;
-constexpr uint32_t kRealBlocksPerLaunch = 2;
 constexpr uint32_t kStages = 8;
 constexpr uint32_t kStageIndexBase = 2 * kN;
 constexpr uint32_t kOutputIndexBase = kStageIndexBase + 2 * kStages * kN;
@@ -41,7 +40,8 @@ class Fft256Aiv {
                               GM_ADDR twiddles,
                               uint32_t transform_count,
                               uint32_t output_row_stride = 0,
-                              uint32_t output_transform_offset = 0) {
+                              uint32_t output_transform_offset = 0,
+                              uint32_t real_block_count = 1) {
     input_ptr_ = reinterpret_cast<__gm__ float *>(input);
     output_ptr_ = reinterpret_cast<__gm__ float *>(output);
     indices_.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(indices));
@@ -49,6 +49,7 @@ class Fft256Aiv {
     transform_count_ = transform_count;
     output_row_stride_ = output_row_stride;
     output_transform_offset_ = output_transform_offset;
+    real_block_count_ = real_block_count;
 
     constexpr uint32_t group_n = kN * GroupSize;
     constexpr uint32_t index_count = PairButterflies ? 4 * group_n :
@@ -72,7 +73,7 @@ class Fft256Aiv {
 
     if constexpr (PairButterflies) {
       if constexpr (RealForward || RealInverse) {
-        const uint32_t block_stride = kRealBlocksPerLaunch * GroupSize;
+        const uint32_t block_stride = real_block_count_ * GroupSize;
         for (uint32_t row = transform; row < transform_count_; row += block_stride) {
           ProcessPairGroup8(row);
         }
@@ -389,5 +390,6 @@ class Fft256Aiv {
   uint32_t transform_count_ = 0;
   uint32_t output_row_stride_ = 0;
   uint32_t output_transform_offset_ = 0;
+  uint32_t real_block_count_ = 1;
 };
 }  // namespace

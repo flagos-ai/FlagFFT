@@ -24,6 +24,7 @@
 #include <aclrtlaunch_flagfft_npu_fft256_real_forward_group8.h>
 #include <aclrtlaunch_flagfft_npu_fft256_real_inverse_group8.h>
 
+#include <cstdlib>
 #include <cstdio>
 
 namespace flagfft::adaptor::npu {
@@ -50,11 +51,18 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
       transform_count % group_size != 0) {
     return FLAGFFT_INVALID_SIZE;
   }
-  constexpr uint32_t kMaxRealBlocksPerLaunch = 2;
+  constexpr uint32_t kMaxRealBlocksPerLaunch = 20;
   const uint32_t logical_block_dim = static_cast<uint32_t>(transform_count / group_size);
-  const uint32_t block_dim = (mode == 1 || mode == 2) &&
-                                     logical_block_dim > kMaxRealBlocksPerLaunch
-      ? kMaxRealBlocksPerLaunch
+  uint32_t requested_real_blocks = kMaxRealBlocksPerLaunch;
+  if (const char *block_count = std::getenv("FLAGFFT_NPU_3D_REAL_BLOCKS")) {
+    char *end = nullptr;
+    const unsigned long parsed = std::strtoul(block_count, &end, 10);
+    if (end != block_count && *end == '\0' && parsed > 0) {
+      requested_real_blocks = static_cast<uint32_t>(parsed);
+    }
+  }
+  const uint32_t block_dim = (mode == 1 || mode == 2)
+      ? (logical_block_dim < requested_real_blocks ? logical_block_dim : requested_real_blocks)
       : logical_block_dim;
   if (mode == 1 || mode == 2) {
     std::fprintf(stderr,
@@ -71,7 +79,8 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
         reinterpret_cast<uint8_t *>(output),
         reinterpret_cast<uint8_t *>(indices),
         reinterpret_cast<uint8_t *>(twiddles),
-        static_cast<uint32_t>(transform_count));
+        static_cast<uint32_t>(transform_count),
+        block_dim);
   } else if (mode == 2) {
     status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft256_real_inverse_group8)(
         block_dim,
@@ -80,7 +89,8 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
         reinterpret_cast<uint8_t *>(output),
         reinterpret_cast<uint8_t *>(indices),
         reinterpret_cast<uint8_t *>(twiddles),
-        static_cast<uint32_t>(transform_count));
+        static_cast<uint32_t>(transform_count),
+        block_dim);
   } else if (group_size == 8) {
     if (pair_mode) {
       if (transposed_store) {
