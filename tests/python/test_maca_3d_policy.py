@@ -189,8 +189,26 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         )
         assert long_fp64["kernel_name"].endswith("_t16_tile_vec")
 
+        monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "2")
+        long_fp64_grouped = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=128, n1=2048, n2=64, order="201", dtype="complex128", out_dir=tmp_path
+        )
+        assert long_fp64_grouped["kernel_name"].endswith("_t16_tile_vec")
+        cube_fp64_grouped = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=256, n1=256, n2=256, order="021", dtype="complex128", out_dir=tmp_path
+        )
+        assert cube_fp64_grouped["kernel_name"].endswith(
+            "_f64_t16_tile_vec_sliceg2seq"
+        )
+        assert cube_fp64_grouped["num_warps"] == 4
+        assert cube_fp64_grouped["grid_x_override"] == 32768
+
         monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
         monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "1")
+        cube_fp64_rollback = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=256, n1=256, n2=256, order="021", dtype="complex128", out_dir=tmp_path
+        )
+        assert cube_fp64_rollback["kernel_name"].endswith("_t16_tile_vec")
         rollback = emit._emit_tiled_transpose3d_jit_kernel(
             n0=256, n1=256, n2=256, order="021", dtype="complex64", out_dir=tmp_path
         )
