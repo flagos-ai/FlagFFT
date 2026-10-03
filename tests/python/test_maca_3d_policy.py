@@ -319,6 +319,16 @@ def test_maca_pair64_1024_cube_transpose_screen(tmp_path, monkeypatch):
         assert candidate["grid_x_override"] == 4096
         profile.validate(candidate["num_warps"])
 
+        monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair64x16")
+        rectangular = _emit_tiled_transpose3d_jit_kernel(
+            n0=256, n1=256, n2=256, order="210", dtype="complex64",
+            out_dir=tmp_path / "rectangular",
+        )
+        assert rectangular["kernel_name"].endswith("_t64x16_tile_pair_rmajor")
+        assert rectangular["num_warps"] == 16
+        assert rectangular["grid_x_override"] == 16384
+        profile.validate(rectangular["num_warps"])
+
         limited = BackendProfile.from_device(
             {"backend": "maca", "device_arch": "102", "warp_size": 64,
              "max_threads_per_block": 512, "max_dynamic_shared_memory": 65536}

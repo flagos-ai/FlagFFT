@@ -258,7 +258,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     s2: int,
     order: str,
     dtype: str,
-    tile: int = 32,
+    tile: int | tuple[int, int] = 32,
     pair: bool = False,
     vec_store: bool = False,
     tile_traversal: str = "col",
@@ -283,6 +283,14 @@ def _build_tiled_transpose3d_tile_kernel_source(
         raise ValueError("vector-store tiled 3D transpose requires complex128")
     if tile_traversal not in {"col", "row"}:
         raise ValueError("tile_traversal must be col or row")
+    if isinstance(tile, tuple):
+        tile_rows, tile_cols = tile
+        if tile_rows <= 0 or tile_cols <= 0:
+            raise ValueError("transpose tile dimensions must be positive")
+        tile_name = f"{tile_rows}x{tile_cols}"
+    else:
+        tile_rows = tile_cols = tile
+        tile_name = str(tile)
     zero = _zero_other(dtype)
     total_complex = s0 * s1 * s2
     scalar_width = 1 if pair else 2
@@ -333,18 +341,18 @@ def _build_tiled_transpose3d_tile_kernel_source(
     src_col_stride = desc["src_col_stride"]
     dst_slice_stride = desc["dst_slice_stride"]
     dst_row_stride = desc["dst_row_stride"]
-    tile_cols = (cols + tile - 1) // tile
-    tile_rows = (rows + tile - 1) // tile
-    tiles_per_slice = tile_cols * tile_rows
+    num_tile_cols = (cols + tile_cols - 1) // tile_cols
+    num_tile_rows = (rows + tile_rows - 1) // tile_rows
+    tiles_per_slice = num_tile_cols * num_tile_rows
     if tile_traversal == "row":
-        tile_row_expr = f"tile_in_slice % {tile_rows}"
-        tile_col_expr = f"tile_in_slice // {tile_rows}"
+        tile_row_expr = f"tile_in_slice % {num_tile_rows}"
+        tile_col_expr = f"tile_in_slice // {num_tile_rows}"
     else:
-        tile_row_expr = f"tile_in_slice // {tile_cols}"
-        tile_col_expr = f"tile_in_slice % {tile_cols}"
+        tile_row_expr = f"tile_in_slice // {num_tile_cols}"
+        tile_col_expr = f"tile_in_slice % {num_tile_cols}"
     grid_x = num_slices * tiles_per_slice
     kernel_name = (
-        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile}_tile"
+        f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile_name}_tile"
         + ("_pair" if pair else "")
         + ("_vec" if vec_store else "")
         + ("_rmajor" if tile_traversal == "row" else "")
@@ -365,8 +373,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
             tile_row = {tile_row_expr}
             tile_col = {tile_col_expr}
 
-            row_offsets = tile_row * {tile} + tl.arange(0, {tile})
-            col_offsets = tile_col * {tile} + tl.arange(0, {tile})
+            row_offsets = tile_row * {tile_rows} + tl.arange(0, {tile_rows})
+            col_offsets = tile_col * {tile_cols} + tl.arange(0, {tile_cols})
             row_mask = row_offsets < {rows}
             col_mask = col_offsets < {cols}
             load_mask = col_mask[:, None] & row_mask[None, :]
