@@ -1264,6 +1264,25 @@ struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
+// Coalesced outer-axis FFT for the small 32-point IX plane route.
+struct CompiledRaw3DColumnNode final : CompiledRawNode {
+  CompiledRaw3DColumnNode(int64_t outer_stride,
+                          int64_t columns,
+                          std::shared_ptr<JitKernel> kernel,
+                          DeviceAllocation tw_r,
+                          DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t outer_stride;
+  int64_t columns;
+  std::shared_ptr<JitKernel> kernel;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 // Experimental 32^3 complex path: fuse the two inner axes in each 32x32
 // plane, then apply the outer strided axis.
 struct CompiledRaw3DFused32PlaneNode final : CompiledRawNode {

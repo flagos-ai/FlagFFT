@@ -3356,10 +3356,12 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
       // commute, so the same schedule is valid for forward and inverse.
       result = n2_fft->execute(input, temp1.get(), n2_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
+      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
       result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) return result;
-      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
+      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
       return n0_fft->execute(temp2.get(), output, n0_context);
     }
 
@@ -3603,6 +3605,49 @@ flagfftResult CompiledRaw3DFusedCubeNode::execute(adaptor::DevicePtr input,
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D fused cube execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DColumnNode::CompiledRaw3DColumnNode(
+    int64_t outer_stride,
+    int64_t columns,
+    std::shared_ptr<JitKernel> kernel,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : outer_stride(outer_stride),
+      columns(columns),
+      kernel(std::move(kernel)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DColumnNode::describe() const {
+  return "CompiledRaw3DColumn(outer_stride=" + std::to_string(outer_stride) +
+         ", columns=" + std::to_string(columns) +
+         ", kernel=" + kernel->execution_description() + ")";
+}
+
+flagfftResult CompiledRaw3DColumnNode::execute(adaptor::DevicePtr input,
+                                               adaptor::DevicePtr output,
+                                               const RawExecutionContext &context) const {
+  try {
+    if (context.batch % outer_stride != 0) {
+      throw std::runtime_error("3D column batch must be a multiple of the outer stride");
+    }
+    const int64_t cube_batch = context.batch / outer_stride;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(output),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+        JitKernelArg::i64(outer_stride),
+    };
+    kernel->launch(context.stream, args, ceil_div(outer_stride, columns), cube_batch, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D column execute failed: %s\n", e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }
@@ -3940,24 +3985,29 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
           if (result != FLAGFFT_SUCCESS) return result;
           result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
           if (result != FLAGFFT_SUCCESS) return result;
-          launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch);
+          launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch,
+                        complex_element_bytes(context.request.input_dtype));
           result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
           if (result != FLAGFFT_SUCCESS) return result;
-          launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch);
+          launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch,
+                        complex_element_bytes(context.request.input_dtype));
           return FLAGFFT_SUCCESS;
         }
 
         result = n2_real_fft->execute(input, temp1.get(), n2_context);
         if (result != FLAGFFT_SUCCESS) return result;
         if (layout == Layout::FusedStore || layout == Layout::Transposed) {
-          launch_perm3d(perm_first, context.stream, temp1.get(), temp2.get(), packed, batch);
+          launch_perm3d(perm_first, context.stream, temp1.get(), temp2.get(), packed, batch,
+                        complex_element_bytes(context.request.input_dtype));
           result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
           if (result != FLAGFFT_SUCCESS) return result;
           if (layout == Layout::Transposed) {
-            launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch);
+            launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch,
+                          complex_element_bytes(context.request.input_dtype));
             result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
             if (result != FLAGFFT_SUCCESS) return result;
-            launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch);
+            launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch,
+                          complex_element_bytes(context.request.input_dtype));
             return FLAGFFT_SUCCESS;
           }
           return n0_fft->execute(temp1.get(), output, n0_context);
@@ -3968,7 +4018,8 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
       }
 
       if (layout == Layout::FusedStore) {
-        launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch);
+        launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
         result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
         if (result != FLAGFFT_SUCCESS) return result;
         result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
@@ -3976,13 +4027,16 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
         return n2_real_fft->execute(temp1.get(), output, n2_context);
       }
       if (layout == Layout::Transposed) {
-        launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch);
+        launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
         result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
         if (result != FLAGFFT_SUCCESS) return result;
-        launch_perm3d(perm_second, context.stream, temp2.get(), temp1.get(), packed, batch);
+        launch_perm3d(perm_second, context.stream, temp2.get(), temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
         result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
         if (result != FLAGFFT_SUCCESS) return result;
-        launch_perm3d(perm_third, context.stream, temp2.get(), temp1.get(), packed, batch);
+        launch_perm3d(perm_third, context.stream, temp2.get(), temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
         return n2_real_fft->execute(temp1.get(), output, n2_context);
       }
       result = n1_fft->execute(input, temp1.get(), n1_context);
