@@ -1035,34 +1035,6 @@ def test_maca_pair16_row_group_only_codegen_screen(tmp_path, monkeypatch) -> Non
     assert fp64_metadata["num_warps"] == 4
 
 
-def test_maca_pair16x32_rectangular_transpose_codegen_is_opt_in(tmp_path, monkeypatch):
-    from flagfft_codegen import emit, kernels_common
-
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
-    monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
-    monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16x32")
-
-    metadata = emit._emit_tiled_transpose3d_jit_kernel(
-        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
-    )
-    source = Path(metadata["module_path"]).read_text()
-
-    assert metadata["kernel_name"].endswith(
-        "_t16x32_tile_pair_sliceg2seq_rmajor"
-    )
-    assert metadata["num_warps"] == 8
-    assert metadata["grid_x_override"] == 16384
-    assert "row_offsets = tile_row * 16 + tl.arange(0, 16)" in source
-    assert "col_offsets = tile_col * 32 + tl.arange(0, 32)" in source
-    assert "for group_offset in tl.static_range(0, 2):" in source
-
-    fp64_metadata = emit._emit_tiled_transpose3d_jit_kernel(
-        n0=256, n1=256, n2=256, order="210", dtype="complex128", out_dir=tmp_path
-    )
-    assert fp64_metadata["kernel_name"].endswith("_tile_vec")
-
-
 def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
     from flagfft_codegen import emit, kernels_common
 
