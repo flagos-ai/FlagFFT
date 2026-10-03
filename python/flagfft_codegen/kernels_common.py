@@ -827,7 +827,12 @@ def _four_step_row_inner_pack_for(
     return 1
 
 
-def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
+def _bounded_inner_pack(
+    pack: int,
+    plan: LeafPlan | None,
+    *,
+    extra_smem_elements: int = 1,
+) -> int:
     profile = current_profile()
     if (
         plan is None
@@ -838,7 +843,7 @@ def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
     # A two-stage TLE leaf writes only smem_b; smem_a is unused. Keep this
     # tighter bound opt-in until the wider packs have been measured on IX.
     buffers = 4
-    padded_elements = plan.smem_size + 1
+    padded_elements = plan.smem_size + extra_smem_elements
     if (_ix_backend_active() and _maca_knob("TLE_INNER_PACK")
             and not _portable_leaf_backend_active() and len(plan.factors) == 2):
         buffers = 2
@@ -852,13 +857,27 @@ def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
-    return _bounded_inner_pack(_four_step_col_inner_pack_for(n1, n2, dtype, plan), plan)
+    # Four-step kernels use an unpadded shared-memory stride between packed
+    # transforms (batch_pack is always one here).  The generic leaf bound's
+    # one-element padding made a 1024-point FP64 leaf miss pack=2 by 64 bytes
+    # on HCU, despite the generated layout using exactly 64 KiB at that pack.
+    extra_smem_elements = 0 if current_profile().backend == "hcu" else 1
+    return _bounded_inner_pack(
+        _four_step_col_inner_pack_for(n1, n2, dtype, plan),
+        plan,
+        extra_smem_elements=extra_smem_elements,
+    )
 
 
 def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
-    return _bounded_inner_pack(_four_step_row_inner_pack_for(n1, n2, dtype, plan), plan)
+    extra_smem_elements = 0 if current_profile().backend == "hcu" else 1
+    return _bounded_inner_pack(
+        _four_step_row_inner_pack_for(n1, n2, dtype, plan),
+        plan,
+        extra_smem_elements=extra_smem_elements,
+    )
 
 
 def use_tle_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") -> bool:

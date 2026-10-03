@@ -407,6 +407,48 @@ class ProfileTest(unittest.TestCase):
         finally:
             reset_profile(token)
 
+    def test_hcu_four_step_pack_uses_unpadded_shared_stride(self):
+        from flagfft_codegen.kernels_common import (
+            four_step_col_inner_pack_for,
+            four_step_row_inner_pack_for,
+        )
+
+        profile = BackendProfile.from_device(
+            {
+                "backend": "hcu",
+                "device_arch": "gfx936",
+                "warp_size": 64,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 64 * 1024,
+            },
+            "native",
+        )
+        token = set_profile(profile)
+        try:
+            # Two transforms occupy exactly four 1024-element FP64 shared
+            # arrays per slot: 64 KiB. The generic extra-element padding used
+            # to reject pack=2 by 64 bytes, leaving half of each HCU wave idle.
+            plan = LeafPlan(
+                1024, (32, 32), 1, 32, 1, (), 1024, dtype="complex128"
+            )
+            self.assertEqual(
+                four_step_row_inner_pack_for(512, 1024, "complex128", plan), 2
+            )
+            self.assertEqual(
+                four_step_col_inner_pack_for(512, 1024, "complex128", plan), 2
+            )
+
+            # The same policy still caps a leaf whose two slots need more than
+            # the device's 64 KiB dynamic shared-memory budget.
+            oversized = LeafPlan(
+                2048, (32, 32, 2), 1, 32, 1, (), 2048, dtype="complex128"
+            )
+            self.assertEqual(
+                four_step_col_inner_pack_for(512, 2048, "complex128", oversized), 1
+            )
+        finally:
+            reset_profile(token)
+
     def test_maca_four_step_packing_respects_runtime_smem_limit(self):
         from flagfft_codegen.kernels_common import four_step_col_inner_pack_for
 
