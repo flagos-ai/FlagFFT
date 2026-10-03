@@ -1012,6 +1012,21 @@ def _emit_tiled_transpose3d_jit_kernel(
                     raise ValueError("FLAGFFT_IX_3D_TRANSPOSE_TILE must be 8, 16 or 32")
                 tile = int(ix_tile)
             packed_complex = os.getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE") == "1"
+            (
+                kernel_name,
+                kernel_source,
+                arg_names,
+                grid_x,
+            ) = _build_tiled_transpose3d_tile_kernel_source(
+                n0,
+                n1,
+                n2,
+                order,
+                dtype,
+                tile=tile,
+                packed_complex=packed_complex,
+                pair_store=pair_store,
+            )
         elif _hcu_backend_active():
             transpose_slice_group = os.getenv(
                 "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP", "auto"
