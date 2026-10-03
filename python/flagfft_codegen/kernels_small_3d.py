@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from .artifacts import write_text_atomic
 from .kernels_common import _dtype_suffix
 from .metadata import _module_source, _signature
+from .target import backend_name
 
 
 def emit_fused_16_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
@@ -108,6 +110,14 @@ def fused_16_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
 
 def emit_fused_32_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
     """Emit a 32x32 complex plane FFT for the MACA 3D fusion experiment."""
+    num_warps_text = (
+        os.environ.get("FLAGFFT_MACA_3D_C2C_FUSED32_WARPS", "8")
+        if backend_name() == "maca"
+        else "8"
+    )
+    if num_warps_text not in {"4", "8"}:
+        raise ValueError("FLAGFFT_MACA_3D_C2C_FUSED32_WARPS must be 4 or 8")
+    num_warps = int(num_warps_text)
     source = """
 @triton.jit
 def fused_32_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
@@ -171,7 +181,7 @@ def fused_32_plane_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
         "module_path": str(module_path),
         "kernel_name": "fused_32_plane_fft_kernel",
         "signature": _signature(args, dtype),
-        "num_warps": 8,
+        "num_warps": num_warps,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": args,
