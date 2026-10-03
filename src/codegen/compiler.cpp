@@ -3411,7 +3411,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       flag_or_default("FLAGFFT_NPU_3D_AIV64", false);
   const bool npu_aiv256_real = npu_real_request && node->n2 == 256 &&
       (batch * node->n0 * node->n1) % 8 == 0 &&
-      flag_or_default("FLAGFFT_NPU_3D_AIV256", false) &&
       flag_or_default("FLAGFFT_NPU_3D_AIV256_REAL", false);
   const bool npu_real_native = npu_aiv64_real || npu_aiv256_real;
   const char *ix_rtrt_override = std::getenv("FLAGFFT_IX_3D_REAL_RTRT");
