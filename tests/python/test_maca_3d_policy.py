@@ -295,3 +295,38 @@ def test_maca_3d_c2c32_more_lanes_keeps_candidate_factors(monkeypatch):
     finally:
         set_codegen_target("")
         reset_profile(profile)
+
+
+def test_maca_pair64_1024_cube_transpose_screen(tmp_path, monkeypatch):
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+    from flagfft_codegen.target import set_codegen_target
+
+    profile = set_profile(
+        BackendProfile.from_device(
+            {"backend": "maca", "device_arch": "102", "warp_size": 64,
+             "max_threads_per_block": 1024, "max_dynamic_shared_memory": 65536}
+        )
+    )
+    set_codegen_target("maca:102:64")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair64")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "16")
+    try:
+        candidate = _emit_tiled_transpose3d_jit_kernel(
+            n0=256, n1=256, n2=256, order="210", dtype="complex64",
+            out_dir=tmp_path / "candidate",
+        )
+        assert candidate["kernel_name"].endswith("_t64_tile_pair_rmajor")
+        assert candidate["num_warps"] == 16
+        assert candidate["grid_x_override"] == 4096
+
+        # A full-matrix environment must leave FP64 on its existing transpose
+        # path and must not carry the 1024-thread launch into another dtype.
+        control = _emit_tiled_transpose3d_jit_kernel(
+            n0=256, n1=256, n2=256, order="210", dtype="complex128",
+            out_dir=tmp_path / "control",
+        )
+        assert control["kernel_name"].endswith("_t16_tile_vec")
+        assert control["num_warps"] == 4
+    finally:
+        set_codegen_target("")
+        reset_profile(profile)

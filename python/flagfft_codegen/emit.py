@@ -785,13 +785,26 @@ def _emit_tiled_transpose3d_jit_kernel(
         # This screen only specializes the FP32 cube. Let an all-suite run
         # keep unrelated dtypes and shapes on their regular transpose policy.
         maca_mode = "pair16"
+    pair64_cube_1024_candidate = (
+        _declared_backend() == "maca"
+        and maca_mode == "pair64"
+        and dtype == "complex64"
+        and tuple(sorted((n0, n1, n2))) == (256, 256, 256)
+        and os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS") == "16"
+    )
     maca_warps = (
         os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8" if dtype == "complex64" else "4")
         if _declared_backend() == "maca"
         else "4"
     )
-    if maca_warps not in {"2", "4", "8"}:
-        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4 or 8")
+    if maca_warps == "16" and not pair64_cube_1024_candidate:
+        # Keep a broad transpose screen from leaking its 1024-thread CTA
+        # setting into other dtypes and shapes. The vendor-matched tile is a
+        # narrowly scoped FP32 cube experiment only.
+        maca_mode = "pair16"
+        maca_warps = "8" if dtype == "complex64" else "4"
+    if maca_warps not in {"2", "4", "8", "16"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4, 8 or the scoped pair64 cube value 16")
     traversal_default = "col"
     if (
         _declared_backend() == "maca"
