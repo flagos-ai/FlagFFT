@@ -297,6 +297,7 @@ class Fft256Aiv {
       Gather(current_imag, input_local, index_local, sizeof(float), group_n);
       if constexpr (RealInverse) {
         DataCopy(twiddle_local, twiddles_[kStages * group_n], group_n);
+        PipeBarrier<PIPE_ALL>();
         Mul(current_imag, current_imag, twiddle_local, group_n);
         PipeBarrier<PIPE_ALL>();
       }
