@@ -27,7 +27,11 @@ constexpr uint32_t kOutputIndexCount = 2 * kN;
 constexpr uint32_t kLocalIndexCount = kOutputIndexBase + kOutputIndexCount;
 constexpr uint32_t kTwiddleCount = 2 * kStages * kN;
 
-template <uint32_t GroupSize, bool PairButterflies = false, bool TransposedOutput = false>
+template <uint32_t GroupSize,
+          bool PairButterflies = false,
+          bool TransposedOutput = false,
+          bool RealForward = false,
+          bool RealInverse = false>
 class Fft256Aiv {
  public:
   __aicore__ inline void Init(GM_ADDR input,
@@ -52,6 +56,9 @@ class Fft256Aiv {
         (GroupSize == 1 ? kTwiddleCount : 2 * group_n);
     pipe_.InitBuffer(input_buf_, 2 * group_n * sizeof(float));
     constexpr uint32_t work_vectors = PairButterflies ? 8 : 11;
+    static_assert(!(RealForward && RealInverse));
+    static_assert((!RealForward && !RealInverse) ||
+                  (GroupSize == 8 && PairButterflies && !TransposedOutput));
     pipe_.InitBuffer(work_buf_, work_vectors * group_n * sizeof(float));
     pipe_.InitBuffer(index_buf_, index_count * sizeof(uint32_t));
     pipe_.InitBuffer(twiddle_buf_, twiddle_count * sizeof(float));
@@ -229,6 +236,7 @@ class Fft256Aiv {
   __aicore__ inline void ProcessPairGroup8(uint32_t transform) {
     constexpr uint32_t group_n = kN * GroupSize;
     constexpr uint32_t half_group = group_n / 2;
+    constexpr uint32_t half = kN / 2 + 1;
     constexpr uint32_t output_index_base = group_n;
     constexpr uint32_t stage_a_local = 3 * group_n;
     constexpr uint32_t stage_b_local = stage_a_local + half_group;
@@ -237,9 +245,21 @@ class Fft256Aiv {
     static_assert(GroupSize == 8);
 
     GlobalTensor<float> src;
-    src.SetGlobalBuffer(input_ptr_ + transform * 2 * kN);
+    if constexpr (RealForward) {
+      src.SetGlobalBuffer(input_ptr_ + transform * kN);
+    } else if constexpr (RealInverse) {
+      src.SetGlobalBuffer(input_ptr_ + transform * 2 * half);
+    } else {
+      src.SetGlobalBuffer(input_ptr_ + transform * 2 * kN);
+    }
     LocalTensor<float> input_local = input_buf_.Get<float>();
-    DataCopy(input_local, src, 2 * group_n);
+    if constexpr (RealForward) {
+      DataCopy(input_local, src, group_n);
+    } else if constexpr (RealInverse) {
+      DataCopy(input_local, src, 2 * half * GroupSize);
+    } else {
+      DataCopy(input_local, src, 2 * group_n);
+    }
 
     LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
     DataCopy(index_local, indices_, group_n);
@@ -259,10 +279,19 @@ class Fft256Aiv {
     LocalTensor<float> product1 = work[6 * group_n + half_group];
     LocalTensor<float> product2 = work[7 * group_n];
 
-    Gather(current_real, input_local, index_local, 0, group_n);
-    Gather(current_imag, input_local, index_local, sizeof(float), group_n);
-
     LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
+    Gather(current_real, input_local, index_local, 0, group_n);
+    if constexpr (RealForward) {
+      Duplicate(current_imag, 0.0f, group_n);
+    } else {
+      Gather(current_imag, input_local, index_local, sizeof(float), group_n);
+      if constexpr (RealInverse) {
+        DataCopy(twiddle_local, twiddles_[kStages * group_n], group_n);
+        Mul(current_imag, current_imag, twiddle_local, group_n);
+        PipeBarrier<PIPE_ALL>();
+      }
+    }
+
     for (uint32_t stage = 0; stage < kStages; ++stage) {
       const uint32_t stage_offset = stage * group_n;
       DataCopy(index_local[stage_a_local], indices_[stage_a_global + stage * half_group], half_group);
@@ -301,24 +330,38 @@ class Fft256Aiv {
     DataCopy(merged[group_n], current_imag, group_n);
     PipeBarrier<PIPE_ALL>();
     LocalTensor<float> output_local = output_buf_.Get<float>();
-    Gather(output_local, merged, index_local[output_index_base], 0, 2 * group_n);
-    PipeBarrier<PIPE_ALL>();
-    if constexpr (TransposedOutput) {
-      LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
-      GlobalTensor<uint64_t> dst;
-      dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_) +
-                          output_transform_offset_ + transform);
-      const DataCopyExtParams output_params(
-          kN,
-          GroupSize * sizeof(uint64_t),
-          0,
-          (output_row_stride_ - GroupSize) * sizeof(uint64_t),
-          0);
-      DataCopyPad(dst, output_complex, output_params);
-    } else {
+    if constexpr (RealForward) {
+      Gather(output_local, merged, index_local[output_index_base], 0, 2 * half * GroupSize);
+      PipeBarrier<PIPE_ALL>();
       GlobalTensor<float> dst;
-      dst.SetGlobalBuffer(output_ptr_ + transform * 2 * kN);
-      DataCopy(dst, output_local, 2 * group_n);
+      dst.SetGlobalBuffer(output_ptr_ + transform * 2 * half);
+      DataCopy(dst, output_local, 2 * half * GroupSize);
+    } else if constexpr (RealInverse) {
+      Gather(output_local, current_real, index_local[output_index_base], 0, group_n);
+      PipeBarrier<PIPE_ALL>();
+      GlobalTensor<float> dst;
+      dst.SetGlobalBuffer(output_ptr_ + transform * kN);
+      DataCopy(dst, output_local, group_n);
+    } else {
+      Gather(output_local, merged, index_local[output_index_base], 0, 2 * group_n);
+      PipeBarrier<PIPE_ALL>();
+      if constexpr (TransposedOutput) {
+        LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
+        GlobalTensor<uint64_t> dst;
+        dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_) +
+                            output_transform_offset_ + transform);
+        const DataCopyExtParams output_params(
+            kN,
+            GroupSize * sizeof(uint64_t),
+            0,
+            (output_row_stride_ - GroupSize) * sizeof(uint64_t),
+            0);
+        DataCopyPad(dst, output_complex, output_params);
+      } else {
+        GlobalTensor<float> dst;
+        dst.SetGlobalBuffer(output_ptr_ + transform * 2 * kN);
+        DataCopy(dst, output_local, 2 * group_n);
+      }
     }
   }
 

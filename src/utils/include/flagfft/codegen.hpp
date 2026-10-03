@@ -194,6 +194,8 @@ enum class NpuAivFFT64Mode : int32_t {
   RealInverse = 2,
 };
 
+using NpuAivFFT256Mode = NpuAivFFT64Mode;
+
 using NpuAivFFTSmallMode = NpuAivFFT64Mode;
 
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -262,7 +264,8 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
                               bool pair_mode = false,
                               bool transposed_store = false,
                               bool radix4_mode = false,
-                              int64_t transposed_output_row_stride = 0);
+                              int64_t transposed_output_row_stride = 0,
+                              NpuAivFFT256Mode mode = NpuAivFFT256Mode::Complex);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -275,6 +278,7 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   bool transposed_store;
   bool radix4_mode;
   int64_t transposed_output_row_stride;
+  NpuAivFFT256Mode mode;
 };
 #endif
 

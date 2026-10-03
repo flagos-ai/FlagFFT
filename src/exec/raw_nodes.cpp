@@ -759,14 +759,16 @@ CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     bool pair_mode,
     bool transposed_store,
     bool radix4_mode,
-    int64_t transposed_output_row_stride)
+    int64_t transposed_output_row_stride,
+    NpuAivFFT256Mode mode)
     : indices(std::move(indices)),
       twiddles(std::move(twiddles)),
       group_size(group_size),
       pair_mode(pair_mode),
       transposed_store(transposed_store),
       radix4_mode(radix4_mode),
-      transposed_output_row_stride(transposed_output_row_stride) {}
+      transposed_output_row_stride(transposed_output_row_stride),
+      mode(mode) {}
 
 std::string CompiledRawNpuAivFFT256Node::describe() const {
   std::ostringstream oss;
@@ -775,6 +777,8 @@ std::string CompiledRawNpuAivFFT256Node::describe() const {
       << ", transposed_store=" << transposed_store
       << ", radix4_mode=" << radix4_mode
       << ", transposed_output_row_stride=" << transposed_output_row_stride << ")";
+  if (mode == NpuAivFFT256Mode::RealForward) oss << "[r2c-row]";
+  if (mode == NpuAivFFT256Mode::RealInverse) oss << "[c2r-row]";
   return oss.str();
 }
 
@@ -786,6 +790,10 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
       (pair_mode && group_size != 8) ||
       (transposed_store && !pair_mode) ||
       (radix4_mode && (!pair_mode || !transposed_store || group_size != 8)) ||
+      (mode != NpuAivFFT256Mode::Complex &&
+       (mode != NpuAivFFT256Mode::RealForward && mode != NpuAivFFT256Mode::RealInverse)) ||
+      (mode != NpuAivFFT256Mode::Complex &&
+       (!pair_mode || group_size != 8 || transposed_store || radix4_mode)) ||
       context.batch % group_size != 0 ||
       indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
@@ -800,13 +808,22 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
   const int64_t batch_chunk = block_limit_per_launch() * group_size;
   if (batch_chunk <= 0) return FLAGFFT_INVALID_SIZE;
   const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+  const int64_t real_bytes = element_bytes / 2;
+  const int64_t input_transform_bytes = mode == NpuAivFFT256Mode::RealForward
+      ? 256 * real_bytes
+      : (mode == NpuAivFFT256Mode::RealInverse ? 129 * element_bytes : 256 * element_bytes);
+  const int64_t output_transform_bytes = mode == NpuAivFFT256Mode::RealForward
+      ? 129 * element_bytes
+      : (mode == NpuAivFFT256Mode::RealInverse ? 256 * real_bytes : 256 * element_bytes);
   for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
     const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
     const adaptor::DevicePtr byte_offset =
-        static_cast<adaptor::DevicePtr>(batch_offset * 256 * element_bytes);
+        static_cast<adaptor::DevicePtr>(batch_offset * input_transform_bytes);
     const flagfftResult result = adaptor::npu::launch_ascendc_fft256(
         input + byte_offset,
-        transposed_store ? output : output + byte_offset,
+        transposed_store
+            ? output
+            : output + static_cast<adaptor::DevicePtr>(batch_offset * output_transform_bytes),
         indices->get(),
         twiddles->get(),
         static_cast<int32_t>(chunk_batch),
@@ -814,6 +831,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
         pair_mode,
         transposed_store,
         radix4_mode,
+        static_cast<int32_t>(mode),
         transposed_store ? static_cast<int32_t>(output_row_stride) : 0,
         transposed_store ? static_cast<int32_t>(batch_offset) : 0,
         context.stream);
