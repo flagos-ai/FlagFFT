@@ -1196,6 +1196,13 @@ namespace {
     return 1;
   }
 
+  int32_t npu_aiv_fft_group_size_for_batch(int32_t requested_group_size, int64_t batch) {
+    for (int32_t group_size = 32; group_size >= 4; group_size /= 2) {
+      if (group_size <= requested_group_size && batch % group_size == 0) return group_size;
+    }
+    return 1;
+  }
+
   int32_t npu_aiv_fft64_real_row_group_size(const char *setting, int64_t batch) {
     const int32_t group_size = npu_aiv_fft64_group_size(setting, batch);
     // Compact rows contain 33 complex values. Grouping at least four rows
@@ -1560,7 +1567,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
                                        : npu_aiv_fft64_group_size(group_setting, batch);
       if (group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) group_size = 8;
-      if (batch % group_size != 0) group_size = batch % 8 == 0 ? 8 : 4;
+      group_size = npu_aiv_fft_group_size_for_batch(group_size, batch);
       if (batch % group_size == 0) {
         return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
       }
@@ -1646,9 +1653,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 32)
                                        : npu_aiv_fft64_group_size(group_setting, batch);
-      if (group_size > 1 && batch % group_size != 0) {
-        group_size = batch % 8 == 0 ? 8 : batch % 4 == 0 ? 4 : 1;
-      }
+      group_size = npu_aiv_fft_group_size_for_batch(group_size, batch);
       return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
@@ -1670,7 +1675,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
                                        : npu_aiv_fft64_group_size(group_setting, batch);
       if (group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) group_size = 8;
-      if (batch % group_size != 0) group_size = batch % 8 == 0 ? 8 : 4;
+      group_size = npu_aiv_fft_group_size_for_batch(group_size, batch);
       if (batch % group_size == 0) {
         return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
       }
@@ -3409,7 +3414,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
     int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, real_batch, 32)
                                      : npu_aiv_fft64_real_row_group_size(group_setting, real_batch);
-    if ((batch * n0 * n1) % group_size != 0) group_size = 1;
+    group_size = npu_aiv_fft_group_size_for_batch(group_size, real_batch);
     n2_real_fft =
         make_npu_aiv_fft64_child(n2_request,
                                  1,
