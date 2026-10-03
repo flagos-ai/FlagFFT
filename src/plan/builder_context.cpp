@@ -76,6 +76,49 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }
+  // Opt in to an explicit HCU single C2R split while screening alternative
+  // 1D four-step decompositions. Keep the override at the public root so it
+  // cannot change child FFTs used by another algorithm.
+  const bool hcu_single_c2r_root =
+      request.device_type == "hcu" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.requested_n == n && request.real_transform &&
+      (request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d" ||
+       request.origin_real_transform_kind == "c2r" ||
+       request.origin_real_transform_kind == "z2d");
+  const char *hcu_c2r_split = std::getenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+  if (hcu_single_c2r_root && hcu_c2r_split != nullptr && *hcu_c2r_split != '\0') {
+    const std::string spec(hcu_c2r_split);
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t target_length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (target_length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT n1 must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
+    }
+  }
+  if (hcu_single_c2r_root && n == 340200) {
+    // The measured 567x600 pair uses lane-richer leaves than the automatic
+    // 504x675 pair and improves both HCU C2R precisions.
+    constexpr int64_t n1 = 567;
+    constexpr int64_t n2 = 600;
+    return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                              build_auto_node(n1, false), build_auto_node(n2, false));
+  }
   // An opt-in split lets Ascend qualify the existing generic FourStep path
   // with Stockham/Bluestein children before changing its automatic policy.
   // Scope the override to the requested 1D root, never a convolution child.

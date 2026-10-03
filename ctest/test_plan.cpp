@@ -231,6 +231,46 @@ TEST(Plan1D, IxFp32RealBatchFactors) {
   EXPECT_EQ(complex_plan->factors, (std::vector<int64_t>{8, 8, 4, 4}));
 }
 
+TEST(Plan1D, HcuSingleC2rFourStepSplitOverride) {
+  if (flagfft::adaptor::backend_name() != "hcu") GTEST_SKIP() << "HCU-only plan policy";
+
+  const char* original = std::getenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+  const std::optional<std::string> saved = original ? std::optional<std::string>(original) : std::nullopt;
+  struct Restore {
+    std::optional<std::string> value;
+    ~Restore() {
+      if (value) setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", value->c_str(), 1);
+      else unsetenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+    }
+  } restore{saved};
+
+  unsetenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.device_index = 0;
+  request.raw_dim = request.origin_rank = 1;
+  request.real_transform = true;
+  request.real_transform_kind = request.origin_real_transform_kind = "z2d";
+  request.n = request.fft_length = request.requested_n = 340200;
+  request.input_dtype = "complex128";
+  request.output_dtype = "float64";
+  request.batch = 1;
+
+  flagfft::PlanBuilder builder;
+  auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 567);
+  EXPECT_EQ(plan->n2, 600);
+
+  setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", "524288:1024", 1);
+  request.n = request.fft_length = request.requested_n = 524288;
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(524288, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 1024);
+  EXPECT_EQ(plan->n2, 512);
+}
+
 TEST(Plan1D, CreateDestroyAllTypes) {
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {
