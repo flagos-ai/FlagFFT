@@ -3256,11 +3256,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
   const bool small = packed <= 64 * 64 * 64;
+  const bool npu_row_only_debug = npu_real_leaf_screen && n2 == 256 &&
+      flag_or_default("FLAGFFT_NPU_3D_DEBUG_REAL_ROW_ONLY", false);
   if (ix_real_leaf_screen && !ix_real_fused_screen && !small) return nullptr;
   // Large Ascend real transforms use the generic compact 3D route below,
   // whose explicit transpose can run as the native AIV tile kernel. The
   // generic permuted-store leaf path has no qualified Ascend schedule.
-  if (npu_real_leaf_screen && !small) return nullptr;
+  if (npu_real_leaf_screen && (!small || npu_row_only_debug)) return nullptr;
   if (!small && !fused_3d_store_enabled() && !ix_real_fused_screen) return nullptr;
 
   FFTRequest n2_request = request;
