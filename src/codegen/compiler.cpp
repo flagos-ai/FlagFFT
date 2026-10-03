@@ -4220,6 +4220,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
 
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   std::vector<DeviceAllocation> npu_transpose_indices;
+#if defined(FLAGFFT_BACKEND_NPU)
   if (npu_real_native) {
     const int64_t real_batch = batch * n0 * n1;
     if (npu_aiv256_real) {
@@ -4242,6 +4243,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
                                    radix4_pair);
     }
   } else if (fused_first) {
+#else
+  if (fused_first) {
+#endif
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
                                          n2_request.direction, n2_request.input_dtype,
                                          n2_leaf->length, n2_leaf->factors,
