@@ -1501,6 +1501,36 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(perm_201));
   }
 
+  // Cube screen: fuse only the first n2-axis permutation into the leaf store.
+  // This removes one full-cube transpose while leaving the two later stages on
+  // their established contiguous-leaf paths. Keep it opt-in until its store
+  // cost is measured against the saved transpose on C550.
+  const bool maca_cube_first_store = request.device_type == "maca" && batch == 1 &&
+      n0 == 256 && n1 == 256 && n2 == 256 && n0_leaf && n1_leaf && n2_leaf &&
+      request.input_dtype == "complex64" &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_CUBE_FIRST_STORE", false);
+  if (maca_cube_first_store) {
+    auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
+    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
+    auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
+    auto perm_201 = compile_transpose3d_kernel(request, n1, n2, n0, "201");
+    DeviceAllocation temp1 = adaptor::Memory(
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    DeviceAllocation temp2 = adaptor::Memory(
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    return std::make_shared<CompiledRaw3DHybridNode>(n0,
+                                                     n1,
+                                                     n2,
+                                                     std::move(n2_fft),
+                                                     std::move(n1_fft),
+                                                     std::move(n0_fft),
+                                                     std::move(perm_210),
+                                                     std::move(temp1),
+                                                     std::move(temp2),
+                                                     std::move(perm_201));
+  }
+
   // Cube screen: keep the two transposes needed to make n1 and n0 contiguous,
   // then fuse the final layout restoration into the n0 leaf's output store.
   // This remains an opt-in FP32 prototype for the single-batch 256^3 case.
