@@ -21,6 +21,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
         "FLAGFFT_MACA_3D_N64_PACK",
         "FLAGFFT_MACA_3D_N32_FP64_PACK",
         "FLAGFFT_MACA_3D_N128_PACK",
+        "FLAGFFT_MACA_3D_N2048_FP32_PACK",
         "FLAGFFT_MACA_EXCHANGE",
         "FLAGFFT_MACA_VEC_IO",
         "FLAGFFT_MACA_3D_PERMSTORE_PACK",
@@ -40,6 +41,10 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
     double = LeafPlan(256, (4, 4, 4, 4), 1, 64, 2, (), 256, dtype="complex128")
     single128 = LeafPlan(128, (4, 4, 4, 2), 1, 32, 2, (), 128, dtype="complex64")
     long_middle = LeafPlan(2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex64")
+    from pathlib import Path
+    from flagfft_codegen.metadata import _metadata
+    from flagfft_codegen.target import set_codegen_target
+
     try:
         off = set_maca_3d_default(False)
         try:
@@ -125,6 +130,37 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
             # The 2048-point leaf consumes enough shared memory to cap its
             # permuted-store pack at one; the long-axis hybrid avoids that.
             assert permuted_store_batch_pack_for(long_middle) == 1
+            assert contiguous_batch_pack_for(long_middle) == 1
+            long_middle_fp64 = LeafPlan(
+                2048, (16, 8, 16), 1, 128, 4, (), 2048, dtype="complex128"
+            )
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_FP32_PACK", "2")
+            assert contiguous_batch_pack_for(long_middle) == 2
+            assert contiguous_batch_pack_for(long_middle_fp64) == 1
+            set_codegen_target("maca:102:64")
+            packed_metadata = _metadata(
+                module_path=Path("kernel.py"),
+                kernel_name="fft_kernel",
+                arg_names=[],
+                plan=long_middle,
+                kernel_type="leaf",
+                n1=0,
+                n2=0,
+                dtype="complex64",
+            )
+            assert packed_metadata["batch_per_block"] == 2
+            assert packed_metadata["num_warps"] == 8
+            set_codegen_target("")
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_FP32_PACK", "1")
+            assert contiguous_batch_pack_for(long_middle) == 1
+            monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_FP32_PACK", "4")
+            try:
+                contiguous_batch_pack_for(long_middle)
+            except ValueError as error:
+                assert "must be 1 or 2" in str(error)
+            else:
+                raise AssertionError("unsupported MACA 2048-point FP32 pack was accepted")
+            monkeypatch.delenv("FLAGFFT_MACA_3D_N2048_FP32_PACK")
             assert _maca_knob("VEC_IO", "0") == "packed"
             from flagfft_codegen.kernels_leaf import _packed_maca_fp32_complex_io
             assert _packed_maca_fp32_complex_io("complex64")
@@ -152,6 +188,7 @@ def test_maca_3d_packing_scope_and_override(monkeypatch):
         finally:
             reset_maca_3d_default(on)
     finally:
+        set_codegen_target("")
         reset_profile(profile)
 
 
