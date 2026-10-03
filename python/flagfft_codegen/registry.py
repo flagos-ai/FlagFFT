@@ -252,6 +252,7 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("fused_32_real_plane", SMALL_3D),
     KernelSpec("fused_rect_plane", SMALL_3D),
     KernelSpec("fused_16_cube", SMALL_3D),
+    KernelSpec("fused_16_real_cube", SMALL_3D),
     KernelSpec("fused_32_plane", SMALL_3D),
     KernelSpec("fused_16_real_plane", SMALL_3D),
     KernelSpec("fused_32_column", SMALL_3D),

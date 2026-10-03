@@ -36,6 +36,7 @@ from .metadata import _csv_ints
 from .kernels_small_3d import (
     emit_fused_32_column_kernel,
     emit_fused_16_cube_kernel,
+    emit_fused_16_real_cube_kernel,
     emit_fused_16_plane_kernel,
     emit_fused_32_real_plane_kernel,
     emit_fused_rect_plane_kernel,
@@ -458,6 +459,10 @@ def main() -> None:
     elif spec.family == SMALL_3D:
         if args.kernel == "fused_32_column":
             metadata = emit_fused_32_column_kernel(
+                dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+            )
+        elif args.kernel == "fused_16_real_cube":
+            metadata = emit_fused_16_real_cube_kernel(
                 dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
             )
         elif args.kernel == "fused_16_cube":

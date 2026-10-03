@@ -434,6 +434,97 @@ def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
     return metadata
 
 
+def emit_fused_16_real_cube_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
+    """Compute one compact real-to-complex frequency plane per block."""
+    source = f"""
+@triton.jit
+def fused_16_cube_fft_kernel(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
+    pid = tl.program_id(0)
+    k0 = pid % 16
+    batch = pid // 16
+    idx = tl.arange(0, 256)
+    row = idx // 16
+    col = idx % 16
+    ar = tl.full((256,), 0.0, tl.float32)
+    ai = tl.full((256,), 0.0, tl.float32)
+    for i0 in tl.static_range(16):
+        vr = tl.load(in_ptr + batch * 4096 + i0 * 256 + idx)
+        vi = tl.full((256,), 0.0, tl.float32)
+        tw = (k0 * i0) % 16
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        ar += wr * vr - wi * vi
+        ai += wr * vi + wi * vr
+
+    rev_row = tl.full((256,), 0, tl.int32)
+    rev_col = tl.full((256,), 0, tl.int32)
+    for bit in tl.static_range(4):
+        rev_row = (rev_row << 1) | ((row >> bit) & 1)
+        rev_col = (rev_col << 1) | ((col >> bit) & 1)
+    reverse = rev_row * 16 + rev_col
+    xr = tl.gather(ar, reverse, 0)
+    xi = tl.gather(ai, reverse, 0)
+
+    for stage in tl.static_range(4):
+        partner = idx ^ (1 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (col & (1 << stage)) != 0
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        cr = tl.where(upper, pr, xr)
+        ci = tl.where(upper, pi, xi)
+        tw = (col & ((1 << stage) - 1)) * (16 >> (stage + 1))
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        tr = wr * br - wi * bi
+        ti = wr * bi + wi * br
+        xr = tl.where(upper, cr - tr, cr + tr)
+        xi = tl.where(upper, ci - ti, ci + ti)
+
+    for stage in tl.static_range(4):
+        partner = idx ^ (16 << stage)
+        pr = tl.gather(xr, partner, 0)
+        pi = tl.gather(xi, partner, 0)
+        upper = (row & (1 << stage)) != 0
+        br = tl.where(upper, xr, pr)
+        bi = tl.where(upper, xi, pi)
+        cr = tl.where(upper, pr, xr)
+        ci = tl.where(upper, pi, xi)
+        tw = (row & ((1 << stage) - 1)) * (16 >> (stage + 1))
+        wr = tl.load(tw_r_ptr + tw)
+        wi = tl.load(tw_i_ptr + tw)
+        tr = wr * br - wi * bi
+        ti = wr * bi + wi * br
+        xr = tl.where(upper, cr - tr, cr + tr)
+        xi = tl.where(upper, ci - ti, ci + ti)
+
+    dst = (batch * 16 * 16 * 9 + k0 * 16 * 9 + row * 9 + col) * 2
+    keep = col <= 8
+    tl.store(out_ptr + dst, xr, mask=keep)
+    tl.store(out_ptr + dst + 1, xi, mask=keep)
+"""
+    name = f"flagfft_jit_fused_16_real_cube_{direction}_{_dtype_suffix(dtype)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{name}.py"
+    write_text_atomic(module_path, _module_source(source))
+    args = ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
+    metadata = {
+        "module_path": str(module_path),
+        "kernel_name": "fused_16_cube_fft_kernel",
+        "signature": _signature(args, dtype),
+        "num_warps": 4,
+        "num_stages": 1,
+        "batch_per_block": 1,
+        "arg_names": args,
+        "kernel_type": "fused_16_real_cube",
+        "dtype": dtype,
+        "direction": direction,
+    }
+    write_text_atomic(out_dir / f"{name}.json", json.dumps(metadata, sort_keys=True))
+    return metadata
+
+
 def emit_fused_32_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
     """Emit a 32x32 complex plane FFT for the MACA 3D fusion experiment."""
     source = """

@@ -1103,6 +1103,31 @@ def test_fused_16_cube_codegen_resolves_template_parameters(tmp_path) -> None:
     assert "{quarter_r}" not in source
 
 
+def test_fused_16_real_cube_codegen_emits_compact_output(tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_16_real_cube_kernel
+
+    metadata = emit_fused_16_real_cube_kernel(
+        dtype="complex64", direction="forward", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+    assert metadata["kernel_type"] == "fused_16_real_cube"
+    assert "batch * 4096 + i0 * 256 + idx" in source
+    assert "keep = col <= 8" in source
+
+
+def test_fused_16_real_cube_cli_dispatch(tmp_path, monkeypatch, capsys) -> None:
+    from flagfft_codegen.cli import main
+
+    monkeypatch.setattr(sys, "argv", [
+        "jit_source", "--kernel", "fused_16_real_cube", "--dtype", "complex64",
+        "--direction", "forward", "--target", "corex:71:64", "--out-dir", str(tmp_path),
+    ])
+    main()
+    metadata = json.loads(capsys.readouterr().out)
+    assert metadata["kernel_type"] == "fused_16_real_cube"
+    assert Path(metadata["module_path"]).is_file()
+
+
 def test_fused_rect_plane_codegen_emits_16x64_strided_batches(tmp_path) -> None:
     from flagfft_codegen.kernels_small_3d import emit_fused_rect_plane_kernel
 
@@ -1821,6 +1846,7 @@ def test_kernel_registry_is_complete_and_consistent() -> None:
     assert len(registry.KERNEL_NAMES) == len(registry.KERNEL_SPECS)
     assert "leaf_strided_permuted_store" in registry.KERNEL_NAMES
     assert "fused_32_column" in registry.KERNEL_NAMES
+    assert "fused_16_real_cube" in registry.KERNEL_NAMES
     assert set(registry.KERNEL_SPECS) == set(registry.KERNEL_NAMES)
 
     for name, spec in registry.KERNEL_SPECS.items():
