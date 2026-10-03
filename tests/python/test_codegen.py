@@ -131,25 +131,6 @@ def test_fused_32_plane_codegen(dtype, direction, tmp_path) -> None:
     assert source.count("tl.static_range(5)") == 3
 
 
-def test_fused_32_plane_codegen_maca_warps(tmp_path, monkeypatch) -> None:
-    from flagfft_codegen.kernels_small_3d import emit_fused_32_plane_kernel
-    from flagfft_codegen.target import set_codegen_target
-
-    set_codegen_target("maca:80:64")
-    monkeypatch.setenv("FLAGFFT_MACA_3D_C2C_FUSED32_WARPS", "4")
-    metadata = emit_fused_32_plane_kernel(
-        dtype="complex128", direction="inverse", out_dir=tmp_path / "warps4"
-    )
-    assert metadata["num_warps"] == 4
-
-    monkeypatch.setenv("FLAGFFT_MACA_3D_C2C_FUSED32_WARPS", "3")
-    with pytest.raises(ValueError, match="must be 4 or 8"):
-        emit_fused_32_plane_kernel(
-            dtype="complex128", direction="inverse", out_dir=tmp_path / "warps3"
-        )
-    set_codegen_target("")
-
-
 def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     plan = kernels.LeafPlan(
         length=16,

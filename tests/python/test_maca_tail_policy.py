@@ -145,12 +145,6 @@ def test_cache_identity_and_backend_scope(monkeypatch):
         set_maca_tail_mode("all")
 
 
-def test_variant_suffix_tracks_fused32_warp_override(monkeypatch):
-    baseline = variant_suffix()
-    monkeypatch.setenv("FLAGFFT_MACA_3D_C2C_FUSED32_WARPS", "4")
-    assert variant_suffix() != baseline
-
-
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("kernel", ["rader_prepare", "rader_finalize"])
 def test_prime_rader_vector_io_policy_and_override(monkeypatch, dtype, kernel):

@@ -16,8 +16,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_VEC_IO", "FLAGFFT_MACA_BATCH_REAL_PACK2",
                              "FLAGFFT_MACA_BATCH_C2C_PACK2",
                              "FLAGFFT_MACA_BATCH_PRIME_VEC_IO",
-                             "FLAGFFT_MACA_BATCH_C2C_TREE",
-                             "FLAGFFT_MACA_3D_C2C_FUSED32_WARPS"}) {
+                             "FLAGFFT_MACA_BATCH_C2C_TREE"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -171,9 +170,6 @@ TEST_F(TailPolicy, KernelModeIsNarrowAndCacheSeparatesLegacyTree) {
   setenv("FLAGFFT_MACA_3D_C2C_FUSED32", "1", 1);
   EXPECT_NE(baseline, flagfft::maca_tail_codegen_identity("off"));
   unsetenv("FLAGFFT_MACA_3D_C2C_FUSED32");
-  setenv("FLAGFFT_MACA_3D_C2C_FUSED32_WARPS", "4", 1);
-  EXPECT_NE(baseline, flagfft::maca_tail_codegen_identity("off"));
-  unsetenv("FLAGFFT_MACA_3D_C2C_FUSED32_WARPS");
   setenv("FLAGFFT_MACA_3D_FINAL_STORE", "1", 1);
   EXPECT_NE(baseline, flagfft::maca_tail_codegen_identity("off"));
   unsetenv("FLAGFFT_MACA_3D_FINAL_STORE");
