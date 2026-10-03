@@ -3251,7 +3251,7 @@ def _build_leaf_kernel_source_for_io(
                 body.append(f"    batch_base = current_batch * {n}")
         if io_mode in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
-        if io_mode in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c", "packed_r2c", "contiguous_c2r"}:
+        if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}:
             body.append("    output_batch_base = current_batch * output_distance")
         if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
             # `perm_gbase` is the output address of each batch slot's row start
