@@ -848,8 +848,8 @@ def _emit_tiled_transpose3d_jit_kernel(
     if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
     if maca_mode == "pair16x32" and _portable_transpose3d_supported():
-        if dtype != "complex64" or maca_warps != "8" or maca_traversal != "row":
-            raise ValueError("pair16x32 requires complex64, 8 warps and row traversal")
+        if dtype != "complex64" or maca_warps not in {"4", "8"} or maca_traversal != "row":
+            raise ValueError("pair16x32 requires complex64, 4 or 8 warps and row traversal")
         if tuple(sorted((n0, n1, n2))) != (256, 256, 256):
             raise ValueError("pair16x32 is only screened for the MACA 256^3 cube")
         (

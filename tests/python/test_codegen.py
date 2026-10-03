@@ -1057,6 +1057,13 @@ def test_maca_pair16x32_rectangular_transpose_codegen_is_opt_in(tmp_path, monkey
     assert "col_offsets = tile_col * 32 + tl.arange(0, 32)" in source
     assert "for group_offset in tl.static_range(0, 2):" in source
 
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
+    four_warp_metadata = emit._emit_tiled_transpose3d_jit_kernel(
+        n0=256, n1=256, n2=256, order="210", dtype="complex64", out_dir=tmp_path
+    )
+    assert four_warp_metadata["kernel_name"] == metadata["kernel_name"]
+    assert four_warp_metadata["num_warps"] == 4
+
     fp64_metadata = emit._emit_tiled_transpose3d_jit_kernel(
         n0=256, n1=256, n2=256, order="210", dtype="complex128", out_dir=tmp_path
     )
