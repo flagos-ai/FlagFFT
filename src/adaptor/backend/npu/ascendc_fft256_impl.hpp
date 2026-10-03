@@ -20,7 +20,7 @@ using namespace AscendC;
 
 namespace {
 constexpr uint32_t kN = 256;
-constexpr uint32_t kRealBlocksPerLaunch = 1;
+constexpr uint32_t kRealBlocksPerLaunch = 7;
 constexpr uint32_t kStages = 8;
 constexpr uint32_t kStageIndexBase = 2 * kN;
 constexpr uint32_t kOutputIndexBase = kStageIndexBase + 2 * kStages * kN;
