@@ -131,6 +131,28 @@ def test_fused_32_plane_codegen(dtype, direction, tmp_path) -> None:
     assert source.count("tl.static_range(5)") == 3
 
 
+@pytest.mark.parametrize("direction", ["forward", "inverse"])
+def test_fused_256_transpose_codegen(direction, tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_256_transpose_kernel
+
+    metadata = emit_fused_256_transpose_kernel(
+        dtype="complex64", direction=direction, out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+    assert metadata["kernel_name"] == "fused_256_transpose_kernel"
+    assert metadata["kernel_type"] == "fused_256_transpose"
+    assert metadata["num_warps"] == 8
+    assert "tl.arange(0, 4096)" in source
+    assert "tl.trans(tl.reshape(xr, (16, 256)))" in source
+
+
+def test_fused_256_transpose_rejects_complex128(tmp_path) -> None:
+    from flagfft_codegen.kernels_small_3d import emit_fused_256_transpose_kernel
+
+    with pytest.raises(ValueError, match="complex64 only"):
+        emit_fused_256_transpose_kernel(dtype="complex128", direction="forward", out_dir=tmp_path)
+
+
 def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     plan = kernels.LeafPlan(
         length=16,
@@ -1402,8 +1424,8 @@ def test_jit_csv_parsing_accepts_empty_and_populated_lists(jit_source) -> None:
 def test_kernel_registry_is_complete_and_consistent() -> None:
     import flagfft_codegen.registry as registry
 
-    assert len(registry.KERNEL_NAMES) == 49
-    assert len(set(registry.KERNEL_NAMES)) == 49
+    assert len(registry.KERNEL_NAMES) == 50
+    assert len(set(registry.KERNEL_NAMES)) == 50
     assert set(registry.KERNEL_SPECS) == set(registry.KERNEL_NAMES)
 
     for name, spec in registry.KERNEL_SPECS.items():

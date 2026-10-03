@@ -34,6 +34,7 @@ from .emit import (
 )
 from .metadata import _csv_ints
 from .kernels_small_3d import (
+    emit_fused_256_transpose_kernel,
     emit_fused_16_plane_kernel,
     emit_fused_16_real_plane_kernel,
     emit_fused_32_plane_kernel,
@@ -331,6 +332,7 @@ def main() -> None:
         small_3d_emitters = {
             "fused_16_plane": emit_fused_16_plane_kernel,
             "fused_32_plane": emit_fused_32_plane_kernel,
+            "fused_256_transpose": emit_fused_256_transpose_kernel,
             "fused_16_real_plane": emit_fused_16_real_plane_kernel,
             "fused_32_real_plane": emit_fused_32_real_plane_kernel,
         }

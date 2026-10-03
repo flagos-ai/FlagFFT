@@ -1013,6 +1013,40 @@ struct CompiledRaw3DFused32PlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 
+// Experimental C2C path: fuse the contiguous 256-point FFT with the first
+// (n0,n1,n2)->(n0,n2,n1) transpose using 16-row tiles.
+struct CompiledRaw3DFusedAxisTransposeNode final : CompiledRawNode {
+  CompiledRaw3DFusedAxisTransposeNode(int64_t n0,
+                                      int64_t n1,
+                                      int64_t n2,
+                                      std::shared_ptr<JitKernel> fused_n2_transpose,
+                                      std::shared_ptr<CompiledRawNode> n1_fft,
+                                      std::shared_ptr<CompiledRawNode> n0_fft,
+                                      std::shared_ptr<JitKernel> perm_210,
+                                      std::shared_ptr<JitKernel> perm_201,
+                                      DeviceAllocation temp1,
+                                      DeviceAllocation temp2,
+                                      DeviceAllocation tw_r,
+                                      DeviceAllocation tw_i);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n0;
+  int64_t n1;
+  int64_t n2;
+  std::shared_ptr<JitKernel> fused_n2_transpose;
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<JitKernel> perm_210;
+  std::shared_ptr<JitKernel> perm_201;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
+  DeviceAllocation tw_r;
+  DeviceAllocation tw_i;
+};
+
 // Experimental real 32-cube path: fuse the contiguous real axis and middle
 // complex axis in each plane, then apply the outer strided axis.
 struct CompiledRaw3DFusedRealPlaneNode final : CompiledRawNode {
