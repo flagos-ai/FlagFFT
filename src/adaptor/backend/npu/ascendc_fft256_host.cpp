@@ -24,6 +24,8 @@
 #include <aclrtlaunch_flagfft_npu_fft256_real_forward_group8.h>
 #include <aclrtlaunch_flagfft_npu_fft256_real_inverse_group8.h>
 
+#include <cstdio>
+
 namespace flagfft::adaptor::npu {
 
 flagfftResult launch_ascendc_fft256(DevicePtr input,
@@ -54,6 +56,10 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
                                      logical_block_dim > kMaxRealBlocksPerLaunch
       ? kMaxRealBlocksPerLaunch
       : logical_block_dim;
+  if (mode == 1 || mode == 2) {
+    std::fprintf(stderr, "fft256 real launch mode=%d transforms=%d logical_blocks=%u block_dim=%u\\n",
+                 mode, transform_count, logical_block_dim, block_dim);
+  }
   uint32_t status = 0;
   if (mode == 1) {
     status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft256_real_forward_group8)(
