@@ -805,14 +805,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
                            output_row_stride % group_size != 0)) {
     return FLAGFFT_INVALID_SIZE;
   }
-  // The fused real row kernel is tuned for the 40 AIVs on Ascend 910B4. A
-  // larger grid dimension produces incorrect results on that target, so keep
-  // each real launch within one AIV wave. The loop below covers larger batches.
-  constexpr int64_t kRealAivBlocksPerLaunch = 40;
-  const int64_t launch_blocks = mode == NpuAivFFT256Mode::Complex
-      ? block_limit_per_launch()
-      : std::min(block_limit_per_launch(), kRealAivBlocksPerLaunch);
-  const int64_t batch_chunk = launch_blocks * group_size;
+  const int64_t batch_chunk = block_limit_per_launch() * group_size;
   if (batch_chunk <= 0) return FLAGFFT_INVALID_SIZE;
   const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
   const int64_t real_bytes = element_bytes / 2;
