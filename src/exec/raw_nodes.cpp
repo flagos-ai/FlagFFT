@@ -3772,7 +3772,35 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
                  static_cast<std::streamsize>(row_input.size() * sizeof(float)));
       if (!dump) throw std::runtime_error("failed to write NPU 3D C2R row input dump");
     }
-    return n2_real_fft->execute(has_perm_201 ? temp1.get() : temp2.get(), output, n2_context);
+    result = n2_real_fft->execute(has_perm_201 ? temp1.get() : temp2.get(), output, n2_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    const char *dump_c2r_output = std::getenv("FLAGFFT_NPU_3D_DEBUG_DUMP_C2R_OUTPUT");
+    if (inverse && context.request.device_type == "npu" && dump_c2r_output != nullptr &&
+        std::string(dump_c2r_output) == "1") {
+      const aclError sync_status =
+          aclrtSynchronizeStream(reinterpret_cast<aclrtStream>(context.stream));
+      if (sync_status != ACL_SUCCESS) {
+        throw std::runtime_error("failed to synchronize before NPU C2R output dump");
+      }
+      const std::size_t output_elements =
+          static_cast<std::size_t>(batch * n0 * n1 * n2);
+      std::vector<float> output_snapshot(output_elements);
+      const aclError copy_status = aclrtMemcpy(output_snapshot.data(),
+                                               output_snapshot.size() * sizeof(float),
+                                               reinterpret_cast<void *>(output),
+                                               output_snapshot.size() * sizeof(float),
+                                               ACL_MEMCPY_DEVICE_TO_HOST);
+      if (copy_status != ACL_SUCCESS) {
+        throw std::runtime_error("failed to copy NPU 3D C2R output to host");
+      }
+      const char *path = std::getenv("FLAGFFT_NPU_3D_DEBUG_C2R_OUTPUT_PATH");
+      std::ofstream dump(path != nullptr ? path : "/tmp/npu3d_c2r_output.bin",
+                         std::ios::binary | std::ios::trunc);
+      dump.write(reinterpret_cast<const char *>(output_snapshot.data()),
+                 static_cast<std::streamsize>(output_snapshot.size() * sizeof(float)));
+      if (!dump) throw std::runtime_error("failed to write NPU 3D C2R output dump");
+    }
+    return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D real RTRT execute failed: %s\n", e.what());
     std::fflush(stderr);
