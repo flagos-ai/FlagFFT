@@ -140,21 +140,6 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // slightly improving the direct C550 2048-point 3D axis. Keep it off the
     // Bluestein convolution used by the 997-point transform.
     if (context.device_arch == "102" && n == 2048 && context.requested_n == n) {
-      const bool direct_single_c2c = context.real_transform_kind.empty() &&
-                                     context.input_dtype == context.output_dtype &&
-                                     context.batch == 8192;
-      const char *factor_order = std::getenv("FLAGFFT_MACA_3D_N2048_FACTOR_ORDER");
-      if (factor_order != nullptr && std::string(factor_order) != "default" &&
-          std::string(factor_order) != "auto") {
-        if (direct_single_c2c && std::string(factor_order) == "81616") {
-          // Keep the generated lane block at 256, matching the default, while
-          // testing whether leading with radix-8 reduces stage exchange cost.
-          return {8, 16, 16};
-        }
-        throw std::runtime_error(
-            "FLAGFFT_MACA_3D_N2048_FACTOR_ORDER supports only 81616 for the "
-            "single-batch direct rank-3 C2C long axis");
-      }
       return {16, 8, 16};
     }
   }

@@ -137,9 +137,6 @@ def test_cache_identity_and_backend_scope(monkeypatch):
             monkeypatch.setenv(ENV_NAMES[0], value)
         identities.add(variant_suffix(root=True))
     assert len(identities) == 4
-    baseline = variant_suffix(root=True)
-    monkeypatch.setenv("FLAGFFT_MACA_3D_N2048_FACTOR_ORDER", "81616")
-    assert variant_suffix(root=True) != baseline
     set_maca_tail_mode("p4w4")
     set_codegen_target("cuda:80:32")
     assert variant_suffix(root=True) == ""
