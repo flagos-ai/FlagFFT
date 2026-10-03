@@ -79,8 +79,7 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
         reinterpret_cast<uint8_t *>(output),
         reinterpret_cast<uint8_t *>(indices),
         reinterpret_cast<uint8_t *>(twiddles),
-        static_cast<uint32_t>(transform_count),
-        block_dim);
+        static_cast<uint32_t>(transform_count));
   } else if (mode == 2) {
     status = ACLRT_LAUNCH_KERNEL(flagfft_npu_fft256_real_inverse_group8)(
         block_dim,
@@ -89,8 +88,7 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
         reinterpret_cast<uint8_t *>(output),
         reinterpret_cast<uint8_t *>(indices),
         reinterpret_cast<uint8_t *>(twiddles),
-        static_cast<uint32_t>(transform_count),
-        block_dim);
+        static_cast<uint32_t>(transform_count));
   } else if (group_size == 8) {
     if (pair_mode) {
       if (transposed_store) {

@@ -18,9 +18,8 @@ extern "C" __global__ __aicore__ void flagfft_npu_fft256_real_forward_group8(GM_
                                                                               GM_ADDR output,
                                                                               GM_ADDR indices,
                                                                               GM_ADDR twiddles,
-                                                                              uint32_t transform_count,
-                                                                              uint32_t real_block_count) {
+                                                                              uint32_t transform_count) {
   Fft256Aiv<8, true, false, true, false> op;
-  op.Init(input, output, indices, twiddles, transform_count, 0, 0, real_block_count);
+  op.Init(input, output, indices, twiddles, transform_count);
   op.Process();
 }
