@@ -50,7 +50,7 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
       transform_count % group_size != 0) {
     return FLAGFFT_INVALID_SIZE;
   }
-  constexpr uint32_t kMaxRealBlocksPerLaunch = 1;
+  constexpr uint32_t kMaxRealBlocksPerLaunch = 20;
   const uint32_t logical_block_dim = static_cast<uint32_t>(transform_count / group_size);
   const uint32_t block_dim = (mode == 1 || mode == 2) &&
                                      logical_block_dim > kMaxRealBlocksPerLaunch
