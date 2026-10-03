@@ -70,7 +70,15 @@ class Fft256Aiv {
     if (transform >= transform_count_) return;
 
     if constexpr (PairButterflies) {
-      ProcessPairGroup8(transform);
+      if constexpr (RealForward || RealInverse) {
+        const uint32_t block_stride = GetBlockNum() * GroupSize;
+        if (block_stride == 0) return;
+        for (uint32_t row = transform; row < transform_count_; row += block_stride) {
+          ProcessPairGroup8(row);
+        }
+      } else {
+        ProcessPairGroup8(transform);
+      }
       return;
     }
 
@@ -336,6 +344,7 @@ class Fft256Aiv {
       GlobalTensor<float> dst;
       dst.SetGlobalBuffer(output_ptr_ + transform * 2 * half);
       DataCopy(dst, output_local, 2 * half * GroupSize);
+      PipeBarrier<PIPE_ALL>();
     } else if constexpr (RealInverse) {
       Gather(output_local, current_real, index_local[output_index_base], 0, group_n);
       PipeBarrier<PIPE_ALL>();
