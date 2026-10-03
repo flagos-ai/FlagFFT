@@ -523,23 +523,26 @@ def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
     # pack=16 (4 warps / 256 threads) for the validated 128x2048x64 C2C
     # first-store path, across single/batch and both directions. The smaller
     # block is the likely source; hardware occupancy counters were not
-    # collected. Keep this change to rank-3 FP32 length-64 stores; length 128
-    # and ordinary contiguous leaves retain their existing pack choices.
-    final_store_cube = (
+    # collected. Keep the validated default narrow; cube permuted-store
+    # candidates can select an explicit pack through the override below.
+    cube_permuted_store = (
         plan.length == 256
-        and os.getenv("FLAGFFT_MACA_3D_FINAL_STORE") == "1"
+        and (
+            os.getenv("FLAGFFT_MACA_3D_FINAL_STORE") == "1"
+            or os.getenv("FLAGFFT_MACA_3D_CUBE_FIRST_STORE") == "1"
+        )
     )
     if (
         _declared_backend() == "maca"
         and maca_3d_default_enabled()
         and plan.dtype == "complex64"
-        and (plan.length in {64, 128} or final_store_cube)
+        and (plan.length in {64, 128} or cube_permuted_store)
     ):
         target_pack = 8 if plan.length == 64 else 16 if plan.length == 128 else 4
         override = os.getenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
         if override is not None and override != "auto":
             allowed = {"1", "2", "4", "8", "16", "32"}
-            if final_store_cube:
+            if cube_permuted_store:
                 allowed = {"1", "2", "4", "8"}
             if override not in allowed:
                 raise ValueError(

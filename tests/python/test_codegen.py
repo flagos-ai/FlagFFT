@@ -179,6 +179,46 @@ def test_permuted_store_launch_grid_matches_generated_batch_pack(kernels, jit_so
     assert "batch_id = pid * 4" in source
 
 
+def test_maca_cube_first_store_honors_permuted_store_pack(monkeypatch) -> None:
+    from flagfft_codegen import kernels_common
+    from flagfft_codegen.backend_profile import (
+        BackendProfile,
+        reset_profile,
+        set_profile,
+    )
+    from flagfft_codegen.target import reset_maca_3d_default, set_maca_3d_default
+
+    monkeypatch.setenv("FLAGFFT_MACA_3D_CUBE_FIRST_STORE", "1")
+    monkeypatch.setenv("FLAGFFT_MACA_3D_PERMSTORE_PACK", "2")
+    profile_token = set_profile(
+        BackendProfile.from_device(
+            {
+                "backend": "maca",
+                "device_arch": "102",
+                "warp_size": 64,
+                "max_threads_per_block": 512,
+                "max_dynamic_shared_memory": 65536,
+            }
+        )
+    )
+    policy_token = set_maca_3d_default(True)
+    plan = kernels_common.LeafPlan(
+        length=256,
+        factors=(4, 4, 4, 4),
+        remainder=1,
+        lanes=64,
+        num_warps=2,
+        generic_radices=(),
+        smem_size=256,
+        dtype="complex64",
+    )
+    try:
+        assert kernels_common.permuted_store_batch_pack_for(plan) == 2
+    finally:
+        reset_maca_3d_default(policy_token)
+        reset_profile(profile_token)
+
+
 @pytest.mark.parametrize("pack", [1, 4])
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 def test_maca_packed_permuted_store_is_fp32_only(
