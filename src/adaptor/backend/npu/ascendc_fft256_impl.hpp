@@ -54,7 +54,10 @@ class Fft256Aiv {
         (GroupSize == 1 ? kLocalIndexCount : 5 * group_n);
     constexpr uint32_t twiddle_count = PairButterflies ? group_n :
         (GroupSize == 1 ? kTwiddleCount : 2 * group_n);
-    pipe_.InitBuffer(input_buf_, 2 * group_n * sizeof(float));
+    constexpr uint32_t input_float_count = RealInverse
+        ? 2 * (kN / 2 + 1) * GroupSize
+        : 2 * group_n;
+    pipe_.InitBuffer(input_buf_, input_float_count * sizeof(float));
     constexpr uint32_t work_vectors = PairButterflies ? 8 : 11;
     static_assert(!(RealForward && RealInverse));
     static_assert((!RealForward && !RealInverse) ||
