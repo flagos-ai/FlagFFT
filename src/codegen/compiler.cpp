@@ -3217,6 +3217,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 #endif
 
 #if defined(FLAGFFT_BACKEND_NPU)
+  const bool npu_fused32_plane = request.device_type == "npu" && request.origin_rank == 3 &&
+      request.real_transform_kind.empty() && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && n0 == 32 && n1 == 32 && n2 == 32 &&
+      batch <= 4 && npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_FUSED32_PLANE", false);
+  if (npu_fused32_plane) {
+    std::vector<float> tw_r(16);
+    std::vector<float> tw_i(16);
+    const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 16; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
+      tw_r[static_cast<std::size_t>(k)] = static_cast<float>(std::cos(angle));
+      tw_i[static_cast<std::size_t>(k)] = static_cast<float>(std::sin(angle));
+    }
+    auto plane_fft = compile_kernel(KernelKey::fused_32_plane(
+        triton_target_for_request(request), request.direction, request.input_dtype));
+    auto outer_fft = make_npu_aiv_fft_small_child(n0_request, n0, n1 * n2, 4);
+    DeviceAllocation temp = adaptor::Memory(
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+    return std::make_shared<CompiledRaw3DFused32PlaneNode>(
+        std::move(plane_fft), std::move(outer_fft), std::move(temp),
+        adaptor::Memory::from_floats(tw_r), adaptor::Memory::from_floats(tw_i));
+  }
+
   // NPU planner variants can encode these axes as Stockham instead of leaves;
   // the measured AIV codelet implements the complete small transform either way.
   // Keep the strided schedule separately selectable so batch shapes can be
@@ -3841,6 +3864,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     n0_request.batch = batch * n1 * half;
     n0_request.real_transform_kind.clear();
     n0_request.real_transform = false;
+
+    const bool npu_fused32_real_plane = n0 == 32 && batch <= 4 &&
+        npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED32_PLANE", false);
+    if (npu_fused32_real_plane) {
+      std::vector<float> tw_r(16);
+      std::vector<float> tw_i(16);
+      const double sign = inverse ? 1.0 : -1.0;
+      for (int64_t k = 0; k < 16; ++k) {
+        const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
+        tw_r[static_cast<std::size_t>(k)] = static_cast<float>(std::cos(angle));
+        tw_i[static_cast<std::size_t>(k)] = static_cast<float>(std::sin(angle));
+      }
+      auto plane_fft = compile_kernel(KernelKey::fused_32_real_plane(
+          triton_target_for_request(request), request.direction, request.input_dtype));
+      auto outer_fft = make_npu_aiv_fft_small_child(
+          n0_request, n0, n1 * half, group_size_for(n0, n1 * half));
+      DeviceAllocation temp = adaptor::Memory(
+          static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype)));
+      return std::make_shared<CompiledRaw3DRealFusedPlaneNode>(
+          n1, inverse, std::move(plane_fft), std::move(outer_fft), std::move(temp),
+          adaptor::Memory::from_floats(tw_r), adaptor::Memory::from_floats(tw_i));
+    }
 
     const int64_t preferred_group = n2 == 16 ? 8 : 4;
     auto n2_real_fft = make_npu_aiv_fft_small_child(
