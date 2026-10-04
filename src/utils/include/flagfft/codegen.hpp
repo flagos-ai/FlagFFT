@@ -221,6 +221,7 @@ struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
 struct CompiledRawNpuAivFFTSmallNode final : CompiledRawNode {
   CompiledRawNpuAivFFTSmallNode(int64_t length,
                                 int64_t stride,
+                                int64_t output_stride,
                                 int64_t group_size,
                                 std::shared_ptr<DeviceAllocation> indices,
                                 std::shared_ptr<DeviceAllocation> twiddles,
@@ -232,6 +233,7 @@ struct CompiledRawNpuAivFFTSmallNode final : CompiledRawNode {
 
   int64_t length;
   int64_t stride;
+  int64_t output_stride;
   int64_t group_size;
   NpuAivFFTSmallMode mode;
   std::shared_ptr<DeviceAllocation> indices;
@@ -1461,7 +1463,8 @@ struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
                             DeviceAllocation temp1,
                             DeviceAllocation temp2,
                             std::vector<DeviceAllocation> npu_transpose_indices = {},
-                            bool npu_fused_outer_stores = false);
+                            bool npu_fused_outer_stores = false,
+                            bool npu_fused_small_final_store = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1481,6 +1484,7 @@ struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
   DeviceAllocation temp2;
   std::vector<DeviceAllocation> npu_transpose_indices;
   bool npu_fused_outer_stores;
+  bool npu_fused_small_final_store;
 };
 
 struct CompiledRaw3DR2CNode final : CompiledRawNode {

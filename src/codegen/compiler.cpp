@@ -857,7 +857,8 @@ namespace {
   void build_npu_aiv_fft_small_tables(const FFTRequest &request,
                                       int64_t n,
                                       int64_t group_size,
-                                      bool strided_columns,
+                                      bool strided_input,
+                                      bool strided_output,
                                       std::vector<uint32_t> &indices,
                                       std::vector<float> &twiddles,
                                       NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex) {
@@ -896,10 +897,11 @@ namespace {
           twiddles[twiddle_count + destination] = reversed > n / 2 ? -1.0f : 1.0f;
         } else {
           const int64_t source_complex =
-              strided_columns ? reversed * group_size + group : group * n + reversed;
+              strided_input ? reversed * group_size + group : group * n + reversed;
           indices[destination] =
-              static_cast<uint32_t>(strided_columns && group_size == 1 ? reversed * 8 * sizeof(float)
-                                                                       : source_complex * 2 * sizeof(float));
+              static_cast<uint32_t>(strided_input && group_size == 1
+                                        ? reversed * 8 * sizeof(float)
+                                        : source_complex * 2 * sizeof(float));
         }
 
         for (int64_t stage = 0; stage < stages; ++stage) {
@@ -938,7 +940,7 @@ namespace {
       for (int64_t i = 0; i < 2 * group_n; ++i) {
         const int64_t component = i % 2;
         int64_t source_index = 0;
-        if (strided_columns) {
+        if (strided_output) {
           const int64_t row = i / (2 * group_size);
           const int64_t column = (i / 2) % group_size;
           source_index = column * n + row + component * group_n;
@@ -957,16 +959,20 @@ namespace {
       int64_t n,
       int64_t stride,
       int64_t group_size,
-      NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex) {
+      NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex,
+      int64_t output_stride = -1) {
+    if (output_stride < 0) output_stride = stride;
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
-    build_npu_aiv_fft_small_tables(request, n, group_size, stride != 1, host_indices, host_twiddles, mode);
+    build_npu_aiv_fft_small_tables(request, n, group_size, stride != 1, output_stride != 1,
+                                   host_indices, host_twiddles, mode);
     auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
     indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
     auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
     twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
     return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n,
                                                            stride,
+                                                           output_stride,
                                                            group_size,
                                                            std::move(indices),
                                                            std::move(twiddles),
@@ -4353,6 +4359,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_STORE") &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4") &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED_STORES");
+  const bool npu_fused_small_final_store = npu_aiv_small_real && batch == 4 &&
+      n0 == 32 && n1 == 32 && n2 == 32 &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_SMALL_FUSED_FINAL_STORE", false);
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
   // The middle store removes one full-cube transpose for single 256^3 R2C.
   // Batch four and the elongated shape measured slower, so keep this narrow.
@@ -4480,7 +4489,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
              : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, false));
   auto n0_fft = npu_fused_outer_stores
       ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, true)
-      : (fused_n0
+      : (npu_fused_small_final_store
+             ? make_npu_aiv_fft_small_child(
+                   n0_request, n0, 1, 4, NpuAivFFTSmallMode::Complex, n1 * half)
+             : fused_n0
              ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
              : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, false));
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -4536,7 +4548,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
                                                      std::move(temp1),
                                                      std::move(temp2),
                                                      std::move(npu_transpose_indices),
-                                                     npu_fused_outer_stores);
+                                                     npu_fused_outer_stores,
+                                                     npu_fused_small_final_store);
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(

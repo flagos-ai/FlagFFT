@@ -31,6 +31,7 @@ class FftSmallAiv {
                               GM_ADDR twiddles,
                               uint32_t block_count,
                               uint32_t stride,
+                              uint32_t output_stride,
                               uint32_t mode) {
     input_ptr_ = reinterpret_cast<__gm__ float *>(input);
     output_ptr_ = reinterpret_cast<__gm__ float *>(output);
@@ -38,12 +39,14 @@ class FftSmallAiv {
     twiddles_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(twiddles));
     block_count_ = block_count;
     stride_ = stride;
+    output_stride_ = output_stride;
     mode_ = mode;
 
     constexpr uint32_t kGroupN = N * GroupSize;
     constexpr uint32_t kIndexCount = (3 + 2 * Stages) * kGroupN;
     constexpr uint32_t kTwiddleCount = 2 * Stages * kGroupN;
-    const uint32_t padded_capacity = GroupSize == 1 && stride_ != 1 ? N * 8 : 2 * kGroupN;
+    const uint32_t padded_capacity =
+        GroupSize == 1 && (stride_ != 1 || output_stride_ != 1) ? N * 8 : 2 * kGroupN;
     pipe_.InitBuffer(input_buf_, padded_capacity * sizeof(float));
     pipe_.InitBuffer(work_buf_, 11 * kGroupN * sizeof(float));
     pipe_.InitBuffer(index_buf_,
@@ -60,8 +63,12 @@ class FftSmallAiv {
     constexpr uint32_t kTwiddleCount = 2 * Stages * kGroupN;
     constexpr uint32_t kHalf = N / 2 + 1;
     const uint32_t block = GetBlockIdx();
-    if (block >= block_count_ || mode_ > kModeRealInverse || (mode_ != kModeComplex && stride_ != 1) ||
-        (stride_ != 1 && (stride_ < GroupSize || stride_ % GroupSize != 0))) {
+    if (block >= block_count_ || mode_ > kModeRealInverse ||
+        (mode_ != kModeComplex && (stride_ != 1 || output_stride_ != 1)) || stride_ == 0 ||
+        output_stride_ == 0 ||
+        (stride_ != 1 && (stride_ < GroupSize || stride_ % GroupSize != 0)) ||
+        (output_stride_ != 1 &&
+         (output_stride_ < GroupSize || output_stride_ % GroupSize != 0))) {
       return;
     }
 
@@ -69,6 +76,10 @@ class FftSmallAiv {
     const uint32_t source_base = stride_ == 1
                                      ? transform_base * N
                                      : (transform_base / stride_) * N * stride_ + transform_base % stride_;
+    const uint32_t output_base = output_stride_ == 1
+                                     ? transform_base * N
+                                     : (transform_base / output_stride_) * N * output_stride_ +
+                                           transform_base % output_stride_;
     LocalTensor<float> input_local = input_buf_.Get<float>();
     if (mode_ == kModeRealForward) {
       GlobalTensor<float> src;
@@ -177,7 +188,7 @@ class FftSmallAiv {
         GlobalTensor<float> dst;
         dst.SetGlobalBuffer(output_ptr_ + transform_base * kHalf * 2);
         DataCopy(dst, output_local, output_count);
-      } else if (stride_ == 1) {
+      } else if (output_stride_ == 1) {
         GlobalTensor<float> dst;
         dst.SetGlobalBuffer(output_ptr_ + transform_base * N * 2);
         DataCopy(dst, output_local, output_count);
@@ -191,18 +202,19 @@ class FftSmallAiv {
           }
           PipeBarrier<PIPE_ALL>();
           GlobalTensor<uint64_t> dst;
-          dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + source_base * 2));
+          dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + output_base * 2));
           LocalTensor<uint64_t> output_complex = input_local.ReinterpretCast<uint64_t>();
-          const DataCopyExtParams params(N, sizeof(uint64_t), 0, (stride_ - 1) * sizeof(uint64_t), 0);
+          const DataCopyExtParams params(
+              N, sizeof(uint64_t), 0, (output_stride_ - 1) * sizeof(uint64_t), 0);
           DataCopyPad(dst, output_complex, params);
         } else {
           GlobalTensor<uint64_t> dst;
-          dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + source_base * 2));
+          dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t *>(output_ptr_ + output_base * 2));
           LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
           const DataCopyExtParams params(N,
                                          GroupSize * sizeof(uint64_t),
                                          0,
-                                         (stride_ - GroupSize) * sizeof(uint64_t),
+                                         (output_stride_ - GroupSize) * sizeof(uint64_t),
                                          0);
           DataCopyPad(dst, output_complex, params);
         }
@@ -224,5 +236,6 @@ class FftSmallAiv {
   GlobalTensor<float> twiddles_;
   uint32_t block_count_ = 0;
   uint32_t stride_ = 1;
+  uint32_t output_stride_ = 1;
   uint32_t mode_ = kModeComplex;
 };

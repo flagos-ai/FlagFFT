@@ -9,8 +9,9 @@ extern "C" __global__ __aicore__ void flagfft_npu_fft16(GM_ADDR input,
                                                         GM_ADDR twiddles,
                                                         uint32_t block_count,
                                                         uint32_t stride,
+                                                        uint32_t output_stride,
                                                         uint32_t mode) {
   FftSmallAiv<16, 4, 8> op;
-  op.Init(input, output, indices, twiddles, block_count, stride, mode);
+  op.Init(input, output, indices, twiddles, block_count, stride, output_stride, mode);
   op.Process();
 }

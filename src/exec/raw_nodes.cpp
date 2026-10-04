@@ -533,12 +533,14 @@ CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(int64_t stride,
 
 CompiledRawNpuAivFFTSmallNode::CompiledRawNpuAivFFTSmallNode(int64_t length,
                                                              int64_t stride,
+                                                             int64_t output_stride,
                                                              int64_t group_size,
                                                              std::shared_ptr<DeviceAllocation> indices,
                                                              std::shared_ptr<DeviceAllocation> twiddles,
                                                              NpuAivFFTSmallMode mode)
     : length(length),
       stride(stride),
+      output_stride(output_stride),
       group_size(group_size),
       mode(mode),
       indices(std::move(indices)),
@@ -547,7 +549,9 @@ CompiledRawNpuAivFFTSmallNode::CompiledRawNpuAivFFTSmallNode(int64_t length,
 
 std::string CompiledRawNpuAivFFTSmallNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawNpuAivFFTSmall(n=" << length << ", stride=" << stride << ", group_size=" << group_size;
+  oss << "CompiledRawNpuAivFFTSmall(n=" << length << ", stride=" << stride;
+  if (output_stride != stride) oss << ", output_stride=" << output_stride;
+  oss << ", group_size=" << group_size;
   if (mode == NpuAivFFTSmallMode::RealForward) oss << ", mode=r2c";
   if (mode == NpuAivFFTSmallMode::RealInverse) oss << ", mode=c2r";
   oss << ")";
@@ -560,8 +564,11 @@ flagfftResult CompiledRawNpuAivFFTSmallNode::execute(adaptor::DevicePtr input,
   const int64_t preferred_group = length == 16 ? 8 : length == 32 ? 4 : 0;
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
       (length != 16 && length != 32) || (group_size != 1 && group_size != preferred_group) || stride <= 0 ||
-      (mode != NpuAivFFTSmallMode::Complex && stride != 1) ||
+      output_stride <= 0 ||
+      (mode != NpuAivFFTSmallMode::Complex && (stride != 1 || output_stride != 1)) ||
       (stride != 1 && (stride < group_size || stride % group_size != 0)) || context.batch % group_size != 0 ||
+      (output_stride != 1 &&
+       (output_stride < group_size || output_stride % group_size != 0)) ||
       indices == nullptr || twiddles == nullptr) {
     return FLAGFFT_INVALID_SIZE;
   }
@@ -586,7 +593,10 @@ flagfftResult CompiledRawNpuAivFFTSmallNode::execute(adaptor::DevicePtr input,
       input_offset = stride == 1 ? transform_offset * length * complex_bytes
                                  : (transform_offset / stride) * length * stride * complex_bytes +
                                        (transform_offset % stride) * complex_bytes;
-      output_offset = input_offset;
+      output_offset = output_stride == 1
+                          ? transform_offset * length * complex_bytes
+                          : (transform_offset / output_stride) * length * output_stride * complex_bytes +
+                                (transform_offset % output_stride) * complex_bytes;
     }
     const flagfftResult result = adaptor::npu::launch_ascendc_fft_small(static_cast<int32_t>(length),
                                                                         input + input_offset,
@@ -596,6 +606,7 @@ flagfftResult CompiledRawNpuAivFFTSmallNode::execute(adaptor::DevicePtr input,
                                                                         static_cast<int32_t>(chunk_blocks),
                                                                         static_cast<int32_t>(group_size),
                                                                         static_cast<int32_t>(stride),
+                                                                        static_cast<int32_t>(output_stride),
                                                                         static_cast<int32_t>(mode),
                                                                         context.stream);
     if (result != FLAGFFT_SUCCESS) return result;
@@ -4109,7 +4120,8 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
     DeviceAllocation temp1,
     DeviceAllocation temp2,
     std::vector<DeviceAllocation> npu_transpose_indices,
-    bool npu_fused_outer_stores)
+    bool npu_fused_outer_stores,
+    bool npu_fused_small_final_store)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -4123,7 +4135,8 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
       temp1(std::move(temp1)),
       temp2(std::move(temp2)),
       npu_transpose_indices(std::move(npu_transpose_indices)),
-      npu_fused_outer_stores(npu_fused_outer_stores) {
+      npu_fused_outer_stores(npu_fused_outer_stores),
+      npu_fused_small_final_store(npu_fused_small_final_store) {
 }
 
 std::string CompiledRaw3DRealRTRTNode::describe() const {
@@ -4135,6 +4148,7 @@ std::string CompiledRaw3DRealRTRTNode::describe() const {
       << ", fused_n0=" << (perm_201 == nullptr && npu_transpose_indices.empty())
       << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
       << ", npu_fused_outer_stores=" << npu_fused_outer_stores
+      << ", npu_fused_small_final_store=" << npu_fused_small_final_store
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
@@ -4160,7 +4174,8 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n0_context {n0_request, context.stream, batch * n1 * half};
     const bool has_perm_021 = perm_021 != nullptr || !npu_transpose_indices.empty();
     const bool has_perm_210 = perm_210 != nullptr || !npu_transpose_indices.empty();
-    const bool has_perm_201 = perm_201 != nullptr || !npu_transpose_indices.empty();
+    const bool has_perm_201 = !npu_fused_small_final_store &&
+        (perm_201 != nullptr || !npu_transpose_indices.empty());
     auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
                        adaptor::DevicePtr source,
                        adaptor::DevicePtr destination,
