@@ -24,6 +24,8 @@
 #include <aclrtlaunch_flagfft_npu_fft256_real_forward_group8.h>
 #include <aclrtlaunch_flagfft_npu_fft256_real_inverse_group8.h>
 
+#include <cstdlib>
+
 namespace flagfft::adaptor::npu {
 
 flagfftResult launch_ascendc_fft256(DevicePtr input,
@@ -48,12 +50,23 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
       transform_count % group_size != 0) {
     return FLAGFFT_INVALID_SIZE;
   }
-  constexpr uint32_t kMaxRealBlocksPerLaunch = 32;
+  constexpr uint32_t kDefaultMaxRealBlocksPerLaunch = 32;
   const uint32_t logical_block_dim = static_cast<uint32_t>(transform_count / group_size);
+  uint32_t max_real_blocks = kDefaultMaxRealBlocksPerLaunch;
+  if (mode == 1 || mode == 2) {
+    if (const char *setting = std::getenv("FLAGFFT_NPU_3D_REAL_BLOCKS")) {
+      char *end = nullptr;
+      const unsigned long parsed = std::strtoul(setting, &end, 10);
+      if (end == setting || *end != '\0' || parsed == 0 || parsed > 256) {
+        return FLAGFFT_INVALID_SIZE;
+      }
+      max_real_blocks = static_cast<uint32_t>(parsed);
+    }
+  }
   const uint32_t block_dim = (mode == 1 || mode == 2)
-      ? (logical_block_dim < kMaxRealBlocksPerLaunch
+      ? (logical_block_dim < max_real_blocks
              ? logical_block_dim
-             : kMaxRealBlocksPerLaunch)
+             : max_real_blocks)
       : logical_block_dim;
   uint32_t status = 0;
   if (mode == 1) {
