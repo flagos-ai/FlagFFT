@@ -4352,7 +4352,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR") &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_STORE") &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4") &&
-      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED_STORES", false);
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED_STORES");
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
   // The middle store removes one full-cube transpose for single 256^3 R2C.
   // Batch four and the elongated shape measured slower, so keep this narrow.
