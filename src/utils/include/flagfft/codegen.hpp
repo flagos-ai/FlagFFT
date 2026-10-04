@@ -1464,7 +1464,7 @@ struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
                             DeviceAllocation temp2,
                             std::vector<DeviceAllocation> npu_transpose_indices = {},
                             bool npu_fused_outer_stores = false,
-                            bool npu_fused_small_stores = false);
+                            bool npu_fused_small_final_store = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1484,7 +1484,7 @@ struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
   DeviceAllocation temp2;
   std::vector<DeviceAllocation> npu_transpose_indices;
   bool npu_fused_outer_stores;
-  bool npu_fused_small_stores;
+  bool npu_fused_small_final_store;
 };
 
 struct CompiledRaw3DR2CNode final : CompiledRawNode {
