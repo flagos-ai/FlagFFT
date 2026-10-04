@@ -30,10 +30,18 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  // Shape-qualified NPU 3D kernels are the measured default. Keep per-route
+  // environment overrides as opt-outs for diagnostics and regressions.
+  bool npu_3d_flag_or_default(const FFTRequest &request, const char *name,
+                              bool default_value = true) {
+    const bool npu_3d_request = request.device_type == "npu" && request.origin_rank == 3;
+    return flag_or_default(name, npu_3d_request && default_value);
+  }
+
   bool npu_3d_native_transpose_enabled(const FFTRequest &request) {
     return request.device_type == "npu" && request.origin_rank == 3 &&
            request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-           flag_or_default("FLAGFFT_NPU_3D_TRANSPOSE", false);
+           npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_TRANSPOSE");
   }
 
   std::vector<DeviceAllocation> build_npu_3d_transpose_indices() {
@@ -1274,9 +1282,7 @@ namespace {
 #endif
 
   void mark_npu_portable_leaf(KernelKey &key, const FFTRequest &request) {
-    const char *npu_3d_leaf = std::getenv("FLAGFFT_NPU_3D_LEAF");
-    const bool allow_3d_leaf = request.origin_rank == 3 && npu_3d_leaf != nullptr &&
-                               std::string(npu_3d_leaf) == "1";
+    const bool allow_3d_leaf = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_LEAF");
     key.npu_portable_leaf = request.device_type == "npu" &&
                             (request.origin_rank == 2 || allow_3d_leaf);
   }
@@ -1658,20 +1664,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_npu_3d_aiv_small =
         request.device_type == "npu" && request.origin_rank == 3 && request.real_transform_kind.empty() &&
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-        (leaf->length == 16 || leaf->length == 32) && flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
+        (leaf->length == 16 || leaf->length == 32) &&
+        npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL");
     if (use_npu_3d_aiv_small) {
       const int64_t preferred_group = leaf->length == 16 ? 8 : 4;
       const int64_t group_size = batch % preferred_group == 0 ? preferred_group : 1;
       return make_npu_aiv_fft_small_child(request, leaf->length, 1, group_size);
     }
-    const char *npu_3d_aiv128 = std::getenv("FLAGFFT_NPU_3D_AIV128");
     const bool use_npu_3d_aiv128 = request.device_type == "npu" && request.origin_rank == 3 &&
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" && leaf->length == 128 &&
-                                   npu_3d_aiv128 != nullptr && std::string(npu_3d_aiv128) == "1";
+                                   npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV128");
     if (use_npu_3d_aiv128 && batch % 4 == 0) {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV128_GROUP");
-      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      if (group_setting == nullptr) group_setting = "16";
+      const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
                                        : npu_aiv_fft64_group_size(group_setting, batch);
       if (group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) group_size = 8;
@@ -1680,13 +1687,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
       }
     }
-    const char *npu_3d_aiv256 = std::getenv("FLAGFFT_NPU_3D_AIV256");
     const bool use_npu_3d_aiv256 = request.device_type == "npu" && request.origin_rank == 3 &&
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" && leaf->length == 256 &&
-                                   npu_3d_aiv256 != nullptr && std::string(npu_3d_aiv256) == "1";
+                                   npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256");
     if (use_npu_3d_aiv256) {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV256_GROUP");
+      if (group_setting == nullptr) group_setting = "8";
       int64_t group_size = 1;
       if (group_setting != nullptr && std::string(group_setting) == "4") {
         group_size = 4;
@@ -1698,7 +1705,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       std::vector<uint32_t> host_indices;
       std::vector<float> host_twiddles;
       const char *pair_setting = std::getenv("FLAGFFT_NPU_3D_AIV256_PAIR");
-      const bool pair_mode = pair_setting != nullptr && std::string(pair_setting) == "1";
+      const bool pair_mode = pair_setting == nullptr
+          ? npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR")
+          : std::string(pair_setting) == "1";
       if (pair_setting != nullptr && std::string(pair_setting) != "0" && !pair_mode) {
         throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR must be 0 or 1");
       }
@@ -1706,8 +1715,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR requires FLAGFFT_NPU_3D_AIV256_GROUP=8");
       }
       const char *pair_store_setting = std::getenv("FLAGFFT_NPU_3D_AIV256_PAIR_STORE");
-      const bool pair_store_requested =
-          pair_store_setting != nullptr && std::string(pair_store_setting) == "1";
+      const bool pair_store_requested = pair_store_setting == nullptr
+          ? npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_STORE")
+          : std::string(pair_store_setting) == "1";
       if (pair_store_setting != nullptr && std::string(pair_store_setting) != "0" &&
           !pair_store_requested) {
         throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR_STORE must be 0 or 1");
@@ -1717,7 +1727,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
             "FLAGFFT_NPU_3D_AIV256_PAIR_STORE requires pair mode and group size 8");
       }
       const char *radix4_setting = std::getenv("FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4");
-      const bool radix4_requested = radix4_setting != nullptr && std::string(radix4_setting) == "1";
+      const bool radix4_requested = radix4_setting == nullptr
+          ? npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4")
+          : std::string(radix4_setting) == "1";
       if (radix4_setting != nullptr && std::string(radix4_setting) != "0" && !radix4_requested) {
         throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4 must be 0 or 1");
       }
@@ -1750,15 +1762,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                           transposed_store,
                                                           radix4_mode);
     }
-    const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
     const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
                                   request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
                                   leaf->length == 64 &&
-                                  npu_3d_aiv64 != nullptr && std::string(npu_3d_aiv64) == "1";
+                                  npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV64");
     if (use_npu_3d_aiv64) {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV64_GROUP");
-      if (group_setting == nullptr) group_setting = "auto";
-      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      if (group_setting == nullptr) group_setting = "32";
+      const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 32)
                                        : npu_aiv_fft64_group_size(group_setting, batch);
       group_size = npu_aiv_fft_group_size_for_batch(group_size, batch);
@@ -1776,10 +1787,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.real_transform_kind.empty() &&
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" && stockham->length == 128 &&
-                                   flag_or_default("FLAGFFT_NPU_3D_AIV128", false);
+                                   npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV128");
     if (use_npu_3d_aiv128 && batch % 4 == 0) {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV128_GROUP");
-      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      if (group_setting == nullptr) group_setting = "16";
+      const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
                                        : npu_aiv_fft64_group_size(group_setting, batch);
       if (group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) group_size = 8;
@@ -1792,9 +1804,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                     request.real_transform_kind.empty() &&
                                     request.input_dtype == "complex64" &&
                                     request.output_dtype == "complex64" && stockham->length == 2048 &&
-                                    flag_or_default("FLAGFFT_NPU_3D_AIV2048", false);
+                                    npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV2048");
     if (use_npu_3d_aiv2048) {
-      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       return make_npu_aiv_fft2048_child(request, radix4_pair);
     }
 #endif
@@ -2538,7 +2550,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const 
   const bool use_npu_3d_aiv_small =
       request.device_type == "npu" && request.origin_rank == 3 && request.real_transform_kind.empty() &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      (leaf.length == 16 || leaf.length == 32) && flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
+      (leaf.length == 16 || leaf.length == 32) &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL");
   if (use_npu_3d_aiv_small) {
     const int64_t preferred_group = leaf.length == 16 ? 8 : 4;
     const int64_t group_size = outer_stride % preferred_group == 0 ? preferred_group : 1;
@@ -3099,17 +3112,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // store is only selected for its explicit AIV256 screening configuration.
 #if defined(FLAGFFT_BACKEND_NPU)
   const char *npu_aiv256_group = std::getenv("FLAGFFT_NPU_3D_AIV256_GROUP");
-  const bool npu_pair_radix4 = flag_or_default("FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4", false);
+  if (npu_aiv256_group == nullptr) npu_aiv256_group = "8";
+  const bool npu_pair_radix4 =
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4");
   const bool npu_pair_fused_store = request.device_type == "npu" &&
       request.origin_rank == 3 && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && batch > 0 && (batch == 1 || npu_pair_radix4) &&
       n0 == 256 && n1 == 256 && n2 == 256 &&
       n0_leaf && n1_leaf && n2_leaf &&
       n0_leaf->length == 256 && n1_leaf->length == 256 && n2_leaf->length == 256 &&
-      flag_or_default("FLAGFFT_NPU_3D_AIV256", false) &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256") &&
       npu_aiv256_group != nullptr && std::string(npu_aiv256_group) == "8" &&
-      flag_or_default("FLAGFFT_NPU_3D_AIV256_PAIR", false) &&
-      flag_or_default("FLAGFFT_NPU_3D_AIV256_PAIR_STORE", false);
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_STORE");
   if (npu_pair_fused_store) {
     // The pair-output leaf writes each axis result as [batch][frequency][transform].
     // Cycling the physical axis order gives these three layouts directly:
@@ -3694,7 +3709,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool npu_real_leaf_screen =
       request.device_type == "npu" && request.origin_rank == 3 &&
       (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
-      npu_3d_real_leaf != nullptr && std::string(npu_3d_real_leaf) == "1";
+      (npu_3d_real_leaf != nullptr ? std::string(npu_3d_real_leaf) == "1"
+                                   : npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_LEAF"));
   // HCU and MUSA use the compact real leaf route; IX and NPU enter only when
   // their separately qualified 3D screens are enabled. MACA uses the same
   // compact node with a measured 16/32-plane and long-axis layout policy.
@@ -4018,9 +4034,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
         DeviceAllocation{}, n1);
   } else {
     #if defined(FLAGFFT_BACKEND_NPU)
-    const bool use_npu_small_real = request.device_type == "npu" && (n2 == 16 || n2 == 32) &&
+    const bool use_npu_small_real = request.device_type == "npu" && request.origin_rank == 3 &&
+                                    (n2 == 16 || n2 == 32) &&
                                     n2_leaf->length == n2 &&
-                                    flag_or_default("FLAGFFT_NPU_3D_AIV_SMALL", false);
+                                    npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL");
     if (use_npu_small_real) {
       const int64_t preferred_group = n2 == 16 ? 8 : 4;
       const int64_t group_size = n2_batch % preferred_group == 0 ? preferred_group : 1;
@@ -4135,11 +4152,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r");
   const bool npu_aiv64_real = npu_real_request && node->n2 == 64 &&
-      flag_or_default("FLAGFFT_NPU_3D_REAL_NATIVE", false) &&
-      flag_or_default("FLAGFFT_NPU_3D_AIV64", false);
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_NATIVE") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV64");
   const bool npu_aiv256_real = npu_real_request && node->n2 == 256 &&
       (batch * node->n0 * node->n1) % 8 == 0 &&
-      flag_or_default("FLAGFFT_NPU_3D_AIV256_REAL", false);
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_REAL");
   const bool npu_real_native = npu_aiv64_real || npu_aiv256_real;
   const char *ix_rtrt_override = std::getenv("FLAGFFT_IX_3D_REAL_RTRT");
   const bool screen_rtrt = ix_rtrt_override != nullptr && std::string(ix_rtrt_override) == "1";
@@ -4212,7 +4229,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
           inverse ? NpuAivFFT256Mode::RealInverse : NpuAivFFT256Mode::RealForward);
     } else {
       const char *group_setting = std::getenv("FLAGFFT_NPU_3D_AIV64_GROUP");
-      const bool radix4_pair = flag_or_default("FLAGFFT_NPU_3D_RADIX4_PAIR", false);
+      if (group_setting == nullptr) group_setting = "32";
+      const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, real_batch, 32)
                                        : npu_aiv_fft64_real_row_group_size(group_setting, real_batch);
       group_size = npu_aiv_fft_group_size_for_batch(group_size, real_batch);
