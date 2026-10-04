@@ -4344,7 +4344,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     return false;
   };
   const char *npu_aiv256_group = std::getenv("FLAGFFT_NPU_3D_AIV256_GROUP");
-  const bool npu_fused_outer_stores = npu_aiv256_real && batch == 4 &&
+  const bool npu_fused_outer_stores = npu_aiv256_real && (batch == 1 || batch == 4) &&
       n0 == 256 && n1 == 256 && n2 == 256 &&
       is_npu_aiv256_axis(node->n1_plan) && is_npu_aiv256_axis(node->n0_plan) &&
       (npu_aiv256_group == nullptr || std::string(npu_aiv256_group) == "8") &&
