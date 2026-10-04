@@ -1783,6 +1783,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    const bool use_npu_3d_aiv_small =
+        request.device_type == "npu" && request.origin_rank == 3 &&
+        request.real_transform_kind.empty() && request.input_dtype == "complex64" &&
+        request.output_dtype == "complex64" &&
+        (stockham->length == 16 || stockham->length == 32) &&
+        npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL");
+    if (use_npu_3d_aiv_small) {
+      const int64_t preferred_group = stockham->length == 16 ? 8 : 4;
+      const int64_t group_size = batch % preferred_group == 0 ? preferred_group : 1;
+      return make_npu_aiv_fft_small_child(request, stockham->length, 1, group_size);
+    }
     const bool use_npu_3d_aiv128 = request.device_type == "npu" && request.origin_rank == 3 &&
                                    request.real_transform_kind.empty() &&
                                    request.input_dtype == "complex64" &&
@@ -3172,6 +3183,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   }
 #endif
 
+#if defined(FLAGFFT_BACKEND_NPU)
+  // NPU planner variants can encode these axes as Stockham instead of leaves;
+  // the measured AIV codelet implements the complete small transform either way.
+  const bool npu_small_strided_cube =
+      request.device_type == "npu" && request.origin_rank == 3 &&
+      request.real_transform_kind.empty() && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && n0 == n1 && n1 == n2 &&
+      (n0 == 16 || n0 == 32) && batch * n0 * n1 * n2 <= 64 * 64 * 64 &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL");
+  if (npu_small_strided_cube) {
+    const auto group_size_for = [](int64_t length, int64_t grouping_stride) {
+      const int64_t preferred_group = length == 16 ? 8 : 4;
+      return grouping_stride % preferred_group == 0 ? preferred_group : 1;
+    };
+    auto n2_fft = make_npu_aiv_fft_small_child(
+        n2_request, n2, 1, group_size_for(n2, batch * n0 * n1));
+    auto n1_fft = make_npu_aiv_fft_small_child(
+        n1_request, n1, n2, group_size_for(n1, n2));
+    auto n0_fft = make_npu_aiv_fft_small_child(
+        n0_request, n0, n1 * n2, group_size_for(n0, n1 * n2));
+    const std::size_t temp_bytes =
+        static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(temp_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(temp_bytes);
+    return std::make_shared<CompiledRaw3DStridedNode>(n0, n1, n2,
+                                                      std::move(n2_fft),
+                                                      std::move(n1_fft),
+                                                      std::move(n0_fft),
+                                                      std::move(temp1),
+                                                      std::move(temp2));
+  }
+#endif
+
   const bool ix_fused_cube = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       batch == 1 && n0 == 16 && n1 == 16 && n2 == 16 &&
@@ -3719,6 +3763,68 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   if (request.device_type != "musa" && request.device_type != "hcu" &&
       !ix_real_leaf_screen && !ix_real_fused_screen && !npu_real_leaf_screen &&
       !maca_real_compact) return nullptr;
+  const int64_t n0 = node->n0;
+  const int64_t n1 = node->n1;
+  const int64_t n2 = node->n2;
+  const int64_t half = n2 / 2 + 1;
+  const int64_t packed = batch * n0 * n1 * half;
+#if defined(FLAGFFT_BACKEND_NPU)
+  // Keep the compact real layout on the same strided small AIV route even if
+  // the planner did not expose the axes as LeafPlanNodes.
+  const bool npu_small_real_cube =
+      npu_real_leaf_screen && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && n0 == n1 && n1 == n2 &&
+      (n0 == 16 || n0 == 32) && batch * n0 * n1 * n2 <= 64 * 64 * 64 &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL");
+  if (npu_small_real_cube) {
+    const auto group_size_for = [](int64_t length, int64_t grouping_stride) {
+      const int64_t preferred_group = length == 16 ? 8 : 4;
+      return grouping_stride % preferred_group == 0 ? preferred_group : 1;
+    };
+    FFTRequest n2_request = request;
+    n2_request.fft_length = n2;
+    n2_request.input_shape = {batch * n0 * n1, n2};
+    n2_request.input_strides = {n2, 1};
+    n2_request.requested_n = n2;
+    n2_request.batch = batch * n0 * n1;
+
+    FFTRequest n1_request = request;
+    n1_request.fft_length = n1;
+    n1_request.input_shape = {batch * n0 * half, n1};
+    n1_request.input_strides = {n1, 1};
+    n1_request.requested_n = n1;
+    n1_request.batch = batch * n0 * half;
+    n1_request.real_transform_kind.clear();
+    n1_request.real_transform = false;
+
+    FFTRequest n0_request = request;
+    n0_request.fft_length = n0;
+    n0_request.input_shape = {batch * n1 * half, n0};
+    n0_request.input_strides = {n0, 1};
+    n0_request.requested_n = n0;
+    n0_request.batch = batch * n1 * half;
+    n0_request.real_transform_kind.clear();
+    n0_request.real_transform = false;
+
+    const int64_t preferred_group = n2 == 16 ? 8 : 4;
+    auto n2_real_fft = make_npu_aiv_fft_small_child(
+        n2_request, n2, 1,
+        (batch * n0 * n1) % preferred_group == 0 ? preferred_group : 1,
+        inverse ? NpuAivFFTSmallMode::RealInverse : NpuAivFFTSmallMode::RealForward);
+    auto n1_fft = make_npu_aiv_fft_small_child(
+        n1_request, n1, half, group_size_for(n1, half));
+    auto n0_fft = make_npu_aiv_fft_small_child(
+        n0_request, n0, n1 * half, group_size_for(n0, n1 * half));
+    const std::size_t temp_bytes = static_cast<std::size_t>(
+        packed * complex_element_bytes(request.input_dtype));
+    DeviceAllocation temp1 = adaptor::Memory(temp_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(temp_bytes);
+    return std::make_shared<CompiledRaw3DRealLeafNode>(
+        n0, n1, n2, inverse, false, false, false,
+        std::move(n2_real_fft), std::move(n1_fft), std::move(n0_fft),
+        std::shared_ptr<JitKernel>{}, std::move(temp1), std::move(temp2));
+  }
+#endif
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
@@ -3727,11 +3833,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_COMPACT", true);
   if (!n2_leaf || !n0_leaf || (!n1_leaf && !maca_prime_compact)) return nullptr;
 
-  const int64_t n0 = node->n0;
-  const int64_t n1 = node->n1;
-  const int64_t n2 = node->n2;
-  const int64_t half = n2 / 2 + 1;
-  const int64_t packed = batch * n0 * n1 * half;
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
   const bool maca_r2c_first_store_default = maca_real_compact && !inverse &&
       request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64;
