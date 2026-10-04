@@ -30,6 +30,7 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
                                     bool transposed_store,
                                     bool radix4_mode,
                                     int32_t mode,
+                                    int32_t default_real_blocks_per_launch,
                                     int32_t output_row_stride,
                                     int32_t output_transform_offset,
                                     StreamHandle stream);

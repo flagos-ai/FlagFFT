@@ -38,6 +38,7 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
                                     bool transposed_store,
                                     bool radix4_mode,
                                     int32_t mode,
+                                    int32_t default_real_blocks_per_launch,
                                     int32_t output_row_stride,
                                     int32_t output_transform_offset,
                                     StreamHandle stream) {
@@ -47,12 +48,12 @@ flagfftResult launch_ascendc_fft256(DevicePtr input,
       mode < 0 || mode > 2 ||
       (mode != 0 && (!pair_mode || group_size != 8 || transposed_store || radix4_mode)) ||
       (transposed_store && output_row_stride < group_size) || output_transform_offset < 0 ||
-      transform_count % group_size != 0) {
+      transform_count % group_size != 0 || default_real_blocks_per_launch <= 0 ||
+      default_real_blocks_per_launch > 256) {
     return FLAGFFT_INVALID_SIZE;
   }
-  constexpr uint32_t kDefaultMaxRealBlocksPerLaunch = 32;
   const uint32_t logical_block_dim = static_cast<uint32_t>(transform_count / group_size);
-  uint32_t max_real_blocks = kDefaultMaxRealBlocksPerLaunch;
+  uint32_t max_real_blocks = static_cast<uint32_t>(default_real_blocks_per_launch);
   if (mode == 1 || mode == 2) {
     if (const char *setting = std::getenv("FLAGFFT_NPU_3D_REAL_BLOCKS")) {
       char *end = nullptr;

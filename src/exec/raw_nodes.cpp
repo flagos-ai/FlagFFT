@@ -824,6 +824,11 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
   const int64_t output_transform_bytes = mode == NpuAivFFT256Mode::RealForward
       ? 129 * element_bytes
       : (mode == NpuAivFFT256Mode::RealInverse ? 256 * real_bytes : 256 * element_bytes);
+  const int32_t default_real_blocks_per_launch =
+      context.request.device_type == "npu" && context.request.origin_rank == 3 &&
+              mode == NpuAivFFT256Mode::RealInverse && context.batch == 4 * 256 * 256
+          ? 40
+          : 32;
   for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
     const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
     const adaptor::DevicePtr byte_offset =
@@ -841,6 +846,7 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
         transposed_store,
         radix4_mode,
         static_cast<int32_t>(mode),
+        default_real_blocks_per_launch,
         transposed_store ? static_cast<int32_t>(output_row_stride) : 0,
         transposed_store ? static_cast<int32_t>(batch_offset) : 0,
         context.stream);

@@ -3802,12 +3802,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool ix_real_fused_screen = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       ix_real_fused_override != nullptr && std::string(ix_real_fused_override) == "1";
+  const bool npu_small_real_rtrt_candidate = request.device_type == "npu" &&
+      request.origin_rank == 3 && batch == 4 && node->n0 == 32 && node->n1 == 32 && node->n2 == 32 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_RTRT_SMALL", batch == 4) &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_SMALL_FUSED_STORES");
+  const bool npu_real_leaf_default = !npu_small_real_rtrt_candidate;
   const char *npu_3d_real_leaf = std::getenv("FLAGFFT_NPU_3D_LEAF");
   const bool npu_real_leaf_screen =
       request.device_type == "npu" && request.origin_rank == 3 &&
       (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
       (npu_3d_real_leaf != nullptr ? std::string(npu_3d_real_leaf) == "1"
-                                   : npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_LEAF"));
+                                   : npu_3d_flag_or_default(
+                                         request, "FLAGFFT_NPU_3D_LEAF", npu_real_leaf_default));
   // HCU and MUSA use the compact real leaf route; IX and NPU enter only when
   // their separately qualified 3D screens are enabled. MACA uses the same
   // compact node with a measured 16/32-plane and long-axis layout policy.
@@ -4361,7 +4370,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED_STORES");
   const bool npu_fused_small_stores = npu_aiv_small_real && batch == 4 &&
       n0 == 32 && n1 == 32 && n2 == 32 &&
-      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_SMALL_FUSED_STORES", false);
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_SMALL_FUSED_STORES");
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
   // The middle store removes one full-cube transpose for single 256^3 R2C.
   // Batch four and the elongated shape measured slower, so keep this narrow.
