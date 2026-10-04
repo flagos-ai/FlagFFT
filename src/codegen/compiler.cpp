@@ -3620,8 +3620,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                           (hcu_hybrid_override == nullptr || std::string(hcu_hybrid_override) != "0");
   const bool portable_hybrid = fused_3d_store_enabled() && elongated_3d &&
                                (musa_hybrid || hcu_hybrid);
-  if (n2_leaf && n0_leaf && (portable_hybrid || ix_hybrid) &&
-      (n1_leaf || ix_hybrid)) {
+  if (n2_leaf && n0_leaf && (portable_hybrid || ix_hybrid)) {
     const char *first_transpose_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_FIRST_TRANSPOSE");
     const bool first_transpose = request.device_type == "hcu" &&
                                  first_transpose_override != nullptr &&
@@ -3897,7 +3896,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool maca_prime_compact = maca_real_compact && node->n0 == 16 &&
       node->n1 == 997 && node->n2 == 64 && batch <= 4 &&
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_COMPACT", true);
-  if (!n2_leaf || !n0_leaf || (!n1_leaf && !maca_prime_compact)) return nullptr;
+  // HCU can keep an elongated Bluestein middle axis in the compact real
+  // layout; the real_hybrid shape gate below decides whether that route applies.
+  if (!n2_leaf || !n0_leaf ||
+      (!n1_leaf && !maca_prime_compact && request.device_type != "hcu")) {
+    return nullptr;
+  }
 
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
   const bool maca_r2c_first_store_default = maca_real_compact && !inverse &&

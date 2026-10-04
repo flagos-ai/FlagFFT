@@ -205,6 +205,29 @@ def test_hcu_r2c_permuted_store_writes_compact_transposed_rows(monkeypatch):
         reset_profile(token)
 
 
+def test_hcu_r2c_permuted_store_does_not_emit_unused_output_distance(monkeypatch):
+    token = set_profile(
+        BackendProfile(
+            backend="hcu", device_arch="gfx936", warp_size=64,
+            max_threads_per_block=1024, max_dynamic_shared_memory=65536,
+            policy="native",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=256, factors=(16, 16), remainder=1, lanes=16,
+            num_warps=1, generic_radices=(), smem_size=256,
+        )
+        _kernel_name, source = _build_leaf_kernel_source_for_io(
+            plan, io_mode="permuted_store_r2c"
+        )
+        assert "input_distance" in source
+        assert "perm_span" in source
+        assert "output_distance" not in source
+    finally:
+        reset_profile(token)
+
+
 def test_hcu_r2c_permuted_store_uses_first_axis_pack_override(monkeypatch):
     monkeypatch.setenv("FLAGFFT_HCU_3D_FIRST_PACK", "8")
     token = set_profile(
