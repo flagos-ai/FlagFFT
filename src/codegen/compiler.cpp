@@ -3229,7 +3229,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL") &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_SMALL_STRIDED");
   if (npu_small_strided_cube) {
-    const auto group_size_for = [](int64_t length, int64_t grouping_stride) {
+    const bool force_group1 =
+        npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL_GROUP1", false);
+    const auto group_size_for = [force_group1](int64_t length, int64_t grouping_stride) {
+      if (force_group1) return int64_t{1};
       const int64_t preferred_group = length == 16 ? 8 : 4;
       return grouping_stride % preferred_group == 0 ? preferred_group : 1;
     };
@@ -3814,7 +3817,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL") &&
       !npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_RTRT_SMALL", false);
   if (npu_small_real_cube) {
-    const auto group_size_for = [](int64_t length, int64_t grouping_stride) {
+    const bool force_group1 =
+        npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL_GROUP1", false);
+    const auto group_size_for = [force_group1](int64_t length, int64_t grouping_stride) {
+      if (force_group1) return int64_t{1};
       const int64_t preferred_group = length == 16 ? 8 : 4;
       return grouping_stride % preferred_group == 0 ? preferred_group : 1;
     };
@@ -3846,7 +3852,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     const int64_t preferred_group = n2 == 16 ? 8 : 4;
     auto n2_real_fft = make_npu_aiv_fft_small_child(
         n2_request, n2, 1,
-        (batch * n0 * n1) % preferred_group == 0 ? preferred_group : 1,
+        force_group1 ? 1 : ((batch * n0 * n1) % preferred_group == 0 ? preferred_group : 1),
         inverse ? NpuAivFFTSmallMode::RealInverse : NpuAivFFTSmallMode::RealForward);
     auto n1_fft = make_npu_aiv_fft_small_child(
         n1_request, n1, half, group_size_for(n1, half));
@@ -4372,7 +4378,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
           inverse ? NpuAivFFT256Mode::RealInverse : NpuAivFFT256Mode::RealForward);
     } else if (npu_aiv_small_real) {
       const int32_t preferred_group = n2 == 16 ? 8 : 4;
-      const int32_t group_size = real_batch % preferred_group == 0 ? preferred_group : 1;
+      const bool force_group1 =
+          npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL_GROUP1", false);
+      const int32_t group_size =
+          force_group1 ? 1 : (real_batch % preferred_group == 0 ? preferred_group : 1);
       n2_real_fft = make_npu_aiv_fft_small_child(
           n2_request, n2, 1, group_size,
           inverse ? NpuAivFFTSmallMode::RealInverse : NpuAivFFTSmallMode::RealForward);
