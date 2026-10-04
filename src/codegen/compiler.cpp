@@ -3219,12 +3219,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 #if defined(FLAGFFT_BACKEND_NPU)
   // NPU planner variants can encode these axes as Stockham instead of leaves;
   // the measured AIV codelet implements the complete small transform either way.
+  // Keep the strided schedule separately selectable so batch shapes can be
+  // compared against contiguous AIV axes with native transposes.
   const bool npu_small_strided_cube =
       request.device_type == "npu" && request.origin_rank == 3 &&
       request.real_transform_kind.empty() && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && n0 == n1 && n1 == n2 &&
       (n0 == 16 || n0 == 32) && batch * n0 * n1 * n2 <= 64 * 64 * 64 &&
-      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL");
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_SMALL_STRIDED");
   if (npu_small_strided_cube) {
     const auto group_size_for = [](int64_t length, int64_t grouping_stride) {
       const int64_t preferred_group = length == 16 ? 8 : 4;
