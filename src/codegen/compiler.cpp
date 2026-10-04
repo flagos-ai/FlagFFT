@@ -4359,9 +4359,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_STORE") &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4") &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED_STORES");
-  const bool npu_fused_small_final_store = npu_aiv_small_real && batch == 4 &&
+  const bool npu_fused_small_stores = npu_aiv_small_real && batch == 4 &&
       n0 == 32 && n1 == 32 && n2 == 32 &&
-      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_SMALL_FUSED_FINAL_STORE", false);
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_SMALL_FUSED_STORES", false);
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
   // The middle store removes one full-cube transpose for single 256^3 R2C.
   // Batch four and the elongated shape measured slower, so keep this narrow.
@@ -4484,14 +4484,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   }
   auto n1_fft = npu_fused_outer_stores
       ? compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, true)
-      : (fused_middle
+      : (npu_fused_small_stores
+             ? make_npu_aiv_fft_small_child(
+                   n1_request, n1, 1, 4, NpuAivFFTSmallMode::Complex, n0 * half)
+             : fused_middle
              ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner")
              : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, false));
   auto n0_fft = npu_fused_outer_stores
       ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, true)
-      : (npu_fused_small_final_store
+      : (npu_fused_small_stores
              ? make_npu_aiv_fft_small_child(
-                   n0_request, n0, 1, 4, NpuAivFFTSmallMode::Complex, n1 * half)
+                   n0_request, n0, half, 1, NpuAivFFTSmallMode::Complex, n1 * half)
              : fused_n0
              ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
              : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, false));
@@ -4549,7 +4552,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
                                                      std::move(temp2),
                                                      std::move(npu_transpose_indices),
                                                      npu_fused_outer_stores,
-                                                     npu_fused_small_final_store);
+                                                     npu_fused_small_stores);
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(

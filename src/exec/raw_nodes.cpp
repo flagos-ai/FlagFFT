@@ -4121,7 +4121,7 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
     DeviceAllocation temp2,
     std::vector<DeviceAllocation> npu_transpose_indices,
     bool npu_fused_outer_stores,
-    bool npu_fused_small_final_store)
+    bool npu_fused_small_stores)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -4136,7 +4136,7 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
       temp2(std::move(temp2)),
       npu_transpose_indices(std::move(npu_transpose_indices)),
       npu_fused_outer_stores(npu_fused_outer_stores),
-      npu_fused_small_final_store(npu_fused_small_final_store) {
+      npu_fused_small_stores(npu_fused_small_stores) {
 }
 
 std::string CompiledRaw3DRealRTRTNode::describe() const {
@@ -4148,7 +4148,7 @@ std::string CompiledRaw3DRealRTRTNode::describe() const {
       << ", fused_n0=" << (perm_201 == nullptr && npu_transpose_indices.empty())
       << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
       << ", npu_fused_outer_stores=" << npu_fused_outer_stores
-      << ", npu_fused_small_final_store=" << npu_fused_small_final_store
+      << ", npu_fused_small_stores=" << npu_fused_small_stores
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
@@ -4173,8 +4173,9 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n1_context {n1_request, context.stream, batch * n0 * half};
     RawExecutionContext n0_context {n0_request, context.stream, batch * n1 * half};
     const bool has_perm_021 = perm_021 != nullptr || !npu_transpose_indices.empty();
-    const bool has_perm_210 = perm_210 != nullptr || !npu_transpose_indices.empty();
-    const bool has_perm_201 = !npu_fused_small_final_store &&
+    const bool has_perm_210 = !npu_fused_small_stores &&
+        (perm_210 != nullptr || !npu_transpose_indices.empty());
+    const bool has_perm_201 = !npu_fused_small_stores &&
         (perm_201 != nullptr || !npu_transpose_indices.empty());
     auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
                        adaptor::DevicePtr source,
@@ -4260,15 +4261,21 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) return result;
     result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) return result;
-    result = permute(perm_210, temp2.get(), temp1.get(), n0, half, n1, 2, 1, 0);
-    if (result != FLAGFFT_SUCCESS) return result;
-    result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+    if (has_perm_210) {
+      result = permute(perm_210, temp2.get(), temp1.get(), n0, half, n1, 2, 1, 0);
+      if (result != FLAGFFT_SUCCESS) return result;
+    }
+    result = n0_fft->execute(npu_fused_small_stores ? temp2.get() : temp1.get(),
+                             npu_fused_small_stores ? temp1.get() : temp2.get(),
+                             n0_context);
     if (result != FLAGFFT_SUCCESS) return result;
     if (has_perm_201) {
       result = permute(perm_201, temp2.get(), temp1.get(), n1, half, n0, 2, 0, 1);
       if (result != FLAGFFT_SUCCESS) return result;
     }
-    result = n2_real_fft->execute(has_perm_201 ? temp1.get() : temp2.get(), output, n2_context);
+    result = n2_real_fft->execute(
+        has_perm_201 ? temp1.get() : (npu_fused_small_stores ? temp1.get() : temp2.get()),
+        output, n2_context);
     if (result != FLAGFFT_SUCCESS) return result;
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
