@@ -1840,7 +1840,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.output_dtype == "complex64" && stockham->length == 256 &&
                                    npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256");
     if (use_npu_3d_aiv256) {
-      return make_npu_aiv_fft256_complex_child(request, allow_npu_aiv256_transposed_store);
+      // Stockham axes use the ordinary ThreeDim transpose schedule; transposed
+      // pair stores are valid only for the leaf-only fused-store schedule.
+      return make_npu_aiv_fft256_complex_child(request, false);
     }
     const bool use_npu_3d_aiv2048 = request.device_type == "npu" && request.origin_rank == 3 &&
                                     request.real_transform_kind.empty() &&
