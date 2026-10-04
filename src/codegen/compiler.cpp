@@ -4395,7 +4395,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
 
 #if defined(FLAGFFT_BACKEND_NPU)
   const bool npu_fused_real32_plane = npu_aiv_small_real && batch == 4 &&
-      n0 == 32 && n1 == 32 && n2 == 32 && n0_leaf && n1_leaf && n2_leaf &&
+      n0 == 32 && n1 == 32 && n2 == 32 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED32_PLANE", false);
   if (npu_fused_real32_plane) {
@@ -4409,7 +4409,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     }
     auto plane_fft = compile_kernel(KernelKey::fused_32_real_plane(
         triton_target_for_request(request), request.direction, request.input_dtype));
-    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
+    auto outer_fft = compile_raw_node(
+        node->n0_plan, n0_request, batch * n1 * half, false);
     DeviceAllocation temp = adaptor::Memory(
         static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype)));
     return std::make_shared<CompiledRaw3DFusedRealPlaneNode>(
