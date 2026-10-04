@@ -3815,7 +3815,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       request.output_dtype == "complex64" && n0 == n1 && n1 == n2 &&
       (n0 == 16 || n0 == 32) && batch * n0 * n1 * n2 <= 64 * 64 * 64 &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL") &&
-      !npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_RTRT_SMALL", false);
+      !npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_RTRT_SMALL", batch == 4);
   if (npu_small_real_cube) {
     const bool force_group1 =
         npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL_GROUP1", false);
@@ -4304,7 +4304,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const bool npu_aiv_small_real = npu_real_request && node->n0 == node->n1 &&
       node->n1 == node->n2 && (node->n2 == 16 || node->n2 == 32) && batch <= 4 &&
       batch * node->n0 * node->n1 * node->n2 <= 64 * 64 * 64 &&
-      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_RTRT_SMALL", false) &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_RTRT_SMALL", batch == 4) &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV_SMALL");
   const bool npu_real_native = npu_aiv_small_real || npu_aiv64_real || npu_aiv256_real;
   const char *ix_rtrt_override = std::getenv("FLAGFFT_IX_3D_REAL_RTRT");
