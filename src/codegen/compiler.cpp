@@ -3883,7 +3883,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       DeviceAllocation temp = adaptor::Memory(
           static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype)));
       return std::make_shared<CompiledRaw3DRealFusedPlaneNode>(
-          n1, inverse, std::move(plane_fft), std::move(outer_fft), std::move(temp),
+          n0, n1, n2, inverse, std::move(plane_fft), std::move(outer_fft), std::move(temp),
           adaptor::Memory::from_floats(tw_r), adaptor::Memory::from_floats(tw_i));
     }
 
