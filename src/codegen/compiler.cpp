@@ -4393,6 +4393,32 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     n0_request.real_transform = false;
   }
 
+#if defined(FLAGFFT_BACKEND_NPU)
+  const bool npu_fused_real32_plane = npu_aiv_small_real && batch == 4 &&
+      n0 == 32 && n1 == 32 && n2 == 32 && n0_leaf && n1_leaf && n2_leaf &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED32_PLANE", false);
+  if (npu_fused_real32_plane) {
+    std::vector<float> twiddle_real(16);
+    std::vector<float> twiddle_imag(16);
+    const double sign = inverse ? 1.0 : -1.0;
+    for (int64_t k = 0; k < 16; ++k) {
+      const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
+      twiddle_real[static_cast<std::size_t>(k)] = static_cast<float>(std::cos(angle));
+      twiddle_imag[static_cast<std::size_t>(k)] = static_cast<float>(std::sin(angle));
+    }
+    auto plane_fft = compile_kernel(KernelKey::fused_32_real_plane(
+        triton_target_for_request(request), request.direction, request.input_dtype));
+    auto outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
+    DeviceAllocation temp = adaptor::Memory(
+        static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype)));
+    return std::make_shared<CompiledRaw3DFusedRealPlaneNode>(
+        n0, inverse, std::move(plane_fft), std::move(outer_fft), std::move(temp),
+        adaptor::Memory::from_floats(twiddle_real),
+        adaptor::Memory::from_floats(twiddle_imag));
+  }
+#endif
+
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   std::vector<DeviceAllocation> npu_transpose_indices;
 #if defined(FLAGFFT_BACKEND_NPU)
