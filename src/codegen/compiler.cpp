@@ -4409,8 +4409,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     }
     auto plane_fft = compile_kernel(KernelKey::fused_32_real_plane(
         triton_target_for_request(request), request.direction, request.input_dtype));
-    auto outer_fft = compile_raw_node(
-        node->n0_plan, n0_request, batch * n1 * half, false);
+    // The n0 axis remains strided in [n0,n1,n2/2+1] compact layout.
+    const int64_t outer_stride = n1 * half;
+    const int32_t outer_group = outer_stride % 4 == 0 ? 4 : 1;
+    auto outer_fft = make_npu_aiv_fft_small_child(
+        n0_request, n0, outer_stride, outer_group);
     DeviceAllocation temp = adaptor::Memory(
         static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype)));
     return std::make_shared<CompiledRaw3DFusedRealPlaneNode>(
