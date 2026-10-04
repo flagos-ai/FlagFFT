@@ -4334,6 +4334,25 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
+  const auto is_npu_aiv256_axis = [](const PlanNodePtr &axis_plan) {
+    if (const auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(axis_plan)) {
+      return leaf->length == 256;
+    }
+    if (const auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(axis_plan)) {
+      return stockham->length == 256;
+    }
+    return false;
+  };
+  const char *npu_aiv256_group = std::getenv("FLAGFFT_NPU_3D_AIV256_GROUP");
+  const bool npu_fused_outer_stores = npu_aiv256_real && batch == 4 &&
+      n0 == 256 && n1 == 256 && n2 == 256 &&
+      is_npu_aiv256_axis(node->n1_plan) && is_npu_aiv256_axis(node->n0_plan) &&
+      (npu_aiv256_group == nullptr || std::string(npu_aiv256_group) == "8") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_STORE") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4") &&
+      npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_REAL_FUSED_STORES", false);
   const bool fused_n0 = screen_hybrid && n0_leaf && packed > 64 * 64 * 64;
   // The middle store removes one full-cube transpose for single 256^3 R2C.
   // Batch four and the elongated shape measured slower, so keep this narrow.
@@ -4424,19 +4443,41 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
         ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
         : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
   }
-  auto n1_fft = fused_middle
-      ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner")
-      : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half,
-                         /*allow_npu_aiv256_transposed_store=*/false);
-  auto n0_fft = fused_n0
-      ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
-      : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half,
-                         /*allow_npu_aiv256_transposed_store=*/false);
+  auto n1_fft = npu_fused_outer_stores
+      ? compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, true)
+      : (fused_middle
+             ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner")
+             : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, false));
+  auto n0_fft = npu_fused_outer_stores
+      ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, true)
+      : (fused_n0
+             ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
+             : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, false));
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (npu_fused_outer_stores) {
+    const auto set_row_stride = [](const std::shared_ptr<CompiledRawNode> &child,
+                                   int64_t row_stride) {
+      auto aiv_fft = std::dynamic_pointer_cast<CompiledRawNpuAivFFT256Node>(child);
+      if (!aiv_fft || !aiv_fft->transposed_store || !aiv_fft->radix4_mode ||
+          aiv_fft->group_size != 8) {
+        throw std::runtime_error(
+            "3D real AIV256 fused stores require radix-4 group-of-eight children");
+      }
+      aiv_fft->transposed_output_row_stride = row_stride;
+    };
+    set_row_stride(n1_fft, n0 * half);
+    set_row_stride(n0_fft, n1 * half);
+  }
+#endif
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_210;
   std::shared_ptr<JitKernel> perm_201;
   if (npu_3d_native_transpose_enabled(request)) {
     npu_transpose_indices = build_npu_3d_transpose_indices();
+  } else if (npu_fused_outer_stores) {
+    // Reorder compact real spectra to [half,n0,n1]; the two following AIV256
+    // stores produce [n1,half,n0] and then natural [n0,n1,half] directly.
+    perm_201 = compile_transpose3d_kernel(request, n0, n1, half, "201");
   } else {
     perm_021 = fused_first
         ? std::shared_ptr<JitKernel>{}
@@ -4464,7 +4505,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
                                                      std::move(perm_201),
                                                      std::move(temp1),
                                                      std::move(temp2),
-                                                     std::move(npu_transpose_indices));
+                                                     std::move(npu_transpose_indices),
+                                                     npu_fused_outer_stores);
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(

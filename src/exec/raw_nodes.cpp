@@ -4108,7 +4108,8 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
     std::shared_ptr<JitKernel> perm_201,
     DeviceAllocation temp1,
     DeviceAllocation temp2,
-    std::vector<DeviceAllocation> npu_transpose_indices)
+    std::vector<DeviceAllocation> npu_transpose_indices,
+    bool npu_fused_outer_stores)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -4121,7 +4122,8 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
       perm_201(std::move(perm_201)),
       temp1(std::move(temp1)),
       temp2(std::move(temp2)),
-      npu_transpose_indices(std::move(npu_transpose_indices)) {
+      npu_transpose_indices(std::move(npu_transpose_indices)),
+      npu_fused_outer_stores(npu_fused_outer_stores) {
 }
 
 std::string CompiledRaw3DRealRTRTNode::describe() const {
@@ -4132,6 +4134,7 @@ std::string CompiledRaw3DRealRTRTNode::describe() const {
       << ", fused_middle=" << (perm_210 == nullptr && npu_transpose_indices.empty())
       << ", fused_n0=" << (perm_201 == nullptr && npu_transpose_indices.empty())
       << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
+      << ", npu_fused_outer_stores=" << npu_fused_outer_stores
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
@@ -4172,6 +4175,42 @@ flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
           d0, d1, d2, axis0, axis1, axis2, batch,
           complex_element_bytes(context.request.input_dtype));
     };
+
+    if (npu_fused_outer_stores) {
+      const int64_t batch_bytes = n0 * n1 * half *
+          complex_element_bytes(context.request.input_dtype);
+      const int64_t n1_batch = n0 * half;
+      const int64_t n0_batch = n1 * half;
+      if (!inverse) {
+        flagfftResult result = n2_real_fft->execute(input, temp1.get(), n2_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        result = permute(perm_201, temp1.get(), temp2.get(), n0, n1, half, 2, 0, 1);
+        if (result != FLAGFFT_SUCCESS) return result;
+        for (int64_t b = 0; b < batch; ++b) {
+          const adaptor::DevicePtr offset = static_cast<adaptor::DevicePtr>(b * batch_bytes);
+          RawExecutionContext n1_batch_context {n1_request, context.stream, n1_batch};
+          result = n1_fft->execute(temp2.get() + offset, temp1.get() + offset, n1_batch_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          RawExecutionContext n0_batch_context {n0_request, context.stream, n0_batch};
+          result = n0_fft->execute(temp1.get() + offset, output + offset, n0_batch_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+        }
+        return FLAGFFT_SUCCESS;
+      }
+
+      flagfftResult result = permute(perm_201, input, temp1.get(), n0, n1, half, 2, 0, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
+      for (int64_t b = 0; b < batch; ++b) {
+        const adaptor::DevicePtr offset = static_cast<adaptor::DevicePtr>(b * batch_bytes);
+        RawExecutionContext n1_batch_context {n1_request, context.stream, n1_batch};
+        result = n1_fft->execute(temp1.get() + offset, temp2.get() + offset, n1_batch_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        RawExecutionContext n0_batch_context {n0_request, context.stream, n0_batch};
+        result = n0_fft->execute(temp2.get() + offset, temp1.get() + offset, n0_batch_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+      }
+      return n2_real_fft->execute(temp1.get(), output, n2_context);
+    }
 
     if (!inverse) {
       if (!has_perm_021) n2_context.output_distance = n1;

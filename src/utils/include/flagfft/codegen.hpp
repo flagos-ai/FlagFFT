@@ -1460,7 +1460,8 @@ struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
                             std::shared_ptr<JitKernel> perm_201,
                             DeviceAllocation temp1,
                             DeviceAllocation temp2,
-                            std::vector<DeviceAllocation> npu_transpose_indices = {});
+                            std::vector<DeviceAllocation> npu_transpose_indices = {},
+                            bool npu_fused_outer_stores = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1479,6 +1480,7 @@ struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
   DeviceAllocation temp1;
   DeviceAllocation temp2;
   std::vector<DeviceAllocation> npu_transpose_indices;
+  bool npu_fused_outer_stores;
 };
 
 struct CompiledRaw3DR2CNode final : CompiledRawNode {
