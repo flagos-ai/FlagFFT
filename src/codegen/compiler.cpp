@@ -4502,14 +4502,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       : (fused_middle
              ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner")
              : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, false));
-  auto n0_fft = npu_fused_outer_stores
-      ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, true)
-      : (npu_fused_small_final_store
-             ? make_npu_aiv_fft_small_child(
-                   n0_request, n0, 1, 4, NpuAivFFTSmallMode::Complex, n1 * half)
-             : fused_n0
-             ? compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer")
-             : compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, false));
+  std::shared_ptr<CompiledRawNode> n0_fft;
+  if (npu_fused_outer_stores) {
+    n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, true);
+  }
+#if defined(FLAGFFT_BACKEND_NPU)
+  else if (npu_fused_small_final_store) {
+    n0_fft = make_npu_aiv_fft_small_child(
+        n0_request, n0, 1, 4, NpuAivFFTSmallMode::Complex, n1 * half);
+  }
+#endif
+  else if (fused_n0) {
+    n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
+  } else {
+    n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, false);
+  }
 #if defined(FLAGFFT_BACKEND_NPU)
   if (npu_fused_outer_stores) {
     const auto set_row_stride = [](const std::shared_ptr<CompiledRawNode> &child,
