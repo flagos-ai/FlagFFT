@@ -1840,9 +1840,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.output_dtype == "complex64" && stockham->length == 256 &&
                                    npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256");
     if (use_npu_3d_aiv256) {
-      // Stockham axes use the ordinary ThreeDim transpose schedule; transposed
-      // pair stores are valid only for the leaf-only fused-store schedule.
-      return make_npu_aiv_fft256_complex_child(request, false);
+      return make_npu_aiv_fft256_complex_child(request, allow_npu_aiv256_transposed_store);
     }
     const bool use_npu_3d_aiv2048 = request.device_type == "npu" && request.origin_rank == 3 &&
                                     request.real_transform_kind.empty() &&
@@ -3159,12 +3157,22 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   if (npu_aiv256_group == nullptr) npu_aiv256_group = "8";
   const bool npu_pair_radix4 =
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4");
+  const auto is_npu_aiv256_axis = [](const PlanNodePtr &axis_plan) {
+    if (const auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(axis_plan)) {
+      return leaf->length == 256;
+    }
+    if (const auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(axis_plan)) {
+      return stockham->length == 256;
+    }
+    return false;
+  };
   const bool npu_pair_fused_store = request.device_type == "npu" &&
       request.origin_rank == 3 && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && batch > 0 && (batch == 1 || npu_pair_radix4) &&
       n0 == 256 && n1 == 256 && n2 == 256 &&
-      n0_leaf && n1_leaf && n2_leaf &&
-      n0_leaf->length == 256 && n1_leaf->length == 256 && n2_leaf->length == 256 &&
+      is_npu_aiv256_axis(node->n0_plan) &&
+      is_npu_aiv256_axis(node->n1_plan) &&
+      is_npu_aiv256_axis(node->n2_plan) &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256") &&
       npu_aiv256_group != nullptr && std::string(npu_aiv256_group) == "8" &&
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR") &&
@@ -3175,9 +3183,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     // [n2,n0,n1] -> [n1,n2,n0] -> [n0,n1,n2], with the outer batch preserved.
     // This retains the existing ThreeDimPlanNode and three axis children while
     // removing its transpose launches on this bounded AIV256 path.
-    auto n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
-    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
-    auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
+    auto n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1, true);
+    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2, true);
+    auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2, true);
     if (npu_pair_radix4) {
       const auto set_row_stride = [](
           const std::shared_ptr<CompiledRawNode> &child, int64_t row_stride) {
