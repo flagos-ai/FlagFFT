@@ -35,7 +35,8 @@ namespace {
   bool npu_3d_flag_or_default(const FFTRequest &request, const char *name,
                               bool default_value = true) {
     const bool npu_3d_request = request.device_type == "npu" && request.origin_rank == 3;
-    return flag_or_default(name, npu_3d_request && default_value);
+    if (!npu_3d_request) return false;
+    return flag_or_default(name, default_value);
   }
 
   bool npu_3d_native_transpose_enabled(const FFTRequest &request) {
@@ -4833,12 +4834,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
-  const char *npu_aiv_fft64 = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV");
+  // Enable the measured Ascend 64x64 route by default only for its qualified
+  // NPU shape. FLAGFFT_NPU_2D_ASCENDC_AIV=0 remains the explicit rollback.
+  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
   const bool use_npu_aiv_fft64 =
       request.device_type == "npu" && request.origin_rank == 2 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      n0 == 64 && n1 == 64 && npu_aiv_fft64 != nullptr &&
-      std::string(npu_aiv_fft64) == "1" &&
+      n0 == 64 && n1 == 64 && npu_aiv_fft64_enabled &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64) {
@@ -5098,12 +5100,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
-  const char *npu_aiv_fft64 = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV");
+  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
   const bool use_npu_aiv_fft64_real =
       request.device_type == "npu" && request.origin_rank == 2 &&
       request.real_transform_kind == "r2c" && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" &&
-      n0 == 64 && n1 == 64 && npu_aiv_fft64 != nullptr && std::string(npu_aiv_fft64) == "1" &&
+      n0 == 64 && n1 == 64 && npu_aiv_fft64_enabled &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64_real) {
@@ -5288,12 +5290,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
-  const char *npu_aiv_fft64 = std::getenv("FLAGFFT_NPU_2D_ASCENDC_AIV");
+  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
   const bool use_npu_aiv_fft64_real =
       request.device_type == "npu" && request.origin_rank == 2 &&
       request.real_transform_kind == "c2r" && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" &&
-      n0 == 64 && n1 == 64 && npu_aiv_fft64 != nullptr && std::string(npu_aiv_fft64) == "1" &&
+      n0 == 64 && n1 == 64 && npu_aiv_fft64_enabled &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan) != nullptr &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64_real) {
