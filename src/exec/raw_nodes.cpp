@@ -925,6 +925,8 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
     // One stage launch covers ceil(batch * length / factor / block) blocks, which
     // exceeds the NPU launch limit for large batched transforms. Batches are
     // independent, so a stage is split into batch chunks with pointer offsets.
+    // Long NPU stages use grid-y for transforms and grid-x for their tiles;
+    // short stages keep the flattened grid to pack several transforms per CTA.
     const int64_t block_limit = block_limit_per_launch();
     for (std::size_t stage = 0; stage < factors.size(); ++stage) {
       const int64_t factor = factors[stage];
@@ -946,10 +948,10 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
                                           JitKernelArg::i32(static_cast<int32_t>(count))};
         const int64_t butterflies = count * (length / factor);
         const bool transform_tiled = context.request.device_type == "npu" && length / factor >= block;
-        const int64_t grid = transform_tiled
-                                 ? count * programs_per_batch
-                                 : (butterflies + block - 1) / block;
-        kernels[stage]->launch(context.stream, args, grid, 1, 1);
+        const int64_t grid_x = transform_tiled
+                                   ? programs_per_batch
+                                   : (butterflies + block - 1) / block;
+        kernels[stage]->launch(context.stream, args, grid_x, transform_tiled ? count : 1, 1);
       }
       current = dst;
       span *= factor;
