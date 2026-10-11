@@ -60,7 +60,10 @@ class StockhamStageAiv {
     if (has_contiguous_store_) {
       store_indices_.SetGlobalBuffer(
           reinterpret_cast<__gm__ uint32_t *>(store_index_table));
-      store_index_stride_ = (2 * radix_ * batch_lane_extent_ + 7U) & ~7U;
+      const uint32_t store_lanes = span_ == 1
+          ? (ndiv_ < kTile ? ndiv_ : kTile)
+          : batch_lane_extent_;
+      store_index_stride_ = (2 * radix_ * store_lanes + 7U) & ~7U;
     }
 
     pipe_.InitBuffer(input_buf_, 2 * kTile * sizeof(float));
