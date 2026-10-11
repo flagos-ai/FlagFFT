@@ -724,7 +724,8 @@ flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
       (length == 128 && group_size != 1 && group_size != 4 && group_size != 8 &&
        !(radix4_pair && group_size == 16)) ||
       (length == 128 && group_size == 1 && radix4_pair) ||
-      (length == 2048 && group_size != 1) || (length != 128 && length != 2048) ||
+      ((length == 1024 || length == 2048) && group_size != 1) ||
+      (length != 128 && length != 1024 && length != 2048) ||
       context.batch % group_size != 0) {
     return FLAGFFT_INVALID_SIZE;
   }
@@ -753,6 +754,10 @@ flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
           input_chunk, output_chunk, indices->get(), twiddles->get(),
           static_cast<int32_t>(chunk / group_size), 1, static_cast<int32_t>(group_size), 0,
           context.stream);
+    } else if (length == 1024) {
+      result = adaptor::npu::launch_ascendc_fft1024(
+          input_chunk, output_chunk, indices->get(), twiddles->get(),
+          static_cast<int32_t>(chunk), context.stream);
     } else {
       result = adaptor::npu::launch_ascendc_fft2048(
           input_chunk, output_chunk, indices->get(), twiddles->get(),

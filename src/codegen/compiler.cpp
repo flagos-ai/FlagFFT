@@ -864,11 +864,12 @@ namespace {
     }
   }
 
-  void build_npu_aiv_fft2048_tables(const FFTRequest &request,
-                                    std::vector<uint32_t> &indices,
-                                    std::vector<float> &twiddles) {
-    constexpr int64_t n = 2048;
-    constexpr int64_t stages = 11;
+  void build_npu_aiv_fft_power2_tables(const FFTRequest &request,
+                                      int64_t n,
+                                      std::vector<uint32_t> &indices,
+                                      std::vector<float> &twiddles) {
+    int64_t stages = 0;
+    for (int64_t remaining = n; remaining > 1; remaining >>= 1) ++stages;
     constexpr double pi = 3.141592653589793238462643383279502884;
     const int64_t stage_a_base = n;
     const int64_t stage_b_base = stage_a_base + stages * n;
@@ -1374,7 +1375,7 @@ namespace {
                                            host_indices,
                                            host_twiddles);
     } else {
-      build_npu_aiv_fft2048_tables(request, host_indices, host_twiddles);
+      build_npu_aiv_fft_power2_tables(request, 2048, host_indices, host_twiddles);
     }
     auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
     indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
@@ -1385,6 +1386,21 @@ namespace {
                                                       std::move(twiddles),
                                                       1,
                                                       radix4_pair);
+  }
+
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft1024_child(const FFTRequest &request) {
+    std::vector<uint32_t> host_indices;
+    std::vector<float> host_twiddles;
+    build_npu_aiv_fft_power2_tables(request, 1024, host_indices, host_twiddles);
+    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    return std::make_shared<CompiledRawNpuAivFFTNode>(1024,
+                                                      std::move(indices),
+                                                      std::move(twiddles),
+                                                      1,
+                                                      false);
   }
 
   int32_t npu_aiv_fft64_group_size(const char *setting, int64_t batch) {
@@ -1826,6 +1842,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    flag_or_default("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM", false);
   const bool use_npu_2d_aiv128 = npu_2d_complex_child &&
                                  flag_or_default("FLAGFFT_NPU_2D_AIV128", false);
+  const bool use_npu_2d_aiv1024 = npu_2d_complex_child &&
+                                  flag_or_default("FLAGFFT_NPU_2D_AIV1024", false);
   const bool use_npu_2d_aiv2048 = npu_2d_complex_child &&
                                   flag_or_default("FLAGFFT_NPU_2D_AIV2048", false);
   const bool npu_2d_radix4_pair = flag_or_default("FLAGFFT_NPU_2D_RADIX4_PAIR", true);
@@ -1845,6 +1863,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 #endif
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    if (use_npu_2d_aiv1024 && leaf->length == 1024) {
+      return make_npu_aiv_fft1024_child(request);
+    }
     if (use_npu_2d_aiv128 && leaf->length == 128) {
       if (auto child = make_npu_2d_aiv128_child()) return child;
     }
@@ -1902,6 +1923,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    if (use_npu_2d_aiv1024 && direct->length == 1024) {
+      return make_npu_aiv_fft1024_child(request);
+    }
     // Some planner versions represent the power-of-two 128-point child as a
     // DirectDFT node. The native AIV implementation is a radix-2 FFT and is
     // valid for the same transform independently of that planner choice.
@@ -1913,6 +1937,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    if (use_npu_2d_aiv1024 && stockham->length == 1024) {
+      return make_npu_aiv_fft1024_child(request);
+    }
     if (use_npu_2d_aiv128 && stockham->length == 128) {
       if (auto child = make_npu_2d_aiv128_child()) return child;
     }

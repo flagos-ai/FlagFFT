@@ -20,6 +20,13 @@
 
 namespace flagfft::adaptor::npu {
 
+flagfftResult launch_ascendc_fft1024(DevicePtr input,
+                                     DevicePtr output,
+                                     DevicePtr indices,
+                                     DevicePtr twiddles,
+                                     int32_t transform_count,
+                                     StreamHandle stream);
+
 flagfftResult launch_ascendc_fft2048(DevicePtr input,
                                      DevicePtr output,
                                      DevicePtr indices,

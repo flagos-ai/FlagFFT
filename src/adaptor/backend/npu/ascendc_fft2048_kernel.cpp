@@ -17,17 +17,19 @@
 using namespace AscendC;
 
 namespace {
-constexpr uint32_t kN = 2048;
-constexpr uint32_t kStages = 11;
-constexpr uint32_t kInputIndexCount = kN;
-constexpr uint32_t kStageAIndexBase = kInputIndexCount;
-constexpr uint32_t kStageBIndexBase = kStageAIndexBase + kStages * kN;
-constexpr uint32_t kOutputIndexBase = kStageBIndexBase + kStages * kN;
 constexpr uint32_t kWorkArrays = 11;
 constexpr uint32_t kGatherTile = 256;
 
-class Fft2048Aiv {
+template <uint32_t N, uint32_t Stages>
+class FftPower2Aiv {
  public:
+  static constexpr uint32_t kN = N;
+  static constexpr uint32_t kStages = Stages;
+  static constexpr uint32_t kInputIndexCount = kN;
+  static constexpr uint32_t kStageAIndexBase = kInputIndexCount;
+  static constexpr uint32_t kStageBIndexBase = kStageAIndexBase + kStages * kN;
+  static constexpr uint32_t kOutputIndexBase = kStageBIndexBase + kStages * kN;
+
   __aicore__ inline void Init(GM_ADDR input,
                               GM_ADDR output,
                               GM_ADDR indices,
@@ -154,7 +156,17 @@ extern "C" __global__ __aicore__ void flagfft_npu_fft2048(GM_ADDR input,
                                                            GM_ADDR indices,
                                                            GM_ADDR twiddles,
                                                            uint32_t transform_count) {
-  Fft2048Aiv op;
+  FftPower2Aiv<2048, 11> op;
+  op.Init(input, output, indices, twiddles, transform_count);
+  op.Process();
+}
+
+extern "C" __global__ __aicore__ void flagfft_npu_fft1024(GM_ADDR input,
+                                                           GM_ADDR output,
+                                                           GM_ADDR indices,
+                                                           GM_ADDR twiddles,
+                                                           uint32_t transform_count) {
+  FftPower2Aiv<1024, 10> op;
   op.Init(input, output, indices, twiddles, transform_count);
   op.Process();
 }
