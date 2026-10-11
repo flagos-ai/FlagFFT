@@ -47,9 +47,12 @@ flagfftResult launch_ascendc_stockham_stage(DevicePtr input,
                                            ? (ndiv + kAscendCStockhamTile - 1) /
                                                  kAscendCStockhamTile
                                            : groups_per_transform * tiles_per_group;
-  // Fill otherwise idle lanes with independent first-stage transforms.
-  const uint64_t batch_group = span == 1 && ndiv < kAscendCStockhamTile
-                                   ? kAscendCStockhamTile / ndiv
+  // Fill otherwise idle lanes with independent transform segments.
+  const uint64_t lane_extent = span == 1
+                                   ? ndiv
+                                   : std::min<uint64_t>(span, kAscendCStockhamTile);
+  const uint64_t batch_group = lane_extent < kAscendCStockhamTile
+                                   ? kAscendCStockhamTile / lane_extent
                                    : 1;
   const uint64_t batch_groups =
       (static_cast<uint64_t>(batch) + batch_group - 1) / batch_group;

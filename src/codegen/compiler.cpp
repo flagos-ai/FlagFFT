@@ -2011,11 +2011,22 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           : (ndiv / stage_span) *
                 ((stage_span + adaptor::npu::kAscendCStockhamTile - 1) /
                  adaptor::npu::kAscendCStockhamTile);
+      const uint64_t stage_batch_group = active_extent > 0 &&
+              active_extent < adaptor::npu::kAscendCStockhamTile
+          ? adaptor::npu::kAscendCStockhamTile /
+                static_cast<uint64_t>(active_extent)
+          : 1;
+      const uint64_t stage_batch_count = batch > 0 ? static_cast<uint64_t>(batch) : 0;
+      const uint64_t stage_batch_groups =
+          stage_batch_count / stage_batch_group +
+          (stage_batch_count % stage_batch_group != 0);
       const bool enough_stage_work = batch > 0 && stage_tiles_per_transform > 0 &&
-          static_cast<uint64_t>(batch) >=
-              (static_cast<uint64_t>(adaptor::npu::kAscendCStockhamTile) +
-               static_cast<uint64_t>(stage_tiles_per_transform) - 1) /
-                  static_cast<uint64_t>(stage_tiles_per_transform);
+          stage_batch_groups >=
+              static_cast<uint64_t>(adaptor::npu::kAscendCStockhamTile) /
+                  static_cast<uint64_t>(stage_tiles_per_transform) +
+                  (static_cast<uint64_t>(adaptor::npu::kAscendCStockhamTile) %
+                       static_cast<uint64_t>(stage_tiles_per_transform) !=
+                   0);
       // The AIV stage masks a partial tile. Keep small extents eligible when
       // they still fill one vector repeat and expose enough independent tiles.
       const bool use_aiv_stage = npu_2d_aiv_stockham && stockham->length > 0 &&

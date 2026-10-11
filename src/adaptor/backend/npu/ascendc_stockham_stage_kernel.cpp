@@ -49,8 +49,9 @@ class StockhamStageAiv {
     groups_per_transform_ = span_ == 1 ? 1 : ndiv_ / span_;
     tiles_per_transform_ = span_ == 1 ? (ndiv_ + kTile - 1) / kTile
                                        : groups_per_transform_ * tiles_per_group_;
-    // Keep this mapping in sync with the host's first-stage tile count.
-    batch_group_ = span_ == 1 && ndiv_ < kTile ? kTile / ndiv_ : 1;
+    // Keep this mapping in sync with the host's short-extent tile count.
+    batch_lane_extent_ = span_ == 1 ? ndiv_ : (span_ < kTile ? span_ : kTile);
+    batch_group_ = batch_lane_extent_ < kTile ? kTile / batch_lane_extent_ : 1;
     batch_groups_ = (static_cast<uint64_t>(batch_) + batch_group_ - 1) /
                     batch_group_;
     root_float_count_ = 2 * radix_ * kRootStride;
@@ -131,7 +132,8 @@ class StockhamStageAiv {
                                       static_cast<uint64_t>(digit) * ndiv_;
         GlobalTensor<uint64_t> src;
         src.SetGlobalBuffer(input_ptr_ + input_offset);
-        LocalTensor<uint64_t> input_dest = input_complex[transform * ndiv_];
+        LocalTensor<uint64_t> input_dest =
+            input_complex[transform * batch_lane_extent_];
         if (valid == kTile && batch_group_ == 1) {
           DataCopy(input_dest, src, kTile);
         } else {
@@ -151,15 +153,20 @@ class StockhamStageAiv {
       if (digit > 0 && span_ > 1) {
         Duplicate(twiddle, 0.0f, 2 * kTile);
         PipeBarrier<PIPE_ALL>();
-        GlobalTensor<uint64_t> ext_twiddle;
-        ext_twiddle.SetGlobalBuffer(stage_twiddles_ptr_ +
-                                    static_cast<uint64_t>(digit) * span_ + j_start);
-        if (valid == kTile) {
-          DataCopy(twiddle.ReinterpretCast<uint64_t>(), ext_twiddle, kTile);
-        } else {
-          const DataCopyExtParams params(1, valid * sizeof(uint64_t), 0, 0, 0);
-          const DataCopyPadExtParams<uint64_t> pad;
-          DataCopyPad(twiddle.ReinterpretCast<uint64_t>(), ext_twiddle, params, pad);
+        for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
+          GlobalTensor<uint64_t> ext_twiddle;
+          ext_twiddle.SetGlobalBuffer(stage_twiddles_ptr_ +
+                                      static_cast<uint64_t>(digit) * span_ + j_start);
+          LocalTensor<uint64_t> twiddle_dest =
+              twiddle.ReinterpretCast<uint64_t>()[
+                  transform * batch_lane_extent_];
+          if (valid == kTile && batch_group_ == 1) {
+            DataCopy(twiddle_dest, ext_twiddle, kTile);
+          } else {
+            const DataCopyExtParams params(1, valid * sizeof(uint64_t), 0, 0, 0);
+            const DataCopyPadExtParams<uint64_t> pad;
+            DataCopyPad(twiddle_dest, ext_twiddle, params, pad);
+          }
         }
         PipeBarrier<PIPE_ALL>();
         Gather(twiddle_real, twiddle, indices, 0, kTile);
@@ -269,7 +276,7 @@ class StockhamStageAiv {
       // GM block length is one complex value. Stage each packed value at the
       // start of a padded local block before the strided scatter.
       for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
-        const uint32_t lane_offset = transform * ndiv_;
+        const uint32_t lane_offset = transform * batch_lane_extent_;
         Duplicate(store, 0.0f, 8 * kTile);
         PipeBarrier<PIPE_ALL>();
         for (uint32_t lane = 0; lane < valid; ++lane) {
@@ -327,6 +334,7 @@ class StockhamStageAiv {
   uint32_t tiles_per_group_ = 0;
   uint32_t groups_per_transform_ = 0;
   uint32_t tiles_per_transform_ = 0;
+  uint32_t batch_lane_extent_ = 0;
   uint32_t batch_group_ = 1;
   uint64_t batch_groups_ = 0;
   uint32_t root_float_count_ = 0;
