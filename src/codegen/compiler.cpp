@@ -2023,10 +2023,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       if (use_aiv_stage) {
         if (aiv_indices.get() == 0) {
           constexpr uint32_t tile = adaptor::npu::kAscendCStockhamTile;
-          std::vector<uint32_t> indices(2 * tile);
+          std::vector<uint32_t> indices(4 * tile);
           for (uint32_t lane = 0; lane < tile; ++lane) {
             indices[lane] = 2 * lane * sizeof(float);
             indices[tile + lane] = (2 * lane + 1) * sizeof(float);
+            indices[2 * tile + 2 * lane] = lane * sizeof(float);
+            indices[2 * tile + 2 * lane + 1] = (tile + lane) * sizeof(float);
           }
           aiv_indices = DeviceAllocation(indices.size() * sizeof(uint32_t));
           aiv_indices.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));

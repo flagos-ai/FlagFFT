@@ -52,15 +52,17 @@ class StockhamStageAiv {
     pipe_.InitBuffer(twiddle_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(digits_buf_, 2 * kMaxRadix * kTile * sizeof(float));
     pipe_.InitBuffer(roots_buf_, kMaxRootFloats * sizeof(float));
-    pipe_.InitBuffer(indices_buf_, 2 * kTile * sizeof(uint32_t));
+    pipe_.InitBuffer(indices_buf_, 4 * kTile * sizeof(uint32_t));
     pipe_.InitBuffer(root_indices_buf_, 2 * kTile * sizeof(uint32_t));
     pipe_.InitBuffer(work_buf_, 7 * kTile * sizeof(float));
+    pipe_.InitBuffer(planar_buf_, 2 * kTile * sizeof(float));
+    pipe_.InitBuffer(packed_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(store_buf_, 8 * kTile * sizeof(float));
 
     LocalTensor<float> roots = roots_buf_.Get<float>();
     DataCopy(roots, radix_roots_, root_float_count_);
     LocalTensor<uint32_t> indices = indices_buf_.Get<uint32_t>();
-    DataCopy(indices, indices_, 2 * kTile);
+    DataCopy(indices, indices_, 4 * kTile);
     PipeBarrier<PIPE_ALL>();
   }
 
@@ -158,10 +160,11 @@ class StockhamStageAiv {
 
     LocalTensor<float> acc_real = work;
     LocalTensor<float> acc_imag = work[kTile];
+    LocalTensor<float> planar = planar_buf_.Get<float>();
+    LocalTensor<float> packed = packed_buf_.Get<float>();
     LocalTensor<float> store = store_buf_.Get<float>();
-    const uint32_t output_stride = span_ == 1
-        ? (2 * radix_ - 1) * sizeof(float)
-        : sizeof(float);
+    LocalTensor<uint64_t> store_complex = store.ReinterpretCast<uint64_t>();
+    const uint32_t dst_stride = (radix_ - 1) * sizeof(uint64_t);
     for (uint32_t q = 0; q < radix_; ++q) {
       Duplicate(acc_real, 0.0f, kTile);
       Duplicate(acc_imag, 0.0f, kTile);
@@ -191,27 +194,34 @@ class StockhamStageAiv {
           Add(acc_imag, acc_imag, tmp_imag, kTile);
         }
       }
+      PipeBarrier<PIPE_ALL>();
+      DataCopy(planar, acc_real, kTile);
+      DataCopy(planar[kTile], acc_imag, kTile);
+      PipeBarrier<PIPE_ALL>();
+      Gather(packed, planar, indices[2 * kTile], 0, 2 * kTile);
+      PipeBarrier<PIPE_ALL>();
+
+      // MTE3 reads one 32-byte VECOUT block per transfer block. Brcb places
+      // each complex output at the start of its own block without scalar stores.
+      Brcb(store_complex,
+           packed.ReinterpretCast<uint64_t>(),
+           kTile / 8,
+           {1, 8});
+      PipeBarrier<PIPE_ALL>();
+
       const uint64_t output_base = batch_index * length_ +
           static_cast<uint64_t>(radix_) * k_start -
           static_cast<uint64_t>(radix_ - 1) * j_start +
           static_cast<uint64_t>(q) * span_;
-      const DataCopyExtParams params(valid, sizeof(float), 0, output_stride, 0);
-      // Brcb is supported for FP32 on the 910B AI Core. It places one scalar
-      // at the start of each 32-byte VECOUT block for an MTE3 strided store.
-      Brcb(store, acc_real, kTile / 8, {1, 8});
-      PipeBarrier<PIPE_ALL>();
-      GlobalTensor<float> dst_real;
-      dst_real.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(output_ptr_) +
-                               2 * output_base);
-      DataCopyPad(dst_real, store, params);
-      PipeBarrier<PIPE_ALL>();
-
-      Brcb(store, acc_imag, kTile / 8, {1, 8});
-      PipeBarrier<PIPE_ALL>();
-      GlobalTensor<float> dst_imag;
-      dst_imag.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(output_ptr_) +
-                               2 * output_base + 1);
-      DataCopyPad(dst_imag, store, params);
+      GlobalTensor<uint64_t> dst;
+      dst.SetGlobalBuffer(output_ptr_ + output_base);
+      const uint32_t output_stride = span_ == 1 ? dst_stride : 0;
+      const DataCopyExtParams params(valid,
+                                     sizeof(uint64_t),
+                                     0,
+                                     output_stride,
+                                     0);
+      DataCopyPad(dst, store_complex, params);
       PipeBarrier<PIPE_ALL>();
     }
   }
@@ -224,6 +234,8 @@ class StockhamStageAiv {
   TBuf<TPosition::VECCALC> indices_buf_;
   TBuf<TPosition::VECCALC> root_indices_buf_;
   TBuf<TPosition::VECCALC> work_buf_;
+  TBuf<TPosition::VECCALC> planar_buf_;
+  TBuf<TPosition::VECCALC> packed_buf_;
   TBuf<TPosition::VECCALC> store_buf_;
   __gm__ uint64_t *stage_twiddles_ptr_ = nullptr;
   GlobalTensor<float> radix_roots_;
