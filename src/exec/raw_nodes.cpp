@@ -1826,9 +1826,12 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(output_distance),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
+    const int64_t grid_x = postprocess_kernel->grid_x_override > 0
+                               ? postprocess_kernel->grid_x_override
+                               : ceil_div(half, block);
     postprocess_kernel->launch(context.stream,
                                args,
-                               ceil_div(half, block),
+                               grid_x,
                                grid_rows(postprocess_kernel, context.batch),
                                1);
     return FLAGFFT_SUCCESS;
@@ -2178,9 +2181,12 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(input_distance),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
+    const int64_t grid_x = preprocess_kernel->grid_x_override > 0
+                               ? preprocess_kernel->grid_x_override
+                               : ceil_div(packed, block);
     preprocess_kernel->launch(context.stream,
                               args,
-                              ceil_div(packed, block),
+                              grid_x,
                               grid_rows(preprocess_kernel, context.batch),
                               1);
 

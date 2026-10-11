@@ -256,17 +256,16 @@ def _build_r2c_half_pack_kernel_source(
 
 
 def _build_r2c_packed_postprocess_kernel_source(
-    n: int, dtype: str
-) -> tuple[str, list[str], list[str]]:
+    n: int, dtype: str, elements_per_program: int = 256
+) -> tuple[str, list[str], list[str], int, int]:
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
     packed = n // 2
     half = packed + 1
-    block = 256
-    block_cols, rows_per_block = _packed_layout(half, block)
+    block_cols, rows_per_block = _packed_layout(half, elements_per_program)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
-    kernel_name = f"_r2c_packed_postprocess_kernel_n{n}_{suffix}"
+    kernel_name = f"_r2c_packed_postprocess_kernel_n{n}_{suffix}_e{elements_per_program}_b{block_cols}"
     source = dedent(
         f"""
         @triton.jit
@@ -312,20 +311,20 @@ def _build_r2c_packed_postprocess_kernel_source(
         source,
         ["in_ptr", "twiddle_ptr", "out_ptr", "output_distance", "nbatch"],
         rows_per_block,
+        (half + block_cols - 1) // block_cols,
     )
 
 
 def _build_c2r_packed_preprocess_kernel_source(
-    n: int, dtype: str
-) -> tuple[str, list[str], list[str]]:
+    n: int, dtype: str, elements_per_program: int = 256
+) -> tuple[str, list[str], list[str], int, int]:
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
     packed = n // 2
-    block = 256
-    block_cols, rows_per_block = _packed_layout(packed, block)
+    block_cols, rows_per_block = _packed_layout(packed, elements_per_program)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
-    kernel_name = f"_c2r_packed_preprocess_kernel_n{n}_{suffix}"
+    kernel_name = f"_c2r_packed_preprocess_kernel_n{n}_{suffix}_e{elements_per_program}_b{block_cols}"
     source = dedent(
         f"""
         @triton.jit
@@ -373,6 +372,7 @@ def _build_c2r_packed_preprocess_kernel_source(
         source,
         ["in_ptr", "twiddle_ptr", "out_ptr", "input_distance", "nbatch"],
         rows_per_block,
+        (packed + block_cols - 1) // block_cols,
     )
 
 
