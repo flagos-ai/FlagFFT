@@ -179,6 +179,9 @@ class StockhamStageAiv {
     LocalTensor<float> q_root_real = q_root_buf_.Get<float>();
     LocalTensor<float> q_root_imag = q_root_real[kTile];
     LocalTensor<uint32_t> q_root_offsets = indices[4 * kTile];
+    LocalTensor<int32_t> root_indices_i = root_indices.ReinterpretCast<int32_t>();
+    LocalTensor<int32_t> q_root_offsets_i =
+        q_root_offsets.ReinterpretCast<int32_t>();
     LocalTensor<uint8_t> broadcast_scratch = broadcast_scratch_buf_.Get<uint8_t>();
     const uint32_t q_shape[2] = {radix_, kTile};
     const uint32_t input_shape[2] = {1, kTile};
@@ -205,12 +208,12 @@ class StockhamStageAiv {
         continue;
       }
 
-      Adds(root_indices, q_root_offsets,
-           digit * static_cast<uint32_t>(sizeof(float)), kTile);
+      Adds(root_indices_i, q_root_offsets_i,
+           static_cast<int32_t>(digit * sizeof(float)), kTile);
       Gather(q_root_real, roots, root_indices, 0, kTile);
-      Adds(root_indices, q_root_offsets,
-           (radix_ * kRootStride + digit) *
-               static_cast<uint32_t>(sizeof(float)),
+      Adds(root_indices_i, q_root_offsets_i,
+           static_cast<int32_t>((radix_ * kRootStride + digit) *
+                                sizeof(float)),
            kTile);
       Gather(q_root_imag, roots, root_indices, 0, kTile);
       PipeBarrier<PIPE_ALL>();
