@@ -105,20 +105,16 @@ class Transpose2DAiv {
     PipeBarrier<PIPE_ALL>();
 
     LocalTensor<uint64_t> output_complex = output_local.ReinterpretCast<uint64_t>();
-    for (uint32_t output_row = 0; output_row < valid_cols; ++output_row) {
-      const uint64_t output_offset =
-          (static_cast<uint64_t>(batch_index) * cols_ + col_start + output_row) * rows_ + row_start;
-      GlobalTensor<uint64_t> output_global;
-      output_global.SetGlobalBuffer(output_ptr_ + output_offset);
-      const DataCopyExtParams output_params(valid_cols,
-                                            valid_rows * sizeof(uint64_t),
-                                            kTileDataBlocks - (valid_rows + 3) / 4,
-                                            (rows_ - valid_rows) * sizeof(uint64_t),
-                                            0);
-      DataCopyPad(output_global,
-                  output_complex[output_row * kTile],
-                  output_params);
-    }
+    const uint64_t output_offset =
+        (static_cast<uint64_t>(batch_index) * cols_ + col_start) * rows_ + row_start;
+    GlobalTensor<uint64_t> output_global;
+    output_global.SetGlobalBuffer(output_ptr_ + output_offset);
+    const DataCopyExtParams output_params(valid_cols,
+                                          valid_rows * sizeof(uint64_t),
+                                          kTileDataBlocks - (valid_rows + 3) / 4,
+                                          (rows_ - valid_rows) * sizeof(uint64_t),
+                                          0);
+    DataCopyPad(output_global, output_complex, output_params);
     // The same UB buffers are reused by the next grid-stride tile.
     PipeBarrier<PIPE_ALL>();
   }
