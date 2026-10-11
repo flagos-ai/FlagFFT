@@ -447,26 +447,7 @@ def _emit_r2c_pointwise_jit_kernel(
     target: str = "",
 ) -> dict[str, Any]:
     elements_per_program = 256
-    packed_real_elements = 256
     num_warps = _RESHAPE_NUM_WARPS
-    grid_x_override = 0
-    if target.startswith("npu:") and kernel in {
-        "r2c_packed_postprocess",
-        "c2r_packed_preprocess",
-    }:
-        tile_text = os.getenv("FLAGFFT_NPU_2D_REAL_PACK_TILE", "256")
-        if tile_text == "auto":
-            tile_text = "256"
-        try:
-            packed_real_elements = int(tile_text)
-        except ValueError:
-            raise ValueError(
-                "FLAGFFT_NPU_2D_REAL_PACK_TILE must be auto or one of 256, 512, 1024, 2048"
-            ) from None
-        if packed_real_elements not in {256, 512, 1024, 2048}:
-            raise ValueError(
-                "FLAGFFT_NPU_2D_REAL_PACK_TILE must be auto or one of 256, 512, 1024, 2048"
-            )
     if target.startswith("npu:") and n == 256:
         # AIV conversion kernels are sensitive to work per block. Keep the
         # profiled one-row/four-thread layout as the default; expose narrow
@@ -504,16 +485,14 @@ def _emit_r2c_pointwise_jit_kernel(
             kernel_source,
             arg_names,
             rows_per_block,
-            grid_x_override,
-        ) = _build_r2c_packed_postprocess_kernel_source(n, dtype, packed_real_elements)
+        ) = _build_r2c_packed_postprocess_kernel_source(n, dtype)
     elif kernel == "c2r_packed_preprocess":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-            grid_x_override,
-        ) = _build_c2r_packed_preprocess_kernel_source(n, dtype, packed_real_elements)
+        ) = _build_c2r_packed_preprocess_kernel_source(n, dtype)
     elif kernel == "compact_to_hermitian_full":
         (
             kernel_name,
@@ -560,8 +539,6 @@ def _emit_r2c_pointwise_jit_kernel(
         "block": 256,
         "rows_per_block": int(rows_per_block),
     }
-    if grid_x_override > 0:
-        metadata["grid_x_override"] = int(grid_x_override)
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
