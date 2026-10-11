@@ -323,6 +323,7 @@ struct CompiledRawStockhamNode final : CompiledRawNode {
     bool enabled = false;
     DeviceAllocation twiddles;
     DeviceAllocation roots;
+    DeviceAllocation store_indices;
   };
 
   CompiledRawStockhamNode(int64_t length,

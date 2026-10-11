@@ -31,6 +31,7 @@ class StockhamStageAiv {
                               GM_ADDR stage_twiddles,
                               GM_ADDR radix_roots,
                               GM_ADDR index_table,
+                              GM_ADDR store_index_table,
                               uint32_t length,
                               uint32_t radix,
                               uint32_t span,
@@ -55,6 +56,12 @@ class StockhamStageAiv {
     batch_groups_ = (static_cast<uint64_t>(batch_) + batch_group_ - 1) /
                     batch_group_;
     root_float_count_ = 2 * radix_ * kRootStride;
+    has_contiguous_store_ = store_index_table != nullptr && span_ <= kTile;
+    if (has_contiguous_store_) {
+      store_indices_.SetGlobalBuffer(
+          reinterpret_cast<__gm__ uint32_t *>(store_index_table));
+      store_index_stride_ = (2 * radix_ * batch_lane_extent_ + 7U) & ~7U;
+    }
 
     pipe_.InitBuffer(input_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(twiddle_buf_, 2 * kTile * sizeof(float));
@@ -65,7 +72,15 @@ class StockhamStageAiv {
     pipe_.InitBuffer(work_buf_, 7 * kTile * sizeof(float));
     pipe_.InitBuffer(planar_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(packed_buf_, 2 * kTile * sizeof(float));
-    pipe_.InitBuffer(store_buf_, 8 * kTile * sizeof(float));
+    const uint32_t store_buffer_floats = has_contiguous_store_
+        ? (store_index_stride_ > 8 * kTile ? store_index_stride_ : 8 * kTile)
+        : 8 * kTile;
+    pipe_.InitBuffer(store_buf_, store_buffer_floats * sizeof(float));
+    if (has_contiguous_store_) {
+      pipe_.InitBuffer(store_indices_buf_,
+                       static_cast<uint64_t>(store_index_stride_) * batch_group_ *
+                           sizeof(uint32_t));
+    }
     pipe_.InitBuffer(q_input_buf_, 2 * kMaxRadix * kTile * sizeof(float));
     pipe_.InitBuffer(q_coeff_buf_, 2 * kMaxRadix * kTile * sizeof(float));
     pipe_.InitBuffer(q_acc_buf_, 2 * kMaxRadix * kTile * sizeof(float));
@@ -77,6 +92,10 @@ class StockhamStageAiv {
     DataCopy(roots, radix_roots_, root_float_count_);
     LocalTensor<uint32_t> indices = indices_buf_.Get<uint32_t>();
     DataCopy(indices, indices_, 5 * kTile);
+    if (has_contiguous_store_) {
+      LocalTensor<uint32_t> store_indices = store_indices_buf_.Get<uint32_t>();
+      DataCopy(store_indices, store_indices_, store_index_stride_ * batch_group_);
+    }
     PipeBarrier<PIPE_ALL>();
   }
 
@@ -257,6 +276,31 @@ class StockhamStageAiv {
       PipeBarrier<PIPE_V>();
     }
 
+    if (has_contiguous_store_) {
+      LocalTensor<float> store = store_buf_.Get<float>();
+      LocalTensor<uint32_t> store_indices = store_indices_buf_.Get<uint32_t>();
+      LocalTensor<float> q_acc = q_acc_buf_.Get<float>();
+      const uint32_t output_complex_count = radix_ * valid;
+      const uint32_t table_stride = store_index_stride_;
+      // Repack the full radix tile once and issue one contiguous GM write.
+      for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
+        const uint32_t index_offset = transform * table_stride;
+        Gather(store, q_acc, store_indices[index_offset], 0, table_stride);
+        PipeBarrier<PIPE_V>();
+
+        const uint64_t output_base = (batch_index + transform) * length_ +
+            static_cast<uint64_t>(radix_) * k_start -
+            static_cast<uint64_t>(radix_ - 1) * j_start;
+        GlobalTensor<uint64_t> dst;
+        dst.SetGlobalBuffer(output_ptr_ + output_base);
+        const DataCopyExtParams params(
+            1, output_complex_count * sizeof(uint64_t), 0, 0, 0);
+        DataCopyPad(dst, store.ReinterpretCast<uint64_t>(), params);
+        PipeBarrier<PIPE_ALL>();
+      }
+      return;
+    }
+
     LocalTensor<float> planar = planar_buf_.Get<float>();
     LocalTensor<float> packed = packed_buf_.Get<float>();
     LocalTensor<float> store = store_buf_.Get<float>();
@@ -315,6 +359,7 @@ class StockhamStageAiv {
   TBuf<TPosition::VECCALC> planar_buf_;
   TBuf<TPosition::VECCALC> packed_buf_;
   TBuf<TPosition::VECCALC> store_buf_;
+  TBuf<TPosition::VECCALC> store_indices_buf_;
   TBuf<TPosition::VECCALC> q_input_buf_;
   TBuf<TPosition::VECCALC> q_coeff_buf_;
   TBuf<TPosition::VECCALC> q_acc_buf_;
@@ -324,6 +369,7 @@ class StockhamStageAiv {
   __gm__ uint64_t *stage_twiddles_ptr_ = nullptr;
   GlobalTensor<float> radix_roots_;
   GlobalTensor<uint32_t> indices_;
+  GlobalTensor<uint32_t> store_indices_;
   __gm__ uint64_t *input_ptr_ = nullptr;
   __gm__ uint64_t *output_ptr_ = nullptr;
   uint32_t length_ = 0;
@@ -338,6 +384,8 @@ class StockhamStageAiv {
   uint32_t batch_group_ = 1;
   uint64_t batch_groups_ = 0;
   uint32_t root_float_count_ = 0;
+  uint32_t store_index_stride_ = 0;
+  bool has_contiguous_store_ = false;
 };
 }  // namespace
 
@@ -346,12 +394,13 @@ extern "C" __global__ __aicore__ void flagfft_npu_stockham_stage(GM_ADDR input,
                                                                   GM_ADDR stage_twiddles,
                                                                   GM_ADDR radix_roots,
                                                                   GM_ADDR indices,
+                                                                  GM_ADDR store_indices,
                                                                   uint32_t length,
                                                                   uint32_t radix,
                                                                   uint32_t span,
                                                                   uint32_t batch) {
   StockhamStageAiv kernel;
-  kernel.Init(input, output, stage_twiddles, radix_roots, indices,
+  kernel.Init(input, output, stage_twiddles, radix_roots, indices, store_indices,
               length, radix, span, batch);
   kernel.Process();
 }

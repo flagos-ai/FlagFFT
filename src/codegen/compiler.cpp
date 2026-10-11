@@ -2090,6 +2090,46 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           }
           tables.twiddles = DeviceAllocation::from_floats(stage_twiddles);
         }
+        if (stage_span <= adaptor::npu::kAscendCStockhamTile) {
+          // Build a byte-offset map that repacks q-major real/imag accumulators
+          // into the contiguous output order for one tile (or transform slice).
+          const uint32_t store_lanes = static_cast<uint32_t>(
+              stage_span == 1
+                  ? std::min<int64_t>(ndiv, adaptor::npu::kAscendCStockhamTile)
+                  : stage_span);
+          const uint32_t store_index_count =
+              static_cast<uint32_t>(2 * radix * store_lanes);
+          const uint32_t store_index_stride =
+              (store_index_count + 7U) & ~7U;
+          const uint64_t store_batch_group = stage_batch_group;
+          std::vector<uint32_t> store_indices(
+              static_cast<std::size_t>(store_batch_group * store_index_stride), 0);
+          for (uint32_t transform = 0; transform < store_batch_group; ++transform) {
+            uint32_t *mapping = store_indices.data() +
+                                static_cast<std::size_t>(transform) *
+                                    store_index_stride;
+            for (uint32_t q = 0; q < static_cast<uint32_t>(radix); ++q) {
+              for (uint32_t lane = 0; lane < store_lanes; ++lane) {
+                const uint32_t output_complex = stage_span == 1
+                    ? lane * static_cast<uint32_t>(radix) + q
+                    : q * store_lanes + lane;
+                const uint32_t input_lane = transform * store_lanes + lane;
+                mapping[2 * output_complex] = static_cast<uint32_t>(
+                    (q * adaptor::npu::kAscendCStockhamTile + input_lane) *
+                    sizeof(float));
+                mapping[2 * output_complex + 1] = static_cast<uint32_t>(
+                    (static_cast<uint32_t>(radix) *
+                         adaptor::npu::kAscendCStockhamTile +
+                     q * adaptor::npu::kAscendCStockhamTile + input_lane) *
+                    sizeof(float));
+              }
+            }
+          }
+          tables.store_indices = DeviceAllocation(
+              store_indices.size() * sizeof(uint32_t));
+          tables.store_indices.copy_from_host(
+              store_indices.data(), store_indices.size() * sizeof(uint32_t));
+        }
         kernels.push_back(nullptr);
         aiv_stages.push_back(std::move(tables));
         stage_span *= radix;
