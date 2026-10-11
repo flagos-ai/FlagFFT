@@ -1998,13 +1998,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       butterfly_block = block_override("FLAGFFT_NPU_STOCKHAM_BLOCK", butterfly_block);
     }
     const int64_t prime_block = block_override("FLAGFFT_NPU_PRIME_BLOCK", 128);
-#if defined(FLAGFFT_BACKEND_NPU)
-    const char *stockham_radix_filter_env =
-        std::getenv("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM_RADIX_FILTER");
-    const int64_t stockham_radix_filter = stockham_radix_filter_env == nullptr
-                                              ? 0
-                                              : std::stoll(stockham_radix_filter_env);
-#endif
     for (int64_t radix : stockham->factors) {
 #if defined(FLAGFFT_BACKEND_NPU)
       const int64_t ndiv = stockham->length / radix;
@@ -2018,7 +2011,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           stage_span <= std::numeric_limits<uint32_t>::max() &&
           stockham->length % radix == 0 &&
           stockham->length % (radix * stage_span) == 0 &&
-          (stockham_radix_filter == 0 || stockham_radix_filter == radix) &&
           active_extent >= adaptor::npu::kAscendCStockhamTile / 2;
       if (use_aiv_stage) {
         if (aiv_indices.get() == 0) {
