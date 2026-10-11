@@ -318,9 +318,17 @@ struct CompiledRawStridedDirectDftNode final : CompiledRawNode {
 };
 
 struct CompiledRawStockhamNode final : CompiledRawNode {
+  struct AivStageTables {
+    bool enabled = false;
+    DeviceAllocation twiddles;
+    DeviceAllocation roots;
+  };
+
   CompiledRawStockhamNode(int64_t length,
                           std::vector<int64_t> factors,
                           std::vector<std::shared_ptr<JitKernel>> kernels,
+                          std::vector<AivStageTables> aiv_stages,
+                          DeviceAllocation aiv_indices,
                           DeviceAllocation twiddle,
                           DeviceAllocation first,
                           DeviceAllocation second);
@@ -331,6 +339,8 @@ struct CompiledRawStockhamNode final : CompiledRawNode {
   int64_t length;
   std::vector<int64_t> factors;
   std::vector<std::shared_ptr<JitKernel>> kernels;
+  std::vector<AivStageTables> aiv_stages;
+  DeviceAllocation aiv_indices;
   DeviceAllocation twiddle;
   DeviceAllocation first;
   DeviceAllocation second;

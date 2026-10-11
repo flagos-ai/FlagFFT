@@ -23,6 +23,7 @@
 #include "adaptor/backend/npu/ascendc_fft_small.hpp"
 #include "adaptor/backend/npu/ascendc_transpose3d.hpp"
 #include "adaptor/backend/npu/ascendc_transpose2d.hpp"
+#include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
 #endif
 
 #include <algorithm>
@@ -900,12 +901,16 @@ flagfftResult CompiledRawStridedDirectDftNode::execute(adaptor::DevicePtr input,
 CompiledRawStockhamNode::CompiledRawStockhamNode(int64_t length,
                                                  std::vector<int64_t> factors,
                                                  std::vector<std::shared_ptr<JitKernel>> kernels,
+                                                 std::vector<AivStageTables> aiv_stages,
+                                                 DeviceAllocation aiv_indices,
                                                  DeviceAllocation twiddle,
                                                  DeviceAllocation first,
                                                  DeviceAllocation second)
     : length(length),
       factors(std::move(factors)),
       kernels(std::move(kernels)),
+      aiv_stages(std::move(aiv_stages)),
+      aiv_indices(std::move(aiv_indices)),
       twiddle(std::move(twiddle)),
       first(std::move(first)),
       second(std::move(second)) {
@@ -928,24 +933,57 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
     const int64_t block_limit = block_limit_per_launch();
     for (std::size_t stage = 0; stage < factors.size(); ++stage) {
       const int64_t factor = factors[stage];
-      const int64_t block = kernels[stage]->butterflies_per_block;
-      const int64_t programs_per_batch = (length / factor + block - 1) / block;
-      const int64_t batch_chunk = std::max<int64_t>(
-          1,
-          std::min<int64_t>(context.batch, block_limit / std::max<int64_t>(1, programs_per_batch)));
       const bool last = stage + 1 == factors.size();
       adaptor::DevicePtr dst =
           last && current != output ? output : (stage % 2 == 0 ? first.get() : second.get());
-      for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
-        const int64_t count = std::min(batch_chunk, context.batch - batch_offset);
-        const int64_t byte_offset = batch_offset * length * element_bytes;
-        std::vector<JitKernelArg> args = {JitKernelArg::device(current + byte_offset),
-                                          JitKernelArg::device(dst + byte_offset),
-                                          JitKernelArg::device(twiddle.get()),
-                                          JitKernelArg::i64(span),
-                                          JitKernelArg::i32(static_cast<int32_t>(count))};
-        const int64_t butterflies = count * (length / factor);
-        kernels[stage]->launch(context.stream, args, (butterflies + block - 1) / block, 1, 1);
+#if defined(FLAGFFT_BACKEND_NPU)
+      if (aiv_stages[stage].enabled) {
+        constexpr int64_t kTile = adaptor::npu::kAscendCStockhamTile;
+        const int64_t ndiv = length / factor;
+        const int64_t tiles_per_transform = span == 1
+                                                ? (ndiv + kTile - 1) / kTile
+                                                : (ndiv / span) * ((span + kTile - 1) / kTile);
+        const int64_t max_batch = std::max<int64_t>(
+            1, static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) /
+                   std::max<int64_t>(1, tiles_per_transform));
+        const int64_t batch_chunk = std::min(context.batch, max_batch);
+        for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+          const int64_t count = std::min(batch_chunk, context.batch - batch_offset);
+          const int64_t byte_offset = batch_offset * length * element_bytes;
+          const auto &tables = aiv_stages[stage];
+          const flagfftResult status = adaptor::npu::launch_ascendc_stockham_stage(
+              current + byte_offset,
+              dst + byte_offset,
+              tables.twiddles.get(),
+              tables.roots.get(),
+              aiv_indices.get(),
+              static_cast<uint32_t>(length),
+              static_cast<uint32_t>(factor),
+              static_cast<uint32_t>(span),
+              static_cast<uint32_t>(count),
+              context.stream);
+          if (status != FLAGFFT_SUCCESS) return status;
+        }
+      } else
+#endif
+      {
+        const int64_t block = kernels[stage]->butterflies_per_block;
+        const int64_t programs_per_batch = (length / factor + block - 1) / block;
+        const int64_t batch_chunk = std::max<int64_t>(
+            1,
+            std::min<int64_t>(context.batch,
+                              block_limit / std::max<int64_t>(1, programs_per_batch)));
+        for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+          const int64_t count = std::min(batch_chunk, context.batch - batch_offset);
+          const int64_t byte_offset = batch_offset * length * element_bytes;
+          std::vector<JitKernelArg> args = {JitKernelArg::device(current + byte_offset),
+                                            JitKernelArg::device(dst + byte_offset),
+                                            JitKernelArg::device(twiddle.get()),
+                                            JitKernelArg::i64(span),
+                                            JitKernelArg::i32(static_cast<int32_t>(count))};
+          const int64_t butterflies = count * (length / factor);
+          kernels[stage]->launch(context.stream, args, (butterflies + block - 1) / block, 1, 1);
+        }
       }
       current = dst;
       span *= factor;

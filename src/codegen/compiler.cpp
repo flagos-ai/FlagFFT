@@ -23,6 +23,10 @@
 #include <utility>
 #include <limits>
 
+#if defined(FLAGFFT_BACKEND_NPU)
+#include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
+#endif
+
 namespace flagfft {
 namespace {
 
@@ -1805,6 +1809,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" &&
                                    flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
+  const bool npu_2d_aiv_stockham = request.device_type == "npu" &&
+                                   request.origin_rank == 2 &&
+                                   request.input_dtype == "complex64" &&
+                                   request.output_dtype == "complex64" &&
+                                   flag_or_default("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM", false);
   const bool use_npu_2d_aiv128 = npu_2d_complex_child &&
                                  flag_or_default("FLAGFFT_NPU_2D_AIV128", false);
   const bool use_npu_2d_aiv2048 = npu_2d_complex_child &&
@@ -1962,6 +1971,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     }
 #endif
     std::vector<std::shared_ptr<JitKernel>> kernels;
+    std::vector<CompiledRawStockhamNode::AivStageTables> aiv_stages;
+    aiv_stages.reserve(stockham->factors.size());
+    DeviceAllocation aiv_indices;
     int64_t stage_span = 1;
     // Small single transforms use smaller tiles to expose more NPU programs;
     // batch-64 1024/2048 transforms use the best measured 32/64 tile sizes.
@@ -1987,6 +1999,70 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     }
     const int64_t prime_block = block_override("FLAGFFT_NPU_PRIME_BLOCK", 128);
     for (int64_t radix : stockham->factors) {
+#if defined(FLAGFFT_BACKEND_NPU)
+      const int64_t ndiv = stockham->length / radix;
+      const int64_t active_extent = stage_span == 1
+                                        ? ndiv
+                                        : std::min<int64_t>(stage_span,
+                                              adaptor::npu::kAscendCStockhamTile);
+      const bool use_aiv_stage = npu_2d_aiv_stockham && stockham->length > 0 &&
+          stockham->length <= std::numeric_limits<uint32_t>::max() &&
+          radix >= 2 && radix <= 19 && stage_span > 0 &&
+          stage_span <= std::numeric_limits<uint32_t>::max() &&
+          stockham->length % radix == 0 &&
+          stockham->length % (radix * stage_span) == 0 &&
+          active_extent >= adaptor::npu::kAscendCStockhamTile / 2;
+      if (use_aiv_stage) {
+        if (aiv_indices.get() == 0) {
+          constexpr uint32_t tile = adaptor::npu::kAscendCStockhamTile;
+          std::vector<uint32_t> indices(4 * tile);
+          for (uint32_t lane = 0; lane < tile; ++lane) {
+            indices[lane] = 2 * lane;
+            indices[tile + lane] = 2 * lane + 1;
+            indices[2 * tile + 2 * lane] = lane;
+            indices[2 * tile + 2 * lane + 1] = tile + lane;
+          }
+          aiv_indices = DeviceAllocation(indices.size() * sizeof(uint32_t));
+          aiv_indices.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
+        }
+
+        const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+        std::vector<float> roots(((2 * radix * radix + 7) / 8) * 8, 0.0f);
+        for (int64_t q = 0; q < radix; ++q) {
+          for (int64_t digit = 0; digit < radix; ++digit) {
+            const double angle = sign * 2.0 * kPi * static_cast<double>(q * digit) /
+                                 static_cast<double>(radix);
+            const std::size_t index = static_cast<std::size_t>(2 * (q * radix + digit));
+            roots[index] = static_cast<float>(std::cos(angle));
+            roots[index + 1] = static_cast<float>(std::sin(angle));
+          }
+        }
+
+        CompiledRawStockhamNode::AivStageTables tables;
+        tables.enabled = true;
+        tables.roots = DeviceAllocation::from_floats(roots);
+        if (stage_span > 1) {
+          std::vector<float> stage_twiddles(
+              static_cast<std::size_t>(2 * radix * stage_span), 0.0f);
+          for (int64_t digit = 0; digit < radix; ++digit) {
+            for (int64_t j = 0; j < stage_span; ++j) {
+              const double angle = sign * 2.0 * kPi * static_cast<double>(digit * j) /
+                                   static_cast<double>(radix * stage_span);
+              const std::size_t index =
+                  static_cast<std::size_t>(2 * (digit * stage_span + j));
+              stage_twiddles[index] = static_cast<float>(std::cos(angle));
+              stage_twiddles[index + 1] = static_cast<float>(std::sin(angle));
+            }
+          }
+          tables.twiddles = DeviceAllocation::from_floats(stage_twiddles);
+        }
+        kernels.push_back(nullptr);
+        aiv_stages.push_back(std::move(tables));
+        stage_span *= radix;
+        continue;
+      }
+#endif
+
       KernelKey key = KernelKey::direct_dft(triton_target_for_request(request),
                                             request.direction,
                                             request.input_dtype,
@@ -1998,6 +2074,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const bool vector_prime = radix == 13 || radix == 17 || radix == 19;
       key.factors = {radix, stage_span, vector_prime ? prime_block : butterfly_block};
       kernels.push_back(compile_kernel(key));
+      aiv_stages.emplace_back();
       stage_span *= radix;
     }
     const int64_t n = stockham->length;
@@ -2015,6 +2092,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return std::make_shared<CompiledRawStockhamNode>(n,
                                                      stockham->factors,
                                                      std::move(kernels),
+                                                     std::move(aiv_stages),
+                                                     std::move(aiv_indices),
                                                      std::move(twiddle),
                                                      adaptor::Memory(bytes),
                                                      adaptor::Memory(bytes));
