@@ -2048,11 +2048,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           : (ndiv / stage_span) *
                 ((stage_span + adaptor::npu::kAscendCStockhamTile - 1) /
                  adaptor::npu::kAscendCStockhamTile);
-      const uint64_t stage_batch_group = active_extent > 0 &&
-              active_extent < adaptor::npu::kAscendCStockhamTile
-          ? adaptor::npu::kAscendCStockhamTile /
-                static_cast<uint64_t>(active_extent)
-          : 1;
+      const uint64_t stage_batch_group =
+          adaptor::npu::ascendc_stockham_batch_group(
+              static_cast<uint64_t>(std::max<int64_t>(active_extent, 0)));
       const uint64_t stage_batch_count = batch > 0 ? static_cast<uint64_t>(batch) : 0;
       const uint64_t stage_batch_groups =
           stage_batch_count / stage_batch_group +

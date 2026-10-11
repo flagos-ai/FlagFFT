@@ -24,6 +24,17 @@ inline constexpr uint32_t kAscendCStockhamTile = 32;
 inline constexpr uint32_t kAscendCStockhamMaxRadix = 19;
 inline constexpr uint32_t kAscendCStockhamRootStride = 24;
 inline constexpr uint32_t kAscendCStockhamIndexVectors = 5;
+inline constexpr uint32_t kAscendCStockhamComplexAlignment = 4;
+
+// DataCopyPad local addresses must start on a 32-byte boundary. A complex64
+// value occupies 8 bytes, so only combine transforms when each local segment
+// begins at a multiple of four complex values.
+inline constexpr uint64_t ascendc_stockham_batch_group(uint64_t lane_extent) {
+  return lane_extent > 0 && lane_extent < kAscendCStockhamTile &&
+                 lane_extent % kAscendCStockhamComplexAlignment == 0
+             ? kAscendCStockhamTile / lane_extent
+             : 1;
+}
 
 flagfftResult launch_ascendc_stockham_stage(DevicePtr input,
                                              DevicePtr output,

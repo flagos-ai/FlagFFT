@@ -52,7 +52,12 @@ class StockhamStageAiv {
                                        : groups_per_transform_ * tiles_per_group_;
     // Keep this mapping in sync with the host's short-extent tile count.
     batch_lane_extent_ = span_ == 1 ? ndiv_ : (span_ < kTile ? span_ : kTile);
-    batch_group_ = batch_lane_extent_ < kTile ? kTile / batch_lane_extent_ : 1;
+    // Keep short-extent grouping aligned with the host helper: complex64 is
+    // 8 bytes, so each DataCopyPad local destination must start every 4 lanes.
+    batch_group_ = batch_lane_extent_ > 0 && batch_lane_extent_ < kTile &&
+                           batch_lane_extent_ % 4U == 0
+                       ? kTile / batch_lane_extent_
+                       : 1;
     batch_groups_ = (static_cast<uint64_t>(batch_) + batch_group_ - 1) /
                     batch_group_;
     root_float_count_ = 2 * radix_ * kRootStride;
