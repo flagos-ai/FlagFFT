@@ -57,6 +57,7 @@ class StockhamStageAiv {
     pipe_.InitBuffer(work_buf_, 7 * kTile * sizeof(float));
     pipe_.InitBuffer(planar_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(packed_buf_, 2 * kTile * sizeof(float));
+    pipe_.InitBuffer(store_buf_, 8 * kTile * sizeof(float));
 
     LocalTensor<float> roots = roots_buf_.Get<float>();
     DataCopy(roots, radix_roots_, root_float_count_);
@@ -161,7 +162,8 @@ class StockhamStageAiv {
     LocalTensor<float> acc_imag = work[kTile];
     LocalTensor<float> planar = planar_buf_.Get<float>();
     LocalTensor<float> packed = packed_buf_.Get<float>();
-    LocalTensor<uint64_t> packed_complex = packed.ReinterpretCast<uint64_t>();
+    LocalTensor<float> store = store_buf_.Get<float>();
+    LocalTensor<uint64_t> store_complex = store.ReinterpretCast<uint64_t>();
     const uint32_t dst_stride = (radix_ - 1) * sizeof(uint64_t);
     for (uint32_t q = 0; q < radix_; ++q) {
       Duplicate(acc_real, 0.0f, kTile);
@@ -199,19 +201,30 @@ class StockhamStageAiv {
       Gather(packed, planar, indices[2 * kTile], 0, 2 * kTile);
       PipeBarrier<PIPE_ALL>();
 
+      // MTE3 reads one 32-byte VECOUT block per transfer block even when the
+      // GM block length is one complex value. Stage each packed value at the
+      // start of a padded local block before the strided scatter.
+      Duplicate(store, 0.0f, 8 * kTile);
+      PipeBarrier<PIPE_ALL>();
+      for (uint32_t lane = 0; lane < valid; ++lane) {
+        store.SetValue(8 * lane, packed.GetValue(2 * lane));
+        store.SetValue(8 * lane + 1, packed.GetValue(2 * lane + 1));
+      }
+      PipeBarrier<PIPE_ALL>();
+
       const uint64_t output_base = batch_index * length_ +
           static_cast<uint64_t>(radix_) * k_start -
           static_cast<uint64_t>(radix_ - 1) * j_start +
           static_cast<uint64_t>(q) * span_;
       GlobalTensor<uint64_t> dst;
       dst.SetGlobalBuffer(output_ptr_ + output_base);
-      if (span_ == 1) {
-        const DataCopyExtParams params(valid, sizeof(uint64_t), 0, dst_stride, 0);
-        DataCopyPad(dst, packed_complex, params);
-      } else {
-        const DataCopyExtParams params(1, valid * sizeof(uint64_t), 0, 0, 0);
-        DataCopyPad(dst, packed_complex, params);
-      }
+      const uint32_t output_stride = span_ == 1 ? dst_stride : 0;
+      const DataCopyExtParams params(valid,
+                                     sizeof(uint64_t),
+                                     3 * sizeof(uint64_t),
+                                     output_stride,
+                                     0);
+      DataCopyPad(dst, store_complex, params);
       PipeBarrier<PIPE_ALL>();
     }
   }
@@ -226,6 +239,7 @@ class StockhamStageAiv {
   TBuf<TPosition::VECCALC> work_buf_;
   TBuf<TPosition::VECCALC> planar_buf_;
   TBuf<TPosition::VECCALC> packed_buf_;
+  TBuf<TPosition::VECCALC> store_buf_;
   __gm__ uint64_t *stage_twiddles_ptr_ = nullptr;
   GlobalTensor<float> radix_roots_;
   GlobalTensor<uint32_t> indices_;
