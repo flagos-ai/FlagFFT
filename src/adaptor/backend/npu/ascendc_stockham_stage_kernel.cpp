@@ -221,7 +221,7 @@ class StockhamStageAiv {
       const uint32_t output_stride = span_ == 1 ? dst_stride : 0;
       const DataCopyExtParams params(valid,
                                      sizeof(uint64_t),
-                                     3 * sizeof(uint64_t),
+                                     0,
                                      output_stride,
                                      0);
       DataCopyPad(dst, store_complex, params);
