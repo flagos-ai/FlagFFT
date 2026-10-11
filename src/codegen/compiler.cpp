@@ -1521,6 +1521,17 @@ namespace {
     // 2^20 is the upper end of the single-transform qualification range.
     const bool is_npu_single_fp32_target = request.device_type == "npu" &&
         request.input_dtype == "complex64" && batch == 1 && n >= 1024 && n <= 1048576;
+    // Two-dimensional real transforms apply this boundary to many independent
+    // rows. The packed even/odd formulation is batch independent, so allow it
+    // for contiguous FP32 rows as well as the previously qualified 1D case.
+    const bool is_npu_2d_batched_fp32_target = request.device_type == "npu" &&
+        request.origin_rank == 2 && request.raw_dim == 2 && batch > 1 &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        n >= 1024 && n <= 1048576 && request.fft_length == n &&
+        request.requested_n == n && !request.input_strides.empty() &&
+        request.input_strides.back() == 1;
+    const bool is_npu_fp32_target = is_npu_single_fp32_target ||
+                                    is_npu_2d_batched_fp32_target;
     const bool is_ix_single_fp32_target = batch == 1 && ix_packed_real_policy_enabled(request);
     const bool is_ix_batch_fp32_target = batch == 64 && n == 16384 &&
         ix_ct_batch_policy_enabled(request);
@@ -1553,12 +1564,12 @@ namespace {
         request.device_type == "maca" && request.raw_dim == 1 && batch == 1 && inverse &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
         (n == 185640 || n == 340200 || n == 524288 || n == 663000);
-    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_single_fp32_target &&
+    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_fp32_target &&
         !is_ix_single_fp32_target && !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target) {
       return std::nullopt;
     }
-    if (!force && !is_npu_single_fp32_target && !is_ix_single_fp32_target &&
+    if (!force && !is_npu_fp32_target && !is_ix_single_fp32_target &&
         !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target &&
         (request.input_dtype != "complex128" || n < 65536 ||
@@ -1581,7 +1592,7 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
-    if (!force && is_npu_single_fp32_target) {
+    if (!force && is_npu_fp32_target) {
       // Do not implicitly enable unmeasured Bluestein children or GPU tuning
       // cache entries. New radices qualify naturally when the NPU planner
       // supplies a Stockham plan for both the original and half length.
@@ -5498,6 +5509,34 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   col_request.requested_n = n0;
   col_request.batch = batch * half_n1;
 
+#if defined(FLAGFFT_BACKEND_NPU)
+  // Keep the real boundary compact through both dimensions. Compiling the
+  // row transform as a batched 1D real child enables the existing even/odd
+  // packed route for eligible long rows.
+  if (request.device_type == "npu" && request.origin_rank == 2 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) {
+    std::shared_ptr<CompiledRawNode> row_r2c =
+        compile_raw_r2c_node(node->row_plan, row_request, batch * n0, true);
+    std::shared_ptr<CompiledRawNode> col_fft =
+        compile_raw_node(node->col_plan, col_request, batch * half_n1);
+    auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+    auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
+    const std::size_t compact_bytes =
+        static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
+    return std::make_shared<CompiledRaw2DR2CRowNode>(n0,
+                                                     n1,
+                                                     std::move(row_r2c),
+                                                     std::move(col_fft),
+                                                     std::move(transpose_fwd),
+                                                     std::move(transpose_inv),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+  }
+#endif
+
   // Compile kernels
   auto expand_kernel = compile_real_to_complex_kernel(request, n1);
   std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
@@ -5683,6 +5722,34 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   }
 
   // Compile kernels
+#if defined(FLAGFFT_BACKEND_NPU)
+  // Symmetric compact-row schedule for NPU C2R. The existing 1D real child
+  // consumes compact rows after the column IFFT, so Hermitian expansion (when
+  // needed for odd lengths) stays local to the row transform.
+  if (request.device_type == "npu" && request.origin_rank == 2 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) {
+    std::shared_ptr<CompiledRawNode> col_fft =
+        compile_raw_node(node->col_plan, col_request, batch * half_n1);
+    std::shared_ptr<CompiledRawNode> row_c2r =
+        compile_raw_c2r_node(node->row_plan, row_request, batch * n0, true);
+    auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+    auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
+    const std::size_t compact_bytes =
+        static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+    DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
+    DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
+    return std::make_shared<CompiledRaw2DC2RRowNode>(n0,
+                                                     n1,
+                                                     std::move(col_fft),
+                                                     std::move(row_c2r),
+                                                     std::move(transpose_fwd),
+                                                     std::move(transpose_inv),
+                                                     std::move(temp1),
+                                                     std::move(temp2));
+  }
+#endif
+
   auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n1);
   std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
   std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
