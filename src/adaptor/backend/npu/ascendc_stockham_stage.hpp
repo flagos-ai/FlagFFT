@@ -21,6 +21,9 @@
 namespace flagfft::adaptor::npu {
 
 inline constexpr uint32_t kAscendCStockhamTile = 32;
+inline constexpr uint32_t kAscendCStockhamMaxRadix = 19;
+inline constexpr uint32_t kAscendCStockhamRootStride = 24;
+inline constexpr uint32_t kAscendCStockhamIndexVectors = 5;
 
 flagfftResult launch_ascendc_stockham_stage(DevicePtr input,
                                              DevicePtr output,

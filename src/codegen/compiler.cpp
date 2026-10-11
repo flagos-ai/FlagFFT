@@ -2015,26 +2015,36 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       if (use_aiv_stage) {
         if (aiv_indices.get() == 0) {
           constexpr uint32_t tile = adaptor::npu::kAscendCStockhamTile;
-          std::vector<uint32_t> indices(4 * tile);
+          std::vector<uint32_t> indices(
+              adaptor::npu::kAscendCStockhamIndexVectors * tile);
           for (uint32_t lane = 0; lane < tile; ++lane) {
             indices[lane] = 2 * lane * sizeof(float);
             indices[tile + lane] = (2 * lane + 1) * sizeof(float);
             indices[2 * tile + 2 * lane] = lane * sizeof(float);
             indices[2 * tile + 2 * lane + 1] = (tile + lane) * sizeof(float);
+            indices[4 * tile + lane] =
+                lane < adaptor::npu::kAscendCStockhamMaxRadix
+                    ? lane * adaptor::npu::kAscendCStockhamRootStride *
+                                sizeof(float)
+                          : 0;
           }
           aiv_indices = DeviceAllocation(indices.size() * sizeof(uint32_t));
           aiv_indices.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
         }
 
         const double sign = request.direction == "inverse" ? 1.0 : -1.0;
-        std::vector<float> roots(((2 * radix * radix + 7) / 8) * 8, 0.0f);
+        constexpr int64_t root_stride =
+            adaptor::npu::kAscendCStockhamRootStride;
+        std::vector<float> roots(2 * radix * root_stride, 0.0f);
         for (int64_t q = 0; q < radix; ++q) {
           for (int64_t digit = 0; digit < radix; ++digit) {
             const double angle = sign * 2.0 * kPi * static_cast<double>(q * digit) /
                                  static_cast<double>(radix);
-            const std::size_t index = static_cast<std::size_t>(2 * (q * radix + digit));
-            roots[index] = static_cast<float>(std::cos(angle));
-            roots[index + 1] = static_cast<float>(std::sin(angle));
+            roots[static_cast<std::size_t>(q * root_stride + digit)] =
+                static_cast<float>(std::cos(angle));
+            roots[static_cast<std::size_t>(radix * root_stride +
+                                           q * root_stride + digit)] =
+                static_cast<float>(std::sin(angle));
           }
         }
 

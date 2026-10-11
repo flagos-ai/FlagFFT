@@ -13,13 +13,16 @@
 // limitations under the License.
 
 #include "kernel_operator.h"
+#include "adv_api/broadcast/broadcast.h"
 
 using namespace AscendC;
 
 namespace {
 constexpr uint32_t kTile = 32;
 constexpr uint32_t kMaxRadix = 19;
-constexpr uint32_t kMaxRootFloats = (2 * kMaxRadix * kMaxRadix + 7) / 8 * 8;
+constexpr uint32_t kRootStride = 24;
+constexpr uint32_t kMaxRootFloats = 2 * kMaxRadix * kRootStride;
+constexpr uint32_t kBroadcastScratchBytes = 2048;
 
 class StockhamStageAiv {
  public:
@@ -46,23 +49,29 @@ class StockhamStageAiv {
     groups_per_transform_ = span_ == 1 ? 1 : ndiv_ / span_;
     tiles_per_transform_ = span_ == 1 ? (ndiv_ + kTile - 1) / kTile
                                        : groups_per_transform_ * tiles_per_group_;
-    root_float_count_ = ((2 * radix_ * radix_ + 7) / 8) * 8;
+    root_float_count_ = 2 * radix_ * kRootStride;
 
     pipe_.InitBuffer(input_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(twiddle_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(digits_buf_, 2 * kMaxRadix * kTile * sizeof(float));
     pipe_.InitBuffer(roots_buf_, kMaxRootFloats * sizeof(float));
-    pipe_.InitBuffer(indices_buf_, 4 * kTile * sizeof(uint32_t));
-    pipe_.InitBuffer(root_indices_buf_, 2 * kTile * sizeof(uint32_t));
+    pipe_.InitBuffer(indices_buf_, 5 * kTile * sizeof(uint32_t));
+    pipe_.InitBuffer(root_indices_buf_, kTile * sizeof(uint32_t));
     pipe_.InitBuffer(work_buf_, 7 * kTile * sizeof(float));
     pipe_.InitBuffer(planar_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(packed_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(store_buf_, 8 * kTile * sizeof(float));
+    pipe_.InitBuffer(q_input_buf_, 2 * kMaxRadix * kTile * sizeof(float));
+    pipe_.InitBuffer(q_coeff_buf_, 2 * kMaxRadix * kTile * sizeof(float));
+    pipe_.InitBuffer(q_acc_buf_, 2 * kMaxRadix * kTile * sizeof(float));
+    pipe_.InitBuffer(q_tmp_buf_, 3 * kMaxRadix * kTile * sizeof(float));
+    pipe_.InitBuffer(q_root_buf_, 2 * kTile * sizeof(float));
+    pipe_.InitBuffer(broadcast_scratch_buf_, kBroadcastScratchBytes);
 
     LocalTensor<float> roots = roots_buf_.Get<float>();
     DataCopy(roots, radix_roots_, root_float_count_);
     LocalTensor<uint32_t> indices = indices_buf_.Get<uint32_t>();
-    DataCopy(indices, indices_, 4 * kTile);
+    DataCopy(indices, indices_, 5 * kTile);
     PipeBarrier<PIPE_ALL>();
   }
 
@@ -158,42 +167,83 @@ class StockhamStageAiv {
       }
     }
 
-    LocalTensor<float> acc_real = work;
-    LocalTensor<float> acc_imag = work[kTile];
+    LocalTensor<float> q_input_real = q_input_buf_.Get<float>();
+    LocalTensor<float> q_input_imag = q_input_real[radix_ * kTile];
+    LocalTensor<float> q_coeff_real = q_coeff_buf_.Get<float>();
+    LocalTensor<float> q_coeff_imag = q_coeff_real[radix_ * kTile];
+    LocalTensor<float> q_acc_real = q_acc_buf_.Get<float>();
+    LocalTensor<float> q_acc_imag = q_acc_real[radix_ * kTile];
+    LocalTensor<float> q_tmp_real = q_tmp_buf_.Get<float>();
+    LocalTensor<float> q_tmp_imag = q_tmp_real[radix_ * kTile];
+    LocalTensor<float> q_tmp_aux = q_tmp_imag[radix_ * kTile];
+    LocalTensor<float> q_root_real = q_root_buf_.Get<float>();
+    LocalTensor<float> q_root_imag = q_root_real[kTile];
+    LocalTensor<uint32_t> q_root_offsets = indices[4 * kTile];
+    LocalTensor<uint8_t> broadcast_scratch = broadcast_scratch_buf_.Get<uint8_t>();
+    const uint32_t q_shape[2] = {radix_, kTile};
+    const uint32_t input_shape[2] = {1, kTile};
+    const uint32_t root_shape[2] = {radix_, 1};
+    const BinaryRepeatParams q_repeat_params(
+        1, 1, 1, kTile / 8, kTile / 8, kTile / 8);
+    Duplicate(q_acc_real, 0.0f, radix_ * kTile);
+    Duplicate(q_acc_imag, 0.0f, radix_ * kTile);
+    PipeBarrier<PIPE_ALL>();
+
+    for (uint32_t digit = 0; digit < radix_; ++digit) {
+      LocalTensor<float> digit_real = digits[digit * 2 * kTile];
+      LocalTensor<float> digit_imag = digits[digit * 2 * kTile + kTile];
+      Broadcast<float, 2, 0>(q_input_real, digit_real, q_shape, input_shape,
+                             broadcast_scratch);
+      Broadcast<float, 2, 0>(q_input_imag, digit_imag, q_shape, input_shape,
+                             broadcast_scratch);
+      if (digit == 0) {
+        Add(q_acc_real, q_acc_real, q_input_real, kTile, radix_,
+            q_repeat_params);
+        Add(q_acc_imag, q_acc_imag, q_input_imag, kTile, radix_,
+            q_repeat_params);
+        PipeBarrier<PIPE_ALL>();
+        continue;
+      }
+
+      Duplicate(root_indices, digit * sizeof(float), kTile);
+      Add(root_indices, root_indices, q_root_offsets, kTile);
+      Gather(q_root_real, roots, root_indices, 0, kTile);
+      Duplicate(root_indices,
+                (radix_ * kRootStride + digit) * sizeof(float), kTile);
+      Add(root_indices, root_indices, q_root_offsets, kTile);
+      Gather(q_root_imag, roots, root_indices, 0, kTile);
+      PipeBarrier<PIPE_ALL>();
+      Broadcast<float, 2, 1>(q_coeff_real, q_root_real, q_shape, root_shape,
+                             broadcast_scratch);
+      Broadcast<float, 2, 1>(q_coeff_imag, q_root_imag, q_shape, root_shape,
+                             broadcast_scratch);
+      Mul(q_tmp_real, q_input_real, q_coeff_real, kTile, radix_,
+          q_repeat_params);
+      Mul(q_tmp_imag, q_input_imag, q_coeff_imag, kTile, radix_,
+          q_repeat_params);
+      Sub(q_tmp_real, q_tmp_real, q_tmp_imag, kTile, radix_,
+          q_repeat_params);
+      Mul(q_tmp_imag, q_input_real, q_coeff_imag, kTile, radix_,
+          q_repeat_params);
+      Mul(q_tmp_aux, q_input_imag, q_coeff_real, kTile, radix_,
+          q_repeat_params);
+      Add(q_tmp_imag, q_tmp_imag, q_tmp_aux, kTile, radix_,
+          q_repeat_params);
+      Add(q_acc_real, q_acc_real, q_tmp_real, kTile, radix_,
+          q_repeat_params);
+      Add(q_acc_imag, q_acc_imag, q_tmp_imag, kTile, radix_,
+          q_repeat_params);
+      PipeBarrier<PIPE_ALL>();
+    }
+
     LocalTensor<float> planar = planar_buf_.Get<float>();
     LocalTensor<float> packed = packed_buf_.Get<float>();
     LocalTensor<float> store = store_buf_.Get<float>();
     LocalTensor<uint64_t> store_complex = store.ReinterpretCast<uint64_t>();
     const uint32_t dst_stride = (radix_ - 1) * sizeof(uint64_t);
     for (uint32_t q = 0; q < radix_; ++q) {
-      Duplicate(acc_real, 0.0f, kTile);
-      Duplicate(acc_imag, 0.0f, kTile);
-      PipeBarrier<PIPE_ALL>();
-      for (uint32_t digit = 0; digit < radix_; ++digit) {
-        LocalTensor<float> digit_real = digits[digit * 2 * kTile];
-        LocalTensor<float> digit_imag = digits[digit * 2 * kTile + kTile];
-        if (q == 0) {
-          Add(acc_real, acc_real, digit_real, kTile);
-          Add(acc_imag, acc_imag, digit_imag, kTile);
-        } else {
-          const uint32_t coeff = 2 * (q * radix_ + digit);
-          constexpr uint32_t kFloatBytes = static_cast<uint32_t>(sizeof(float));
-          Duplicate(root_indices, coeff * kFloatBytes, kTile);
-          Duplicate(root_indices[kTile], (coeff + 1) * kFloatBytes, kTile);
-          PipeBarrier<PIPE_ALL>();
-          Gather(twiddle_real, roots, root_indices, 0, kTile);
-          Gather(twiddle_imag, roots, root_indices[kTile], 0, kTile);
-          PipeBarrier<PIPE_ALL>();
-          Mul(tmp_real, digit_real, twiddle_real, kTile);
-          Mul(tmp_imag, digit_imag, twiddle_imag, kTile);
-          Sub(tmp_real, tmp_real, tmp_imag, kTile);
-          Mul(tmp_imag, digit_real, twiddle_imag, kTile);
-          Mul(tmp_aux, digit_imag, twiddle_real, kTile);
-          Add(tmp_imag, tmp_imag, tmp_aux, kTile);
-          Add(acc_real, acc_real, tmp_real, kTile);
-          Add(acc_imag, acc_imag, tmp_imag, kTile);
-        }
-      }
+      LocalTensor<float> acc_real = q_acc_real[q * kTile];
+      LocalTensor<float> acc_imag = q_acc_imag[q * kTile];
       PipeBarrier<PIPE_ALL>();
       DataCopy(planar, acc_real, kTile);
       DataCopy(planar[kTile], acc_imag, kTile);
@@ -240,6 +290,12 @@ class StockhamStageAiv {
   TBuf<TPosition::VECCALC> planar_buf_;
   TBuf<TPosition::VECCALC> packed_buf_;
   TBuf<TPosition::VECCALC> store_buf_;
+  TBuf<TPosition::VECCALC> q_input_buf_;
+  TBuf<TPosition::VECCALC> q_coeff_buf_;
+  TBuf<TPosition::VECCALC> q_acc_buf_;
+  TBuf<TPosition::VECCALC> q_tmp_buf_;
+  TBuf<TPosition::VECCALC> q_root_buf_;
+  TBuf<TPosition::VECCALC> broadcast_scratch_buf_;
   __gm__ uint64_t *stage_twiddles_ptr_ = nullptr;
   GlobalTensor<float> radix_roots_;
   GlobalTensor<uint32_t> indices_;
