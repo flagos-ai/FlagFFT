@@ -252,6 +252,9 @@ if(BACKEND STREQUAL "NPU")
         flagfft_npu_aiv_packed_real_boundary
         flagfft_npu_aiv_transpose3d
         flagfft_npu_aiv_transpose2d)
+    # AscendC generates the launch stub included by the host wrapper. Build
+    # the helper target before compiling flagfft's host-side source files.
+    add_dependencies(flagfft flagfft_npu_aiv_packed_real_boundary_host)
     target_compile_definitions(flagfft PRIVATE FLAGFFT_BACKEND_NPU=1)
 endif()
 
