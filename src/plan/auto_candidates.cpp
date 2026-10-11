@@ -64,6 +64,47 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
   // Keep NPU convolution children on the validated small-radix path, including
   // lengths above the GPU-specific power-of-two preference threshold.
   if (context.device_type == "npu") {
+    const char *smooth_setting = std::getenv("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV");
+    if (smooth_setting != nullptr && std::string(smooth_setting) != "0" &&
+        std::string(smooth_setting) != "1" && std::string(smooth_setting) != "auto") {
+      throw std::runtime_error("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV must be 0, 1 or auto");
+    }
+    if (context.origin_rank == 2 && smooth_setting != nullptr &&
+        std::string(smooth_setting) != "0") {
+      // Bluestein only needs a convolution length >= 2*n-1. A power-of-two
+      // length is safe, but can add substantial work for long transforms.
+      // Generate lengths with small prime factors and choose among them using
+      // the same FFT cost model used by the non-NPU convolution planner. The
+      // restriction to 2/3/5/7 keeps CANN away from the large codelets that
+      // are not yet qualified on this backend.
+      std::vector<int64_t> candidates {1};
+      for (int64_t prime : {2, 3, 5, 7}) {
+        const std::vector<int64_t> previous = candidates;
+        for (int64_t base : previous) {
+          int64_t candidate = base;
+          while (candidate <= power / prime) {
+            candidate *= prime;
+            candidates.push_back(candidate);
+          }
+        }
+      }
+
+      int64_t best = power;
+      double best_cost = 3.0 * cost_for(power) + static_cast<double>(power);
+      for (int64_t candidate : candidates) {
+        if (candidate < minimum || candidate >= best) continue;
+        const Factorization factorization = factorize_supported_radices(candidate);
+        if (factorization.remainder != 1 || factorization.factors.empty()) continue;
+        const double candidate_cost =
+            3.0 * cost_for(candidate) + static_cast<double>(candidate);
+        if (candidate_cost < best_cost ||
+            (candidate_cost == best_cost && candidate < best)) {
+          best = candidate;
+          best_cost = candidate_cost;
+        }
+      }
+      return best;
+    }
     return power;
   }
   const bool is_fp32 = context.input_dtype == "complex64" || context.input_dtype == "float32";
