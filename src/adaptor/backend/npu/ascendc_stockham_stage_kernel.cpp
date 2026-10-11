@@ -27,7 +27,7 @@ class StockhamStageAiv {
                               GM_ADDR output,
                               GM_ADDR stage_twiddles,
                               GM_ADDR radix_roots,
-                              GM_ADDR indices,
+                              GM_ADDR index_table,
                               uint32_t length,
                               uint32_t radix,
                               uint32_t span,
@@ -36,7 +36,7 @@ class StockhamStageAiv {
     output_ptr_ = reinterpret_cast<__gm__ uint64_t *>(output);
     stage_twiddles_ptr_ = reinterpret_cast<__gm__ uint64_t *>(stage_twiddles);
     radix_roots_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(radix_roots));
-    indices_.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(indices));
+    indices_.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t *>(index_table));
     length_ = length;
     radix_ = radix;
     span_ = span;
