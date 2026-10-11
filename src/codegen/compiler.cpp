@@ -25,6 +25,7 @@
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
+#include "adaptor/backend/npu/ascendc_packed_real_boundary.hpp"
 #endif
 
 namespace flagfft {
@@ -66,6 +67,73 @@ namespace {
     return elements >= kMinimumBytes / sizeof(uint64_t) &&
            flag_or_default("FLAGFFT_NPU_2D_NATIVE_TRANSPOSE", false);
   }
+
+#if defined(FLAGFFT_BACKEND_NPU)
+  bool npu_2d_packed_real_boundary_enabled(const FFTRequest &request,
+                                            int64_t length,
+                                            int64_t batch) {
+    // One AIV owns one row. Require at least one hardware-sized wave and a
+    // moderate amount of work so launch/setup costs do not dominate small
+    // batched transforms. This policy is independent of the benchmark shape.
+    constexpr int64_t kMinimumRows = 32;
+    constexpr int64_t kMinimumElements = 16 * 1024;
+    return request.device_type == "npu" && request.origin_rank == 2 &&
+           request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+           length >= 128 && length <= 2048 && (length & 1) == 0 &&
+           batch >= kMinimumRows && batch <= std::numeric_limits<int32_t>::max() &&
+           length <= std::numeric_limits<int64_t>::max() / batch &&
+           length * batch >= kMinimumElements;
+  }
+
+  std::pair<DeviceAllocation, DeviceAllocation> build_npu_packed_real_boundary_tables(
+      int64_t length,
+      bool r2c_postprocess) {
+    constexpr uint32_t kTile = 256;
+    constexpr double kPi = 3.141592653589793238462643383279502884;
+    const uint32_t packed = static_cast<uint32_t>(length / 2);
+    const uint32_t half = packed + 1;
+    const uint32_t output_count = r2c_postprocess ? half : packed;
+    const uint32_t padded_half = ((half + kTile - 1) / kTile) * kTile;
+    const uint32_t index_count = 3 * padded_half + 2 * kTile;
+    std::vector<uint32_t> indices(index_count, 0);
+    for (uint32_t k = 0; k < padded_half; ++k) {
+      const uint32_t lane = k < output_count ? k : 0;
+      const uint32_t a = r2c_postprocess ? lane % packed : lane;
+      const uint32_t b = r2c_postprocess ? (packed - a) % packed : packed - lane;
+      indices[k] = 2 * a * sizeof(float);
+      indices[padded_half + k] = 2 * b * sizeof(float);
+      indices[2 * padded_half + k] = 2 * lane * sizeof(float);
+    }
+    for (uint32_t lane = 0; lane < kTile; ++lane) {
+      indices[3 * padded_half + 2 * lane] = lane * sizeof(float);
+      indices[3 * padded_half + 2 * lane + 1] = (kTile + lane) * sizeof(float);
+    }
+
+    const uint32_t twiddle_count = ((2 * half + 7) / 8) * 8;
+    std::vector<float> twiddles(twiddle_count, 0.0f);
+    for (uint32_t k = 0; k < half; ++k) {
+      const double angle = -2.0 * kPi * static_cast<double>(k) /
+                           static_cast<double>(length);
+      twiddles[2 * k] = static_cast<float>(std::cos(angle));
+      twiddles[2 * k + 1] = static_cast<float>(std::sin(angle));
+    }
+
+    DeviceAllocation index_allocation(indices.size() * sizeof(uint32_t));
+    index_allocation.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
+    DeviceAllocation twiddle_allocation(twiddles.size() * sizeof(float));
+    twiddle_allocation.copy_from_host(twiddles.data(), twiddles.size() * sizeof(float));
+    return {std::move(index_allocation), std::move(twiddle_allocation)};
+  }
+
+  std::shared_ptr<CompiledRawNode> make_npu_packed_real_boundary_node(
+      int64_t length,
+      bool r2c_postprocess) {
+    auto [indices, twiddles] =
+        build_npu_packed_real_boundary_tables(length, r2c_postprocess);
+    return std::make_shared<CompiledRawNpuPackedRealBoundaryNode>(
+        length, r2c_postprocess, std::move(indices), std::move(twiddles));
+  }
+#endif
 
   DeviceAllocation build_npu_2d_transpose_indices(uint32_t tile) {
     const uint32_t float_count = 2 * tile * tile;
@@ -2651,16 +2719,31 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     const int64_t packed = n / 2;
     DeviceAllocation packed_output =
         adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
+    std::shared_ptr<JitKernel> postprocess_kernel;
+    std::shared_ptr<CompiledRawNode> aiv_postprocess;
+    DeviceAllocation boundary_twiddle;
+#if defined(FLAGFFT_BACKEND_NPU)
+    const bool use_npu_aiv_boundary =
+        npu_2d_packed_real_boundary_enabled(request, n, batch);
+    if (use_npu_aiv_boundary) {
+      aiv_postprocess = make_npu_packed_real_boundary_node(n, true);
+    } else
+#endif
+    {
+      postprocess_kernel = compile_r2c_packed_postprocess_kernel(request, n);
+      boundary_twiddle = build_raw_packed_real_twiddle(request, n);
+    }
     return std::make_shared<CompiledRawPackedR2CNode>(
         n,
         compile_raw_node(packed_child->plan, packed_child->request, batch),
-        compile_r2c_packed_postprocess_kernel(request, n),
-        build_raw_packed_real_twiddle(request, n),
+        std::move(postprocess_kernel),
+        std::move(boundary_twiddle),
         std::move(packed_output),
         [node, request, batch]() {
           TritonCompiler compiler;
           return compiler.compile_raw_r2c_node(node, request, batch, false);
-        });
+        },
+        std::move(aiv_postprocess));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
@@ -2755,16 +2838,31 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       }
     }
     DeviceAllocation packed_input = adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
+    std::shared_ptr<JitKernel> preprocess_kernel;
+    std::shared_ptr<CompiledRawNode> aiv_preprocess;
+    DeviceAllocation boundary_twiddle;
+#if defined(FLAGFFT_BACKEND_NPU)
+    const bool use_npu_aiv_boundary =
+        npu_2d_packed_real_boundary_enabled(request, n, batch);
+    if (use_npu_aiv_boundary) {
+      aiv_preprocess = make_npu_packed_real_boundary_node(n, false);
+    } else
+#endif
+    {
+      preprocess_kernel = compile_c2r_packed_preprocess_kernel(request, n);
+      boundary_twiddle = build_raw_packed_real_twiddle(request, n);
+    }
     return std::make_shared<CompiledRawPackedC2RNode>(
         n,
-        compile_c2r_packed_preprocess_kernel(request, n),
+        std::move(preprocess_kernel),
         compile_raw_node(packed_child->plan, packed_child->request, batch),
-        build_raw_packed_real_twiddle(request, n),
+        std::move(boundary_twiddle),
         std::move(packed_input),
         [node, request, batch]() {
           TritonCompiler compiler;
           return compiler.compile_raw_c2r_node(node, request, batch, false);
-        });
+        },
+        std::move(aiv_preprocess));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);

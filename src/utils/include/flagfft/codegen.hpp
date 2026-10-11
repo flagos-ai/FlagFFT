@@ -348,6 +348,24 @@ struct CompiledRawStockhamNode final : CompiledRawNode {
   DeviceAllocation second;
 };
 
+#if defined(FLAGFFT_BACKEND_NPU)
+struct CompiledRawNpuPackedRealBoundaryNode final : CompiledRawNode {
+  CompiledRawNpuPackedRealBoundaryNode(int64_t length,
+                                       bool r2c_postprocess,
+                                       DeviceAllocation indices,
+                                       DeviceAllocation twiddles);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t length;
+  bool r2c_postprocess;
+  DeviceAllocation indices;
+  DeviceAllocation twiddles;
+};
+#endif
+
 struct CompiledRawDirectDftNode final : CompiledRawNode {
   CompiledRawDirectDftNode(int64_t length,
                            std::shared_ptr<JitKernel> kernel,
@@ -641,7 +659,8 @@ struct CompiledRawPackedR2CNode final : CompiledRawNode {
                            std::shared_ptr<JitKernel> postprocess_kernel,
                            DeviceAllocation twiddle,
                            DeviceAllocation packed_output,
-                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
+                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {},
+                           std::shared_ptr<CompiledRawNode> aiv_postprocess = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -653,6 +672,7 @@ struct CompiledRawPackedR2CNode final : CompiledRawNode {
   DeviceAllocation twiddle;
   DeviceAllocation packed_output;
   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  std::shared_ptr<CompiledRawNode> aiv_postprocess;
   mutable std::shared_ptr<CompiledRawNode> layout_fallback;
   mutable std::mutex layout_mutex;
 };
@@ -758,7 +778,8 @@ struct CompiledRawPackedC2RNode final : CompiledRawNode {
                            std::shared_ptr<CompiledRawNode> fft,
                            DeviceAllocation twiddle,
                            DeviceAllocation packed_input,
-                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
+                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {},
+                           std::shared_ptr<CompiledRawNode> aiv_preprocess = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -770,6 +791,7 @@ struct CompiledRawPackedC2RNode final : CompiledRawNode {
   DeviceAllocation twiddle;
   DeviceAllocation packed_input;
   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  std::shared_ptr<CompiledRawNode> aiv_preprocess;
   mutable std::shared_ptr<CompiledRawNode> layout_fallback;
   mutable std::mutex layout_mutex;
 };

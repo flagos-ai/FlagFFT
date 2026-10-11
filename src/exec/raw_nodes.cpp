@@ -24,6 +24,7 @@
 #include "adaptor/backend/npu/ascendc_transpose3d.hpp"
 #include "adaptor/backend/npu/ascendc_transpose2d.hpp"
 #include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
+#include "adaptor/backend/npu/ascendc_packed_real_boundary.hpp"
 #endif
 
 #include <algorithm>
@@ -1771,26 +1772,72 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
   }
 }
 
+#if defined(FLAGFFT_BACKEND_NPU)
+CompiledRawNpuPackedRealBoundaryNode::CompiledRawNpuPackedRealBoundaryNode(
+    int64_t length,
+    bool r2c_postprocess,
+    DeviceAllocation indices,
+    DeviceAllocation twiddles)
+    : length(length),
+      r2c_postprocess(r2c_postprocess),
+      indices(std::move(indices)),
+      twiddles(std::move(twiddles)) {
+}
+
+std::string CompiledRawNpuPackedRealBoundaryNode::describe() const {
+  return "CompiledRawNpuPackedRealBoundary(n=" + std::to_string(length) +
+         (r2c_postprocess ? ", mode=r2c)" : ", mode=c2r)");
+}
+
+flagfftResult CompiledRawNpuPackedRealBoundaryNode::execute(
+    adaptor::DevicePtr input,
+    adaptor::DevicePtr output,
+    const RawExecutionContext &context) const {
+  const int64_t packed = length / 2;
+  const int64_t half = packed + 1;
+  const int64_t input_distance = r2c_postprocess
+                                     ? packed
+                                     : (context.input_distance > 0 ? context.input_distance : half);
+  const int64_t output_distance = r2c_postprocess
+                                      ? (context.output_distance > 0 ? context.output_distance : half)
+                                      : (context.output_distance > 0 ? context.output_distance : packed);
+  if (length < 128 || length > 2048 || (length & 1) != 0 || context.batch <= 0 ||
+      context.batch > std::numeric_limits<int32_t>::max() ||
+      input_distance > std::numeric_limits<int32_t>::max() ||
+      output_distance > std::numeric_limits<int32_t>::max() || indices.size() == 0 ||
+      twiddles.size() == 0) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  return adaptor::npu::launch_ascendc_packed_real_boundary(
+      input, output, indices.get(), twiddles.get(), static_cast<int32_t>(length),
+      static_cast<int32_t>(input_distance), static_cast<int32_t>(output_distance),
+      static_cast<int32_t>(context.batch), r2c_postprocess, context.stream);
+}
+#endif
+
 CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(
     int64_t length,
     std::shared_ptr<CompiledRawNode> fft,
     std::shared_ptr<JitKernel> postprocess_kernel,
     DeviceAllocation twiddle,
     DeviceAllocation packed_output,
-    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback,
+    std::shared_ptr<CompiledRawNode> aiv_postprocess)
     : length(length),
       fft(std::move(fft)),
       postprocess_kernel(std::move(postprocess_kernel)),
       twiddle(std::move(twiddle)),
       packed_output(std::move(packed_output)),
-      make_layout_fallback(std::move(make_layout_fallback)) {
+      make_layout_fallback(std::move(make_layout_fallback)),
+      aiv_postprocess(std::move(aiv_postprocess)) {
 }
 
 std::string CompiledRawPackedR2CNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawPackedR2C(n=" << length << ", packed_n=" << length / 2
       << ", fft=" << (fft ? fft->describe() : "null") << ", postprocess_kernel="
-      << (postprocess_kernel ? postprocess_kernel->execution_description() : "null") << ")";
+      << (postprocess_kernel ? postprocess_kernel->execution_description() : "null")
+      << ", aiv_postprocess=" << (aiv_postprocess ? aiv_postprocess->describe() : "null") << ")";
   return oss.str();
 }
 
@@ -1817,6 +1864,12 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
     flagfftResult result = fft->execute(input, packed_output.get(), child_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+
+    if (aiv_postprocess) {
+      RawExecutionContext boundary_context {
+          context.request, context.stream, context.batch, packed, output_distance};
+      return aiv_postprocess->execute(packed_output.get(), output, boundary_context);
     }
 
     std::vector<JitKernelArg> args = {
@@ -2138,19 +2191,22 @@ CompiledRawPackedC2RNode::CompiledRawPackedC2RNode(
     std::shared_ptr<CompiledRawNode> fft,
     DeviceAllocation twiddle,
     DeviceAllocation packed_input,
-    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback,
+    std::shared_ptr<CompiledRawNode> aiv_preprocess)
     : length(length),
       preprocess_kernel(std::move(preprocess_kernel)),
       fft(std::move(fft)),
       twiddle(std::move(twiddle)),
       packed_input(std::move(packed_input)),
-      make_layout_fallback(std::move(make_layout_fallback)) {
+      make_layout_fallback(std::move(make_layout_fallback)),
+      aiv_preprocess(std::move(aiv_preprocess)) {
 }
 
 std::string CompiledRawPackedC2RNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawPackedC2R(n=" << length << ", packed_n=" << length / 2
       << ", preprocess_kernel=" << (preprocess_kernel ? preprocess_kernel->execution_description() : "null")
+      << ", aiv_preprocess=" << (aiv_preprocess ? aiv_preprocess->describe() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -2171,18 +2227,26 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
       return layout_fallback->execute(input, output, context);
     }
 
-    std::vector<JitKernelArg> args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(twiddle.get()),
-        JitKernelArg::device(packed_input.get()),
-        JitKernelArg::i64(input_distance),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    preprocess_kernel->launch(context.stream,
-                              args,
-                              ceil_div(packed, block),
-                              grid_rows(preprocess_kernel, context.batch),
-                              1);
+    if (aiv_preprocess) {
+      RawExecutionContext boundary_context {
+          context.request, context.stream, context.batch, input_distance, packed};
+      const flagfftResult preprocess_result =
+          aiv_preprocess->execute(input, packed_input.get(), boundary_context);
+      if (preprocess_result != FLAGFFT_SUCCESS) return preprocess_result;
+    } else {
+      std::vector<JitKernelArg> args = {
+          JitKernelArg::device(input),
+          JitKernelArg::device(twiddle.get()),
+          JitKernelArg::device(packed_input.get()),
+          JitKernelArg::i64(input_distance),
+          JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+      };
+      preprocess_kernel->launch(context.stream,
+                                args,
+                                ceil_div(packed, block),
+                                grid_rows(preprocess_kernel, context.batch),
+                                1);
+    }
 
     RawExecutionContext child_context {context.request, context.stream, context.batch};
     return fft->execute(packed_input.get(), output, child_context);
