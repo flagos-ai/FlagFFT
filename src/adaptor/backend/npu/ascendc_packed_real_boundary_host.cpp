@@ -30,7 +30,13 @@ flagfftResult launch_ascendc_packed_real_boundary(DevicePtr input,
     return FLAGFFT_INVALID_SIZE;
   }
   constexpr uint32_t kMaxBlocks = 65535;
-  const uint32_t blocks = static_cast<uint32_t>(std::min<int32_t>(batch, kMaxBlocks));
+  const uint32_t output_count = r2c_postprocess ? static_cast<uint32_t>(half)
+                                               : static_cast<uint32_t>(packed);
+  uint32_t group_rows = 1;
+  while ((output_count * group_rows) % 4U != 0) ++group_rows;
+  const uint32_t row_groups =
+      (static_cast<uint32_t>(batch) + group_rows - 1) / group_rows;
+  const uint32_t blocks = std::min<uint32_t>(row_groups, kMaxBlocks);
   const uint32_t status = ACLRT_LAUNCH_KERNEL(flagfft_npu_packed_real_boundary)(
       blocks,
       reinterpret_cast<void *>(stream),

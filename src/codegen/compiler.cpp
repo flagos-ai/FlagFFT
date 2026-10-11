@@ -94,7 +94,14 @@ namespace {
     const uint32_t half = packed + 1;
     const uint32_t output_count = r2c_postprocess ? half : packed;
     const uint32_t padded_half = ((half + kTile - 1) / kTile) * kTile;
-    const uint32_t index_count = 3 * padded_half + 2 * kTile;
+    uint32_t group_rows = 1;
+    while ((output_count * group_rows) % 4 != 0) ++group_rows;
+    const uint32_t staging_row_pitch =
+        ((output_count + kTile - 1) / kTile) * kTile;
+    const uint32_t compact_count =
+        ((group_rows * output_count + kTile - 1) / kTile) * kTile;
+    const uint32_t compact_index_base = 3 * padded_half + 2 * kTile;
+    const uint32_t index_count = compact_index_base + 2 * compact_count;
     std::vector<uint32_t> indices(index_count, 0);
     for (uint32_t k = 0; k < padded_half; ++k) {
       const uint32_t lane = k < output_count ? k : 0;
@@ -107,6 +114,18 @@ namespace {
     for (uint32_t lane = 0; lane < kTile; ++lane) {
       indices[3 * padded_half + 2 * lane] = lane * sizeof(float);
       indices[3 * padded_half + 2 * lane + 1] = (kTile + lane) * sizeof(float);
+    }
+    for (uint32_t flat_float = 0; flat_float < 2 * compact_count; ++flat_float) {
+      const uint32_t flat_complex = flat_float / 2;
+      const uint32_t component = flat_float % 2;
+      uint32_t source_complex = 0;
+      if (flat_complex < group_rows * output_count) {
+        const uint32_t row = flat_complex / output_count;
+        const uint32_t col = flat_complex % output_count;
+        source_complex = row * staging_row_pitch + col;
+      }
+      indices[compact_index_base + flat_float] =
+          (2 * source_complex + component) * sizeof(float);
     }
 
     const uint32_t twiddle_count = ((2 * half + 7) / 8) * 8;

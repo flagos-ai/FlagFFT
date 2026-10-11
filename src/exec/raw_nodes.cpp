@@ -1852,8 +1852,10 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
     // Reinterpreting adjacent real pairs as complex values requires a dense
     // input batch. In-place real rows carry Nyquist padding; preserve their
     // original distance-aware implementation.
-    if (context.batch > 1 &&
-        (input == output || (context.input_distance > 0 && context.input_distance != length))) {
+    const bool aiv_requires_dense_output = aiv_postprocess && output_distance != half;
+    if (aiv_requires_dense_output ||
+        (context.batch > 1 &&
+         (input == output || (context.input_distance > 0 && context.input_distance != length)))) {
       std::lock_guard<std::mutex> lock(layout_mutex);
       if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
       if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
