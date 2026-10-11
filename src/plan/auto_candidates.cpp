@@ -16,7 +16,9 @@
 
 #include "rader_utils.hpp"
 
+#include <cmath>
 #include <cstdlib>
+#include <limits>
 
 namespace flagfft {
 namespace {
@@ -346,6 +348,57 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
 
     Factorization factorization = factorize_supported_radices(n);
+    const char *factor_split_setting = std::getenv("FLAGFFT_NPU_2D_FACTOR_SPLIT");
+    if (factor_split_setting != nullptr && std::string(factor_split_setting) != "0" &&
+        std::string(factor_split_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_NPU_2D_FACTOR_SPLIT must be 0 or 1");
+    }
+    const bool use_npu_2d_factor_split =
+        factor_split_setting != nullptr && std::string(factor_split_setting) == "1" &&
+        context.origin_rank == 2 && context.input_dtype == "complex64" &&
+        context.output_dtype == "complex64" && n >= 1024 &&
+        factorization.remainder == 1 && !factorization.factors.empty() &&
+        std::any_of(factorization.factors.begin(), factorization.factors.end(),
+                    [](int64_t radix) { return radix != 2; });
+    if (use_npu_2d_factor_split) {
+      // A balanced Cooley-Tukey split limits each child transform's working
+      // set while keeping all factors in the existing supported-radix set.
+      // Build the child Stockham plans directly so the split is applied once
+      // at this transform root and cannot recursively nest on each child.
+      int64_t best_n1 = 0;
+      int64_t best_n2 = 0;
+      double best_balance = std::numeric_limits<double>::infinity();
+      std::vector<int64_t> best_row_factors;
+      std::vector<int64_t> best_col_factors;
+      for (int64_t n1 : enumerate_divisors(n)) {
+        const int64_t n2 = n / n1;
+        if (n1 <= 1 || n1 >= n2) continue;
+        const Factorization row_factors = factorize_supported_radices(n1);
+        const Factorization col_factors = factorize_supported_radices(n2);
+        if (row_factors.remainder != 1 || row_factors.factors.empty() ||
+            col_factors.remainder != 1 || col_factors.factors.empty()) {
+          continue;
+        }
+        const double balance = std::abs(std::log(static_cast<double>(n2)) -
+                                         std::log(static_cast<double>(n1)));
+        if (balance < best_balance) {
+          best_balance = balance;
+          best_n1 = n1;
+          best_n2 = n2;
+          best_row_factors = row_factors.factors;
+          best_col_factors = col_factors.factors;
+        }
+      }
+      if (best_n1 > 0) {
+        PlanNodePtr row = std::make_shared<StockhamPlanNode>(best_n1, best_row_factors);
+        PlanNodePtr col = std::make_shared<StockhamPlanNode>(best_n2, best_col_factors);
+        PlanNodePtr node =
+            std::make_shared<FourStepPlanNode>(n, best_n1, best_n2, row, col);
+        const double split_cost = static_cast<double>(n) *
+                                  (best_row_factors.size() + best_col_factors.size() + 2.0);
+        return {{node, split_cost, priority(node)}};
+      }
+    }
     // Large prime codelets produce expensive compiler scheduling on CANN 9
     // (radix 13 exceeded several minutes). Keep 13/17/19 on the existing DFT
     // or Bluestein route until their vector lowering is qualified separately.
