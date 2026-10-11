@@ -111,36 +111,6 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
   const auto &context = request_context();
-  const char *npu_2d_bluestein_fourstep = std::getenv("FLAGFFT_NPU_2D_BLUESTEIN_FOURSTEP");
-  const bool use_npu_2d_bluestein_fourstep =
-      context.device_type == "npu" && context.origin_rank == 2 &&
-      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
-      npu_2d_bluestein_fourstep != nullptr && std::string(npu_2d_bluestein_fourstep) == "1";
-  if (use_npu_2d_bluestein_fourstep) {
-    // Long power-of-two convolution transforms otherwise become one Stockham
-    // kernel launch per radix stage on Ascend. A balanced pair of leaf FFTs
-    // lets the NPU Bluestein boundary path fuse chirp and pointwise work into
-    // the two Cooley-Tukey passes. Keep children bounded by the qualified
-    // 512-point leaf kernels and leave other backends/plans untouched.
-    int64_t n1 = std::min<int64_t>(512, conv_length);
-    while (n1 > 1 && n1 > conv_length / n1) n1 /= 2;
-    while (n1 > 1 && (conv_length % n1 != 0 || conv_length / n1 > 512)) n1 /= 2;
-    const int64_t n2 = n1 > 1 ? conv_length / n1 : 0;
-    if (n2 > 1 && n2 <= 512) {
-      const auto row_factors = select_leaf_factors(n1);
-      const auto col_factors = select_leaf_factors(n2);
-      if (should_use_leaf(n1, row_factors) && should_use_leaf(n2, col_factors)) {
-        return std::make_shared<BluesteinPlanNode>(
-            n,
-            conv_length,
-            std::make_shared<FourStepPlanNode>(conv_length,
-                                              n1,
-                                              n2,
-                                              make_leaf_plan(n1, row_factors),
-                                              make_leaf_plan(n2, col_factors)));
-      }
-    }
-  }
   const bool maca_c550_3d_997_fp64 =
       context.device_type == "maca" && context.device_arch == "102" &&
       context.origin_rank == 3 && n == 997 &&
