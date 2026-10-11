@@ -52,7 +52,7 @@ class StockhamStageAiv {
     pipe_.InitBuffer(twiddle_buf_, 2 * kTile * sizeof(float));
     pipe_.InitBuffer(digits_buf_, 2 * kMaxRadix * kTile * sizeof(float));
     pipe_.InitBuffer(roots_buf_, kMaxRootFloats * sizeof(float));
-    pipe_.InitBuffer(indices_buf_, 6 * kTile * sizeof(uint32_t));
+    pipe_.InitBuffer(indices_buf_, 4 * kTile * sizeof(uint32_t));
     pipe_.InitBuffer(root_indices_buf_, 2 * kTile * sizeof(uint32_t));
     pipe_.InitBuffer(work_buf_, 7 * kTile * sizeof(float));
     pipe_.InitBuffer(planar_buf_, 2 * kTile * sizeof(float));
@@ -62,7 +62,7 @@ class StockhamStageAiv {
     LocalTensor<float> roots = roots_buf_.Get<float>();
     DataCopy(roots, radix_roots_, root_float_count_);
     LocalTensor<uint32_t> indices = indices_buf_.Get<uint32_t>();
-    DataCopy(indices, indices_, 6 * kTile);
+    DataCopy(indices, indices_, 4 * kTile);
     PipeBarrier<PIPE_ALL>();
   }
 
@@ -201,10 +201,15 @@ class StockhamStageAiv {
       Gather(packed, planar, indices[2 * kTile], 0, 2 * kTile);
       PipeBarrier<PIPE_ALL>();
 
-      // MTE3 reads one 32-byte VECOUT block per transfer block. Scatter each
-      // complex value into the first two floats of its padded local block so
-      // the strided GM copy can stream it without scalar SetValue operations.
-      Scatter(store, packed, indices[4 * kTile], 0, 2 * valid);
+      // MTE3 reads one 32-byte VECOUT block per transfer block even when the
+      // GM block length is one complex value. Stage each packed value at the
+      // start of a padded local block before the strided scatter.
+      Duplicate(store, 0.0f, 8 * kTile);
+      PipeBarrier<PIPE_ALL>();
+      for (uint32_t lane = 0; lane < valid; ++lane) {
+        store.SetValue(8 * lane, packed.GetValue(2 * lane));
+        store.SetValue(8 * lane + 1, packed.GetValue(2 * lane + 1));
+      }
       PipeBarrier<PIPE_ALL>();
 
       const uint64_t output_base = batch_index * length_ +
