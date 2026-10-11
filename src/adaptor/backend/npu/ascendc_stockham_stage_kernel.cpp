@@ -304,7 +304,7 @@ class StockhamStageAiv {
       for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
         const uint32_t index_offset = transform * table_stride;
         Gather(store, q_acc, store_indices[index_offset], 0, table_stride);
-        PipeBarrier<PIPE_V>();
+        PipeBarrier<PIPE_ALL>();
 
         const uint64_t output_base = (batch_index + transform) * length_ +
             static_cast<uint64_t>(radix_) * k_start -
