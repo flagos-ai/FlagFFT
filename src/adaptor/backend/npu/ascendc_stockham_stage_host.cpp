@@ -47,7 +47,13 @@ flagfftResult launch_ascendc_stockham_stage(DevicePtr input,
                                            ? (ndiv + kAscendCStockhamTile - 1) /
                                                  kAscendCStockhamTile
                                            : groups_per_transform * tiles_per_group;
-  const uint64_t total_tiles = static_cast<uint64_t>(batch) * tiles_per_transform;
+  // Fill otherwise idle lanes with independent first-stage transforms.
+  const uint64_t batch_group = span == 1 && ndiv < kAscendCStockhamTile
+                                   ? kAscendCStockhamTile / ndiv
+                                   : 1;
+  const uint64_t batch_groups =
+      (static_cast<uint64_t>(batch) + batch_group - 1) / batch_group;
+  const uint64_t total_tiles = batch_groups * tiles_per_transform;
   if (tiles_per_transform == 0 || total_tiles == 0) return FLAGFFT_INVALID_SIZE;
 
   constexpr uint32_t kMaxGrid = 65535;

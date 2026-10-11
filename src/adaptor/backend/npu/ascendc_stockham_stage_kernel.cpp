@@ -49,6 +49,10 @@ class StockhamStageAiv {
     groups_per_transform_ = span_ == 1 ? 1 : ndiv_ / span_;
     tiles_per_transform_ = span_ == 1 ? (ndiv_ + kTile - 1) / kTile
                                        : groups_per_transform_ * tiles_per_group_;
+    // Keep this mapping in sync with the host's first-stage tile count.
+    batch_group_ = span_ == 1 && ndiv_ < kTile ? kTile / ndiv_ : 1;
+    batch_groups_ = (static_cast<uint64_t>(batch_) + batch_group_ - 1) /
+                    batch_group_;
     root_float_count_ = 2 * radix_ * kRootStride;
 
     pipe_.InitBuffer(input_buf_, 2 * kTile * sizeof(float));
@@ -76,7 +80,7 @@ class StockhamStageAiv {
   }
 
   __aicore__ inline void Process() {
-    const uint64_t total_tiles = static_cast<uint64_t>(batch_) * tiles_per_transform_;
+    const uint64_t total_tiles = batch_groups_ * tiles_per_transform_;
     const uint64_t block_count = GetBlockNum();
     if (block_count == 0) return;
     for (uint64_t tile_id = GetBlockIdx(); tile_id < total_tiles; tile_id += block_count) {
@@ -86,8 +90,11 @@ class StockhamStageAiv {
 
  private:
   __aicore__ inline void ProcessTile(uint64_t tile_id) {
-    const uint64_t batch_index = tile_id / tiles_per_transform_;
+    const uint64_t batch_group_index = tile_id / tiles_per_transform_;
     const uint64_t local_tile = tile_id % tiles_per_transform_;
+    const uint64_t batch_index = batch_group_index * batch_group_;
+    const uint32_t grouped_batch_count = static_cast<uint32_t>(
+        batch_ - batch_index < batch_group_ ? batch_ - batch_index : batch_group_);
     uint64_t k_start = 0;
     uint32_t j_start = 0;
     uint32_t valid = 0;
@@ -119,16 +126,19 @@ class StockhamStageAiv {
     for (uint32_t digit = 0; digit < radix_; ++digit) {
       Duplicate(input_local, 0.0f, 2 * kTile);
       PipeBarrier<PIPE_ALL>();
-      const uint64_t input_offset = batch_index * length_ + k_start +
-                                    static_cast<uint64_t>(digit) * ndiv_;
-      GlobalTensor<uint64_t> src;
-      src.SetGlobalBuffer(input_ptr_ + input_offset);
-      if (valid == kTile) {
-        DataCopy(input_complex, src, kTile);
-      } else {
-        const DataCopyExtParams params(1, valid * sizeof(uint64_t), 0, 0, 0);
-        const DataCopyPadExtParams<uint64_t> pad;
-        DataCopyPad(input_complex, src, params, pad);
+      for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
+        const uint64_t input_offset = (batch_index + transform) * length_ + k_start +
+                                      static_cast<uint64_t>(digit) * ndiv_;
+        GlobalTensor<uint64_t> src;
+        src.SetGlobalBuffer(input_ptr_ + input_offset);
+        LocalTensor<uint64_t> input_dest = input_complex[transform * ndiv_];
+        if (valid == kTile && batch_group_ == 1) {
+          DataCopy(input_dest, src, kTile);
+        } else {
+          const DataCopyExtParams params(1, valid * sizeof(uint64_t), 0, 0, 0);
+          const DataCopyPadExtParams<uint64_t> pad;
+          DataCopyPad(input_dest, src, params, pad);
+        }
       }
       PipeBarrier<PIPE_ALL>();
 
@@ -258,28 +268,32 @@ class StockhamStageAiv {
       // MTE3 reads one 32-byte VECOUT block per transfer block even when the
       // GM block length is one complex value. Stage each packed value at the
       // start of a padded local block before the strided scatter.
-      Duplicate(store, 0.0f, 8 * kTile);
-      PipeBarrier<PIPE_ALL>();
-      for (uint32_t lane = 0; lane < valid; ++lane) {
-        store.SetValue(8 * lane, packed.GetValue(2 * lane));
-        store.SetValue(8 * lane + 1, packed.GetValue(2 * lane + 1));
-      }
-      PipeBarrier<PIPE_ALL>();
+      for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
+        const uint32_t lane_offset = transform * ndiv_;
+        Duplicate(store, 0.0f, 8 * kTile);
+        PipeBarrier<PIPE_ALL>();
+        for (uint32_t lane = 0; lane < valid; ++lane) {
+          store.SetValue(8 * lane, packed.GetValue(2 * (lane_offset + lane)));
+          store.SetValue(8 * lane + 1,
+                         packed.GetValue(2 * (lane_offset + lane) + 1));
+        }
+        PipeBarrier<PIPE_ALL>();
 
-      const uint64_t output_base = batch_index * length_ +
-          static_cast<uint64_t>(radix_) * k_start -
-          static_cast<uint64_t>(radix_ - 1) * j_start +
-          static_cast<uint64_t>(q) * span_;
-      GlobalTensor<uint64_t> dst;
-      dst.SetGlobalBuffer(output_ptr_ + output_base);
-      const uint32_t output_stride = span_ == 1 ? dst_stride : 0;
-      const DataCopyExtParams params(valid,
-                                     sizeof(uint64_t),
-                                     0,
-                                     output_stride,
-                                     0);
-      DataCopyPad(dst, store_complex, params);
-      PipeBarrier<PIPE_ALL>();
+        const uint64_t output_base = (batch_index + transform) * length_ +
+            static_cast<uint64_t>(radix_) * k_start -
+            static_cast<uint64_t>(radix_ - 1) * j_start +
+            static_cast<uint64_t>(q) * span_;
+        GlobalTensor<uint64_t> dst;
+        dst.SetGlobalBuffer(output_ptr_ + output_base);
+        const uint32_t output_stride = span_ == 1 ? dst_stride : 0;
+        const DataCopyExtParams params(valid,
+                                       sizeof(uint64_t),
+                                       0,
+                                       output_stride,
+                                       0);
+        DataCopyPad(dst, store_complex, params);
+        PipeBarrier<PIPE_ALL>();
+      }
     }
   }
 
@@ -313,6 +327,8 @@ class StockhamStageAiv {
   uint32_t tiles_per_group_ = 0;
   uint32_t groups_per_transform_ = 0;
   uint32_t tiles_per_transform_ = 0;
+  uint32_t batch_group_ = 1;
+  uint64_t batch_groups_ = 0;
   uint32_t root_float_count_ = 0;
 };
 }  // namespace
