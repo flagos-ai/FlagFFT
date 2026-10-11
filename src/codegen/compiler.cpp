@@ -1742,8 +1742,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                                   int64_t batch,
                                                                   bool allow_npu_aiv256_transposed_store) {
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  // Reuse the existing Ascend C kernels at the 1D leaves of a 2D plan. The
+  // guards describe the child transform, so the route also applies to the
+  // complex stages used internally by 2D real transforms and Bluestein.
+  const bool npu_2d_complex_child = request.device_type == "npu" &&
+                                   request.origin_rank == 2 &&
+                                   request.input_dtype == "complex64" &&
+                                   request.output_dtype == "complex64" &&
+                                   flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
+  const bool use_npu_2d_aiv128 = npu_2d_complex_child &&
+                                 flag_or_default("FLAGFFT_NPU_2D_AIV128", false);
+  const bool use_npu_2d_aiv2048 = npu_2d_complex_child &&
+                                  flag_or_default("FLAGFFT_NPU_2D_AIV2048", false);
+  const bool npu_2d_radix4_pair = flag_or_default("FLAGFFT_NPU_2D_RADIX4_PAIR", true);
+  auto make_npu_2d_aiv128_child = [&]() -> std::shared_ptr<CompiledRawNode> {
+    const char *group_setting = std::getenv("FLAGFFT_NPU_2D_AIV128_GROUP");
+    if (group_setting == nullptr) group_setting = "auto";
+    int32_t group_size = npu_2d_radix4_pair
+                             ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
+                             : npu_aiv_fft64_group_size(group_setting, batch);
+    group_size = npu_aiv_fft_group_size_for_batch(group_size, batch);
+    if (group_size == 1) return nullptr;
+    return make_npu_aiv_fft128_child(request, group_size, npu_2d_radix4_pair);
+  };
+#endif
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    if (use_npu_2d_aiv128 && leaf->length == 128 && batch % 4 == 0) {
+      if (auto child = make_npu_2d_aiv128_child()) return child;
+    }
+    if (use_npu_2d_aiv2048 && leaf->length == 2048) {
+      return make_npu_aiv_fft2048_child(request, npu_2d_radix4_pair);
+    }
     const bool use_npu_3d_aiv_small =
         request.device_type == "npu" && request.origin_rank == 3 && request.real_transform_kind.empty() &&
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
@@ -1794,10 +1825,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return compile_raw_leaf(*leaf, request);
   }
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
+#if defined(FLAGFFT_BACKEND_NPU)
+    // Some planner versions represent the power-of-two 128-point child as a
+    // DirectDFT node. The native AIV implementation is a radix-2 FFT and is
+    // valid for the same transform independently of that planner choice.
+    if (use_npu_2d_aiv128 && direct->length == 128 && batch % 4 == 0) {
+      if (auto child = make_npu_2d_aiv128_child()) return child;
+    }
+#endif
     return compile_raw_direct_dft(*direct, request, batch);
   }
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    if (use_npu_2d_aiv128 && stockham->length == 128 && batch % 4 == 0) {
+      if (auto child = make_npu_2d_aiv128_child()) return child;
+    }
+    if (use_npu_2d_aiv2048 && stockham->length == 2048) {
+      return make_npu_aiv_fft2048_child(request, npu_2d_radix4_pair);
+    }
     const bool use_npu_3d_aiv_small =
         request.device_type == "npu" && request.origin_rank == 3 &&
         request.real_transform_kind.empty() && request.input_dtype == "complex64" &&
