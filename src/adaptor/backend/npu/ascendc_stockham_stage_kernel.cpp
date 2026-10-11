@@ -148,7 +148,7 @@ class StockhamStageAiv {
       LocalTensor<float> digit_imag = digits[digit * 2 * kTile + kTile];
       Gather(digit_real, input_local, indices, 0, kTile);
       Gather(digit_imag, input_local, indices[kTile], 0, kTile);
-      PipeBarrier<PIPE_ALL>();
+      PipeBarrier<PIPE_V>();
 
       if (digit > 0 && span_ > 1) {
         Duplicate(twiddle, 0.0f, 2 * kTile);
@@ -221,7 +221,7 @@ class StockhamStageAiv {
             q_repeat_params);
         Add(q_acc_imag, q_acc_imag, q_input_imag, kTile, radix_,
             q_repeat_params);
-        PipeBarrier<PIPE_ALL>();
+        PipeBarrier<PIPE_V>();
         continue;
       }
 
@@ -233,7 +233,7 @@ class StockhamStageAiv {
                                 sizeof(float)),
            kTile);
       Gather(q_root_imag, roots, root_indices, 0, kTile);
-      PipeBarrier<PIPE_ALL>();
+      PipeBarrier<PIPE_V>();
       Broadcast<float, 2, 1>(q_coeff_real, q_root_real, q_shape, root_shape,
                              broadcast_scratch);
       Broadcast<float, 2, 1>(q_coeff_imag, q_root_imag, q_shape, root_shape,
@@ -254,7 +254,7 @@ class StockhamStageAiv {
           q_repeat_params);
       Add(q_acc_imag, q_acc_imag, q_tmp_imag, kTile, radix_,
           q_repeat_params);
-      PipeBarrier<PIPE_ALL>();
+      PipeBarrier<PIPE_V>();
     }
 
     LocalTensor<float> planar = planar_buf_.Get<float>();
@@ -270,7 +270,7 @@ class StockhamStageAiv {
       DataCopy(planar[kTile], acc_imag, kTile);
       PipeBarrier<PIPE_ALL>();
       Gather(packed, planar, indices[2 * kTile], 0, 2 * kTile);
-      PipeBarrier<PIPE_ALL>();
+      PipeBarrier<PIPE_V>();
 
       // MTE3 reads one 32-byte VECOUT block per transfer block even when the
       // GM block length is one complex value. Stage each packed value at the
