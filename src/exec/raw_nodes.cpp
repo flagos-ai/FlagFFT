@@ -945,11 +945,7 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
                                           JitKernelArg::i64(span),
                                           JitKernelArg::i32(static_cast<int32_t>(count))};
         const int64_t butterflies = count * (length / factor);
-        const bool transform_tiled = context.request.device_type == "npu" && length / factor >= block;
-        const int64_t grid = transform_tiled
-                                 ? count * programs_per_batch
-                                 : (butterflies + block - 1) / block;
-        kernels[stage]->launch(context.stream, args, grid, 1, 1);
+        kernels[stage]->launch(context.stream, args, (butterflies + block - 1) / block, 1, 1);
       }
       current = dst;
       span *= factor;

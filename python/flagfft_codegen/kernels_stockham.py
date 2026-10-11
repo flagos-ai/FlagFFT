@@ -1,60 +1,28 @@
 """Global-memory Stockham mapping of the shared register radix codelets."""
 
-from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix, _npu_backend_active
+from .kernels_common import _NATURAL_ORDER_CODELET_RADICES, _dtype_suffix
 from .kernels_leaf import _emit_natural_order_codelet_call
 
 
-def _stockham_index_mapping(n: int, radix: int, block: int) -> tuple[list[str], bool]:
-    """Map long NPU stages by transform tile to avoid per-element div/mod.
-
-    Flattening remains preferable when one transform contributes fewer than a
-    block of butterflies: it packs independent transforms into the same CTA.
-    For longer transforms, each CTA owns a tile from one transform, so batch
-    and tile decoding happen once per CTA instead of once per lane.
-    """
-    butterflies_per_transform = n // radix
-    transform_tiled = _npu_backend_active() and butterflies_per_transform >= block
-    if transform_tiled:
-        programs_per_transform = (butterflies_per_transform + block - 1) // block
-        return [
-            "    program = tl.program_id(0).to(tl.int64)",
-            f"    batch = program // {programs_per_transform}",
-            f"    tile = program % {programs_per_transform}",
-            f"    k = tile * {block} + tl.arange(0, {block})",
-            f"    mask = (batch < nbatch.to(tl.int64)) & (k < {butterflies_per_transform})",
-        ], True
-    return [
-        f"    index = tl.program_id(0).to(tl.int64) * {block} + tl.arange(0, {block})",
-        f"    mask = index < nbatch.to(tl.int64) * {butterflies_per_transform}",
-        f"    batch = index // {butterflies_per_transform}",
-        f"    k = index % {butterflies_per_transform}",
-    ], False
-
-
-def build_stockham_stage(
-    n: int,
-    radix: int,
-    direction: str,
-    dtype: str,
-    stage_span: int = 0,
-    block: int = 128,
-):
+def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int = 0,
+                        block: int = 128):
     if radix not in _NATURAL_ORDER_CODELET_RADICES or n % radix:
         raise ValueError(f"unsupported Stockham stage n={n}, radix={radix}")
     if stage_span < 0 or (stage_span and n % (radix * stage_span)):
         raise ValueError(f"invalid Stockham span {stage_span} for n={n}, radix={radix}")
     if block < 1 or block > 128 or block & (block - 1):
         raise ValueError(f"invalid Stockham butterfly block {block}")
-    index_mapping, transform_tiled = _stockham_index_mapping(n, radix, block)
     if radix in (13, 17, 19):
         return _build_vector_stage(n, radix, direction, dtype, stage_span, block)
-    map_suffix = "_tt" if transform_tiled else ""
-    name = f"stockham_{direction}_n{n}_r{radix}_s{stage_span}_b{block}{map_suffix}_{_dtype_suffix(dtype)}"
+    name = f"stockham_{direction}_n{n}_r{radix}_s{stage_span}_b{block}_{_dtype_suffix(dtype)}"
     body = [
         "@triton.jit",
         f"def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):",
         *([f"    span = {stage_span}"] if stage_span else []),
-        *index_mapping,
+        f"    index = tl.program_id(0).to(tl.int64) * {block} + tl.arange(0, {block})",
+        f"    mask = index < nbatch.to(tl.int64) * {n // radix}",
+        f"    batch = index // {n // radix}",
+        f"    k = index % {n // radix}",
         "    j = k % span",
     ]
     for digit in range(radix):
@@ -93,15 +61,9 @@ def _build_vector_stage(n: int, radix: int, direction: str, dtype: str, stage_sp
     Four half-width accumulators then produce both k and radix-k outputs.
     The direction-specific N-point roots preserve the inverse sign convention.
     """
+    name = f"stockham_paired_vector_{direction}_n{n}_r{radix}_s{stage_span}_b{block}_{_dtype_suffix(dtype)}"
     half = radix // 2
     width = 1 << half.bit_length()
-    index_mapping, transform_tiled = _stockham_index_mapping(n, radix, block)
-    map_suffix = "_tt" if transform_tiled else ""
-    name = f"stockham_paired_vector_{direction}_n{n}_r{radix}_s{stage_span}_b{block}{map_suffix}_{_dtype_suffix(dtype)}"
-    if transform_tiled:
-        batch_base = f"batch * {n}"
-    else:
-        batch_base = f"batch[None, :] * {n}"
     span_line = f"    span = {stage_span}\n" if stage_span else ""
     twiddle_lines = ""
     if stage_span != 1:
@@ -116,7 +78,10 @@ def _build_vector_stage(n: int, radix: int, direction: str, dtype: str, stage_sp
 """
     source = f'''@triton.jit
 def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):
-{span_line}{chr(10).join(index_mapping)}
+{span_line}    index = tl.program_id(0).to(tl.int64) * {block} + tl.arange(0, {block})
+    mask = index < nbatch.to(tl.int64) * {n // radix}
+    batch = index // {n // radix}
+    k = index % {n // radix}
     j = k % span
     output = tl.arange(0, {width})
     src0 = (batch * {n} + k) * 2
@@ -142,7 +107,7 @@ def {name}(in_ptr, out_ptr, twiddle_ptr, span, nbatch):
         cosine_i = cosine_i + pi[None, :] * cr[:, None]
         sine_r = sine_r + mr[None, :] * ci[:, None]
         sine_i = sine_i + mi[None, :] * ci[:, None]
-    base = {batch_base} + {radix} * k[None, :] - {radix - 1} * j[None, :]
+    base = batch[None, :] * {n} + {radix} * k[None, :] - {radix - 1} * j[None, :]
     dst = base + output[:, None] * span
     valid = mask[None, :] & (output[:, None] <= {half})
     tl.store(out_ptr + dst * 2, cosine_r - sine_i, valid)
