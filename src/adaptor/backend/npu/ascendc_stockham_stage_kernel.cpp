@@ -205,11 +205,14 @@ class StockhamStageAiv {
         continue;
       }
 
-      Duplicate(root_indices, digit * sizeof(float), kTile);
+      Duplicate(root_indices,
+                digit * static_cast<uint32_t>(sizeof(float)), kTile);
       Add(root_indices, root_indices, q_root_offsets, kTile);
       Gather(q_root_real, roots, root_indices, 0, kTile);
       Duplicate(root_indices,
-                (radix_ * kRootStride + digit) * sizeof(float), kTile);
+                (radix_ * kRootStride + digit) *
+                    static_cast<uint32_t>(sizeof(float)),
+                kTile);
       Add(root_indices, root_indices, q_root_offsets, kTile);
       Gather(q_root_imag, roots, root_indices, 0, kTile);
       PipeBarrier<PIPE_ALL>();
