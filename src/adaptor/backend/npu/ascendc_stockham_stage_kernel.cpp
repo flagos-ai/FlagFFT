@@ -276,11 +276,26 @@ class StockhamStageAiv {
       PipeBarrier<PIPE_V>();
     }
 
-    if (has_contiguous_store_) {
+    const uint32_t output_complex_count = radix_ * valid;
+    bool use_contiguous_store = has_contiguous_store_ &&
+                                (output_complex_count % 4U) == 0;
+    // A contiguous GM transfer is only safe when both ends satisfy the
+    // 32-byte DataCopy granularity. Irregular tails and batch boundaries use
+    // the existing strided DataCopyPad path below.
+    for (uint32_t transform = 0;
+         use_contiguous_store && transform < grouped_batch_count;
+         ++transform) {
+      const uint64_t output_base =
+          (batch_index + transform) * length_ +
+          static_cast<uint64_t>(radix_) * k_start -
+          static_cast<uint64_t>(radix_ - 1) * j_start;
+      use_contiguous_store = (output_base % 4U) == 0;
+    }
+
+    if (use_contiguous_store) {
       LocalTensor<float> store = store_buf_.Get<float>();
       LocalTensor<uint32_t> store_indices = store_indices_buf_.Get<uint32_t>();
       LocalTensor<float> q_acc = q_acc_buf_.Get<float>();
-      const uint32_t output_complex_count = radix_ * valid;
       const uint32_t table_stride = store_index_stride_;
       // Repack the full radix tile once and issue one contiguous GM write.
       for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
@@ -293,9 +308,7 @@ class StockhamStageAiv {
             static_cast<uint64_t>(radix_ - 1) * j_start;
         GlobalTensor<uint64_t> dst;
         dst.SetGlobalBuffer(output_ptr_ + output_base);
-        const DataCopyExtParams params(
-            1, output_complex_count * sizeof(uint64_t), 0, 0, 0);
-        DataCopyPad(dst, store.ReinterpretCast<uint64_t>(), params);
+        DataCopy(dst, store.ReinterpretCast<uint64_t>(), output_complex_count);
         PipeBarrier<PIPE_ALL>();
       }
       return;
