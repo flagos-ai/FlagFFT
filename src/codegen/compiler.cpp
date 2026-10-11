@@ -2070,6 +2070,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_musa_fp64_four_step = request.device_type == "musa" && request.device_arch == "31" &&
                                          request.input_dtype == "complex128" && batch >= 16 &&
                                          batch == chunk_batch;
+    const char *npu_2d_bluestein_fourstep = std::getenv("FLAGFFT_NPU_2D_BLUESTEIN_FOURSTEP");
+    const bool use_npu_2d_bluestein_four_step =
+        request.device_type == "npu" && request.origin_rank == 2 &&
+        npu_2d_bluestein_fourstep != nullptr && std::string(npu_2d_bluestein_fourstep) == "1" &&
+        four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
+        row_leaf->length <= 512 && col_leaf->length <= 512;
     const bool use_default_four_step = allow_bluestein_fusion &&
                                (request.input_dtype == "complex64" || use_musa_fp64_four_step) &&
                                four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
@@ -2082,7 +2088,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
         maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
-    const bool use_four_step = use_default_four_step || use_maca_four_step;
+    const bool use_four_step = use_default_four_step || use_npu_2d_bluestein_four_step || use_maca_four_step;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
