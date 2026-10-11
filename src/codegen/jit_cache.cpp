@@ -205,13 +205,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
-  if (adaptor::backend_name() == "npu" &&
-      (key.kind == KernelKind::R2CPackedPostprocess ||
-       key.kind == KernelKind::C2RPackedPreprocess)) {
-    const char *real_pack_warps = std::getenv("FLAGFFT_NPU_2D_REAL_PACK_WARPS");
-    cache_key += ";npu-2d-real-pack-warps=" +
-                 std::string(real_pack_warps != nullptr ? real_pack_warps : "4");
-  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");

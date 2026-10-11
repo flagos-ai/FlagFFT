@@ -448,24 +448,7 @@ def _emit_r2c_pointwise_jit_kernel(
 ) -> dict[str, Any]:
     elements_per_program = 256
     num_warps = _RESHAPE_NUM_WARPS
-    if target.startswith("npu:") and kernel in {
-        "r2c_packed_postprocess",
-        "c2r_packed_preprocess",
-    }:
-        warps_text = os.getenv("FLAGFFT_NPU_2D_REAL_PACK_WARPS", "4")
-        try:
-            num_warps = int(warps_text)
-        except ValueError:
-            raise ValueError(
-                "FLAGFFT_NPU_2D_REAL_PACK_WARPS must be one of 4, 8, 16, 32"
-            ) from None
-        if num_warps not in {4, 8, 16, 32}:
-            raise ValueError("FLAGFFT_NPU_2D_REAL_PACK_WARPS must be one of 4, 8, 16, 32")
-    if (
-        target.startswith("npu:")
-        and n == 256
-        and kernel not in {"r2c_packed_postprocess", "c2r_packed_preprocess"}
-    ):
+    if target.startswith("npu:") and n == 256:
         # AIV conversion kernels are sensitive to work per block. Keep the
         # profiled one-row/four-thread layout as the default; expose narrow
         # experiment knobs so rows and block threads can be measured without
