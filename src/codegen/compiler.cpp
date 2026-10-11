@@ -2005,13 +2005,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                         ? ndiv
                                         : std::min<int64_t>(stage_span,
                                               adaptor::npu::kAscendCStockhamTile);
+      const int64_t stage_tiles_per_transform = stage_span == 1
+          ? (ndiv + adaptor::npu::kAscendCStockhamTile - 1) /
+                adaptor::npu::kAscendCStockhamTile
+          : (ndiv / stage_span) *
+                ((stage_span + adaptor::npu::kAscendCStockhamTile - 1) /
+                 adaptor::npu::kAscendCStockhamTile);
+      const bool enough_stage_work = batch > 0 && stage_tiles_per_transform > 0 &&
+          static_cast<uint64_t>(batch) >=
+              (static_cast<uint64_t>(adaptor::npu::kAscendCStockhamTile) +
+               static_cast<uint64_t>(stage_tiles_per_transform) - 1) /
+                  static_cast<uint64_t>(stage_tiles_per_transform);
+      // The AIV stage masks a partial tile. Keep small extents eligible when
+      // they still fill one vector repeat and expose enough independent tiles.
       const bool use_aiv_stage = npu_2d_aiv_stockham && stockham->length > 0 &&
           stockham->length <= std::numeric_limits<uint32_t>::max() &&
           radix >= 2 && radix <= 19 && stage_span > 0 &&
           stage_span <= std::numeric_limits<uint32_t>::max() &&
           stockham->length % radix == 0 &&
           stockham->length % (radix * stage_span) == 0 &&
-          active_extent >= adaptor::npu::kAscendCStockhamTile / 2;
+          active_extent >= adaptor::npu::kAscendCStockhamTile / 8 &&
+          enough_stage_work;
       if (use_aiv_stage) {
         if (aiv_indices.get() == 0) {
           constexpr uint32_t tile = adaptor::npu::kAscendCStockhamTile;
