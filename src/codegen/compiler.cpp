@@ -1817,13 +1817,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                              ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
                              : npu_aiv_fft64_group_size(group_setting, batch);
     group_size = npu_aiv_fft_group_size_for_batch(group_size, batch);
-    if (group_size == 1) return nullptr;
+    // The radix-2 AIV kernel supports one transform per block. A single
+    // transform cannot use the radix-4 pair kernel, so fall back to the
+    // ordinary 128-point index tables when the batch cannot fill a group.
+    if (group_size == 1) return make_npu_aiv_fft128_child(request, 1, false);
     return make_npu_aiv_fft128_child(request, group_size, npu_2d_radix4_pair);
   };
 #endif
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
-    if (use_npu_2d_aiv128 && leaf->length == 128 && batch % 4 == 0) {
+    if (use_npu_2d_aiv128 && leaf->length == 128) {
       if (auto child = make_npu_2d_aiv128_child()) return child;
     }
     if (use_npu_2d_aiv2048 && leaf->length == 2048) {
@@ -1883,7 +1886,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // Some planner versions represent the power-of-two 128-point child as a
     // DirectDFT node. The native AIV implementation is a radix-2 FFT and is
     // valid for the same transform independently of that planner choice.
-    if (use_npu_2d_aiv128 && direct->length == 128 && batch % 4 == 0) {
+    if (use_npu_2d_aiv128 && direct->length == 128) {
       if (auto child = make_npu_2d_aiv128_child()) return child;
     }
 #endif
@@ -1891,7 +1894,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
-    if (use_npu_2d_aiv128 && stockham->length == 128 && batch % 4 == 0) {
+    if (use_npu_2d_aiv128 && stockham->length == 128) {
       if (auto child = make_npu_2d_aiv128_child()) return child;
     }
     if (use_npu_2d_aiv2048 && stockham->length == 2048) {

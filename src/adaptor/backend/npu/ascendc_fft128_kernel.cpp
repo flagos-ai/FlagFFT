@@ -132,9 +132,15 @@ class Fft128Aiv {
     LocalTensor<uint32_t> index_local = index_buf_.Get<uint32_t>();
     LocalTensor<float> twiddle_local = twiddle_buf_.Get<float>();
     DataCopy(index_local, indices_, 2 * kN);
-    DataCopy(index_local[kStageIndexBase], indices_[kStageIndexBase],
+    // The group-table builder uses the grouped layout even for a single
+    // transform (group_n == 128): input indices start at 0, output indices at
+    // 128, and the two stage tables at 384. Copy those tables into the regular
+    // single-transform offsets consumed below.
+    const uint32_t source_stage_index_base = group_size_ == 1 ? 3 * kN : kStageIndexBase;
+    const uint32_t source_output_index_base = group_size_ == 1 ? kN : kOutputIndexBase;
+    DataCopy(index_local[kStageIndexBase], indices_[source_stage_index_base],
              2 * kStages * kN);
-    DataCopy(index_local[kOutputIndexBase], indices_[kOutputIndexBase], kOutputIndexCount);
+    DataCopy(index_local[kOutputIndexBase], indices_[source_output_index_base], kOutputIndexCount);
     DataCopy(twiddle_local,
              twiddles_,
              kTwiddleCount + (mode_ == kModeRealInverse ? kN : 0));
