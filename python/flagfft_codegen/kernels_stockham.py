@@ -15,11 +15,13 @@ def _stockham_index_mapping(n: int, radix: int, block: int) -> tuple[list[str], 
     butterflies_per_transform = n // radix
     transform_tiled = _npu_backend_active() and butterflies_per_transform >= block
     if transform_tiled:
+        programs_per_transform = (butterflies_per_transform + block - 1) // block
         return [
-            "    tile = tl.program_id(0).to(tl.int64)",
-            f"    batch = tl.zeros(({block},), tl.int64) + tl.program_id(1).to(tl.int64)",
+            "    program = tl.program_id(0).to(tl.int64)",
+            f"    batch = program // {programs_per_transform}",
+            f"    tile = program % {programs_per_transform}",
             f"    k = tile * {block} + tl.arange(0, {block})",
-            f"    mask = k < {butterflies_per_transform}",
+            f"    mask = (batch < nbatch.to(tl.int64)) & (k < {butterflies_per_transform})",
         ], True
     return [
         f"    index = tl.program_id(0).to(tl.int64) * {block} + tl.arange(0, {block})",
@@ -96,7 +98,10 @@ def _build_vector_stage(n: int, radix: int, direction: str, dtype: str, stage_sp
     index_mapping, transform_tiled = _stockham_index_mapping(n, radix, block)
     map_suffix = "_tt" if transform_tiled else ""
     name = f"stockham_paired_vector_{direction}_n{n}_r{radix}_s{stage_span}_b{block}{map_suffix}_{_dtype_suffix(dtype)}"
-    batch_base = f"batch[None, :] * {n}"
+    if transform_tiled:
+        batch_base = f"batch * {n}"
+    else:
+        batch_base = f"batch[None, :] * {n}"
     span_line = f"    span = {stage_span}\n" if stage_span else ""
     twiddle_lines = ""
     if stage_span != 1:
