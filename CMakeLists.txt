@@ -214,6 +214,8 @@ if(BACKEND STREQUAL "NPU")
         src/adaptor/backend/npu/ascendc_fft256_pair_radix4_store_group8_kernel.cpp)
     ascendc_library(flagfft_npu_aiv_transpose3d STATIC
         src/adaptor/backend/npu/ascendc_transpose3d_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_transpose2d STATIC
+        src/adaptor/backend/npu/ascendc_transpose2d_kernel.cpp)
     target_sources(flagfft PRIVATE
         src/adaptor/backend/npu/ascendc_fft64_host.cpp
         src/adaptor/backend/npu/ascendc_fft_small_host.cpp
@@ -221,7 +223,8 @@ if(BACKEND STREQUAL "NPU")
         src/adaptor/backend/npu/ascendc_fft2048_host.cpp
         src/adaptor/backend/npu/ascendc_fft_radix4_pair_host.cpp
         src/adaptor/backend/npu/ascendc_fft256_host.cpp
-        src/adaptor/backend/npu/ascendc_transpose3d_host.cpp)
+        src/adaptor/backend/npu/ascendc_transpose3d_host.cpp
+        src/adaptor/backend/npu/ascendc_transpose2d_host.cpp)
     target_link_libraries(flagfft PRIVATE
         flagfft_npu_aiv_fft64
         flagfft_npu_aiv_fft16
@@ -239,7 +242,8 @@ if(BACKEND STREQUAL "NPU")
         flagfft_npu_aiv_fft256_real_inverse_group8
         flagfft_npu_aiv_fft256_pair_store_group8
         flagfft_npu_aiv_fft256_pair_radix4_store_group8
-        flagfft_npu_aiv_transpose3d)
+        flagfft_npu_aiv_transpose3d
+        flagfft_npu_aiv_transpose2d)
     target_compile_definitions(flagfft PRIVATE FLAGFFT_BACKEND_NPU=1)
 endif()
 

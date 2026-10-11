@@ -116,6 +116,24 @@ struct JitKernel {
 
 using DeviceAllocation = adaptor::Memory;
 
+// A 2D complex transpose can use the portable Triton kernel or the native
+// AscendC AIV tile kernel. Keeping both behind one compiled operation lets
+// all rank-2 complex and real schedules share the same backend-specific path.
+struct CompiledRawTranspose2D {
+  int64_t rows = 0;
+  int64_t cols = 0;
+  std::shared_ptr<JitKernel> triton_kernel;
+  DeviceAllocation npu_indices;
+  bool native_npu = false;
+
+  void launch(adaptor::StreamHandle stream,
+              const std::vector<JitKernelArg> &kernel_args,
+              int64_t grid_x,
+              int64_t grid_y,
+              int64_t grid_z) const;
+  std::string execution_description() const;
+};
+
 struct RawExecutionContext {
   const FFTRequest &request;
   adaptor::StreamHandle stream = nullptr;
@@ -871,8 +889,8 @@ struct CompiledRaw2DNode final : CompiledRawNode {
                     int64_t n1,
                     std::shared_ptr<CompiledRawNode> row_fft,
                     std::shared_ptr<CompiledRawNode> col_fft,
-                    std::shared_ptr<JitKernel> transpose_fwd,
-                    std::shared_ptr<JitKernel> transpose_inv,
+                    std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                    std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                     DeviceAllocation temp1,
                     DeviceAllocation temp2,
                     bool enable_graph = true);
@@ -885,8 +903,8 @@ struct CompiledRaw2DNode final : CompiledRawNode {
   int64_t n1;
   std::shared_ptr<CompiledRawNode> row_fft;
   std::shared_ptr<CompiledRawNode> col_fft;
-  std::shared_ptr<JitKernel> transpose_fwd;
-  std::shared_ptr<JitKernel> transpose_inv;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 
@@ -965,8 +983,8 @@ struct CompiledRaw2DR2CRowNode final : CompiledRawNode {
                           int64_t n1,
                           std::shared_ptr<CompiledRawNode> row_r2c,
                           std::shared_ptr<CompiledRawNode> col_fft,
-                          std::shared_ptr<JitKernel> transpose_fwd,
-                          std::shared_ptr<JitKernel> transpose_inv,
+                          std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                          std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                           DeviceAllocation temp1,
                           DeviceAllocation temp2);
   flagfftResult execute(adaptor::DevicePtr input,
@@ -978,8 +996,8 @@ struct CompiledRaw2DR2CRowNode final : CompiledRawNode {
   int64_t n1;
   std::shared_ptr<CompiledRawNode> row_r2c;
   std::shared_ptr<CompiledRawNode> col_fft;
-  std::shared_ptr<JitKernel> transpose_fwd;
-  std::shared_ptr<JitKernel> transpose_inv;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };
@@ -989,8 +1007,8 @@ struct CompiledRaw2DC2RRowNode final : CompiledRawNode {
                           int64_t n1,
                           std::shared_ptr<CompiledRawNode> col_fft,
                           std::shared_ptr<CompiledRawNode> row_c2r,
-                          std::shared_ptr<JitKernel> transpose_fwd,
-                          std::shared_ptr<JitKernel> transpose_inv,
+                          std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                          std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                           DeviceAllocation temp1,
                           DeviceAllocation temp2);
   flagfftResult execute(adaptor::DevicePtr input,
@@ -1002,8 +1020,8 @@ struct CompiledRaw2DC2RRowNode final : CompiledRawNode {
   int64_t n1;
   std::shared_ptr<CompiledRawNode> col_fft;
   std::shared_ptr<CompiledRawNode> row_c2r;
-  std::shared_ptr<JitKernel> transpose_fwd;
-  std::shared_ptr<JitKernel> transpose_inv;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
 };
@@ -1015,8 +1033,8 @@ struct CompiledRaw2DR2CNode final : CompiledRawNode {
                        std::shared_ptr<CompiledRawNode> row_fft,
                        std::shared_ptr<JitKernel> pack_kernel,
                        std::shared_ptr<CompiledRawNode> col_fft,
-                       std::shared_ptr<JitKernel> transpose_fwd,
-                       std::shared_ptr<JitKernel> transpose_inv,
+                       std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                       std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                        DeviceAllocation row_fft_buf,
                        DeviceAllocation temp1,
                        DeviceAllocation temp2);
@@ -1031,8 +1049,8 @@ struct CompiledRaw2DR2CNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> row_fft;
   std::shared_ptr<JitKernel> pack_kernel;
   std::shared_ptr<CompiledRawNode> col_fft;
-  std::shared_ptr<JitKernel> transpose_fwd;
-  std::shared_ptr<JitKernel> transpose_inv;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_inv;
   DeviceAllocation row_fft_buf;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
@@ -1066,8 +1084,8 @@ struct CompiledRaw2DC2RNode final : CompiledRawNode {
                        std::shared_ptr<JitKernel> expand_kernel,
                        std::shared_ptr<CompiledRawNode> col_fft,
                        std::shared_ptr<CompiledRawNode> row_fft,
-                       std::shared_ptr<JitKernel> transpose_fwd,
-                       std::shared_ptr<JitKernel> transpose_inv,
+                       std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                       std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                        std::shared_ptr<JitKernel> pack_kernel,
                        DeviceAllocation temp1,
                        DeviceAllocation temp2,
@@ -1082,8 +1100,8 @@ struct CompiledRaw2DC2RNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> expand_kernel;
   std::shared_ptr<CompiledRawNode> col_fft;
   std::shared_ptr<CompiledRawNode> row_fft;
-  std::shared_ptr<JitKernel> transpose_fwd;
-  std::shared_ptr<JitKernel> transpose_inv;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd;
+  std::shared_ptr<CompiledRawTranspose2D> transpose_inv;
   std::shared_ptr<JitKernel> pack_kernel;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
@@ -1731,6 +1749,10 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_tiled_transpose_kernel(const FFTRequest &request,
                                                             int64_t n0,
                                                             int64_t n1);
+  std::shared_ptr<CompiledRawTranspose2D> compile_2d_transpose_kernel(const FFTRequest &request,
+                                                                      int64_t rows,
+                                                                      int64_t cols,
+                                                                      int64_t batch);
   std::shared_ptr<JitKernel> compile_transpose3d_kernel(
       const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order);
   std::shared_ptr<JitKernel> compile_kernel(const KernelKey &key) const;

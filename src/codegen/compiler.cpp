@@ -21,6 +21,7 @@
 #include <array>
 #include <optional>
 #include <utility>
+#include <limits>
 
 namespace flagfft {
 namespace {
@@ -28,6 +29,59 @@ namespace {
   bool flag_or_default(const char *name, bool default_value) {
     const char *value = std::getenv(name);
     return value == nullptr ? default_value : std::string(value) == "1";
+  }
+
+  bool npu_2d_native_transpose_enabled(const FFTRequest &request,
+                                      int64_t rows,
+                                      int64_t cols,
+                                      int64_t batch) {
+    const auto fp32_type = [](const std::string &dtype) {
+      return dtype == "complex64" || dtype == "float32";
+    };
+    if (request.device_type != "npu" || request.origin_rank != 2 ||
+        !fp32_type(request.input_dtype) || !fp32_type(request.output_dtype) ||
+        rows < 16 || cols < 16 || batch <= 0 ||
+        rows > std::numeric_limits<int32_t>::max() ||
+        cols > std::numeric_limits<int32_t>::max() ||
+        batch > std::numeric_limits<int32_t>::max()) {
+      return false;
+    }
+    // Use the AIV route when the transposed working set is large enough to
+    // amortize a native launch. This volume-based gate applies across shapes
+    // and batches instead of selecting named benchmark dimensions.
+    constexpr uint64_t kMinimumBytes = 64 * 1024;
+    uint64_t elements = static_cast<uint64_t>(rows);
+    if (elements > std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(cols)) {
+      return false;
+    }
+    elements *= static_cast<uint64_t>(cols);
+    if (elements > std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(batch)) {
+      return false;
+    }
+    elements *= static_cast<uint64_t>(batch);
+    return elements >= kMinimumBytes / sizeof(uint64_t) &&
+           flag_or_default("FLAGFFT_NPU_2D_NATIVE_TRANSPOSE", false);
+  }
+
+  DeviceAllocation build_npu_2d_transpose_indices() {
+    constexpr uint32_t kTile = 16;
+    constexpr uint32_t kFloatCount = 2 * kTile * kTile;
+    std::vector<uint32_t> indices(4 * kFloatCount);
+    for (uint32_t shift = 0; shift < 4; ++shift) {
+      uint32_t *table = indices.data() + shift * kFloatCount;
+      for (uint32_t output_row = 0; output_row < kTile; ++output_row) {
+        for (uint32_t output_col = 0; output_col < kTile; ++output_col) {
+          const uint32_t input_col = (output_row + shift) % kTile;
+          const uint32_t input_index = output_col * kTile + input_col;
+          const uint32_t output_index = output_row * kTile + output_col;
+          table[2 * output_index] = 2 * input_index * sizeof(float);
+          table[2 * output_index + 1] = (2 * input_index + 1) * sizeof(float);
+        }
+      }
+    }
+    DeviceAllocation allocation(indices.size() * sizeof(uint32_t));
+    allocation.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
+    return allocation;
   }
 
   // Shape-qualified NPU 3D kernels are the measured default. Keep per-route
@@ -3134,6 +3188,20 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_tiled_transpose_kernel(const 
   return compile_kernel(key);
 }
 
+std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_kernel(
+    const FFTRequest &request, int64_t rows, int64_t cols, int64_t batch) {
+  auto transpose = std::make_shared<CompiledRawTranspose2D>();
+  transpose->rows = rows;
+  transpose->cols = cols;
+  if (npu_2d_native_transpose_enabled(request, rows, cols, batch)) {
+    transpose->native_npu = true;
+    transpose->npu_indices = build_npu_2d_transpose_indices();
+  } else {
+    transpose->triton_kernel = compile_tiled_transpose_kernel(request, rows, cols);
+  }
+  return transpose;
+}
+
 std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
     const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order) {
   std::string target = triton_target_for_request(request);
@@ -4986,8 +5054,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       // than lowering tl.trans into each Cube kernel's epilogue.
       std::shared_ptr<CompiledRawNode> row_fft = compile_raw_node(node->row_plan, row_request, batch * n0);
       std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * n1);
-      auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, n1);
-      auto transpose_inv = compile_tiled_transpose_kernel(request, n1, n0);
+      auto transpose_fwd = compile_2d_transpose_kernel(request, n0, n1, batch);
+      auto transpose_inv = compile_2d_transpose_kernel(request, n1, n0, batch);
       DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
       DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
       return std::make_shared<CompiledRaw2DNode>(n0,
@@ -5100,8 +5168,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * n1);
 
   // Compile transpose kernels
-  auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, n1);
-  auto transpose_inv = compile_tiled_transpose_kernel(request, n1, n0);
+  auto transpose_fwd = compile_2d_transpose_kernel(request, n0, n1, batch);
+  auto transpose_inv = compile_2d_transpose_kernel(request, n1, n0, batch);
 
   // Allocate temporary buffers
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
@@ -5189,8 +5257,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     col_request.batch = batch * half_n1;
     std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
-    auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
-    auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+    auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+    auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
     DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
@@ -5268,8 +5336,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
   // R2C transposes: (n0, half_n1) <-> (half_n1, n0)
-  auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
-  auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+  auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+  auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
 
   // Allocate buffers
   // row_fft_buf: full complex output from row R2C FFT (batch*n0*n1 complex)
@@ -5378,8 +5446,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
 
     std::shared_ptr<CompiledRawNode> row_c2r =
         compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
-    auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
-    auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+    auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+    auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
     DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
@@ -5452,8 +5520,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   auto pack_kernel = compile_complex_to_real_kernel(request, n1);
 
   // C2R transposes: (n0, half_n1) <-> (half_n1, n0)
-  auto transpose_fwd = compile_tiled_transpose_kernel(request, n0, half_n1);
-  auto transpose_inv = compile_tiled_transpose_kernel(request, half_n1, n0);
+  auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+  auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
 
   // Allocate buffers
   // temp1: transposed data (batch * half_n1 * n0 complex)
