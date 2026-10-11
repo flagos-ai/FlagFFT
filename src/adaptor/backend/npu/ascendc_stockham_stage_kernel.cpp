@@ -175,8 +175,9 @@ class StockhamStageAiv {
           Add(acc_imag, acc_imag, digit_imag, kTile);
         } else {
           const uint32_t coeff = 2 * (q * radix_ + digit);
-          Duplicate(root_indices, coeff * sizeof(float), kTile);
-          Duplicate(root_indices[kTile], (coeff + 1) * sizeof(float), kTile);
+          constexpr uint32_t kFloatBytes = static_cast<uint32_t>(sizeof(float));
+          Duplicate(root_indices, coeff * kFloatBytes, kTile);
+          Duplicate(root_indices[kTile], (coeff + 1) * kFloatBytes, kTile);
           PipeBarrier<PIPE_ALL>();
           Gather(twiddle_real, roots, root_indices, 0, kTile);
           Gather(twiddle_imag, roots, root_indices[kTile], 0, kTile);
