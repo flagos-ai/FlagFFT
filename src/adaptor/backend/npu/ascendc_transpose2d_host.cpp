@@ -15,7 +15,8 @@
 #include "adaptor/backend/npu/ascendc_transpose2d.hpp"
 
 #include <acl/acl_rt.h>
-#include <aclrtlaunch_flagfft_npu_transpose2d.h>
+#include <aclrtlaunch_flagfft_npu_transpose2d_t16.h>
+#include <aclrtlaunch_flagfft_npu_transpose2d_t32.h>
 
 #include <algorithm>
 #include <limits>
@@ -28,12 +29,14 @@ flagfftResult launch_ascendc_transpose2d(DevicePtr input,
                                          int32_t rows,
                                          int32_t cols,
                                          int32_t batch,
+                                         int32_t tile_size,
                                          StreamHandle stream) {
-  if (input == 0 || output == 0 || indices == 0 || rows < 4 || cols < 4 || batch <= 0) {
+  if (input == 0 || output == 0 || indices == 0 || rows < 4 || cols < 4 || batch <= 0 ||
+      (tile_size != 16 && tile_size != 32)) {
     return FLAGFFT_INVALID_SIZE;
   }
-  const uint64_t row_tiles = (static_cast<uint64_t>(rows) + 15) / 16;
-  const uint64_t col_tiles = (static_cast<uint64_t>(cols) + 15) / 16;
+  const uint64_t row_tiles = (static_cast<uint64_t>(rows) + tile_size - 1) / tile_size;
+  const uint64_t col_tiles = (static_cast<uint64_t>(cols) + tile_size - 1) / tile_size;
   const uint64_t total_tiles = static_cast<uint64_t>(batch) * row_tiles * col_tiles;
   if (total_tiles == 0 || total_tiles > std::numeric_limits<uint32_t>::max()) {
     return FLAGFFT_INVALID_SIZE;
@@ -41,15 +44,25 @@ flagfftResult launch_ascendc_transpose2d(DevicePtr input,
   // ACL blockDim is limited to 65535. The kernel uses a grid-stride loop to
   // cover larger matrices without splitting the transpose across launches.
   const uint32_t blocks = static_cast<uint32_t>(std::min<uint64_t>(total_tiles, 65535));
-  const uint32_t status = ACLRT_LAUNCH_KERNEL(flagfft_npu_transpose2d)(
-      blocks,
-      reinterpret_cast<void *>(stream),
-      reinterpret_cast<uint8_t *>(input),
-      reinterpret_cast<uint8_t *>(output),
-      reinterpret_cast<uint8_t *>(indices),
-      static_cast<uint32_t>(rows),
-      static_cast<uint32_t>(cols),
-      static_cast<uint32_t>(batch));
+  const uint32_t status = tile_size == 32
+      ? ACLRT_LAUNCH_KERNEL(flagfft_npu_transpose2d_t32)(
+            blocks,
+            reinterpret_cast<void *>(stream),
+            reinterpret_cast<uint8_t *>(input),
+            reinterpret_cast<uint8_t *>(output),
+            reinterpret_cast<uint8_t *>(indices),
+            static_cast<uint32_t>(rows),
+            static_cast<uint32_t>(cols),
+            static_cast<uint32_t>(batch))
+      : ACLRT_LAUNCH_KERNEL(flagfft_npu_transpose2d_t16)(
+            blocks,
+            reinterpret_cast<void *>(stream),
+            reinterpret_cast<uint8_t *>(input),
+            reinterpret_cast<uint8_t *>(output),
+            reinterpret_cast<uint8_t *>(indices),
+            static_cast<uint32_t>(rows),
+            static_cast<uint32_t>(cols),
+            static_cast<uint32_t>(batch));
   return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
 }
 

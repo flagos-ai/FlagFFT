@@ -124,6 +124,7 @@ struct CompiledRawTranspose2D {
   int64_t cols = 0;
   std::shared_ptr<JitKernel> triton_kernel;
   DeviceAllocation npu_indices;
+  int32_t npu_tile_size = 16;
   bool native_npu = false;
 
   void launch(adaptor::StreamHandle stream,

@@ -26,6 +26,7 @@ flagfftResult launch_ascendc_transpose2d(DevicePtr input,
                                          int32_t rows,
                                          int32_t cols,
                                          int32_t batch,
+                                         int32_t tile_size,
                                          StreamHandle stream);
 
 }  // namespace flagfft::adaptor::npu

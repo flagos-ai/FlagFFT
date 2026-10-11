@@ -2265,6 +2265,7 @@ void CompiledRawTranspose2D::launch(adaptor::StreamHandle stream,
         static_cast<int32_t>(rows),
         static_cast<int32_t>(cols),
         kernel_args[2].int32_value,
+        npu_tile_size,
         stream);
     if (result != FLAGFFT_SUCCESS) {
       throw std::runtime_error("native AscendC 2D transpose launch failed");
@@ -2283,7 +2284,8 @@ void CompiledRawTranspose2D::launch(adaptor::StreamHandle stream,
 std::string CompiledRawTranspose2D::execution_description() const {
   if (native_npu) {
     return "AscendCTranspose2D(rows=" + std::to_string(rows) +
-           ", cols=" + std::to_string(cols) + ")";
+           ", cols=" + std::to_string(cols) +
+           ", tile=" + std::to_string(npu_tile_size) + ")";
   }
   return triton_kernel ? triton_kernel->execution_description() : "null";
 }

@@ -67,17 +67,16 @@ namespace {
            flag_or_default("FLAGFFT_NPU_2D_NATIVE_TRANSPOSE", false);
   }
 
-  DeviceAllocation build_npu_2d_transpose_indices() {
-    constexpr uint32_t kTile = 16;
-    constexpr uint32_t kFloatCount = 2 * kTile * kTile;
-    std::vector<uint32_t> indices(4 * kFloatCount);
+  DeviceAllocation build_npu_2d_transpose_indices(uint32_t tile) {
+    const uint32_t float_count = 2 * tile * tile;
+    std::vector<uint32_t> indices(4 * float_count);
     for (uint32_t shift = 0; shift < 4; ++shift) {
-      uint32_t *table = indices.data() + shift * kFloatCount;
-      for (uint32_t output_row = 0; output_row < kTile; ++output_row) {
-        for (uint32_t output_col = 0; output_col < kTile; ++output_col) {
-          const uint32_t input_col = (output_row + shift) % kTile;
-          const uint32_t input_index = output_col * kTile + input_col;
-          const uint32_t output_index = output_row * kTile + output_col;
+      uint32_t *table = indices.data() + shift * float_count;
+      for (uint32_t output_row = 0; output_row < tile; ++output_row) {
+        for (uint32_t output_col = 0; output_col < tile; ++output_col) {
+          const uint32_t input_col = (output_row + shift) % tile;
+          const uint32_t input_index = output_col * tile + input_col;
+          const uint32_t output_index = output_row * tile + output_col;
           table[2 * output_index] = 2 * input_index * sizeof(float);
           table[2 * output_index + 1] = (2 * input_index + 1) * sizeof(float);
         }
@@ -3312,7 +3311,20 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
   transpose->cols = cols;
   if (npu_2d_native_transpose_enabled(request, rows, cols, batch)) {
     transpose->native_npu = true;
-    transpose->npu_indices = build_npu_2d_transpose_indices();
+    // Larger tiles amortize per-block address and launch bookkeeping for
+    // substantial matrices. Keep 16x16 tiles for smaller working sets so the
+    // grid still exposes enough independent blocks.
+    constexpr uint64_t kWideTileMinimumElements = 32 * 1024;
+    const bool dimensions_support_wide_tile = rows >= 32 && cols >= 32;
+    const bool working_set_supports_wide_tile =
+        dimensions_support_wide_tile &&
+        static_cast<uint64_t>(rows) <= std::numeric_limits<uint64_t>::max() /
+                                           static_cast<uint64_t>(cols) &&
+        static_cast<uint64_t>(rows) * static_cast<uint64_t>(cols) >=
+            kWideTileMinimumElements;
+    transpose->npu_tile_size = working_set_supports_wide_tile ? 32 : 16;
+    transpose->npu_indices = build_npu_2d_transpose_indices(
+        static_cast<uint32_t>(transpose->npu_tile_size));
   } else {
     transpose->triton_kernel = compile_tiled_transpose_kernel(request, rows, cols);
   }

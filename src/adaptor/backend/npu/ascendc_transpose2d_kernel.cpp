@@ -17,14 +17,15 @@
 using namespace AscendC;
 
 namespace {
-constexpr uint32_t kTile = 16;
-constexpr uint32_t kTileComplexCount = kTile * kTile;
-constexpr uint32_t kTileFloatCount = 2 * kTileComplexCount;
-constexpr uint32_t kTileDataBlocks = kTile * sizeof(uint64_t) / 32;
-constexpr uint32_t kFloatIndicesPerTable = kTileFloatCount;
-
+template <uint32_t Tile>
 class Transpose2DAiv {
  public:
+  static constexpr uint32_t kTile = Tile;
+  static constexpr uint32_t kTileComplexCount = kTile * kTile;
+  static constexpr uint32_t kTileFloatCount = 2 * kTileComplexCount;
+  static constexpr uint32_t kTileDataBlocks = kTile * sizeof(uint64_t) / 32;
+  static constexpr uint32_t kFloatIndicesPerTable = kTileFloatCount;
+
   __aicore__ inline void Init(GM_ADDR input,
                               GM_ADDR output,
                               GM_ADDR indices,
@@ -136,13 +137,24 @@ class Transpose2DAiv {
 };
 }  // namespace
 
-extern "C" __global__ __aicore__ void flagfft_npu_transpose2d(GM_ADDR input,
-                                                               GM_ADDR output,
-                                                               GM_ADDR indices,
-                                                               uint32_t rows,
-                                                               uint32_t cols,
-                                                               uint32_t batch) {
-  Transpose2DAiv kernel;
+extern "C" __global__ __aicore__ void flagfft_npu_transpose2d_t16(GM_ADDR input,
+                                                                   GM_ADDR output,
+                                                                   GM_ADDR indices,
+                                                                   uint32_t rows,
+                                                                   uint32_t cols,
+                                                                   uint32_t batch) {
+  Transpose2DAiv<16> kernel;
+  kernel.Init(input, output, indices, rows, cols, batch);
+  kernel.Process();
+}
+
+extern "C" __global__ __aicore__ void flagfft_npu_transpose2d_t32(GM_ADDR input,
+                                                                   GM_ADDR output,
+                                                                   GM_ADDR indices,
+                                                                   uint32_t rows,
+                                                                   uint32_t cols,
+                                                                   uint32_t batch) {
+  Transpose2DAiv<32> kernel;
   kernel.Init(input, output, indices, rows, cols, batch);
   kernel.Process();
 }
