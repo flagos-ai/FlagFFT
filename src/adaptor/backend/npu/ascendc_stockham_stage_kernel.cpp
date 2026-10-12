@@ -48,8 +48,6 @@ class StockhamStageAiv {
     ndiv_ = length_ / radix_;
     tiles_per_group_ = span_ == 1 ? 1 : (span_ + kTile - 1) / kTile;
     groups_per_transform_ = span_ == 1 ? 1 : ndiv_ / span_;
-    tiles_per_transform_ = span_ == 1 ? (ndiv_ + kTile - 1) / kTile
-                                       : groups_per_transform_ * tiles_per_group_;
     // Keep this mapping in sync with the host's short-extent tile count.
     batch_lane_extent_ = span_ == 1 ? ndiv_ : (span_ < kTile ? span_ : kTile);
     // Keep short-extent grouping aligned with the host helper: complex64 is
@@ -58,10 +56,21 @@ class StockhamStageAiv {
                            batch_lane_extent_ % 4U == 0
                        ? kTile / batch_lane_extent_
                        : 1;
+    // Pack adjacent independent groups when a short non-aligned span cannot
+    // use the batch-group path without violating DataCopyPad alignment.
+    packed_groups_per_tile_ = span_ > 1 && span_ < kTile && batch_group_ == 1
+                                  ? kTile / span_
+                                  : 1;
+    tiles_per_transform_ = span_ == 1
+        ? (ndiv_ + kTile - 1) / kTile
+        : ((groups_per_transform_ + packed_groups_per_tile_ - 1) /
+           packed_groups_per_tile_) * tiles_per_group_;
     batch_groups_ = (static_cast<uint64_t>(batch_) + batch_group_ - 1) /
                     batch_group_;
+    twiddle_stride_ = packed_groups_per_tile_ > 1 ? kTile : span_;
     root_float_count_ = 2 * radix_ * kRootStride;
-    has_contiguous_store_ = store_index_table != nullptr && span_ <= kTile;
+    has_contiguous_store_ = store_index_table != nullptr && span_ <= kTile &&
+                            packed_groups_per_tile_ == 1;
     if (has_contiguous_store_) {
       store_indices_.SetGlobalBuffer(
           reinterpret_cast<__gm__ uint32_t *>(store_index_table));
@@ -126,15 +135,26 @@ class StockhamStageAiv {
     uint64_t k_start = 0;
     uint32_t j_start = 0;
     uint32_t valid = 0;
+    uint32_t valid_per_group = 0;
+    uint32_t groups_in_tile = 1;
     if (span_ == 1) {
       k_start = local_tile * kTile;
       valid = static_cast<uint32_t>(ndiv_ - k_start < kTile ? ndiv_ - k_start : kTile);
+      valid_per_group = valid;
     } else {
-      const uint64_t group = local_tile / tiles_per_group_;
+      const uint64_t group_tile = local_tile / tiles_per_group_;
       const uint64_t tile_in_group = local_tile % tiles_per_group_;
       j_start = static_cast<uint32_t>(tile_in_group * kTile);
+      const uint64_t group = group_tile * packed_groups_per_tile_;
       k_start = group * span_ + j_start;
-      valid = span_ - j_start < kTile ? span_ - j_start : kTile;
+      valid_per_group = span_ - j_start < kTile ? span_ - j_start : kTile;
+      groups_in_tile = static_cast<uint32_t>(
+          groups_per_transform_ - group < packed_groups_per_tile_
+              ? groups_per_transform_ - group
+              : packed_groups_per_tile_);
+      valid = packed_groups_per_tile_ > 1
+                  ? groups_in_tile * valid_per_group
+                  : valid_per_group;
     }
 
     LocalTensor<float> input_local = input_buf_.Get<float>();
@@ -183,7 +203,7 @@ class StockhamStageAiv {
         for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
           GlobalTensor<uint64_t> ext_twiddle;
           ext_twiddle.SetGlobalBuffer(stage_twiddles_ptr_ +
-                                      static_cast<uint64_t>(digit) * span_ + j_start);
+                                      static_cast<uint64_t>(digit) * twiddle_stride_ + j_start);
           LocalTensor<uint64_t> twiddle_dest =
               twiddle.ReinterpretCast<uint64_t>()[
                   transform * batch_lane_extent_];
@@ -341,42 +361,56 @@ class StockhamStageAiv {
       // GM block length is one complex value. Stage each packed value at the
       // start of a padded local block before the strided scatter.
       for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
-        const uint64_t output_base = (batch_index + transform) * length_ +
-            static_cast<uint64_t>(radix_) * k_start -
-            static_cast<uint64_t>(radix_ - 1) * j_start +
-            static_cast<uint64_t>(q) * span_;
-        if (span_ > 1 && grouped_batch_count == 1 && valid == kTile &&
-            (output_base % 4U) == 0) {
-          // A full lane tile is already interleaved in `packed`; when its GM
-          // destination is 32-byte aligned, write the contiguous segment
-          // directly and avoid scalar SetValue packing into padded slots.
+        const uint32_t groups_to_store = packed_groups_per_tile_ > 1
+                                             ? groups_in_tile
+                                             : 1;
+        for (uint32_t group_slot = 0; group_slot < groups_to_store; ++group_slot) {
+          const uint64_t output_base = (batch_index + transform) * length_ +
+              static_cast<uint64_t>(radix_) * k_start -
+              static_cast<uint64_t>(radix_ - 1) * j_start +
+              (packed_groups_per_tile_ > 1
+                   ? static_cast<uint64_t>(group_slot) * radix_ * span_
+                   : 0) +
+              static_cast<uint64_t>(q) * span_;
+          const uint32_t group_valid = packed_groups_per_tile_ > 1
+                                           ? valid_per_group
+                                           : valid;
+          const uint32_t lane_offset = transform * batch_lane_extent_ +
+              (packed_groups_per_tile_ > 1 ? group_slot * span_ : 0);
+          if (packed_groups_per_tile_ == 1 && span_ > 1 &&
+              grouped_batch_count == 1 && group_valid == kTile &&
+              (output_base % 4U) == 0) {
+            // A full lane tile is already interleaved in `packed`; when its GM
+            // destination is 32-byte aligned, write the contiguous segment
+            // directly and avoid scalar SetValue packing into padded slots.
+            GlobalTensor<uint64_t> dst;
+            dst.SetGlobalBuffer(output_ptr_ + output_base);
+            DataCopy(dst, packed.ReinterpretCast<uint64_t>()[lane_offset],
+                     group_valid);
+            PipeBarrier<PIPE_ALL>();
+            continue;
+          }
+
+          Duplicate(store, 0.0f, 8 * kTile);
+          PipeBarrier<PIPE_ALL>();
+          for (uint32_t lane = 0; lane < group_valid; ++lane) {
+            store.SetValue(8 * lane, packed.GetValue(2 * (lane_offset + lane)));
+            store.SetValue(8 * lane + 1,
+                           packed.GetValue(2 * (lane_offset + lane) + 1));
+          }
+          PipeBarrier<PIPE_ALL>();
+
           GlobalTensor<uint64_t> dst;
           dst.SetGlobalBuffer(output_ptr_ + output_base);
-          DataCopy(dst, packed.ReinterpretCast<uint64_t>(), valid);
+          const uint32_t output_stride = span_ == 1 ? dst_stride : 0;
+          const DataCopyExtParams params(group_valid,
+                                         sizeof(uint64_t),
+                                         0,
+                                         output_stride,
+                                         0);
+          DataCopyPad(dst, store_complex, params);
           PipeBarrier<PIPE_ALL>();
-          continue;
         }
-
-        const uint32_t lane_offset = transform * batch_lane_extent_;
-        Duplicate(store, 0.0f, 8 * kTile);
-        PipeBarrier<PIPE_ALL>();
-        for (uint32_t lane = 0; lane < valid; ++lane) {
-          store.SetValue(8 * lane, packed.GetValue(2 * (lane_offset + lane)));
-          store.SetValue(8 * lane + 1,
-                         packed.GetValue(2 * (lane_offset + lane) + 1));
-        }
-        PipeBarrier<PIPE_ALL>();
-
-        GlobalTensor<uint64_t> dst;
-        dst.SetGlobalBuffer(output_ptr_ + output_base);
-        const uint32_t output_stride = span_ == 1 ? dst_stride : 0;
-        const DataCopyExtParams params(valid,
-                                       sizeof(uint64_t),
-                                       0,
-                                       output_stride,
-                                       0);
-        DataCopyPad(dst, store_complex, params);
-        PipeBarrier<PIPE_ALL>();
       }
     }
   }
@@ -412,12 +446,14 @@ class StockhamStageAiv {
   uint32_t ndiv_ = 0;
   uint32_t tiles_per_group_ = 0;
   uint32_t groups_per_transform_ = 0;
+  uint32_t packed_groups_per_tile_ = 1;
   uint32_t tiles_per_transform_ = 0;
   uint32_t batch_lane_extent_ = 0;
   uint32_t batch_group_ = 1;
   uint64_t batch_groups_ = 0;
   uint32_t root_float_count_ = 0;
   uint32_t store_index_stride_ = 0;
+  uint32_t twiddle_stride_ = 0;
   bool has_contiguous_store_ = false;
 };
 }  // namespace

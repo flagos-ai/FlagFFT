@@ -2129,15 +2129,33 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                         ? ndiv
                                         : std::min<int64_t>(stage_span,
                                               adaptor::npu::kAscendCStockhamTile);
-      const int64_t stage_tiles_per_transform = stage_span == 1
-          ? (ndiv + adaptor::npu::kAscendCStockhamTile - 1) /
-                adaptor::npu::kAscendCStockhamTile
-          : (ndiv / stage_span) *
-                ((stage_span + adaptor::npu::kAscendCStockhamTile - 1) /
-                 adaptor::npu::kAscendCStockhamTile);
       const uint64_t stage_batch_group =
           adaptor::npu::ascendc_stockham_batch_group(
               static_cast<uint64_t>(std::max<int64_t>(active_extent, 0)));
+      const uint64_t effective_batch_lanes =
+          batch > 0 ? std::min<uint64_t>(stage_batch_group,
+                                        static_cast<uint64_t>(batch))
+                    : 0;
+      const uint64_t effective_stage_lanes =
+          effective_batch_lanes *
+          static_cast<uint64_t>(std::max<int64_t>(active_extent, 0));
+      const uint64_t stage_groups_per_transform =
+          stage_span == 1 ? 1 : static_cast<uint64_t>(ndiv / stage_span);
+      const uint64_t stage_groups_per_tile =
+          stage_span > 1 &&
+                  stage_span < adaptor::npu::kAscendCStockhamTile &&
+                  stage_batch_group == 1
+              ? adaptor::npu::kAscendCStockhamTile /
+                    static_cast<uint64_t>(stage_span)
+              : 1;
+      const int64_t stage_tiles_per_transform = stage_span == 1
+          ? (ndiv + adaptor::npu::kAscendCStockhamTile - 1) /
+                adaptor::npu::kAscendCStockhamTile
+          : static_cast<int64_t>(
+                (stage_groups_per_transform + stage_groups_per_tile - 1) /
+                stage_groups_per_tile) *
+                ((stage_span + adaptor::npu::kAscendCStockhamTile - 1) /
+                 adaptor::npu::kAscendCStockhamTile);
       const uint64_t stage_batch_count = batch > 0 ? static_cast<uint64_t>(batch) : 0;
       const uint64_t stage_batch_groups =
           stage_batch_count / stage_batch_group +
@@ -2149,15 +2167,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                   (static_cast<uint64_t>(adaptor::npu::kAscendCStockhamTile) %
                        static_cast<uint64_t>(stage_tiles_per_transform) !=
                    0);
-      // The AIV stage masks a partial tile. Keep small extents eligible when
-      // they still fill one vector repeat and expose enough independent tiles.
+      // Estimate useful lanes after combining short transforms within a tile.
+      // The AIV stage masks partial tiles, so require at least one vector repeat
+      // of active work and enough independent tiles to occupy the device.
       const bool use_aiv_stage = npu_2d_aiv_stockham && stockham->length > 0 &&
           stockham->length <= std::numeric_limits<uint32_t>::max() &&
           radix >= 2 && radix <= 19 && stage_span > 0 &&
           stage_span <= std::numeric_limits<uint32_t>::max() &&
           stockham->length % radix == 0 &&
           stockham->length % (radix * stage_span) == 0 &&
-          active_extent >= adaptor::npu::kAscendCStockhamTile / 8 &&
+          effective_stage_lanes >= adaptor::npu::kAscendCStockhamTile / 8 &&
           enough_stage_work;
       if (use_aiv_stage) {
         if (aiv_indices.get() == 0) {
@@ -2199,21 +2218,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         tables.enabled = true;
         tables.roots = DeviceAllocation::from_floats(roots);
         if (stage_span > 1) {
+          const int64_t twiddle_stride =
+              stage_groups_per_tile > 1
+                  ? adaptor::npu::kAscendCStockhamTile
+                  : stage_span;
           std::vector<float> stage_twiddles(
-              static_cast<std::size_t>(2 * radix * stage_span), 0.0f);
+              static_cast<std::size_t>(2 * radix * twiddle_stride), 0.0f);
           for (int64_t digit = 0; digit < radix; ++digit) {
-            for (int64_t j = 0; j < stage_span; ++j) {
-              const double angle = sign * 2.0 * kPi * static_cast<double>(digit * j) /
+            for (int64_t j = 0; j < twiddle_stride; ++j) {
+              const int64_t twiddle_lane = j % stage_span;
+              const double angle = sign * 2.0 * kPi *
+                                   static_cast<double>(digit * twiddle_lane) /
                                    static_cast<double>(radix * stage_span);
               const std::size_t index =
-                  static_cast<std::size_t>(2 * (digit * stage_span + j));
+                  static_cast<std::size_t>(2 * (digit * twiddle_stride + j));
               stage_twiddles[index] = static_cast<float>(std::cos(angle));
               stage_twiddles[index + 1] = static_cast<float>(std::sin(angle));
             }
           }
           tables.twiddles = DeviceAllocation::from_floats(stage_twiddles);
         }
-        if (stage_span <= adaptor::npu::kAscendCStockhamTile) {
+        if (stage_span <= adaptor::npu::kAscendCStockhamTile &&
+            stage_groups_per_tile == 1) {
           // Build a byte-offset map that repacks q-major real/imag accumulators
           // into the contiguous output order for one tile (or transform slice).
           const uint32_t store_lanes = static_cast<uint32_t>(

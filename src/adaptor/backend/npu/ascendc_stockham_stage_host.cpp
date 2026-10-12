@@ -44,15 +44,22 @@ flagfftResult launch_ascendc_stockham_stage(DevicePtr input,
   const uint64_t tiles_per_group =
       span == 1 ? 1 : (span + kAscendCStockhamTile - 1) / kAscendCStockhamTile;
   const uint64_t groups_per_transform = span == 1 ? 1 : ndiv / span;
-  const uint64_t tiles_per_transform = span == 1
-                                           ? (ndiv + kAscendCStockhamTile - 1) /
-                                                 kAscendCStockhamTile
-                                           : groups_per_transform * tiles_per_group;
   // Fill otherwise idle lanes with independent transform segments.
   const uint64_t lane_extent = span == 1
                                    ? ndiv
                                    : std::min<uint64_t>(span, kAscendCStockhamTile);
   const uint64_t batch_group = ascendc_stockham_batch_group(lane_extent);
+  // If batch grouping cannot fill a vector because the butterfly span is not
+  // 32-byte aligned, pack adjacent independent Stockham groups into the tile.
+  const uint64_t groups_per_tile =
+      span > 1 && span < kAscendCStockhamTile && batch_group == 1
+          ? kAscendCStockhamTile / span
+          : 1;
+  const uint64_t tiles_per_transform = span == 1
+                                           ? (ndiv + kAscendCStockhamTile - 1) /
+                                                 kAscendCStockhamTile
+                                           : ((groups_per_transform + groups_per_tile - 1) /
+                                              groups_per_tile) * tiles_per_group;
   const uint64_t batch_groups =
       (static_cast<uint64_t>(batch) + batch_group - 1) / batch_group;
   const uint64_t total_tiles = batch_groups * tiles_per_transform;
