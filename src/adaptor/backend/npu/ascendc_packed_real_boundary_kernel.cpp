@@ -107,6 +107,21 @@ class PackedRealBoundaryAiv {
           Gather(w_imag, twiddle, index_w, sizeof(float), kTile);
           PipeBarrier<PIPE_V>();
 
+          // Diagnostic: materialize the first packed FFT value pair through
+          // the same gather and row-compaction path used by the R2C boundary.
+          if (r2c_postprocess_) {
+            DataCopy(merge, a_real, kTile);
+            DataCopy(merge[kTile], a_imag, kTile);
+            PipeBarrier<PIPE_ALL>();
+            Gather(output_local, merge, indices[3 * padded_half_], 0, 2 * kTile);
+            PipeBarrier<PIPE_V>();
+            LocalTensor<float> row_staging =
+                staging[row_slot * staging_row_pitch_ * 2 + first * 2];
+            DataCopy(row_staging, output_local, 2 * kTile);
+            PipeBarrier<PIPE_ALL>();
+            continue;
+          }
+
           Muls(b_imag, b_imag, -1.0f, kTile);
           Add(sum_real, a_real, b_real, kTile);
           Add(sum_imag, a_imag, b_imag, kTile);
