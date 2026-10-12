@@ -2741,17 +2741,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     std::shared_ptr<JitKernel> postprocess_kernel;
     std::shared_ptr<CompiledRawNode> aiv_postprocess;
     DeviceAllocation boundary_twiddle;
-#if defined(FLAGFFT_BACKEND_NPU)
-    const bool use_npu_aiv_boundary =
-        npu_2d_packed_real_boundary_enabled(request, n, batch);
-    if (use_npu_aiv_boundary) {
-      aiv_postprocess = make_npu_packed_real_boundary_node(n, true);
-    } else
-#endif
-    {
-      postprocess_kernel = compile_r2c_packed_postprocess_kernel(request, n);
-      boundary_twiddle = build_raw_packed_real_twiddle(request, n);
-    }
+    // The grouped AIV R2C store path is not accuracy-qualified yet. Keep the
+    // proven JIT postprocess until dense-row compaction is fixed and retested.
+    postprocess_kernel = compile_r2c_packed_postprocess_kernel(request, n);
+    boundary_twiddle = build_raw_packed_real_twiddle(request, n);
     return std::make_shared<CompiledRawPackedR2CNode>(
         n,
         compile_raw_node(packed_child->plan, packed_child->request, batch),
