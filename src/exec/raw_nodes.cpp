@@ -1870,6 +1870,28 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
       return result;
     }
 
+#if defined(FLAGFFT_BACKEND_NPU)
+    const char *fft_dump_path = std::getenv("FLAGFFT_NPU_DUMP_PACKED_R2C_FFT_OUTPUT");
+    if (fft_dump_path != nullptr && fft_dump_path[0] != '\0') {
+      const std::size_t bytes = static_cast<std::size_t>(context.batch) *
+                                static_cast<std::size_t>(packed) *
+                                static_cast<std::size_t>(complex_element_bytes(
+                                    context.request.output_dtype));
+      std::vector<uint8_t> host(bytes);
+      const aclrtStream stream = reinterpret_cast<aclrtStream>(context.stream);
+      if (aclrtSynchronizeStream(stream) != ACL_SUCCESS ||
+          aclrtMemcpy(host.data(), bytes,
+                      reinterpret_cast<const void *>(packed_output.get()), bytes,
+                      ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+        throw std::runtime_error("failed to capture packed R2C FFT output");
+      }
+      std::ofstream dump(fft_dump_path, std::ios::binary);
+      dump.write(reinterpret_cast<const char *>(host.data()),
+                 static_cast<std::streamsize>(bytes));
+      if (!dump) throw std::runtime_error("failed to write packed R2C FFT output dump");
+    }
+#endif
+
     if (aiv_postprocess) {
       RawExecutionContext boundary_context {
           context.request, context.stream, context.batch, packed, output_distance};
