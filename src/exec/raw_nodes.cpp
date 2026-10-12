@@ -29,10 +29,15 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
+#include <complex>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
+#include <vector>
 
 namespace flagfft {
 
@@ -1863,10 +1868,41 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
       return layout_fallback->execute(input, output, context);
     }
 
+    const char *debug_prefix = std::getenv("FLAGFFT_NPU_DEBUG_PACKED_R2C_PREFIX");
+    static std::atomic<bool> debug_dumped{false};
+    const bool capture_debug = debug_prefix != nullptr && aiv_postprocess &&
+                               !debug_dumped.exchange(true);
+    auto dump_debug_buffer = [&](const char *suffix,
+                                 adaptor::DevicePtr source,
+                                 std::size_t bytes) {
+      adaptor::Memory snapshot(bytes);
+      adaptor::copy_device_to_device(snapshot.get(), source, bytes, context.stream);
+      adaptor::synchronize();
+      std::vector<unsigned char> host(bytes);
+      snapshot.copy_to_host(host.data(), bytes);
+      std::ofstream file(std::string(debug_prefix) + "." + suffix + ".bin",
+                         std::ios::binary);
+      file.write(reinterpret_cast<const char *>(host.data()),
+                 static_cast<std::streamsize>(host.size()));
+      if (!file) throw std::runtime_error("failed to write packed R2C debug dump");
+    };
+    const int64_t input_distance =
+        context.input_distance > 0 ? context.input_distance : length;
+    if (capture_debug) {
+      dump_debug_buffer("input", input,
+                        static_cast<std::size_t>(context.batch * input_distance) * sizeof(float));
+    }
+
     RawExecutionContext child_context {context.request, context.stream, context.batch};
     flagfftResult result = fft->execute(input, packed_output.get(), child_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+
+    if (capture_debug) {
+      dump_debug_buffer("packed", packed_output.get(),
+                        static_cast<std::size_t>(context.batch * packed) *
+                            sizeof(std::complex<float>));
     }
 
 
@@ -1876,6 +1912,11 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
       const flagfftResult result =
           aiv_postprocess->execute(packed_output.get(), output, boundary_context);
       if (result != FLAGFFT_SUCCESS) return result;
+      if (capture_debug) {
+        dump_debug_buffer("boundary", output,
+                          static_cast<std::size_t>(context.batch * output_distance) *
+                              sizeof(std::complex<float>));
+      }
       return FLAGFFT_SUCCESS;
     }
 
