@@ -15,6 +15,7 @@
 #include "flagfft/core.hpp"
 
 #if defined(FLAGFFT_BACKEND_NPU)
+#include <acl/acl_rt.h>
 #include "adaptor/backend/npu/ascendc_fft128.hpp"
 #include "adaptor/backend/npu/ascendc_fft2048.hpp"
 #include "adaptor/backend/npu/ascendc_fft256.hpp"
@@ -30,6 +31,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include <limits>
 #include <sstream>
 
@@ -1871,7 +1873,27 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
     if (aiv_postprocess) {
       RawExecutionContext boundary_context {
           context.request, context.stream, context.batch, packed, output_distance};
-      return aiv_postprocess->execute(packed_output.get(), output, boundary_context);
+      const flagfftResult result =
+          aiv_postprocess->execute(packed_output.get(), output, boundary_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      const char *dump_path = std::getenv("FLAGFFT_NPU_DUMP_PACKED_R2C_OUTPUT");
+      if (dump_path != nullptr && dump_path[0] != '\0') {
+        const std::size_t bytes = static_cast<std::size_t>(context.batch) *
+                                  static_cast<std::size_t>(output_distance) *
+                                  static_cast<std::size_t>(complex_element_bytes(context.request.input_dtype));
+        std::vector<uint8_t> host(bytes);
+        const aclrtStream stream = reinterpret_cast<aclrtStream>(context.stream);
+        if (aclrtSynchronizeStream(stream) != ACL_SUCCESS ||
+            aclrtMemcpy(host.data(), bytes, reinterpret_cast<const void *>(output), bytes,
+                        ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+          throw std::runtime_error("failed to capture Ascend packed R2C output");
+        }
+        std::ofstream dump(dump_path, std::ios::binary);
+        dump.write(reinterpret_cast<const char *>(host.data()),
+                   static_cast<std::streamsize>(bytes));
+        if (!dump) throw std::runtime_error("failed to write Ascend packed R2C output dump");
+      }
+      return FLAGFFT_SUCCESS;
     }
 
     std::vector<JitKernelArg> args = {
