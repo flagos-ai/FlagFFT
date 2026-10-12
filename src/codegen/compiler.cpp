@@ -3497,20 +3497,11 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
   transpose->cols = cols;
   if (npu_2d_native_transpose_enabled(request, rows, cols, batch)) {
     transpose->native_npu = true;
-    // A tile override is useful for hardware screening. Leave the default
-    // policy shape-generic and unchanged until a larger tile wins across the
-    // intended matrix families.
-    int32_t tile_override = 0;
-    if (const char *setting = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_TILE")) {
-      const std::string value(setting);
-      if (value == "16" || value == "32" || value == "64") {
-        tile_override = std::stoi(value);
-      }
-    }
-    // Larger tiles amortize per-block address and launch bookkeeping for
-    // substantial matrices. Keep 16x16 tiles for smaller working sets so the
-    // grid still exposes enough independent blocks.
+    // Use larger tiles only when the matrix has enough total traffic and the
+    // resulting grid still exposes multiple waves of independent work.
     constexpr uint64_t kWideTileMinimumElements = 32 * 1024;
+    constexpr uint64_t kLargeTileMinimumElements = 1024 * 1024;
+    constexpr uint64_t kLargeTileMinimumBlocks = 64;
     const bool dimensions_support_wide_tile = rows >= 32 && cols >= 32;
     const bool working_set_supports_wide_tile =
         dimensions_support_wide_tile &&
@@ -3518,9 +3509,42 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
                                            static_cast<uint64_t>(cols) &&
         static_cast<uint64_t>(rows) * static_cast<uint64_t>(cols) >=
             kWideTileMinimumElements;
-    transpose->npu_tile_size = tile_override != 0
-                                   ? tile_override
-                                   : (working_set_supports_wide_tile ? 32 : 16);
+    uint64_t elements = 0;
+    if (static_cast<uint64_t>(rows) <= std::numeric_limits<uint64_t>::max() /
+                                           static_cast<uint64_t>(cols)) {
+      elements = static_cast<uint64_t>(rows) * static_cast<uint64_t>(cols);
+      if (elements <= std::numeric_limits<uint64_t>::max() /
+                          static_cast<uint64_t>(batch)) {
+        elements *= static_cast<uint64_t>(batch);
+      } else {
+        elements = std::numeric_limits<uint64_t>::max();
+      }
+    }
+    const auto saturating_multiply = [](uint64_t lhs, uint64_t rhs) {
+      if (rhs != 0 && lhs > std::numeric_limits<uint64_t>::max() / rhs) {
+        return std::numeric_limits<uint64_t>::max();
+      }
+      return lhs * rhs;
+    };
+    uint64_t large_tile_blocks = saturating_multiply(
+        static_cast<uint64_t>(batch), (static_cast<uint64_t>(rows) + 63) / 64);
+    large_tile_blocks = saturating_multiply(
+        large_tile_blocks, (static_cast<uint64_t>(cols) + 63) / 64);
+    const bool working_set_supports_large_tile =
+        working_set_supports_wide_tile &&
+        elements >= kLargeTileMinimumElements &&
+        large_tile_blocks >= kLargeTileMinimumBlocks;
+    int32_t selected_tile = working_set_supports_large_tile
+                                ? 64
+                                : (working_set_supports_wide_tile ? 32 : 16);
+    // An explicit override is reserved for controlled hardware screening.
+    if (const char *setting = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_TILE")) {
+      const std::string value(setting);
+      if (value == "16" || value == "32" || value == "64") {
+        selected_tile = std::stoi(value);
+      }
+    }
+    transpose->npu_tile_size = selected_tile;
     transpose->npu_indices = build_npu_2d_transpose_indices(
         static_cast<uint32_t>(transpose->npu_tile_size));
   } else {
