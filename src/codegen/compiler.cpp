@@ -65,7 +65,7 @@ namespace {
     }
     elements *= static_cast<uint64_t>(batch);
     return elements >= kMinimumBytes / sizeof(uint64_t) &&
-           flag_or_default("FLAGFFT_NPU_2D_NATIVE_TRANSPOSE", false);
+           flag_or_default("FLAGFFT_NPU_2D_NATIVE_TRANSPOSE", true);
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -1926,13 +1926,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.origin_rank == 2 &&
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" &&
-                                   flag_or_default("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM", false);
+                                   flag_or_default("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM", true);
   const bool use_npu_2d_aiv128 = npu_2d_complex_child &&
-                                 flag_or_default("FLAGFFT_NPU_2D_AIV128", false);
+                                 flag_or_default("FLAGFFT_NPU_2D_AIV128", true);
   const bool use_npu_2d_aiv1024 = npu_2d_complex_child &&
-                                  flag_or_default("FLAGFFT_NPU_2D_AIV1024", false);
+                                  flag_or_default("FLAGFFT_NPU_2D_AIV1024", true);
   const bool use_npu_2d_aiv2048 = npu_2d_complex_child &&
-                                  flag_or_default("FLAGFFT_NPU_2D_AIV2048", false);
+                                  flag_or_default("FLAGFFT_NPU_2D_AIV2048", true);
   const bool npu_2d_radix4_pair = flag_or_default("FLAGFFT_NPU_2D_RADIX4_PAIR", true);
   auto make_npu_2d_aiv128_child = [&]() -> std::shared_ptr<CompiledRawNode> {
     const char *group_setting = std::getenv("FLAGFFT_NPU_2D_AIV128_GROUP");
@@ -5348,7 +5348,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64) {
     auto parse_group_size = [](const char *setting, int64_t batch) {
-      if (setting == nullptr) return int32_t{1};
+      if (setting == nullptr) return batch > 1 ? int32_t{8} : int32_t{4};
       const std::string value(setting);
       // A single matrix benefits from four-way groups, while the row and
       // column profiles show that batch workloads benefit from eight-way
