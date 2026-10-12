@@ -7,7 +7,6 @@
 #include <aclrtlaunch_flagfft_npu_packed_real_boundary.h>
 
 #include <algorithm>
-#include <cstdlib>
 
 namespace flagfft::adaptor::npu {
 
@@ -30,28 +29,14 @@ flagfftResult launch_ascendc_packed_real_boundary(DevicePtr input,
       output_distance < minimum_output_distance || batch <= 0) {
     return FLAGFFT_INVALID_SIZE;
   }
-  // Keep the launch grid near one device wave. Larger row batches are handled
-  // by the kernel's grid-stride loop, which also bounds per-launch scheduling
-  // overhead on Ascend devices.
-  constexpr uint32_t kDefaultMaxBlocks = 32;
-  constexpr uint32_t kDeviceMaxBlocks = 65535;
-  uint32_t block_cap = kDefaultMaxBlocks;
-  if (const char *configured_cap =
-          std::getenv("FLAGFFT_NPU_2D_PACKED_REAL_BLOCK_CAP")) {
-    char *end = nullptr;
-    const unsigned long parsed = std::strtoul(configured_cap, &end, 10);
-    if (end != configured_cap && *end == '\0' && parsed > 0 &&
-        parsed <= kDeviceMaxBlocks) {
-      block_cap = static_cast<uint32_t>(parsed);
-    }
-  }
+  constexpr uint32_t kMaxBlocks = 65535;
   const uint32_t output_count = r2c_postprocess ? static_cast<uint32_t>(half)
                                                : static_cast<uint32_t>(packed);
   uint32_t group_rows = 1;
   while ((output_count * group_rows) % 4U != 0) ++group_rows;
   const uint32_t row_groups =
       (static_cast<uint32_t>(batch) + group_rows - 1) / group_rows;
-  const uint32_t blocks = std::min<uint32_t>(row_groups, block_cap);
+  const uint32_t blocks = std::min<uint32_t>(row_groups, kMaxBlocks);
   const uint32_t status = ACLRT_LAUNCH_KERNEL(flagfft_npu_packed_real_boundary)(
       blocks,
       reinterpret_cast<void *>(stream),
