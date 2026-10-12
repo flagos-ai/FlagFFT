@@ -20,9 +20,9 @@
 
 namespace flagfft::adaptor::npu {
 
-// Keep one Vector Unit repeat per Stockham tile. Larger tiles reduce GM tile
-// count but also increase per-block UB use and can reduce AIV occupancy.
-inline constexpr uint32_t kAscendCStockhamTile = 32;
+// Keep more independent lanes in flight per AIV block. 128 FP32 lanes map to
+// two Vector Unit repeats, while reducing the number of GM tiles for long axes.
+inline constexpr uint32_t kAscendCStockhamTile = 128;
 inline constexpr uint32_t kAscendCStockhamMaxRadix = 19;
 inline constexpr uint32_t kAscendCStockhamRootStride = 24;
 inline constexpr uint32_t kAscendCStockhamIndexVectors = 5;
