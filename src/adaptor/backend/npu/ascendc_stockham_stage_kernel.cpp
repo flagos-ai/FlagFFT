@@ -341,6 +341,22 @@ class StockhamStageAiv {
       // GM block length is one complex value. Stage each packed value at the
       // start of a padded local block before the strided scatter.
       for (uint32_t transform = 0; transform < grouped_batch_count; ++transform) {
+        const uint64_t output_base = (batch_index + transform) * length_ +
+            static_cast<uint64_t>(radix_) * k_start -
+            static_cast<uint64_t>(radix_ - 1) * j_start +
+            static_cast<uint64_t>(q) * span_;
+        if (span_ > 1 && grouped_batch_count == 1 && valid == kTile &&
+            (output_base % 4U) == 0) {
+          // A full lane tile is already interleaved in `packed`; when its GM
+          // destination is 32-byte aligned, write the contiguous segment
+          // directly and avoid scalar SetValue packing into padded slots.
+          GlobalTensor<uint64_t> dst;
+          dst.SetGlobalBuffer(output_ptr_ + output_base);
+          DataCopy(dst, packed.ReinterpretCast<uint64_t>(), valid);
+          PipeBarrier<PIPE_ALL>();
+          continue;
+        }
+
         const uint32_t lane_offset = transform * batch_lane_extent_;
         Duplicate(store, 0.0f, 8 * kTile);
         PipeBarrier<PIPE_ALL>();
@@ -351,10 +367,6 @@ class StockhamStageAiv {
         }
         PipeBarrier<PIPE_ALL>();
 
-        const uint64_t output_base = (batch_index + transform) * length_ +
-            static_cast<uint64_t>(radix_) * k_start -
-            static_cast<uint64_t>(radix_ - 1) * j_start +
-            static_cast<uint64_t>(q) * span_;
         GlobalTensor<uint64_t> dst;
         dst.SetGlobalBuffer(output_ptr_ + output_base);
         const uint32_t output_stride = span_ == 1 ? dst_stride : 0;
