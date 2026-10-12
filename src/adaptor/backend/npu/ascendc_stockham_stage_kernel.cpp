@@ -19,6 +19,7 @@ using namespace AscendC;
 
 namespace {
 constexpr uint32_t kTile = 128;
+constexpr uint32_t kVectorRepeatElements = 64;
 constexpr uint32_t kMaxRadix = 19;
 constexpr uint32_t kRootStride = 24;
 constexpr uint32_t kMaxRootFloats = 2 * kMaxRadix * kRootStride;
@@ -264,10 +265,15 @@ class StockhamStageAiv {
       Broadcast<float, 2, 0>(q_input_imag, digit_imag, q_shape, input_shape,
                              broadcast_scratch);
       if (digit == 0) {
-        Add(q_acc_real, q_acc_real, q_input_real, kTile, radix_,
-            q_repeat_params);
-        Add(q_acc_imag, q_acc_imag, q_input_imag, kTile, radix_,
-            q_repeat_params);
+        for (uint32_t lane_offset = 0; lane_offset < kTile;
+             lane_offset += kVectorRepeatElements) {
+          Add(q_acc_real[lane_offset], q_acc_real[lane_offset],
+              q_input_real[lane_offset], kVectorRepeatElements, radix_,
+              q_repeat_params);
+          Add(q_acc_imag[lane_offset], q_acc_imag[lane_offset],
+              q_input_imag[lane_offset], kVectorRepeatElements, radix_,
+              q_repeat_params);
+        }
         PipeBarrier<PIPE_V>();
         continue;
       }
@@ -285,22 +291,33 @@ class StockhamStageAiv {
                              broadcast_scratch);
       Broadcast<float, 2, 1>(q_coeff_imag, q_root_imag, q_shape, root_shape,
                              broadcast_scratch);
-      Mul(q_tmp_real, q_input_real, q_coeff_real, kTile, radix_,
-          q_repeat_params);
-      Mul(q_tmp_imag, q_input_imag, q_coeff_imag, kTile, radix_,
-          q_repeat_params);
-      Sub(q_tmp_real, q_tmp_real, q_tmp_imag, kTile, radix_,
-          q_repeat_params);
-      Mul(q_tmp_imag, q_input_real, q_coeff_imag, kTile, radix_,
-          q_repeat_params);
-      Mul(q_tmp_aux, q_input_imag, q_coeff_real, kTile, radix_,
-          q_repeat_params);
-      Add(q_tmp_imag, q_tmp_imag, q_tmp_aux, kTile, radix_,
-          q_repeat_params);
-      Add(q_acc_real, q_acc_real, q_tmp_real, kTile, radix_,
-          q_repeat_params);
-      Add(q_acc_imag, q_acc_imag, q_tmp_imag, kTile, radix_,
-          q_repeat_params);
+      for (uint32_t lane_offset = 0; lane_offset < kTile;
+           lane_offset += kVectorRepeatElements) {
+        Mul(q_tmp_real[lane_offset], q_input_real[lane_offset],
+            q_coeff_real[lane_offset], kVectorRepeatElements, radix_,
+            q_repeat_params);
+        Mul(q_tmp_imag[lane_offset], q_input_imag[lane_offset],
+            q_coeff_imag[lane_offset], kVectorRepeatElements, radix_,
+            q_repeat_params);
+        Sub(q_tmp_real[lane_offset], q_tmp_real[lane_offset],
+            q_tmp_imag[lane_offset], kVectorRepeatElements, radix_,
+            q_repeat_params);
+        Mul(q_tmp_imag[lane_offset], q_input_real[lane_offset],
+            q_coeff_imag[lane_offset], kVectorRepeatElements, radix_,
+            q_repeat_params);
+        Mul(q_tmp_aux[lane_offset], q_input_imag[lane_offset],
+            q_coeff_real[lane_offset], kVectorRepeatElements, radix_,
+            q_repeat_params);
+        Add(q_tmp_imag[lane_offset], q_tmp_imag[lane_offset],
+            q_tmp_aux[lane_offset], kVectorRepeatElements, radix_,
+            q_repeat_params);
+        Add(q_acc_real[lane_offset], q_acc_real[lane_offset],
+            q_tmp_real[lane_offset], kVectorRepeatElements, radix_,
+            q_repeat_params);
+        Add(q_acc_imag[lane_offset], q_acc_imag[lane_offset],
+            q_tmp_imag[lane_offset], kVectorRepeatElements, radix_,
+            q_repeat_params);
+      }
       PipeBarrier<PIPE_V>();
     }
 
