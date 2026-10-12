@@ -2160,16 +2160,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const uint64_t stage_batch_groups =
           stage_batch_count / stage_batch_group +
           (stage_batch_count % stage_batch_group != 0);
+      // Do not require a full 128-block grid before selecting the vector
+      // kernel. Long transforms can have substantial per-tile work while a
+      // single batch exposes fewer than 128 independent tiles; those stages
+      // otherwise fall back to the scalar-heavy JIT Stockham kernel. Keep a
+      // small floor to avoid paying AIV setup for only a handful of tiles.
+      constexpr uint64_t min_aiv_stage_tiles =
+          adaptor::npu::kAscendCStockhamTile / 8;
+      const uint64_t stage_groups_needed =
+          stage_tiles_per_transform > 0
+              ? (min_aiv_stage_tiles +
+                 static_cast<uint64_t>(stage_tiles_per_transform) - 1) /
+                    static_cast<uint64_t>(stage_tiles_per_transform)
+              : min_aiv_stage_tiles;
       const bool enough_stage_work = batch > 0 && stage_tiles_per_transform > 0 &&
-          stage_batch_groups >=
-              static_cast<uint64_t>(adaptor::npu::kAscendCStockhamTile) /
-                  static_cast<uint64_t>(stage_tiles_per_transform) +
-                  (static_cast<uint64_t>(adaptor::npu::kAscendCStockhamTile) %
-                       static_cast<uint64_t>(stage_tiles_per_transform) !=
-                   0);
+                                     stage_batch_groups >= stage_groups_needed;
       // Estimate useful lanes after combining short transforms within a tile.
       // The AIV stage masks partial tiles, so require at least one vector repeat
-      // of active work and enough independent tiles to occupy the device.
+      // of active work as well as the independent-tile floor above.
       const bool use_aiv_stage = npu_2d_aiv_stockham && stockham->length > 0 &&
           stockham->length <= std::numeric_limits<uint32_t>::max() &&
           radix >= 2 && radix <= 19 && stage_span > 0 &&
