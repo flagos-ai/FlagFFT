@@ -158,3 +158,14 @@ extern "C" __global__ __aicore__ void flagfft_npu_transpose2d_t32(GM_ADDR input,
   kernel.Init(input, output, indices, rows, cols, batch);
   kernel.Process();
 }
+
+extern "C" __global__ __aicore__ void flagfft_npu_transpose2d_t64(GM_ADDR input,
+                                                                   GM_ADDR output,
+                                                                   GM_ADDR indices,
+                                                                   uint32_t rows,
+                                                                   uint32_t cols,
+                                                                   uint32_t batch) {
+  Transpose2DAiv<64> kernel;
+  kernel.Init(input, output, indices, rows, cols, batch);
+  kernel.Process();
+}

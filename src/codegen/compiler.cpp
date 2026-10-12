@@ -3497,6 +3497,16 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
   transpose->cols = cols;
   if (npu_2d_native_transpose_enabled(request, rows, cols, batch)) {
     transpose->native_npu = true;
+    // A tile override is useful for hardware screening. Leave the default
+    // policy shape-generic and unchanged until a larger tile wins across the
+    // intended matrix families.
+    int32_t tile_override = 0;
+    if (const char *setting = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_TILE")) {
+      const std::string value(setting);
+      if (value == "16" || value == "32" || value == "64") {
+        tile_override = std::stoi(value);
+      }
+    }
     // Larger tiles amortize per-block address and launch bookkeeping for
     // substantial matrices. Keep 16x16 tiles for smaller working sets so the
     // grid still exposes enough independent blocks.
@@ -3508,7 +3518,9 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
                                            static_cast<uint64_t>(cols) &&
         static_cast<uint64_t>(rows) * static_cast<uint64_t>(cols) >=
             kWideTileMinimumElements;
-    transpose->npu_tile_size = working_set_supports_wide_tile ? 32 : 16;
+    transpose->npu_tile_size = tile_override != 0
+                                   ? tile_override
+                                   : (working_set_supports_wide_tile ? 32 : 16);
     transpose->npu_indices = build_npu_2d_transpose_indices(
         static_cast<uint32_t>(transpose->npu_tile_size));
   } else {
