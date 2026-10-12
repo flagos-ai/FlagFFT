@@ -33,7 +33,9 @@ class PackedRealBoundaryAiv {
     r2c_postprocess_ = r2c_postprocess != 0;
     output_count_ = r2c_postprocess_ ? half_ : packed_;
     group_rows_ = 1;
-    while ((output_count_ * group_rows_) % 4U != 0) ++group_rows_;
+    if (!r2c_postprocess_) {
+      while ((output_count_ * group_rows_) % 4U != 0) ++group_rows_;
+    }
     staging_row_pitch_ = ((output_count_ + kTile - 1) / kTile) * kTile;
     compact_count_ = ((group_rows_ * output_count_ + kTile - 1) / kTile) * kTile;
     compact_index_base_ = 3 * padded_half_ + 2 * kTile;
@@ -145,11 +147,24 @@ class PackedRealBoundaryAiv {
           Gather(output_local, merge, indices[3 * padded_half_], 0, 2 * kTile);
           PipeBarrier<PIPE_V>();
 
-          LocalTensor<float> row_staging = staging[row_slot * staging_row_pitch_ * 2 + first * 2];
-          DataCopy(row_staging, output_local, 2 * kTile);
-          PipeBarrier<PIPE_ALL>();
+          if (r2c_postprocess_) {
+            GlobalTensor<float> dst;
+            dst.SetGlobalBuffer(output_ptr_ +
+                                (static_cast<uint64_t>(row) * output_distance_ + first) * 2);
+            const DataCopyExtParams output_params(
+                1, 2 * valid * sizeof(float), 0, 0, 0);
+            DataCopyPad(dst, output_local, output_params);
+            PipeBarrier<PIPE_ALL>();
+          } else {
+            LocalTensor<float> row_staging =
+                staging[row_slot * staging_row_pitch_ * 2 + first * 2];
+            DataCopy(row_staging, output_local, 2 * kTile);
+            PipeBarrier<PIPE_ALL>();
+          }
         }
       }
+
+      if (r2c_postprocess_) continue;
 
       const uint32_t flat_count = valid_rows * output_count;
       for (uint32_t first = 0; first < flat_count; first += kTile) {
