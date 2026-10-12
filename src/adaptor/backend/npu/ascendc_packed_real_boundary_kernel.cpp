@@ -107,17 +107,24 @@ class PackedRealBoundaryAiv {
           Gather(w_imag, twiddle, index_w, sizeof(float), kTile);
           PipeBarrier<PIPE_V>();
 
-          // Diagnostic: materialize the first packed FFT value pair through
-          // the same gather and row-compaction path used by the R2C boundary.
+          // Diagnostic: dump the gathered real and imaginary planes before
+          // interleaving or compaction, so those stores can be checked alone.
           if (r2c_postprocess_) {
-            DataCopy(merge, a_real, kTile);
-            DataCopy(merge[kTile], a_imag, kTile);
-            PipeBarrier<PIPE_ALL>();
-            Gather(output_local, merge, indices[3 * padded_half_], 0, 2 * kTile);
-            PipeBarrier<PIPE_V>();
-            LocalTensor<float> row_staging =
-                staging[row_slot * staging_row_pitch_ * 2 + first * 2];
-            DataCopy(row_staging, output_local, 2 * kTile);
+            if (first < packed_) {
+              const uint32_t packed_valid =
+                  packed_ - first < kTile ? packed_ - first : kTile;
+              GlobalTensor<float> real_dst;
+              real_dst.SetGlobalBuffer(output_ptr_ +
+                                       static_cast<uint64_t>(row) * output_distance_ * 2 + first);
+              const DataCopyExtParams real_params(
+                  1, packed_valid * sizeof(float), 0, 0, 0);
+              DataCopyPad(real_dst, a_real, real_params);
+              GlobalTensor<float> imag_dst;
+              imag_dst.SetGlobalBuffer(output_ptr_ +
+                                       static_cast<uint64_t>(row) * output_distance_ * 2 +
+                                           output_count_ + first);
+              DataCopyPad(imag_dst, a_imag, real_params);
+            }
             PipeBarrier<PIPE_ALL>();
             continue;
           }
@@ -171,6 +178,8 @@ class PackedRealBoundaryAiv {
           PipeBarrier<PIPE_ALL>();
         }
       }
+
+      if (r2c_postprocess_) continue;
 
       const uint32_t flat_count = valid_rows * output_count;
       for (uint32_t first = 0; first < flat_count; first += kTile) {
