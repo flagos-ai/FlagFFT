@@ -6,7 +6,7 @@
 using namespace AscendC;
 
 namespace {
-constexpr uint32_t kTile = 256;
+constexpr uint32_t kTile = 128;
 
 class PackedRealBoundaryAiv {
  public:

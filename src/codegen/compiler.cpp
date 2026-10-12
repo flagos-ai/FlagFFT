@@ -88,7 +88,7 @@ namespace {
   std::pair<DeviceAllocation, DeviceAllocation> build_npu_packed_real_boundary_tables(
       int64_t length,
       bool r2c_postprocess) {
-    constexpr uint32_t kTile = 256;
+    constexpr uint32_t kTile = 128;
     constexpr double kPi = 3.141592653589793238462643383279502884;
     const uint32_t packed = static_cast<uint32_t>(length / 2);
     const uint32_t half = packed + 1;
