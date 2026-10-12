@@ -33,9 +33,7 @@ class PackedRealBoundaryAiv {
     r2c_postprocess_ = r2c_postprocess != 0;
     output_count_ = r2c_postprocess_ ? half_ : packed_;
     group_rows_ = 1;
-    if (!r2c_postprocess_) {
-      while ((output_count_ * group_rows_) % 4U != 0) ++group_rows_;
-    }
+    while ((output_count_ * group_rows_) % 4U != 0) ++group_rows_;
     staging_row_pitch_ = ((output_count_ + kTile - 1) / kTile) * kTile;
     compact_count_ = ((group_rows_ * output_count_ + kTile - 1) / kTile) * kTile;
     compact_index_base_ = 3 * padded_half_ + 2 * kTile;
@@ -121,10 +119,15 @@ class PackedRealBoundaryAiv {
             Mul(product_imag, diff_imag, w_real, kTile);
             Mul(output_real, diff_real, w_imag, kTile);
             Add(product_imag, product_imag, output_real, kTile);
-            Add(output_real, sum_real, product_imag, kTile);
-            Muls(output_real, output_real, 0.5f, kTile);
-            Sub(output_imag, sum_imag, product_real, kTile);
-            Muls(output_imag, output_imag, 0.5f, kTile);
+            PipeBarrier<PIPE_V>();
+            Muls(a_real, sum_real, 0.5f, kTile);
+            Muls(a_imag, sum_imag, 0.5f, kTile);
+            Muls(b_real, product_imag, 0.5f, kTile);
+            Muls(b_imag, product_real, 0.5f, kTile);
+            PipeBarrier<PIPE_V>();
+            Add(output_real, a_real, b_real, kTile);
+            Sub(output_imag, a_imag, b_imag, kTile);
+            PipeBarrier<PIPE_V>();
             if (first == 0) output_imag.SetValue(0, 0.0f);
             if (first <= packed_ && first + valid > packed_) {
               output_imag.SetValue(packed_ - first, 0.0f);
@@ -147,24 +150,12 @@ class PackedRealBoundaryAiv {
           Gather(output_local, merge, indices[3 * padded_half_], 0, 2 * kTile);
           PipeBarrier<PIPE_V>();
 
-          if (r2c_postprocess_) {
-            GlobalTensor<float> dst;
-            dst.SetGlobalBuffer(output_ptr_ +
-                                (static_cast<uint64_t>(row) * output_distance_ + first) * 2);
-            const DataCopyExtParams output_params(
-                1, 2 * valid * sizeof(float), 0, 0, 0);
-            DataCopyPad(dst, output_local, output_params);
-            PipeBarrier<PIPE_ALL>();
-          } else {
-            LocalTensor<float> row_staging =
-                staging[row_slot * staging_row_pitch_ * 2 + first * 2];
-            DataCopy(row_staging, output_local, 2 * kTile);
-            PipeBarrier<PIPE_ALL>();
-          }
+          LocalTensor<float> row_staging =
+              staging[row_slot * staging_row_pitch_ * 2 + first * 2];
+          DataCopy(row_staging, output_local, 2 * kTile);
+          PipeBarrier<PIPE_ALL>();
         }
       }
-
-      if (r2c_postprocess_) continue;
 
       const uint32_t flat_count = valid_rows * output_count;
       for (uint32_t first = 0; first < flat_count; first += kTile) {
