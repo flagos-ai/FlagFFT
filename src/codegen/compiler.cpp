@@ -2742,9 +2742,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     std::shared_ptr<CompiledRawNode> aiv_postprocess;
     DeviceAllocation boundary_twiddle;
 #if defined(FLAGFFT_BACKEND_NPU)
-    const char *aiv_r2c_setting = std::getenv("FLAGFFT_NPU_2D_PACKED_R2C_AIV");
-    if (aiv_r2c_setting != nullptr && std::string(aiv_r2c_setting) == "1" &&
-        npu_2d_packed_real_boundary_enabled(request, n, batch)) {
+    if (npu_2d_packed_real_boundary_enabled(request, n, batch)) {
       aiv_postprocess = make_npu_packed_real_boundary_node(n, true);
     } else
 #endif
