@@ -279,8 +279,14 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       throw std::runtime_error("FLAGFFT_NPU_2D_CUBE_DFT must be 0 or 1");
     }
     const bool use_cube_dft = cube_dft_setting != nullptr && std::string(cube_dft_setting) == "1";
+    const Factorization cube_factorization = factorize_supported_radices(n);
+    const bool cube_supported_length = n >= 32 && n <= 64 &&
+        cube_factorization.remainder == 1 && !cube_factorization.factors.empty();
+    const bool cube_high_batch = context.batch >= 1024;
+    const bool cube_small_batch_64 = n == 64 && context.batch <= 512;
     if (use_cube_dft && context.origin_rank == 2 && context.input_dtype == "complex64" &&
-        context.output_dtype == "complex64" && npu_2d_c2c && n == 64 && context.batch <= 512) {
+        context.output_dtype == "complex64" && npu_2d_c2c && cube_supported_length &&
+        (cube_high_batch || cube_small_batch_64)) {
       PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
       return {{node, estimate_direct_dft_cost(n), priority(node)}};
     }

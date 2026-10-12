@@ -234,7 +234,7 @@ namespace {
     const char *setting = std::getenv("FLAGFFT_NPU_2D_CUBE_DFT");
     return setting != nullptr && std::string(setting) == "1" && request.device_type == "npu" &&
            request.origin_rank == 2 && request.input_dtype == "complex64" &&
-           request.output_dtype == "complex64" && n == 64;
+           request.output_dtype == "complex64" && n >= 32 && n <= 64;
   }
 
   void build_npu_aiv_fft64_tables(const FFTRequest &request,

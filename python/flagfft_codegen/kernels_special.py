@@ -34,9 +34,15 @@ def _build_direct_dft_kernel_source(
     cube_transposed: bool = False,
 ) -> tuple[str, str, list[str]]:
     if cube or cube_transposed:
-        if n != 64 or dtype != "complex64":
-            raise ValueError("the Ascend Cube DFT kernel supports complex64 length 64 only")
-        return _build_cube_dft_kernel_source(strided=strided, transpose_output=cube_transposed)
+        if dtype != "complex64":
+            raise ValueError("the Ascend Cube DFT kernel requires complex64 input")
+        if cube_transposed and n != 64:
+            raise ValueError("the transposed Ascend Cube DFT kernel supports length 64 only")
+        if not cube_transposed and not 16 <= n <= 64:
+            raise ValueError("the Ascend Cube DFT kernel supports lengths from 16 through 64")
+        return _build_cube_dft_kernel_source(
+            n, strided=strided, transpose_output=cube_transposed
+        )
     block = lane_block_for(n)
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     suffix = _dtype_suffix(dtype)
@@ -150,12 +156,14 @@ def _build_direct_dft_kernel_source(
 
 
 def _build_cube_dft_kernel_source(
-    *, strided: bool = False, transpose_output: bool = False
+    n: int = 64, *, strided: bool = False, transpose_output: bool = False
 ) -> tuple[str, str, list[str]]:
-    """Build the measured 64-point FP32 Cube matmul kernel."""
+    """Build an FP32 Cube matmul DFT with 16-wide reduction tiles."""
     if transpose_output:
         if strided:
             raise ValueError("the transposed Cube DFT path requires contiguous input")
+        if n != 64:
+            raise ValueError("the transposed Cube DFT kernel supports length 64 only")
         kernel_name = "direct_dft_cube_transposed_kernel_n64_complex64_b16"
         source = dedent(
             f"""
@@ -190,17 +198,17 @@ def _build_cube_dft_kernel_source(
         )
         return kernel_name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
 
-    kernel_name = (
-        "direct_dft_cube_strided_kernel_n64_complex64_b16"
-        if strided
-        else "direct_dft_cube_kernel_n64_complex64_b16"
-    )
+    if not 16 <= n <= 64:
+        raise ValueError("the Ascend Cube DFT kernel supports lengths from 16 through 64")
+    output_tile = 1 << (n - 1).bit_length()
+    reduction_tiles = (n + 15) // 16
+    kernel_name = f"direct_dft_cube{'_strided' if strided else ''}_kernel_n{n}_complex64_b16"
     base = (
         "            batch_index = line // outer_stride\n"
-        "            base = batch_index * (64 * outer_stride) + "
+        f"            base = batch_index * ({n} * outer_stride) + "
         "(line - batch_index * outer_stride)\n"
         if strided
-        else "            base = line * 64\n"
+        else f"            base = line * {n}\n"
     )
     input_offset = (
         "base[:, None] + j[None, :] * outer_stride"
@@ -220,24 +228,29 @@ def _build_cube_dft_kernel_source(
 {extra}            nbatch):
             line_block = tl.program_id(0)
             line = line_block * 16 + tl.arange(0, 16)
-            out = tl.arange(0, 64)
+            out = tl.arange(0, {output_tile})
             k = tl.arange(0, 16)
-{base}            acc_r = tl.zeros((16, 64), dtype=tl.float32)
-            acc_i = tl.zeros((16, 64), dtype=tl.float32)
-            for kk in tl.static_range(4):
+{base}            acc_r = tl.zeros((16, {output_tile}), dtype=tl.float32)
+            acc_i = tl.zeros((16, {output_tile}), dtype=tl.float32)
+            for kk in tl.static_range({reduction_tiles}):
                 j = kk * 16 + k
                 line_mask = line < nbatch
+                input_mask = line_mask[:, None] & (j[None, :] < {n})
                 xr = tl.load(in_ptr + ({input_offset}) * 2,
-                             mask=line_mask[:, None], other=0.0)
+                             mask=input_mask, other=0.0)
                 xi = tl.load(in_ptr + ({input_offset}) * 2 + 1,
-                             mask=line_mask[:, None], other=0.0)
-                wr = tl.load(dft_r_ptr + j[:, None] * 64 + out[None, :])
-                wi = tl.load(dft_i_ptr + j[:, None] * 64 + out[None, :])
+                             mask=input_mask, other=0.0)
+                matrix_mask = (j[:, None] < {n}) & (out[None, :] < {n})
+                wr = tl.load(dft_r_ptr + j[:, None] * {n} + out[None, :],
+                             mask=matrix_mask, other=0.0)
+                wi = tl.load(dft_i_ptr + j[:, None] * {n} + out[None, :],
+                             mask=matrix_mask, other=0.0)
                 acc_r += tl.dot(xr, wr) - tl.dot(xi, wi)
                 acc_i += tl.dot(xr, wi) + tl.dot(xi, wr)
             dst = out_ptr + ({output_offset}) * 2
-            tl.store(dst, acc_r, mask=line_mask[:, None])
-            tl.store(dst + 1, acc_i, mask=line_mask[:, None])
+            output_mask = line_mask[:, None] & (out[None, :] < {n})
+            tl.store(dst, acc_r, mask=output_mask)
+            tl.store(dst + 1, acc_i, mask=output_mask)
         """
     )
     arg_names = (

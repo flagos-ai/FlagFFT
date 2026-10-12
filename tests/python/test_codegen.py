@@ -937,6 +937,29 @@ def test_ascend_cube_dft_kernel_source(kernels) -> None:
         "in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "outer_stride", "nbatch"
     ]
 
+    cube48_name, cube48_source, cube48_args = kernels._build_direct_dft_kernel_source(
+        48, "forward", "complex64", cube=True
+    )
+    assert cube48_name.startswith("direct_dft_cube_kernel_n48")
+    assert "out = tl.arange(0, 64)" in cube48_source
+    assert "tl.static_range(3)" in cube48_source
+    assert "j[None, :] < 48" in cube48_source
+    assert "out[None, :] < 48" in cube48_source
+    assert "j[:, None] * 48 + out[None, :]" in cube48_source
+    assert cube48_args == ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+
+    cube48_strided_name, cube48_strided_source, cube48_strided_args = (
+        kernels._build_direct_dft_kernel_source(
+            48, "inverse", "complex64", strided=True, cube=True
+        )
+    )
+    assert cube48_strided_name.startswith("direct_dft_cube_strided_kernel_n48")
+    assert "batch_index * (48 * outer_stride)" in cube48_strided_source
+    assert "j[None, :] * outer_stride" in cube48_strided_source
+    assert cube48_strided_args == [
+        "in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "outer_stride", "nbatch"
+    ]
+
 
 def test_ascend_cube_2d_tiled_matmul_sources(kernels) -> None:
     row_name, row_source, row_args = kernels._build_cube_dft_2d_kernel_source(
