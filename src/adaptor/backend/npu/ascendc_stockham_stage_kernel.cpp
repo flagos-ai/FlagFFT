@@ -18,11 +18,11 @@
 using namespace AscendC;
 
 namespace {
-constexpr uint32_t kTile = 64;
+constexpr uint32_t kTile = 128;
 constexpr uint32_t kMaxRadix = 19;
 constexpr uint32_t kRootStride = 24;
 constexpr uint32_t kMaxRootFloats = 2 * kMaxRadix * kRootStride;
-constexpr uint32_t kBroadcastScratchBytes = 4096;
+constexpr uint32_t kBroadcastScratchBytes = 16384;
 
 class StockhamStageAiv {
  public:
