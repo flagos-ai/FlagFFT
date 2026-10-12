@@ -927,7 +927,17 @@ CompiledRawStockhamNode::CompiledRawStockhamNode(int64_t length,
 }
 
 std::string CompiledRawStockhamNode::describe() const {
-  return "CompiledRawStockham(n=" + std::to_string(length) + ")";
+  std::string description = "CompiledRawStockham(n=" + std::to_string(length) +
+                            ", stages=[";
+  for (std::size_t stage = 0; stage < factors.size(); ++stage) {
+    if (stage != 0) description += ",";
+    description += std::to_string(factors[stage]);
+    description += stage < aiv_stages.size() && aiv_stages[stage].enabled
+                       ? ":AIV"
+                       : ":JIT";
+  }
+  description += "])";
+  return description;
 }
 
 flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
