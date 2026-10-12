@@ -88,20 +88,44 @@ namespace {
   }
 
   bool npu_sip_supports(const FlagFFTPlanDesc &desc) {
-    if (desc.rank != 1 || desc.batch <= 0 || desc.n.size() != 1 ||
-        desc.n[0] > (int64_t{1} << 27) || desc.n[0] * desc.batch > (int64_t{1} << 30) ||
-        desc.istride != 1 || desc.ostride != 1 ||
-        (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_R2C && desc.type != FLAGFFT_C2R) ||
-        !sip_factor_limit(desc.n[0])) {
+    if (desc.batch <= 0 || desc.istride != 1 || desc.ostride != 1 ||
+        (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_R2C && desc.type != FLAGFFT_C2R)) {
       return false;
     }
-    const int64_t n = desc.n[0];
-    const int64_t half = n / 2 + 1;
-    const int64_t input_length = desc.type == FLAGFFT_C2R ? half : n;
-    const int64_t output_length = desc.type == FLAGFFT_R2C ? half : n;
-    return desc.idist == input_length && desc.odist == output_length &&
-           desc.inembed.size() == 1 && desc.inembed[0] == input_length &&
-           desc.onembed.size() == 1 && desc.onembed[0] == output_length;
+    constexpr int64_t kMaxDimension = int64_t{1} << 27;
+    constexpr int64_t kMaxBatch = int64_t{1} << 30;
+    if (desc.rank == 1 && desc.n.size() == 1) {
+      const int64_t n = desc.n[0];
+      if (n <= 0 || n > kMaxDimension || desc.batch > kMaxBatch / n ||
+          !sip_factor_limit(n)) {
+        return false;
+      }
+      const int64_t half = n / 2 + 1;
+      const int64_t input_length = desc.type == FLAGFFT_C2R ? half : n;
+      const int64_t output_length = desc.type == FLAGFFT_R2C ? half : n;
+      return desc.idist == input_length && desc.odist == output_length &&
+             desc.inembed.size() == 1 && desc.inembed[0] == input_length &&
+             desc.onembed.size() == 1 && desc.onembed[0] == output_length;
+    }
+    if (desc.rank != 2 || desc.n.size() != 2 ||
+        desc.batch > std::numeric_limits<int32_t>::max()) {
+      return false;
+    }
+
+    const int64_t n0 = desc.n[0];
+    const int64_t n1 = desc.n[1];
+    if (n0 <= 0 || n1 <= 0 || n0 > kMaxDimension || n1 > kMaxDimension ||
+        desc.batch > kMaxBatch / n0 || n1 > kMaxBatch / (n0 * desc.batch) ||
+        !sip_factor_limit(n0) || !sip_factor_limit(n1)) {
+      return false;
+    }
+    const int64_t half_n1 = n1 / 2 + 1;
+    const int64_t input_n1 = desc.type == FLAGFFT_C2R ? half_n1 : n1;
+    const int64_t output_n1 = desc.type == FLAGFFT_R2C ? half_n1 : n1;
+    return desc.idist == n0 * input_n1 && desc.odist == n0 * output_n1 &&
+           desc.inembed.size() == 2 && desc.inembed[0] == n0 &&
+           desc.inembed[1] == input_n1 && desc.onembed.size() == 2 &&
+           desc.onembed[0] == n0 && desc.onembed[1] == output_n1;
   }
 
   flagfftResult configure_npu_sip_execution(FlagFFTPlan &plan) {
@@ -113,14 +137,21 @@ namespace {
 
     void *forward = nullptr;
     void *inverse = nullptr;
+    const auto create_sip_plan = [&](int direction) {
+      if (plan.desc.rank == 1) {
+        return adaptor::npu::sip_plan_create(plan.desc.n[0], plan.desc.batch,
+                                             plan.desc.type, direction);
+      }
+      return adaptor::npu::sip_plan_create_2d(plan.desc.n[0], plan.desc.n[1],
+                                              plan.desc.batch, plan.desc.type,
+                                              direction);
+    };
     try {
       if (plan.desc.type == FLAGFFT_C2C || plan.desc.type == FLAGFFT_R2C) {
-        forward = adaptor::npu::sip_plan_create(plan.desc.n[0], plan.desc.batch,
-                                                plan.desc.type, FLAGFFT_FORWARD);
+        forward = create_sip_plan(FLAGFFT_FORWARD);
       }
       if (plan.desc.type == FLAGFFT_C2C || plan.desc.type == FLAGFFT_C2R) {
-        inverse = adaptor::npu::sip_plan_create(plan.desc.n[0], plan.desc.batch,
-                                                plan.desc.type, FLAGFFT_INVERSE);
+        inverse = create_sip_plan(FLAGFFT_INVERSE);
       }
     } catch (const std::exception &e) {
       adaptor::npu::sip_plan_destroy(forward);

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -126,31 +127,71 @@ namespace {
     return *static_cast<SipExecutor *>(opaque);
   }
 
+  void *create_sip_plan(const std::vector<int64_t> &lengths,
+                        int64_t batch,
+                        flagfftType type,
+                        int direction) {
+    if ((lengths.size() != 1 && lengths.size() != 2) || batch <= 0 ||
+        (lengths.size() == 2 && batch > std::numeric_limits<int32_t>::max())) {
+      throw std::runtime_error("invalid SiP FFT rank or batch");
+    }
+    for (const int64_t length : lengths) {
+      if (length <= 0) throw std::runtime_error("invalid SiP FFT dimension");
+    }
+
+    auto plan = std::make_unique<SipExecutor>();
+    plan->type = type;
+    plan->direction = direction;
+    plan->input_shape.push_back(batch);
+    plan->output_shape.push_back(batch);
+    for (std::size_t axis = 0; axis < lengths.size(); ++axis) {
+      int64_t input_length = lengths[axis];
+      int64_t output_length = lengths[axis];
+      if (axis + 1 == lengths.size()) {
+        if (type == FLAGFFT_C2R) input_length = lengths[axis] / 2 + 1;
+        if (type == FLAGFFT_R2C) output_length = lengths[axis] / 2 + 1;
+      }
+      plan->input_shape.push_back(input_length);
+      plan->output_shape.push_back(output_length);
+    }
+
+    check_sip(AsdSip::asdFftCreate(plan->handle), "asdFftCreate");
+    if (lengths.size() == 1) {
+      check_sip(AsdSip::asdFftMakePlan1D(plan->handle, lengths[0], sip_type(type),
+                                        sip_direction(direction), batch,
+                                        AsdSip::ASCEND_FFT_HORIZONTAL),
+                "asdFftMakePlan1D");
+    } else {
+      check_sip(AsdSip::asdFftMakePlan2D(plan->handle, lengths[0], lengths[1],
+                                        sip_type(type), sip_direction(direction),
+                                        static_cast<int32_t>(batch)),
+                "asdFftMakePlan2D");
+    }
+
+    std::size_t workspace_size = 0;
+    check_sip(AsdSip::asdFftGetWorkspaceSize(plan->handle, workspace_size),
+              "asdFftGetWorkspaceSize");
+    if (workspace_size != 0) {
+      check_acl(aclrtMalloc(&plan->workspace, workspace_size, ACL_MEM_MALLOC_HUGE_FIRST),
+                "aclrtMalloc(SiP workspace)");
+    }
+    check_sip(AsdSip::asdFftSetWorkspace(plan->handle, plan->workspace),
+              "asdFftSetWorkspace");
+    return plan.release();
+  }
+
 }  // namespace
 
 void *sip_plan_create(int64_t length, int64_t batch, flagfftType type, int direction) {
-  if (length <= 0 || batch <= 0) throw std::runtime_error("invalid SiP execution shape or batch");
-  auto plan = std::make_unique<SipExecutor>();
-  plan->type = type;
-  plan->direction = direction;
-  const int64_t compact_length = length / 2 + 1;
-  const int64_t input_length = type == FLAGFFT_C2R ? compact_length : length;
-  const int64_t output_length = type == FLAGFFT_R2C ? compact_length : length;
-  plan->input_shape = {batch, input_length};
-  plan->output_shape = {batch, output_length};
+  return create_sip_plan({length}, batch, type, direction);
+}
 
-  check_sip(AsdSip::asdFftCreate(plan->handle), "asdFftCreate");
-  check_sip(AsdSip::asdFftMakePlan1D(plan->handle, length, sip_type(type), sip_direction(direction), batch,
-                                    AsdSip::ASCEND_FFT_HORIZONTAL),
-            "asdFftMakePlan1D");
-  std::size_t workspace_size = 0;
-  check_sip(AsdSip::asdFftGetWorkspaceSize(plan->handle, workspace_size), "asdFftGetWorkspaceSize");
-  if (workspace_size != 0) {
-    check_acl(aclrtMalloc(&plan->workspace, workspace_size, ACL_MEM_MALLOC_HUGE_FIRST),
-              "aclrtMalloc(SiP workspace)");
-  }
-  check_sip(AsdSip::asdFftSetWorkspace(plan->handle, plan->workspace), "asdFftSetWorkspace");
-  return plan.release();
+void *sip_plan_create_2d(int64_t n0,
+                         int64_t n1,
+                         int64_t batch,
+                         flagfftType type,
+                         int direction) {
+  return create_sip_plan({n0, n1}, batch, type, direction);
 }
 
 void sip_plan_destroy(void *opaque) {

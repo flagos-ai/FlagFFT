@@ -24,6 +24,11 @@ namespace flagfft::adaptor::npu {
 // The returned handle owns the SiP plan, workspace, and shape metadata. The
 // input/output ACL tensors are cached after the first execute call.
 void *sip_plan_create(int64_t length, int64_t batch, flagfftType type, int direction);
+void *sip_plan_create_2d(int64_t n0,
+                         int64_t n1,
+                         int64_t batch,
+                         flagfftType type,
+                         int direction);
 void sip_plan_destroy(void *plan);
 flagfftResult sip_plan_set_stream(void *plan, StreamHandle stream);
 flagfftResult sip_plan_execute(void *plan, void *input, void *output);
