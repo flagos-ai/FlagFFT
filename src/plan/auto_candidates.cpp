@@ -16,6 +16,10 @@
 
 #include "rader_utils.hpp"
 
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+
 namespace flagfft {
 namespace {
 
@@ -62,6 +66,47 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
   // Keep NPU convolution children on the validated small-radix path, including
   // lengths above the GPU-specific power-of-two preference threshold.
   if (context.device_type == "npu") {
+    const char *smooth_setting = std::getenv("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV");
+    if (smooth_setting != nullptr && std::string(smooth_setting) != "0" &&
+        std::string(smooth_setting) != "1" && std::string(smooth_setting) != "auto") {
+      throw std::runtime_error("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV must be 0, 1 or auto");
+    }
+    if (context.origin_rank == 2 && smooth_setting != nullptr &&
+        std::string(smooth_setting) != "0") {
+      // Bluestein only needs a convolution length >= 2*n-1. A power-of-two
+      // length is safe, but can add substantial work for long transforms.
+      // Generate lengths with small prime factors and choose among them using
+      // the same FFT cost model used by the non-NPU convolution planner. The
+      // restriction to 2/3/5/7 keeps CANN away from the large codelets that
+      // are not yet qualified on this backend.
+      std::vector<int64_t> candidates {1};
+      for (int64_t prime : {2, 3, 5, 7}) {
+        const std::vector<int64_t> previous = candidates;
+        for (int64_t base : previous) {
+          int64_t candidate = base;
+          while (candidate <= power / prime) {
+            candidate *= prime;
+            candidates.push_back(candidate);
+          }
+        }
+      }
+
+      int64_t best = power;
+      double best_cost = 3.0 * cost_for(power) + static_cast<double>(power);
+      for (int64_t candidate : candidates) {
+        if (candidate < minimum || candidate >= best) continue;
+        const Factorization factorization = factorize_supported_radices(candidate);
+        if (factorization.remainder != 1 || factorization.factors.empty()) continue;
+        const double candidate_cost =
+            3.0 * cost_for(candidate) + static_cast<double>(candidate);
+        if (candidate_cost < best_cost ||
+            (candidate_cost == best_cost && candidate < best)) {
+          best = candidate;
+          best_cost = candidate_cost;
+        }
+      }
+      return best;
+    }
     return power;
   }
   const bool is_fp32 = context.input_dtype == "complex64" || context.input_dtype == "float32";
@@ -108,14 +153,57 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
 
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
-  PlanNodePtr fft_plan = build_auto_node(conv_length, false);
+  const auto &context = request_context();
+  const bool maca_c550_3d_997_fp64 =
+      context.device_type == "maca" && context.device_arch == "102" &&
+      context.origin_rank == 3 && n == 997 &&
+      (context.input_dtype == "complex128" || context.input_dtype == "float64");
+  if (maca_c550_3d_997_fp64) {
+    // C550's regular radix-2 convolution is faster than the cost model's
+    // 2000-point mixed-radix choice for the rank-3 FP64 prime axis.
+    conv_length = 2048;
+  }
+  const char *balanced_override = std::getenv("FLAGFFT_MACA_BATCH_PRIME_BALANCED");
+  const char *batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const bool balanced_maca_batch = context.device_type == "maca" && context.device_arch == "102" &&
+                                    context.origin_rank <= 1 && context.batch == 64 &&
+                                    context.input_dtype == "complex128" && n == 524287 &&
+                                    conv_length == 1048576 &&
+                                    (batch_policy == nullptr || std::string(batch_policy) != "0") &&
+                                    (balanced_override == nullptr || std::string(balanced_override) != "0");
+  // The 1024x1024 FP64 convolution has a measured 4x advantage over the
+  // automatic 512x2048 split at batch 64. Keep the decision at the prime root
+  // so unrelated 1M FFTs retain their existing plan.
+  PlanNodePtr fft_plan = balanced_maca_batch
+                             ? std::make_shared<FourStepPlanNode>(
+                                   conv_length, 1024, 1024,
+                                   build_auto_node(1024, false), build_auto_node(1024, false))
+                             : build_auto_node(conv_length, false);
   return std::make_shared<BluesteinPlanNode>(n, conv_length, std::move(fft_plan));
 }
 
 PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
   int64_t root = find_primitive_root(n);
   std::vector<int64_t> idx = build_rader_index_table(n, root);
-  PlanNodePtr conv_plan = build_auto_node(n - 1, false);
+  const auto &context = request_context();
+  const char *batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const char *split_override = std::getenv("FLAGFFT_MACA_BATCH_RADER_SPLIT");
+  const bool tuned_split = context.device_type == "maca" && context.device_arch == "102" &&
+                           context.origin_rank <= 1 && context.batch == 64 &&
+                           context.requested_n == n &&
+                           (context.input_dtype == "complex64" ||
+                            context.input_dtype == "complex128") &&
+                           (n == 8191 || n == 16381) &&
+                           (batch_policy == nullptr || std::string(batch_policy) != "0") &&
+                           (split_override == nullptr || std::string(split_override) != "0");
+  // Balanced, factorable children avoid the slow mixed-radix column leaves.
+  const int64_t n1 = n == 8191 ? 90 : 91;
+  const int64_t n2 = n == 8191 ? 91 : 180;
+  PlanNodePtr conv_plan = tuned_split
+                              ? std::make_shared<FourStepPlanNode>(
+                                    n - 1, n1, n2,
+                                    build_auto_node(n1, false), build_auto_node(n2, false))
+                              : build_auto_node(n - 1, false);
   return std::make_shared<RaderPlanNode>(n, root, std::move(idx), std::move(conv_plan));
 }
 
@@ -126,7 +214,197 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   // Reuse the radix codelets through the GM Stockham mapping on Ascend.
   // CUDA shared-memory leaf layouts are not used on this path.
   if (request_context().device_type == "npu") {
+    const RequestContext &context = request_context();
+    // For short axes and moderate batches, one direct-DFT launch is faster
+    // than launching a Stockham kernel per radix stage on Ascend. Keep the
+    // measured cutover limited to complex FP32 and at most 512 axis transforms;
+    // larger batches use Stockham to avoid the direct kernel's quadratic work.
+    // The measured 64-point leaf is faster for small 2D C2C, and it enables
+    // the compact real-row path for 2D R2C/C2R. Keep 128-point axes on the
+    // existing policy until their batched performance is competitive.
+    int64_t npu_2d_direct_dft_max = 128;
+    if (const char *raw = std::getenv("FLAGFFT_NPU_2D_DIRECT_DFT_MAX"); raw != nullptr) {
+      std::size_t parsed = 0;
+      try {
+        npu_2d_direct_dft_max = std::stoll(raw, &parsed);
+      } catch (const std::exception &) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_DIRECT_DFT_MAX must be 0, 64, or 128");
+      }
+      if (parsed != std::string(raw).size() ||
+          (npu_2d_direct_dft_max != 0 && npu_2d_direct_dft_max != 64 && npu_2d_direct_dft_max != 128)) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_DIRECT_DFT_MAX must be 0, 64, or 128");
+      }
+    }
+    const bool npu_2d_real_transform = context.real_transform_kind == "r2c" ||
+                                       context.real_transform_kind == "c2r";
+    const bool npu_2d_c2c = context.real_transform_kind.empty();
+    const char *npu_3d_leaf_setting = std::getenv("FLAGFFT_NPU_3D_LEAF");
+    if (npu_3d_leaf_setting != nullptr && std::string(npu_3d_leaf_setting) != "0" &&
+        std::string(npu_3d_leaf_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_NPU_3D_LEAF must be 0 or 1");
+    }
+    const bool use_npu_3d_leaf = npu_3d_leaf_setting != nullptr &&
+                                 std::string(npu_3d_leaf_setting) == "1";
+    const char *npu_3d_aiv_small_setting = std::getenv("FLAGFFT_NPU_3D_AIV_SMALL");
+    if (npu_3d_aiv_small_setting != nullptr &&
+        std::string(npu_3d_aiv_small_setting) != "0" &&
+        std::string(npu_3d_aiv_small_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_NPU_3D_AIV_SMALL must be 0 or 1");
+    }
+    const bool use_npu_3d_aiv_small = npu_3d_aiv_small_setting != nullptr &&
+                                      std::string(npu_3d_aiv_small_setting) == "1";
+    if (use_npu_3d_aiv_small && context.origin_rank == 3 &&
+        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+        (n == 16 || n == 32)) {
+      const auto factors = select_leaf_factors(n);
+      PlanNodePtr node = make_leaf_plan(n, factors);
+      return {{node, estimate_leaf_warm_cost(n, factors), priority(node)}};
+    }
+    // Generic 32-point Triton leaves generated multi-megabyte MLIR and exceeded
+    // the CANN 9 runner timeout. The native small-AIV route above can use a 32
+    // point LeafPlan without compiling that Triton module; this fallback keeps
+    // the qualified portable opt-in route at 16/256, with 64 selected by AIV64.
+    if (use_npu_3d_leaf && context.origin_rank == 3 &&
+        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+        (n == 16 || n == 256)) {
+      const auto factors = select_leaf_factors(n);
+      if (should_use_leaf(n, factors)) {
+        PlanNodePtr node = make_leaf_plan(n, factors);
+        return {{node, estimate_leaf_warm_cost(n, factors), priority(node)}};
+      }
+    }
+    const char *cube_dft_setting = std::getenv("FLAGFFT_NPU_2D_CUBE_DFT");
+    if (cube_dft_setting != nullptr && std::string(cube_dft_setting) != "0" &&
+        std::string(cube_dft_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_NPU_2D_CUBE_DFT must be 0 or 1");
+    }
+    const bool use_cube_dft = cube_dft_setting != nullptr && std::string(cube_dft_setting) == "1";
+    const Factorization cube_factorization = factorize_supported_radices(n);
+    const bool cube_supported_length = n >= 32 && n <= 64 &&
+        cube_factorization.remainder == 1 && !cube_factorization.factors.empty();
+    const bool cube_high_batch = context.batch >= 1024;
+    const bool cube_small_batch_64 = n == 64 && context.batch <= 512;
+    if (use_cube_dft && context.origin_rank == 2 && context.input_dtype == "complex64" &&
+        context.output_dtype == "complex64" && npu_2d_c2c && cube_supported_length &&
+        (cube_high_batch || cube_small_batch_64)) {
+      PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+      return {{node, estimate_direct_dft_cost(n), priority(node)}};
+    }
+    const bool npu_2d_leaf_explicit = std::getenv("FLAGFFT_NPU_2D_LEAF_LENGTH") != nullptr;
+    const bool npu_2d_measured_leaf = context.origin_rank == 2 && n == 64 &&
+                                      (npu_2d_real_transform || npu_2d_c2c);
+    int64_t npu_2d_leaf_length = npu_2d_measured_leaf ? n : 0;
+    if (const char *raw = std::getenv("FLAGFFT_NPU_2D_LEAF_LENGTH"); raw != nullptr) {
+      std::size_t parsed = 0;
+      try {
+        npu_2d_leaf_length = std::stoll(raw, &parsed);
+      } catch (const std::exception &) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_LENGTH must be a positive integer");
+      }
+      if (parsed != std::string(raw).size() || npu_2d_leaf_length <= 1) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_LENGTH must be a positive integer greater than one");
+      }
+    }
+    if (context.origin_rank == 2 && context.input_dtype == "complex64" &&
+        context.output_dtype == "complex64" && (npu_2d_measured_leaf || npu_2d_leaf_explicit) &&
+        n == npu_2d_leaf_length) {
+      std::vector<int64_t> factors = select_leaf_factors(n);
+      if (n == 64) factors = {8, 8};
+      if (const char *raw = std::getenv("FLAGFFT_NPU_2D_LEAF_FACTORS"); raw != nullptr) {
+        const std::string spec(raw);
+        std::size_t start = 0;
+        int64_t product = 1;
+        factors.clear();
+        while (start <= spec.size()) {
+          const std::size_t separator = spec.find('x', start);
+          const std::string token = spec.substr(start, separator - start);
+          std::size_t parsed = 0;
+          int64_t radix = 0;
+          try {
+            radix = std::stoll(token, &parsed);
+          } catch (const std::exception &) {
+            throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_FACTORS must be radices such as 16x8");
+          }
+          if (parsed != token.size() || radix <= 1 || product > n / radix) {
+            throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_FACTORS must multiply to the selected leaf length");
+          }
+          factors.push_back(radix);
+          product *= radix;
+          if (separator == std::string::npos) break;
+          start = separator + 1;
+        }
+        if (product != n) {
+          throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_FACTORS must multiply to the selected leaf length");
+        }
+      }
+      if (!should_use_leaf(n, factors)) {
+        throw std::runtime_error("FLAGFFT_NPU_2D_LEAF_LENGTH requires a supported factorization");
+      }
+      PlanNodePtr node = make_leaf_plan(n, factors);
+      return {
+          {node, estimate_leaf_warm_cost(n, factors), priority(node)}
+      };
+    }
+    if (context.origin_rank == 2 && context.input_dtype == "complex64" &&
+        context.output_dtype == "complex64" && context.batch <= 512 && n > 1 && n <= npu_2d_direct_dft_max) {
+      PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+      return {
+          {node, estimate_direct_dft_cost(n), priority(node)}
+      };
+    }
+
     Factorization factorization = factorize_supported_radices(n);
+    const char *factor_split_setting = std::getenv("FLAGFFT_NPU_2D_FACTOR_SPLIT");
+    if (factor_split_setting != nullptr && std::string(factor_split_setting) != "0" &&
+        std::string(factor_split_setting) != "1") {
+      throw std::runtime_error("FLAGFFT_NPU_2D_FACTOR_SPLIT must be 0 or 1");
+    }
+    const bool use_npu_2d_factor_split =
+        factor_split_setting != nullptr && std::string(factor_split_setting) == "1" &&
+        context.origin_rank == 2 && context.input_dtype == "complex64" &&
+        context.output_dtype == "complex64" && n >= 1024 &&
+        factorization.remainder == 1 && !factorization.factors.empty() &&
+        std::any_of(factorization.factors.begin(), factorization.factors.end(),
+                    [](int64_t radix) { return radix != 2; });
+    if (use_npu_2d_factor_split) {
+      // A balanced Cooley-Tukey split limits each child transform's working
+      // set while keeping all factors in the existing supported-radix set.
+      // Build the child Stockham plans directly so the split is applied once
+      // at this transform root and cannot recursively nest on each child.
+      int64_t best_n1 = 0;
+      int64_t best_n2 = 0;
+      double best_balance = std::numeric_limits<double>::infinity();
+      std::vector<int64_t> best_row_factors;
+      std::vector<int64_t> best_col_factors;
+      for (int64_t n1 : enumerate_divisors(n)) {
+        const int64_t n2 = n / n1;
+        if (n1 <= 1 || n1 >= n2) continue;
+        const Factorization row_factors = factorize_supported_radices(n1);
+        const Factorization col_factors = factorize_supported_radices(n2);
+        if (row_factors.remainder != 1 || row_factors.factors.empty() ||
+            col_factors.remainder != 1 || col_factors.factors.empty()) {
+          continue;
+        }
+        const double balance = std::abs(std::log(static_cast<double>(n2)) -
+                                         std::log(static_cast<double>(n1)));
+        if (balance < best_balance) {
+          best_balance = balance;
+          best_n1 = n1;
+          best_n2 = n2;
+          best_row_factors = row_factors.factors;
+          best_col_factors = col_factors.factors;
+        }
+      }
+      if (best_n1 > 0) {
+        PlanNodePtr row = std::make_shared<StockhamPlanNode>(best_n1, best_row_factors);
+        PlanNodePtr col = std::make_shared<StockhamPlanNode>(best_n2, best_col_factors);
+        PlanNodePtr node =
+            std::make_shared<FourStepPlanNode>(n, best_n1, best_n2, row, col);
+        const double split_cost = static_cast<double>(n) *
+                                  (best_row_factors.size() + best_col_factors.size() + 2.0);
+        return {{node, split_cost, priority(node)}};
+      }
+    }
     // Large prime codelets produce expensive compiler scheduling on CANN 9
     // (radix 13 exceeded several minutes). Keep 13/17/19 on the existing DFT
     // or Bluestein route until their vector lowering is qualified separately.

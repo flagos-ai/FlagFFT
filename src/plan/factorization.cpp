@@ -14,6 +14,9 @@
 
 #include "flagfft/core.hpp"
 
+#include <cstdlib>
+#include <sstream>
+
 namespace flagfft {
 
 Factorization PlanBuilder::factorize_supported_radices(int64_t n) {
@@ -121,7 +124,183 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
+    const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
+    if (override_value != nullptr) {
+      const std::string choice(override_value);
+      if (choice == "auto" || choice == "16,16") return {16, 16};
+      if (choice == "8,8,4") return {8, 8, 4};
+      if (choice == "4,8,8") return {4, 8, 8};
+      if (choice == "8,4,8") return {8, 4, 8};
+      if (choice == "4,16,4") return {4, 16, 4};
+      if (choice == "4,4,4,4") return {4, 4, 4, 4};
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_256_FACTORS must be auto, 16,16, 8,8,4, 4,8,8, 8,4,8, 4,16,4 or 4,4,4,4");
+    }
+  }
+  if (context.device_type == "hcu" && context.origin_rank == 3 && n == 128) {
+    if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_128_FACTORS")) {
+      const std::string choice(override_value);
+      if (choice == "4,4,8") return {4, 4, 8};
+      if (choice == "4,8,4") return {4, 8, 4};
+      if (choice == "8,8,2") return {8, 8, 2};
+      if (choice == "16,8") return {16, 8};
+      if (choice == "8,16") return {8, 16};
+      if (choice != "auto") {
+        throw std::runtime_error("FLAGFFT_HCU_3D_128_FACTORS must be auto, 4,4,8, 4,8,4, 8,8,2, 16,8 or 8,16");
+      }
+    }
+  }
+  if (context.device_type == "hcu" && context.origin_rank == 3 && n == 2048) {
+    const bool c2r_fp64 = (context.origin_real_transform_kind == "c2r" ||
+                           context.origin_real_transform_kind == "z2d") &&
+                          context.input_dtype == "complex128" && context.requested_n == n;
+    const bool r2c_fp64 = (context.origin_real_transform_kind == "r2c" ||
+                           context.origin_real_transform_kind == "d2z") &&
+                          context.input_dtype == "complex128" && context.requested_n == n;
+    const char *c2r_fp64_override =
+        c2r_fp64 ? std::getenv("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
+    const char *r2c_fp64_override =
+        r2c_fp64 ? std::getenv("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS") : nullptr;
+    const char *fp64_override =
+        r2c_fp64_override != nullptr ? r2c_fp64_override : c2r_fp64_override;
+    const char *override_value =
+        fp64_override != nullptr ? fp64_override : std::getenv("FLAGFFT_HCU_3D_2048_FACTORS");
+    if (c2r_fp64_override != nullptr && std::string(c2r_fp64_override) != "auto" &&
+        std::string(c2r_fp64_override) != "16,16,8" && std::string(c2r_fp64_override) != "8,16,16" &&
+        std::string(c2r_fp64_override) != "16,8,16") {
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
+    }
+    if (r2c_fp64_override != nullptr && std::string(r2c_fp64_override) != "auto" &&
+        std::string(r2c_fp64_override) != "16,16,8" && std::string(r2c_fp64_override) != "8,16,16" &&
+        std::string(r2c_fp64_override) != "16,8,16") {
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
+    }
+    // Restrict the measured FP64 real-transform order to a direct 2048-point
+    // axis. A global override also changes Bluestein's internal 2048 FFT for
+    // n=997, where this factor order fails accuracy checks. An explicit "auto"
+    // override retains the planner's previous choice.
+    const std::string choice = override_value == nullptr
+                                   ? ((c2r_fp64 || r2c_fp64) ? "8,16,16" : "auto")
+                                   : override_value;
+    if (choice == "8,16,16") return {8, 16, 16};
+    if (choice == "16,8,16") return {16, 8, 16};
+    if (choice == "auto" &&
+        (context.real_transform_kind == "r2c" || context.real_transform_kind == "c2r")) {
+      // This order improves the measured HCU long-axis single real paths and
+      // does not perturb C2C's default order.
+      return {8, 16, 16};
+    }
+    if (choice != "auto" && choice != "16,16,8") {
+      throw std::runtime_error(
+          "FLAGFFT_HCU_3D_2048_FACTORS must be auto, 16,16,8, 8,16,16 or 16,8,16");
+    }
+  }
+  if (context.maca_3d_c2c32_single_cube && n == 32) {
+    const char *more_lanes = std::getenv("FLAGFFT_MACA_3D_C2C32_MORE_LANES");
+    if (more_lanes != nullptr && std::string(more_lanes) == "0") {
+      return {32};
+    }
+    if (more_lanes != nullptr && std::string(more_lanes) != "1") {
+      throw std::runtime_error("FLAGFFT_MACA_3D_C2C32_MORE_LANES must be 0 or 1");
+    }
+    // 1D MACA batch-1 tests found that more short radix stages can raise lane
+    // participation. Enable the measured 3D single-cube variant narrowly.
+    return {4, 4, 2};
+  }
+  if (context.device_type == "maca" && context.origin_rank == 3) {
+    // This order retains the 128 collaboration lanes and 4-warps block while
+    // slightly improving the direct C550 2048-point 3D axis. Keep it off the
+    // Bluestein convolution used by the 997-point transform.
+    if (context.device_arch == "102" && n == 2048 && context.requested_n == n) {
+      return {16, 8, 16};
+    }
+  }
+  // Use two short codelets for 32^3 axes instead of five radix-two stages.
+  if ((context.device_type == "musa" || context.device_type == "hcu") &&
+      context.origin_rank == 3 && n == 32) {
+    return {4, 8};
+  }
+  const char *ix_3d_32_factors = std::getenv("FLAGFFT_IX_3D_32_FACTORS");
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.origin_rank == 3 && context.input_dtype == "complex64" &&
+      n == 32 && (ix_3d_32_factors == nullptr ||
+                  std::string(ix_3d_32_factors) == "1")) {
+    return {4, 8};
+  }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.origin_rank == 3 && context.input_dtype == "complex64") {
+    if (n == 64) {
+      const char *value = std::getenv("FLAGFFT_IX_3D_64_FACTORS");
+      if (value != nullptr && std::string(value) == "8x8") return {8, 8};
+    }
+    if (n == 128) {
+      const char *value = std::getenv("FLAGFFT_IX_3D_128_FACTORS");
+      if (value != nullptr && std::string(value) == "8x16") return {8, 16};
+      if (value == nullptr || std::string(value) == "16x8") return {16, 8};
+    }
+    if (n == 256) {
+      const char *value = std::getenv("FLAGFFT_IX_3D_256_FACTORS");
+      if (value != nullptr && std::string(value) == "8x8x4") return {8, 8, 4};
+      if (value != nullptr && std::string(value) == "4x4x4x4") return {4, 4, 4, 4};
+    }
+    if (n == 2048) {
+      const char *value = std::getenv("FLAGFFT_IX_3D_2048_FACTORS");
+      if (value != nullptr && std::string(value) == "16x8x16") return {16, 8, 16};
+    }
+  }
+  const bool ix_fp32_real_batch =
+      context.device_type == "ix" && context.device_arch == "71" &&
+      context.origin_rank <= 1 && context.requested_n == n &&
+      context.batch == 64 && context.input_dtype == "complex64" &&
+      context.output_dtype == "complex64" &&
+      (context.real_transform_kind == "r2c" ||
+       context.real_transform_kind == "c2r");
+  if (ix_fp32_real_batch && n == 1024) return {8, 4, 8, 4};
+  if (ix_fp32_real_batch && n == 2048) return {16, 8, 16};
+  if (context.ix_ct_batch && context.requested_n == n && n == 2048 &&
+      context.real_transform_kind.empty()) {
+    // At batch 64, moving the radix-8 stage to the middle lowers both C2C
+    // directions by about 14% on BI-V150 with the portable exchange.
+    return {16, 8, 16};
+  }
   if (context.ix_short_single && n == 1024) return {16, 8, 8};
+  if (context.ix_ct_batch && context.requested_n == n && n == 1024) {
+    // Four radix-8/4 stages use more lanes and avoid the slow two radix-32
+    // batch leaf on V150. The code generator separately selects tensor exchange.
+    return {8, 8, 4, 4};
+  }
+  if (context.device_type == "hcu" &&
+      (context.origin_rank <= 1 || context.origin_rank == 3) &&
+      context.requested_n == n && n == 16) {
+    if (context.origin_rank == 3) {
+      if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_16_FACTORS")) {
+        const std::string choice(override_value);
+        if (choice == "4,4") return {4, 4};
+        if (choice == "2,2,2,2") return {2, 2, 2, 2};
+        if (choice == "4,2,2") return {4, 2, 2};
+        if (choice == "2,2,4") return {2, 2, 4};
+        if (choice == "2,8") return {2, 8};
+        if (choice == "8,2") return {8, 2};
+        if (choice != "16") {
+          throw std::runtime_error("FLAGFFT_HCU_3D_16_FACTORS must be 16, 4,4, 2,2,2,2, 4,2,2, 2,2,4, 2,8 or 8,2");
+        }
+      } else if (context.batch >= 10000) {
+        // Long-axis 3D plans run enough short outer FFTs to amortize the
+        // extra exchange; small 16^3 cubes keep the direct codelet.
+        return {4, 4};
+      }
+    }
+    // The direct radix-16 codelet avoids a shared-memory round trip.
+    return {16};
+  }
+  if (context.device_type == "hcu" && context.origin_rank <= 1 &&
+      context.requested_n == n && n == 1024 && context.batch == 64) {
+    // Two radix-32 stages underuse BW1000's 64-lane wavefront for batch=64.
+    return {16, 8, 8};
+  }
   auto it = best_leaf_factors_cache_.find(n);
   if (it != best_leaf_factors_cache_.end()) {
     return it->second;

@@ -156,11 +156,17 @@ class PlanBuilder {
   struct RequestContext {
     std::string input_dtype;
     std::string output_dtype;
+    std::string real_transform_kind;
+    std::string origin_real_transform_kind;
     std::string device_type;
     int64_t device_index = -1;
     std::string device_arch;
+    int64_t origin_rank = 0;
+    int64_t requested_n = 0;
     int64_t batch = 1;
+    bool maca_3d_c2c32_single_cube = false;
     bool ix_short_single = false;
+    bool ix_ct_batch = false;
     int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
 
     bool operator==(const RequestContext& other) const;

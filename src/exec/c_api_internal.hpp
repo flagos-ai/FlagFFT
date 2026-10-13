@@ -66,8 +66,13 @@ struct FlagFFTPlan {
   FlagFFTPlanDesc desc;
   FlagFFTPlanState state;
   FlagFFTExecutable executable;
+  void *npu_sip_forward = nullptr;
+  void *npu_sip_inverse = nullptr;
+  bool npu_sip_enabled = false;
   mutable std::string description_cache;
   std::mutex mutex;
+
+  ~FlagFFTPlan();
 };
 
 flagfftResult type_metadata(flagfftType type,

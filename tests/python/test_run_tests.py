@@ -140,7 +140,7 @@ def test_acceptance_has_30_ordered_operators_and_distinct_cases(operators, matri
     assert [op["id"] for op in operators] == expected_ids
     assert "combinations" not in matrix
     cases = RUN_TESTS.expand_all_test_cases(operators, matrix)
-    assert len(cases) == 384
+    assert len(cases) == 400
     assert len({case["case_id"] for case in cases}) == len(cases)
     assert {case["op_id"] for case in cases} == set(expected_ids)
     assert {case["dtype"] for case in cases} == set(RUN_TESTS.FLAGGEMS_DTYPES)
@@ -163,7 +163,7 @@ def test_acceptance_has_30_ordered_operators_and_distinct_cases(operators, matri
 
 
 def test_requested_sizes_and_batch_counts(matrix):
-    assert matrix["sizes_1d_ct"] == [16, 1024, 2048]
+    assert matrix["sizes_1d_ct"] == [16, 210, 1024, 2048]
     assert matrix["sizes_1d_fourstep"] == [16384, 46189, 185640, 340200, 524288, 663000]
     assert matrix["sizes_1d_prime"] == [23, 1009, 8191, 16381, 524287]
     assert matrix["sizes_2d"] == [
@@ -239,7 +239,7 @@ def test_npu_backend_detection_and_fp64_policy(tmp_path, operators, matrix):
     assert RUN_TESTS.dtype_skip_reason("torch.float64", "npu")
 
 
-def test_npu_benchmark_parser_accepts_ops_fft_reference_timing():
+def test_npu_benchmark_parser_accepts_sip_reference_timing():
     payload = {
         "cases": [
             {
@@ -260,7 +260,7 @@ def test_npu_benchmark_parser_accepts_ops_fft_reference_timing():
     assert result["reference_available"] is True
 
 
-def test_npu_ops_fft_case_policy_limits(operators, matrix):
+def test_npu_sip_case_policy_limits(operators, matrix):
     npu_cases = RUN_TESTS.expand_test_cases(
         [op for op in operators if op["api"] in RUN_TESTS.OP_APIS],
         matrix,
@@ -270,8 +270,6 @@ def test_npu_ops_fft_case_policy_limits(operators, matrix):
     reasons = {
         case["case_id"]: RUN_TESTS.case_skip_reason(case, "npu") for case in npu_cases
     }
-    assert any(reason and "3D" in reason for reason in reasons.values())
-    assert any(reason and "2D" in reason for reason in reasons.values())
     assert any(reason and "prime factor" in reason for reason in reasons.values())
     supported = [
         case
@@ -280,11 +278,26 @@ def test_npu_ops_fft_case_policy_limits(operators, matrix):
     ]
     assert supported
     assert all(case["api"] in ("c2c", "r2c", "c2r") for case in supported)
-    assert all(
-        case["rank"] == 1
-        or (case["api"] == "c2c" and all(n in (32, 64, 128) for n in case["shape"]))
-        for case in supported
-    )
+    assert any(case["rank"] == 2 and case["api"] == "r2c" for case in supported)
+    assert any(case["rank"] == 3 and case["api"] == "c2r" for case in supported)
+    assert all(all(max(RUN_TESTS._prime_factors(n), default=1) <= 199 for n in case["shape"])
+               for case in supported)
+
+
+def test_npu_sip_skips_intermittent_16384_batched_c2c_reference():
+    case = {
+        "api": "c2c",
+        "rank": 1,
+        "shape": [16384],
+        "batch": 64,
+        "placement": "out-of-place",
+    }
+    reason = RUN_TESTS.case_skip_reason(case, "npu")
+    assert reason is not None
+    assert "intermittent incorrect batch outputs" in reason
+
+    case["batch"] = 1
+    assert RUN_TESTS.case_skip_reason(case, "npu") is None
 
 
 def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
@@ -298,12 +311,12 @@ def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
         "rank": 2,
         "algorithm": "ct",
         "batch_mode": "single",
-        "shape": [2048, 2048],
+        "shape": [32, 997],
         "batch": 1,
         "placement": "out-of-place",
         "direction": "forward",
         "scale": 1.0,
-        "skip_reason": "ops-fft 2D C2C size is unsupported",
+        "skip_reason": "SiP FFT dimension has a prime factor above 199",
     }
     passed = {"status": "Passed", "metric": {"passed": True}, "plan": "plan"}
     skipped = {

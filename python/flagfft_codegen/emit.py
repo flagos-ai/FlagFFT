@@ -19,17 +19,21 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
 from functools import wraps
-from .maca_tail_policy import maca_tail_kernel_scope, variant_suffix
+from .maca_tail_policy import maca_tail_kernel_scope, rader_vector_io_default, variant_suffix
 from .artifacts import write_text_atomic
 
 from .kernels_common import (
     LeafPlan,
     _dtype_suffix,
+    _hcu_backend_active,
+    _declared_backend,
+    _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
     _zero_other,
@@ -41,6 +45,9 @@ from .kernels_layout import (
     _build_packed_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
+    _build_tiled_transpose3d_slice_group_kernel_source,
+    _build_tiled_transpose3d_pair_slice_group_kernel_source,
+    _build_tiled_transpose3d_pair_slice_row_group_kernel_source,
     _build_tiled_transpose3d_tile_kernel_source,
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
@@ -55,7 +62,7 @@ from .kernels_real import (
     _build_r2c_packed_postprocess_kernel_source,
     _build_real_to_complex_kernel_source,
 )
-from .kernels_special import _build_direct_dft_kernel_source
+from .kernels_special import _build_cube_dft_2d_kernel_source, _build_direct_dft_kernel_source
 from .kernels_real import _build_real_direct_dft_kernel_source
 from .kernels_stockham import build_stockham_stage
 from .metadata import _metadata, _module_source, _signature
@@ -221,6 +228,24 @@ def _rader_kernel_source(
 ) -> tuple[str, str, list[str]]:
     zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
+    vector_io = (dtype in {"complex64", "complex128"} and _maca_backend_active() and
+                 os.environ.get("FLAGFFT_MACA_RADER_VEC_IO",
+                                "1" if rader_vector_io_default() else "0") == "1")
+    prepare_load = (
+        "pair = tl.load(src[:, None] + tl.arange(0, 2)[None, :], "
+        "mask=mask[:, None], other=0.0)\n"
+        "                    xr, xi = tl.split(pair)"
+        if vector_io else
+        f"xr = tl.load(src, mask=mask, other={zero})\n"
+        f"                    xi = tl.load(src + 1, mask=mask, other={zero})"
+    )
+    finalize_store = (
+        "tl.store(dst[:, None] + tl.arange(0, 2)[None, :], "
+        "tl.join(yr, yi), mask=mask[:, None])"
+        if vector_io else
+        "tl.store(dst, yr, mask=mask)\n"
+        "                    tl.store(dst + 1, yi, mask=mask)"
+    )
     if kind == "rader_prepare":
         return (
             "_rader_prepare_kernel",
@@ -243,8 +268,7 @@ def _rader_kernel_source(
                     src_index = tl.load(idx_ptr + inv_offsets, mask=mask, other=0)
 
                     src = in_ptr + (pid_batch * n + src_index) * 2
-                    xr = tl.load(src, mask=mask, other={zero})
-                    xi = tl.load(src + 1, mask=mask, other={zero})
+                    {prepare_load}
 
                     dst = out_ptr + (pid_batch * m + offsets) * 2
                     tl.store(dst, xr, mask=mask)
@@ -329,8 +353,7 @@ def _rader_kernel_source(
 
                     dst_index = tl.load(idx_ptr + offsets, mask=mask, other=0)
                     dst = out_ptr + (pid_batch * n + dst_index) * 2
-                    tl.store(dst, yr, mask=mask)
-                    tl.store(dst + 1, yi, mask=mask)
+                    {finalize_store}
 
                 """
             ),
@@ -421,21 +444,41 @@ def _emit_r2c_pointwise_jit_kernel(
     n: int,
     dtype: str,
     out_dir: Path,
+    target: str = "",
 ) -> dict[str, Any]:
+    elements_per_program = 256
+    num_warps = _RESHAPE_NUM_WARPS
+    if target.startswith("npu:") and n == 256:
+        # AIV conversion kernels are sensitive to work per block. Keep the
+        # profiled one-row/four-thread layout as the default; expose narrow
+        # experiment knobs so rows and block threads can be measured without
+        # changing other targets or kernel families.
+        rows_text = os.getenv("FLAGFFT_NPU_3D_REAL_POINTWISE_ROWS", "1")
+        warps_text = os.getenv("FLAGFFT_NPU_3D_REAL_POINTWISE_WARPS", "4")
+        try:
+            rows_per_program = int(rows_text)
+            num_warps = int(warps_text)
+        except ValueError as exc:
+            raise ValueError("NPU 256-point real pointwise rows/warps must be integers") from exc
+        if rows_per_program not in {1, 2, 4, 8}:
+            raise ValueError("NPU 256-point real pointwise rows must be one of 1, 2, 4, 8")
+        if num_warps not in {4, 8, 16, 32}:
+            raise ValueError("NPU 256-point real pointwise warps must be one of 4, 8, 16, 32")
+        elements_per_program *= rows_per_program
     if kernel == "real_to_complex":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_real_to_complex_kernel_source(n, dtype)
+        ) = _build_real_to_complex_kernel_source(n, dtype, elements_per_program)
     elif kernel == "r2c_half_pack":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_r2c_half_pack_kernel_source(n, dtype)
+        ) = _build_r2c_half_pack_kernel_source(n, dtype, elements_per_program)
     elif kernel == "r2c_packed_postprocess":
         (
             kernel_name,
@@ -456,14 +499,14 @@ def _emit_r2c_pointwise_jit_kernel(
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_compact_to_hermitian_full_kernel_source(n, dtype)
+        ) = _build_compact_to_hermitian_full_kernel_source(n, dtype, elements_per_program)
     elif kernel == "complex_to_real":
         (
             kernel_name,
             kernel_source,
             arg_names,
             rows_per_block,
-        ) = _build_complex_to_real_kernel_source(n, dtype)
+        ) = _build_complex_to_real_kernel_source(n, dtype, elements_per_program)
     else:
         raise ValueError(f"unsupported R2C pointwise kernel kind: {kernel}")
 
@@ -484,13 +527,15 @@ def _emit_r2c_pointwise_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": _RESHAPE_NUM_WARPS,
+        "num_warps": num_warps,
         "num_stages": _RESHAPE_NUM_STAGES,
         "batch_per_block": 1,
         "arg_names": arg_names,
         "kernel_type": kernel,
         "dtype": dtype,
         "length": int(n),
+        # `block` is the column extent used by raw_nodes.cpp to build grid.x;
+        # `rows_per_block` carries the selected row grouping in grid.y.
         "block": 256,
         "rows_per_block": int(rows_per_block),
     }
@@ -525,8 +570,14 @@ def emit_jit_kernel(
     four_step_n1: int,
     four_step_n2: int,
     perm_form: str = "outer",
+    hcu_full_smem: bool = False,
     out_dir: Path,
 ) -> dict[str, Any]:
+    if (kernel == "leaf_packed_r2c" and _ix_backend_active()
+            and os.getenv("FLAGFFT_IX_3D_PACKED_R2C") == "1"):
+        # Each JIT source process emits one kernel.  Keep the portable
+        # exchange required by this packed boundary local to that process.
+        os.environ["FLAGFFT_IX_PORTABLE_LEAF"] = "1"
     plan = LeafPlan(
         length=length,
         factors=factors,
@@ -540,6 +591,11 @@ def emit_jit_kernel(
     )
     spec = kernel_spec(kernel)
     if spec.is_leaf_like:
+        io_mode = (
+            "permuted_r2c"
+            if kernel == "leaf_r2c" and perm_form == "permuted"
+            else spec.io_mode
+        )
         if kernel in FOUR_STEP_ROW_NAMES and plan.length != four_step_n1:
             raise ValueError(
                 f"four-step {kernel} kernel length must equal n1: "
@@ -552,11 +608,12 @@ def emit_jit_kernel(
             )
         kernel_name, kernel_source = _build_leaf_kernel_source_for_io(
             plan,
-            io_mode=spec.io_mode,
+            io_mode=io_mode,
             prime_n=prime_n,
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
             perm_form=perm_form,
+            hcu_full_smem=hcu_full_smem,
         )
         n1 = four_step_n1 if spec.is_four_step else 0
         n2 = four_step_n2 if spec.is_four_step else 0
@@ -577,12 +634,18 @@ def emit_jit_kernel(
             kernel_name, kernel_source, _ = _build_real_direct_dft_kernel_source(
                 length, dtype, inverse=(kernel == "direct_dft_c2r")
             )
+        elif kernel in {"direct_dft_cube_2d_row", "direct_dft_cube_2d_col"}:
+            kernel_name, kernel_source, _ = _build_cube_dft_2d_kernel_source(
+                length, direction, dtype, column=(kernel == "direct_dft_cube_2d_col")
+            )
         else:
             kernel_name, kernel_source, _ = _build_direct_dft_kernel_source(
                 length,
                 direction,
                 dtype,
-                strided=(kernel == "direct_dft_strided"),
+                strided=kernel in {"direct_dft_strided", "direct_dft_cube_strided"},
+                cube=kernel in {"direct_dft_cube", "direct_dft_cube_strided"},
+                cube_transposed=kernel == "direct_dft_cube_transposed",
             )
         n1 = 0
         n2 = 0
@@ -643,9 +706,17 @@ def emit_jit_kernel(
         n1=n1,
         n2=n2,
         dtype=dtype,
+        hcu_full_smem=hcu_full_smem,
     )
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
+    if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:
+        metadata["batch_per_block"] = 16
+    if kernel == "direct_dft_cube_transposed":
+        metadata["grid_y_override"] = 1
+    if kernel in {"direct_dft_cube_2d_row", "direct_dft_cube_2d_col"}:
+        metadata["batch_per_block"] = 16
+        metadata["grid_y_override"] = 4
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
@@ -713,7 +784,7 @@ def _transpose3d_v2_supported() -> bool:
 # Backends whose 3D correctness and performance have been validated with the
 # portable register-tile transpose.  Each backend is added here after its own
 # validation; the remaining non-NVIDIA targets keep the previous v1 kernel.
-_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca", "musa"})
+_PORTABLE_TRANSPOSE3D_BACKENDS = frozenset({"ix", "maca", "musa", "hcu", "npu"})
 
 
 def _portable_transpose3d_supported() -> bool:
@@ -732,29 +803,318 @@ def _emit_tiled_transpose3d_jit_kernel(
     dtype: str = "complex64",
     out_dir: Path,
 ) -> dict[str, Any]:
-    if dtype == "complex64" and _transpose3d_v2_supported():
-        (
-            kernel_name,
-            kernel_source,
-            arg_names,
-            grid_x,
-        ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
-    elif dtype == "complex64" and _portable_transpose3d_supported():
+    transpose_warps = 4
+    if _declared_backend() == "npu":
+        raw_warps = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_WARPS")
+        if raw_warps is not None:
+            if raw_warps not in {"4", "8"}:
+                raise ValueError("FLAGFFT_NPU_3D_TRANSPOSE_WARPS must be 4 or 8")
+            transpose_warps = int(raw_warps)
+
+    if _declared_backend() == "maca":
+        maca_mode_default = (
+            "pair16sg2rg2"
+            if dtype == "complex64" and tuple(sorted((n0, n1, n2))) == (256, 256, 256)
+            else "pair16"
+        )
+        maca_mode = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", maca_mode_default)
+    else:
+        maca_mode = "tile32"
+    if maca_mode not in {
+        "tile16", "tile32", "tile64", "pair16", "pair32", "pair64", "pair64x16",
+        "pair16rg2", "pair16sg2rg2", "v1",
+    }:
+        raise ValueError(
+            "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, "
+            "pair32, pair64, pair64x16, pair16rg2, pair16sg2rg2 or v1"
+        )
+    if maca_mode == "pair16sg2rg2" and (
+        dtype != "complex64"
+        or tuple(sorted((n0, n1, n2)))
+        not in {(64, 128, 2048), (256, 256, 256)}
+    ):
+        # The experimental row/slice-group kernel is only validated for
+        # these FP32 shapes. An all-suite environment must leave every other
+        # dtype and shape on the established pair16 path.
+        maca_mode = "pair16"
+    if maca_mode == "pair16rg2" and (
+        dtype != "complex64" or tuple(sorted((n0, n1, n2))) != (256, 256, 256)
+    ):
+        # This screen only specializes the FP32 cube. Let an all-suite run
+        # keep unrelated dtypes and shapes on their regular transpose policy.
+        maca_mode = "pair16"
+    pair64_cube_1024_candidate = (
+        _declared_backend() == "maca"
+        and maca_mode in {"pair64", "pair64x16"}
+        and dtype == "complex64"
+        and tuple(sorted((n0, n1, n2))) == (256, 256, 256)
+        and os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS") == "16"
+    )
+    maca_warps = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8" if dtype == "complex64" else "4")
+        if _declared_backend() == "maca"
+        else "4"
+    )
+    if maca_warps == "16" and not pair64_cube_1024_candidate:
+        # Keep a broad transpose screen from leaking its 1024-thread CTA
+        # setting into other dtypes and shapes. The vendor-matched tile is a
+        # narrowly scoped FP32 cube experiment only.
+        maca_mode = "pair16"
+        maca_warps = "8" if dtype == "complex64" else "4"
+    if maca_warps not in {"2", "4", "8", "16"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_WARPS must be 2, 4, 8 or the scoped pair64 cube value 16")
+    traversal_default = "col"
+    if (
+        _declared_backend() == "maca"
+        and dtype == "complex64"
+        and tuple(sorted((n0, n1, n2)))
+        in {(64, 128, 2048), (256, 256, 256)}
+    ):
+        traversal_default = "row"
+    maca_traversal = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL", traversal_default)
+        if _declared_backend() == "maca"
+        else "col"
+    )
+    if maca_traversal not in {"col", "row"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL must be col or row")
+    maca_slice_group_default = (
+        "2"
+        if (
+            _declared_backend() == "maca"
+            and dtype == "complex64"
+            and maca_mode == "pair16"
+            and maca_warps == "8"
+            and maca_traversal == "row"
+            and tuple(sorted((n0, n1, n2))) in {
+                (64, 128, 2048),
+                (256, 256, 256),
+            }
+        )
+        else "1"
+    )
+    maca_slice_group = os.environ.get(
+        "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", maca_slice_group_default
+    )
+    if maca_slice_group not in {"1", "2"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP must be 1 or 2")
+    maca_grouped_slice_tile = (
+        _declared_backend() == "maca"
+        and dtype == "complex64"
+        and maca_mode == "pair16"
+        and maca_warps == "8"
+        and maca_traversal == "row"
+        and maca_slice_group == "2"
+    )
+    fp64_mode = (
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
+        if _declared_backend() == "maca"
+        else "v1"
+    )
+    if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
+        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
+    if maca_mode == "pair64x16" and _portable_transpose3d_supported():
+        if dtype != "complex64" or maca_warps != "16" or maca_traversal != "row":
+            raise ValueError("pair64x16 requires complex64, 16 warps and row traversal")
+        if tuple(sorted((n0, n1, n2))) != (256, 256, 256):
+            raise ValueError("pair64x16 is only screened for the MACA 256^3 cube")
         (
             kernel_name,
             kernel_source,
             arg_names,
             grid_x,
         ) = _build_tiled_transpose3d_tile_kernel_source(
-            n0, n1, n2, order, dtype, tile=32
+            n0, n1, n2, order, dtype, tile=(64, 16), pair=True,
+            tile_traversal=maca_traversal,
         )
+    elif maca_mode == "pair16rg2" and _portable_transpose3d_supported():
+        if dtype != "complex64" or maca_warps != "8" or maca_traversal != "row":
+            raise ValueError("pair16rg2 requires complex64, 8 warps and row traversal")
+        if tuple(sorted((n0, n1, n2))) != (256, 256, 256):
+            raise ValueError("pair16rg2 is only screened for the MACA 256^3 cube")
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
+            n0, n1, n2, order, tile=16, slice_group=1,
+            row_group=2,
+            tile_traversal=maca_traversal,
+        )
+    elif maca_mode == "pair16sg2rg2" and _portable_transpose3d_supported():
+        if dtype != "complex64" or maca_warps != "8" or maca_traversal != "row":
+            raise ValueError(
+                "pair16sg2rg2 requires complex64, 8 warps and row traversal"
+            )
+        if tuple(sorted((n0, n1, n2))) not in {
+            (64, 128, 2048),
+            (256, 256, 256),
+        }:
+            raise ValueError("pair16sg2rg2 is only screened for the MACA cube and long shapes")
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_pair_slice_row_group_kernel_source(
+            n0, n1, n2, order, tile=16, slice_group=2,
+            row_group=2,
+            tile_traversal=maca_traversal,
+        )
+    elif dtype == "complex64" and _transpose3d_v2_supported():
+        (
+            kernel_name,
+            kernel_source,
+            arg_names,
+            grid_x,
+        ) = _build_tiled_transpose3d_v2_kernel_source(n0, n1, n2, order, dtype, tile=16)
+    elif maca_grouped_slice_tile and _portable_transpose3d_supported():
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_pair_slice_group_kernel_source(
+            n0, n1, n2, order, tile=16, slice_group=2, tile_traversal=maca_traversal
+        )
+    elif dtype == "complex64" and _declared_backend() == "maca" and _portable_transpose3d_supported() and maca_mode != "v1":
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=int(maca_mode[4:]), pair=maca_mode.startswith("pair"),
+            tile_traversal=maca_traversal
+        )
+    elif dtype == "complex128" and _declared_backend() == "maca" and fp64_mode != "v1":
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=int(fp64_mode[4:6]),
+            vec_store=fp64_mode.endswith("vec"), tile_traversal=maca_traversal
+        )
+    elif _declared_backend() != "maca" and _portable_transpose3d_supported() and (
+        dtype == "complex64"
+        or (
+            dtype == "complex128"
+            and _hcu_backend_active()
+            and (
+                os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "1"
+                or (
+                    os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto") == "auto"
+                    and (n0, n1, n2, order) in {
+                        (256, 256, 129, "021"),
+                        (16, 64, 997, "210"),
+                        (16, 33, 997, "210"),
+                    }
+                )
+            )
+        )
+    ):
+        tile = 32 if dtype == "complex64" else 16
+        packed_complex = False
+        pair_store = False
+        if _ix_backend_active():
+            tile = 16
+            ix_tile = os.getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE")
+            if ix_tile is not None:
+                if ix_tile not in {"8", "16", "32"}:
+                    raise ValueError("FLAGFFT_IX_3D_TRANSPOSE_TILE must be 8, 16 or 32")
+                tile = int(ix_tile)
+            packed_complex = os.getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE") == "1"
+            (
+                kernel_name,
+                kernel_source,
+                arg_names,
+                grid_x,
+            ) = _build_tiled_transpose3d_tile_kernel_source(
+                n0,
+                n1,
+                n2,
+                order,
+                dtype,
+                tile=tile,
+                packed_complex=packed_complex,
+                pair_store=pair_store,
+            )
+        elif _hcu_backend_active():
+            transpose_slice_group = os.getenv(
+                "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP", "auto"
+            )
+            if transpose_slice_group not in {"auto", "1", "2"}:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP must be auto, 1 or 2"
+                )
+            if dtype == "complex64":
+                transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
+                if transpose_tile == "auto":
+                    tile = (
+                        16
+                        if (n0, n1, n2, order)
+                        in {
+                            (16, 64, 997, "210"),
+                            (16, 33, 997, "210"),
+                            # The FP32 HCU C2R long-axis middle transpose has
+                            # high L1 stalls with tile32; tile16 was 17.8%
+                            # faster in an isolated 128x2048x64 A-B-B-A.
+                            (128, 33, 2048, "210"),
+                        }
+                        else 32
+                    )
+                else:
+                    tile = int(transpose_tile)
+            pair_store = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "0") == "1"
+            if (
+                dtype == "complex64"
+                and transpose_slice_group == "2"
+                and (n0, n1, n2, order) == (128, 64, 2048, "210")
+                and tile == 32
+                and not pair_store
+            ):
+                (
+                    kernel_name,
+                    kernel_source,
+                    arg_names,
+                    grid_x,
+                ) = _build_tiled_transpose3d_slice_group_kernel_source(
+                    n0,
+                    n1,
+                    n2,
+                    order,
+                    dtype,
+                    tile=tile,
+                    slice_group=2,
+                )
+            else:
+                (
+                    kernel_name,
+                    kernel_source,
+                    arg_names,
+                    grid_x,
+                ) = _build_tiled_transpose3d_tile_kernel_source(
+                    n0,
+                    n1,
+                    n2,
+                    order,
+                    dtype,
+                    tile=tile,
+                    packed_complex=packed_complex,
+                    pair_store=pair_store,
+                )
+        else:
+            (
+                kernel_name,
+                kernel_source,
+                arg_names,
+                grid_x,
+            ) = _build_tiled_transpose3d_tile_kernel_source(
+                n0, n1, n2, order, dtype, tile=tile,
+                packed_complex=packed_complex, pair_store=pair_store,
+            )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose3d_kernel_source(
             n0, n1, n2, order, dtype
         )
         grid_x = 0
     suffix = _dtype_suffix(dtype)
-    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}"
+    warp_suffix = f"_w{transpose_warps}" if transpose_warps != 4 else ""
+    if warp_suffix:
+        kernel_name_with_warps = f"{kernel_name}{warp_suffix}"
+        kernel_source = kernel_source.replace(
+            f"def {kernel_name}(", f"def {kernel_name_with_warps}(", 1
+        )
+        kernel_name = kernel_name_with_warps
+    module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}{warp_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))
@@ -762,7 +1122,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": 4,
+        "num_warps": int(maca_warps) if _declared_backend() == "maca" else transpose_warps,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": arg_names,

@@ -22,6 +22,13 @@ option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning C
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
 set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX" "MACA" "NPU" "HCU")
+set(_FLAGFFT_NPU_SIP_EXECUTION_DEFAULT OFF)
+if(BACKEND STREQUAL "NPU")
+    set(_FLAGFFT_NPU_SIP_EXECUTION_DEFAULT ON)
+endif()
+option(FLAGFFT_NPU_ENABLE_SIP_EXECUTION
+       "Enable the installed Ascend SiP FFT as an optional NPU execution backend"
+       ${_FLAGFFT_NPU_SIP_EXECUTION_DEFAULT})
 
 if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX" OR BACKEND STREQUAL "MACA" OR BACKEND STREQUAL "NPU" OR BACKEND STREQUAL "HCU"))
     message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, BACKEND=MACA, BACKEND=NPU, or BACKEND=HCU")
@@ -63,6 +70,11 @@ add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
                  "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
 
 if(BACKEND STREQUAL "HCU")
+    # The bundled HCU backend logs every kernel launch at INFO. That host-side
+    # work sits between benchmark events and adds latency to short FFTs.
+    # Compile out INFO while retaining warnings and errors.
+    target_compile_definitions(triton_jit PRIVATE GOOGLE_STRIP_LOG=1)
+
     # The HCU Triton backend discovers HIP in the dependency subdirectory. Keep
     # the matching hipFFT package discoverable for FlagFFT's reference adaptor
     # as well; DTK images use either /opt/dtk or a versioned /opt/dtk-* root.
@@ -147,6 +159,105 @@ set(FLAGFFT_CORE_SOURCES
 
 add_library(flagfft SHARED ${FLAGFFT_CORE_SOURCES})
 add_subdirectory(src/adaptor)
+
+# CANN 9 ships the Ascend C toolchain and runtime helpers in the toolkit.
+# Keep the native AIV leaf isolated to the NPU backend so other builds remain
+# independent of the vendor SDK.  The leaf is opt-in at runtime while its
+# correctness and performance are being evaluated.
+if(BACKEND STREQUAL "NPU")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+        set(_FLAGFFT_ASCEND_ARCH_DIR "aarch64-linux")
+    else()
+        set(_FLAGFFT_ASCEND_ARCH_DIR "x86_64-linux")
+    endif()
+    set(ASCEND_CANN_PACKAGE_PATH "${ASCEND_TOOLKIT_HOME}")
+    set(ASCENDC_CMAKE_DIR
+        "${ASCEND_TOOLKIT_HOME}/${_FLAGFFT_ASCEND_ARCH_DIR}/tikcpp/ascendc_kernel_cmake")
+    if(NOT EXISTS "${ASCENDC_CMAKE_DIR}/ascendc.cmake")
+        message(FATAL_ERROR "Ascend C CMake helpers not found at ${ASCENDC_CMAKE_DIR}")
+    endif()
+    set(SOC_VERSION "Ascend910B4")
+    set(RUN_MODE "npu")
+    set(ASCEND_PYTHON_EXECUTABLE "${Python_EXECUTABLE}")
+    include("${ASCENDC_CMAKE_DIR}/ascendc.cmake")
+    ascendc_library(flagfft_npu_aiv_fft64 STATIC
+        src/adaptor/backend/npu/ascendc_fft64_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft16 STATIC
+        src/adaptor/backend/npu/ascendc_fft16_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft16_g1 STATIC
+        src/adaptor/backend/npu/ascendc_fft16_g1_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft32 STATIC
+        src/adaptor/backend/npu/ascendc_fft32_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft32_g1 STATIC
+        src/adaptor/backend/npu/ascendc_fft32_g1_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft128 STATIC
+        src/adaptor/backend/npu/ascendc_fft128_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_stockham_stage STATIC
+        src/adaptor/backend/npu/ascendc_stockham_stage_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft2048 STATIC
+        src/adaptor/backend/npu/ascendc_fft2048_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft_radix4_pair STATIC
+        src/adaptor/backend/npu/ascendc_fft_radix4_pair_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256_group4 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_group4_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256_group8 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_group8_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256_pair_group8 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_pair_group8_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256_real_forward_group8 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_real_forward_group8_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256_real_inverse_group8 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_real_inverse_group8_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256_pair_store_group8 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_pair_store_group8_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_fft256_pair_radix4_store_group8 STATIC
+        src/adaptor/backend/npu/ascendc_fft256_pair_radix4_store_group8_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_transpose3d STATIC
+        src/adaptor/backend/npu/ascendc_transpose3d_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_transpose2d STATIC
+        src/adaptor/backend/npu/ascendc_transpose2d_kernel.cpp)
+    ascendc_library(flagfft_npu_aiv_packed_real_boundary STATIC
+        src/adaptor/backend/npu/ascendc_packed_real_boundary_kernel.cpp)
+    target_sources(flagfft PRIVATE
+        src/adaptor/backend/npu/ascendc_fft64_host.cpp
+        src/adaptor/backend/npu/ascendc_fft_small_host.cpp
+        src/adaptor/backend/npu/ascendc_fft128_host.cpp
+        src/adaptor/backend/npu/ascendc_stockham_stage_host.cpp
+        src/adaptor/backend/npu/ascendc_fft2048_host.cpp
+        src/adaptor/backend/npu/ascendc_fft_radix4_pair_host.cpp
+        src/adaptor/backend/npu/ascendc_fft256_host.cpp
+        src/adaptor/backend/npu/ascendc_packed_real_boundary_host.cpp
+        src/adaptor/backend/npu/ascendc_transpose3d_host.cpp
+        src/adaptor/backend/npu/ascendc_transpose2d_host.cpp)
+    target_link_libraries(flagfft PRIVATE
+        flagfft_npu_aiv_fft64
+        flagfft_npu_aiv_fft16
+        flagfft_npu_aiv_fft16_g1
+        flagfft_npu_aiv_fft32
+        flagfft_npu_aiv_fft32_g1
+        flagfft_npu_aiv_fft128
+        flagfft_npu_aiv_stockham_stage
+        flagfft_npu_aiv_fft2048
+        flagfft_npu_aiv_fft_radix4_pair
+        flagfft_npu_aiv_fft256
+        flagfft_npu_aiv_fft256_group4
+        flagfft_npu_aiv_fft256_group8
+        flagfft_npu_aiv_fft256_pair_group8
+        flagfft_npu_aiv_fft256_real_forward_group8
+        flagfft_npu_aiv_fft256_real_inverse_group8
+        flagfft_npu_aiv_fft256_pair_store_group8
+        flagfft_npu_aiv_fft256_pair_radix4_store_group8
+        flagfft_npu_aiv_packed_real_boundary
+        flagfft_npu_aiv_transpose3d
+        flagfft_npu_aiv_transpose2d)
+    # AscendC generates the launch stub included by the host wrapper. Build
+    # the complete helper target before compiling flagfft's host-side files.
+    add_dependencies(flagfft flagfft_npu_aiv_packed_real_boundary)
+    target_compile_definitions(flagfft PRIVATE FLAGFFT_BACKEND_NPU=1)
+endif()
+
 target_compile_features(flagfft PUBLIC cxx_std_20)
 target_include_directories(flagfft
     PUBLIC
@@ -181,7 +292,7 @@ install(DIRECTORY deps/libtriton_jit/scripts/
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.
 # Reused by flagfft-cli (bench/verify) and the native capture target. NPU links
-# the external CANN ops-fft reference when CLI/tests are enabled.
+# the SiP FFT library supplied by the CANN NNAL installation.
 if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
     if(BACKEND STREQUAL "CUDA")
         find_package(CUDAToolkit REQUIRED)
@@ -259,31 +370,31 @@ if(FLAGFFT_BUILD_CLI OR FLAGFFT_BUILD_TESTS)
             CUDA::cuda_driver
         )
     elseif(BACKEND STREQUAL "NPU")
-        set(ASCEND_OPS_FFT_ROOT "$ENV{ASCEND_OPS_FFT_ROOT}" CACHE PATH
-            "ops-fft installation root used as the Ascend reference library")
-        find_path(ASCEND_OPS_FFT_INCLUDE_DIR cann_ops_fft.h
-            HINTS
-                "${ASCEND_OPS_FFT_ROOT}/include"
-                "${ASCEND_OPS_FFT_ROOT}/include/math_libs"
-                "${ASCEND_OPS_FFT_ROOT}/src/include"
-            REQUIRED)
-        find_library(ASCEND_OPS_FFT_LIBRARY NAMES cann_ops_fft
-            HINTS
-                "${ASCEND_OPS_FFT_ROOT}/lib"
-                "${ASCEND_OPS_FFT_ROOT}/lib64"
-                "${ASCEND_OPS_FFT_ROOT}/build/lib"
-                "${ASCEND_OPS_FFT_ROOT}/build"
-            REQUIRED)
+        set(_ASCEND_SIP_DEFAULT_ROOT "$ENV{ASCEND_SIP_ROOT}")
+        if(NOT _ASCEND_SIP_DEFAULT_ROOT)
+            set(_ASCEND_SIP_DEFAULT_ROOT "/usr/local/Ascend/nnal/asdsip/latest")
+        endif()
+        set(ASCEND_SIP_ROOT "${_ASCEND_SIP_DEFAULT_ROOT}" CACHE PATH
+            "installed Ascend SiP root used as the NPU FFT reference")
+        find_path(ASCEND_SIP_INCLUDE_DIR fft_api.h
+            HINTS "${ASCEND_SIP_ROOT}/include" REQUIRED)
+        find_library(ASCEND_SIP_LIBRARY NAMES asdsip
+            HINTS "${ASCEND_SIP_ROOT}/lib" REQUIRED)
+        find_library(ASCEND_OPAPI_LIBRARY NAMES opapi
+            HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+                  "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
+        find_library(ASCEND_NNOPBASE_LIBRARY NAMES nnopbase
+            HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+                  "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
         add_library(flagfft_test_adaptor OBJECT
             src/adaptor/backend/npu/test_adaptor.cpp
         )
         target_include_directories(flagfft_test_adaptor PUBLIC
-            "${ASCEND_OPS_FFT_INCLUDE_DIR}")
+            "${ASCEND_SIP_INCLUDE_DIR}")
         target_link_libraries(flagfft_test_adaptor PUBLIC
-            "${ASCEND_OPS_FFT_LIBRARY}"
-            # The ops-fft public header includes acl/acl.h.  Linking the
-            # imported CANN targets also propagates the complete CANN include
-            # tree (including pkg_inc) to this object target.
+            "${ASCEND_SIP_LIBRARY}"
+            "${ASCEND_OPAPI_LIBRARY}"
+            "${ASCEND_NNOPBASE_LIBRARY}"
             Ascend::ascendcl
             Ascend::runtime)
     elseif(BACKEND STREQUAL "HCU")

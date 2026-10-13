@@ -63,6 +63,11 @@ def select_cases(args) -> list[dict]:
     if args.batches:
         batches = {int(b) for b in args.batches.split(",")}
         cases = [c for c in cases if c["batch"] in batches]
+    if args.dtypes:
+        dtypes = {f"torch.float{bits}" for bits in args.dtypes.split(",")}
+        if not dtypes <= {"torch.float32", "torch.float64"}:
+            raise SystemExit("dtypes must be a comma-separated subset of 32,64")
+        cases = [c for c in cases if c["dtype"] in dtypes]
     if args.directions:
         directions = set(filter(None, (d.strip() for d in args.directions.split(","))))
         cases = [c for c in cases if c["direction"] in directions]
@@ -109,6 +114,7 @@ def measure(case, build, root, variant, overrides, args, env_base):
         return record
 
     times = []
+    reference_times = []
     plan = ""
     for repeat in range(args.repeats):
         proc = subprocess.run(
@@ -125,14 +131,58 @@ def measure(case, build, root, variant, overrides, args, env_base):
         result = json.loads(proc.stdout)["cases"][0]
         times.append(result["timing"]["flagfft_median_ms"])
         plan = result.get("plan_description", plan) or plan
-        record["platform_ms"] = result["timing"]["ref_median_ms"]
+        reference_times.append(result["timing"]["ref_median_ms"])
+    flagfft_ms = float(np.median(times))
+    platform_ms = float(np.median(reference_times))
     record.update(
         status="passed",
-        flagfft_ms=float(np.median(times)),
+        flagfft_ms=flagfft_ms,
+        platform_ms=platform_ms,
+        speedup_vs_reference=platform_ms / flagfft_ms,
         spread=float(max(times) - min(times)),
         plan=plan,
     )
     return record
+
+
+def summarize_records(records, variants):
+    """Summarize one aggregated measurement record per case and variant."""
+    summary = {}
+    for case in sorted({record["case"] for record in records}):
+        per_variant = {}
+        for name, _ in variants:
+            trials = [
+                record for record in records
+                if record["case"] == case and record["variant"] == name
+            ]
+            # measure() already folds --repeats timing runs into its median and
+            # spread, then emits exactly one record for the variant.
+            if len(trials) == 1 and trials[0]["status"] == "passed":
+                record = trials[0]
+                per_variant[name] = {
+                    "median_ms": float(record["flagfft_ms"]),
+                    "platform_ms": float(record["platform_ms"]),
+                    "plan": record["plan"],
+                }
+        baseline = per_variant.get(variants[0][0], {}).get("median_ms")
+        baseline_relative = None
+        if variants[0][0] in per_variant:
+            data = per_variant[variants[0][0]]
+            baseline_relative = data["platform_ms"] / data["median_ms"]
+        summary[case] = {
+            "variants": per_variant,
+            "speedup_vs_baseline": {
+                name: baseline / data["median_ms"]
+                for name, data in per_variant.items()
+                if baseline and name != variants[0][0]
+            },
+            "reference_normalized_speedup_vs_baseline": {
+                name: (data["platform_ms"] / data["median_ms"]) / baseline_relative
+                for name, data in per_variant.items()
+                if baseline_relative and name != variants[0][0]
+            },
+        }
+    return summary
 
 
 def main():
@@ -144,6 +194,7 @@ def main():
     parser.add_argument("--ops", help="Comma-separated operator ids")
     parser.add_argument("--shapes", help="Comma-separated shapes, e.g. 8192,64x64,16x997x64")
     parser.add_argument("--batches", help="Comma-separated batch sizes")
+    parser.add_argument("--dtypes", help="Comma-separated precision bits: 32,64")
     parser.add_argument("--directions", help="forward,inverse")
     parser.add_argument("--variants", required=True)
     parser.add_argument("--repeats", type=int, default=3)
@@ -185,7 +236,8 @@ def main():
     )
 
     records = []
-    fields = ["case", "variant", "status", "correct", "flagfft_ms", "platform_ms", "spread", "plan", "reason"]
+    fields = ["case", "variant", "status", "correct", "flagfft_ms", "platform_ms",
+              "speedup_vs_reference", "spread", "plan", "reason"]
     with (root / "incremental.csv").open("w", newline="") as out:
         writer = csv.DictWriter(out, fieldnames=fields)
         writer.writeheader()
@@ -210,26 +262,7 @@ def main():
             print(f"[{index}/{len(cases)}] {acceptance.case_name(case)}", flush=True)
     acceptance.write_json(root / "records.json", records)
 
-    summary = {}
-    for case in sorted({r["case"] for r in records}):
-        per_variant = {}
-        for name, _ in variants:
-            trials = [r for r in records if r["case"] == case and r["variant"] == name]
-            if len(trials) == args.repeats and all(r["status"] == "passed" for r in trials):
-                per_variant[name] = {
-                    "median_ms": float(np.median([r["flagfft_ms"] for r in trials])),
-                    "platform_ms": trials[0]["platform_ms"],
-                    "plan": trials[0]["plan"],
-                }
-        baseline = per_variant.get(variants[0][0], {}).get("median_ms")
-        summary[case] = {
-            "variants": per_variant,
-            "speedup_vs_baseline": {
-                name: baseline / data["median_ms"]
-                for name, data in per_variant.items()
-                if baseline and name != variants[0][0]
-            },
-        }
+    summary = summarize_records(records, variants)
     acceptance.write_json(root / "summary.json", summary)
     print(f"\nwrote {root/'summary.json'}")
 

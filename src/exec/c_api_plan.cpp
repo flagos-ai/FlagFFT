@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cstdio>
+#include <cstdlib>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
 #include "flagfft/tune_json.hpp"
 #include "flagfft/maca_tail_policy.hpp"
 #include "plan/rader_utils.hpp"
+
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+#include "adaptor/backend/npu/sip_executor.hpp"
+#endif
 
 namespace flagfft {
 namespace {
@@ -56,6 +61,112 @@ namespace {
     }
     return builder.build(request.requested_n, request);
   }
+
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+  enum class NpuExecutionBackend { Auto, Triton, SiP };
+
+  NpuExecutionBackend npu_execution_backend() {
+    const char *raw = std::getenv("FLAGFFT_NPU_EXECUTION_BACKEND");
+    if (raw == nullptr || *raw == '\0' || std::string(raw) == "auto") {
+      return NpuExecutionBackend::Auto;
+    }
+    if (std::string(raw) == "triton" || std::string(raw) == "native") {
+      return NpuExecutionBackend::Triton;
+    }
+    if (std::string(raw) == "sip") {
+      return NpuExecutionBackend::SiP;
+    }
+    throw std::runtime_error(
+        "FLAGFFT_NPU_EXECUTION_BACKEND must be auto, sip, or triton");
+  }
+
+  bool sip_factor_limit(int64_t length) {
+    for (int64_t factor = 2; factor <= 199 && factor * factor <= length; ++factor) {
+      while (length % factor == 0) length /= factor;
+    }
+    return length <= 199;
+  }
+
+  bool npu_sip_supports(const FlagFFTPlanDesc &desc) {
+    if (desc.batch <= 0 || desc.istride != 1 || desc.ostride != 1 ||
+        (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_R2C && desc.type != FLAGFFT_C2R)) {
+      return false;
+    }
+    constexpr int64_t kMaxDimension = int64_t{1} << 27;
+    constexpr int64_t kMaxBatch = int64_t{1} << 30;
+    if (desc.rank == 1 && desc.n.size() == 1) {
+      const int64_t n = desc.n[0];
+      if (n <= 0 || n > kMaxDimension || desc.batch > kMaxBatch / n ||
+          !sip_factor_limit(n)) {
+        return false;
+      }
+      const int64_t half = n / 2 + 1;
+      const int64_t input_length = desc.type == FLAGFFT_C2R ? half : n;
+      const int64_t output_length = desc.type == FLAGFFT_R2C ? half : n;
+      return desc.idist == input_length && desc.odist == output_length &&
+             desc.inembed.size() == 1 && desc.inembed[0] == input_length &&
+             desc.onembed.size() == 1 && desc.onembed[0] == output_length;
+    }
+    if (desc.rank != 2 || desc.n.size() != 2 ||
+        desc.batch > std::numeric_limits<int32_t>::max()) {
+      return false;
+    }
+
+    const int64_t n0 = desc.n[0];
+    const int64_t n1 = desc.n[1];
+    if (n0 <= 0 || n1 <= 0 || n0 > kMaxDimension || n1 > kMaxDimension ||
+        desc.batch > kMaxBatch / n0 || n1 > kMaxBatch / (n0 * desc.batch) ||
+        !sip_factor_limit(n0) || !sip_factor_limit(n1)) {
+      return false;
+    }
+    const int64_t half_n1 = n1 / 2 + 1;
+    const int64_t input_n1 = desc.type == FLAGFFT_C2R ? half_n1 : n1;
+    const int64_t output_n1 = desc.type == FLAGFFT_R2C ? half_n1 : n1;
+    return desc.idist == n0 * input_n1 && desc.odist == n0 * output_n1 &&
+           desc.inembed.size() == 2 && desc.inembed[0] == n0 &&
+           desc.inembed[1] == input_n1 && desc.onembed.size() == 2 &&
+           desc.onembed[0] == n0 && desc.onembed[1] == output_n1;
+  }
+
+  flagfftResult configure_npu_sip_execution(FlagFFTPlan &plan) {
+    const NpuExecutionBackend backend = npu_execution_backend();
+    if (backend == NpuExecutionBackend::Triton) return FLAGFFT_SUCCESS;
+    if (!npu_sip_supports(plan.desc)) {
+      return backend == NpuExecutionBackend::SiP ? FLAGFFT_NOT_SUPPORTED : FLAGFFT_SUCCESS;
+    }
+
+    void *forward = nullptr;
+    void *inverse = nullptr;
+    const auto create_sip_plan = [&](int direction) {
+      if (plan.desc.rank == 1) {
+        return adaptor::npu::sip_plan_create(plan.desc.n[0], plan.desc.batch,
+                                             plan.desc.type, direction);
+      }
+      return adaptor::npu::sip_plan_create_2d(plan.desc.n[0], plan.desc.n[1],
+                                              plan.desc.batch, plan.desc.type,
+                                              direction);
+    };
+    try {
+      if (plan.desc.type == FLAGFFT_C2C || plan.desc.type == FLAGFFT_R2C) {
+        forward = create_sip_plan(FLAGFFT_FORWARD);
+      }
+      if (plan.desc.type == FLAGFFT_C2C || plan.desc.type == FLAGFFT_C2R) {
+        inverse = create_sip_plan(FLAGFFT_INVERSE);
+      }
+    } catch (const std::exception &e) {
+      adaptor::npu::sip_plan_destroy(forward);
+      adaptor::npu::sip_plan_destroy(inverse);
+      if (backend == NpuExecutionBackend::SiP) throw;
+      std::fprintf(stderr, "[flagfft] SiP plan unavailable; using Triton: %s\n", e.what());
+      std::fflush(stderr);
+      return FLAGFFT_SUCCESS;
+    }
+    plan.npu_sip_forward = forward;
+    plan.npu_sip_inverse = inverse;
+    plan.npu_sip_enabled = true;
+    return FLAGFFT_SUCCESS;
+  }
+#endif
 
 }  // namespace
 
@@ -106,6 +217,20 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       //   Col: C2C along n0 (batch*half_n1), row: C2C along n1 (batch*n0)
       // Both use "forward" for R2C, "inverse" for C2R
 
+      auto make_axis_request = [&](const FlagFFTPlanDesc &axis_desc,
+                                   const std::string &direction) {
+        FFTRequest request = request_from_desc(axis_desc, direction, plan->desc.rank);
+        // Preserve the parent real-transform kind for child axes whose
+        // descriptors are C2C. The marker guides plan selection; the axis
+        // descriptor still determines the transform type and data layout.
+        if (real_inverse) {
+          request.real_transform_kind = "c2r";
+        } else if (real_forward) {
+          request.real_transform_kind = "r2c";
+        }
+        return request;
+      };
+
       // Build row descriptor
       FlagFFTPlanDesc row_desc = plan->desc;
       row_desc.rank = 1;
@@ -137,10 +262,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         row_desc.batch = batch * n0;
       }
 
-      FFTRequest row_forward_request = request_from_desc(row_desc, "forward", plan->desc.rank);
+      FFTRequest row_forward_request = make_axis_request(row_desc, "forward");
       PlanNodePtr row_plan = lookup_or_build_root(builder, row_forward_request);
       if (!raw_supported_node(row_plan)) {
-        row_plan = lookup_or_build_root(builder, request_from_desc(row_desc, "inverse", plan->desc.rank));
+        row_plan = lookup_or_build_root(builder, make_axis_request(row_desc, "inverse"));
       }
       if (!raw_supported_node(row_plan)) {
         row_plan = raw_compatible_rader_plan(n1, builder, row_forward_request);
@@ -168,12 +293,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       // For C2R/Z2D, column FFT should be inverse (IFFT)
       // For R2C/D2Z or C2C/Z2Z, column FFT should be forward
       const std::string col_direction = real_inverse ? "inverse" : "forward";
-      FFTRequest col_request = request_from_desc(col_desc, col_direction, plan->desc.rank);
+      FFTRequest col_request = make_axis_request(col_desc, col_direction);
       PlanNodePtr col_plan = lookup_or_build_root(builder, col_request);
       if (!raw_supported_node(col_plan)) {
         col_plan = lookup_or_build_root(
             builder,
-            request_from_desc(col_desc, col_direction == "forward" ? "inverse" : "forward", plan->desc.rank));
+            make_axis_request(col_desc, col_direction == "forward" ? "inverse" : "forward"));
       }
       if (!raw_supported_node(col_plan)) {
         col_plan = raw_compatible_rader_plan(n0, builder, col_request);
@@ -202,6 +327,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
           (plan->desc.type == FLAGFFT_Z2D || plan->desc.type == FLAGFFT_D2Z || plan->desc.type == FLAGFFT_Z2Z)
               ? FLAGFFT_Z2Z
               : FLAGFFT_C2C;
+      const std::string origin_real_transform_kind =
+          request_from_desc(plan->desc, "forward", plan->desc.rank).real_transform_kind;
+      const bool maca_c2c32_single_cube = adaptor::backend_name() == "maca" &&
+                                          plan->desc.device_arch == "102" && plan->desc.type == FLAGFFT_Z2Z &&
+                                          plan->desc.precision == FlagFFTPrecision::Float64 && batch == 1 &&
+                                          n0 == 32 && n1 == 32 && n2 == 32;
 
       // RTRT decomposition: FFT along the innermost axis n2, then the middle
       // axis n1, then the outermost axis n0, with a 3D axis permutation
@@ -221,12 +352,17 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         axis_desc.idist = length;
         axis_desc.odist = length;
         axis_desc.batch = axis_batch;
-        FFTRequest axis_request = request_from_desc(axis_desc, direction, plan->desc.rank);
+        auto make_axis_request = [&](const std::string &axis_direction) {
+          FFTRequest request = request_from_desc(axis_desc, axis_direction, plan->desc.rank);
+          request.origin_real_transform_kind = origin_real_transform_kind;
+          request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
+          return request;
+        };
+        FFTRequest axis_request = make_axis_request(direction);
         PlanNodePtr axis_plan = lookup_or_build_root(builder, axis_request);
         if (!raw_supported_node(axis_plan)) {
-          axis_plan = lookup_or_build_root(
-              builder,
-              request_from_desc(axis_desc, direction == "forward" ? "inverse" : "forward", plan->desc.rank));
+          axis_plan = lookup_or_build_root(builder,
+                                           make_axis_request(direction == "forward" ? "inverse" : "forward"));
         }
         if (!raw_supported_node(axis_plan)) {
           axis_plan = raw_compatible_rader_plan(length, builder, axis_request);
@@ -256,6 +392,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
           std::make_shared<ThreeDimPlanNode>(n0, n1, n2, ThreeDimStrategy::RTRT, n2_plan, n1_plan, n0_plan);
       plan->executable.forward_request = request_from_desc(plan->desc, "forward");
       plan->executable.inverse_request = request_from_desc(plan->desc, "inverse");
+      plan->executable.forward_request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
+      plan->executable.inverse_request.maca_3d_c2c32_single_cube = maca_c2c32_single_cube;
     } else {
       // 1D FFT: original path
       plan->executable.forward_request = request_from_desc(plan->desc, "forward");
@@ -317,6 +455,34 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse =
             compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
       }
+      const char *graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH");
+      const char *large_graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH_LARGE");
+      const int64_t graph_max_elements = large_graph_override != nullptr &&
+                                          std::string(large_graph_override) == "1"
+                                              ? 4 * 1024 * 1024
+                                              : 64 * 64 * 64;
+      const bool real_transform = plan->desc.type == FLAGFFT_R2C ||
+                                  plan->desc.type == FLAGFFT_D2Z ||
+                                  plan->desc.type == FLAGFFT_C2R ||
+                                  plan->desc.type == FLAGFFT_Z2D;
+      const bool hcu_prime_real_graph =
+          plan->executable.forward_request.device_type == "hcu" && real_transform &&
+          plan->desc.batch == 1 && three_dim->n0 == 16 && three_dim->n1 == 997 &&
+          three_dim->n2 == 64;
+      const int64_t total_elements =
+          plan->desc.batch * three_dim->n0 * three_dim->n1 * three_dim->n2;
+      const bool graph_allowed = plan->executable.forward_request.device_type == "hcu" &&
+                                 (total_elements <= graph_max_elements || hcu_prime_real_graph) &&
+                                 std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
+                                 (graph_override == nullptr || std::string(graph_override) != "0");
+      if (graph_allowed) {
+        if (plan->executable.forward) {
+          plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+        }
+        if (plan->executable.inverse) {
+          plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+        }
+      }
     } else {
       // 1D FFT: original compilation
       if (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z) {
@@ -336,6 +502,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
                                                              plan->desc.batch);
       }
     }
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+    const flagfftResult sip_result = configure_npu_sip_execution(*plan);
+    if (sip_result != FLAGFFT_SUCCESS) return sip_result;
+#endif
     plan->state.initialized = true;
 
     std::unique_ptr<flagfftPlan_t> handle(new flagfftPlan_t());

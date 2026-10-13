@@ -60,7 +60,7 @@ A CUDA development environment with the default dependencies is available:
 
 ```bash
 docker build -t flagfft-dev -f docker/Dockerfile .
-docker run --gpus all -v $(pwd):/workspace/FlagFFT-dev -it flagfft-dev
+docker run --gpus all -v $(pwd):/workspace/FlagFFT -it flagfft-dev
 # Inside the container, run steps 3-5 from above.
 ```
 
@@ -170,11 +170,10 @@ Use the CANN 9 toolchain and the Ascend-enabled Triton/libtriton_jit checkout:
 
 ```bash
 source /usr/local/Ascend/cann-9.0.0/set_env.sh
-export ASCEND_OPS_FFT_ROOT=/path/to/ops-fft
+source /usr/local/Ascend/nnal/asdsip/set_env.sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DBACKEND=NPU \
       -DFLAGFFT_TRITON_JIT_SOURCE_DIR=/path/to/libtriton_jit \
-      -DASCEND_OPS_FFT_ROOT="$ASCEND_OPS_FFT_ROOT" \
       -DFLAGFFT_BUILD_CLI=ON \
       -DFLAGFFT_BUILD_TESTS=ON
 cmake --build build -j$(nproc)
@@ -186,13 +185,27 @@ contiguous 1D, 2D, and 3D plans. Native FP64 is unavailable on Ascend 910B:
 silently downcast or moved to a CPU fallback. The unified acceptance runner
 omits the FP64 dtype cases on NPU before calculating totals and averages.
 
-For the native comparison and performance baseline, set
-`ASCEND_OPS_FFT_ROOT` to a built [CANN ops-fft](https://gitcode.com/cann/ops-fft)
-tree. Its current 910B reference is FP32-only: horizontal 1D
-`C2C`/`R2C`/`C2R` subject to the documented length limits, and 2D `C2C` only
-when each dimension is 32, 64, or 128. It has no 2D real or 3D plans. The
-runner still checks FlagFFT against NumPy for those cases and marks only the
-unavailable platform/performance rows as `Skipped` with the ops-fft reason.
+The native comparison and performance baseline uses the SiP FFT library from
+the CANN NNAL installation (`ASCEND_SIP_ROOT` can override the default
+`/usr/local/Ascend/nnal/asdsip/latest`). SiP accepts device tensors and covers
+FP32 `C2C`/`R2C`/`C2R` in contiguous 1D/2D/3D out-of-place plans on 910B.
+Each dimension must be at most `2^27` with no prime factor above 199, and the
+documented input-element limit is `2^30`. The runner still checks FlagFFT
+against NumPy when SiP is unavailable for a case; only its platform and
+performance rows are `Skipped`. SiP may modify the input of a power-of-two
+horizontal 1D transform of length at least 32768, so the benchmark refreshes
+its reference input before each execution.
+
+When built with `-DFLAGFFT_NPU_ENABLE_SIP_EXECUTION=ON` (on by default for
+`BACKEND=NPU`), FlagFFT also exposes `FLAGFFT_NPU_EXECUTION_BACKEND=auto|sip|triton`.
+The default `auto` mode delegates eligible contiguous, out-of-place 1D FP32
+plans to the installed SiP library and falls back to FlagFFT's Triton executor
+for unsupported shapes or in-place calls. `sip` requires SiP support, while
+`triton` forces the independent FlagFFT kernels. Plan descriptions include the
+selected execution backend. Since `auto` uses the same SiP library as the
+benchmark reference, its speedup measures wrapper/delegation overhead rather
+than the performance of FlagFFT's own FFT kernels; use `triton` for native
+kernel comparisons.
 
 ### Hygon BW1000 (HCU) Build
 
@@ -227,20 +240,37 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 
 | Length | Complex FFT policy | Real FFT policy |
 |---|---|---|
-| 1024 | `[16,8,8]`, tensor exchange, one physical warp | Same leaf with real input/output |
-| 2048 | Tensor exchange, two physical warps | Same leaf with real input/output |
+| 1024 | `[16,8,8]`, tensor exchange, two physical warps | Same leaf with real input/output |
+| 2048 | Tensor exchange, two physical warps | R2C packs even/odd samples into a 1024-point complex leaf and reconstructs the half spectrum in one kernel; C2R keeps the real-boundary leaf |
 | 16384 | Tensor exchange, inner pack 4, two physical warps | Same Four-Step with real input/output |
 | 328050, 340200 | Interleaved shared exchange and twiddle recurrence | Half-length complex FFT plus pre/postprocess |
 | 663000 | Unchanged | Half-length complex FFT plus pre/postprocess |
 | 1048576 | Interleaved/swizzled exchange, inner pack 8, four physical warps | Half-length complex FFT plus pre/postprocess |
 
-Other lengths, batches, ranks, architectures and FP64 retain their existing
+For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024, 2048,
+or 16384 use tensor exchange and four physical warps. The 1024-point leaf uses
+`[8,8,4,4]`; the 2048-point C2C/C2R leaf uses its measured factor order.
+The 2048-point R2C path uses the fused 1024-point `[16,8,8]` leaf with two
+physical warps. The same exchange policy covers the 8191-point batch-64
+Bluestein plan, whose convolution uses a 16384-point Four-Step child.
+For 23-point batch-64 R2C/C2R, a direct real DFT folds the two conversion
+kernels into the transform; `FLAGFFT_IX_REAL_DIRECT_DFT=0` restores the prior path.
+At length 16384, batch-64 R2C/C2R use a packed 8192-point complex child;
+`FLAGFFT_PACKED_REAL=0` disables this real-transform path.
+At lengths 185640, 340200, 524288, and 663000, batch-64 R2C/C2R also use
+the packed half-length complex Four-Step child. These cases keep the full-length
+path when `FLAGFFT_IX_CT_BATCH=0` or `FLAGFFT_PACKED_REAL=0`.
+Set `FLAGFFT_IX_FUSED_R2C=0` before starting the process to
+restore the prior full-length R2C leaf. Set `FLAGFFT_IX_CT_BATCH=0` to
+compare with the previous batch path.
+
+Other lengths, batch sizes, ranks, architectures and FP64 retain their existing
 paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to compare
-against the original implementation. `FLAGFFT_PACKED_REAL=0` can separately
+against the original single implementation. `FLAGFFT_PACKED_REAL=0` can separately
 disable the half-length real path. The policies select matching stage-twiddle
 tables and have separate in-process and filesystem kernel cache entries.
 
-Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --output-dir
+Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --batches 1,64 --output-dir
 <workspace>/results/<timestamp>_ix_ct_single` for serial, alternating
 baseline/default measurements on physical GPU 2 (`--gpu` selects another card).
 Accuracy validation remains
@@ -376,7 +406,7 @@ supported forms remain unsupported.
 | Rank-2 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ |
 | Rank-3 contiguous row-major C2C, Z2Z | ✅ RTRT decomposition (n2 → n1 → n0 + 3D axis permutations) |
 | Rank-3 contiguous row-major R2C, D2Z, C2R, Z2D | ✅ half-packed on the innermost axis |
-| Ascend 910B FP32 profile | ✅ FlagFFT C2C, R2C, C2R for contiguous 1D/2D/3D; FP64 Z2Z/Z2D/D2Z return `FLAGFFT_NOT_SUPPORTED`; ops-fft reference has narrower 1D/2D coverage |
+| Ascend 910B FP32 profile | ✅ FlagFFT C2C, R2C, C2R for contiguous 1D/2D/3D; FP64 Z2Z/Z2D/D2Z return `FLAGFFT_NOT_SUPPORTED`; SiP is the FP32 platform reference |
 | Batched transforms | ✅ |
 | In-place and out-of-place | ✅ |
 | Backend adaptors | ✅ CUDA, MUSA, PPU, IX, NPU (selected at build time) |
@@ -517,7 +547,7 @@ values to C2C/R2C/C2R or Z2Z/D2Z/Z2D internally.
 count. `conf/test_matrix.yaml` sets 1D batch to 64, 2D/3D batch to 4, and keeps
 single-transform batch at 1. All cases run out-of-place, including 2D/3D batch
 cases through contiguous PlanMany layouts without custom embeds or strides.
-The current full matrix expands to 384 cases before backend dtype omissions.
+The current full matrix expands to 400 cases before backend dtype omissions.
 The four-step group also checks that the captured runtime plan contains a
 FourStep node.
 
@@ -527,12 +557,11 @@ not count them as skipped or completed work; every logical operator still runs
 for FP32.
 
 On NPU, Ascend 910B does not support FP64, so the runner omits those cases
-before launch and aggregation. The FP32 cases run FlagFFT against NumPy. The ops-fft
-reference is used for supported horizontal 1D FP32 C2C/R2C/C2R cases and
-supported 2D C2C sizes; its unsupported 2D real, 3D, out-of-matrix 2D, and
-out-of-range 1D cases retain the FlagFFT NumPy result while their platform and
-performance rows are marked `Skipped`. NPU performance reports ops-fft
-reference timing and speedup wherever that reference exists.
+before launch and aggregation. The FP32 cases run FlagFFT against NumPy. SiP
+is used for its supported out-of-place 1D/2D/3D C2C/R2C/C2R shapes. Cases
+outside SiP's size or prime-factor limits retain the FlagFFT NumPy result while
+their platform and performance rows are marked `Skipped`. NPU performance
+reports SiP reference timing and speedup wherever that reference exists.
 
 Complex APIs test both directions; real-to-complex APIs test forward and
 complex-to-real APIs test inverse. Real-inverse inputs have valid
@@ -620,7 +649,7 @@ status. A plan is saved as soon as its creation succeeds and refreshed after
 successful execution; creation failures have `plan: null`.
 
 Performance rows retain the raw speedup and record `baseline_valid`. NPU rows
-for ops-fft-supported cases include reference timing and speedup; policy-skipped
+for SiP-supported cases include reference timing and speedup; policy-skipped
 reference cases serialize those fields as `null`.
 An incorrect platform baseline is excluded from the aggregate speedup
 statistics; operators failing FlagFFT correctness are excluded as well.
@@ -636,10 +665,9 @@ error and 130 is interruption. Platform correctness is reported independently.
 Built with `-DFLAGFFT_BUILD_TESTS=ON`. Each test binary compares FlagFFT
 output against the selected backend's reference FFT library using normwise
 relative error metrics (`rel_l2`, `rel_linf`). On NPU, the reference-based
-GTest binaries are skipped because they are not wired to the host-pointer
-ops-fft adaptor; `ctest/numpy_fft_capture` is used by the unified runner. It
-runs FlagFFT for every selected FP32 case, compares against NumPy, and invokes
-ops-fft for cases inside its support matrix.
+GTest binaries are skipped; `ctest/numpy_fft_capture` is used by the unified
+runner. It runs FlagFFT for every selected FP32 case, compares against NumPy,
+and invokes SiP for cases inside its support matrix.
 
 #### Structure
 
@@ -662,12 +690,12 @@ Suffix key: `s` = single-batch, `b` = multi-batch; `ct` = Cooley-Tukey, `bs`
 
 The unified acceptance runner is the supported entry point for IX and NPU. It
 keeps the three FP64 APIs in the report but filters them before native
-execution. On NPU it also applies the ops-fft 1D/2D/3D support matrix per case:
+execution. On NPU it also applies the SiP 1D/2D/3D support matrix per case:
 FlagFFT accuracy continues to run, while an unavailable platform comparison or
 benchmark is recorded as `Skipped`. Direct invocation of bundled FP64 C++ test
 binaries is not an IX or NPU acceptance test and may call unsupported vendor
 functionality. NPU `FLAGFFT_BUILD_TESTS` builds the capture executable and
-links ops-fft when `ASCEND_OPS_FFT_ROOT` is set.
+links the installed SiP FFT library.
 
 #### Running Individual Tests
 

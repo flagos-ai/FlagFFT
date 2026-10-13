@@ -16,10 +16,12 @@ from __future__ import annotations
 
 """Direct DFT kernel source generation."""
 
+import os
 from textwrap import dedent
 from typing import Literal
 
-from .kernels_common import _dtype_suffix, lane_block_for
+from .kernels_common import _dtype_suffix, _maca_backend_active, lane_block_for
+from .maca_tail_policy import resource_default
 
 
 def _build_direct_dft_kernel_source(
@@ -28,7 +30,19 @@ def _build_direct_dft_kernel_source(
     dtype: str,
     *,
     strided: bool = False,
+    cube: bool = False,
+    cube_transposed: bool = False,
 ) -> tuple[str, str, list[str]]:
+    if cube or cube_transposed:
+        if dtype != "complex64":
+            raise ValueError("the Ascend Cube DFT kernel requires complex64 input")
+        if cube_transposed and n != 64:
+            raise ValueError("the transposed Ascend Cube DFT kernel supports length 64 only")
+        if not cube_transposed and not 16 <= n <= 64:
+            raise ValueError("the Ascend Cube DFT kernel supports lengths from 16 through 64")
+        return _build_cube_dft_kernel_source(
+            n, strided=strided, transpose_output=cube_transposed
+        )
     block = lane_block_for(n)
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     suffix = _dtype_suffix(dtype)
@@ -38,6 +52,13 @@ def _build_direct_dft_kernel_source(
         if strided
         else f"{prefix}_kernel_n{n}_{suffix}_b{block}"
     )
+    tree = (
+        dtype == "complex128" and n <= 32 and _maca_backend_active()
+        and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION",
+                           resource_default("REAL_DFT_REDUCTION") or "kahan") == "tree"
+    )
+    if tree:
+        kernel_name += "_tree"
     in_placeholder = "base + j * outer_stride" if strided else f"pid_batch * {n} + j"
     out_placeholder = "base + k * outer_stride" if strided else f"pid_batch * {n} + k"
     param_extra = "            outer_stride,\n" if strided else ""
@@ -74,7 +95,7 @@ def _build_direct_dft_kernel_source(
                 acc_r += tl.sum(xr * wr - xi * wi, axis=0)
                 acc_i += tl.sum(xr * wi + xi * wr, axis=0)
     """
-    if dtype == "complex128":
+    if dtype == "complex128" and not tree:
         compensation_init = f"""
             comp_r = tl.zeros(({block},), dtype={acc_dtype})
             comp_i = tl.zeros(({block},), dtype={acc_dtype})
@@ -134,6 +155,194 @@ def _build_direct_dft_kernel_source(
     )
 
 
+def _build_cube_dft_kernel_source(
+    n: int = 64, *, strided: bool = False, transpose_output: bool = False
+) -> tuple[str, str, list[str]]:
+    """Build an FP32 Cube matmul DFT with 16-wide reduction tiles."""
+    if transpose_output:
+        if strided:
+            raise ValueError("the transposed Cube DFT path requires contiguous input")
+        if n != 64:
+            raise ValueError("the transposed Cube DFT kernel supports length 64 only")
+        kernel_name = "direct_dft_cube_transposed_kernel_n64_complex64_b16"
+        source = dedent(
+            f"""
+            @triton.jit
+            def {kernel_name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
+                line_block = tl.program_id(0)
+                line = line_block * 16 + tl.arange(0, 16)
+                out = tl.arange(0, 64)
+                k = tl.arange(0, 16)
+                base = line * 64
+                acc_r = tl.zeros((16, 64), dtype=tl.float32)
+                acc_i = tl.zeros((16, 64), dtype=tl.float32)
+                for kk in tl.static_range(4):
+                    j = kk * 16 + k
+                    line_mask = line < nbatch
+                    xr = tl.load(in_ptr + (base[:, None] + j[None, :]) * 2,
+                                 mask=line_mask[:, None], other=0.0)
+                    xi = tl.load(in_ptr + (base[:, None] + j[None, :]) * 2 + 1,
+                                 mask=line_mask[:, None], other=0.0)
+                    wr = tl.load(dft_r_ptr + j[:, None] * 64 + out[None, :])
+                    wi = tl.load(dft_i_ptr + j[:, None] * 64 + out[None, :])
+                    acc_r += tl.dot(xr, wr) - tl.dot(xi, wi)
+                    acc_i += tl.dot(xr, wi) + tl.dot(xi, wr)
+                batch_index = line // 64
+                line_offset = line % 64
+                dst = out_ptr + (batch_index[None, :] * 4096 +
+                                 out[:, None] * 64 + line_offset[None, :]) * 2
+                store_mask = line_mask[None, :]
+                tl.store(dst, tl.trans(acc_r), mask=store_mask)
+                tl.store(dst + 1, tl.trans(acc_i), mask=store_mask)
+            """
+        )
+        return kernel_name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+
+    if not 16 <= n <= 64:
+        raise ValueError("the Ascend Cube DFT kernel supports lengths from 16 through 64")
+    output_tile = 1 << (n - 1).bit_length()
+    reduction_tiles = (n + 15) // 16
+    kernel_name = f"direct_dft_cube{'_strided' if strided else ''}_kernel_n{n}_complex64_b16"
+    base = (
+        "            batch_index = line // outer_stride\n"
+        f"            base = batch_index * ({n} * outer_stride) + "
+        "(line - batch_index * outer_stride)\n"
+        if strided
+        else f"            base = line * {n}\n"
+    )
+    input_offset = (
+        "base[:, None] + j[None, :] * outer_stride"
+        if strided
+        else "base[:, None] + j[None, :]"
+    )
+    output_offset = (
+        "base[:, None] + out[None, :] * outer_stride"
+        if strided
+        else "base[:, None] + out[None, :]"
+    )
+    extra = "            outer_stride,\n" if strided else ""
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr,
+{extra}            nbatch):
+            line_block = tl.program_id(0)
+            line = line_block * 16 + tl.arange(0, 16)
+            out = tl.arange(0, {output_tile})
+            k = tl.arange(0, 16)
+{base}            acc_r = tl.zeros((16, {output_tile}), dtype=tl.float32)
+            acc_i = tl.zeros((16, {output_tile}), dtype=tl.float32)
+            for kk in tl.static_range({reduction_tiles}):
+                j = kk * 16 + k
+                line_mask = line < nbatch
+                input_mask = line_mask[:, None] & (j[None, :] < {n})
+                xr = tl.load(in_ptr + ({input_offset}) * 2,
+                             mask=input_mask, other=0.0)
+                xi = tl.load(in_ptr + ({input_offset}) * 2 + 1,
+                             mask=input_mask, other=0.0)
+                matrix_mask = (j[:, None] < {n}) & (out[None, :] < {n})
+                wr = tl.load(dft_r_ptr + j[:, None] * {n} + out[None, :],
+                             mask=matrix_mask, other=0.0)
+                wi = tl.load(dft_i_ptr + j[:, None] * {n} + out[None, :],
+                             mask=matrix_mask, other=0.0)
+                acc_r += tl.dot(xr, wr) - tl.dot(xi, wi)
+                acc_i += tl.dot(xr, wi) + tl.dot(xi, wr)
+            dst = out_ptr + ({output_offset}) * 2
+            output_mask = line_mask[:, None] & (out[None, :] < {n})
+            tl.store(dst, acc_r, mask=output_mask)
+            tl.store(dst + 1, acc_i, mask=output_mask)
+        """
+    )
+    arg_names = (
+        ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "outer_stride", "nbatch"]
+        if strided
+        else ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+    )
+    return kernel_name, source, arg_names
+
+
+def _build_cube_dft_2d_kernel_source(
+    n: int,
+    direction: Literal["forward", "inverse"],
+    dtype: str,
+    *,
+    column: bool,
+) -> tuple[str, str, list[str]]:
+    """Build one tiled Cube matrix product for a 64x64 C2C transform.
+
+    The row kernel computes ``X * F.T``. The column kernel computes ``F * X``
+    directly from row-major storage, so neither pass needs an intermediate
+    matrix transpose. Each CTA owns a 16x16 output tile; this increases the
+    number of independent Cube programs compared with the one-FFT-per-CTA
+    direct DFT kernel.
+    """
+    del direction  # Direction and normalization are baked into the DFT tables.
+    if n != 64 or dtype != "complex64":
+        raise ValueError("the Ascend 2D Cube DFT kernel supports complex64 length 64 only")
+
+    axis = "col" if column else "row"
+    kernel_name = f"direct_dft_cube_2d_{axis}_kernel_n64_complex64_t16"
+    if column:
+        source = dedent(
+            f"""
+            @triton.jit
+            def {kernel_name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
+                # The host flattens four 16-column tiles per matrix into grid x.
+                block_x = tl.program_id(0)
+                batch_index = block_x // 4
+                tile_col = block_x % 4
+                tile_row = tl.program_id(1)
+                cols = tile_col * 16 + tl.arange(0, 16)
+                rows = tile_row * 16 + tl.arange(0, 16)
+                batch_mask = batch_index < nbatch // 64
+                acc_r = tl.zeros((16, 16), dtype=tl.float32)
+                acc_i = tl.zeros((16, 16), dtype=tl.float32)
+                for kk in tl.static_range(4):
+                    inner = kk * 16 + tl.arange(0, 16)
+                    x_offset = batch_index * 4096 + inner[:, None] * 64 + cols[None, :]
+                    xr = tl.load(in_ptr + x_offset * 2, mask=batch_mask, other=0.0)
+                    xi = tl.load(in_ptr + x_offset * 2 + 1, mask=batch_mask, other=0.0)
+                    dft_offset = rows[:, None] * 64 + inner[None, :]
+                    wr = tl.load(dft_r_ptr + dft_offset)
+                    wi = tl.load(dft_i_ptr + dft_offset)
+                    acc_r += tl.dot(wr, xr) - tl.dot(wi, xi)
+                    acc_i += tl.dot(wr, xi) + tl.dot(wi, xr)
+                dst = (batch_index * 4096 + rows[:, None] * 64 + cols[None, :]) * 2
+                tl.store(out_ptr + dst, acc_r, mask=batch_mask)
+                tl.store(out_ptr + dst + 1, acc_i, mask=batch_mask)
+            """
+        )
+    else:
+        source = dedent(
+            f"""
+            @triton.jit
+            def {kernel_name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
+                block_row = tl.program_id(0)
+                tile_out = tl.program_id(1)
+                lines = block_row * 16 + tl.arange(0, 16)
+                outputs = tile_out * 16 + tl.arange(0, 16)
+                line_mask = lines < nbatch
+                acc_r = tl.zeros((16, 16), dtype=tl.float32)
+                acc_i = tl.zeros((16, 16), dtype=tl.float32)
+                for kk in tl.static_range(4):
+                    inner = kk * 16 + tl.arange(0, 16)
+                    x_offset = lines[:, None] * 64 + inner[None, :]
+                    xr = tl.load(in_ptr + x_offset * 2, mask=line_mask[:, None], other=0.0)
+                    xi = tl.load(in_ptr + x_offset * 2 + 1, mask=line_mask[:, None], other=0.0)
+                    dft_offset = inner[:, None] * 64 + outputs[None, :]
+                    wr = tl.load(dft_r_ptr + dft_offset)
+                    wi = tl.load(dft_i_ptr + dft_offset)
+                    acc_r += tl.dot(xr, wr) - tl.dot(xi, wi)
+                    acc_i += tl.dot(xr, wi) + tl.dot(xi, wr)
+                dst = (lines[:, None] * 64 + outputs[None, :]) * 2
+                tl.store(out_ptr + dst, acc_r, mask=line_mask[:, None])
+                tl.store(out_ptr + dst + 1, acc_i, mask=line_mask[:, None])
+            """
+        )
+    return kernel_name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
+
+
 __all__ = [
     "_build_direct_dft_kernel_source",
+    "_build_cube_dft_2d_kernel_source",
 ]

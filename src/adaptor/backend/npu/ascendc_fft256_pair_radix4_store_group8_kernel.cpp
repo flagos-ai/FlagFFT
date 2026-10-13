@@ -1,0 +1,28 @@
+// Copyright 2026 FlagOS Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "ascendc_fft256_pair_radix4_impl.hpp"
+
+extern "C" __global__ __aicore__ void flagfft_npu_fft256_pair_radix4_store_group8(
+    GM_ADDR input,
+    GM_ADDR output,
+    GM_ADDR indices,
+    GM_ADDR twiddles,
+    uint32_t transform_count,
+    uint32_t output_row_stride,
+    uint32_t output_transform_offset) {
+  Fft256AivPairRadix4Group8 op;
+  op.Init(input, output, indices, twiddles, transform_count, output_row_stride, output_transform_offset);
+  op.Process();
+}

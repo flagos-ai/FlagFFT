@@ -18,9 +18,14 @@ from contextvars import ContextVar
 
 _target = ContextVar("flagfft_codegen_target", default="")
 _MACA_1D_SINGLE_DEFAULT = ContextVar("flagfft_maca_1d_single_default", default=False)
+_MACA_1D_BATCH_DEFAULT = ContextVar("flagfft_maca_1d_batch_default", default=False)
 _IX_CT_SINGLE_DEFAULT = ContextVar("flagfft_ix_ct_single_default", default=False)
+_IX_CT_BATCH_DEFAULT = ContextVar("flagfft_ix_ct_batch_default", default=False)
+_IX_REAL_SINGLE_PACK = ContextVar("flagfft_ix_real_single_pack", default=False)
 _IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
 _MACA_2D_SINGLE_DEFAULT = ContextVar("flagfft_maca_2d_single_default", default=False)
+_MACA_3D_DEFAULT = ContextVar("flagfft_maca_3d_default", default=False)
+_MACA_3D_C2C32_SINGLE_CUBE = ContextVar("flagfft_maca_3d_c2c32_single_cube", default=False)
 
 
 def set_ix_ct_single_tle_default(policy: int):
@@ -49,6 +54,26 @@ def ix_ct_single_default_enabled() -> bool:
     return _IX_CT_SINGLE_DEFAULT.get()
 
 
+def set_ix_ct_batch_default(enabled: bool):
+    return _IX_CT_BATCH_DEFAULT.set(bool(enabled))
+
+
+def reset_ix_ct_batch_default(token):
+    _IX_CT_BATCH_DEFAULT.reset(token)
+
+
+def ix_ct_batch_default_enabled() -> bool:
+    return _IX_CT_BATCH_DEFAULT.get()
+
+
+def set_ix_real_single_pack(enabled: bool):
+    return _IX_REAL_SINGLE_PACK.set(bool(enabled))
+
+
+def ix_real_single_pack_enabled() -> bool:
+    return _IX_REAL_SINGLE_PACK.get()
+
+
 def set_codegen_target(target: str) -> None:
     if target and len(target.split(":")) != 3:
         raise ValueError(f"Invalid Triton target: {target!r}")
@@ -71,6 +96,18 @@ def maca_1d_single_default_enabled() -> bool:
     return _MACA_1D_SINGLE_DEFAULT.get()
 
 
+def set_maca_1d_batch_default(enabled: bool):
+    return _MACA_1D_BATCH_DEFAULT.set(bool(enabled))
+
+
+def reset_maca_1d_batch_default(token) -> None:
+    _MACA_1D_BATCH_DEFAULT.reset(token)
+
+
+def maca_1d_batch_default_enabled() -> bool:
+    return _MACA_1D_BATCH_DEFAULT.get()
+
+
 def set_maca_2d_single_default(enabled: bool):
     return _MACA_2D_SINGLE_DEFAULT.set(bool(enabled))
 
@@ -82,6 +119,31 @@ def reset_maca_2d_single_default(token) -> None:
 def maca_2d_single_default_enabled() -> bool:
     """Root 2D FP32 batch-1 policy, including its batched axis kernels."""
     return _MACA_2D_SINGLE_DEFAULT.get()
+
+
+def set_maca_3d_default(enabled: bool):
+    return _MACA_3D_DEFAULT.set(bool(enabled))
+
+
+def reset_maca_3d_default(token) -> None:
+    _MACA_3D_DEFAULT.reset(token)
+
+
+def maca_3d_default_enabled() -> bool:
+    return _MACA_3D_DEFAULT.get()
+
+
+def set_maca_3d_c2c32_single_cube(enabled: bool):
+    """Set the narrow policy for a single FP64 C2C 32-cube."""
+    return _MACA_3D_C2C32_SINGLE_CUBE.set(bool(enabled))
+
+
+def reset_maca_3d_c2c32_single_cube(token) -> None:
+    _MACA_3D_C2C32_SINGLE_CUBE.reset(token)
+
+
+def maca_3d_c2c32_single_cube_enabled() -> bool:
+    return _MACA_3D_C2C32_SINGLE_CUBE.get()
 
 
 def backend_name() -> str:

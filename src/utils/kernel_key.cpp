@@ -16,6 +16,106 @@
 
 namespace flagfft {
 
+KernelKey KernelKey::fused_16_plane(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused16Plane;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 16;
+  return key;
+}
+
+KernelKey KernelKey::fused_32_real_plane(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused32RealPlane;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 32;
+  return key;
+}
+
+KernelKey KernelKey::fused_rect_plane(std::string target,
+                                      std::string direction,
+                                      std::string dtype,
+                                      int64_t plane_n0,
+                                      int64_t plane_n1,
+                                      int64_t middle_size) {
+  KernelKey key;
+  key.kind = KernelKind::FusedRectPlane;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.fused_plane_n0 = plane_n0;
+  key.fused_plane_n1 = plane_n1;
+  key.fused_plane_middle = middle_size;
+  return key;
+}
+
+KernelKey KernelKey::fused_16_cube(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused16Cube;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 16;
+  return key;
+}
+
+KernelKey KernelKey::fused_16_real_cube(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused16RealCube;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 16;
+  return key;
+}
+
+KernelKey KernelKey::fused_32_column(std::string target, std::string direction,
+                                      std::string dtype, int64_t columns) {
+  KernelKey key;
+  key.kind = KernelKind::Fused32Column;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = columns;
+  return key;
+}
+
+KernelKey KernelKey::fused_2d(std::string target, std::string direction,
+                             std::string dtype, int64_t length, bool transpose_output) {
+  KernelKey key;
+  key.kind = KernelKind::Fused2D;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = length;
+  key.perm_form = transpose_output ? "transpose" : "rowmajor";
+  return key;
+}
+
+KernelKey KernelKey::fused_32_plane(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused32Plane;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 32;
+  return key;
+}
+
+KernelKey KernelKey::fused_16_real_plane(std::string target, std::string direction, std::string dtype) {
+  KernelKey key;
+  key.kind = KernelKind::Fused16RealPlane;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = std::move(dtype);
+  key.length = 16;
+  return key;
+}
+
 KernelKey KernelKey::leaf(std::string target,
                           std::string direction,
                           std::string dtype,
@@ -110,6 +210,30 @@ KernelKey KernelKey::leaf_r2c(std::string target,
   return key;
 }
 
+KernelKey KernelKey::leaf_r2c_permuted_store(std::string target,
+                                             std::string direction,
+                                             std::string dtype,
+                                             int64_t length,
+                                             std::vector<int64_t> factors,
+                                             int64_t lanes,
+                                             int64_t num_warps,
+                                             std::vector<int64_t> generic_radices,
+                                             int64_t smem_size,
+                                             std::string perm_form) {
+  KernelKey key = KernelKey::leaf_r2c(std::move(target),
+                                      std::move(direction),
+                                      std::move(dtype),
+                                      length,
+                                      std::move(factors),
+                                      lanes,
+                                      num_warps,
+                                      std::move(generic_radices),
+                                      smem_size);
+  key.kind = KernelKind::LeafR2CPermutedStore;
+  key.perm_form = std::move(perm_form);
+  return key;
+}
+
 KernelKey KernelKey::leaf_c2r(std::string target,
                               std::string direction,
                               std::string dtype,
@@ -154,6 +278,51 @@ KernelKey KernelKey::leaf_bluestein(std::string target,
   key.kind = KernelKind::LeafBluestein;
   key.bluestein_n = prime_n;
   key.bluestein_m = length;
+  return key;
+}
+
+KernelKey KernelKey::leaf_rader_full(std::string target,
+                                     std::string direction,
+                                     std::string dtype,
+                                     int64_t prime_n,
+                                     int64_t length,
+                                     std::vector<int64_t> factors,
+                                     int64_t lanes,
+                                     int64_t num_warps,
+                                     std::vector<int64_t> generic_radices,
+                                     int64_t smem_size) {
+  KernelKey key = KernelKey::leaf(std::move(target), std::move(direction), std::move(dtype),
+                                  length, std::move(factors), lanes, num_warps,
+                                  std::move(generic_radices), smem_size);
+  key.kind = KernelKind::LeafRaderFull;
+  key.rader_n = prime_n;
+  key.rader_m = length;
+  return key;
+}
+
+KernelKey KernelKey::leaf_rader_prepare(std::string target, std::string direction,
+                                        std::string dtype, int64_t prime_n, int64_t length,
+                                        std::vector<int64_t> factors, int64_t lanes,
+                                        int64_t num_warps, std::vector<int64_t> generic_radices,
+                                        int64_t smem_size) {
+  KernelKey key = KernelKey::leaf_rader_full(std::move(target), std::move(direction),
+                                             std::move(dtype), prime_n, length,
+                                             std::move(factors), lanes, num_warps,
+                                             std::move(generic_radices), smem_size);
+  key.kind = KernelKind::LeafRaderPrepare;
+  return key;
+}
+
+KernelKey KernelKey::leaf_rader_finish(std::string target, std::string direction,
+                                       std::string dtype, int64_t prime_n, int64_t length,
+                                       std::vector<int64_t> factors, int64_t lanes,
+                                       int64_t num_warps, std::vector<int64_t> generic_radices,
+                                       int64_t smem_size) {
+  KernelKey key = KernelKey::leaf_rader_full(std::move(target), std::move(direction),
+                                             std::move(dtype), prime_n, length,
+                                             std::move(factors), lanes, num_warps,
+                                             std::move(generic_radices), smem_size);
+  key.kind = KernelKind::LeafRaderFinish;
   return key;
 }
 
@@ -597,7 +766,11 @@ bool KernelKey::operator==(const KernelKey &other) const {
          reshape_n1 == other.reshape_n1 && reshape_n2 == other.reshape_n2 &&
          transpose3d_n0 == other.transpose3d_n0 && transpose3d_n1 == other.transpose3d_n1 &&
          transpose3d_n2 == other.transpose3d_n2 && transpose3d_order == other.transpose3d_order &&
-         perm_form == other.perm_form;
+         fused_plane_n0 == other.fused_plane_n0 && fused_plane_n1 == other.fused_plane_n1 &&
+         fused_plane_middle == other.fused_plane_middle &&
+         perm_form == other.perm_form && npu_portable_leaf == other.npu_portable_leaf &&
+         hcu_full_smem == other.hcu_full_smem &&
+         hcu_3d_middle_batch_pack == other.hcu_3d_middle_batch_pack;
 }
 
 std::string KernelKey::repr() const {
@@ -615,7 +788,12 @@ std::string KernelKey::repr() const {
       << ";rader_n=" << rader_n << ";rader_m=" << rader_m << ";reshape_n1=" << reshape_n1
       << ";reshape_n2=" << reshape_n2 << ";transpose3d_n0=" << transpose3d_n0
       << ";transpose3d_n1=" << transpose3d_n1 << ";transpose3d_n2=" << transpose3d_n2
-      << ";order=" << transpose3d_order << ";perm_form=" << perm_form;
+      << ";fused_plane_n0=" << fused_plane_n0 << ";fused_plane_n1=" << fused_plane_n1
+      << ";fused_plane_middle=" << fused_plane_middle
+      << ";order=" << transpose3d_order << ";perm_form=" << perm_form
+      << ";npu_portable_leaf=" << npu_portable_leaf
+      << ";hcu_full_smem=" << hcu_full_smem
+      << ";hcu_3d_middle_batch_pack=" << hcu_3d_middle_batch_pack;
   return out.str();
 }
 
@@ -642,8 +820,14 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.transpose3d_n0);
   hash_value(seed, key.transpose3d_n1);
   hash_value(seed, key.transpose3d_n2);
+  hash_value(seed, key.fused_plane_n0);
+  hash_value(seed, key.fused_plane_n1);
+  hash_value(seed, key.fused_plane_middle);
   hash_value(seed, key.transpose3d_order);
   hash_value(seed, key.perm_form);
+  hash_value(seed, key.npu_portable_leaf);
+  hash_value(seed, key.hcu_full_smem);
+  hash_value(seed, key.hcu_3d_middle_batch_pack);
   return seed;
 }
 

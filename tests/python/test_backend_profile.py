@@ -6,6 +6,79 @@ from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
 
 
 class ProfileTest(unittest.TestCase):
+    def test_npu_2d_leaf_knobs_are_backend_scoped(self):
+        from flagfft_codegen.kernels_common import _maca_knob, _npu_backend_active
+        from flagfft_codegen.target import set_codegen_target
+
+        set_codegen_target("npu:Ascend910B4:1")
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
+                    "FLAGFFT_NPU_2D_EXCHANGE": "transpose",
+                    "FLAGFFT_NPU_2D_LANE_MIN": "8",
+                    "FLAGFFT_NPU_2D_BATCH_PACK": "2",
+                    "FLAGFFT_MACA_EXCHANGE": "direct",
+                    "FLAGFFT_MACA_LANE_MIN": "64",
+                    "FLAGFFT_MACA_BATCH_PACK": "8",
+                },
+                clear=True,
+            ):
+                self.assertTrue(_npu_backend_active())
+                self.assertEqual(_maca_knob("EXCHANGE"), "transpose")
+                self.assertEqual(_maca_knob("LANE_MIN", "auto"), "8")
+                self.assertEqual(_maca_knob("BATCH_PACK", "auto"), "2")
+        finally:
+            set_codegen_target("")
+
+    def test_npu_portable_leaf_batch_pack_expands_vector_block(self):
+        from pathlib import Path
+        from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+        from flagfft_codegen.metadata import _metadata
+        from flagfft_codegen.target import set_codegen_target
+
+        profile_token = set_profile(
+            self.profile(backend="npu", device_arch="Ascend910B4", warp_size=32)
+        )
+        set_codegen_target("npu:Ascend910B4:1")
+        try:
+            with patch.dict(
+                "os.environ",
+                {
+                    "FLAGFFT_NPU_FOURSTEP_LEAF": "1",
+                    "FLAGFFT_NPU_2D_EXCHANGE": "transpose",
+                    "FLAGFFT_NPU_2D_LANE_MIN": "8",
+                    "FLAGFFT_NPU_2D_BATCH_PACK": "2",
+                },
+                clear=True,
+            ):
+                plan = LeafPlan(64, (8, 8), 1, 8, 2, (), 64)
+                for io_mode, kernel_type in (
+                    ("contiguous", "leaf"),
+                    ("strided", "leaf_strided"),
+                ):
+                    with self.subTest(io_mode=io_mode):
+                        name, source = _build_leaf_kernel_source_for_io(
+                            plan, io_mode=io_mode
+                        )
+                        metadata = _metadata(
+                            module_path=Path("unused.py"),
+                            kernel_name=name,
+                            arg_names=[],
+                            plan=plan,
+                            kernel_type=kernel_type,
+                            n1=0,
+                            n2=0,
+                            dtype=plan.dtype,
+                        )
+                        self.assertIn("batch_id = pid * 2", source)
+                        self.assertIn("lane_vec = tl.arange(0, 16)", source)
+                        self.assertEqual(metadata["batch_per_block"], 2)
+        finally:
+            reset_profile(profile_token)
+            set_codegen_target("")
+
     def test_ix_scoped_default_uses_two_warps_and_recurrence(self):
         from pathlib import Path
         from flagfft_codegen.target import set_ix_ct_single_default, reset_ix_ct_single_default, set_codegen_target
@@ -330,6 +403,56 @@ class ProfileTest(unittest.TestCase):
             )
             self.assertGreater(
                 four_step_col_inner_pack_for(1024, 1024, "complex64", plan), 1
+            )
+        finally:
+            reset_profile(token)
+
+    def test_hcu_four_step_pack_preserves_fp64_lds_residency(self):
+        from flagfft_codegen.kernels_common import (
+            four_step_col_inner_pack_for,
+            four_step_row_inner_pack_for,
+        )
+
+        profile = BackendProfile.from_device(
+            {
+                "backend": "hcu",
+                "device_arch": "gfx936",
+                "warp_size": 64,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 64 * 1024,
+            },
+            "native",
+        )
+        token = set_profile(profile)
+        try:
+            # FP32 pack four fills the 64 KiB budget and improved the measured
+            # large C2R cases. FP64 pack two also fills 64 KiB, but reduced
+            # residency and regressed n=524288, so keep its conservative bound.
+            single_precision = LeafPlan(
+                1024, (32, 32), 1, 32, 1, (), 1024, dtype="complex64"
+            )
+            self.assertEqual(
+                four_step_row_inner_pack_for(512, 1024, "complex64", single_precision), 4
+            )
+            self.assertEqual(
+                four_step_col_inner_pack_for(512, 1024, "complex64", single_precision), 4
+            )
+
+            double_precision = LeafPlan(
+                1024, (32, 32), 1, 32, 1, (), 1024, dtype="complex128"
+            )
+            self.assertEqual(
+                four_step_row_inner_pack_for(512, 1024, "complex128", double_precision), 1
+            )
+            self.assertEqual(
+                four_step_col_inner_pack_for(512, 1024, "complex128", double_precision), 1
+            )
+
+            oversized = LeafPlan(
+                2048, (32, 32, 2), 1, 32, 1, (), 2048, dtype="complex128"
+            )
+            self.assertEqual(
+                four_step_col_inner_pack_for(512, 2048, "complex128", oversized), 1
             )
         finally:
             reset_profile(token)

@@ -193,13 +193,75 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   const std::string policy = policy_env ? policy_env : default_policy;
   const auto tail_mode = maca_tail_kernel_mode(maca_tail_policy_, key.kind, key.dtype,
                                                key.length, key.four_step_n1, key.four_step_n2);
-  const std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
-                                (maca_1d_single_policy_ ? "1" : "0") + ";maca-2d-single=" +
-                                (maca_2d_single_policy_ ? "1" : "0") + ";ix-ct-single=" +
+  std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
+                                (maca_1d_single_policy_ ? "1" : "0") + ";maca-1d-batch=" +
+                                (maca_1d_batch_policy_ ? "1" : "0") + ";maca-2d-single=" +
+                                (maca_2d_single_policy_ ? "1" : "0") + ";maca-3d=" +
+                                (maca_3d_policy_ ? "1" : "0") + ";maca-3d-c2c32-single-cube=" +
+                                (maca_3d_c2c32_single_cube_policy_ ? "1" : "0") + ";ix-ct-single=" +
                                 (ix_ct_single_policy_ ? "1" : "0") + ";ix-ct-single-tle=" +
-                                std::to_string(ix_ct_single_tle_policy_) +
+                                std::to_string(ix_ct_single_tle_policy_) + ";ix-ct-batch=" +
+                                (ix_ct_batch_policy_ ? "1" : "0") + ";ix-real-single-pack=" +
+                                (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
+    const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
+    const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
+    const char *pack = std::getenv("FLAGFFT_IX_3D_PACK");
+    cache_key += ";ix-3d-direct-store=" + std::string(direct_store != nullptr &&
+                                                       std::string(direct_store) == "1" ? "1" : "0");
+    cache_key += ";ix-3d-pair-store=" + std::string(pair_store != nullptr &&
+                                                     std::string(pair_store) == "1" ? "1" : "0");
+    cache_key += ";ix-3d-pack=" + std::string(pack != nullptr ? pack : "auto");
+  }
+  if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "npu") {
+    const char *transpose_store = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
+    const char *portable_leaf = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+    const char *transpose_pack = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_PACK");
+    cache_key += ";npu-2d-transpose-store=" +
+                 std::string(transpose_store != nullptr && std::string(transpose_store) == "1" ? "1" : "0");
+    cache_key += ";npu-portable-leaf=" +
+                 std::string(portable_leaf != nullptr && std::string(portable_leaf) == "1" ? "1" : "0");
+    cache_key += ";npu-2d-transpose-pack=" +
+                 std::string(transpose_pack != nullptr ? transpose_pack : "auto");
+  }
+  if (adaptor::backend_name() == "npu" &&
+      (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
+       key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafR2C ||
+       key.kind == KernelKind::LeafC2R)) {
+    const char *portable_leaf = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+    const bool use_portable_leaf = key.npu_portable_leaf ||
+                                   (portable_leaf != nullptr && std::string(portable_leaf) == "1");
+    cache_key += ";npu-portable-leaf=" + std::string(use_portable_leaf ? "1" : "0");
+    if (key.npu_portable_leaf) {
+      const char *exchange = std::getenv("FLAGFFT_NPU_2D_EXCHANGE");
+      const char *lane_min = std::getenv("FLAGFFT_NPU_2D_LANE_MIN");
+      const char *batch_pack = std::getenv("FLAGFFT_NPU_2D_BATCH_PACK");
+      const char *split_order = std::getenv("FLAGFFT_NPU_2D_SPLIT_ORDER");
+      if (exchange == nullptr) exchange = std::getenv("FLAGFFT_MACA_EXCHANGE");
+      if (lane_min == nullptr) lane_min = std::getenv("FLAGFFT_MACA_LANE_MIN");
+      if (batch_pack == nullptr) batch_pack = std::getenv("FLAGFFT_MACA_BATCH_PACK");
+      if (split_order == nullptr) split_order = std::getenv("FLAGFFT_MACA_SPLIT_ORDER");
+      cache_key += ";npu-2d-exchange=" + std::string(exchange != nullptr ? exchange : "auto");
+      cache_key += ";npu-2d-lane-min=" + std::string(lane_min != nullptr ? lane_min : "auto");
+      cache_key += ";npu-2d-batch-pack=" + std::string(batch_pack != nullptr ? batch_pack : "auto");
+      cache_key += ";npu-2d-split-order=" +
+                   std::string(split_order != nullptr ? split_order : "auto");
+    }
+  }
+  if (key.kind == KernelKind::LeafPackedR2C && adaptor::backend_name() == "ix") {
+    const char *packed_3d = std::getenv("FLAGFFT_IX_3D_PACKED_R2C");
+    cache_key += ";ix-3d-packed-r2c=" + std::string(packed_3d != nullptr &&
+                                                     std::string(packed_3d) == "1" ? "1" : "0");
+  }
+  if (key.kind == KernelKind::Transpose3D && adaptor::backend_name() == "ix") {
+    const char *tile = std::getenv("FLAGFFT_IX_3D_TRANSPOSE_TILE");
+    const char *packed = std::getenv("FLAGFFT_IX_3D_PACKED_TRANSPOSE");
+    cache_key += ";ix-3d-transpose-tile=" + std::string(tile != nullptr ? tile : "16");
+    cache_key += ";ix-3d-packed-transpose=" + std::string(packed != nullptr &&
+                                                         std::string(packed) == "1" ? "1" : "0");
+  }
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);
@@ -221,14 +283,35 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::LeafPermutedStore:
       kernel_kind = "leaf_permuted_store";
       break;
+    case KernelKind::LeafStridedPermutedStore:
+      kernel_kind = "leaf_strided_permuted_store";
+      break;
     case KernelKind::LeafR2C:
       kernel_kind = "leaf_r2c";
+      break;
+    case KernelKind::LeafR2CPermutedStore:
+      kernel_kind = "leaf_r2c_permuted_store";
+      break;
+    case KernelKind::LeafPackedR2C:
+      kernel_kind = "leaf_packed_r2c";
       break;
     case KernelKind::LeafC2R:
       kernel_kind = "leaf_c2r";
       break;
+    case KernelKind::LeafPackedC2R:
+      kernel_kind = "leaf_packed_c2r";
+      break;
     case KernelKind::LeafBluestein:
-      kernel_kind = "leaf_bluestein";
+      kernel_kind = key.perm_form == "outer" ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form;
+      break;
+    case KernelKind::LeafRaderFull:
+      kernel_kind = "leaf_rader_full";
+      break;
+    case KernelKind::LeafRaderPrepare:
+      kernel_kind = "leaf_rader_prepare";
+      break;
+    case KernelKind::LeafRaderFinish:
+      kernel_kind = "leaf_rader_finish";
       break;
     case KernelKind::LeafBluesteinPrepare:
       kernel_kind = "leaf_bluestein_prepare";
@@ -237,19 +320,36 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "leaf_bluestein_finish";
       break;
     case KernelKind::BluesteinFourStepPrepareRow:
-      kernel_kind = "bluestein_four_step_prepare_row";
+      kernel_kind = key.perm_form == "outer" ? "bluestein_four_step_prepare_row"
+                                             : "bluestein_four_step_prepare_row_" + key.perm_form;
       break;
     case KernelKind::BluesteinFourStepPointwiseRow:
       kernel_kind = "bluestein_four_step_pointwise_row";
       break;
     case KernelKind::BluesteinFourStepFinishCol:
-      kernel_kind = "bluestein_four_step_finish_col";
+      kernel_kind = key.perm_form == "outer" ? "bluestein_four_step_finish_col"
+                                             : "bluestein_four_step_finish_col_" + key.perm_form;
       break;
     case KernelKind::DirectDft:
       kernel_kind = "direct_dft";
       break;
     case KernelKind::DirectDftStrided:
       kernel_kind = "direct_dft_strided";
+      break;
+    case KernelKind::DirectDftCube:
+      kernel_kind = "direct_dft_cube";
+      break;
+    case KernelKind::DirectDftCubeTransposed:
+      kernel_kind = "direct_dft_cube_transposed";
+      break;
+    case KernelKind::DirectDftCubeStrided:
+      kernel_kind = "direct_dft_cube_strided";
+      break;
+    case KernelKind::DirectDftCube2DRow:
+      kernel_kind = "direct_dft_cube_2d_row";
+      break;
+    case KernelKind::DirectDftCube2DCol:
+      kernel_kind = "direct_dft_cube_2d_col";
       break;
     case KernelKind::DirectDftR2C:
       kernel_kind = "direct_dft_r2c";
@@ -332,6 +432,33 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
+    case KernelKind::Fused16Plane:
+      kernel_kind = "fused_16_plane";
+      break;
+    case KernelKind::Fused16RealPlane:
+      kernel_kind = "fused_16_real_plane";
+      break;
+    case KernelKind::Fused32Plane:
+      kernel_kind = "fused_32_plane";
+      break;
+    case KernelKind::Fused32RealPlane:
+      kernel_kind = "fused_32_real_plane";
+      break;
+    case KernelKind::FusedRectPlane:
+      kernel_kind = "fused_rect_plane";
+      break;
+    case KernelKind::Fused16Cube:
+      kernel_kind = "fused_16_cube";
+      break;
+    case KernelKind::Fused16RealCube:
+      kernel_kind = "fused_16_real_cube";
+      break;
+    case KernelKind::Fused32Column:
+      kernel_kind = "fused_32_column";
+      break;
+    case KernelKind::Fused2D:
+      kernel_kind = "fused_2d";
+      break;
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
@@ -350,11 +477,20 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  if (key.target.rfind("hcu:", 0) == 0) {
+    jit_command << "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK="
+                << (key.hcu_3d_middle_batch_pack > 0
+                        ? std::to_string(key.hcu_3d_middle_batch_pack)
+                        : std::string("auto"))
+                << " ";
+  }
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(request_dir.string()) << " --dtype "
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "
               << shell_quote(device_profile) << " --execution-policy " << shell_quote(policy);
   if (ix_ct_single_policy_) jit_command << " --ix-ct-single";
+  if (ix_ct_batch_policy_) jit_command << " --ix-ct-batch";
+  if (ix_real_single_pack_) jit_command << " --ix-real-single-pack";
   if (ix_ct_single_tle_policy_) jit_command << " --ix-ct-single-tle " << ix_ct_single_tle_policy_;
 #if defined(BACKEND_MACA)
   jit_command << " --compile-script "
@@ -362,15 +498,30 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (maca_1d_single_policy_) {
     jit_command << " --maca-1d-single";
   }
+  if (maca_1d_batch_policy_) {
+    jit_command << " --maca-1d-batch";
+  }
   jit_command << " --maca-tail-mode " << shell_quote(tail_mode);
   if (maca_2d_single_policy_) {
     jit_command << " --maca-2d-single";
   }
+  if (maca_3d_policy_) {
+    jit_command << " --maca-3d";
+  }
+  if (maca_3d_c2c32_single_cube_policy_) {
+    jit_command << " --maca-3d-c2c32-single-cube";
+  }
 #endif
   if (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
       key.kind == KernelKind::LeafPermutedStore ||
-      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R ||
-      key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafBluesteinPrepare ||
+      key.kind == KernelKind::LeafStridedPermutedStore ||
+      key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafR2CPermutedStore ||
+      key.kind == KernelKind::LeafPackedR2C ||
+      key.kind == KernelKind::LeafC2R ||
+      key.kind == KernelKind::LeafPackedC2R ||
+      key.kind == KernelKind::LeafBluestein || key.kind == KernelKind::LeafRaderFull ||
+      key.kind == KernelKind::LeafRaderPrepare || key.kind == KernelKind::LeafRaderFinish ||
+      key.kind == KernelKind::LeafBluesteinPrepare ||
       key.kind == KernelKind::LeafBluesteinFinish || key.kind == KernelKind::BluesteinFourStepPrepareRow ||
       key.kind == KernelKind::BluesteinFourStepPointwiseRow ||
       key.kind == KernelKind::BluesteinFourStepFinishCol || key.kind == KernelKind::FourStepRow ||
@@ -382,11 +533,20 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --lanes " << key.lanes << " --num-warps " << key.num_warps << " --generic-radices "
                 << shell_quote(join_ints(key.generic_radices)) << " --smem-size " << key.smem_size
                 << " --direction " << shell_quote(key.direction);
+    if (key.npu_portable_leaf) {
+      jit_command << " --npu-portable-leaf";
+    }
   }
-  if (key.kind == KernelKind::LeafPermutedStore) {
+  if (key.kind == KernelKind::LeafPermutedStore ||
+      key.kind == KernelKind::LeafStridedPermutedStore ||
+      key.kind == KernelKind::LeafR2CPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
+  if (key.hcu_full_smem) jit_command << " --hcu-3d-full-smem";
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
+      key.kind == KernelKind::DirectDftCube || key.kind == KernelKind::DirectDftCubeTransposed ||
+      key.kind == KernelKind::DirectDftCubeStrided || key.kind == KernelKind::DirectDftCube2DRow ||
+      key.kind == KernelKind::DirectDftCube2DCol ||
       key.kind == KernelKind::DirectDftR2C || key.kind == KernelKind::DirectDftC2R) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
   }
@@ -410,7 +570,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::BluesteinPointwise || key.kind == KernelKind::BluesteinFinalize) {
     jit_command << " --bluestein-n " << key.bluestein_n << " --bluestein-m " << key.bluestein_m;
   }
-  if (key.kind == KernelKind::RaderPrepare || key.kind == KernelKind::RaderPointwise ||
+  if (key.kind == KernelKind::LeafRaderFull || key.kind == KernelKind::LeafRaderPrepare ||
+      key.kind == KernelKind::LeafRaderFinish || key.kind == KernelKind::RaderPrepare ||
+      key.kind == KernelKind::RaderPointwise ||
       key.kind == KernelKind::RaderFinalize) {
     jit_command << " --rader-n " << key.rader_n << " --rader-m " << key.rader_m;
   }
@@ -422,6 +584,31 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --transpose3d-n0 " << key.transpose3d_n0 << " --transpose3d-n1 " << key.transpose3d_n1
                 << " --transpose3d-n2 " << key.transpose3d_n2 << " --transpose3d-order "
                 << shell_quote(key.transpose3d_order);
+  }
+  if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32Plane ||
+      key.kind == KernelKind::Fused16RealPlane || key.kind == KernelKind::Fused32RealPlane ||
+      key.kind == KernelKind::FusedRectPlane || key.kind == KernelKind::Fused16Cube ||
+      key.kind == KernelKind::Fused16RealCube || key.kind == KernelKind::Fused32Column ||
+      key.kind == KernelKind::Fused2D) {
+    jit_command << " --direction " << shell_quote(key.direction);
+  }
+  if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32RealPlane ||
+      key.kind == KernelKind::Fused16Cube) {
+    jit_command << " --length " << key.length;
+  }
+  if (key.kind == KernelKind::FusedRectPlane) {
+    jit_command << " --fused-plane-n0 " << key.fused_plane_n0
+                << " --fused-plane-n1 " << key.fused_plane_n1
+                << " --fused-plane-middle " << key.fused_plane_middle;
+  }
+  if (key.kind == KernelKind::Fused32Column) {
+    jit_command << " --length " << key.length;
+  }
+  if (key.kind == KernelKind::Fused2D) {
+    jit_command << " --length " << key.length;
+    if (key.perm_form == "transpose") {
+      jit_command << " --fused-2d-transpose";
+    }
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
@@ -442,6 +629,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->profile_id = json_string_field(artifact_json, "profile_id");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
+  if (key.kind == KernelKind::DirectDftCubeTransposed ||
+      key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {
+    kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
+  }
   if (key.kind == KernelKind::StockhamStage) {
     kernel->butterflies_per_block = json_int_field(artifact_json, "butterflies_per_block");
   }

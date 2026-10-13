@@ -17,6 +17,32 @@ if(BACKEND STREQUAL "NPU")
         ${CMAKE_CURRENT_LIST_DIR}/backend/npu/adaptor.cpp
     )
     target_link_libraries(flagfft PRIVATE Ascend::ascendcl Ascend::runtime)
+    if(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+        set(_ASCEND_SIP_DEFAULT_ROOT "$ENV{ASCEND_SIP_ROOT}")
+        if(NOT _ASCEND_SIP_DEFAULT_ROOT)
+            set(_ASCEND_SIP_DEFAULT_ROOT "/usr/local/Ascend/nnal/asdsip/latest")
+        endif()
+        set(ASCEND_SIP_ROOT "${_ASCEND_SIP_DEFAULT_ROOT}" CACHE PATH
+            "installed Ascend SiP root used by the optional NPU execution backend")
+        find_path(ASCEND_SIP_INCLUDE_DIR fft_api.h
+            HINTS "${ASCEND_SIP_ROOT}/include" REQUIRED)
+        find_library(ASCEND_SIP_LIBRARY NAMES asdsip
+            HINTS "${ASCEND_SIP_ROOT}/lib" REQUIRED)
+        find_library(ASCEND_OPAPI_LIBRARY NAMES opapi
+            HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+                  "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
+        find_library(ASCEND_NNOPBASE_LIBRARY NAMES nnopbase
+            HINTS "${ASCEND_TOOLKIT_HOME}/lib64"
+                  "${ASCEND_TOOLKIT_HOME}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64" REQUIRED)
+        target_sources(flagfft PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/backend/npu/sip_executor.cpp)
+        target_include_directories(flagfft PRIVATE "${ASCEND_SIP_INCLUDE_DIR}")
+        target_compile_definitions(flagfft PRIVATE FLAGFFT_NPU_ENABLE_SIP_EXECUTION=1)
+        target_link_libraries(flagfft PRIVATE
+            "${ASCEND_SIP_LIBRARY}"
+            "${ASCEND_OPAPI_LIBRARY}"
+            "${ASCEND_NNOPBASE_LIBRARY}")
+    endif()
 elseif(BACKEND STREQUAL "CUDA")
     find_package(CUDAToolkit REQUIRED)
     target_sources(flagfft PRIVATE

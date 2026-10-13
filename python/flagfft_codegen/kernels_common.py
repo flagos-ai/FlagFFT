@@ -26,9 +26,14 @@ from typing import Literal
 from .backend_profile import current_profile
 from .target import (
     ix_ct_single_default_enabled,
+    ix_ct_batch_default_enabled,
     ix_ct_single_tle_default,
+    ix_real_single_pack_enabled,
     maca_1d_single_default_enabled,
+    maca_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
+    maca_3d_default_enabled,
+    maca_3d_c2c32_single_cube_enabled,
 )
 from .maca_tail_policy import resource_default
 
@@ -200,14 +205,28 @@ LeafIoMode = Literal[
     "contiguous",
     "strided",
     "permuted_store",
+    "strided_permuted_store",
+    "permuted_r2c",
     "contiguous_r2c",
+    "permuted_r2c",
+    "packed_r2c",
+    "packed_c2r",
     "contiguous_c2r",
     "bluestein_prepare_leaf",
     "bluestein_finish_leaf",
     "bluestein_full_leaf",
+    "bluestein_full_leaf_r2c",
+    "bluestein_full_leaf_c2r",
+    "rader_full_leaf",
+    "rader_prepare_leaf",
+    "rader_finish_leaf",
     "bluestein_four_step_prepare_row",
+    "bluestein_four_step_prepare_row_r2c",
+    "bluestein_four_step_prepare_row_c2r",
     "bluestein_four_step_pointwise_row",
     "bluestein_four_step_finish_col",
+    "bluestein_four_step_finish_col_r2c",
+    "bluestein_four_step_finish_col_c2r",
     "four_step_row",
     "four_step_real_row",
     "four_step_hermitian_row",
@@ -233,7 +252,14 @@ def emitted_leaf_factors(
 ) -> tuple[int, ...]:
     if (
         _portable_leaf_backend_active()
-        and io_mode != "bluestein_full_leaf"
+        and plan.length == 32
+        and plan.dtype == "complex128"
+        and plan.factors == (4, 4, 2)
+    ):
+        return plan.factors
+    if (
+        _portable_leaf_backend_active()
+        and io_mode not in {"bluestein_full_leaf", "rader_full_leaf"}
         and plan.length
         in _NATURAL_ORDER_CODELET_RADICES | _THREAD_LOCAL_MIXED_RADICES | {16}
     ):
@@ -283,28 +309,55 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
 def _maca_knob(name: str, default: str = "") -> str:
     """Read a MACA code-generation override.
 
-    The native compiler scopes the measured 1D and 2D single policies. The
-    2D scope also covers batched row/column kernels. These supply defaults while
-    preserving an explicit environment override for A/B testing and rollback.
+    The native compiler scopes measured 1D single, 1D batch, 2D single and
+    3D policies. The 2D scope also covers batched row/column kernels. These
+    supply defaults while preserving an explicit environment override for
+    A/B testing and rollback.
     Direct Python code-generation calls remain on the historical defaults.
     """
     if _ix_backend_active():
         defaults = {"EXCHANGE": "direct_all", "SPLIT_ORDER": "lsb"}
         if ix_ct_single_default_enabled():
             defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="2", INNER_PACK="4", LANE_MIN="1")
+        if ix_ct_batch_default_enabled():
+            defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="4", LANE_MIN="1")
         if ix_ct_single_tle_default():
             defaults.update(SMEM_INTERLEAVE="1", RECURRENCE="1")
         if ix_ct_single_tle_default() == 2:
             defaults.update(SMEM_SWIZZLE="1", SMEM_SWIZZLE_SHIFT="5", TLE_INNER_PACK="8", WARPS="4")
         return os.environ.get(f"FLAGFFT_IX_{name}", defaults.get(name, default)).strip().lower()
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
+        npu_env_name = {
+            "EXCHANGE": "FLAGFFT_NPU_2D_EXCHANGE",
+            "LANE_MIN": "FLAGFFT_NPU_2D_LANE_MIN",
+            "BATCH_PACK": "FLAGFFT_NPU_2D_BATCH_PACK",
+            "SPLIT_ORDER": "FLAGFFT_NPU_2D_SPLIT_ORDER",
+        }.get(name)
+        if npu_env_name is not None and npu_env_name in os.environ:
+            return os.environ[npu_env_name].strip().lower()
     env_name = f"FLAGFFT_MACA_{name}"
     if env_name in os.environ:
         return os.environ[env_name].strip().lower()
     tail_default = resource_default(name)
     if tail_default is not None:
         return tail_default
+    if maca_3d_default_enabled():
+        if name == "EXCHANGE":
+            return "direct_all"
+        if name == "VEC_IO":
+            return "packed"
     if maca_2d_single_default_enabled() and name == "2D_TRANSPOSE":
         return "packed"
+    if maca_1d_batch_default_enabled():
+        if name == "EXCHANGE":
+            return "direct_all"
+        if name == "FP64_REGISTER_PACK":
+            return "1"
+        if name == "INNER_PACK":
+            # The resource guard in _maca_four_step_inner_pack keeps short and
+            # mixed leaves at their measured pack while allowing P8 for the
+            # FP32 512/1024-point power-of-two pair used by N=524288.
+            return "8"
     if maca_1d_single_default_enabled() or maca_2d_single_default_enabled():
         defaults = {
             "EXCHANGE": "direct_all",
@@ -404,12 +457,58 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 
 
 def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
+    if _hcu_backend_active() and plan.length == 2048:
+        middle_batch_pack = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
+        if middle_batch_pack != "auto":
+            if middle_batch_pack not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK must be auto, 1, 2, 4, 8, 16 or 32"
+                )
+            return int(middle_batch_pack)
+    if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
+        return 1
     if _portable_leaf_backend_active():
         override = _maca_knob("BATCH_PACK")
         if override == "auto":
             return _profile_batch_pack_for(plan)
         if override:
             return _positive_knob("BATCH_PACK", override)
+        if plan.length == 64 and len(emitted_leaf_factors(plan)) > 1:
+            short_pack = os.getenv("FLAGFFT_MACA_3D_N64_PACK")
+            if short_pack is not None:
+                if short_pack not in {"1", "2", "4", "8", "16", "32"}:
+                    raise ValueError("FLAGFFT_MACA_3D_N64_PACK must be 1, 2, 4, 8, 16 or 32")
+                return int(short_pack)
+        if maca_3d_default_enabled() and len(emitted_leaf_factors(plan)) > 1:
+            if plan.length == 64 and plan.dtype == "complex64":
+                return 8
+            if plan.length == 64 and plan.dtype == "complex128":
+                return 8
+            if (plan.length == 32 and plan.dtype == "complex128"
+                    and maca_3d_c2c32_single_cube_enabled()):
+                # This shape-specific policy was measured on the outer
+                # strided leaf of a single 32^3 FP64 C2C transform. Batched
+                # length-32 transforms keep the normal rank-3 pack.
+                pack_32_fp64 = os.getenv("FLAGFFT_MACA_3D_N32_FP64_PACK", "8")
+                if pack_32_fp64 not in {"1", "2", "4", "8"}:
+                    raise ValueError(
+                        "FLAGFFT_MACA_3D_N32_FP64_PACK must be 1, 2, 4 or 8"
+                    )
+                return int(pack_32_fp64)
+            if plan.length == 128:
+                pack_128 = os.getenv("FLAGFFT_MACA_3D_N128_PACK", "2")
+                if pack_128 not in {"1", "2", "4"}:
+                    raise ValueError("FLAGFFT_MACA_3D_N128_PACK must be 1, 2 or 4")
+                return int(pack_128)
+            # On C550, the 256-point FP32 3D leaf runs with a 128-thread
+            # block.  Packing two transforms fills that block and halves the
+            # CTA count; a paired GPU measurement improved 256^3 C2C by 10%.
+            if plan.length == 256 and plan.dtype == "complex64":
+                return 2
+            if plan.length == 256 and plan.dtype == "complex128":
+                return 2
+        if maca_1d_batch_default_enabled() and plan.length == 16:
+            return 1
         # Native 2D only emits these fused real boundary leaves when n0 > 256.
         # Group short rows to avoid tens of thousands of underfilled blocks.
         # Small 2D RC plans use ordinary complex leaves and stay at pack=1;
@@ -434,23 +533,80 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
     return _profile_batch_pack_for(plan)
 
 
-def permuted_store_batch_pack_for(plan: LeafPlan) -> int:
+def permuted_store_batch_pack_for(
+    plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None
+) -> int:
     """Batch slots per block for the fused permuted store.
 
-    Four is what measured best, not the widest run that fits.  The reasoning
-    that a longer run would vectorize better (16 complex64 fills a cache line)
-    does not survive contact with the measurement: 8 and 16 lose to 4 on both
-    MUSA (0.51 against 0.46 ms at 256^3) and A100 (0.51 against 0.36), because
-    the wider pack costs more in shared memory and register pressure than the
-    longer contiguous run buys back.  Shared memory still caps it for large
-    leaves.
+    Four is the generic FP32 default.  The validated MACA rank-3 length-64
+    first-store path uses eight slots; MUSA's paired complex FP64 store uses
+    two. Shared memory still caps the selected pack for large leaves.
     """
     profile = current_profile()
     bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
     smem_pack = max(
         1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
     )
-    return _floor_power_of_two(max(1, min(4, smem_pack)))
+    target_pack = 2 if _mthreads_backend_active() and _is_double_dtype(plan.dtype) else 4
+    # On C550, pack=8 (2 warps / 128 threads) measured about 1% faster than
+    # pack=16 (4 warps / 256 threads) for the validated 128x2048x64 C2C
+    # first-store path, across single/batch and both directions. The smaller
+    # block is the likely source; hardware occupancy counters were not
+    # collected. Keep this change to rank-3 FP32 length-64 stores; length 128
+    # and ordinary contiguous leaves retain their existing pack choices.
+    final_store_cube = (
+        plan.length == 256
+        and os.getenv("FLAGFFT_MACA_3D_FINAL_STORE") == "1"
+    )
+    if (
+        _declared_backend() == "maca"
+        and maca_3d_default_enabled()
+        and plan.dtype == "complex64"
+        and (plan.length in {64, 128} or final_store_cube)
+    ):
+        target_pack = 8 if plan.length == 64 else 16 if plan.length == 128 else 4
+        override = os.getenv("FLAGFFT_MACA_3D_PERMSTORE_PACK")
+        if override is not None and override != "auto":
+            allowed = {"1", "2", "4", "8", "16", "32"}
+            if final_store_cube:
+                allowed = {"1", "2", "4", "8"}
+            if override not in allowed:
+                raise ValueError(
+                    "FLAGFFT_MACA_3D_PERMSTORE_PACK must be 1, 2, 4, 8, 16, 32 or auto"
+                )
+            target_pack = int(override)
+    if _mthreads_backend_active():
+        override = os.getenv("FLAGFFT_MUSA_3D_PACK")
+        if override is not None and override != "auto":
+            if override not in {"1", "2", "4", "8"}:
+                raise ValueError("FLAGFFT_MUSA_3D_PACK must be 1, 2, 4 or 8")
+            target_pack = int(override)
+    if _hcu_backend_active():
+        if force_full_smem:
+            target_pack = 8
+        override = os.getenv("FLAGFFT_HCU_3D_PACK")
+        if override is not None and override != "auto":
+            if override not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError("FLAGFFT_HCU_3D_PACK must be 1, 2, 4, 8, 16 or 32")
+            target_pack = int(override)
+        if pack_override is not None:
+            if pack_override not in {1, 2, 4, 8, 16, 32}:
+                raise ValueError("HCU final-axis pack must be 1, 2, 4, 8, 16 or 32")
+            target_pack = pack_override
+        if ((force_full_smem or os.getenv("FLAGFFT_HCU_3D_FULL_SMEM", "0") == "1")
+                and len(plan.factors) == 2):
+            # The normal 48 KiB budget preserves occupancy.  For this HCU
+            # two-stage experiment, admit a pack only when its exchange fits
+            # the queried 64 KiB dynamic shared-memory limit.  Three-stage
+            # leaves use more buffers; the ordinary budget remains in force.
+            smem_limit = profile.shared_budget(64 * 1024)
+            smem_pack = max(
+                (pack for pack in (1, 2, 4, 8, 16, 32)
+                 if lane_block_for((plan.smem_size + (1 if pack >= 4 else 0)) * pack)
+                 * 2 * _real_element_bytes(plan.dtype) <= smem_limit),
+                default=1,
+            )
+    return _floor_power_of_two(max(1, min(target_pack, smem_pack)))
 
 
 def _mthreads_small_mixed_leaf(plan: LeafPlan) -> bool:
@@ -621,6 +777,13 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     launchable shared-memory limit.
     """
     override = _maca_knob("INNER_PACK", "")
+    if (maca_1d_batch_default_enabled() and plan is not None
+            and _is_double_dtype(plan.dtype)
+            and "FLAGFFT_MACA_INNER_PACK" not in os.environ
+            and resource_default("INNER_PACK") is None):
+        # The measured FP64 register exchange uses the normal resource-derived
+        # pack, while the P8 default is qualified only for FP32 leaves.
+        override = ""
     # An explicit number is an experiment setting, but it still goes through
     # the hard launchable shared-memory limit.
     if override not in {"", "auto"}:
@@ -672,6 +835,8 @@ def _four_step_col_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
+        return 1
     if _portable_leaf_backend_active():
         return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
@@ -700,6 +865,8 @@ def _four_step_row_inner_pack_for(
     dtype: str = "complex64",
     plan: LeafPlan | None = None,
 ) -> int:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
+        return 1
     if _portable_leaf_backend_active():
         return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
@@ -735,7 +902,12 @@ def _four_step_row_inner_pack_for(
     return 1
 
 
-def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
+def _bounded_inner_pack(
+    pack: int,
+    plan: LeafPlan | None,
+    *,
+    extra_smem_elements: int = 1,
+) -> int:
     profile = current_profile()
     if (
         plan is None
@@ -746,7 +918,7 @@ def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
     # A two-stage TLE leaf writes only smem_b; smem_a is unused. Keep this
     # tighter bound opt-in until the wider packs have been measured on IX.
     buffers = 4
-    padded_elements = plan.smem_size + 1
+    padded_elements = plan.smem_size + extra_smem_elements
     if (_ix_backend_active() and _maca_knob("TLE_INNER_PACK")
             and not _portable_leaf_backend_active() and len(plan.factors) == 2):
         buffers = 2
@@ -760,13 +932,36 @@ def _bounded_inner_pack(pack: int, plan: LeafPlan | None) -> int:
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
-    return _bounded_inner_pack(_four_step_col_inner_pack_for(n1, n2, dtype, plan), plan)
+    # HCU's FP32 1024-point leaves benefit from using the exact unpadded
+    # four-step stride: pack four fills 64 KiB and improved the measured
+    # large C2R cases.  Keep the generic 64-byte margin for FP64; pack two
+    # also fills all 64 KiB there, but the measured n=524288 case regressed
+    # from 0.32x to 0.26x as LDS residency fell.
+    extra_smem_elements = (
+        0
+        if current_profile().backend == "hcu" and not _is_double_dtype(dtype)
+        else 1
+    )
+    return _bounded_inner_pack(
+        _four_step_col_inner_pack_for(n1, n2, dtype, plan),
+        plan,
+        extra_smem_elements=extra_smem_elements,
+    )
 
 
 def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
-    return _bounded_inner_pack(_four_step_row_inner_pack_for(n1, n2, dtype, plan), plan)
+    extra_smem_elements = (
+        0
+        if current_profile().backend == "hcu" and not _is_double_dtype(dtype)
+        else 1
+    )
+    return _bounded_inner_pack(
+        _four_step_row_inner_pack_for(n1, n2, dtype, plan),
+        plan,
+        extra_smem_elements=extra_smem_elements,
+    )
 
 
 def use_tle_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") -> bool:
@@ -915,8 +1110,10 @@ def _maca_backend_active() -> bool:
 
 
 def _portable_leaf_backend_active() -> bool:
-    """Select the tensor-exchange leaf implementation for IX experiments."""
+    """Select tensor exchange when the backend's TLE shared memory is unavailable."""
     return _maca_backend_active() or (
+        _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1"
+    ) or (
         _ix_backend_active() and _maca_knob("PORTABLE_LEAF") == "1"
     )
 

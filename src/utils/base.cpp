@@ -124,12 +124,26 @@ std::string kernel_kind_name(KernelKind kind) {
       return "leaf_strided";
     case KernelKind::LeafPermutedStore:
       return "leaf_permuted_store";
+    case KernelKind::LeafStridedPermutedStore:
+      return "leaf_strided_permuted_store";
     case KernelKind::LeafR2C:
       return "leaf_r2c";
+    case KernelKind::LeafR2CPermutedStore:
+      return "leaf_r2c_permuted_store";
+    case KernelKind::LeafPackedR2C:
+      return "leaf_packed_r2c";
     case KernelKind::LeafC2R:
       return "leaf_c2r";
+    case KernelKind::LeafPackedC2R:
+      return "leaf_packed_c2r";
     case KernelKind::LeafBluestein:
       return "leaf_bluestein";
+    case KernelKind::LeafRaderFull:
+      return "leaf_rader_full";
+    case KernelKind::LeafRaderPrepare:
+      return "leaf_rader_prepare";
+    case KernelKind::LeafRaderFinish:
+      return "leaf_rader_finish";
     case KernelKind::LeafBluesteinPrepare:
       return "leaf_bluestein_prepare";
     case KernelKind::LeafBluesteinFinish:
@@ -144,6 +158,16 @@ std::string kernel_kind_name(KernelKind kind) {
       return "direct_dft";
     case KernelKind::DirectDftStrided:
       return "direct_dft_strided";
+    case KernelKind::DirectDftCube:
+      return "direct_dft_cube";
+    case KernelKind::DirectDftCubeTransposed:
+      return "direct_dft_cube_transposed";
+    case KernelKind::DirectDftCubeStrided:
+      return "direct_dft_cube_strided";
+    case KernelKind::DirectDftCube2DRow:
+      return "direct_dft_cube_2d_row";
+    case KernelKind::DirectDftCube2DCol:
+      return "direct_dft_cube_2d_col";
     case KernelKind::DirectDftR2C:
       return "direct_dft_r2c";
     case KernelKind::DirectDftC2R:
@@ -198,6 +222,24 @@ std::string kernel_kind_name(KernelKind kind) {
       return "tiled_transpose";
     case KernelKind::Transpose3D:
       return "transpose3d";
+    case KernelKind::Fused16Plane:
+      return "fused_16_plane";
+    case KernelKind::FusedRectPlane:
+      return "fused_rect_plane";
+    case KernelKind::Fused32Plane:
+      return "fused_32_plane";
+    case KernelKind::Fused16RealPlane:
+      return "fused_16_real_plane";
+    case KernelKind::Fused32RealPlane:
+      return "fused_32_real_plane";
+    case KernelKind::Fused16Cube:
+      return "fused_16_cube";
+    case KernelKind::Fused16RealCube:
+      return "fused_16_real_cube";
+    case KernelKind::Fused32Column:
+      return "fused_32_column";
+    case KernelKind::Fused2D:
+      return "fused_2d";
   }
   return "unknown";
 }

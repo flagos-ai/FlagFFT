@@ -17,6 +17,7 @@ from __future__ import annotations
 """Mixed-radix leaf generation: codelet emitters, stage/route emission, thread-local leaves and I/O builders."""
 
 import math
+import os
 from typing import Literal
 
 from .kernels_common import (
@@ -26,8 +27,11 @@ from .kernels_common import (
     _TLE_SMEM_SWIZZLE_SHIFT,
     LeafIoMode,
     LeafPlan,
+    _dtype_suffix,
     _is_double_dtype,
+    _hcu_backend_active,
     _maca_backend_active,
+    _mthreads_backend_active,
     _ix_backend_active,
     _portable_leaf_backend_active,
     _maca_knob,
@@ -76,7 +80,7 @@ _COMPLEX_PAIR_OFFSETS = "_fft_pair_offsets"
 
 
 def _portable_complex_vector_io() -> bool:
-    """Whether to vectorize complex IO with a ``[..., 2]`` block.
+    """Whether to vectorize complex IO on MACA.
 
     The scalar form issues two 4-byte accesses per complex element, which is
     limited by load/store throughput rather than DRAM.  A block whose
@@ -84,7 +88,17 @@ def _portable_complex_vector_io() -> bool:
     natively, without the ``ld.global.v2`` inline asm that the MetaX plugin
     cannot compile.
     """
-    return _maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"}
+    return (
+        (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
+    )
+
+
+def _packed_maca_fp32_complex_io(dtype: str) -> bool:
+    return (
+        dtype == "complex64"
+        and _maca_backend_active()
+        and _maca_knob("VEC_IO", "0") == "packed"
+    )
 
 
 def _emit_vectorized_complex_load(
@@ -94,6 +108,15 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
+    if _packed_maca_fp32_complex_io(dtype):
+        pair = "_packed_pair_" + dest.split(",")[0].strip()
+        real, imag = (name.strip() for name in dest.split(","))
+        return [
+            f"{indent}{pair} = tl.load(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), "
+            f"mask={mask}, other=0)",
+            f"{indent}{real} = tl.cast(tl.cast({pair}, tl.uint32), tl.float32, bitcast=True)",
+            f"{indent}{imag} = tl.cast(tl.cast({pair} >> 32, tl.uint32), tl.float32, bitcast=True)",
+        ]
     if _portable_complex_vector_io():
         pair = "_pair_" + dest.split(",")[0].strip()
         return [
@@ -127,6 +150,14 @@ def _emit_vectorized_complex_store(
     mask: str,
     dtype: str,
 ) -> list[str]:
+    if _packed_maca_fp32_complex_io(dtype):
+        pair = "_packed_store_" + r_name
+        return [
+            f"{indent}{pair} = tl.cast(tl.cast({r_name}, tl.uint32, bitcast=True), tl.uint64) "
+            f"| (tl.cast(tl.cast({i_name}, tl.uint32, bitcast=True), tl.uint64) << 32)",
+            f"{indent}tl.store(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), {pair}, "
+            f"mask={mask})",
+        ]
     if _portable_complex_vector_io():
         return [
             f"{indent}tl.store(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
@@ -435,12 +466,72 @@ def _emit_lane_output_base(
     return lines
 
 
+def _emit_grouped_maca_fp32_permuted_store(
+    indent: str,
+    factors: tuple[int, ...],
+    radix: int,
+    pack: int,
+    lane_block: int,
+) -> list[str]:
+    """Transpose a full final radix group once for the MACA FP32 cube path."""
+    lines: list[str] = []
+    pairs = []
+    for digit in range(radix):
+        pair_name = f"perm_group_pair_flat{digit}"
+        pairs.append(pair_name)
+        lines.append(
+            f"{indent}{pair_name} = "
+            f"tl.cast(tl.cast(r{digit}, tl.uint32, bitcast=True), tl.uint64) "
+            f"| (tl.cast(tl.cast(i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)"
+        )
+
+    level = pairs
+    level_id = 0
+    join_stride = radix // 2
+    while join_stride > 0:
+        next_level = []
+        for pair_index in range(join_stride):
+            joined = f"perm_group_join_{level_id}_{pair_index}"
+            lines.append(
+                f"{indent}{joined} = tl.join({level[pair_index]}, "
+                f"{level[pair_index + join_stride]})"
+            )
+            next_level.append(joined)
+        level = next_level
+        level_id += 1
+        join_stride //= 2
+
+    lines.extend(
+        [
+            f"{indent}perm_group_pair_raw = tl.reshape({level[0]}, "
+            f"({pack}, {lane_block * radix}))",
+            f"{indent}perm_group_pair_out = tl.trans(perm_group_pair_raw)",
+            f"{indent}perm_group_digit = tl.arange(0, {radix})",
+            f"{indent}perm_group_base = tl.reshape(output_base_lane[:, None] + "
+            f"perm_group_digit[None, :] * {math.prod(factors[:-1])}, "
+            f"({lane_block * radix},))",
+            f"{indent}perm_group_addr = perm_group_base[:, None] * "
+            "perm_k_stride + perm_gbase[None, :]",
+            f"{indent}perm_group_mask = tl.reshape(tl.broadcast_to("
+            f"perm_store_mask[:, None, :], ({lane_block}, {radix}, {pack})), "
+            f"({lane_block * radix}, {pack}))",
+            f"{indent}perm_group_ptr = tl.cast(out_ptr + perm_group_addr * 2, "
+            "tl.pointer_type(tl.uint64))",
+            f"{indent}tl.store(perm_group_ptr, perm_group_pair_out, "
+            "mask=perm_group_mask)",
+        ]
+    )
+    return lines
+
+
 def _emit_permuted_store(
     indent: str,
     digit: int,
     factors: tuple[int, ...],
     pack: int,
     lane_block: int,
+    dtype: str,
+    compact_length: int | None = None,
 ) -> list[str]:
     """Store one radix digit with the batch axis made contiguous.
 
@@ -460,16 +551,85 @@ def _emit_permuted_store(
         # that singleton layout with the wrong pointer lanes.  The ordinary
         # one-dimensional tensor is both semantically exact and cheaper.
         address = f"{base} * perm_k_stride + perm_gbase_scalar"
+        mask = "lane_mask"
+        if compact_length is not None:
+            mask = f"lane_mask & ({base} < {compact_length})"
+        if _packed_maca_fp32_complex_io(dtype):
+            return [
+                f"{indent}perm_addr{digit} = {address}",
+                f"{indent}perm_pair{digit} = "
+                f"tl.cast(tl.cast(r{digit}, tl.uint32, bitcast=True), tl.uint64) "
+                f"| (tl.cast(tl.cast(i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)",
+                f"{indent}perm_ptr{digit} = tl.cast(out_ptr + perm_addr{digit} * 2, "
+                "tl.pointer_type(tl.uint64))",
+                f"{indent}tl.store(perm_ptr{digit}, perm_pair{digit}, mask={mask})",
+            ]
+        mask = ("lane_mask" if compact_length is None else
+                f"(lane_mask & ({base} < {compact_length}))")
         return [
             f"{indent}perm_addr{digit} = {address}",
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, "
-            f"mask=lane_mask)",
+            f"mask={mask})",
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
-            f"mask=lane_mask)",
+            f"mask={mask})",
+        ]
+    if _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
+        # Keep the register tile in its original (batch, lane) layout.  This
+        # screens whether IX's lowering of tl.trans costs more than scalar
+        # stores for this kernel; the row-to-output mapping is unchanged.
+        address = f"(output_base + {offset}) * perm_k_stride + perm_gbase_vector"
+        return [
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2, r{digit}, mask=lane_mask)",
+            f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, mask=lane_mask)",
         ]
     else:
         address = f"{base}[:, None] * perm_k_stride + perm_gbase[None, :]"
-        mask = "perm_store_mask"
+        mask = ("perm_store_mask" if compact_length is None else
+                f"(perm_store_mask & ({base} < {compact_length})[:, None])")
+    pair_store = (
+        (_mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1")
+        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1") == "1")
+    )
+    if pair_store:
+        return [
+            f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
+            f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}pair{digit} = tl.join(zr{digit}, zi{digit})",
+            f"{indent}pair_addr{digit} = perm_addr{digit}[:, :, None] * 2 + "
+            "tl.arange(0, 2)[None, None, :]",
+            f"{indent}tl.store(out_ptr + pair_addr{digit}, pair{digit}, "
+            f"mask={mask}[:, :, None])",
+        ]
+    if _packed_maca_fp32_complex_io(dtype) and math.prod(factors) == 256:
+        # The cube final-store path was paying for separate shared-layout
+        # conversions of real and imaginary values before combining them.
+        # Pack the complex bits per thread first, then transpose one 64-bit
+        # tile so the cross-lane conversion moves half as many elements.
+        return [
+            f"{indent}perm_pair_flat{digit} = "
+            f"tl.cast(tl.cast(r{digit}, tl.uint32, bitcast=True), tl.uint64) "
+            f"| (tl.cast(tl.cast(i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)",
+            f"{indent}perm_pair{digit} = tl.trans(tl.reshape(perm_pair_flat{digit}, "
+            f"({pack}, {lane_block})))",
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}perm_ptr{digit} = tl.cast(out_ptr + perm_addr{digit} * 2, "
+            "tl.pointer_type(tl.uint64))",
+            f"{indent}tl.store(perm_ptr{digit}, perm_pair{digit}, mask={mask})",
+        ]
+    if _packed_maca_fp32_complex_io(dtype):
+        return [
+            f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
+            f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}perm_pair{digit} = "
+            f"tl.cast(tl.cast(zr{digit}, tl.uint32, bitcast=True), tl.uint64) "
+            f"| (tl.cast(tl.cast(zi{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)",
+            f"{indent}perm_ptr{digit} = tl.cast(out_ptr + perm_addr{digit} * 2, "
+            "tl.pointer_type(tl.uint64))",
+            f"{indent}tl.store(perm_ptr{digit}, perm_pair{digit}, mask={mask})",
+        ]
     return [
         f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
         f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
@@ -1025,6 +1185,7 @@ def _emit_stage_block(
     portable_exchange: bool = False,
     exchange_size: int = 0,
     exchange_slot_stride: int = 0,
+    bluestein_real_kind: str = "",
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1034,7 +1195,39 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
-    smem_swizzle = fuse_twiddle_into_row or (
+    hcu_swizzle_override = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE")
+    hcu_swizzle_default = dtype == "complex128" and n >= 64
+    hcu_swizzle_enabled = (
+        hcu_swizzle_default
+        if hcu_swizzle_override in (None, "auto")
+        else hcu_swizzle_override == "1"
+    )
+    hcu_smem_swizzle = (
+        _hcu_backend_active()
+        and not portable_exchange
+        and n & (n - 1) == 0
+        and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c"}
+        and hcu_swizzle_enabled
+    )
+    hcu_r2c_leaf_swizzle = (
+        _hcu_backend_active()
+        and not portable_exchange
+        and n >= 64
+        and n & (n - 1) == 0
+        and io_mode == "contiguous_r2c"
+        and dtype == "complex128"
+        # The default covers only the profiled 256-point FP64 R2C leaf.
+        # Other lengths remain available for explicit screening via =1.
+        and (
+            os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "auto") == "1"
+            or (
+                os.getenv("FLAGFFT_HCU_3D_R2C_LEAF_SWIZZLE", "auto") == "auto"
+                and n == 256
+            )
+        )
+    )
+    hcu_smem_swizzle = hcu_smem_swizzle or hcu_r2c_leaf_swizzle
+    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
@@ -1048,6 +1241,10 @@ def _emit_stage_block(
         swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
         if not 1 <= swizzle_shift <= 8:
             raise ValueError("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
+    if hcu_smem_swizzle:
+        swizzle_shift = int(os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT", "5"))
+        if not 1 <= swizzle_shift <= 8:
+            raise ValueError("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
     is_last = stage == len(factors) - 1
     source_buffer = (
         None
@@ -1078,7 +1275,10 @@ def _emit_stage_block(
     lines: list[str] = []
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
-    vector_io_allowed = not _non_nvidia_backend_active() or _portable_complex_vector_io()
+    vector_io_allowed = not _non_nvidia_backend_active() or (
+        _portable_complex_vector_io()
+        and (_maca_knob("VEC_IO", "0") != "packed" or dtype == "complex64")
+    )
     vectorized_four_step_complex_io = (
         io_mode
         in {
@@ -1093,7 +1293,11 @@ def _emit_stage_block(
     vectorized_complex_io = (
         io_mode in {"contiguous", "contiguous_c2r", "permuted_store"}
         or vectorized_four_step_complex_io
-    ) and vector_io_allowed
+    ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
+    hcu_u64_load = (
+        _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
+        and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1") == "1"
+    )
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
     vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
@@ -1131,10 +1335,14 @@ def _emit_stage_block(
         lines.extend(
             _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
         )
-        if io_mode == "permuted_store":
+        if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
             active_lanes = max(stage_lanes) if stage_lanes is not None else lanes
             lines.append(f"{indent}lane_only = tl.arange(0, {lane_block})")
-            lines.append(f"{indent}perm_lane_mask = lane_only < {active_lanes}")
+            # The last stage may use fewer lanes than an earlier stage. The
+            # packed store reshapes its lanes into (lane, batch_slot), so its
+            # mask must match this stage's valid lanes or padded lanes can
+            # overwrite other transforms' output addresses.
+            lines.append(f"{indent}perm_lane_mask = lane_only < {current_lanes}")
             lines.append(
                 f"{indent}lane_only = tl.where(perm_lane_mask, lane_only, 0)"
             )
@@ -1163,7 +1371,20 @@ def _emit_stage_block(
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
             if io_mode in {"contiguous", "permuted_store"}:
-                if vectorized_complex_io:
+                if hcu_u64_load:
+                    lines.append(
+                        f"{indent}packed{j} = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.uint64)) "
+                        f"+ batch_base + in{j}, mask=lane_mask, other=0)"
+                    )
+                    lines.append(
+                        f"{indent}r{j} = tl.cast(tl.cast(packed{j} & 0xffffffff, tl.uint32), "
+                        "tl.float32, bitcast=True)"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.cast(tl.cast(packed{j} >> 32, tl.uint32), "
+                        "tl.float32, bitcast=True)"
+                    )
+                elif vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_load(
                             indent,
@@ -1182,20 +1403,53 @@ def _emit_stage_block(
                         f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, "
                         f"mask=lane_mask, other={zero})"
                     )
-            elif io_mode == "strided":
+            elif io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
                 lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2, "
+                    f"{indent}r{j} = tl.load(in_ptr + (batch_base + in{j} * {stride}) * 2, "
                     f"mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j} * outer_stride) * 2 + 1, "
+                    f"{indent}i{j} = tl.load(in_ptr + (batch_base + in{j} * {stride}) * 2 + 1, "
                     f"mask=lane_mask, other={zero})"
                 )
-            elif io_mode == "contiguous_r2c":
+            elif io_mode in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c"}:
                 lines.append(
                     f"{indent}r{j} = tl.load(in_ptr + input_batch_base + in{j}, mask=lane_mask, other={zero})"
                 )
                 lines.append(f"{indent}i{j} = r{j} * 0.0")
+            elif io_mode == "packed_r2c":
+                lines.append(
+                    f"{indent}r{j} = tl.load(in_ptr + input_batch_base + 2 * in{j}, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}i{j} = tl.load(in_ptr + input_batch_base + 2 * in{j} + 1, mask=lane_mask, other={zero})"
+                )
+            elif io_mode == "packed_c2r":
+                lines.extend(
+                    [
+                        f"{indent}packed_k{j} = tl.where(lane_mask, in{j}, 0)",
+                        f"{indent}packed_q{j} = {n} - packed_k{j}",
+                        f"{indent}packed_x_ptr{j} = in_ptr + (input_batch_base + packed_k{j}) * 2",
+                        f"{indent}packed_q_ptr{j} = in_ptr + (input_batch_base + packed_q{j}) * 2",
+                        f"{indent}packed_xr{j} = tl.load(packed_x_ptr{j}, mask=lane_mask, other={zero})",
+                        f"{indent}packed_xi{j} = tl.load(packed_x_ptr{j} + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_qr{j} = tl.load(packed_q_ptr{j}, mask=lane_mask, other={zero})",
+                        f"{indent}packed_qi{j} = -tl.load(packed_q_ptr{j} + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_wr{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2, mask=lane_mask, other={zero})",
+                        f"{indent}packed_wi{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2 + 1, mask=lane_mask, other={zero})",
+                        f"{indent}packed_sum_r{j} = packed_xr{j} + packed_qr{j}",
+                        f"{indent}packed_sum_i{j} = packed_xi{j} + packed_qi{j}",
+                        f"{indent}packed_diff_r{j} = packed_xr{j} - packed_qr{j}",
+                        f"{indent}packed_diff_i{j} = packed_xi{j} - packed_qi{j}",
+                        f"{indent}packed_prod_r{j} = packed_diff_r{j} * packed_wr{j} + "
+                        f"packed_diff_i{j} * packed_wi{j}",
+                        f"{indent}packed_prod_i{j} = packed_diff_i{j} * packed_wr{j} - "
+                        f"packed_diff_r{j} * packed_wi{j}",
+                        f"{indent}r{j} = packed_sum_r{j} - packed_prod_i{j}",
+                        f"{indent}i{j} = packed_sum_i{j} + packed_prod_r{j}",
+                    ]
+                )
             elif io_mode == "contiguous_c2r":
                 half_n = n // 2 + 1
                 nyquist_guard = f" | (in{j} == {n // 2})" if n % 2 == 0 else ""
@@ -1259,20 +1513,50 @@ def _emit_stage_block(
                     f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})"
                 )
                 lines.append(f"{indent}i{j} = -point_i{j}")
+            elif io_mode == "rader_prepare_leaf":
+                lines.append(f"{indent}inv_idx{j} = tl.where(in{j} == 0, 0, {n} - in{j})")
+                lines.append(
+                    f"{indent}src_idx{j} = tl.load(idx_ptr + inv_idx{j}, mask=lane_mask, other=0)"
+                )
+                lines.append(
+                    f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + src_idx{j}) * 2"
+                )
+                lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})")
+                lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})")
+            elif io_mode == "rader_finish_leaf":
+                lines.append(
+                    f"{indent}ar{j} = tl.load(in_ptr + (batch_base + in{j}) * 2, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}ai{j} = tl.load(in_ptr + (batch_base + in{j}) * 2 + 1, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}br{j} = tl.load(b_fft_ptr + in{j} * 2, mask=lane_mask, other={zero})"
+                )
+                lines.append(
+                    f"{indent}bi{j} = tl.load(b_fft_ptr + in{j} * 2 + 1, mask=lane_mask, other={zero})"
+                )
+                lines.append(f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})")
+                lines.append(f"{indent}i{j} = -point_i{j}")
             elif io_mode == "bluestein_full_leaf":
                 if bluestein_pass == 0:
                     lines.append(
                         f"{indent}prime_mask{j} = lane_mask & (in{j} < {prime_n})"
                     )
-                    lines.append(
-                        f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + in{j}) * 2"
-                    )
-                    lines.append(
-                        f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})"
-                    )
+                    if bluestein_real_kind == "r2c":
+                        lines.append(f"{indent}src_ptr{j} = in_ptr + current_batch * {prime_n} + in{j}")
+                        lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                        lines.append(f"{indent}i{j} = {zero}")
+                    elif bluestein_real_kind == "c2r":
+                        lines.append(f"{indent}compact_idx{j} = tl.minimum(in{j}, {prime_n} - in{j})")
+                        lines.append(f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n // 2 + 1} + compact_idx{j}) * 2")
+                        lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                        lines.append(f"{indent}loaded_i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
+                        lines.append(f"{indent}i{j} = tl.where(in{j} == 0, 0.0, tl.where(in{j} <= {prime_n // 2}, loaded_i{j}, -loaded_i{j}))")
+                    else:
+                        lines.append(f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + in{j}) * 2")
+                        lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                        lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
                     lines.append(
                         f"{indent}chirp_r{j} = tl.load(chirp_ptr + in{j} * 2, mask=prime_mask{j}, other={zero})"
                     )
@@ -1298,6 +1582,32 @@ def _emit_stage_block(
                             portable_exchange,
                         )
                     )
+            elif io_mode == "rader_full_leaf":
+                if bluestein_pass == 0:
+                    lines.append(f"{indent}inv_idx{j} = tl.where(in{j} == 0, 0, {n} - in{j})")
+                    lines.append(
+                        f"{indent}src_idx{j} = tl.load(idx_ptr + inv_idx{j}, mask=lane_mask, other=0)"
+                    )
+                    lines.append(
+                        f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + src_idx{j}) * 2"
+                    )
+                    lines.append(
+                        f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
+                    )
+                else:
+                    intermediate_index = f"in{j}"
+                    if smem_pack > 1:
+                        lines.append(f"{indent}intermediate_in{j} = in{j} + smem_offset")
+                        intermediate_index = f"intermediate_in{j}"
+                    lines.extend(
+                        _emit_exchange_load(
+                            indent, bluestein_intermediate_buffer,
+                            intermediate_index, j, portable_exchange,
+                        )
+                    )
             elif io_mode == "bluestein_four_step_prepare_row":
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
@@ -1305,15 +1615,20 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}prime_mask{j} = lane_mask & (src_idx{j} < {prime_n})"
                 )
-                lines.append(
-                    f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n} + src_idx{j}) * 2"
-                )
-                lines.append(
-                    f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})"
-                )
+                if bluestein_real_kind == "r2c":
+                    lines.append(f"{indent}src_ptr{j} = in_ptr + four_step_batch * {prime_n} + src_idx{j}")
+                    lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                    lines.append(f"{indent}i{j} = {zero}")
+                elif bluestein_real_kind == "c2r":
+                    lines.append(f"{indent}compact_idx{j} = tl.minimum(src_idx{j}, {prime_n} - src_idx{j})")
+                    lines.append(f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n // 2 + 1} + compact_idx{j}) * 2")
+                    lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                    lines.append(f"{indent}loaded_i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
+                    lines.append(f"{indent}i{j} = tl.where(src_idx{j} == 0, 0.0, tl.where(src_idx{j} <= {prime_n // 2}, loaded_i{j}, -loaded_i{j}))")
+                else:
+                    lines.append(f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n} + src_idx{j}) * 2")
+                    lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
+                    lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
                 lines.append(
                     f"{indent}chirp_r{j} = tl.load(chirp_ptr + src_idx{j} * 2, mask=prime_mask{j}, other={zero})"
                 )
@@ -1568,15 +1883,46 @@ def _emit_stage_block(
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
 
+    grouped_maca_cube_store = (
+        is_last
+        and io_mode == "permuted_store"
+        and _packed_maca_fp32_complex_io(dtype)
+        and math.prod(factors) == 256
+        and radix in {2, 4, 8, 16, 32}
+        and smem_pack > 1
+    )
+    if grouped_maca_cube_store:
+        lines.extend(
+            _emit_grouped_maca_fp32_permuted_store(
+                indent, factors, radix, smem_pack, lane_block
+            )
+        )
+
     for j in range(radix):
         if is_last:
-            if io_mode == "permuted_store":
+            if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
+                if grouped_maca_cube_store:
+                    continue
+                compact_length = (
+                    n // 2 + 1
+                    if io_mode in {"permuted_r2c", "permuted_store_r2c"}
+                    else None
+                )
                 lines.extend(
-                    _emit_permuted_store(indent, j, factors, smem_pack, lane_block)
+                    _emit_permuted_store(
+                        indent,
+                        j,
+                        factors,
+                        smem_pack,
+                        lane_block,
+                        dtype,
+                        compact_length=compact_length,
+                    )
                 )
                 continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
-            if io_mode in {"contiguous", "strided", "bluestein_prepare_leaf"}:
+            if io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
+                           "rader_prepare_leaf"}:
                 if io_mode == "strided":
                     lines.append(
                         f"{indent}tl.store(out_ptr + (batch_base + out_idx{j} * outer_stride) * 2, "
@@ -1607,6 +1953,26 @@ def _emit_stage_block(
                             f"{indent}tl.store(out_ptr + (batch_base + out_idx{j}) * 2 + 1, "
                             f"i{j}, mask=lane_mask)"
                         )
+            elif io_mode == "permuted_r2c":
+                half_n = n // 2 + 1
+                offset = j * math.prod(factors[:len(factors) - 1])
+                base = "output_base_lane" if offset == 0 else f"(output_base_lane + {offset})"
+                if smem_pack == 1:
+                    lines.append(f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {half_n})")
+                    lines.append(
+                        f"{indent}dst_idx{j} = {base} * output_distance + perm_gbase_scalar"
+                    )
+                    lines.append(f"{indent}tl.store(out_ptr + dst_idx{j} * 2, r{j}, mask=compact_mask{j})")
+                    lines.append(f"{indent}tl.store(out_ptr + dst_idx{j} * 2 + 1, i{j}, mask=compact_mask{j})")
+                else:
+                    lines.append(f"{indent}compact_mask{j} = perm_store_mask & ({base} < {half_n})[:, None]")
+                    lines.append(f"{indent}zr{j} = tl.trans(tl.reshape(r{j}, ({smem_pack}, {lane_block})))")
+                    lines.append(f"{indent}zi{j} = tl.trans(tl.reshape(i{j}, ({smem_pack}, {lane_block})))")
+                    lines.append(
+                        f"{indent}dst_idx{j} = {base}[:, None] * output_distance + perm_gbase[None, :]"
+                    )
+                    lines.append(f"{indent}tl.store(out_ptr + dst_idx{j} * 2, zr{j}, mask=compact_mask{j})")
+                    lines.append(f"{indent}tl.store(out_ptr + dst_idx{j} * 2 + 1, zi{j}, mask=compact_mask{j})")
             elif io_mode == "contiguous_r2c":
                 lines.append(
                     f"{indent}compact_mask{j} = lane_mask & (out_idx{j} < {n // 2 + 1})"
@@ -1620,6 +1986,10 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
                 )
+            elif io_mode == "packed_r2c":
+                lines.extend(_emit_exchange_store(
+                    indent, "packed", f"out_idx{j}", j, f"r{j}", f"i{j}", portable_exchange
+                ))
             elif io_mode == "contiguous_c2r":
                 lines.append(
                     f"{indent}tl.store(out_ptr + output_batch_base + out_idx{j}, r{j}, mask=lane_mask)"
@@ -1647,6 +2017,47 @@ def _emit_stage_block(
                 )
                 lines.append(
                     f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})"
+                )
+            elif io_mode == "rader_finish_leaf":
+                lines.append(
+                    f"{indent}dst_idx{j} = tl.load(idx_ptr + out_idx{j}, mask=lane_mask, other=0)"
+                )
+                lines.append(
+                    f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + dst_idx{j}) * 2"
+                )
+                lines.append(
+                    f"{indent}x0_ptr{j} = original_ptr + current_batch * {prime_n} * 2"
+                )
+                lines.append(
+                    f"{indent}x0r{j} = tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero})"
+                )
+                lines.append(
+                    f"{indent}x0i{j} = tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j}, x0r{j} + r{j} / {n}, mask=lane_mask)"
+                )
+                lines.append(
+                    f"{indent}tl.store(dst_ptr{j} + 1, x0i{j} - i{j} / {n}, mask=lane_mask)"
+                )
+                lines.append(f"{indent}dc_mask{j} = lane_mask & (out_idx{j} == 0)")
+                lines.append(
+                    f"{indent}a0_ptr{j} = in_ptr + batch_base * 2"
+                )
+                lines.append(
+                    f"{indent}dc_ptr{j} = out_ptr + current_batch * {prime_n} * 2"
+                )
+                lines.append(
+                    f"{indent}a0r{j} = tl.load(a0_ptr{j}, mask=current_batch < nbatch, other={zero})"
+                )
+                lines.append(
+                    f"{indent}a0i{j} = tl.load(a0_ptr{j} + 1, mask=current_batch < nbatch, other={zero})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dc_ptr{j} + out_idx{j}, x0r{j} + a0r{j}, mask=dc_mask{j})"
+                )
+                lines.append(
+                    f"{indent}tl.store(dc_ptr{j} + out_idx{j} + 1, x0i{j} + a0i{j}, mask=dc_mask{j})"
                 )
             elif io_mode == "bluestein_full_leaf":
                 if bluestein_pass == 0:
@@ -1677,9 +2088,8 @@ def _emit_stage_block(
                         )
                     )
                 else:
-                    lines.append(
-                        f"{indent}prime_mask{j} = lane_mask & (out_idx{j} < {prime_n})"
-                    )
+                    output_length = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+                    lines.append(f"{indent}prime_mask{j} = lane_mask & (out_idx{j} < {output_length})")
                     lines.append(f"{indent}scaled_r{j} = r{j} / {n}")
                     lines.append(f"{indent}scaled_i{j} = -i{j} / {n}")
                     lines.append(
@@ -1691,22 +2101,71 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
                     )
+                    if bluestein_real_kind == "c2r":
+                        lines.append(f"{indent}dst_ptr{j} = out_ptr + current_batch * {prime_n} + out_idx{j}")
+                        lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                    else:
+                        output_distance = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+                        lines.append(f"{indent}dst_ptr{j} = out_ptr + (current_batch * {output_distance} + out_idx{j}) * 2")
+                        lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                        lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
+            elif io_mode == "rader_full_leaf":
+                if bluestein_pass == 0:
                     lines.append(
-                        f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + out_idx{j}) * 2"
+                        f"{indent}br{j} = tl.load(b_fft_ptr + out_idx{j} * 2, mask=lane_mask, other={zero})"
                     )
                     lines.append(
-                        f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})"
+                        f"{indent}bi{j} = tl.load(b_fft_ptr + out_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
                     )
                     lines.append(
-                        f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})"
+                        f"{indent}point_r{j}, point_i{j} = _cmul(r{j}, i{j}, br{j}, bi{j})"
+                    )
+                    intermediate_index = f"out_idx{j}"
+                    if smem_pack > 1:
+                        lines.append(f"{indent}intermediate_out{j} = out_idx{j} + smem_offset")
+                        intermediate_index = f"intermediate_out{j}"
+                    lines.extend(
+                        _emit_exchange_store(
+                            indent, bluestein_intermediate_buffer,
+                            intermediate_index, j, f"point_r{j}", f"-point_i{j}",
+                            portable_exchange,
+                        )
+                    )
+                    lines.append(f"{indent}dc_mask{j} = lane_mask & (out_idx{j} == 0)")
+                    lines.append(
+                        f"{indent}x0_ptr{j} = in_ptr + current_batch * {prime_n} * 2"
+                    )
+                    lines.append(
+                        f"{indent}dc_ptr{j} = out_ptr + current_batch * {prime_n} * 2"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(dc_ptr{j} + out_idx{j}, r{j} + tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(dc_ptr{j} + out_idx{j} + 1, i{j} + tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
+                    )
+                else:
+                    lines.append(
+                        f"{indent}dst_idx{j} = tl.load(idx_ptr + out_idx{j}, mask=lane_mask, other=0)"
+                    )
+                    lines.append(
+                        f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + dst_idx{j}) * 2"
+                    )
+                    lines.append(
+                        f"{indent}x0_ptr{j} = in_ptr + current_batch * {prime_n} * 2"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(dst_ptr{j}, tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero}) + r{j} / {n}, mask=lane_mask)"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(dst_ptr{j} + 1, tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}) - i{j} / {n}, mask=lane_mask)"
                     )
             elif io_mode == "bluestein_four_step_finish_col":
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
                 )
-                lines.append(
-                    f"{indent}prime_mask{j} = lane_mask & (dst_idx{j} < {prime_n})"
-                )
+                output_length = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+                lines.append(f"{indent}prime_mask{j} = lane_mask & (dst_idx{j} < {output_length})")
                 lines.append(
                     f"{indent}scaled_r{j} = r{j} / {four_step_n1 * four_step_n2}"
                 )
@@ -1722,15 +2181,14 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
                 )
-                lines.append(
-                    f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * {prime_n} + dst_idx{j}) * 2"
-                )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})"
-                )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})"
-                )
+                if bluestein_real_kind == "c2r":
+                    lines.append(f"{indent}dst_ptr{j} = out_ptr + four_step_batch * {prime_n} + dst_idx{j}")
+                    lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                else:
+                    output_distance = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+                    lines.append(f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * {output_distance} + dst_idx{j}) * 2")
+                    lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                    lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
             elif io_mode == "four_step_row_strided":
                 lines.append(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
@@ -1923,8 +2381,9 @@ def _emit_stage_block(
 
     if portable_exchange:
         buffer = (
+            "packed" if is_last and io_mode == "packed_r2c" else
             bluestein_intermediate_buffer
-            if is_last and io_mode == "bluestein_full_leaf" and bluestein_pass == 0
+            if is_last and io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 0
             else dest_buffer
         )
         if buffer is not None:
@@ -1975,16 +2434,28 @@ def _leaf_kernel_params_for_io(
     params = _leaf_kernel_params(
         plan, include_four_step_twiddle=include_four_step_twiddle
     )
+    if io_mode == "packed_r2c":
+        params.insert(2, "packed_twiddle_ptr")
+    elif io_mode == "packed_c2r":
+        params.insert(2, "packed_twiddle_ptr")
     if io_mode == "strided":
         params.append("outer_stride")
-    if io_mode == "permuted_store":
+    if io_mode in {"permuted_store", "strided_permuted_store"}:
         params.append("perm_span")
+    elif io_mode == "permuted_store_r2c":
+        params.extend(("input_distance", "perm_span"))
     if io_mode == "bluestein_prepare_leaf":
         params.insert(1, "chirp_ptr")
     elif io_mode == "bluestein_finish_leaf":
         params[1:1] = ["b_fft_ptr", "chirp_ptr"]
     elif io_mode == "bluestein_full_leaf":
         params[1:1] = ["b_fft_ptr", "chirp_ptr"]
+    elif io_mode == "rader_full_leaf":
+        params[1:1] = ["b_fft_ptr", "idx_ptr"]
+    elif io_mode == "rader_prepare_leaf":
+        params.insert(1, "idx_ptr")
+    elif io_mode == "rader_finish_leaf":
+        params[1:1] = ["b_fft_ptr", "idx_ptr", "original_ptr"]
     elif io_mode in {
         "bluestein_four_step_prepare_row",
         "bluestein_four_step_finish_col",
@@ -1994,6 +2465,9 @@ def _leaf_kernel_params_for_io(
         params.insert(1, "b_fft_ptr")
     if io_mode in {
         "contiguous_r2c",
+        "permuted_r2c",
+        "packed_r2c",
+        "packed_c2r",
         "contiguous_c2r",
         "four_step_real_row",
         "four_step_hermitian_row",
@@ -2001,6 +2475,8 @@ def _leaf_kernel_params_for_io(
         params.append("input_distance")
     if io_mode in {
         "contiguous_r2c",
+        "permuted_r2c",
+        "packed_r2c",
         "contiguous_c2r",
         "four_step_r2c_col",
         "four_step_c2r_col",
@@ -2008,6 +2484,8 @@ def _leaf_kernel_params_for_io(
         params.append("output_distance")
     if io_mode in {"four_step_row_strided", "four_step_col_strided"}:
         params.append("outer_stride")
+    if io_mode == "permuted_r2c":
+        params.append("perm_span")
     params.append("nbatch")
     return params
 
@@ -2485,7 +2963,13 @@ def _build_leaf_kernel_source_for_io(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
     perm_form: str = "outer",
+    hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
+    kernel_io_mode = io_mode
+    bluestein_real_kind = ""
+    if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
+        bluestein_real_kind = io_mode.rsplit("_", 1)[1]
+        io_mode = io_mode.rsplit("_", 1)[0]
     if _use_thread_local_mixed_leaf(
         plan,
         io_mode=io_mode,
@@ -2500,8 +2984,11 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
+    if io_mode == "packed_r2c" and not portable_exchange:
+        raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
+    inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
@@ -2517,17 +3004,42 @@ def _build_leaf_kernel_source_for_io(
         "contiguous",
         "strided",
         "permuted_store",
+        "strided_permuted_store",
+        "permuted_store_r2c",
         "contiguous_r2c",
+        "permuted_r2c",
+        "packed_r2c",
+        "packed_c2r",
         "contiguous_c2r",
         "bluestein_prepare_leaf",
         "bluestein_finish_leaf",
         "bluestein_full_leaf",
+        "rader_full_leaf",
+        "rader_prepare_leaf",
+        "rader_finish_leaf",
     }
-    if io_mode == "permuted_store":
-        batch_pack = permuted_store_batch_pack_for(plan)
+    if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
+        final_pack = None
+        if _hcu_backend_active():
+            pack_knob = {
+                "outer_first": "FLAGFFT_HCU_3D_FIRST_PACK",
+                "inner_middle": "FLAGFFT_HCU_3D_MIDDLE_PACK",
+                "inner_middle_c2r_cube": "FLAGFFT_HCU_3D_MIDDLE_PACK",
+                "outer_last": "FLAGFFT_HCU_3D_FINAL_PACK",
+            }.get(perm_form)
+            requested_pack = os.getenv(pack_knob, "auto") if pack_knob else "auto"
+            if requested_pack != "auto":
+                final_pack = int(requested_pack)
+            elif _hcu_backend_active() and perm_form == "inner_middle_c2r_cube":
+                final_pack = 8
+        batch_pack = permuted_store_batch_pack_for(
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+        )
     elif io_mode in contiguous_modes:
         batch_pack = contiguous_batch_pack_for(
-            plan, real_boundary=io_mode in {"contiguous_r2c", "contiguous_c2r"}
+            plan,
+            real_boundary=io_mode
+            in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"},
         )
     else:
         batch_pack = 1
@@ -2622,6 +3134,13 @@ def _build_leaf_kernel_source_for_io(
         )
     elif io_mode == "contiguous_r2c":
         kernel_name = f"r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "permuted_r2c":
+        perm_tag = f"_{perm_form}" if perm_form != "outer" else ""
+        kernel_name = f"r2c_permuted_store{perm_tag}_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "packed_r2c":
+        kernel_name = f"packed_r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "packed_c2r":
+        kernel_name = f"packed_c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
         kernel_name = f"c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_prepare_leaf":
@@ -2629,17 +3148,28 @@ def _build_leaf_kernel_source_for_io(
     elif io_mode == "bluestein_finish_leaf":
         kernel_name = f"bluestein_finish_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "bluestein_full_leaf":
-        kernel_name = f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
+        kernel_name = f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}{'_' + bluestein_real_kind if bluestein_real_kind else ''}"
+    elif io_mode == "rader_full_leaf":
+        kernel_name = f"rader_full_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "rader_prepare_leaf":
+        kernel_name = f"rader_prepare_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
+    elif io_mode == "rader_finish_leaf":
+        kernel_name = f"rader_finish_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode.startswith("bluestein_four_step_"):
         kernel_name = (
-            f"{io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
+            f"{kernel_io_mode}_fft_kernel_{suffix}_p{prime_n}_n{four_step_n1}_{four_step_n2}"
             f"_l{plan.lanes}_b{lane_block}"
         )
-    elif io_mode == "permuted_store":
+    elif io_mode in {"permuted_store", "strided_permuted_store"}:
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = (
             f"permuted_store_{perm_form}_{kernel_prefix}_kernel_{suffix}"
             f"_l{plan.lanes}_b{lane_block}"
+        )
+    elif io_mode == "permuted_store_r2c":
+        kernel_name = (
+            f"permuted_store_r2c_{perm_form}_{suffix}"
+            f"_l{plan.lanes}_b{lane_block}_{_dtype_suffix(plan.dtype)}"
         )
     else:
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
@@ -2676,22 +3206,23 @@ def _build_leaf_kernel_source_for_io(
             body.append("    current_batch = batch_id")
             body.append("    lane = lane_vec")
             body.append(f"    lane_mask = lane < {active_lanes}")
-            if io_mode == "permuted_store" and perm_form == "inner":
+            if io_mode in {"permuted_store", "strided_permuted_store"} and inner_perm_form:
                 # The packed path derives perm_base from pid below.  With one
                 # batch slot, pid already is the row index, but the common
                 # inner-form address equations still consume this name.
                 body.append("    perm_base = batch_id")
-            if io_mode == "strided":
-                body.append("    batch_index = current_batch // outer_stride")
+            if io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
+                body.append(f"    batch_index = current_batch // {stride}")
                 body.append(
-                    f"    batch_base = batch_index * ({n} * outer_stride) + "
-                    "(current_batch - batch_index * outer_stride)"
+                    f"    batch_base = batch_index * ({n} * {stride}) + "
+                    f"(current_batch - batch_index * {stride})"
                 )
         else:
             body.append(f"    batch_slot = lane_vec // {lane_block}")
             body.append(f"    lane = lane_vec - batch_slot * {lane_block}")
             body.append("    current_batch = batch_id + batch_slot")
-            if io_mode == "permuted_store" and perm_form == "inner":
+            if io_mode in {"permuted_store", "strided_permuted_store"} and inner_perm_form:
                 # This pass permutes an axis whose output position is scaled by
                 # the *other* cube dimension, so a block has to span that
                 # dimension rather than consecutive rows: its rows are strided
@@ -2705,28 +3236,30 @@ def _build_leaf_kernel_source_for_io(
             body.append(
                 f"    lane_mask = (lane < {active_lanes}) & (current_batch < nbatch)"
             )
-            if io_mode == "strided":
-                body.append("    batch_index = current_batch // outer_stride")
+            if io_mode in {"strided", "strided_permuted_store"}:
+                stride = "perm_span" if io_mode == "strided_permuted_store" else "outer_stride"
+                body.append(f"    batch_index = current_batch // {stride}")
                 body.append(
-                    f"    batch_base = batch_index * ({n} * outer_stride) + "
-                    "(current_batch - batch_index * outer_stride)"
+                    f"    batch_base = batch_index * ({n} * {stride}) + "
+                    f"(current_batch - batch_index * {stride})"
                 )
             else:
                 body.append(f"    batch_base = current_batch * {n}")
             body.append(f"    smem_offset = batch_slot * {smem_slot_stride}")
         if batch_pack == 1:
-            if io_mode != "strided":
+            if io_mode not in {"strided", "strided_permuted_store"}:
                 body.append(f"    batch_base = current_batch * {n}")
-        if io_mode in {"contiguous_r2c", "contiguous_c2r"}:
+        if io_mode in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"}:
             body.append("    input_batch_base = current_batch * input_distance")
+        if io_mode in {"contiguous_r2c", "permuted_r2c", "packed_r2c", "contiguous_c2r"}:
             body.append("    output_batch_base = current_batch * output_distance")
-        if io_mode == "permuted_store":
+        if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
             # `perm_gbase` is the output address of each batch slot's row start
             # and `perm_k_stride` the stride of the FFT output index; the store
             # adds the two.  The two forms differ in which of the row index's
             # two mixed-radix parts gets scaled by the output layout.
             body.append(f"    perm_slot = tl.arange(0, {batch_pack})")
-            if perm_form == "inner":
+            if inner_perm_form:
                 body.append("    perm_batch = perm_base + perm_slot * perm_span")
                 body.append("    perm_i0 = perm_batch // perm_span")
                 body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
@@ -2736,14 +3269,24 @@ def _build_leaf_kernel_source_for_io(
                 body.append("    perm_batch = batch_id + perm_slot")
                 body.append("    perm_i0 = perm_batch // perm_span")
                 body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
-                body.append(f"    perm_gbase = perm_i0 * ({n} * perm_span) + perm_i1")
+                out_length = n // 2 + 1 if io_mode in {"permuted_r2c", "permuted_store_r2c"} else n
+                body.append(
+                    f"    perm_gbase = perm_i0 * ({out_length} * perm_span) + perm_i1"
+                )
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
+            if batch_pack > 1 and _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
+                body.append("    perm_i0_vector = current_batch // perm_span")
+                body.append("    perm_i1_vector = current_batch - perm_i0_vector * perm_span")
+                if perm_form == "inner":
+                    body.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
+                else:
+                    body.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
             if batch_pack == 1:
                 # Keep the singleton row address scalar.  On MUSA this avoids
                 # a degenerate [1] tensor layout being broadcast into the
                 # lane-shaped store pointer.
-                if perm_form == "inner":
+                if inner_perm_form:
                     body.append("    perm_batch_scalar = perm_base")
                 else:
                     body.append("    perm_batch_scalar = batch_id")
@@ -2752,15 +3295,16 @@ def _build_leaf_kernel_source_for_io(
                     "    perm_i1_scalar = perm_batch_scalar - "
                     "perm_i0_scalar * perm_span"
                 )
-                if perm_form == "inner":
+                if inner_perm_form:
                     body.append(
                         "    perm_gbase_scalar = perm_i1_scalar * "
                         "(nbatch // perm_span) + perm_i0_scalar"
                     )
                 else:
+                    out_length = n // 2 + 1 if io_mode in {"permuted_r2c", "permuted_store_r2c"} else n
                     body.append(
                         f"    perm_gbase_scalar = perm_i0_scalar * "
-                        f"({n} * perm_span) + perm_i1_scalar"
+                        f"({out_length} * perm_span) + perm_i1_scalar"
                     )
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:
@@ -2813,9 +3357,9 @@ def _build_leaf_kernel_source_for_io(
             f"nv_mma_shared_layout=False)"
         )
 
-    if io_mode == "bluestein_full_leaf":
+    if io_mode in {"bluestein_full_leaf", "rader_full_leaf"}:
         if len(factors) < 2:
-            raise ValueError("fused Bluestein leaf requires at least two FFT stages")
+            raise ValueError("fused convolution leaf requires at least two FFT stages")
         last_source = "smem_b" if (len(factors) - 1) % 2 == 1 else "smem_a"
         intermediate_buffer = "smem_a" if last_source == "smem_b" else "smem_b"
 
@@ -2830,7 +3374,7 @@ def _build_leaf_kernel_source_for_io(
                 io_mode=io_mode,
                 bluestein_pass=0,
                 bluestein_intermediate_buffer=intermediate_buffer
-                if io_mode == "bluestein_full_leaf"
+                if io_mode in {"bluestein_full_leaf", "rader_full_leaf"}
                 else "smem_a",
                 prime_n=prime_n,
                 four_step_n1=four_step_n1,
@@ -2845,10 +3389,41 @@ def _build_leaf_kernel_source_for_io(
                 portable_exchange=portable_exchange,
                 exchange_size=smem_n,
                 exchange_slot_stride=smem_slot_stride,
+                bluestein_real_kind=bluestein_real_kind,
             )
         )
 
-    if io_mode == "bluestein_full_leaf":
+    if io_mode == "packed_r2c":
+        # The final codelet outputs were gathered into natural frequency order
+        # by the portable exchange. Reconstruct the real FFT's half spectrum
+        # without a second kernel launch or a global intermediate buffer.
+        body.extend([
+            f"    packed_pos = tl.arange(0, {smem_n})",
+            f"    packed_slot = packed_pos // {smem_slot_stride}",
+            f"    packed_k = packed_pos % {smem_slot_stride}",
+            f"    packed_mask = (packed_slot < {batch_pack}) & (packed_k < {n}) & (batch_id + packed_slot < nbatch)",
+            f"    packed_partner = packed_slot * {smem_slot_stride} + tl.where(packed_k == 0, 0, {n} - packed_k)",
+            "    packed_partner = tl.where(packed_mask, packed_partner, 0)",
+            "    packed_ar = packed_r",
+            "    packed_ai = packed_i",
+            "    packed_br = tl.gather(packed_r, packed_partner, 0)",
+            "    packed_bi = tl.gather(packed_i, packed_partner, 0)",
+            "    packed_twiddle_k = tl.where(packed_mask, packed_k, 0)",
+            "    packed_wr = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2, mask=packed_mask, other=0.0)",
+            "    packed_wi = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2 + 1, mask=packed_mask, other=0.0)",
+            "    packed_dr = packed_ar - packed_br",
+            "    packed_di = packed_ai + packed_bi",
+            "    packed_xr = 0.5 * (packed_ar + packed_br + packed_wi * packed_dr + packed_wr * packed_di)",
+            "    packed_xi = 0.5 * (packed_ai - packed_bi - packed_wr * packed_dr + packed_wi * packed_di)",
+            "    packed_dst = (batch_id + packed_slot) * output_distance + packed_k",
+            "    tl.store(out_ptr + packed_dst * 2, packed_xr, mask=packed_mask)",
+            "    tl.store(out_ptr + packed_dst * 2 + 1, packed_xi, mask=packed_mask)",
+            f"    packed_nyquist = (batch_id + packed_slot) * output_distance + {n}",
+            "    tl.store(out_ptr + packed_nyquist * 2, packed_ar - packed_ai, mask=packed_mask & (packed_k == 0))",
+            "    tl.store(out_ptr + packed_nyquist * 2 + 1, 0.0, mask=packed_mask & (packed_k == 0))",
+        ])
+
+    if io_mode in {"bluestein_full_leaf", "rader_full_leaf"}:
         body.append("    tl.debug_barrier()")
         for stage in range(len(factors)):
             body.extend(
@@ -2874,6 +3449,7 @@ def _build_leaf_kernel_source_for_io(
                     portable_exchange=portable_exchange,
                     exchange_size=smem_n,
                     exchange_slot_stride=smem_slot_stride,
+                    bluestein_real_kind=bluestein_real_kind,
                 )
             )
 

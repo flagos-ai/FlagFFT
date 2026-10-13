@@ -14,11 +14,72 @@
 
 #include "flagfft/core.hpp"
 
+#if defined(FLAGFFT_BACKEND_NPU)
+#include <acl/acl_rt.h>
+#include "adaptor/backend/npu/ascendc_fft128.hpp"
+#include "adaptor/backend/npu/ascendc_fft2048.hpp"
+#include "adaptor/backend/npu/ascendc_fft256.hpp"
+#include "adaptor/backend/npu/ascendc_fft64.hpp"
+#include "adaptor/backend/npu/ascendc_fft_radix4_pair.hpp"
+#include "adaptor/backend/npu/ascendc_fft_small.hpp"
+#include "adaptor/backend/npu/ascendc_transpose3d.hpp"
+#include "adaptor/backend/npu/ascendc_transpose2d.hpp"
+#include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
+#include "adaptor/backend/npu/ascendc_packed_real_boundary.hpp"
+#endif
+
 #include <algorithm>
+#include <complex>
+#include <cstdlib>
 #include <cstdio>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
+#include <vector>
 
 namespace flagfft {
+
+CompiledRawGraphNode::CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inner)
+    : inner(std::move(inner)) {}
+
+std::string CompiledRawGraphNode::describe() const {
+  return "CompiledRawGraph(inner=" + inner->describe() + ")";
+}
+
+flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
+                                            adaptor::DevicePtr output,
+                                            const RawExecutionContext &context) const {
+  try {
+    if (graph != nullptr && graph_input == input && graph_output == output) {
+      graph->launch(context.stream);
+      return FLAGFFT_SUCCESS;
+    }
+
+    flagfftResult result = inner->execute(input, output, context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    if (graph == nullptr && !graph_failed) {
+      try {
+        auto captured = std::make_unique<adaptor::CudaGraph>();
+        captured->begin_capture(context.stream);
+        result = inner->execute(input, output, context);
+        captured->end_capture(context.stream);
+        if (result != FLAGFFT_SUCCESS) return result;
+        captured->launch(context.stream);
+        graph = std::move(captured);
+        graph_input = input;
+        graph_output = output;
+      } catch (const std::exception &) {
+        graph_failed = true;
+      }
+    }
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] graph execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 namespace {
 
   std::vector<JitKernelArg> raw_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
@@ -34,6 +95,58 @@ namespace {
     }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(batch)));
     return args;
+  }
+
+  bool ix_ct_batch_graph_enabled(const RawExecutionContext &context, int64_t length) {
+    const FFTRequest &request = context.request;
+    const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH");
+    const bool enabled = setting == nullptr || std::string(setting) == "1";
+    const bool measured_shape = length == 1024 ||
+        (length == 2048 && (request.real_transform_kind == "r2c" ||
+                            request.real_transform_kind == "c2r"));
+    return enabled && measured_shape && request.device_type == "ix" &&
+           request.device_arch == "71" && request.origin_rank <= 1 && request.raw_dim == 1 &&
+           request.requested_n == length &&
+           context.batch == 64 && request.input_dtype == "complex64" &&
+           request.output_dtype == "complex64";
+  }
+
+  bool replay_leaf_graph(Raw1DGraphState &state,
+                         const RawExecutionContext &context,
+                         adaptor::DevicePtr input,
+                         adaptor::DevicePtr output,
+                         int64_t input_distance,
+                         int64_t output_distance) {
+    if (!state.graph || state.input != input || state.output != output ||
+        state.batch != context.batch || state.input_distance != input_distance ||
+        state.output_distance != output_distance) return false;
+    state.graph->launch(context.stream);
+    return true;
+  }
+
+  template <typename Launch>
+  void capture_leaf_graph(Raw1DGraphState &state,
+                          const RawExecutionContext &context,
+                          adaptor::DevicePtr input,
+                          adaptor::DevicePtr output,
+                          int64_t input_distance,
+                          int64_t output_distance,
+                          Launch launch) {
+    if (state.graph || state.failed) return;
+    try {
+      auto graph = std::make_unique<adaptor::CudaGraph>();
+      graph->begin_capture(context.stream);
+      launch();
+      graph->end_capture(context.stream);
+      state.graph = std::move(graph);
+      state.input = input;
+      state.output = output;
+      state.batch = context.batch;
+      state.input_distance = input_distance;
+      state.output_distance = output_distance;
+    } catch (const std::exception &) {
+      state.failed = true;
+    }
   }
 
   std::vector<JitKernelArg> raw_distance_col_kernel_args(std::initializer_list<adaptor::DevicePtr> ptrs,
@@ -87,15 +200,86 @@ namespace {
                      adaptor::DevicePtr input,
                      adaptor::DevicePtr output,
                      int64_t elements_per_batch,
-                     int64_t batch) {
+                     int64_t batch,
+                     int64_t element_bytes) {
     const int64_t grid_x =
         kernel->grid_x_override > 0 ? kernel->grid_x_override : ceil_div(elements_per_batch, kPerm3dBlock);
-    std::vector<JitKernelArg> args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(output),
-        JitKernelArg::i32(static_cast<int32_t>(batch)),
-    };
-    kernel->launch(stream, args, grid_x, 1, batch);
+    const int64_t batch_chunk = std::max<int64_t>(1, block_limit_per_launch() / std::max<int64_t>(1, grid_x));
+    for (int64_t batch_offset = 0; batch_offset < batch; batch_offset += batch_chunk) {
+      const int64_t count = std::min(batch_chunk, batch - batch_offset);
+      const int64_t byte_offset = batch_offset * elements_per_batch * element_bytes;
+      std::vector<JitKernelArg> args = {
+          JitKernelArg::device(input + byte_offset),
+          JitKernelArg::device(output + byte_offset),
+          JitKernelArg::i32(static_cast<int32_t>(count)),
+      };
+      kernel->launch(stream, args, grid_x, 1, count);
+    }
+  }
+
+  flagfftResult launch_perm3d_with_optional_npu_native(
+      const std::shared_ptr<JitKernel> &kernel,
+      const std::vector<DeviceAllocation> &npu_indices,
+      adaptor::StreamHandle stream,
+      adaptor::DevicePtr input,
+      adaptor::DevicePtr output,
+      int64_t n0,
+      int64_t n1,
+      int64_t n2,
+      int32_t axis0,
+      int32_t axis1,
+      int32_t axis2,
+      int64_t batch,
+      int64_t element_bytes) {
+#if defined(FLAGFFT_BACKEND_NPU)
+    if (!npu_indices.empty()) {
+      if (npu_indices.size() != 24 || element_bytes != 2 * sizeof(float) ||
+          n0 > std::numeric_limits<int32_t>::max() ||
+          n1 > std::numeric_limits<int32_t>::max() ||
+          n2 > std::numeric_limits<int32_t>::max() ||
+          batch > std::numeric_limits<int32_t>::max()) {
+        return FLAGFFT_INVALID_SIZE;
+      }
+      std::size_t index = 5;
+      if (axis0 == 0 && axis1 == 2 && axis2 == 1) index = 0;       // 021
+      else if (axis0 == 2 && axis1 == 1 && axis2 == 0) index = 1;  // 210
+      else if (axis0 == 2 && axis1 == 0 && axis2 == 1) index = 2;  // 201
+      else if (axis0 == 1 && axis1 == 2 && axis2 == 0) index = 3;  // 120
+      else if (axis0 == 1 && axis1 == 0 && axis2 == 2) index = 4;  // 102
+      const uint64_t per_batch_tiles =
+          static_cast<uint64_t>((n0 + 15) / 16) * ((n1 + 15) / 16) * ((n2 + 15) / 16);
+      const int64_t batch_chunk = std::max<int64_t>(
+          1, static_cast<int64_t>(block_limit_per_launch() / std::max<uint64_t>(1, per_batch_tiles)));
+      const int64_t elements_per_batch = n0 * n1 * n2;
+      const int32_t remainder = static_cast<int32_t>(n2 % 16);
+      const int32_t tail_shift = remainder % 4 == 0
+          ? 0 : ((remainder + 3) / 4) * 4 - remainder;
+      const adaptor::DevicePtr edge_indices = tail_shift == 0
+          ? 0 : npu_indices[6 + (tail_shift - 1) * 6 + index].get();
+      for (int64_t batch_offset = 0; batch_offset < batch; batch_offset += batch_chunk) {
+        const int64_t chunk = std::min(batch_chunk, batch - batch_offset);
+        const adaptor::DevicePtr byte_offset = static_cast<adaptor::DevicePtr>(
+            batch_offset * elements_per_batch * element_bytes);
+        const flagfftResult result = adaptor::npu::launch_ascendc_transpose3d(
+            input + byte_offset,
+            output + byte_offset,
+            npu_indices[index].get(),
+            edge_indices,
+            static_cast<int32_t>(n0),
+            static_cast<int32_t>(n1),
+            static_cast<int32_t>(n2),
+            static_cast<int32_t>(chunk),
+            axis0,
+            axis1,
+            axis2,
+            stream);
+        if (result != FLAGFFT_SUCCESS) return result;
+      }
+      return FLAGFFT_SUCCESS;
+    }
+#endif
+    launch_perm3d(kernel, stream, input, output, n0 * n1 * n2, batch, element_bytes);
+    return FLAGFFT_SUCCESS;
   }
 
 }  // namespace
@@ -118,9 +302,43 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
                                            adaptor::DevicePtr output,
                                            const RawExecutionContext &context) const {
   try {
-    std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
-
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
+    if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
+                                           context.input_distance, context.output_distance)) {
+      return FLAGFFT_SUCCESS;
+    }
+    const bool chunk_npu_3d_complex_leaf = context.request.device_type == "npu" &&
+        context.request.origin_rank == 3 && context.request.real_transform_kind.empty() &&
+        context.request.input_dtype == "complex64" && context.request.output_dtype == "complex64";
+    const int64_t batch_limit = std::max<int64_t>(
+        1, kernel->batch_per_block * block_limit_per_launch());
+    auto launch = [&]() {
+      if (!chunk_npu_3d_complex_leaf || context.batch <= batch_limit) {
+        std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
+        kernel->launch(context.stream,
+                       args,
+                       ceil_div(context.batch, kernel->batch_per_block),
+                       1,
+                       1);
+        return;
+      }
+      const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+      for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_limit) {
+        const int64_t chunk_batch = std::min(batch_limit, context.batch - batch_offset);
+        const adaptor::DevicePtr input_chunk = input + batch_offset * length * element_bytes;
+        const adaptor::DevicePtr output_chunk = output + batch_offset * length * element_bytes;
+        std::vector<JitKernelArg> args = raw_kernel_args(
+            {input_chunk, output_chunk}, tables, chunk_batch);
+        kernel->launch(context.stream,
+                       args,
+                       ceil_div(chunk_batch, kernel->batch_per_block),
+                       1,
+                       1);
+      }
+    };
+    launch();
+    if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,
+                                          context.input_distance, context.output_distance, launch);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] Leaf execute failed: %s\n", e.what());
@@ -160,20 +378,43 @@ std::string CompiledRawFourStepFusedNode::describe() const {
 flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
                                                     adaptor::DevicePtr output,
                                                     const RawExecutionContext &context) const {
+  const char *stage = "row";
   try {
     const bool fused_twiddle = row_kernel->tle_fused_twiddle;
-    std::vector<JitKernelArg> row_args =
-        fused_twiddle ? raw_kernel_args({input, twiddle.get(), stage1.get()}, row_tables, context.batch)
-                      : raw_kernel_args({input, stage1.get()}, row_tables, context.batch);
-    row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), context.batch, 1);
+    int64_t batch_chunk = context.batch;
+    if (context.request.device_type == "npu") {
+      const int64_t grid_x =
+          std::max(ceil_div(n2, row_kernel->inner_pack), ceil_div(n1, col_kernel->inner_pack));
+      const int64_t max_blocks = adaptor::max_launch_blocks();
+      if (grid_x <= 0 || max_blocks <= 0) {
+        throw std::runtime_error("invalid NPU FourStep launch grid");
+      }
+      batch_chunk = std::max<int64_t>(1, max_blocks / grid_x);
+    }
+    const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+    for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+      const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
+      const auto byte_offset = static_cast<adaptor::DevicePtr>(batch_offset * length * element_bytes);
+      const adaptor::DevicePtr input_chunk = input + byte_offset;
+      const adaptor::DevicePtr stage1_chunk = stage1.get() + byte_offset;
+      const adaptor::DevicePtr output_chunk = output + byte_offset;
 
-    std::vector<JitKernelArg> col_args =
-        fused_twiddle ? raw_kernel_args({stage1.get(), output}, col_tables, context.batch)
-                      : raw_kernel_args({stage1.get(), twiddle.get(), output}, col_tables, context.batch);
-    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
+      std::vector<JitKernelArg> row_args =
+          fused_twiddle ? raw_kernel_args({input_chunk, twiddle.get(), stage1_chunk}, row_tables, chunk_batch)
+                        : raw_kernel_args({input_chunk, stage1_chunk}, row_tables, chunk_batch);
+      row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), chunk_batch, 1);
+
+      stage = "column";
+      std::vector<JitKernelArg> col_args =
+          fused_twiddle
+              ? raw_kernel_args({stage1_chunk, output_chunk}, col_tables, chunk_batch)
+              : raw_kernel_args({stage1_chunk, twiddle.get(), output_chunk}, col_tables, chunk_batch);
+      col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), chunk_batch, 1);
+      stage = "row";
+    }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
-    std::fprintf(stderr, "[flagfft] FourStepFused execute failed: %s\n", e.what());
+    std::fprintf(stderr, "[flagfft] FourStepFused execute failed in %s stage: %s\n", stage, e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }
@@ -282,6 +523,353 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
   }
 }
 
+#if defined(FLAGFFT_BACKEND_NPU)
+CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(int64_t stride,
+                                                       int64_t group_size,
+                                                       std::shared_ptr<DeviceAllocation> indices,
+                                                       std::shared_ptr<DeviceAllocation> twiddles,
+                                                       NpuAivFFT64Mode mode,
+                                                       bool radix4_pair)
+    : stride(stride),
+      group_size(group_size),
+      mode(mode),
+      radix4_pair(radix4_pair),
+      indices(std::move(indices)),
+      twiddles(std::move(twiddles)) {
+}
+
+CompiledRawNpuAivFFTSmallNode::CompiledRawNpuAivFFTSmallNode(int64_t length,
+                                                             int64_t stride,
+                                                             int64_t output_stride,
+                                                             int64_t group_size,
+                                                             std::shared_ptr<DeviceAllocation> indices,
+                                                             std::shared_ptr<DeviceAllocation> twiddles,
+                                                             NpuAivFFTSmallMode mode)
+    : length(length),
+      stride(stride),
+      output_stride(output_stride),
+      group_size(group_size),
+      mode(mode),
+      indices(std::move(indices)),
+      twiddles(std::move(twiddles)) {
+}
+
+std::string CompiledRawNpuAivFFTSmallNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawNpuAivFFTSmall(n=" << length << ", stride=" << stride;
+  if (output_stride != stride) oss << ", output_stride=" << output_stride;
+  oss << ", group_size=" << group_size;
+  if (mode == NpuAivFFTSmallMode::RealForward) oss << ", mode=r2c";
+  if (mode == NpuAivFFTSmallMode::RealInverse) oss << ", mode=c2r";
+  oss << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawNpuAivFFTSmallNode::execute(adaptor::DevicePtr input,
+                                                     adaptor::DevicePtr output,
+                                                     const RawExecutionContext &context) const {
+  const int64_t preferred_group = length == 16 ? 8 : length == 32 ? 4 : 0;
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
+      (length != 16 && length != 32) || (group_size != 1 && group_size != preferred_group) || stride <= 0 ||
+      output_stride <= 0 ||
+      (mode != NpuAivFFTSmallMode::Complex && (stride != 1 || output_stride != 1)) ||
+      (stride != 1 && (stride < group_size || stride % group_size != 0)) || context.batch % group_size != 0 ||
+      (output_stride != 1 &&
+       (output_stride < group_size || output_stride % group_size != 0)) ||
+      indices == nullptr || twiddles == nullptr) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+
+  constexpr int64_t kMaxBlocksPerLaunch = 65535;
+  const int64_t blocks = context.batch / group_size;
+  constexpr int64_t real_bytes = sizeof(float);
+  constexpr int64_t complex_bytes = 2 * sizeof(float);
+  const int64_t half = length / 2 + 1;
+  for (int64_t block_offset = 0; block_offset < blocks; block_offset += kMaxBlocksPerLaunch) {
+    const int64_t chunk_blocks = std::min(kMaxBlocksPerLaunch, blocks - block_offset);
+    const int64_t transform_offset = block_offset * group_size;
+    int64_t input_offset = 0;
+    int64_t output_offset = 0;
+    if (mode == NpuAivFFTSmallMode::RealForward) {
+      input_offset = transform_offset * length * real_bytes;
+      output_offset = transform_offset * half * complex_bytes;
+    } else if (mode == NpuAivFFTSmallMode::RealInverse) {
+      input_offset = transform_offset * half * complex_bytes;
+      output_offset = transform_offset * length * real_bytes;
+    } else {
+      input_offset = stride == 1 ? transform_offset * length * complex_bytes
+                                 : (transform_offset / stride) * length * stride * complex_bytes +
+                                       (transform_offset % stride) * complex_bytes;
+      output_offset = output_stride == 1
+                          ? transform_offset * length * complex_bytes
+                          : (transform_offset / output_stride) * length * output_stride * complex_bytes +
+                                (transform_offset % output_stride) * complex_bytes;
+    }
+    const flagfftResult result = adaptor::npu::launch_ascendc_fft_small(static_cast<int32_t>(length),
+                                                                        input + input_offset,
+                                                                        output + output_offset,
+                                                                        indices->get(),
+                                                                        twiddles->get(),
+                                                                        static_cast<int32_t>(chunk_blocks),
+                                                                        static_cast<int32_t>(group_size),
+                                                                        static_cast<int32_t>(stride),
+                                                                        static_cast<int32_t>(output_stride),
+                                                                        static_cast<int32_t>(mode),
+                                                                        context.stream);
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
+}
+
+std::string CompiledRawNpuAivFFT64Node::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawNpuAivFFT64(stride=" << stride << ", group_size=" << group_size
+      << ", radix4_pair=" << radix4_pair << ")";
+  if (mode == NpuAivFFT64Mode::RealForward) oss << "[r2c-row]";
+  if (mode == NpuAivFFT64Mode::RealInverse) oss << "[c2r-row]";
+  return oss.str();
+}
+
+flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
+                                                  adaptor::DevicePtr output,
+                                                  const RawExecutionContext &context) const {
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() || stride <= 0 ||
+      (group_size != 1 && group_size != 4 && group_size != 8 &&
+       !(radix4_pair && (group_size == 16 || group_size == 32))) ||
+      (group_size != 1 && stride != 1 && stride != 64) || (mode != NpuAivFFT64Mode::Complex && stride != 1) ||
+      context.batch % group_size != 0 || indices == nullptr || twiddles == nullptr) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+
+  constexpr int64_t kMaxBlocksPerLaunch = 65535;
+  constexpr int64_t kFftLength = 64;
+  constexpr int64_t kComplexBytes = 2 * sizeof(float);
+  const int64_t blocks = context.batch / group_size;
+  // Grouped FFT64 blocks index rows/columns relative to a 64-point matrix.
+  // Each launch restarts GetBlockIdx() at zero, so every non-final chunk must
+  // begin on a complete matrix-group boundary. A single-transform strided
+  // column launch likewise needs to restart at column zero.
+  const int64_t blocks_per_matrix_group =
+      group_size > 1 ? kFftLength / group_size : (stride == kFftLength ? kFftLength : 1);
+  const int64_t max_blocks_per_launch =
+      (kMaxBlocksPerLaunch / blocks_per_matrix_group) * blocks_per_matrix_group;
+
+  for (int64_t block_offset = 0; block_offset < blocks; block_offset += max_blocks_per_launch) {
+    const int64_t chunk_blocks = std::min(max_blocks_per_launch, blocks - block_offset);
+    const int64_t transform_offset = block_offset * group_size;
+    int64_t input_offset = 0;
+    int64_t output_offset = 0;
+    if (mode == NpuAivFFT64Mode::RealForward) {
+      input_offset = transform_offset * kFftLength * sizeof(float);
+      output_offset = transform_offset * (kFftLength / 2 + 1) * kComplexBytes;
+    } else if (mode == NpuAivFFT64Mode::RealInverse) {
+      input_offset = transform_offset * (kFftLength / 2 + 1) * kComplexBytes;
+      output_offset = transform_offset * kFftLength * sizeof(float);
+    } else if (stride == kFftLength) {
+      // For grouped columns, align the chunk start to a matrix group above;
+      // this is the flattened offset of the first column in that group.
+      const int64_t matrix_offset = (transform_offset / kFftLength) * kFftLength * kFftLength;
+      input_offset = (matrix_offset + transform_offset % kFftLength) * kComplexBytes;
+      output_offset = input_offset;
+    } else {
+      input_offset = transform_offset * kFftLength * kComplexBytes;
+      output_offset = input_offset;
+    }
+
+    const adaptor::DevicePtr input_chunk = input + input_offset;
+    const adaptor::DevicePtr output_chunk = output + output_offset;
+    const flagfftResult result =
+        radix4_pair
+            ? adaptor::npu::launch_ascendc_fft_radix4_pair(64,
+                                                           input_chunk,
+                                                           output_chunk,
+                                                           indices->get(),
+                                                           twiddles->get(),
+                                                           static_cast<int32_t>(chunk_blocks * group_size),
+                                                           static_cast<int32_t>(group_size),
+                                                           static_cast<int32_t>(mode),
+                                                           context.stream)
+            : adaptor::npu::launch_ascendc_fft64(input_chunk,
+                                                 output_chunk,
+                                                 indices->get(),
+                                                 twiddles->get(),
+                                                 static_cast<int32_t>(chunk_blocks),
+                                                 static_cast<int32_t>(stride),
+                                                 static_cast<int32_t>(group_size),
+                                                 static_cast<int32_t>(mode),
+                                                 context.stream);
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
+}
+
+CompiledRawNpuAivFFTNode::CompiledRawNpuAivFFTNode(int64_t length,
+                                                   std::shared_ptr<DeviceAllocation> indices,
+                                                   std::shared_ptr<DeviceAllocation> twiddles,
+                                                   int64_t group_size,
+                                                   bool radix4_pair)
+    : length(length),
+      group_size(group_size),
+      radix4_pair(radix4_pair),
+      indices(std::move(indices)),
+      twiddles(std::move(twiddles)) {
+}
+
+std::string CompiledRawNpuAivFFTNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawNpuAivFFT(n=" << length << ", group_size=" << group_size
+      << ", radix4_pair=" << radix4_pair << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
+                                                adaptor::DevicePtr output,
+                                                const RawExecutionContext &context) const {
+  if (context.batch <= 0 || indices == nullptr || twiddles == nullptr ||
+      (length == 128 && group_size != 1 && group_size != 4 && group_size != 8 &&
+       !(radix4_pair && group_size == 16)) ||
+      (length == 128 && group_size == 1 && radix4_pair) ||
+      ((length == 1024 || length == 2048) && group_size != 1) ||
+      (length != 128 && length != 1024 && length != 2048) ||
+      context.batch % group_size != 0) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+
+  constexpr int64_t kMaxBlocksPerLaunch = 65535;
+  const int64_t max_transforms_per_launch = kMaxBlocksPerLaunch * group_size;
+  const int64_t element_bytes = 2 * sizeof(float);
+  for (int64_t offset = 0; offset < context.batch; offset += max_transforms_per_launch) {
+    const int64_t chunk = std::min(max_transforms_per_launch, context.batch - offset);
+    if (chunk % group_size != 0) return FLAGFFT_INVALID_SIZE;
+    const adaptor::DevicePtr input_chunk = input + offset * length * element_bytes;
+    const adaptor::DevicePtr output_chunk = output + offset * length * element_bytes;
+    flagfftResult result;
+    if (radix4_pair) {
+      result = adaptor::npu::launch_ascendc_fft_radix4_pair(static_cast<int32_t>(length),
+                                                            input_chunk,
+                                                            output_chunk,
+                                                            indices->get(),
+                                                            twiddles->get(),
+                                                            static_cast<int32_t>(chunk),
+                                                            static_cast<int32_t>(group_size),
+                                                            0,
+                                                            context.stream);
+    } else if (length == 128) {
+      result = adaptor::npu::launch_ascendc_fft128(
+          input_chunk, output_chunk, indices->get(), twiddles->get(),
+          static_cast<int32_t>(chunk / group_size), 1, static_cast<int32_t>(group_size), 0,
+          context.stream);
+    } else if (length == 1024) {
+      result = adaptor::npu::launch_ascendc_fft1024(
+          input_chunk, output_chunk, indices->get(), twiddles->get(),
+          static_cast<int32_t>(chunk), context.stream);
+    } else {
+      result = adaptor::npu::launch_ascendc_fft2048(
+          input_chunk, output_chunk, indices->get(), twiddles->get(),
+          static_cast<int32_t>(chunk), context.stream);
+    }
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
+}
+
+CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
+    std::shared_ptr<DeviceAllocation> indices,
+    std::shared_ptr<DeviceAllocation> twiddles,
+    int64_t group_size,
+    bool pair_mode,
+    bool transposed_store,
+    bool radix4_mode,
+    int64_t transposed_output_row_stride,
+    NpuAivFFT256Mode mode)
+    : indices(std::move(indices)),
+      twiddles(std::move(twiddles)),
+      group_size(group_size),
+      pair_mode(pair_mode),
+      transposed_store(transposed_store),
+      radix4_mode(radix4_mode),
+      transposed_output_row_stride(transposed_output_row_stride),
+      mode(mode) {}
+
+std::string CompiledRawNpuAivFFT256Node::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawNpuAivFFT256(group_size=" << group_size
+      << ", pair_mode=" << pair_mode
+      << ", transposed_store=" << transposed_store
+      << ", radix4_mode=" << radix4_mode
+      << ", transposed_output_row_stride=" << transposed_output_row_stride << ")";
+  if (mode == NpuAivFFT256Mode::RealForward) oss << "[r2c-row]";
+  if (mode == NpuAivFFT256Mode::RealInverse) oss << "[c2r-row]";
+  return oss.str();
+}
+
+flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
+                                                   adaptor::DevicePtr output,
+                                                   const RawExecutionContext &context) const {
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
+      (group_size != 1 && group_size != 4 && group_size != 8) ||
+      (pair_mode && group_size != 8) ||
+      (transposed_store && !pair_mode) ||
+      (radix4_mode && (!pair_mode || !transposed_store || group_size != 8)) ||
+      (mode != NpuAivFFT256Mode::Complex &&
+       (mode != NpuAivFFT256Mode::RealForward && mode != NpuAivFFT256Mode::RealInverse)) ||
+      (mode != NpuAivFFT256Mode::Complex &&
+       (!pair_mode || group_size != 8 || transposed_store || radix4_mode)) ||
+      context.batch % group_size != 0 ||
+      indices == nullptr || twiddles == nullptr) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  const int64_t output_row_stride =
+      transposed_output_row_stride > 0 ? transposed_output_row_stride : context.batch;
+  if (transposed_store && (output_row_stride < group_size ||
+                           output_row_stride > std::numeric_limits<int32_t>::max() ||
+                           output_row_stride % group_size != 0)) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  const int64_t batch_chunk = mode == NpuAivFFT256Mode::Complex
+      ? block_limit_per_launch() * group_size
+      : context.batch;
+  if (batch_chunk <= 0) return FLAGFFT_INVALID_SIZE;
+  const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+  const int64_t real_bytes = element_bytes / 2;
+  const int64_t input_transform_bytes = mode == NpuAivFFT256Mode::RealForward
+      ? 256 * real_bytes
+      : (mode == NpuAivFFT256Mode::RealInverse ? 129 * element_bytes : 256 * element_bytes);
+  const int64_t output_transform_bytes = mode == NpuAivFFT256Mode::RealForward
+      ? 129 * element_bytes
+      : (mode == NpuAivFFT256Mode::RealInverse ? 256 * real_bytes : 256 * element_bytes);
+  const int32_t default_real_blocks_per_launch =
+      context.request.device_type == "npu" && context.request.origin_rank == 3 &&
+              mode == NpuAivFFT256Mode::RealInverse && context.batch == 4 * 256 * 256
+          ? 40
+          : 32;
+  for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+    const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
+    const adaptor::DevicePtr byte_offset =
+        static_cast<adaptor::DevicePtr>(batch_offset * input_transform_bytes);
+    const flagfftResult result = adaptor::npu::launch_ascendc_fft256(
+        input + byte_offset,
+        transposed_store
+            ? output
+            : output + static_cast<adaptor::DevicePtr>(batch_offset * output_transform_bytes),
+        indices->get(),
+        twiddles->get(),
+        static_cast<int32_t>(chunk_batch),
+        static_cast<int32_t>(group_size),
+        pair_mode,
+        transposed_store,
+        radix4_mode,
+        static_cast<int32_t>(mode),
+        default_real_blocks_per_launch,
+        transposed_store ? static_cast<int32_t>(output_row_stride) : 0,
+        transposed_store ? static_cast<int32_t>(batch_offset) : 0,
+        context.stream);
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
+}
+#endif
+
 CompiledRawStridedDirectDftNode::CompiledRawStridedDirectDftNode(int64_t length,
                                                                  int64_t outer_stride,
                                                                  std::shared_ptr<JitKernel> kernel,
@@ -311,7 +899,7 @@ flagfftResult CompiledRawStridedDirectDftNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i64(outer_stride));
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    kernel->launch(context.stream, args, context.batch, 1, 1);
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] StridedDirectDft execute failed: %s\n", e.what());
@@ -323,19 +911,33 @@ flagfftResult CompiledRawStridedDirectDftNode::execute(adaptor::DevicePtr input,
 CompiledRawStockhamNode::CompiledRawStockhamNode(int64_t length,
                                                  std::vector<int64_t> factors,
                                                  std::vector<std::shared_ptr<JitKernel>> kernels,
+                                                 std::vector<AivStageTables> aiv_stages,
+                                                 DeviceAllocation aiv_indices,
                                                  DeviceAllocation twiddle,
                                                  DeviceAllocation first,
                                                  DeviceAllocation second)
     : length(length),
       factors(std::move(factors)),
       kernels(std::move(kernels)),
+      aiv_stages(std::move(aiv_stages)),
+      aiv_indices(std::move(aiv_indices)),
       twiddle(std::move(twiddle)),
       first(std::move(first)),
       second(std::move(second)) {
 }
 
 std::string CompiledRawStockhamNode::describe() const {
-  return "CompiledRawStockham(n=" + std::to_string(length) + ")";
+  std::string description = "CompiledRawStockham(n=" + std::to_string(length) +
+                            ", stages=[";
+  for (std::size_t stage = 0; stage < factors.size(); ++stage) {
+    if (stage != 0) description += ",";
+    description += std::to_string(factors[stage]);
+    description += stage < aiv_stages.size() && aiv_stages[stage].enabled
+                       ? ":AIV"
+                       : ":JIT";
+  }
+  description += "])";
+  return description;
 }
 
 flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
@@ -351,24 +953,58 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
     const int64_t block_limit = block_limit_per_launch();
     for (std::size_t stage = 0; stage < factors.size(); ++stage) {
       const int64_t factor = factors[stage];
-      const int64_t block = kernels[stage]->butterflies_per_block;
-      const int64_t programs_per_batch = (length / factor + block - 1) / block;
-      const int64_t batch_chunk = std::max<int64_t>(
-          1,
-          std::min<int64_t>(context.batch, block_limit / std::max<int64_t>(1, programs_per_batch)));
       const bool last = stage + 1 == factors.size();
       adaptor::DevicePtr dst =
           last && current != output ? output : (stage % 2 == 0 ? first.get() : second.get());
-      for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
-        const int64_t count = std::min(batch_chunk, context.batch - batch_offset);
-        const int64_t byte_offset = batch_offset * length * element_bytes;
-        std::vector<JitKernelArg> args = {JitKernelArg::device(current + byte_offset),
-                                          JitKernelArg::device(dst + byte_offset),
-                                          JitKernelArg::device(twiddle.get()),
-                                          JitKernelArg::i64(span),
-                                          JitKernelArg::i32(static_cast<int32_t>(count))};
-        const int64_t butterflies = count * (length / factor);
-        kernels[stage]->launch(context.stream, args, (butterflies + block - 1) / block, 1, 1);
+#if defined(FLAGFFT_BACKEND_NPU)
+      if (aiv_stages[stage].enabled) {
+        constexpr int64_t kTile = adaptor::npu::kAscendCStockhamTile;
+        const int64_t ndiv = length / factor;
+        const int64_t tiles_per_transform = span == 1
+                                                ? (ndiv + kTile - 1) / kTile
+                                                : (ndiv / span) * ((span + kTile - 1) / kTile);
+        const int64_t max_batch = std::max<int64_t>(
+            1, static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) /
+                   std::max<int64_t>(1, tiles_per_transform));
+        const int64_t batch_chunk = std::min(context.batch, max_batch);
+        for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+          const int64_t count = std::min(batch_chunk, context.batch - batch_offset);
+          const int64_t byte_offset = batch_offset * length * element_bytes;
+          const auto &tables = aiv_stages[stage];
+          const flagfftResult status = adaptor::npu::launch_ascendc_stockham_stage(
+              current + byte_offset,
+              dst + byte_offset,
+              tables.twiddles.get(),
+              tables.roots.get(),
+              aiv_indices.get(),
+              tables.store_indices.get(),
+              static_cast<uint32_t>(length),
+              static_cast<uint32_t>(factor),
+              static_cast<uint32_t>(span),
+              static_cast<uint32_t>(count),
+              context.stream);
+          if (status != FLAGFFT_SUCCESS) return status;
+        }
+      } else
+#endif
+      {
+        const int64_t block = kernels[stage]->butterflies_per_block;
+        const int64_t programs_per_batch = (length / factor + block - 1) / block;
+        const int64_t batch_chunk = std::max<int64_t>(
+            1,
+            std::min<int64_t>(context.batch,
+                              block_limit / std::max<int64_t>(1, programs_per_batch)));
+        for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+          const int64_t count = std::min(batch_chunk, context.batch - batch_offset);
+          const int64_t byte_offset = batch_offset * length * element_bytes;
+          std::vector<JitKernelArg> args = {JitKernelArg::device(current + byte_offset),
+                                            JitKernelArg::device(dst + byte_offset),
+                                            JitKernelArg::device(twiddle.get()),
+                                            JitKernelArg::i64(span),
+                                            JitKernelArg::i32(static_cast<int32_t>(count))};
+          const int64_t butterflies = count * (length / factor);
+          kernels[stage]->launch(context.stream, args, (butterflies + block - 1) / block, 1, 1);
+        }
       }
       current = dst;
       span *= factor;
@@ -414,7 +1050,11 @@ flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
     }
 
     std::vector<JitKernelArg> args = raw_kernel_args({effective_input, output}, tables, context.batch);
-    kernel->launch(context.stream, args, context.batch, 1, 1);
+    kernel->launch(context.stream,
+                   args,
+                   ceil_div(context.batch, kernel->batch_per_block),
+                   std::max<int64_t>(1, kernel->grid_y_override),
+                   1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] DirectDFT execute failed: %s\n", e.what());
@@ -612,7 +1252,9 @@ CompiledRawBluesteinFullLeafNode::CompiledRawBluesteinFullLeafNode(int64_t lengt
                                                                    std::vector<DeviceAllocation> tables,
                                                                    DeviceAllocation chirp,
                                                                    DeviceAllocation b_time,
-                                                                   DeviceAllocation b_fft_buf)
+                                                                   DeviceAllocation b_fft_buf,
+                                                                   std::string real_kind,
+                                                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
@@ -620,7 +1262,9 @@ CompiledRawBluesteinFullLeafNode::CompiledRawBluesteinFullLeafNode(int64_t lengt
       tables(std::move(tables)),
       chirp(std::move(chirp)),
       b_time(std::move(b_time)),
-      b_fft_buf(std::move(b_fft_buf)) {
+      b_fft_buf(std::move(b_fft_buf)),
+      real_kind(std::move(real_kind)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawBluesteinFullLeafNode::describe() const {
@@ -648,6 +1292,21 @@ flagfftResult CompiledRawBluesteinFullLeafNode::execute(adaptor::DevicePtr input
                                                         adaptor::DevicePtr output,
                                                         const RawExecutionContext &context) const {
   try {
+    if (!real_kind.empty()) {
+      const int64_t half = length / 2 + 1;
+      const int64_t dense_input = real_kind == "r2c" ? length : half;
+      const int64_t dense_output = real_kind == "r2c" ? half : length;
+      if (input == output || (context.input_distance > 0 && context.input_distance != dense_input) ||
+          (context.output_distance > 0 && context.output_distance != dense_output)) {
+        std::shared_ptr<CompiledRawNode> fallback;
+        {
+          std::lock_guard<std::mutex> lock(layout_mutex);
+          if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+          fallback = layout_fallback;
+        }
+        return fallback ? fallback->execute(input, output, context) : FLAGFFT_INVALID_VALUE;
+      }
+    }
     ensure_b_fft(context);
     std::vector<JitKernelArg> args =
         raw_kernel_args({input, b_fft_buf.get(), chirp.get(), output}, tables, context.batch);
@@ -677,7 +1336,9 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
     DeviceAllocation b_time,
     DeviceAllocation stage1,
     DeviceAllocation work_buf,
-    DeviceAllocation b_fft_buf)
+    DeviceAllocation b_fft_buf,
+    std::string real_kind,
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       conv_length(conv_length),
       n1(n1),
@@ -694,7 +1355,9 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
       b_time(std::move(b_time)),
       stage1(std::move(stage1)),
       work_buf(std::move(work_buf)),
-      b_fft_buf(std::move(b_fft_buf)) {
+      b_fft_buf(std::move(b_fft_buf)),
+      real_kind(std::move(real_kind)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawBluesteinFourStepNode::describe() const {
@@ -726,6 +1389,21 @@ flagfftResult CompiledRawBluesteinFourStepNode::execute(adaptor::DevicePtr input
                                                         const RawExecutionContext &context) const {
   const char *stage = "precompute";
   try {
+    if (!real_kind.empty()) {
+      const int64_t half = length / 2 + 1;
+      const int64_t dense_input = real_kind == "r2c" ? length : half;
+      const int64_t dense_output = real_kind == "r2c" ? half : length;
+      if (input == output || (context.input_distance > 0 && context.input_distance != dense_input) ||
+          (context.output_distance > 0 && context.output_distance != dense_output)) {
+        std::shared_ptr<CompiledRawNode> fallback;
+        {
+          std::lock_guard<std::mutex> lock(layout_mutex);
+          if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+          fallback = layout_fallback;
+        }
+        return fallback ? fallback->execute(input, output, context) : FLAGFFT_INVALID_VALUE;
+      }
+    }
     ensure_b_fft(context);
     const bool fused_twiddle = prepare_row_kernel->tle_fused_twiddle;
 
@@ -793,13 +1471,23 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
                                            DeviceAllocation a_buf,
                                            DeviceAllocation work_buf,
                                            DeviceAllocation b_fft_buf,
-                                           DeviceAllocation input_copy)
+                                           DeviceAllocation input_copy,
+                                           std::shared_ptr<JitKernel> fused_leaf_kernel,
+                                           std::vector<DeviceAllocation> fused_leaf_tables,
+                                           std::shared_ptr<JitKernel> boundary_prepare_kernel,
+                                           std::shared_ptr<JitKernel> boundary_finish_kernel,
+                                           std::vector<DeviceAllocation> boundary_tables)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
       prepare_kernel(std::move(prepare_kernel)),
       pointwise_kernel(std::move(pointwise_kernel)),
       finalize_kernel(std::move(finalize_kernel)),
+      fused_leaf_kernel(std::move(fused_leaf_kernel)),
+      fused_leaf_tables(std::move(fused_leaf_tables)),
+      boundary_prepare_kernel(std::move(boundary_prepare_kernel)),
+      boundary_finish_kernel(std::move(boundary_finish_kernel)),
+      boundary_tables(std::move(boundary_tables)),
       idx(std::move(idx)),
       b_time(std::move(b_time)),
       a_buf(std::move(a_buf)),
@@ -814,6 +1502,9 @@ std::string CompiledRawRaderNode::describe() const {
       << ", prepare_kernel=" << (prepare_kernel ? prepare_kernel->execution_description() : "null")
       << ", pointwise_kernel=" << (pointwise_kernel ? pointwise_kernel->execution_description() : "null")
       << ", finalize_kernel=" << (finalize_kernel ? finalize_kernel->execution_description() : "null")
+      << ", fused_leaf_kernel=" << (fused_leaf_kernel ? fused_leaf_kernel->execution_description() : "null")
+      << ", boundary_prepare_kernel=" << (boundary_prepare_kernel ? boundary_prepare_kernel->execution_description() : "null")
+      << ", boundary_finish_kernel=" << (boundary_finish_kernel ? boundary_finish_kernel->execution_description() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -840,6 +1531,27 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
     if (input == output) {
       adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);
       effective_input = input_copy.get();
+    }
+    if (fused_leaf_kernel) {
+      std::vector<JitKernelArg> args = raw_kernel_args(
+          {effective_input, b_fft_buf.get(), idx.get(), output}, fused_leaf_tables, context.batch);
+      fused_leaf_kernel->launch(context.stream, args,
+                                ceil_div(context.batch, fused_leaf_kernel->batch_per_block), 1, 1);
+      return FLAGFFT_SUCCESS;
+    }
+    if (boundary_prepare_kernel && boundary_finish_kernel) {
+      std::vector<JitKernelArg> prepare_args = raw_kernel_args(
+          {effective_input, idx.get(), a_buf.get()}, boundary_tables, context.batch);
+      boundary_prepare_kernel->launch(
+          context.stream, prepare_args,
+          ceil_div(context.batch, boundary_prepare_kernel->batch_per_block), 1, 1);
+      std::vector<JitKernelArg> finish_args = raw_kernel_args(
+          {a_buf.get(), b_fft_buf.get(), idx.get(), effective_input, output},
+          boundary_tables, context.batch);
+      boundary_finish_kernel->launch(
+          context.stream, finish_args,
+          ceil_div(context.batch, boundary_finish_kernel->batch_per_block), 1, 1);
+      return FLAGFFT_SUCCESS;
     }
 
     std::vector<JitKernelArg> prepare_args = {
@@ -932,48 +1644,57 @@ flagfftResult CompiledRawFourStepGenericNode::execute(adaptor::DevicePtr input,
   try {
     const int64_t total = n1 * n2;
     const int64_t reshape_block = 256;
-
-    std::vector<JitKernelArg> reshape_in_args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(stage1.get()),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    reshape_in_kernel->launch(context.stream,
-                              reshape_in_args,
-                              ceil_div(total, reshape_block),
-                              context.batch,
-                              1);
-
-    RawExecutionContext row_context {context.request, context.stream, context.batch * n2};
-    flagfftResult result = row_child->execute(stage1.get(), stage2.get(), row_context);
-    if (result != FLAGFFT_SUCCESS) {
-      return result;
+    const int64_t grid_x = ceil_div(total, reshape_block);
+    int64_t batch_chunk = context.batch;
+    if (context.request.device_type == "npu") {
+      // The input, twiddle and final layout kernels use grid_y=batch. Chunk
+      // large 3D axis batches so grid_x*grid_y stays under the ACL block cap.
+      batch_chunk = std::max<int64_t>(
+          1, std::min(context.batch, block_limit_per_launch() / std::max<int64_t>(1, grid_x)));
     }
+    const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+    for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
+      const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
+      const int64_t byte_offset = batch_offset * total * element_bytes;
+      const adaptor::DevicePtr input_chunk = input + byte_offset;
+      const adaptor::DevicePtr output_chunk = output + byte_offset;
+      const adaptor::DevicePtr stage1_chunk = stage1.get() + byte_offset;
+      const adaptor::DevicePtr stage2_chunk = stage2.get() + byte_offset;
 
-    std::vector<JitKernelArg> twiddle_args = {
-        JitKernelArg::device(stage2.get()),
-        JitKernelArg::device(twiddle.get()),
-        JitKernelArg::device(stage1.get()),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    twiddle_reshape_kernel->launch(context.stream,
-                                   twiddle_args,
-                                   ceil_div(total, reshape_block),
-                                   context.batch,
-                                   1);
+      std::vector<JitKernelArg> reshape_in_args = {
+          JitKernelArg::device(input_chunk),
+          JitKernelArg::device(stage1_chunk),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
+      };
+      reshape_in_kernel->launch(context.stream, reshape_in_args, grid_x, chunk_batch, 1);
 
-    RawExecutionContext col_context {context.request, context.stream, context.batch * n1};
-    result = col_child->execute(stage1.get(), stage2.get(), col_context);
-    if (result != FLAGFFT_SUCCESS) {
-      return result;
+      RawExecutionContext row_context {context.request, context.stream, chunk_batch * n2};
+      flagfftResult result = row_child->execute(stage1_chunk, stage2_chunk, row_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      std::vector<JitKernelArg> twiddle_args = {
+          JitKernelArg::device(stage2_chunk),
+          JitKernelArg::device(twiddle.get()),
+          JitKernelArg::device(stage1_chunk),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
+      };
+      twiddle_reshape_kernel->launch(context.stream, twiddle_args, grid_x, chunk_batch, 1);
+
+      RawExecutionContext col_context {context.request, context.stream, chunk_batch * n1};
+      result = col_child->execute(stage1_chunk, stage2_chunk, col_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      std::vector<JitKernelArg> final_args = {
+          JitKernelArg::device(stage2_chunk),
+          JitKernelArg::device(output_chunk),
+          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
+      };
+      final_pack_kernel->launch(context.stream, final_args, grid_x, chunk_batch, 1);
     }
-
-    std::vector<JitKernelArg> final_args = {
-        JitKernelArg::device(stage2.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    final_pack_kernel->launch(context.stream, final_args, ceil_div(total, reshape_block), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] FourStepGeneric execute failed: %s\n", e.what());
@@ -1065,26 +1786,72 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
   }
 }
 
+#if defined(FLAGFFT_BACKEND_NPU)
+CompiledRawNpuPackedRealBoundaryNode::CompiledRawNpuPackedRealBoundaryNode(
+    int64_t length,
+    bool r2c_postprocess,
+    DeviceAllocation indices,
+    DeviceAllocation twiddles)
+    : length(length),
+      r2c_postprocess(r2c_postprocess),
+      indices(std::move(indices)),
+      twiddles(std::move(twiddles)) {
+}
+
+std::string CompiledRawNpuPackedRealBoundaryNode::describe() const {
+  return "CompiledRawNpuPackedRealBoundary(n=" + std::to_string(length) +
+         (r2c_postprocess ? ", mode=r2c)" : ", mode=c2r)");
+}
+
+flagfftResult CompiledRawNpuPackedRealBoundaryNode::execute(
+    adaptor::DevicePtr input,
+    adaptor::DevicePtr output,
+    const RawExecutionContext &context) const {
+  const int64_t packed = length / 2;
+  const int64_t half = packed + 1;
+  const int64_t input_distance = r2c_postprocess
+                                     ? packed
+                                     : (context.input_distance > 0 ? context.input_distance : half);
+  const int64_t output_distance = r2c_postprocess
+                                      ? (context.output_distance > 0 ? context.output_distance : half)
+                                      : (context.output_distance > 0 ? context.output_distance : packed);
+  if (length < 128 || length > 2048 || (length & 1) != 0 || context.batch <= 0 ||
+      context.batch > std::numeric_limits<int32_t>::max() ||
+      input_distance > std::numeric_limits<int32_t>::max() ||
+      output_distance > std::numeric_limits<int32_t>::max() || indices.size() == 0 ||
+      twiddles.size() == 0) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  return adaptor::npu::launch_ascendc_packed_real_boundary(
+      input, output, indices.get(), twiddles.get(), static_cast<int32_t>(length),
+      static_cast<int32_t>(input_distance), static_cast<int32_t>(output_distance),
+      static_cast<int32_t>(context.batch), r2c_postprocess, context.stream);
+}
+#endif
+
 CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(
     int64_t length,
     std::shared_ptr<CompiledRawNode> fft,
     std::shared_ptr<JitKernel> postprocess_kernel,
     DeviceAllocation twiddle,
     DeviceAllocation packed_output,
-    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback,
+    std::shared_ptr<CompiledRawNode> aiv_postprocess)
     : length(length),
       fft(std::move(fft)),
       postprocess_kernel(std::move(postprocess_kernel)),
       twiddle(std::move(twiddle)),
       packed_output(std::move(packed_output)),
-      make_layout_fallback(std::move(make_layout_fallback)) {
+      make_layout_fallback(std::move(make_layout_fallback)),
+      aiv_postprocess(std::move(aiv_postprocess)) {
 }
 
 std::string CompiledRawPackedR2CNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawPackedR2C(n=" << length << ", packed_n=" << length / 2
       << ", fft=" << (fft ? fft->describe() : "null") << ", postprocess_kernel="
-      << (postprocess_kernel ? postprocess_kernel->execution_description() : "null") << ")";
+      << (postprocess_kernel ? postprocess_kernel->execution_description() : "null")
+      << ", aiv_postprocess=" << (aiv_postprocess ? aiv_postprocess->describe() : "null") << ")";
   return oss.str();
 }
 
@@ -1099,8 +1866,10 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
     // Reinterpreting adjacent real pairs as complex values requires a dense
     // input batch. In-place real rows carry Nyquist padding; preserve their
     // original distance-aware implementation.
-    if (context.batch > 1 &&
-        (input == output || (context.input_distance > 0 && context.input_distance != length))) {
+    const bool aiv_requires_dense_output = aiv_postprocess && output_distance != half;
+    if (aiv_requires_dense_output ||
+        (context.batch > 1 &&
+         (input == output || (context.input_distance > 0 && context.input_distance != length)))) {
       std::lock_guard<std::mutex> lock(layout_mutex);
       if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
       if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
@@ -1111,6 +1880,15 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
     flagfftResult result = fft->execute(input, packed_output.get(), child_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+
+    if (aiv_postprocess) {
+      RawExecutionContext boundary_context {
+          context.request, context.stream, context.batch, packed, output_distance};
+      const flagfftResult result =
+          aiv_postprocess->execute(packed_output.get(), output, boundary_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return FLAGFFT_SUCCESS;
     }
 
     std::vector<JitKernelArg> args = {
@@ -1135,8 +1913,11 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
 
 CompiledRawR2CLeafNode::CompiledRawR2CLeafNode(int64_t length,
                                                std::shared_ptr<JitKernel> kernel,
-                                               std::vector<DeviceAllocation> tables)
-    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+                                               std::vector<DeviceAllocation> tables,
+                                               DeviceAllocation twiddle,
+                                               int64_t perm_span)
+    : length(length), kernel(std::move(kernel)), tables(std::move(tables)),
+      twiddle(std::move(twiddle)), perm_span(perm_span) {
 }
 
 std::string CompiledRawR2CLeafNode::describe() const {
@@ -1144,7 +1925,8 @@ std::string CompiledRawR2CLeafNode::describe() const {
   oss << "CompiledRawR2CLeaf(n=" << length
       << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
-      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
+      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size()
+      << ", perm_span=" << perm_span << ")";
   return oss.str();
 }
 
@@ -1158,18 +1940,33 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     const int64_t input_distance = in_place ? std::max(context.input_distance, padded_real_distance)
                                             : (context.input_distance > 0 ? context.input_distance : length);
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
+    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
+    if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
+                                           input_distance, output_distance)) {
+      return FLAGFFT_SUCCESS;
+    }
 
     std::vector<JitKernelArg> args;
-    args.reserve(2 + tables.size() + 3);
+    args.reserve(3 + tables.size() + 4);
     args.push_back(JitKernelArg::device(input));
     args.push_back(JitKernelArg::device(output));
+    if (twiddle.get()) args.push_back(JitKernelArg::device(twiddle.get()));
     for (const DeviceAllocation &table : tables) {
       args.push_back(JitKernelArg::device(table.get()));
     }
     args.push_back(JitKernelArg::i64(input_distance));
-    args.push_back(JitKernelArg::i64(output_distance));
+    if (perm_span > 0) {
+      args.push_back(JitKernelArg::i64(perm_span));
+    } else {
+      args.push_back(JitKernelArg::i64(output_distance));
+    }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    auto launch = [&]() {
+      kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    };
+    launch();
+    if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,
+                                          input_distance, output_distance, launch);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] R2CLeaf execute failed: %s\n", e.what());
@@ -1413,19 +2210,22 @@ CompiledRawPackedC2RNode::CompiledRawPackedC2RNode(
     std::shared_ptr<CompiledRawNode> fft,
     DeviceAllocation twiddle,
     DeviceAllocation packed_input,
-    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback,
+    std::shared_ptr<CompiledRawNode> aiv_preprocess)
     : length(length),
       preprocess_kernel(std::move(preprocess_kernel)),
       fft(std::move(fft)),
       twiddle(std::move(twiddle)),
       packed_input(std::move(packed_input)),
-      make_layout_fallback(std::move(make_layout_fallback)) {
+      make_layout_fallback(std::move(make_layout_fallback)),
+      aiv_preprocess(std::move(aiv_preprocess)) {
 }
 
 std::string CompiledRawPackedC2RNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawPackedC2R(n=" << length << ", packed_n=" << length / 2
       << ", preprocess_kernel=" << (preprocess_kernel ? preprocess_kernel->execution_description() : "null")
+      << ", aiv_preprocess=" << (aiv_preprocess ? aiv_preprocess->describe() : "null")
       << ", fft=" << (fft ? fft->describe() : "null") << ")";
   return oss.str();
 }
@@ -1446,18 +2246,26 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
       return layout_fallback->execute(input, output, context);
     }
 
-    std::vector<JitKernelArg> args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(twiddle.get()),
-        JitKernelArg::device(packed_input.get()),
-        JitKernelArg::i64(input_distance),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    preprocess_kernel->launch(context.stream,
-                              args,
-                              ceil_div(packed, block),
-                              grid_rows(preprocess_kernel, context.batch),
-                              1);
+    if (aiv_preprocess) {
+      RawExecutionContext boundary_context {
+          context.request, context.stream, context.batch, input_distance, packed};
+      const flagfftResult preprocess_result =
+          aiv_preprocess->execute(input, packed_input.get(), boundary_context);
+      if (preprocess_result != FLAGFFT_SUCCESS) return preprocess_result;
+    } else {
+      std::vector<JitKernelArg> args = {
+          JitKernelArg::device(input),
+          JitKernelArg::device(twiddle.get()),
+          JitKernelArg::device(packed_input.get()),
+          JitKernelArg::i64(input_distance),
+          JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+      };
+      preprocess_kernel->launch(context.stream,
+                                args,
+                                ceil_div(packed, block),
+                                grid_rows(preprocess_kernel, context.batch),
+                                1);
+    }
 
     RawExecutionContext child_context {context.request, context.stream, context.batch};
     return fft->execute(packed_input.get(), output, child_context);
@@ -1468,12 +2276,115 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawPackedC2RFusedLeafNode::CompiledRawPackedC2RFusedLeafNode(
+    int64_t length,
+    std::shared_ptr<JitKernel> kernel,
+    DeviceAllocation twiddle,
+    std::vector<DeviceAllocation> tables,
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+    : length(length),
+      kernel(std::move(kernel)),
+      twiddle(std::move(twiddle)),
+      tables(std::move(tables)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
+}
+
+std::string CompiledRawPackedC2RFusedLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawPackedC2RFusedLeaf(n=" << length << ", packed_n=" << length / 2
+      << ", kernel=" << (kernel ? kernel->execution_description() : "null")
+      << ", tables=" << tables.size() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawPackedC2RFusedLeafNode::execute(
+    adaptor::DevicePtr input,
+    adaptor::DevicePtr output,
+    const RawExecutionContext &context) const {
+  try {
+    const int64_t half = length / 2 + 1;
+    if (context.batch > 1 &&
+        (input == output || (context.output_distance > 0 && context.output_distance != length))) {
+      std::lock_guard<std::mutex> lock(layout_mutex);
+      if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+      if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
+      return layout_fallback->execute(input, output, context);
+    }
+
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
+    std::vector<JitKernelArg> args;
+    args.reserve(3 + tables.size() + 2);
+    args.push_back(JitKernelArg::device(input));
+    args.push_back(JitKernelArg::device(output));
+    args.push_back(JitKernelArg::device(twiddle.get()));
+    for (const DeviceAllocation &table : tables) {
+      args.push_back(JitKernelArg::device(table.get()));
+    }
+    args.push_back(JitKernelArg::i64(input_distance));
+    args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
+    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] PackedC2RFusedLeaf execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+void CompiledRawTranspose2D::launch(adaptor::StreamHandle stream,
+                                    const std::vector<JitKernelArg> &kernel_args,
+                                    int64_t grid_x,
+                                    int64_t grid_y,
+                                    int64_t grid_z) const {
+  if (native_npu) {
+#if defined(FLAGFFT_BACKEND_NPU)
+    if (kernel_args.size() != 3 ||
+        kernel_args[0].kind != JitArgKind::DevicePtr ||
+        kernel_args[1].kind != JitArgKind::DevicePtr ||
+        kernel_args[2].kind != JitArgKind::Int32 ||
+        rows > std::numeric_limits<int32_t>::max() ||
+        cols > std::numeric_limits<int32_t>::max() ||
+        kernel_args[2].int32_value <= 0) {
+      throw std::runtime_error("invalid arguments for native AscendC 2D transpose");
+    }
+    const flagfftResult result = adaptor::npu::launch_ascendc_transpose2d(
+        kernel_args[0].device_ptr,
+        kernel_args[1].device_ptr,
+        npu_indices.get(),
+        static_cast<int32_t>(rows),
+        static_cast<int32_t>(cols),
+        kernel_args[2].int32_value,
+        npu_tile_size,
+        stream);
+    if (result != FLAGFFT_SUCCESS) {
+      throw std::runtime_error("native AscendC 2D transpose launch failed");
+    }
+    return;
+#else
+    throw std::runtime_error("native AscendC transpose selected for a non-NPU build");
+#endif
+  }
+  if (triton_kernel == nullptr) {
+    throw std::runtime_error("missing Triton 2D transpose kernel");
+  }
+  triton_kernel->launch(stream, kernel_args, grid_x, grid_y, grid_z);
+}
+
+std::string CompiledRawTranspose2D::execution_description() const {
+  if (native_npu) {
+    return "AscendCTranspose2D(rows=" + std::to_string(rows) +
+           ", cols=" + std::to_string(cols) +
+           ", tile=" + std::to_string(npu_tile_size) + ")";
+  }
+  return triton_kernel ? triton_kernel->execution_description() : "null";
+}
+
 CompiledRaw2DNode::CompiledRaw2DNode(int64_t n0,
                                      int64_t n1,
                                      std::shared_ptr<CompiledRawNode> row_fft,
                                      std::shared_ptr<CompiledRawNode> col_fft,
-                                     std::shared_ptr<JitKernel> transpose_fwd,
-                                     std::shared_ptr<JitKernel> transpose_inv,
+                                     std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                                     std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                      DeviceAllocation temp1,
                                      DeviceAllocation temp2,
                                      bool enable_graph)
@@ -1486,6 +2397,45 @@ CompiledRaw2DNode::CompiledRaw2DNode(int64_t n0,
       temp1(std::move(temp1)),
       temp2(std::move(temp2)),
       graph_enabled_(enable_graph) {
+}
+
+CompiledRaw2DFusedNode::CompiledRaw2DFusedNode(int64_t n0,
+                                               int64_t n1,
+                                               std::shared_ptr<JitKernel> kernel,
+                                               DeviceAllocation tw_r,
+                                               DeviceAllocation tw_i,
+                                               DeviceAllocation temp)
+    : n0(n0), n1(n1), kernel(std::move(kernel)),
+      tw_r(std::move(tw_r)), tw_i(std::move(tw_i)), temp(std::move(temp)) {
+}
+
+std::string CompiledRaw2DFusedNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw2DFused(n0=" << n0 << ", n1=" << n1
+      << ", kernel=" << kernel->execution_description() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw2DFusedNode::execute(adaptor::DevicePtr input,
+                                              adaptor::DevicePtr output,
+                                              const RawExecutionContext &context) const {
+  try {
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    kernel->launch(context.stream, args, context.batch * n0, 1, 1);
+    args[0] = JitKernelArg::device(temp.get());
+    args[1] = JitKernelArg::device(output);
+    kernel->launch(context.stream, args, context.batch * n1, 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] fused 2D execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
 }
 
 std::string CompiledRaw2DNode::describe() const {
@@ -1621,16 +2571,18 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
     }
 
     auto run_sequence = [&]() -> flagfftResult {
-      // Step 1: Row FFT (input -> temp1), contiguous along n1.
+      // Step 1: Transform the contiguous input axis into temp1. Some compiled
+      // paths store the result transposed so the second pass can also read
+      // contiguous data.
       RawExecutionContext row_context {context.request, context.stream, batch * n0};
       flagfftResult result = row_fft->execute(input, temp1.get(), row_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
 
-      // Step 2: Column FFT in-place on the row-major matrix.  Each column of
-      // length n0 is a strided 1D FFT with outer stride n1, so no transpose is
-      // needed and the result is already in natural (batch, n0, n1) order.
+      // Step 2: Transform the second axis and let its compiled output layout
+      // produce the natural (batch, n0, n1) result. This is strided for the
+      // portable RC path and contiguous for the transposed Cube path.
       RawExecutionContext col_context {context.request, context.stream, batch * n1};
       result = col_fft->execute(temp1.get(), output, col_context);
       return result;
@@ -1707,6 +2659,11 @@ flagfftResult CompiledRawC2RLeafNode::execute(adaptor::DevicePtr input,
     const int64_t output_distance = in_place
                                         ? std::max(context.output_distance, padded_real_distance)
                                         : (context.output_distance > 0 ? context.output_distance : length);
+    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
+    if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
+                                           input_distance, output_distance)) {
+      return FLAGFFT_SUCCESS;
+    }
 
     std::vector<JitKernelArg> args;
     args.reserve(2 + tables.size() + 3);
@@ -1718,7 +2675,12 @@ flagfftResult CompiledRawC2RLeafNode::execute(adaptor::DevicePtr input,
     args.push_back(JitKernelArg::i64(input_distance));
     args.push_back(JitKernelArg::i64(output_distance));
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    auto launch = [&]() {
+      kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    };
+    launch();
+    if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,
+                                          input_distance, output_distance, launch);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] C2RLeaf execute failed: %s\n", e.what());
@@ -1731,8 +2693,8 @@ CompiledRaw2DR2CRowNode::CompiledRaw2DR2CRowNode(int64_t n0,
                                                  int64_t n1,
                                                  std::shared_ptr<CompiledRawNode> row_r2c,
                                                  std::shared_ptr<CompiledRawNode> col_fft,
-                                                 std::shared_ptr<JitKernel> transpose_fwd,
-                                                 std::shared_ptr<JitKernel> transpose_inv,
+                                                 std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                                                 std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                                  DeviceAllocation temp1,
                                                  DeviceAllocation temp2)
     : n0(n0),
@@ -1811,8 +2773,8 @@ CompiledRaw2DC2RRowNode::CompiledRaw2DC2RRowNode(int64_t n0,
                                                  int64_t n1,
                                                  std::shared_ptr<CompiledRawNode> col_fft,
                                                  std::shared_ptr<CompiledRawNode> row_c2r,
-                                                 std::shared_ptr<JitKernel> transpose_fwd,
-                                                 std::shared_ptr<JitKernel> transpose_inv,
+                                                 std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                                                 std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                                  DeviceAllocation temp1,
                                                  DeviceAllocation temp2)
     : n0(n0),
@@ -1888,8 +2850,8 @@ CompiledRaw2DR2CNode::CompiledRaw2DR2CNode(int64_t n0,
                                            std::shared_ptr<CompiledRawNode> row_fft,
                                            std::shared_ptr<JitKernel> pack_kernel,
                                            std::shared_ptr<CompiledRawNode> col_fft,
-                                           std::shared_ptr<JitKernel> transpose_fwd,
-                                           std::shared_ptr<JitKernel> transpose_inv,
+                                           std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                                           std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                            DeviceAllocation row_fft_buf,
                                            DeviceAllocation temp1,
                                            DeviceAllocation temp2)
@@ -1933,17 +2895,23 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
     // input_distance is per-row distance in the input buffer
     const int64_t input_distance = n1;  // Each row in input has n1 real elements
     const int64_t total_rows = batch * n0;
-    std::vector<JitKernelArg> expand_args = {
-        JitKernelArg::device(input),
-        JitKernelArg::device(row_fft_buf.get()),
-        JitKernelArg::i64(input_distance),
-        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
-    };
-    expand_kernel->launch(context.stream,
-                          expand_args,
-                          ceil_div(n1, block),
-                          grid_rows(expand_kernel, total_rows),
-                          1);
+    const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
+    const int64_t real_bytes = complex_bytes / 2;
+    launch_grid_y_chunks(
+        ceil_div(n1, block), total_rows, expand_kernel->rows_per_block,
+        [&](int64_t row_offset, int64_t chunk_rows) {
+          std::vector<JitKernelArg> expand_args = {
+              JitKernelArg::device(input + row_offset * input_distance * real_bytes),
+              JitKernelArg::device(row_fft_buf.get() + row_offset * n1 * complex_bytes),
+              JitKernelArg::i64(input_distance),
+              JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
+          };
+          expand_kernel->launch(context.stream,
+                                expand_args,
+                                ceil_div(n1, block),
+                                grid_rows(expand_kernel, chunk_rows),
+                                1);
+        });
 
     // Step 2: Row C2C FFT
     // row_fft_buf: (batch*n0, n1) complex -> row_fft_buf: (batch*n0, n1) complex (in-place)
@@ -1958,17 +2926,21 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
     // Each row is processed independently, so total rows = batch * n0
     // output_distance is per-row distance in the output buffer
     const int64_t output_distance = half_n1;  // Each row in output has half_n1 complex elements
-    std::vector<JitKernelArg> pack_args = {
-        JitKernelArg::device(row_fft_buf.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i64(output_distance),
-        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
-    };
-    pack_kernel->launch(context.stream,
-                        pack_args,
-                        ceil_div(half_n1, block),
-                        grid_rows(pack_kernel, total_rows),
-                        1);
+    launch_grid_y_chunks(
+        ceil_div(half_n1, block), total_rows, pack_kernel->rows_per_block,
+        [&](int64_t row_offset, int64_t chunk_rows) {
+          std::vector<JitKernelArg> pack_args = {
+              JitKernelArg::device(row_fft_buf.get() + row_offset * n1 * complex_bytes),
+              JitKernelArg::device(output + row_offset * output_distance * complex_bytes),
+              JitKernelArg::i64(output_distance),
+              JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
+          };
+          pack_kernel->launch(context.stream,
+                              pack_args,
+                              ceil_div(half_n1, block),
+                              grid_rows(pack_kernel, chunk_rows),
+                              1);
+        });
 
     // Step 4: Transpose (n0, n1/2+1) -> (n1/2+1, n0)
     // transpose_fwd kernel is compiled for (n0, half_n1) -> (half_n1, n0)
@@ -2046,6 +3018,20 @@ flagfftResult CompiledRaw2DR2CRCNode::execute(adaptor::DevicePtr input,
     constexpr int64_t block = 256;
     const int64_t half_n1 = n1 / 2 + 1;
     const int64_t total_rows = batch * n0;
+
+    if (expand_kernel == nullptr && pack_kernel == nullptr) {
+      // The row child writes the compact half spectrum into scratch. This
+      // keeps exact in-place R2C safe while still avoiding full-complex
+      // expansion and the separate half-spectrum pack kernel.
+      RawExecutionContext row_context {context.request, context.stream, total_rows, n1, half_n1};
+      flagfftResult result = row_fft->execute(input, row_fft_buf.get(), row_context);
+      if (result != FLAGFFT_SUCCESS) {
+        return result;
+      }
+
+      RawExecutionContext col_context {context.request, context.stream, batch * half_n1};
+      return col_fft->execute(row_fft_buf.get(), output, col_context);
+    }
 
     // Step 1: Expand real input to complex.
     std::vector<JitKernelArg> expand_args = {
@@ -2168,8 +3154,8 @@ CompiledRaw2DC2RNode::CompiledRaw2DC2RNode(int64_t n0,
                                            std::shared_ptr<JitKernel> expand_kernel,
                                            std::shared_ptr<CompiledRawNode> col_fft,
                                            std::shared_ptr<CompiledRawNode> row_fft,
-                                           std::shared_ptr<JitKernel> transpose_fwd,
-                                           std::shared_ptr<JitKernel> transpose_inv,
+                                           std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
+                                           std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                            std::shared_ptr<JitKernel> pack_kernel,
                                            DeviceAllocation temp1,
                                            DeviceAllocation temp2,
@@ -2250,17 +3236,23 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
 
     // Step 4: Expand half-packed -> full Hermitian
     // temp1: (batch*n0, half_n1) complex -> temp3: (batch*n0, n1) complex
-    std::vector<JitKernelArg> expand_args = {
-        JitKernelArg::device(temp1.get()),
-        JitKernelArg::device(temp3.get()),
-        JitKernelArg::i64(half_n1),
-        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
-    };
-    expand_kernel->launch(context.stream,
-                          expand_args,
-                          ceil_div(n1, block),
-                          grid_rows(expand_kernel, total_rows),
-                          1);
+    const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
+    const int64_t real_bytes = complex_bytes / 2;
+    launch_grid_y_chunks(
+        ceil_div(n1, block), total_rows, expand_kernel->rows_per_block,
+        [&](int64_t row_offset, int64_t chunk_rows) {
+          std::vector<JitKernelArg> expand_args = {
+              JitKernelArg::device(temp1.get() + row_offset * half_n1 * complex_bytes),
+              JitKernelArg::device(temp3.get() + row_offset * n1 * complex_bytes),
+              JitKernelArg::i64(half_n1),
+              JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
+          };
+          expand_kernel->launch(context.stream,
+                                expand_args,
+                                ceil_div(n1, block),
+                                grid_rows(expand_kernel, chunk_rows),
+                                1);
+        });
 
     // Step 5: Row C2C IFFT along n1 (batch = batch * n0, in-place)
     RawExecutionContext row_context {context.request, context.stream, total_rows};
@@ -2271,17 +3263,21 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
 
     // Step 6: Pack complex -> real
     // temp3: (batch*n0, n1) complex -> output: (batch*n0, n1) real
-    std::vector<JitKernelArg> pack_args = {
-        JitKernelArg::device(temp3.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i64(n1),
-        JitKernelArg::i32(static_cast<int32_t>(total_rows)),
-    };
-    pack_kernel->launch(context.stream,
-                        pack_args,
-                        ceil_div(n1, block),
-                        grid_rows(pack_kernel, total_rows),
-                        1);
+    launch_grid_y_chunks(
+        ceil_div(n1, block), total_rows, pack_kernel->rows_per_block,
+        [&](int64_t row_offset, int64_t chunk_rows) {
+          std::vector<JitKernelArg> pack_args = {
+              JitKernelArg::device(temp3.get() + row_offset * n1 * complex_bytes),
+              JitKernelArg::device(output + row_offset * n1 * real_bytes),
+              JitKernelArg::i64(n1),
+              JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
+          };
+          pack_kernel->launch(context.stream,
+                              pack_args,
+                              ceil_div(n1, block),
+                              grid_rows(pack_kernel, chunk_rows),
+                              1);
+        });
 
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
@@ -2333,6 +3329,14 @@ flagfftResult CompiledRaw2DC2RRCNode::execute(adaptor::DevicePtr input,
     flagfftResult result = col_fft->execute(input, temp_half.get(), col_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+
+    if (expand_kernel == nullptr && pack_kernel == nullptr) {
+      // The compact column result can be consumed directly by each row's
+      // existing 1D C2R boundary. Keep its input in scratch until the final
+      // real output is written so exact in-place C2R remains safe.
+      RawExecutionContext row_context {context.request, context.stream, total_rows, half_n1, n1};
+      return row_fft->execute(temp_half.get(), output, row_context);
     }
 
     // Step 2: Expand half-packed -> full Hermitian.
@@ -2446,7 +3450,9 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
                                      std::shared_ptr<JitKernel> perm_210_inv,
                                      std::shared_ptr<JitKernel> perm_021_inv,
                                      DeviceAllocation temp1,
-                                     DeviceAllocation temp2)
+                                     DeviceAllocation temp2,
+                                     std::vector<DeviceAllocation> npu_transpose_indices,
+                                     bool npu_pair_fused_store)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2460,7 +3466,43 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
       perm_210_inv(std::move(perm_210_inv)),
       perm_021_inv(std::move(perm_021_inv)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      npu_transpose_indices(std::move(npu_transpose_indices)),
+      npu_pair_fused_store(npu_pair_fused_store) {
+}
+
+CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
+                                     int64_t n1,
+                                     int64_t n2,
+                                     std::shared_ptr<CompiledRawNode> n2_fft,
+                                     std::shared_ptr<CompiledRawNode> n1_fft,
+                                     std::shared_ptr<CompiledRawNode> n0_fft,
+                                     std::shared_ptr<JitKernel> perm_021_fwd,
+                                     std::shared_ptr<JitKernel> perm_210_fwd,
+                                     std::shared_ptr<JitKernel> perm_201_fwd,
+                                     std::shared_ptr<JitKernel> perm_120_inv,
+                                     std::shared_ptr<JitKernel> perm_210_inv,
+                                     std::shared_ptr<JitKernel> perm_021_inv,
+                                     DeviceAllocation temp1,
+                                     DeviceAllocation temp2,
+                                     bool final_permuted_store)
+    : CompiledRaw3DNode(n0,
+                        n1,
+                        n2,
+                        std::move(n2_fft),
+                        std::move(n1_fft),
+                        std::move(n0_fft),
+                        std::move(perm_021_fwd),
+                        std::move(perm_210_fwd),
+                        std::move(perm_201_fwd),
+                        std::move(perm_120_inv),
+                        std::move(perm_210_inv),
+                        std::move(perm_021_inv),
+                        std::move(temp1),
+                        std::move(temp2),
+                        std::vector<DeviceAllocation>{},
+                        false) {
+  this->final_permuted_store = final_permuted_store;
 }
 
 std::string CompiledRaw3DNode::describe() const {
@@ -2471,7 +3513,10 @@ std::string CompiledRaw3DNode::describe() const {
       << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
       << ", perm_021_fwd=" << (perm_021_fwd ? perm_021_fwd->execution_description() : "null")
       << ", perm_210_fwd=" << (perm_210_fwd ? perm_210_fwd->execution_description() : "null")
-      << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null") << ")";
+      << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null")
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
+      << ", npu_pair_fused_store=" << npu_pair_fused_store
+      << ", final_permuted_store=" << (final_permuted_store ? 1 : 0) << ")";
   return oss.str();
 }
 
@@ -2487,22 +3532,72 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * n2};
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * n2};
 
+    if (npu_pair_fused_store) {
+      flagfftResult result = n2_fft->execute(input, temp1.get(), n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return n0_fft->execute(temp2.get(), output, n0_context);
+    }
+
+    auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
+                       adaptor::DevicePtr source,
+                       adaptor::DevicePtr destination,
+                       int64_t d0,
+                       int64_t d1,
+                       int64_t d2,
+                       int32_t axis0,
+                       int32_t axis1,
+                       int32_t axis2) {
+      return launch_perm3d_with_optional_npu_native(kernel,
+                                                     npu_transpose_indices,
+                                                     context.stream,
+                                                     source,
+                                                     destination,
+                                                     d0,
+                                                     d1,
+                                                     d2,
+                                                     axis0,
+                                                     axis1,
+                                                     axis2,
+                                                     batch,
+                                                     complex_element_bytes(context.request.input_dtype));
+    };
+
     flagfftResult result;
+    if (final_permuted_store) {
+      // Keep the two contiguous-axis transposes, then let the final n0 leaf
+      // write directly into natural (n0,n1,n2) output order.  The axes
+      // commute, so the same schedule is valid for forward and inverse.
+      result = n2_fft->execute(input, temp1.get(), n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
+      result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
+      return n0_fft->execute(temp2.get(), output, n0_context);
+    }
+
     if (inverse) {
       // (n0,n1,n2) -> perm(1,2,0) -> (n1,n2,n0), IFFT along n0
-      launch_perm3d(perm_120_inv, context.stream, input, temp1.get(), total, batch);
+      result = permute(perm_120_inv, input, temp1.get(), n0, n1, n2, 1, 2, 0);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n1,n2,n0) -> perm(2,1,0) -> (n0,n2,n1), IFFT along n1
-      launch_perm3d(perm_210_inv, context.stream, temp2.get(), temp1.get(), total, batch);
+      result = permute(perm_210_inv, temp2.get(), temp1.get(), n1, n2, n0, 2, 1, 0);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n0,n2,n1) -> perm(0,2,1) -> (n0,n1,n2), IFFT along n2
-      launch_perm3d(perm_021_inv, context.stream, temp2.get(), temp1.get(), total, batch);
+      result = permute(perm_021_inv, temp2.get(), temp1.get(), n0, n2, n1, 0, 2, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n2_fft->execute(temp1.get(), output, n2_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
@@ -2514,23 +3609,359 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
         return result;
       }
       // (n0,n1,n2) -> perm(0,2,1) -> (n0,n2,n1), FFT along n1
-      launch_perm3d(perm_021_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
+      result = permute(perm_021_fwd, temp1.get(), temp2.get(), n0, n1, n2, 0, 2, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n0,n2,n1) -> perm(2,1,0) -> (n1,n2,n0), FFT along n0
-      launch_perm3d(perm_210_fwd, context.stream, temp1.get(), temp2.get(), total, batch);
+      result = permute(perm_210_fwd, temp1.get(), temp2.get(), n0, n2, n1, 2, 1, 0);
+      if (result != FLAGFFT_SUCCESS) return result;
       result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
       if (result != FLAGFFT_SUCCESS) {
         return result;
       }
       // (n1,n2,n0) -> perm(2,0,1) -> (n0,n1,n2)
-      launch_perm3d(perm_201_fwd, context.stream, temp1.get(), output, total, batch);
+      result = permute(perm_201_fwd, temp1.get(), output, n1, n2, n0, 2, 0, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DFusedPlaneNode::CompiledRaw3DFusedPlaneNode(
+    int64_t plane_size,
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> outer_fft,
+    DeviceAllocation temp,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : plane_size(plane_size),
+      plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFusedPlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DFusedPlane(n=" << plane_size << ", plane_fft=" << plane_fft->execution_description()
+      << ", outer_fft=" << outer_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DFusedPlaneNode::execute(adaptor::DevicePtr input,
+                                                     adaptor::DevicePtr output,
+                                                     const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * plane_size, 1, 1);
+    RawExecutionContext outer_context {context.request, context.stream,
+                                       batch * plane_size * plane_size};
+    return outer_fft->execute(temp.get(), output, outer_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DRealFusedPlaneNode::CompiledRaw3DRealFusedPlaneNode(int64_t n0,
+                                                                 int64_t n1,
+                                                                 int64_t n2,
+                                                                 bool inverse,
+                                                                 std::shared_ptr<JitKernel> plane_fft,
+                                                                 std::shared_ptr<CompiledRawNode> outer_fft,
+                                                                 DeviceAllocation temp,
+                                                                 DeviceAllocation tw_r,
+                                                                 DeviceAllocation tw_i)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      inverse(inverse),
+      plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DRealFusedPlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DRealFusedPlane(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2 << ", inverse=" << inverse
+      << ", plane_fft=" << plane_fft->execution_description() << ", outer_fft=" << outer_fft->describe()
+      << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DRealFusedPlaneNode::execute(adaptor::DevicePtr input,
+                                                       adaptor::DevicePtr output,
+                                                       const RawExecutionContext &context) const {
+  try {
+    const int64_t half = n2 / 2 + 1;
+    const int64_t batch = context.batch;
+    RawExecutionContext outer_context {context.request, context.stream, batch * n1 * half};
+    auto launch_plane = [&](adaptor::DevicePtr plane_input, adaptor::DevicePtr plane_output) {
+      std::vector<JitKernelArg> args = {
+          JitKernelArg::device(plane_input),
+          JitKernelArg::device(plane_output),
+          JitKernelArg::device(tw_r.get()),
+          JitKernelArg::device(tw_i.get()),
+      };
+      plane_fft->launch(context.stream, args, batch * n0, 1, 1);
+    };
+
+    if (!inverse) {
+      launch_plane(input, temp.get());
+      return outer_fft->execute(temp.get(), output, outer_context);
+    }
+
+    flagfftResult result = outer_fft->execute(input, temp.get(), outer_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    launch_plane(temp.get(), output);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D real fused plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DPrimePlaneNode::CompiledRaw3DPrimePlaneNode(
+    int64_t n0,
+    int64_t n1,
+    int64_t n2,
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> middle_fft,
+    std::shared_ptr<JitKernel> output_transpose,
+    DeviceAllocation temp1,
+    DeviceAllocation temp2,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      plane_fft(std::move(plane_fft)),
+      middle_fft(std::move(middle_fft)),
+      output_transpose(std::move(output_transpose)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DPrimePlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DPrimePlane(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", plane_fft=" << plane_fft->execution_description()
+      << ", middle_fft=" << middle_fft->describe()
+      << ", output_transpose=" << output_transpose->execution_description() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DPrimePlaneNode::execute(adaptor::DevicePtr input,
+                                                    adaptor::DevicePtr output,
+                                                    const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp1.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * n1, 1, 1);
+    RawExecutionContext middle_context {context.request, context.stream, batch * n0 * n2};
+    flagfftResult result = middle_fft->execute(temp1.get(), temp2.get(), middle_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    launch_perm3d(output_transpose, context.stream, temp2.get(), output,
+                  n0 * n1 * n2, batch,
+                  complex_element_bytes(context.request.input_dtype));
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D prime plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DFusedCubeNode::CompiledRaw3DFusedCubeNode(
+    std::shared_ptr<JitKernel> fft,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : fft(std::move(fft)), tw_r(std::move(tw_r)), tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFusedCubeNode::describe() const {
+  return "CompiledRaw3DFusedCube(fft=" + fft->execution_description() + ")";
+}
+
+flagfftResult CompiledRaw3DFusedCubeNode::execute(adaptor::DevicePtr input,
+                                                   adaptor::DevicePtr output,
+                                                   const RawExecutionContext &context) const {
+  try {
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input), JitKernelArg::device(output),
+        JitKernelArg::device(tw_r.get()), JitKernelArg::device(tw_i.get()),
+    };
+    fft->launch(context.stream, args, context.batch * 16, 1, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused cube execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DColumnNode::CompiledRaw3DColumnNode(
+    int64_t outer_stride,
+    int64_t columns,
+    std::shared_ptr<JitKernel> kernel,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : outer_stride(outer_stride),
+      columns(columns),
+      kernel(std::move(kernel)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DColumnNode::describe() const {
+  return "CompiledRaw3DColumn(outer_stride=" + std::to_string(outer_stride) +
+         ", columns=" + std::to_string(columns) +
+         ", kernel=" + kernel->execution_description() + ")";
+}
+
+flagfftResult CompiledRaw3DColumnNode::execute(adaptor::DevicePtr input,
+                                               adaptor::DevicePtr output,
+                                               const RawExecutionContext &context) const {
+  try {
+    if (context.batch % outer_stride != 0) {
+      throw std::runtime_error("3D column batch must be a multiple of the outer stride");
+    }
+    const int64_t cube_batch = context.batch / outer_stride;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(output),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+        JitKernelArg::i64(outer_stride),
+    };
+    kernel->launch(context.stream, args, ceil_div(outer_stride, columns), cube_batch, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D column execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DFused32PlaneNode::CompiledRaw3DFused32PlaneNode(
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> outer_fft,
+    DeviceAllocation temp,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFused32PlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DFused32Plane(plane_fft=" << plane_fft->execution_description()
+      << ", outer_fft=" << outer_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DFused32PlaneNode::execute(adaptor::DevicePtr input,
+                                                     adaptor::DevicePtr output,
+                                                     const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(input),
+        JitKernelArg::device(temp.get()),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * 32, 1, 1);
+    RawExecutionContext outer_context {context.request, context.stream, batch * 32 * 32};
+    return outer_fft->execute(temp.get(), output, outer_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused 32-plane execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DFusedRealPlaneNode::CompiledRaw3DFusedRealPlaneNode(
+    int64_t plane_size,
+    bool inverse,
+    std::shared_ptr<JitKernel> plane_fft,
+    std::shared_ptr<CompiledRawNode> outer_fft,
+    DeviceAllocation temp,
+    DeviceAllocation tw_r,
+    DeviceAllocation tw_i)
+    : plane_size(plane_size),
+      inverse(inverse),
+      plane_fft(std::move(plane_fft)),
+      outer_fft(std::move(outer_fft)),
+      temp(std::move(temp)),
+      tw_r(std::move(tw_r)),
+      tw_i(std::move(tw_i)) {
+}
+
+std::string CompiledRaw3DFusedRealPlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DFusedRealPlane(plane_size=" << plane_size
+      << ", inverse=" << (inverse ? "true" : "false")
+      << ", plane_fft=" << plane_fft->execution_description()
+      << ", outer_fft=" << outer_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DFusedRealPlaneNode::execute(adaptor::DevicePtr input,
+                                                       adaptor::DevicePtr output,
+                                                       const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t half = plane_size / 2 + 1;
+    RawExecutionContext outer_context {context.request, context.stream, batch * plane_size * half};
+    const adaptor::DevicePtr plane_input = inverse ? temp.get() : input;
+    const adaptor::DevicePtr plane_output = inverse ? output : temp.get();
+
+    if (inverse) {
+      flagfftResult result = outer_fft->execute(input, temp.get(), outer_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+    }
+
+    std::vector<JitKernelArg> args = {
+        JitKernelArg::device(plane_input),
+        JitKernelArg::device(plane_output),
+        JitKernelArg::device(tw_r.get()),
+        JitKernelArg::device(tw_i.get()),
+    };
+    plane_fft->launch(context.stream, args, batch * plane_size, 1, 1);
+
+    if (!inverse) return outer_fft->execute(temp.get(), output, outer_context);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D fused real plane execute failed: %s\n", e.what());
     std::fflush(stderr);
     return FLAGFFT_EXEC_FAILED;
   }
@@ -2591,6 +4022,468 @@ flagfftResult CompiledRaw3DStridedNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DHybridNode::CompiledRaw3DHybridNode(int64_t n0,
+                                                 int64_t n1,
+                                                 int64_t n2,
+                                                 std::shared_ptr<CompiledRawNode> n2_fft,
+                                                 std::shared_ptr<CompiledRawNode> n1_fft,
+                                                 std::shared_ptr<CompiledRawNode> n0_fft,
+                                                 std::shared_ptr<JitKernel> perm_210,
+                                                 DeviceAllocation temp1,
+                                                 DeviceAllocation temp2,
+                                                 std::shared_ptr<JitKernel> perm_021,
+                                                 std::shared_ptr<JitKernel> perm_201)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      n2_fft(std::move(n2_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      perm_210(std::move(perm_210)),
+      perm_021(std::move(perm_021)),
+      perm_201(std::move(perm_201)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw3DHybridNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DHybrid(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", first_transpose=" << (perm_021 != nullptr)
+      << ", middle_transpose=" << (perm_210 != nullptr)
+      << ", last_transpose=" << (perm_201 != nullptr)
+      << ", n2_fft=" << n2_fft->describe() << ", n1_fft=" << n1_fft->describe()
+      << ", n0_fft=" << n0_fft->describe()
+      << ", perm_201=" << (perm_201 ? perm_201->execution_description() : "null") << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
+                                               adaptor::DevicePtr output,
+                                               const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t total = n0 * n1 * n2;
+    RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
+    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * n2};
+    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * n2};
+
+    flagfftResult result = n2_fft->execute(input, temp1.get(), n2_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    if (perm_021) {
+      launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
+    }
+    result = n1_fft->execute(perm_021 ? temp2.get() : temp1.get(),
+                             perm_021 ? temp1.get() : temp2.get(), n1_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    if (perm_210) {
+      launch_perm3d(perm_210, context.stream,
+                    perm_021 ? temp1.get() : temp2.get(),
+                    perm_021 ? temp2.get() : temp1.get(), total, batch,
+                    complex_element_bytes(context.request.input_dtype));
+    }
+    adaptor::DevicePtr n0_input = perm_210 ? (perm_021 ? temp2.get() : temp1.get())
+                                            : (perm_021 ? temp1.get() : temp2.get());
+    adaptor::DevicePtr n0_output = perm_201
+        ? (n0_input == temp1.get() ? temp2.get() : temp1.get())
+        : output;
+    result = n0_fft->execute(n0_input, n0_output, n0_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    if (perm_201) {
+      launch_perm3d(perm_201, context.stream, n0_output, output, total, batch,
+                    complex_element_bytes(context.request.input_dtype));
+    }
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D hybrid execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(
+    int64_t n0,
+    int64_t n1,
+    int64_t n2,
+    bool inverse,
+    bool fused_store,
+    bool n2_permuted,
+    bool n1_strided_input,
+    std::shared_ptr<CompiledRawNode> n2_real_fft,
+    std::shared_ptr<CompiledRawNode> n1_fft,
+    std::shared_ptr<CompiledRawNode> n0_fft,
+    std::shared_ptr<JitKernel> perm_021,
+    DeviceAllocation temp1,
+    DeviceAllocation temp2,
+    std::shared_ptr<JitKernel> perm_210)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      inverse(inverse),
+      fused_store(fused_store),
+      n2_permuted(n2_permuted),
+      n1_strided_input(n1_strided_input),
+      layout(Layout::Legacy),
+      n2_real_fft(std::move(n2_real_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      perm_021(std::move(perm_021)),
+      perm_210(std::move(perm_210)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(
+    int64_t n0,
+    int64_t n1,
+    int64_t n2,
+    bool inverse,
+    Layout layout,
+    std::shared_ptr<CompiledRawNode> n2_real_fft,
+    std::shared_ptr<CompiledRawNode> n1_fft,
+    std::shared_ptr<CompiledRawNode> n0_fft,
+    std::shared_ptr<JitKernel> perm_first,
+    std::shared_ptr<JitKernel> perm_second,
+    std::shared_ptr<JitKernel> perm_third,
+    DeviceAllocation temp1,
+    DeviceAllocation temp2,
+    std::shared_ptr<JitKernel> perm_210)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      inverse(inverse),
+      fused_store(layout == Layout::FusedStore),
+      n2_permuted(layout == Layout::R2CFirstStore),
+      n1_strided_input(false),
+      layout(layout),
+      n2_real_fft(std::move(n2_real_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      perm_021(perm_first),
+      perm_210(perm_second ? perm_second : std::move(perm_210)),
+      perm_first(std::move(perm_first)),
+      perm_second(std::move(perm_second)),
+      perm_third(std::move(perm_third)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)) {
+}
+
+std::string CompiledRaw3DRealLeafNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DRealLeaf(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", inverse=" << inverse << ", layout=" << static_cast<int>(layout)
+      << ", fused_store=" << fused_store << ", n2_permuted=" << n2_permuted
+      << ", n1_strided_input=" << n1_strided_input
+      << ", middle_transpose=" << (perm_210 != nullptr)
+      << ", n2_real_fft=" << n2_real_fft->describe()
+      << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
+                                                 adaptor::DevicePtr output,
+                                                 const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t half = n2 / 2 + 1;
+    const int64_t packed = n0 * n1 * half;
+    RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
+    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
+    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
+    flagfftResult result;
+
+    if (layout != Layout::Legacy) {
+      if (!inverse) {
+        if (layout == Layout::R2CFirstStore) {
+          result = n2_real_fft->execute(input, temp2.get(), n2_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch,
+                        complex_element_bytes(context.request.input_dtype));
+          result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch,
+                        complex_element_bytes(context.request.input_dtype));
+          return FLAGFFT_SUCCESS;
+        }
+
+        result = n2_real_fft->execute(input, temp1.get(), n2_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        if (layout == Layout::FusedStore || layout == Layout::Transposed) {
+          launch_perm3d(perm_first, context.stream, temp1.get(), temp2.get(), packed, batch,
+                        complex_element_bytes(context.request.input_dtype));
+          result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          if (layout == Layout::Transposed) {
+            launch_perm3d(perm_second, context.stream, temp1.get(), temp2.get(), packed, batch,
+                          complex_element_bytes(context.request.input_dtype));
+            result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+            if (result != FLAGFFT_SUCCESS) return result;
+            launch_perm3d(perm_third, context.stream, temp1.get(), output, packed, batch,
+                          complex_element_bytes(context.request.input_dtype));
+            return FLAGFFT_SUCCESS;
+          }
+          return n0_fft->execute(temp1.get(), output, n0_context);
+        }
+        result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        return n0_fft->execute(temp2.get(), output, n0_context);
+      }
+
+      if (layout == Layout::FusedStore) {
+        launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+        result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        result = n0_fft->execute(temp2.get(), temp1.get(), n0_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        return n2_real_fft->execute(temp1.get(), output, n2_context);
+      }
+      if (layout == Layout::Transposed) {
+        launch_perm3d(perm_first, context.stream, input, temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+        result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        launch_perm3d(perm_second, context.stream, temp2.get(), temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+        result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        launch_perm3d(perm_third, context.stream, temp2.get(), temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+        return n2_real_fft->execute(temp1.get(), output, n2_context);
+      }
+      result = n1_fft->execute(input, temp1.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return n2_real_fft->execute(temp2.get(), output, n2_context);
+    }
+
+    if (!inverse) {
+      result = n2_real_fft->execute(input, n2_permuted ? temp2.get() : temp1.get(), n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      if (fused_store) {
+        if (!n2_permuted) {
+          launch_perm3d(perm_021, context.stream, temp1.get(), temp2.get(), packed, batch,
+                        complex_element_bytes(context.request.input_dtype));
+        }
+        result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+      } else {
+        result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+      }
+      if (result != FLAGFFT_SUCCESS) return result;
+      if (perm_210) {
+        launch_perm3d(perm_210, context.stream, temp1.get(), temp2.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+      }
+      return n0_fft->execute(perm_210 ? temp2.get() :
+                             (fused_store ? temp1.get() : temp2.get()), output, n0_context);
+    }
+
+    if (fused_store) {
+      if (!n1_strided_input) {
+        launch_perm3d(perm_021, context.stream, input, temp1.get(), packed, batch,
+                      complex_element_bytes(context.request.input_dtype));
+      }
+      result = n1_fft->execute(n1_strided_input ? input : temp1.get(), temp2.get(), n1_context);
+    } else {
+      result = n1_fft->execute(input, temp1.get(), n1_context);
+    }
+    if (result != FLAGFFT_SUCCESS) return result;
+    if (perm_210) {
+      launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch,
+                    complex_element_bytes(context.request.input_dtype));
+      result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return n2_real_fft->execute(temp2.get(), output, n2_context);
+    }
+    result = n0_fft->execute(fused_store ? temp2.get() : temp1.get(),
+                             fused_store ? temp1.get() : temp2.get(), n0_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    return n2_real_fft->execute(fused_store ? temp1.get() : temp2.get(), output, n2_context);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D real leaf execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
+    int64_t n0,
+    int64_t n1,
+    int64_t n2,
+    bool inverse,
+    std::shared_ptr<CompiledRawNode> n2_real_fft,
+    std::shared_ptr<CompiledRawNode> n1_fft,
+    std::shared_ptr<CompiledRawNode> n0_fft,
+    std::shared_ptr<JitKernel> perm_021,
+    std::shared_ptr<JitKernel> perm_210,
+    std::shared_ptr<JitKernel> perm_201,
+    DeviceAllocation temp1,
+    DeviceAllocation temp2,
+    std::vector<DeviceAllocation> npu_transpose_indices,
+    bool npu_fused_outer_stores,
+    bool npu_fused_small_final_store)
+    : n0(n0),
+      n1(n1),
+      n2(n2),
+      inverse(inverse),
+      n2_real_fft(std::move(n2_real_fft)),
+      n1_fft(std::move(n1_fft)),
+      n0_fft(std::move(n0_fft)),
+      perm_021(std::move(perm_021)),
+      perm_210(std::move(perm_210)),
+      perm_201(std::move(perm_201)),
+      temp1(std::move(temp1)),
+      temp2(std::move(temp2)),
+      npu_transpose_indices(std::move(npu_transpose_indices)),
+      npu_fused_outer_stores(npu_fused_outer_stores),
+      npu_fused_small_final_store(npu_fused_small_final_store) {
+}
+
+std::string CompiledRaw3DRealRTRTNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRaw3DRealRTRT(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
+      << ", inverse=" << inverse
+      << ", fused_first=" << (perm_021 == nullptr && npu_transpose_indices.empty())
+      << ", fused_middle=" << (perm_210 == nullptr && npu_transpose_indices.empty())
+      << ", fused_n0=" << (perm_201 == nullptr && npu_transpose_indices.empty())
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
+      << ", npu_fused_outer_stores=" << npu_fused_outer_stores
+      << ", npu_fused_small_final_store=" << npu_fused_small_final_store
+      << ", n2_real_fft=" << n2_real_fft->describe()
+      << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRaw3DRealRTRTNode::execute(adaptor::DevicePtr input,
+                                                 adaptor::DevicePtr output,
+                                                 const RawExecutionContext &context) const {
+  try {
+    const int64_t batch = context.batch;
+    const int64_t half = n2 / 2 + 1;
+    const int64_t packed = n0 * n1 * half;
+    RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
+    FFTRequest n1_request = context.request;
+    FFTRequest n0_request = context.request;
+    if (context.request.device_type == "npu") {
+      n1_request.real_transform_kind.clear();
+      n1_request.real_transform = false;
+      n0_request.real_transform_kind.clear();
+      n0_request.real_transform = false;
+    }
+    RawExecutionContext n1_context {n1_request, context.stream, batch * n0 * half};
+    RawExecutionContext n0_context {n0_request, context.stream, batch * n1 * half};
+    const bool has_perm_021 = perm_021 != nullptr || !npu_transpose_indices.empty();
+    const bool has_perm_210 = perm_210 != nullptr || !npu_transpose_indices.empty();
+    const bool has_perm_201 = !npu_fused_small_final_store &&
+        (perm_201 != nullptr || !npu_transpose_indices.empty());
+    auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
+                       adaptor::DevicePtr source,
+                       adaptor::DevicePtr destination,
+                       int64_t d0,
+                       int64_t d1,
+                       int64_t d2,
+                       int32_t axis0,
+                       int32_t axis1,
+                       int32_t axis2) {
+      return launch_perm3d_with_optional_npu_native(
+          kernel, npu_transpose_indices, context.stream, source, destination,
+          d0, d1, d2, axis0, axis1, axis2, batch,
+          complex_element_bytes(context.request.input_dtype));
+    };
+
+    if (npu_fused_outer_stores) {
+      const int64_t batch_bytes = n0 * n1 * half *
+          complex_element_bytes(context.request.input_dtype);
+      const int64_t n1_batch = n0 * half;
+      const int64_t n0_batch = n1 * half;
+      if (!inverse) {
+        flagfftResult result = n2_real_fft->execute(input, temp1.get(), n2_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        result = permute(perm_201, temp1.get(), temp2.get(), n0, n1, half, 2, 0, 1);
+        if (result != FLAGFFT_SUCCESS) return result;
+        for (int64_t b = 0; b < batch; ++b) {
+          const adaptor::DevicePtr offset = static_cast<adaptor::DevicePtr>(b * batch_bytes);
+          RawExecutionContext n1_batch_context {n1_request, context.stream, n1_batch};
+          result = n1_fft->execute(temp2.get() + offset, temp1.get() + offset, n1_batch_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+          RawExecutionContext n0_batch_context {n0_request, context.stream, n0_batch};
+          result = n0_fft->execute(temp1.get() + offset, output + offset, n0_batch_context);
+          if (result != FLAGFFT_SUCCESS) return result;
+        }
+        return FLAGFFT_SUCCESS;
+      }
+
+      flagfftResult result = permute(perm_201, input, temp1.get(), n0, n1, half, 2, 0, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
+      for (int64_t b = 0; b < batch; ++b) {
+        const adaptor::DevicePtr offset = static_cast<adaptor::DevicePtr>(b * batch_bytes);
+        RawExecutionContext n1_batch_context {n1_request, context.stream, n1_batch};
+        result = n1_fft->execute(temp1.get() + offset, temp2.get() + offset, n1_batch_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+        RawExecutionContext n0_batch_context {n0_request, context.stream, n0_batch};
+        result = n0_fft->execute(temp2.get() + offset, temp1.get() + offset, n0_batch_context);
+        if (result != FLAGFFT_SUCCESS) return result;
+      }
+      return n2_real_fft->execute(temp1.get(), output, n2_context);
+    }
+
+    if (!inverse) {
+      if (!has_perm_021) n2_context.output_distance = n1;
+      adaptor::DevicePtr n2_output = has_perm_021 ? temp1.get() : temp2.get();
+      flagfftResult result = n2_real_fft->execute(input, n2_output, n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      if (has_perm_021) {
+        result = permute(perm_021, temp1.get(), temp2.get(), n0, n1, half, 0, 2, 1);
+        if (result != FLAGFFT_SUCCESS) return result;
+      }
+      result = n1_fft->execute(temp2.get(), temp1.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      if (has_perm_210) {
+        result = permute(perm_210, temp1.get(), temp2.get(), n0, half, n1, 2, 1, 0);
+        if (result != FLAGFFT_SUCCESS) return result;
+      }
+      adaptor::DevicePtr n0_output = has_perm_201
+          ? (has_perm_210 ? temp1.get() : temp2.get()) : output;
+      result = n0_fft->execute(has_perm_210 ? temp2.get() : temp1.get(),
+                               n0_output, n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      if (has_perm_201) {
+        result = permute(perm_201, n0_output, output, n1, half, n0, 2, 0, 1);
+        if (result != FLAGFFT_SUCCESS) return result;
+      }
+      return FLAGFFT_SUCCESS;
+    }
+
+    // The outer transforms commute, so both use the same compact layouts
+    // before the final real inverse along n2.
+    flagfftResult result = permute(perm_021, input, temp1.get(), n0, n1, half, 0, 2, 1);
+    if (result != FLAGFFT_SUCCESS) return result;
+    result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    if (has_perm_210) {
+      result = permute(perm_210, temp2.get(), temp1.get(), n0, half, n1, 2, 1, 0);
+      if (result != FLAGFFT_SUCCESS) return result;
+    }
+    result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    if (has_perm_201) {
+      result = permute(perm_201, temp2.get(), temp1.get(), n1, half, n0, 2, 0, 1);
+      if (result != FLAGFFT_SUCCESS) return result;
+    }
+    result = n2_real_fft->execute(has_perm_201 ? temp1.get() : temp2.get(), output, n2_context);
+    if (result != FLAGFFT_SUCCESS) return result;
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D real RTRT execute failed: %s\n", e.what());
+    std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DR2CNode::CompiledRaw3DR2CNode(int64_t n0,
                                            int64_t n1,
                                            int64_t n2,
@@ -2604,7 +4497,8 @@ CompiledRaw3DR2CNode::CompiledRaw3DR2CNode(int64_t n0,
                                            std::shared_ptr<JitKernel> perm_201,
                                            DeviceAllocation row_fft_buf,
                                            DeviceAllocation temp1,
-                                           DeviceAllocation temp2)
+                                           DeviceAllocation temp2,
+                                           std::vector<DeviceAllocation> npu_transpose_indices)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2618,7 +4512,8 @@ CompiledRaw3DR2CNode::CompiledRaw3DR2CNode(int64_t n0,
       perm_201(std::move(perm_201)),
       row_fft_buf(std::move(row_fft_buf)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      npu_transpose_indices(std::move(npu_transpose_indices)) {
 }
 
 std::string CompiledRaw3DR2CNode::describe() const {
@@ -2628,7 +4523,8 @@ std::string CompiledRaw3DR2CNode::describe() const {
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
       << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
-      << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null") << ")";
+      << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty()) << ")";
   return oss.str();
 }
 
@@ -2642,6 +4538,32 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     const int64_t total_rows = batch * n0 * n1;
     const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
     const int64_t real_bytes = complex_bytes / 2;
+    FFTRequest complex_request = context.request;
+    complex_request.real_transform_kind.clear();
+    complex_request.real_transform = false;
+    auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
+                       adaptor::DevicePtr source,
+                       adaptor::DevicePtr destination,
+                       int64_t d0,
+                       int64_t d1,
+                       int64_t d2,
+                       int32_t axis0,
+                       int32_t axis1,
+                       int32_t axis2) {
+      return launch_perm3d_with_optional_npu_native(kernel,
+                                                    npu_transpose_indices,
+                                                    context.stream,
+                                                    source,
+                                                    destination,
+                                                    d0,
+                                                    d1,
+                                                    d2,
+                                                    axis0,
+                                                    axis1,
+                                                    axis2,
+                                                    batch,
+                                                    complex_bytes);
+    };
 
     // Step 1: Expand real -> complex rows of length n2.
     launch_grid_y_chunks(ceil_div(n2, block),
@@ -2662,7 +4584,7 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
                          });
 
     // Step 2: FFT along n2 in-place.
-    RawExecutionContext n2_context {context.request, context.stream, total_rows};
+    RawExecutionContext n2_context {complex_request, context.stream, total_rows};
     flagfftResult result = n2_fft->execute(row_fft_buf.get(), row_fft_buf.get(), n2_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
@@ -2687,24 +4609,26 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
                          });
 
     // Step 4: (n0,n1,half) -> (n0,half,n1), FFT along n1.
-    const int64_t packed = n0 * n1 * half;
-    launch_perm3d(perm_021, context.stream, output, temp1.get(), packed, batch);
-    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
+    flagfftResult perm_result = permute(perm_021, output, temp1.get(), n0, n1, half, 0, 2, 1);
+    if (perm_result != FLAGFFT_SUCCESS) return perm_result;
+    RawExecutionContext n1_context {complex_request, context.stream, batch * n0 * half};
     result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
 
     // Step 5: (n0,half,n1) -> (n1,half,n0), FFT along n0.
-    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch);
-    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
+    perm_result = permute(perm_210, temp2.get(), temp1.get(), n0, half, n1, 2, 1, 0);
+    if (perm_result != FLAGFFT_SUCCESS) return perm_result;
+    RawExecutionContext n0_context {complex_request, context.stream, batch * n1 * half};
     result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
 
     // Step 6: (n1,half,n0) -> (n0,n1,half) natural output layout.
-    launch_perm3d(perm_201, context.stream, temp2.get(), output, packed, batch);
+    perm_result = permute(perm_201, temp2.get(), output, n1, half, n0, 2, 0, 1);
+    if (perm_result != FLAGFFT_SUCCESS) return perm_result;
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D R2C execute failed: %s\n", e.what());
@@ -2726,7 +4650,8 @@ CompiledRaw3DC2RNode::CompiledRaw3DC2RNode(int64_t n0,
                                            std::shared_ptr<JitKernel> pack_kernel,
                                            DeviceAllocation temp1,
                                            DeviceAllocation temp2,
-                                           DeviceAllocation full_buf)
+                                           DeviceAllocation full_buf,
+                                           std::vector<DeviceAllocation> npu_transpose_indices)
     : n0(n0),
       n1(n1),
       n2(n2),
@@ -2740,7 +4665,8 @@ CompiledRaw3DC2RNode::CompiledRaw3DC2RNode(int64_t n0,
       pack_kernel(std::move(pack_kernel)),
       temp1(std::move(temp1)),
       temp2(std::move(temp2)),
-      full_buf(std::move(full_buf)) {
+      full_buf(std::move(full_buf)),
+      npu_transpose_indices(std::move(npu_transpose_indices)) {
 }
 
 std::string CompiledRaw3DC2RNode::describe() const {
@@ -2750,7 +4676,8 @@ std::string CompiledRaw3DC2RNode::describe() const {
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
       << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null") << ")";
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty()) << ")";
   return oss.str();
 }
 
@@ -2764,26 +4691,54 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     const int64_t real_bytes = complex_bytes / 2;
     const int64_t half = n2 / 2 + 1;
     const int64_t total_rows = batch * n0 * n1;
-    const int64_t packed = n0 * n1 * half;
+    FFTRequest complex_request = context.request;
+    complex_request.real_transform_kind.clear();
+    complex_request.real_transform = false;
+    auto permute = [&](const std::shared_ptr<JitKernel> &kernel,
+                       adaptor::DevicePtr source,
+                       adaptor::DevicePtr destination,
+                       int64_t d0,
+                       int64_t d1,
+                       int64_t d2,
+                       int32_t axis0,
+                       int32_t axis1,
+                       int32_t axis2) {
+      return launch_perm3d_with_optional_npu_native(kernel,
+                                                    npu_transpose_indices,
+                                                    context.stream,
+                                                    source,
+                                                    destination,
+                                                    d0,
+                                                    d1,
+                                                    d2,
+                                                    axis0,
+                                                    axis1,
+                                                    axis2,
+                                                    batch,
+                                                    complex_bytes);
+    };
 
     // Step 1: (n0,n1,half) -> (n1,half,n0), IFFT along n0.
-    launch_perm3d(perm_120, context.stream, input, temp1.get(), packed, batch);
-    RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
+    flagfftResult perm_result = permute(perm_120, input, temp1.get(), n0, n1, half, 1, 2, 0);
+    if (perm_result != FLAGFFT_SUCCESS) return perm_result;
+    RawExecutionContext n0_context {complex_request, context.stream, batch * n1 * half};
     flagfftResult result = n0_fft->execute(temp1.get(), temp2.get(), n0_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
 
     // Step 2: (n1,half,n0) -> (n0,half,n1), IFFT along n1.
-    launch_perm3d(perm_210, context.stream, temp2.get(), temp1.get(), packed, batch);
-    RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
+    perm_result = permute(perm_210, temp2.get(), temp1.get(), n1, half, n0, 2, 1, 0);
+    if (perm_result != FLAGFFT_SUCCESS) return perm_result;
+    RawExecutionContext n1_context {complex_request, context.stream, batch * n0 * half};
     result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
 
     // Step 3: (n0,half,n1) -> (n0,n1,half), expand half -> full Hermitian.
-    launch_perm3d(perm_021, context.stream, temp2.get(), temp1.get(), packed, batch);
+    perm_result = permute(perm_021, temp2.get(), temp1.get(), n0, half, n1, 0, 2, 1);
+    if (perm_result != FLAGFFT_SUCCESS) return perm_result;
     launch_grid_y_chunks(ceil_div(n2, block),
                          total_rows,
                          expand_kernel->rows_per_block,
@@ -2802,7 +4757,7 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
                          });
 
     // Step 4: IFFT along n2 (in-place on full complex rows), pack complex -> real.
-    RawExecutionContext n2_context {context.request, context.stream, total_rows};
+    RawExecutionContext n2_context {complex_request, context.stream, total_rows};
     result = n2_fft->execute(full_buf.get(), full_buf.get(), n2_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;

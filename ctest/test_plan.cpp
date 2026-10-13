@@ -20,6 +20,7 @@
 #include <cstring>
 #include <set>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -127,6 +128,147 @@ TEST(Plan1D, IxCtSinglePolicyScope) {
   EXPECT_THROW(flagfft::ix_ct_single_policy_enabled(request), std::runtime_error);
   EXPECT_THROW(flagfft::ix_packed_real_policy_enabled(packed), std::runtime_error);
   EXPECT_THROW(flagfft::ix_ct_single_tle_policy(packed), std::runtime_error);
+}
+
+TEST(Plan1D, IxCtBatchPolicyScope) {
+  const char* original = std::getenv("FLAGFFT_IX_CT_BATCH");
+  const std::optional<std::string> saved = original ? std::optional<std::string>(original) : std::nullopt;
+  struct Restore {
+    std::optional<std::string> value;
+    ~Restore() {
+      if (value) setenv("FLAGFFT_IX_CT_BATCH", value->c_str(), 1);
+      else unsetenv("FLAGFFT_IX_CT_BATCH");
+    }
+  } restore{saved};
+  unsetenv("FLAGFFT_IX_CT_BATCH");
+
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.raw_dim = 1;
+  request.batch = 64;
+  request.n = request.fft_length = request.requested_n = 1024;
+  request.input_dtype = request.output_dtype = "complex64";
+  request.input_strides = {1024, 1};
+  EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(request));
+  auto longer = request;
+  longer.n = longer.fft_length = longer.requested_n = 2048;
+  EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(longer));
+  for (auto length : {8191, 16381, 16384}) {
+    auto batched = request;
+    batched.n = batched.fft_length = batched.requested_n = length;
+    batched.input_strides = {length, 1};
+    EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(batched));
+  }
+  auto packed_child = request;
+  packed_child.n = packed_child.fft_length = packed_child.requested_n = 8192;
+  packed_child.input_strides = {8192, 1};
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(packed_child));
+  packed_child.packed_real_child = true;
+  EXPECT_TRUE(flagfft::ix_ct_batch_policy_enabled(packed_child));
+  packed_child.origin_rank = 2;
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(packed_child));
+  for (auto changed : {16, 210, 4096}) {
+    auto other = request;
+    other.n = other.fft_length = other.requested_n = changed;
+    EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(other));
+  }
+  auto changed = request;
+  changed.batch = 1;
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+  changed = request;
+  changed.raw_dim = 2;
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+  changed = request;
+  changed.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+  changed = request;
+  changed.device_arch = "other";
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+  changed = request;
+  changed.input_strides.back() = 2;
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(changed));
+
+  flagfft::PlanBuilder builder;
+  auto optimized = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
+  ASSERT_NE(optimized, nullptr);
+  EXPECT_EQ(optimized->factors, (std::vector<int64_t>{8, 8, 4, 4}));
+  setenv("FLAGFFT_IX_CT_BATCH", "0", 1);
+  EXPECT_FALSE(flagfft::ix_ct_batch_policy_enabled(request));
+  auto baseline = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
+  ASSERT_NE(baseline, nullptr);
+  EXPECT_EQ(baseline->factors, (std::vector<int64_t>{32, 32}));
+  setenv("FLAGFFT_IX_CT_BATCH", "invalid", 1);
+  EXPECT_THROW(flagfft::ix_ct_batch_policy_enabled(request), std::runtime_error);
+}
+
+TEST(Plan1D, IxFp32RealBatchFactors) {
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.raw_dim = 1;
+  request.batch = 64;
+  request.input_strides = {1024, 1};
+  flagfft::PlanBuilder builder;
+  request.input_dtype = request.output_dtype = "complex64";
+  for (auto kind : {"r2c", "c2r"}) {
+    request.real_transform_kind = kind;
+    for (auto shape : {1024, 2048}) {
+      request.n = request.fft_length = request.requested_n = shape;
+      request.input_strides = {shape, 1};
+      auto plan = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(shape, request));
+      ASSERT_NE(plan, nullptr);
+      if (shape == 1024)
+        EXPECT_EQ(plan->factors, (std::vector<int64_t>{8, 4, 8, 4}));
+      else
+        EXPECT_EQ(plan->factors, (std::vector<int64_t>{16, 8, 16}));
+    }
+  }
+  request.real_transform_kind.clear();
+  request.n = request.fft_length = request.requested_n = 1024;
+  auto complex_plan = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(1024, request));
+  ASSERT_NE(complex_plan, nullptr);
+  EXPECT_EQ(complex_plan->factors, (std::vector<int64_t>{8, 8, 4, 4}));
+}
+
+TEST(Plan1D, HcuSingleC2rFourStepSplitOverride) {
+  if (flagfft::adaptor::backend_name() != "hcu") GTEST_SKIP() << "HCU-only plan policy";
+
+  const char* original = std::getenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+  const std::optional<std::string> saved = original ? std::optional<std::string>(original) : std::nullopt;
+  struct Restore {
+    std::optional<std::string> value;
+    ~Restore() {
+      if (value) setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", value->c_str(), 1);
+      else unsetenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+    }
+  } restore{saved};
+
+  unsetenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.device_index = 0;
+  request.raw_dim = request.origin_rank = 1;
+  request.real_transform = true;
+  request.real_transform_kind = request.origin_real_transform_kind = "z2d";
+  request.n = request.fft_length = request.requested_n = 340200;
+  request.input_dtype = "complex128";
+  request.output_dtype = "float64";
+  request.batch = 1;
+
+  flagfft::PlanBuilder builder;
+  auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 567);
+  EXPECT_EQ(plan->n2, 600);
+
+  setenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT", "524288:1024", 1);
+  request.n = request.fft_length = request.requested_n = 524288;
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(524288, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 1024);
+  EXPECT_EQ(plan->n2, 512);
 }
 
 TEST(Plan1D, CreateDestroyAllTypes) {

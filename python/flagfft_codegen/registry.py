@@ -35,6 +35,8 @@ RADER = "rader"
 RESHAPE = "reshape"
 TRANSPOSE = "transpose"
 TRANSPOSE3D = "transpose3d"
+SMALL_3D = "small_3d"
+SMALL_2D = "small_2d"
 REAL_POINTWISE = "real_pointwise"
 
 LEAF_LIKE_FAMILIES = frozenset(
@@ -81,17 +83,60 @@ _SPECS: tuple[KernelSpec, ...] = (
         CT_LEAF,
         io_mode="permuted_store",
         requires=_BASE_LEAF_FLAGS,
-    ),    KernelSpec(
+    ),
+    KernelSpec(
+        "leaf_strided_permuted_store",
+        CT_LEAF,
+        io_mode="strided_permuted_store",
+        requires=_BASE_LEAF_FLAGS,
+    ),
+    KernelSpec(
         "leaf_r2c", CT_LEAF, io_mode="contiguous_r2c", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(
+        "leaf_r2c_permuted_store",
+        CT_LEAF,
+        io_mode="permuted_store_r2c",
+        requires=_BASE_LEAF_FLAGS,
+    ),
+    KernelSpec(
+        "leaf_packed_r2c", CT_LEAF, io_mode="packed_r2c", requires=_BASE_LEAF_FLAGS
+    ),
+    KernelSpec(
         "leaf_c2r", CT_LEAF, io_mode="contiguous_c2r", requires=_BASE_LEAF_FLAGS
+    ),
+    KernelSpec(
+        "leaf_packed_c2r", CT_LEAF, io_mode="packed_c2r", requires=_BASE_LEAF_FLAGS
     ),
     KernelSpec(
         "leaf_bluestein",
         BLUESTEIN_LEAF,
         io_mode="bluestein_full_leaf",
         requires=_BASE_LEAF_FLAGS + ("bluestein_n",),
+    ),
+    *(KernelSpec(
+        f"leaf_bluestein_{real_kind}",
+        BLUESTEIN_LEAF,
+        io_mode=f"bluestein_full_leaf_{real_kind}",
+        requires=_BASE_LEAF_FLAGS + ("bluestein_n",),
+    ) for real_kind in ("r2c", "c2r")),
+    KernelSpec(
+        "leaf_rader_full",
+        CT_LEAF,
+        io_mode="rader_full_leaf",
+        requires=_BASE_LEAF_FLAGS + ("rader_n",),
+    ),
+    KernelSpec(
+        "leaf_rader_prepare",
+        CT_LEAF,
+        io_mode="rader_prepare_leaf",
+        requires=_BASE_LEAF_FLAGS + ("rader_n",),
+    ),
+    KernelSpec(
+        "leaf_rader_finish",
+        CT_LEAF,
+        io_mode="rader_finish_leaf",
+        requires=_BASE_LEAF_FLAGS + ("rader_n",),
     ),
     KernelSpec(
         "leaf_bluestein_prepare",
@@ -111,6 +156,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         io_mode="bluestein_four_step_prepare_row",
         requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
     ),
+    *(KernelSpec(
+        f"bluestein_four_step_prepare_row_{real_kind}",
+        BLUESTEIN_FOUR_STEP,
+        io_mode=f"bluestein_four_step_prepare_row_{real_kind}",
+        requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
+    ) for real_kind in ("r2c", "c2r")),
     KernelSpec(
         "bluestein_four_step_pointwise_row",
         BLUESTEIN_FOUR_STEP,
@@ -123,8 +174,19 @@ _SPECS: tuple[KernelSpec, ...] = (
         io_mode="bluestein_four_step_finish_col",
         requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
     ),
+    *(KernelSpec(
+        f"bluestein_four_step_finish_col_{real_kind}",
+        BLUESTEIN_FOUR_STEP,
+        io_mode=f"bluestein_four_step_finish_col_{real_kind}",
+        requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS + ("bluestein_n",),
+    ) for real_kind in ("r2c", "c2r")),
     KernelSpec("direct_dft", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_strided", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_cube", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_cube_transposed", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_cube_strided", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_cube_2d_row", DIRECT_DFT, requires=("length",)),
+    KernelSpec("direct_dft_cube_2d_col", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_r2c", DIRECT_DFT, requires=("length",)),
     KernelSpec("direct_dft_c2r", DIRECT_DFT, requires=("length",)),
     KernelSpec(
@@ -185,6 +247,15 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("twiddle_reshape_pack", RESHAPE, requires=_RESHAPE_FLAGS),
     KernelSpec("tiled_transpose", TRANSPOSE, requires=_RESHAPE_FLAGS),
     KernelSpec("transpose3d", TRANSPOSE3D, requires=_TRANSPOSE3D_FLAGS),
+    KernelSpec("fused_2d", SMALL_2D, requires=("length",)),
+    KernelSpec("fused_16_plane", SMALL_3D),
+    KernelSpec("fused_32_real_plane", SMALL_3D),
+    KernelSpec("fused_rect_plane", SMALL_3D),
+    KernelSpec("fused_16_cube", SMALL_3D),
+    KernelSpec("fused_16_real_cube", SMALL_3D),
+    KernelSpec("fused_32_plane", SMALL_3D),
+    KernelSpec("fused_16_real_plane", SMALL_3D),
+    KernelSpec("fused_32_column", SMALL_3D),
     KernelSpec("real_to_complex", REAL_POINTWISE, requires=("length",)),
     KernelSpec("r2c_half_pack", REAL_POINTWISE, requires=("length",)),
     KernelSpec("r2c_packed_postprocess", REAL_POINTWISE, requires=("length",)),
@@ -222,8 +293,15 @@ CONTIGUOUS_BATCH_PACK_KERNELS = frozenset(
         "leaf",
         "leaf_strided",
         "leaf_r2c",
+        "leaf_packed_r2c",
         "leaf_c2r",
+        "leaf_packed_c2r",
         "leaf_bluestein",
+        "leaf_bluestein_r2c",
+        "leaf_bluestein_c2r",
+        "leaf_rader_full",
+        "leaf_rader_prepare",
+        "leaf_rader_finish",
         "leaf_bluestein_prepare",
         "leaf_bluestein_finish",
     }
@@ -234,6 +312,8 @@ INNER_PACK_ROW_KERNELS = frozenset(
         "four_step_real_row",
         "four_step_hermitian_row",
         "bluestein_four_step_prepare_row",
+        "bluestein_four_step_prepare_row_r2c",
+        "bluestein_four_step_prepare_row_c2r",
         "bluestein_four_step_pointwise_row",
         "four_step_row_strided",
     }
@@ -244,6 +324,8 @@ INNER_PACK_COL_KERNELS = frozenset(
         "four_step_r2c_col",
         "four_step_c2r_col",
         "bluestein_four_step_finish_col",
+        "bluestein_four_step_finish_col_r2c",
+        "bluestein_four_step_finish_col_c2r",
         "four_step_col_strided",
     }
 )
@@ -292,6 +374,14 @@ def module_name_for(
         return f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "direct_dft_strided":
         return f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
+    if spec.name == "direct_dft_cube":
+        return f"flagfft_jit_direct_dft_cube_{direction_tag}_n{length}_{dtype_tag}"
+    if spec.name == "direct_dft_cube_transposed":
+        return f"flagfft_jit_direct_dft_cube_transposed_{direction_tag}_n{length}_{dtype_tag}"
+    if spec.name == "direct_dft_cube_strided":
+        return f"flagfft_jit_direct_dft_cube_strided_{direction_tag}_n{length}_{dtype_tag}"
+    if spec.name in {"direct_dft_cube_2d_row", "direct_dft_cube_2d_col"}:
+        return f"flagfft_jit_{spec.name}_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name in {"direct_dft_r2c", "direct_dft_c2r"}:
         return f"flagfft_jit_{spec.name}_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "leaf":
@@ -299,12 +389,12 @@ def module_name_for(
             f"flagfft_jit_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
         )
-    if spec.name == "leaf_permuted_store":
+    if spec.name in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}:
         return (
             f"flagfft_jit_{spec.name}_{perm_form}_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
         )
-    if spec.name in {"leaf_r2c", "leaf_c2r"}:
+    if spec.name in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r", "leaf_packed_c2r"}:
         return (
             f"flagfft_jit_{spec.name}_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
@@ -347,6 +437,7 @@ __all__ = [
     "RADER",
     "REAL_POINTWISE",
     "RESHAPE",
+    "SMALL_3D",
     "STRIDED_FOUR_STEP_KERNELS",
     "TRANSPOSE",
     "TRANSPOSE3D",

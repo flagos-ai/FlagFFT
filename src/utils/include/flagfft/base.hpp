@@ -107,6 +107,15 @@ struct FFTRequest {
   // Public real-transform kind, retained while the real request is lowered
   // through complex children. Empty for C2C/Z2Z.
   std::string real_transform_kind;
+  // Public real-transform kind at the decomposed request's root. Axis plans
+  // can be C2C even when they belong to a real 3D transform.
+  std::string origin_real_transform_kind;
+  // True only for the dense half-length complex child of a packed real FFT.
+  bool packed_real_child = false;
+  // Propagated from the public descriptor to rank-1 axis plans so narrow 3D
+  // policies can distinguish a single 32^3 FP64 C2C cube from arbitrary
+  // length-32 batched transforms.
+  bool maca_3d_c2c32_single_cube = false;
   int64_t normalized_dim = -1;
   std::string norm = "backward";
   std::string input_dtype;
@@ -118,6 +127,9 @@ struct FFTRequest {
   bool requires_contiguous_copy = false;
   std::string direction = "forward";
   int64_t batch = 0;
+  // Explicit experimental packing for the HCU 3D middle-axis 2048 leaf.
+  // Zero keeps the default policy.
+  int64_t hcu_3d_middle_batch_pack = 0;
 };
 
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim, ThreeDim };
@@ -125,9 +137,13 @@ enum class KernelKind {
   Leaf,
   LeafStrided,
   LeafPermutedStore,
+  LeafStridedPermutedStore,
   LeafR2C,
+  LeafR2CPermutedStore,
+  LeafPackedR2C,
   LeafC2R,
   LeafBluestein,
+  LeafRaderFull,
   LeafBluesteinPrepare,
   LeafBluesteinFinish,
   BluesteinFourStepPrepareRow,
@@ -135,6 +151,11 @@ enum class KernelKind {
   BluesteinFourStepFinishCol,
   DirectDft,
   DirectDftStrided,
+  DirectDftCube,
+  DirectDftCubeTransposed,
+  DirectDftCubeStrided,
+  DirectDftCube2DRow,
+  DirectDftCube2DCol,
   DirectDftR2C,
   DirectDftC2R,
   StockhamStage,
@@ -161,7 +182,19 @@ enum class KernelKind {
   CompactToHermitianFull,
   ComplexToReal,
   TiledTranspose,
-  Transpose3D
+  Transpose3D,
+  Fused16Plane,
+  FusedRectPlane,
+  Fused32Plane,
+  Fused16RealPlane,
+  Fused32RealPlane,
+  Fused16Cube,
+  Fused16RealCube,
+  Fused32Column,
+  Fused2D,
+  LeafRaderPrepare,
+  LeafRaderFinish,
+  LeafPackedC2R
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

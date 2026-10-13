@@ -1127,40 +1127,34 @@ def _prime_factors(value: int) -> list[int]:
 def case_skip_reason(case: dict, backend: str) -> str | None:
     """Return a backend reference-library limitation for one concrete case.
 
-    ops-fft's current Ascend 910B implementation is FP32-only.  It implements
-    horizontal 1D C2C/R2C/C2R and 2D C2C for dimensions 32, 64, and 128; it has
-    no 3D or 2D real kernels.  1D kernels reject lengths with factors above 47.
-    Keep these limits at case granularity so supported entries in a mixed matrix
-    still run and unsupported entries are visible policy skips.
+    CANN 9 SiP documents FP32 out-of-place C2C/R2C/C2R for contiguous
+    horizontal 1D, 2D and 3D FFTs on the Atlas A2/Ascend 910B family.  Its
+    shape limits apply to every axis, including those in multidimensional plans.
     """
     if backend != "npu":
         return None
     rank = int(case["rank"])
     shape = tuple(int(n) for n in case["shape"])
-    if rank == 3:
-        return "ops-fft on Ascend 910B does not implement 3D FFT plans."
-    if rank == 2:
-        if case["api"] != "c2c":
-            return "ops-fft on Ascend 910B implements only 2D FP32 C2C."
-        if any(n not in (32, 64, 128) for n in shape):
-            return (
-                "ops-fft 2D C2C on Ascend 910B supports only dimensions 32, 64, or 128."
-            )
-        return None
-    if rank != 1:
-        return f"ops-fft does not implement rank-{rank} FFT plans on Ascend 910B."
-    n = shape[0]
-    if n > 2**27:
-        return "ops-fft 1D FFT on Ascend 910B limits nx to 2^27."
-    # The 910B C2C path uses DFT for n <= 256; the real paths use DFT for
-    # n <= 1024.  Those DFT kernels accept arbitrary positive lengths.  The
-    # mixed-radix kernels used above those thresholds accept prime factors up
-    # to 47.
-    dft_limit = 256 if case["api"] == "c2c" else 1024
-    if n <= dft_limit:
-        return None
-    if any(factor > 47 for factor in _prime_factors(n)):
-        return "ops-fft 1D FFT on Ascend 910B rejects lengths with a prime factor above 47."
+    if case["api"] not in ("c2c", "r2c", "c2r"):
+        return "SiP FFT on Ascend 910B supports FP32 C2C/R2C/C2R only."
+    if case.get("placement") == "in-place":
+        return "SiP FFT does not support in-place transforms."
+    if rank not in (1, 2, 3) or len(shape) != rank:
+        return f"SiP FFT does not implement rank-{rank} plans."
+    if rank == 1 and shape == (16384,) and int(case["batch"]) == 64 and case["api"] == "c2c":
+        return (
+            "SiP C2C n=16384 batch=64 produced intermittent incorrect batch outputs in repeated "
+            "CANN 9 runs; platform accuracy and performance are not a reliable baseline."
+        )
+    if any(n <= 0 or n > 2**27 for n in shape):
+        return "SiP FFT limits each dimension to the range [1, 2^27]."
+    if any(factor > 199 for n in shape for factor in _prime_factors(n)):
+        return "SiP FFT rejects dimensions with a prime factor above 199."
+    elements = int(case["batch"])
+    for n in shape:
+        elements *= n
+    if elements > 2**30:
+        return "SiP FFT limits the theoretical input size to 2^30 elements."
     return None
 
 
@@ -1227,7 +1221,7 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
         "ppu": "PPU cuFFT-compatible FFT",
         "ix": "ixfft (CoreX cuFFT-compatible FFT)",
         "maca": "mcFFT",
-        "npu": "ops-fft (CANN)",
+        "npu": "SiP FFT (CANN)",
         "hcu": "hipFFT (DTK 26.04)",
     }.get(ENV_INFO["backend"], "unknown")
     try:
@@ -1567,7 +1561,7 @@ def run_accuracy_case(
         "platform_accuracy": (
             {
                 "status": "Skipped",
-                "reference": ENV_INFO.get("reference_library", "ops-fft (CANN)"),
+                "reference": ENV_INFO.get("reference_library", "SiP FFT (CANN)"),
                 "plan": None,
                 "skip_reason": reference_skip_reason,
                 "error": reference_skip_reason,
@@ -1988,7 +1982,7 @@ def aggregate_results(
                 and block["passed"] + block["skipped"] == block["total"]
             ):
                 # A reference library can support only part of a mixed matrix
-                # (for example, ops-fft's 2D size set). Policy-skipped cases
+                # (for example, SiP's prime-factor limit). Policy-skipped cases
                 # are acceptable when every runnable case passed.
                 if block["passed"] == 0:
                     block["status"] = "Skipped"

@@ -38,9 +38,19 @@ class RefPlanHandle {
 
   std::uintptr_t get() const;
   void replace(std::uintptr_t new_handle);
+  // Some reference libraries bind direction and multidimensional batch at
+  // plan creation. Other backends can ignore this per-case metadata.
+  void configure_case(int direction, int batch) noexcept {
+    direction_ = direction;
+    batch_ = batch;
+  }
+  int direction() const noexcept { return direction_; }
+  int batch() const noexcept { return batch_; }
 
  private:
   std::uintptr_t impl_;
+  int direction_ = FLAGFFT_FORWARD;
+  int batch_ = 1;
 };
 
 // =========================================================================

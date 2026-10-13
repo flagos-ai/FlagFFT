@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serial IX CT-single comparison on one explicitly selected physical GPU.
+"""Serial IX 1D CT comparison on one explicitly selected physical GPU.
 
 This is performance screening only. Use run_tests.py for the accuracy gate.
 Environment overrides are fixed at process startup; each trial gets a fresh
@@ -18,6 +18,7 @@ def main():
     p.add_argument('--binary', required=True)
     p.add_argument('--output-dir', required=True)
     p.add_argument('--shapes', default='2048,1048576')
+    p.add_argument('--batches', default='1', help='Comma-separated batch sizes')
     p.add_argument('--apis', default='c2c,c2r,r2c')
     p.add_argument('--variants', default='baseline,default')
     p.add_argument('--repeats', type=int, default=3)
@@ -57,35 +58,36 @@ def main():
                        FLAGFFT_TUNE_DISABLE='1', **configs[variant])
             env['PYTHONPATH'] = str(root / 'python') + os.pathsep + env.get('PYTHONPATH', '')
             for n in a.shapes.split(','):
-                for api in a.apis.split(','):
-                    directions = a.directions.split(',') if api == 'c2c' else ['inverse' if api == 'c2r' else 'forward']
-                    for direction in directions:
-                        name = f'{variant}_{n}_{api}_{direction}_{repeat}'
-                        cmd = [a.binary, 'bench', '--api', api, '--rank', '1', '--shape', n,
-                               '--batch', '1', '--direction', direction, '--warmup', str(a.warmup),
-                               '--iters', str(a.iters), '--json', '--print-path']
-                        row = dict(variant=variant, n=int(n), api=api, direction=direction,
-                                   repeat=repeat, git_commit=commit, command=cmd, gpu=a.gpu,
-                                   overrides=configs[variant])
-                        proc = subprocess.Popen(cmd, env=env, text=True, stdout=subprocess.PIPE,
-                                                stderr=subprocess.PIPE, start_new_session=True)
-                        try:
-                            stdout, stderr = proc.communicate(timeout=a.timeout)
-                            (out / f'{name}.json').write_text(stdout)
-                            (out / f'{name}.err').write_text(stderr)
-                            row['exit_code'] = proc.returncode
-                            if proc.returncode == 0:
-                                row.update(json.loads(stdout)['cases'][0]['timing'])
-                        except subprocess.TimeoutExpired:
-                            # Stop only this trial's process group, including its JIT child.
-                            os.killpg(proc.pid, signal.SIGKILL)
-                            stdout, stderr = proc.communicate()
-                            (out / f'{name}.json').write_text(stdout)
-                            (out / f'{name}.err').write_text(stderr)
-                            row['timeout'] = a.timeout
-                        rows.append(row)
-                        print(json.dumps(row), flush=True)
-                        (out / 'sweep.json').write_text(json.dumps(rows, indent=2))
+                for batch in a.batches.split(','):
+                    for api in a.apis.split(','):
+                        directions = a.directions.split(',') if api == 'c2c' else ['inverse' if api == 'c2r' else 'forward']
+                        for direction in directions:
+                            name = f'{variant}_{n}_b{batch}_{api}_{direction}_{repeat}'
+                            cmd = [a.binary, 'bench', '--api', api, '--rank', '1', '--shape', n,
+                                   '--batch', batch, '--direction', direction, '--warmup', str(a.warmup),
+                                   '--iters', str(a.iters), '--json', '--print-path']
+                            row = dict(variant=variant, n=int(n), batch=int(batch), api=api,
+                                       direction=direction, repeat=repeat, git_commit=commit,
+                                       command=cmd, gpu=a.gpu, overrides=configs[variant])
+                            proc = subprocess.Popen(cmd, env=env, text=True, stdout=subprocess.PIPE,
+                                                    stderr=subprocess.PIPE, start_new_session=True)
+                            try:
+                                stdout, stderr = proc.communicate(timeout=a.timeout)
+                                (out / f'{name}.json').write_text(stdout)
+                                (out / f'{name}.err').write_text(stderr)
+                                row['exit_code'] = proc.returncode
+                                if proc.returncode == 0:
+                                    row.update(json.loads(stdout)['cases'][0]['timing'])
+                            except subprocess.TimeoutExpired:
+                                # Stop only this trial's process group, including its JIT child.
+                                os.killpg(proc.pid, signal.SIGKILL)
+                                stdout, stderr = proc.communicate()
+                                (out / f'{name}.json').write_text(stdout)
+                                (out / f'{name}.err').write_text(stderr)
+                                row['timeout'] = a.timeout
+                            rows.append(row)
+                            print(json.dumps(row), flush=True)
+                            (out / 'sweep.json').write_text(json.dumps(rows, indent=2))
 
 
 if __name__ == '__main__':

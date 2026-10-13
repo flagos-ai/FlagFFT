@@ -14,7 +14,18 @@
 
 #include "c_api_internal.hpp"
 
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+#include "adaptor/backend/npu/sip_executor.hpp"
+#endif
+
 namespace flagfft {
+
+FlagFFTPlan::~FlagFFTPlan() {
+#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+  adaptor::npu::sip_plan_destroy(npu_sip_forward);
+  adaptor::npu::sip_plan_destroy(npu_sip_inverse);
+#endif
+}
 
 flagfftResult type_metadata(flagfftType type,
                             FlagFFTPrecision &precision,
@@ -206,6 +217,7 @@ FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction,
     case FLAGFFT_Z2D: request.real_transform_kind = "z2d"; break;
     default: request.real_transform_kind.clear(); break;
   }
+  request.origin_real_transform_kind = request.real_transform_kind;
   const int64_t logical_size = product(desc.n);
   request.fft_length = desc.rank == 1 ? desc.n[0] : logical_size;
   if (desc.rank == 1) {

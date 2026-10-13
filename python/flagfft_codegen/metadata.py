@@ -21,13 +21,14 @@ import os
 from typing import Any
 
 from .backend_profile import current_profile
-from .target import ix_ct_single_default_enabled
 from .kernels_common import (
     _CODELET_DIR,
     LeafPlan,
     _cooperative_warp_cap,
     _dtype_suffix,
+    _hcu_backend_active,
     _maca_knob,
+    _npu_backend_active,
     _portable_leaf_backend_active,
     _ix_backend_active,
     _zero_other,
@@ -36,6 +37,7 @@ from .kernels_common import (
     four_step_col_inner_pack_for,
     four_step_row_inner_pack_for,
     lane_block_for,
+    permuted_store_batch_pack_for,
     use_four_step_row_fused_twiddle,
 )
 from .registry import (
@@ -127,12 +129,67 @@ def _metadata(
     n1: int,
     n2: int,
     dtype: str,
+    hcu_full_smem: bool = False,
 ) -> dict[str, Any]:
-    batch_per_block = (
-        contiguous_batch_pack_for(plan, real_boundary=kernel_type in {"leaf_r2c", "leaf_c2r"})
-        if kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS
-        else 1
-    )
+    if (
+        current_profile().backend == "hcu"
+        and kernel_type
+        in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
+    ):
+        pack_knob = None
+        for tag, knob in (
+            ("outer_first", "FLAGFFT_HCU_3D_FIRST_PACK"),
+            ("inner_middle", "FLAGFFT_HCU_3D_MIDDLE_PACK"),
+            ("outer_last", "FLAGFFT_HCU_3D_FINAL_PACK"),
+        ):
+            if f"permuted_store_{tag}_" in kernel_name:
+                pack_knob = knob
+                break
+        requested_pack = os.environ.get(pack_knob, "auto") if pack_knob else "auto"
+        final_pack = int(requested_pack) if requested_pack != "auto" else None
+        if (
+            final_pack is None
+            and current_profile().backend == "hcu"
+            and "permuted_store_inner_middle_c2r_cube_" in kernel_name
+        ):
+            final_pack = 8
+        batch_per_block = permuted_store_batch_pack_for(
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+        )
+    elif kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"} and (
+        _ix_backend_active()
+        or (
+            _npu_backend_active()
+            and os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_STORE") == "1"
+        )
+    ):
+        # The generated kernel advances batch_id by this pack.  Launch the
+        # same number of rows per CTA that the source actually processes.
+        batch_per_block = permuted_store_batch_pack_for(plan)
+        if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_STORE") == "1":
+            override = os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_PACK")
+            if override is not None:
+                try:
+                    batch_per_block = int(override)
+                except ValueError as exc:
+                    raise ValueError(
+                        "FLAGFFT_NPU_2D_TRANSPOSE_PACK must be 1, 2, 4 or 8"
+                    ) from exc
+                if batch_per_block not in {1, 2, 4, 8}:
+                    raise ValueError("FLAGFFT_NPU_2D_TRANSPOSE_PACK must be 1, 2, 4 or 8")
+    elif (
+        current_profile().backend == "maca"
+        and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
+    ):
+        batch_per_block = permuted_store_batch_pack_for(plan)
+    elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
+        batch_per_block = contiguous_batch_pack_for(
+            plan,
+            real_boundary=kernel_type
+            in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r", "leaf_packed_c2r"},
+        )
+    else:
+        batch_per_block = 1
     stage_lanes = cooperative_stage_lanes_for(plan)
     tle_fused_twiddle = is_four_step_twiddle_eligible(
         kernel_type
@@ -147,7 +204,14 @@ def _metadata(
         inner_pack = 1
     profile = current_profile()
     num_warps = profile.planner_warps(int(plan.num_warps))
-    if kernel_type in {"direct_dft", "direct_dft_r2c", "direct_dft_c2r"} and dtype == "complex64":
+    if kernel_type in {
+        "direct_dft",
+        "direct_dft_cube",
+        "direct_dft_cube_transposed",
+        "direct_dft_cube_strided",
+        "direct_dft_r2c",
+        "direct_dft_c2r",
+    } and dtype == "complex64":
         num_warps = 4
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
@@ -177,12 +241,47 @@ def _metadata(
     if maca_backend:
         # One warp triggers unsupported shuffle lowering in multi-stage leaves.
         num_warps = max(2, num_warps)
+        warp_override = _maca_knob("WARPS")
+        if warp_override:
+            try:
+                requested_warps = int(warp_override)
+            except ValueError:
+                raise ValueError(
+                    f"FLAGFFT_MACA_WARPS must be 2, 4 or 8, got {warp_override!r}"
+                ) from None
+            if requested_warps not in {2, 4, 8}:
+                raise ValueError(
+                    f"FLAGFFT_MACA_WARPS must be 2, 4 or 8, got {requested_warps}"
+                )
+            profile.validate(requested_warps)
+            num_warps = requested_warps
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
-        if (ix_ct_single_default_enabled() and plan.length == 1024 and not n1 and not n2
-                and "FLAGFFT_IX_WARPS" not in os.environ):
-            num_warps = 1
         profile.validate(num_warps)
+    if (_ix_backend_active() and kernel_type == "leaf_packed_r2c"
+            and os.environ.get("FLAGFFT_IX_WARPS") is None):
+        # The half-length reconstruction has twice the register work of a
+        # normal leaf. Four warps caused a large batch-64 regression on V150;
+        # the measured two-warp launch retains the one-kernel benefit.
+        num_warps = 2
+    if profile.backend == "hcu" and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store"}:
+        is_final_axis = "permuted_store_outer_last_" in kernel_name
+        is_middle_axis = "permuted_store_inner_" in kernel_name
+        final_warps = os.environ.get("FLAGFFT_HCU_3D_FINAL_WARPS") if is_final_axis else None
+        middle_warps = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_WARPS") if is_middle_axis else None
+        fused_warps = os.environ.get("FLAGFFT_HCU_3D_FUSED_WARPS")
+        if final_warps not in (None, "auto"):
+            fused_warps = final_warps
+        if middle_warps not in (None, "auto"):
+            fused_warps = middle_warps
+        if fused_warps is not None:
+            try:
+                num_warps = int(fused_warps)
+            except ValueError as exc:
+                raise ValueError(
+                    "FLAGFFT_HCU_3D_FUSED_WARPS, FINAL_WARPS and MIDDLE_WARPS must be 1, 2, 4 or 8"
+                ) from exc
+            profile.validate(num_warps)
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

@@ -33,6 +33,7 @@ struct ProblemKey {
   std::vector<int64_t> input_strides;
   std::string input_layout;
   bool requires_contiguous_copy = false;
+  bool maca_3d_c2c32_single_cube = false;
   std::string direction;
 
   static ProblemKey from_request(const FFTRequest &request);
@@ -91,8 +92,31 @@ struct KernelKey {
   int64_t transpose3d_n0 = 0;
   int64_t transpose3d_n1 = 0;
   int64_t transpose3d_n2 = 0;
+  int64_t fused_plane_n0 = 0;
+  int64_t fused_plane_n1 = 0;
+  int64_t fused_plane_middle = 0;
   std::string transpose3d_order;
   std::string perm_form = "outer";
+  bool npu_portable_leaf = false;
+  bool hcu_full_smem = false;
+  int64_t hcu_3d_middle_batch_pack = 0;
+
+  static KernelKey fused_16_plane(std::string target, std::string direction, std::string dtype);
+  static KernelKey fused_32_real_plane(std::string target, std::string direction, std::string dtype);
+  static KernelKey fused_rect_plane(std::string target,
+                                    std::string direction,
+                                    std::string dtype,
+                                    int64_t plane_n0,
+                                    int64_t plane_n1,
+                                    int64_t middle_size);
+  static KernelKey fused_16_cube(std::string target, std::string direction, std::string dtype);
+  static KernelKey fused_16_real_cube(std::string target, std::string direction, std::string dtype);
+  static KernelKey fused_32_column(std::string target, std::string direction, std::string dtype,
+                                   int64_t columns = 16);
+  static KernelKey fused_2d(std::string target, std::string direction, std::string dtype,
+                            int64_t length, bool transpose_output = false);
+  static KernelKey fused_32_plane(std::string target, std::string direction, std::string dtype);
+  static KernelKey fused_16_real_plane(std::string target, std::string direction, std::string dtype);
 
   static KernelKey leaf(std::string target,
                         std::string direction,
@@ -131,6 +155,16 @@ struct KernelKey {
                             int64_t num_warps,
                             std::vector<int64_t> generic_radices,
                             int64_t smem_size);
+  static KernelKey leaf_r2c_permuted_store(std::string target,
+                                           std::string direction,
+                                           std::string dtype,
+                                           int64_t length,
+                                           std::vector<int64_t> factors,
+                                           int64_t lanes,
+                                           int64_t num_warps,
+                                           std::vector<int64_t> generic_radices,
+                                           int64_t smem_size,
+                                           std::string perm_form);
   static KernelKey leaf_c2r(std::string target,
                             std::string direction,
                             std::string dtype,
@@ -150,6 +184,36 @@ struct KernelKey {
                                   int64_t num_warps,
                                   std::vector<int64_t> generic_radices,
                                   int64_t smem_size);
+  static KernelKey leaf_rader_full(std::string target,
+                                   std::string direction,
+                                   std::string dtype,
+                                   int64_t prime_n,
+                                   int64_t length,
+                                   std::vector<int64_t> factors,
+                                   int64_t lanes,
+                                   int64_t num_warps,
+                                   std::vector<int64_t> generic_radices,
+                                   int64_t smem_size);
+  static KernelKey leaf_rader_prepare(std::string target,
+                                      std::string direction,
+                                      std::string dtype,
+                                      int64_t prime_n,
+                                      int64_t length,
+                                      std::vector<int64_t> factors,
+                                      int64_t lanes,
+                                      int64_t num_warps,
+                                      std::vector<int64_t> generic_radices,
+                                      int64_t smem_size);
+  static KernelKey leaf_rader_finish(std::string target,
+                                     std::string direction,
+                                     std::string dtype,
+                                     int64_t prime_n,
+                                     int64_t length,
+                                     std::vector<int64_t> factors,
+                                     int64_t lanes,
+                                     int64_t num_warps,
+                                     std::vector<int64_t> generic_radices,
+                                     int64_t smem_size);
   static KernelKey leaf_bluestein_prepare(std::string target,
                                           std::string direction,
                                           std::string dtype,

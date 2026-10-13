@@ -164,23 +164,22 @@ def _build_real_direct_dft_kernel_source(
     return name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
 
 
-def _packed_layout(n_cols: int, block: int = 256) -> tuple[int, int]:
+def _packed_layout(n_cols: int, elements_per_program: int = 256) -> tuple[int, int]:
     """Choose a (columns, rows-per-block) tile for tiny row-wise kernels.
 
-    Rows shorter than one block are packed so a full 256-lane tile stays
-    busy; rows longer than the block keep one row per block with the column
-    axis spread across grid.x (the historical behavior).
+    Rows shorter than one program tile are packed to keep the program busy;
+    longer rows keep one row per program with the column axis spread across
+    grid.x (the historical behavior).
     """
-    block_cols = min(block, _next_power_of_two(n_cols))
-    rows_per_block = max(1, block // block_cols)
+    block_cols = min(elements_per_program, _next_power_of_two(n_cols))
+    rows_per_block = max(1, elements_per_program // block_cols)
     return block_cols, rows_per_block
 
 
 def _build_real_to_complex_kernel_source(
-    n: int, dtype: str
+    n: int, dtype: str, elements_per_program: int = 256
 ) -> tuple[str, list[str], list[str]]:
-    block = 256
-    block_cols, rows_per_block = _packed_layout(n, block)
+    block_cols, rows_per_block = _packed_layout(n, elements_per_program)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_real_to_complex_kernel_n{n}_{suffix}"
@@ -217,11 +216,10 @@ def _build_real_to_complex_kernel_source(
 
 
 def _build_r2c_half_pack_kernel_source(
-    n: int, dtype: str
+    n: int, dtype: str, elements_per_program: int = 256
 ) -> tuple[str, list[str], list[str]]:
     half = n // 2 + 1
-    block = 256
-    block_cols, rows_per_block = _packed_layout(half, block)
+    block_cols, rows_per_block = _packed_layout(half, elements_per_program)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_r2c_half_pack_kernel_n{n}_{suffix}"
@@ -379,11 +377,10 @@ def _build_c2r_packed_preprocess_kernel_source(
 
 
 def _build_compact_to_hermitian_full_kernel_source(
-    n: int, dtype: str
+    n: int, dtype: str, elements_per_program: int = 256
 ) -> tuple[str, list[str], list[str]]:
     half = n // 2 + 1
-    block = 256
-    block_cols, rows_per_block = _packed_layout(n, block)
+    block_cols, rows_per_block = _packed_layout(n, elements_per_program)
     nyquist_guard = f" | (safe_cols == {n // 2})" if n % 2 == 0 else ""
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
@@ -424,10 +421,9 @@ def _build_compact_to_hermitian_full_kernel_source(
 
 
 def _build_complex_to_real_kernel_source(
-    n: int, dtype: str
+    n: int, dtype: str, elements_per_program: int = 256
 ) -> tuple[str, list[str], list[str]]:
-    block = 256
-    block_cols, rows_per_block = _packed_layout(n, block)
+    block_cols, rows_per_block = _packed_layout(n, elements_per_program)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_complex_to_real_kernel_n{n}_{suffix}"
