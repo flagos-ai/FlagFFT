@@ -28,6 +28,16 @@ RUN pip3 install --no-cache-dir \
 # setuptools >= 70.1 provides bdist_wheel itself (wheel 0.46+ removed it).
 RUN pip3 install --no-cache-dir "setuptools>=70.1" wheel
 
+# openEuler images define %dist as empty (official .oe* tags are
+# injected by EulerMaker); reconstruct it so local/CI builds get
+# distro-tagged Release fields like official packages.
+RUN if [ -z "$(rpm --eval '%{?dist}')" ]; then \
+        . /etc/os-release && \
+        case "${ID}" in \
+            openEuler) echo "%dist .oe$(echo "${VERSION_ID}" | tr -d '.')" >> /root/.rpmmacros ;; \
+        esac; \
+    fi
+
 RUN rpmdev-setuptree
 
 # Copy source code (submodule must already be checked out by caller).
