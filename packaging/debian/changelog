@@ -1,3 +1,11 @@
+libflagfft (0.2.0-2) unstable; urgency=medium
+
+  * Install the bundled libtriton_jit helper scripts under
+    /usr/share/flagfft/triton_jit/scripts (was /usr/share/triton_jit/scripts,
+    which conflicted with libtriton-jit-nvidia); update the .pth entry.
+
+ -- FlagOS Contributors <contact@flagos.io>  Thu, 24 Sep 2026 12:00:00 +0900
+
 libflagfft (0.2.0-1) unstable; urgency=medium
 
   * Align the packaging baseline with the 0.2.0 release line.
