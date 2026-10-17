@@ -61,7 +61,7 @@ class TensorFFTConfig:
             raise ValueError("output_rows_per_batch must be nonnegative")
         if self.output_rows_per_batch and self.output_stride != 1:
             raise ValueError("permuted output uses output_stride=1")
-        if self.exchange not in {"gather", "split", "dsa", "buffer", "static"}:
+        if self.exchange not in {"gather", "flat", "split", "dsa", "buffer", "static"}:
             raise ValueError("unsupported tensor FFT exchange")
         if self.num_warps not in {1, 2, 4, 8}:
             raise ValueError("unsupported tensor FFT launch width")
@@ -163,9 +163,62 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     return name, "\n".join(lines) + "\n"
 
 
+def _build_flat_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
+    """Keep exchange indices in one explicit logical vector address space."""
+    n, pack = config.length, config.rows_per_program
+    identity = hashlib.sha256(json.dumps({"version": 4, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
+    bits = n.bit_length() - 1
+    reversed_index = " | ".join(
+        f"(((frequency >> {bit}) & 1) << {bits - bit - 1})" for bit in range(bits))
+    ilen = n // 2 + 1 if config.mode == "c2r" else n
+    olen = n // 2 + 1 if config.mode == "r2c" else n
+    lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, row_offset):",
+        f"    flat = tl.arange(0, {n * pack})",
+        f"    lane = flat % {pack}", f"    frequency = flat // {pack}",
+        f"    row = row_offset + tl.program_id(0).to(tl.int64) * {pack} + lane",
+        "    mask = row < nbatch", f"    source_frequency = {reversed_index}",
+        f"    input_base = (row // {config.input_stride}) * {ilen * config.input_stride} + row % {config.input_stride}"]
+    if config.mode == "c2r":
+        lines += [f"    conjugate = source_frequency > {n // 2}",
+            f"    source_frequency = tl.where(conjugate, {n} - source_frequency, source_frequency)"]
+    lines += [f"    source_index = input_base + source_frequency * {config.input_stride}"]
+    if config.mode == "r2c":
+        lines += ["    real = tl.load(in_ptr + source_index, mask, 0.0)",
+            f"    imag = tl.full(({n * pack},), 0.0, tl.float32)"]
+    else:
+        lines += ["    real = tl.load(in_ptr + source_index * 2, mask, 0.0)",
+            "    imag = tl.load(in_ptr + source_index * 2 + 1, mask, 0.0)"]
+        if config.mode == "c2r":
+            lines += ["    imag = tl.where(conjugate, -imag, imag)",
+                f"    imag = tl.where((source_frequency == 0) | (source_frequency == {n // 2}), 0.0, imag)"]
+    for stage in range(1, bits + 1):
+        half, span = 1 << (stage - 1), 1 << stage
+        lines += [f"    lo = (frequency & ~{half}) * {pack} + lane",
+            f"    hi = lo + {half * pack}",
+            "    ar = tl.gather(real, lo, 0)", "    ai = tl.gather(imag, lo, 0)",
+            "    br = tl.gather(real, hi, 0)", "    bi = tl.gather(imag, hi, 0)",
+            f"    tw = (frequency % {half}) * {n // span} * 2",
+            "    wr = tl.load(twiddle_ptr + tw)", "    wi = tl.load(twiddle_ptr + tw + 1)",
+            "    tr, ti = _cmul(br, bi, wr, wi)",
+            f"    real = ar + tl.where((frequency & {half}) == 0, tr, -tr)",
+            f"    imag = ai + tl.where((frequency & {half}) == 0, ti, -ti)"]
+    step = config.output_rows_per_batch or config.output_stride
+    lines += [f"    output_base = (row // {step}) * {olen * step} + row % {step}",
+        f"    target = output_base + frequency * {step}", f"    valid = mask & (frequency < {olen})"]
+    if config.mode == "c2r":
+        lines += ["    tl.store(out_ptr + target, real, valid)"]
+    else:
+        lines += ["    tl.store(out_ptr + target * 2, real, valid)",
+            "    tl.store(out_ptr + target * 2 + 1, imag, valid)"]
+    return name, "\n".join(lines) + "\n"
+
+
 def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     if config.exchange == "static":
         return _build_static_fft_source(config)
+    if config.exchange == "flat":
+        return _build_flat_fft_source(config)
     n, pack = config.length, config.rows_per_program
     identity = hashlib.sha256(
         json.dumps({"version": 4, **asdict(config)}, sort_keys=True).encode()
