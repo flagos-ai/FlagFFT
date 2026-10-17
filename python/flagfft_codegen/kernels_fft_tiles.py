@@ -106,7 +106,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     """
     n, pack = config.length, config.rows_per_program
     tile_n = 1 << (n - 1).bit_length()
-    identity = hashlib.sha256(json.dumps({"version": 16, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 17, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
@@ -172,8 +172,8 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             lines += [f"    loaded_r = tl.load(in_ptr + source, {input_mask}, 0.0)",
                 f"    loaded_i = tl.full(({pack}, {tile_n}), 0.0, tl.float32)"]
         else:
-            lines += [f"    loaded_r = tl.load(in_ptr + source * 2, {input_mask}, 0.0)",
-                f"    loaded_i = tl.load(in_ptr + source * 2 + 1, {input_mask}, 0.0)"]
+            lines += [f"    loaded_point = tl.load(in_ptr + source[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], ({input_mask})[:, :, None], 0.0)",
+                "    loaded_r, loaded_i = tl.split(loaded_point)"]
         inverse_indices = { _digit_reversed_index(i, config.factors): i for i in range(n) }
         def split_input(name, points, prefix, path=""):
             if len(points) == 1:
@@ -271,8 +271,8 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         if config.mode == "c2r":
             lines += [f"    tl.store(out_ptr + target, {real}, valid)"]
         else:
-            lines += [f"    tl.store(out_ptr + target * 2, {real}, valid)",
-                f"    tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
+            lines += [f"    output_point = tl.join({real}, {imag})",
+                "    tl.store(out_ptr + target[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], output_point, valid[:, :, None])"]
     else:
         for index in range(output_length):
             position = f"(output_base + {index * step})"
@@ -304,7 +304,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "programs_per_row_group": (extent + config.rows_per_program - 1) // config.rows_per_program if extent else 1,
         "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
         "kernel_type": "tensor_fft", "dtype": "complex64", "implementation": "triton",
-        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 16,
+        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 17,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
