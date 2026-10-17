@@ -26,7 +26,7 @@ def native_tables_executable(tmp_path_factory):
     repo = Path(__file__).resolve().parents[2]
     code = (repo / "src/codegen/compiler.cpp").read_text()
     start = code.index("  void build_npu_aiv_fft_radix4_pair_tables(")
-    end = code.index("  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_real_child(", start)
+    end = code.index("  int32_t npu_aiv_fft64_group_size(", start)
     prelude = """#include <cmath>
 #include <cstdint>
 #include <cstdlib>

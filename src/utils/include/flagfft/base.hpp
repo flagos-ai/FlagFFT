@@ -198,7 +198,8 @@ enum class KernelKind {
   NpuGroupedFFT64,
   NpuRadix4Pair,
   NpuTableStockham,
-  NpuSinglePower2
+  NpuSinglePower2,
+  NpuFFT256Pair
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

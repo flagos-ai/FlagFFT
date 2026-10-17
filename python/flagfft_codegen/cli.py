@@ -48,6 +48,7 @@ from .kernels_npu_grouped import emit_npu_grouped_fft64
 from .kernels_npu_radix4 import emit_npu_radix4_pair
 from .kernels_npu_stockham import emit_npu_table_stockham
 from .kernels_npu_power2 import emit_npu_single_power2
+from .kernels_npu_fft256 import emit_npu_fft256_pair
 from .kernels_npu_layout import emit_npu_table_transpose3d
 from .artifacts import write_text_atomic
 from .registry import (
@@ -62,6 +63,7 @@ from .registry import (
     NPU_RADIX4_PAIR,
     NPU_TABLE_STOCKHAM,
     NPU_SINGLE_POWER2,
+    NPU_FFT256_PAIR,
     RESHAPE,
     SMALL_3D,
     SMALL_2D,
@@ -236,7 +238,7 @@ def main() -> None:
         or not args.target.startswith("npu:") or args.dtype != "complex64"
     ):
         parser.error("--npu-vector-complex-io requires an NPU FP32 transfer body")
-    if args.npu_fft_radix4_pair and args.kernel != "npu_grouped_fft64":
+    if args.npu_fft_radix4_pair and args.kernel not in {"npu_grouped_fft64", "npu_fft256_pair"}:
         parser.error("--npu-fft-radix4-pair requires --kernel npu_grouped_fft64")
     if args.npu_stockham_loop and args.kernel != "npu_table_stockham":
         parser.error("--npu-stockham-loop requires --kernel npu_table_stockham")
@@ -479,6 +481,12 @@ def main() -> None:
         metadata = emit_npu_table_stockham(length=args.length, radix=args.factors[0],
             span=args.factors[1], direction=args.direction, out_dir=args.out_dir,
             compact_loop=args.npu_stockham_loop)
+    elif spec.family == NPU_FFT256_PAIR:
+        if not args.target.startswith("npu:") or args.dtype != "complex64":
+            parser.error("256-point pair requires an NPU FP32 target")
+        metadata = emit_npu_fft256_pair(mode=args.npu_fft_mode,
+            radix4_store=args.npu_fft_radix4_pair, direction=args.direction,
+            out_dir=args.out_dir)
     elif spec.family == NPU_SINGLE_POWER2:
         if not args.target.startswith("npu:") or args.dtype != "complex64":
             parser.error("Single-row power2 requires an NPU FP32 target")

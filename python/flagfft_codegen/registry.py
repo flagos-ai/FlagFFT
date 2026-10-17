@@ -42,6 +42,7 @@ NPU_GROUPED_FFT = "npu_grouped_fft"
 NPU_RADIX4_PAIR = "npu_radix4_pair"
 NPU_TABLE_STOCKHAM = "npu_table_stockham"
 NPU_SINGLE_POWER2 = "npu_single_power2"
+NPU_FFT256_PAIR = "npu_fft256_pair"
 
 LEAF_LIKE_FAMILIES = frozenset(
     {CT_LEAF, FOUR_STEP, BLUESTEIN_LEAF, BLUESTEIN_FOUR_STEP}
@@ -85,6 +86,7 @@ _SPECS: tuple[KernelSpec, ...] = (
                requires=("length", "npu_fft_group", "npu_fft_mode")),
     KernelSpec("npu_table_stockham", NPU_TABLE_STOCKHAM, requires=("length", "factors")),
     KernelSpec("npu_single_power2", NPU_SINGLE_POWER2, requires=("length",)),
+    KernelSpec("npu_fft256_pair", NPU_FFT256_PAIR),
     KernelSpec("stockham_stage", STOCKHAM, requires=("length", "factors")),
     KernelSpec("leaf", CT_LEAF, io_mode="contiguous", requires=_BASE_LEAF_FLAGS),
     KernelSpec("leaf_strided", CT_LEAF, io_mode="strided", requires=_BASE_LEAF_FLAGS),

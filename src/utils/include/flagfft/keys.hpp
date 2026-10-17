@@ -343,6 +343,7 @@ struct KernelKey {
   static KernelKey npu_table_stockham(std::string target, std::string direction,
                                       int64_t length, int64_t radix, int64_t span);
   static KernelKey npu_single_power2(std::string target, std::string direction, int64_t length);
+  static KernelKey npu_fft256_pair(std::string target, std::string direction, int64_t mode, bool radix4_store);
   static KernelKey transpose3d(
       std::string target, std::string dtype, int64_t n0, int64_t n1, int64_t n2, std::string order);
   static KernelKey real_to_complex(std::string target, std::string dtype, int64_t length);

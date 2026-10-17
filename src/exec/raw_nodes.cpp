@@ -828,7 +828,7 @@ CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     bool transposed_store,
     bool radix4_mode,
     int64_t transposed_output_row_stride,
-    NpuAivFFT256Mode mode)
+    NpuAivFFT256Mode mode, std::shared_ptr<JitKernel> replacement)
     : indices(std::move(indices)),
       twiddles(std::move(twiddles)),
       group_size(group_size),
@@ -836,7 +836,7 @@ CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
       transposed_store(transposed_store),
       radix4_mode(radix4_mode),
       transposed_output_row_stride(transposed_output_row_stride),
-      mode(mode) {}
+      mode(mode), replacement(std::move(replacement)) {}
 
 std::string CompiledRawNpuAivFFT256Node::describe() const {
   std::ostringstream oss;
@@ -845,6 +845,7 @@ std::string CompiledRawNpuAivFFT256Node::describe() const {
       << ", transposed_store=" << transposed_store
       << ", radix4_mode=" << radix4_mode
       << ", transposed_output_row_stride=" << transposed_output_row_stride << ")";
+  if (replacement) oss << "[triton]";
   if (mode == NpuAivFFT256Mode::RealForward) oss << "[r2c-row]";
   if (mode == NpuAivFFT256Mode::RealInverse) oss << "[c2r-row]";
   return oss.str();
@@ -894,6 +895,38 @@ flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
     const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
     const adaptor::DevicePtr byte_offset =
         static_cast<adaptor::DevicePtr>(batch_offset * input_transform_bytes);
+    if (replacement) {
+      // Retain native chunk offsets and the original bounded real-row grid.
+      int32_t grid = static_cast<int32_t>(chunk_batch / group_size);
+      if (mode != NpuAivFFT256Mode::Complex) {
+        int32_t real_blocks = default_real_blocks_per_launch;
+        if (const char *setting = std::getenv("FLAGFFT_NPU_3D_REAL_BLOCKS")) {
+          char *end = nullptr;
+          const unsigned long parsed = std::strtoul(setting, &end, 10);
+          if (end == setting || *end != '\0' || parsed == 0 || parsed > 256)
+            return FLAGFFT_INVALID_SIZE;
+          real_blocks = static_cast<int32_t>(parsed);
+        }
+        grid = std::min(grid, real_blocks);
+      }
+      try {
+        std::vector<JitKernelArg> args {
+            JitKernelArg::device(input + byte_offset),
+            JitKernelArg::device(transposed_store ? output :
+                output + static_cast<adaptor::DevicePtr>(batch_offset * output_transform_bytes)),
+            JitKernelArg::device(indices->get()), JitKernelArg::device(twiddles->get()),
+            JitKernelArg::i32(static_cast<int32_t>(chunk_batch))};
+        if (transposed_store) {
+          args.push_back(JitKernelArg::i32(static_cast<int32_t>(output_row_stride)));
+          args.push_back(JitKernelArg::i32(static_cast<int32_t>(batch_offset)));
+        }
+        replacement->launch(context.stream, args, grid, 1, 1);
+      } catch (const std::exception &e) {
+        std::fprintf(stderr, "[flagfft] generated FFT256 execute failed: %s\n", e.what());
+        return FLAGFFT_EXEC_FAILED;
+      }
+      continue;
+    }
     const flagfftResult result = adaptor::npu::launch_ascendc_fft256(
         input + byte_offset,
         transposed_store

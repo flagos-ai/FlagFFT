@@ -455,6 +455,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::NpuSinglePower2:
       kernel_kind = "npu_single_power2";
       break;
+    case KernelKind::NpuFFT256Pair:
+      kernel_kind = "npu_fft256_pair";
+      break;
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
@@ -683,6 +686,16 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --length " << key.length
                 << " --factors " << key.factors[0] << "," << key.factors[1]
                 << " --direction " << shell_quote(key.direction);
+  }
+  if (key.kind == KernelKind::NpuFFT256Pair) {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64" ||
+        key.length != 256 || key.lanes != 8 ||
+        (key.perm_form != "pair" && key.perm_form != "radix4_store")) {
+      throw std::runtime_error("256-point pair requires an NPU FP32 group8 layout");
+    }
+    jit_command << " --npu-fft-mode " << key.reshape_n2
+                << " --direction " << shell_quote(key.direction);
+    if (key.perm_form == "radix4_store") jit_command << " --npu-fft-radix4-pair";
   }
   if (key.kind == KernelKind::NpuSinglePower2) {
     if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {

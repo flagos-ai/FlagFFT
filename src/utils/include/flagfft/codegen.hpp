@@ -290,7 +290,8 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
                               bool transposed_store = false,
                               bool radix4_mode = false,
                               int64_t transposed_output_row_stride = 0,
-                              NpuAivFFT256Mode mode = NpuAivFFT256Mode::Complex);
+                              NpuAivFFT256Mode mode = NpuAivFFT256Mode::Complex,
+                              std::shared_ptr<JitKernel> replacement = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -304,6 +305,7 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   bool radix4_mode;
   int64_t transposed_output_row_stride;
   NpuAivFFT256Mode mode;
+  std::shared_ptr<JitKernel> replacement;
 };
 #endif
 
@@ -1664,6 +1666,10 @@ class TritonCompiler {
       NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex, bool radix4_pair = false);
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft128_child(
       const FFTRequest &request, int32_t group_size, bool radix4_pair = false);
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_real_child(
+      const FFTRequest &request, int64_t batch, NpuAivFFT256Mode mode);
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_complex_child(
+      const FFTRequest &request, bool allow_transposed_store);
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft1024_child(const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft2048_child(
       const FFTRequest &request, bool radix4_pair = false);

@@ -18,15 +18,18 @@ from .artifacts import write_text_atomic
 from .metadata import _module_source, _signature
 
 
-def build_npu_radix4_pair_source(*, length: int, group: int, mode: int):
+def build_npu_radix4_pair_source(*, length: int, group: int, mode: int,
+                                transposed_store: bool = False):
     """Preserve quarter-vector butterflies, grouped tables and real boundaries.
 
     TLE insert_slice keeps the native contiguous UB vector partitions between
     pairs. Inverse scaling is owned by the parent plan, as in the native body.
     """
-    supported = {64: (1, 4, 8, 16, 32), 128: (4, 8, 16), 2048: (1,)}
+    supported = {64: (1, 4, 8, 16, 32), 128: (4, 8, 16), 2048: (1,), 256: (8,)}
     if (length not in supported or group not in supported[length]
-            or mode not in (0, 1, 2) or (length == 2048 and mode != 0)):
+            or mode not in (0, 1, 2) or (length == 2048 and mode != 0)
+            or (length == 256 and (mode != 0 or not transposed_store))
+            or (transposed_store and length != 256)):
         raise ValueError("Unsupported Ascend radix4 pair length, group or mode")
     n = length
     count = n * group
@@ -112,6 +115,18 @@ def build_npu_radix4_pair_source(*, length: int, group: int, mode: int):
               f'    output_index = tl.load(idx_ptr + {output_base} + output_lane, output_lane < {output_count}, 0) >> 2',
               '    result = tl.gather(packed, output_index, 0)',
               f'    tl.store(out_ptr + pid * {output_count} + output_lane, result, output_lane < {output_count})']
+    if transposed_store:
+        name += "_store"
+        lines[0] = f"@triton.jit\ndef {name}(in_ptr, out_ptr, idx_ptr, twiddle_ptr, nbatch, output_row_stride, output_transform_offset):"
+        lines[-1:] = [
+            "    global_row = pid * 8 + output_transform_offset.to(tl.int64)",
+            "    matrix = global_row // output_row_stride",
+            "    column = global_row % output_row_stride",
+            "    offsets = ((matrix * output_row_stride * 256",
+            "                + tl.arange(0, 256)[:, None] * output_row_stride + column) * 2",
+            "               + tl.arange(0, 16)[None, :])",
+            "    tl.store(out_ptr + offsets, tl.reshape(result, (256, 16)))",
+        ]
     return name, '\n'.join(lines) + '\n'
 
 

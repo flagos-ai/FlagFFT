@@ -734,6 +734,20 @@ KernelKey KernelKey::npu_single_power2(std::string target, std::string direction
   return key;
 }
 
+KernelKey KernelKey::npu_fft256_pair(std::string target, std::string direction,
+                                     int64_t mode, bool radix4_store) {
+  KernelKey key;
+  key.kind = KernelKind::NpuFFT256Pair;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = "complex64";
+  key.length = 256;
+  key.lanes = 8;
+  key.reshape_n2 = mode;
+  key.perm_form = radix4_store ? "radix4_store" : "pair";
+  return key;
+}
+
 KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1) {
   KernelKey key;
   key.kind = KernelKind::TiledTranspose;
