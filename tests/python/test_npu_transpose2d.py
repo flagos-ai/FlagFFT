@@ -1,7 +1,11 @@
 """Check the isolated NPU transpose without changing FFT scheduling."""
 
 import ast
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -86,8 +90,9 @@ def test_pair_transpose_is_scoped_to_npu_fp32(monkeypatch, tmp_path, backend, dt
 
     monkeypatch.setattr(emit, "_npu_backend_active", lambda: backend == "npu")
     monkeypatch.setattr(emit, "_maca_backend_active", lambda: False)
-    metadata = emit._emit_tiled_transpose_jit_kernel(n0=257, n1=129, dtype=dtype, out_dir=tmp_path)
     selected = backend == "npu" and dtype == "complex64"
+    metadata = emit._emit_tiled_transpose_jit_kernel(n0=257, n1=129, dtype=dtype,
+        npu_vector_transpose=selected, out_dir=tmp_path)
     assert metadata["kernel_name"].startswith("_complex_pair_transpose") == selected
     assert metadata["tile_size"] == 32 and metadata["batch_per_block"] == 1
     assert metadata["signature"].endswith(",i32")
@@ -118,7 +123,8 @@ def test_npu_transpose_grid_matches_selected_tile(monkeypatch, tmp_path, shape, 
     from flagfft_codegen import emit
     monkeypatch.setattr(emit, "_npu_backend_active", lambda: True)
     rows, cols = shape
-    meta = emit._emit_tiled_transpose_jit_kernel(n0=rows, n1=cols, out_dir=tmp_path)
+    meta = emit._emit_tiled_transpose_jit_kernel(n0=rows, n1=cols,
+        npu_vector_transpose=True, out_dir=tmp_path)
     assert meta["tile_size"] == tile
     assert meta["grid_x_override"] == (cols + tile - 1) // tile
     assert meta["grid_y_override"] == (rows + tile - 1) // tile
@@ -127,3 +133,39 @@ def test_npu_transpose_grid_matches_selected_tile(monkeypatch, tmp_path, shape, 
     assert "tl.split(" not in source and "tl.join(" not in source
     tree = ast.parse(source)
     assert not any(isinstance(node, (ast.FloorDiv, ast.Mod)) for node in ast.walk(tree))
+
+
+def test_existing_npu_transpose_source_is_preserved(monkeypatch, tmp_path):
+    from flagfft_codegen import emit
+    monkeypatch.setattr(emit, "_npu_backend_active", lambda: True)
+    monkeypatch.setattr(emit, "_maca_backend_active", lambda: False)
+    meta = emit._emit_tiled_transpose_jit_kernel(n0=2048, n1=1025, out_dir=tmp_path)
+    _, source, _ = _build_tiled_transpose_kernel_source(2048, 1025, "complex64")
+    assert Path(meta["module_path"]).read_text() == _module_source(source)
+    assert "grid_x_override" not in meta and "grid_y_override" not in meta
+
+
+@pytest.mark.parametrize("backend,dtype", [("cuda", "complex64"), ("ix", "complex64"),
+    ("npu", "complex128")])
+def test_explicit_vector_transpose_rejects_wrong_backend_or_dtype(monkeypatch, tmp_path, backend, dtype):
+    from flagfft_codegen import emit
+    monkeypatch.setattr(emit, "_npu_backend_active", lambda: backend == "npu")
+    with pytest.raises(ValueError, match="NPU complex64"):
+        emit._emit_tiled_transpose_jit_kernel(n0=128, n1=128, dtype=dtype,
+            npu_vector_transpose=True, out_dir=tmp_path)
+
+
+@pytest.mark.parametrize("vector", [False, True])
+def test_npu_transpose_cli_selects_only_explicit_replacement(tmp_path, vector):
+    root = Path(__file__).resolve().parents[2]
+    command = [sys.executable, "-m", "flagfft_codegen.jit_source", "--kernel", "tiled_transpose",
+        "--target", "npu:source-contract:32", "--reshape-n1", "2048", "--reshape-n2", "1025",
+        "--out-dir", str(tmp_path)]
+    if vector:
+        command.append("--npu-vector-transpose")
+    environment = dict(os.environ, PYTHONPATH=str(root / "python"), PYTHONDONTWRITEBYTECODE="1")
+    result = subprocess.run(command, env=environment, text=True, capture_output=True, check=True)
+    meta = json.loads(result.stdout)
+    assert meta["kernel_name"].startswith("_complex_pair_transpose") == vector
+    assert meta["tile_size"] == (64 if vector else 32)
+    assert ("grid_x_override" in meta) == vector

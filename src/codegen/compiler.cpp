@@ -36,7 +36,7 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
-  bool npu_2d_native_transpose_enabled(const FFTRequest &request,
+  bool npu_2d_native_transpose_supported(const FFTRequest &request,
                                       int64_t rows,
                                       int64_t cols,
                                       int64_t batch) {
@@ -64,8 +64,7 @@ namespace {
       return false;
     }
     elements *= static_cast<uint64_t>(batch);
-    return elements >= kMinimumBytes / sizeof(uint64_t) &&
-           flag_or_default("FLAGFFT_NPU_2D_NATIVE_TRANSPOSE", true);
+    return elements >= kMinimumBytes / sizeof(uint64_t);
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -3534,7 +3533,8 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
   auto transpose = std::make_shared<CompiledRawTranspose2D>();
   transpose->rows = rows;
   transpose->cols = cols;
-  if (npu_2d_native_transpose_enabled(request, rows, cols, batch)) {
+  const bool npu_native_supported = npu_2d_native_transpose_supported(request, rows, cols, batch);
+  if (npu_native_supported && flag_or_default("FLAGFFT_NPU_2D_NATIVE_TRANSPOSE", true)) {
     transpose->native_npu = true;
     // Use larger tiles only when the matrix has enough total traffic and the
     // resulting grid still exposes multiple waves of independent work.
@@ -3586,6 +3586,13 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
     transpose->npu_tile_size = selected_tile;
     transpose->npu_indices = build_npu_2d_transpose_indices(
         static_cast<uint32_t>(transpose->npu_tile_size));
+  } else if (npu_native_supported) {
+    auto key = KernelKey::tiled_transpose(triton_target_for_request(request),
+                                         complex_dtype_for(request.input_dtype), rows, cols);
+    // This private variant replaces an eligible native transpose only.
+    // Existing generated transposes retain their original source/cache key.
+    key.perm_form = "npu_vector";
+    transpose->triton_kernel = compile_kernel(key);
   } else {
     transpose->triton_kernel = compile_tiled_transpose_kernel(request, rows, cols);
   }
