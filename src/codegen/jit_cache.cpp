@@ -221,7 +221,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.target.rfind("npu:", 0) == 0 && key.dtype == "complex64" &&
       (key.kind == KernelKind::ReshapePack || key.kind == KernelKind::TwiddleReshapePack)) {
-    const bool tiled = env_flag_enabled(std::getenv("FLAGFFT_NPU_TRITON_RESHAPE_TILE"));
+    const char *setting = std::getenv("FLAGFFT_NPU_TRITON_RESHAPE_TILE");
+    // Match the generator's explicit opt-in; other truthy spellings are OFF.
+    const bool tiled = setting != nullptr && std::string(setting) == "1";
     cache_key += std::string(";npu-reshape-tile=") + (tiled ? "1" : "0");
   }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {

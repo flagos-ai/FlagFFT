@@ -84,3 +84,13 @@ def test_large_local_coordinate_width():
     assert 'tl.int64' in build_npu_tiled_reshape_source(65536, 65536)[1]
     with pytest.raises(ValueError):
         build_npu_tiled_reshape_source(0, 7)
+
+
+@pytest.mark.parametrize('setting', ['', '0', '1', 'true', 'TRUE', 'yes', 'off', 'invalid'])
+@pytest.mark.parametrize('twiddle', [False, True])
+def test_explicit_opt_in_value(monkeypatch, setting, twiddle):
+    build = (kernels_layout._build_twiddle_reshape_pack_kernel_source if twiddle
+             else kernels_layout._build_reshape_pack_kernel_source)
+    monkeypatch.setattr(kernels_layout, '_npu_backend_active', lambda: True)
+    monkeypatch.setenv('FLAGFFT_NPU_TRITON_RESHAPE_TILE', setting)
+    assert build(17, 33, 'complex64')[0].startswith('npu_tiled_') == (setting == '1')
