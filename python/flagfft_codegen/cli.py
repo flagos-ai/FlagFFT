@@ -44,6 +44,7 @@ from .kernels_small_3d import (
     emit_fused_32_plane_kernel,
 )
 from .kernels_small_2d import emit_fused_2d_kernel
+from .kernels_npu_grouped import emit_npu_grouped_fft64
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -53,6 +54,7 @@ from .registry import (
     KERNEL_NAMES,
     RADER,
     REAL_POINTWISE,
+    NPU_GROUPED_FFT,
     RESHAPE,
     SMALL_3D,
     SMALL_2D,
@@ -119,6 +121,9 @@ def main() -> None:
     parser.add_argument("--length", type=int)
     parser.add_argument("--factors", type=_csv_ints)
     parser.add_argument("--lanes", type=int)
+    parser.add_argument("--npu-fft-group", type=int)
+    parser.add_argument("--npu-fft-stride", type=int)
+    parser.add_argument("--npu-fft-mode", type=int)
     parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
@@ -420,6 +425,13 @@ def main() -> None:
             n2=args.reshape_n2,
             dtype=args.dtype,
             out_dir=args.out_dir,
+        )
+    elif spec.family == NPU_GROUPED_FFT:
+        if not args.target.startswith("npu:") or args.dtype != "complex64":
+            parser.error("npu_grouped_fft64 requires an NPU FP32 target")
+        metadata = emit_npu_grouped_fft64(
+            group=args.npu_fft_group, stride=args.npu_fft_stride,
+            mode=args.npu_fft_mode, direction=args.direction, out_dir=args.out_dir,
         )
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:

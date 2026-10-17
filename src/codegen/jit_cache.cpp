@@ -429,6 +429,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::TiledTranspose:
       kernel_kind = "tiled_transpose";
       break;
+    case KernelKind::NpuGroupedFFT64:
+      kernel_kind = "npu_grouped_fft64";
+      break;
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
@@ -620,6 +623,16 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     jit_command << " --length " << key.length;
+  }
+
+  if (key.kind == KernelKind::NpuGroupedFFT64) {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {
+      throw std::runtime_error("Grouped FFT64 body requires NPU FP32");
+    }
+    jit_command << " --npu-fft-group " << key.lanes
+                << " --npu-fft-stride " << key.reshape_n1
+                << " --npu-fft-mode " << key.reshape_n2
+                << " --direction " << shell_quote(key.direction);
   }
 
   std::string artifact_json = run_command_capture_stdout(jit_command.str());

@@ -223,7 +223,8 @@ struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
                              std::shared_ptr<DeviceAllocation> indices,
                              std::shared_ptr<DeviceAllocation> twiddles,
                              NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex,
-                             bool radix4_pair = false);
+                             bool radix4_pair = false,
+                             std::shared_ptr<JitKernel> replacement = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -233,6 +234,7 @@ struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
   int64_t group_size;
   NpuAivFFT64Mode mode;
   bool radix4_pair;
+  std::shared_ptr<JitKernel> replacement;
   std::shared_ptr<DeviceAllocation> indices;
   std::shared_ptr<DeviceAllocation> twiddles;
 };
@@ -1650,6 +1652,11 @@ class TritonCompiler {
   static void clear_kernel_cache();
 
  private:
+#if defined(FLAGFFT_BACKEND_NPU)
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft64_child(
+      const FFTRequest &request, int64_t stride, int32_t group_size,
+      NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex, bool radix4_pair = false);
+#endif
   void configure_single_transform_policies(const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_3d_real_leaf_node(
       const std::shared_ptr<ThreeDimPlanNode> &node,

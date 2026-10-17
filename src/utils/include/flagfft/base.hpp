@@ -194,7 +194,8 @@ enum class KernelKind {
   Fused2D,
   LeafRaderPrepare,
   LeafRaderFinish,
-  LeafPackedC2R
+  LeafPackedC2R,
+  NpuGroupedFFT64
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);
