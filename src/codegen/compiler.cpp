@@ -40,10 +40,7 @@ namespace {
     // The first qualified register tier bounds cold compilation and live values.
     if (request.device_type != "npu" || complex_dtype_for(request.input_dtype) != "complex64" ||
         length < 1 || length > 64 || !flag_or_default("FLAGFFT_NPU_TENSOR_FFT", false)) return false;
-    for (int64_t factor : {2, 3, 5, 7, 11, 13, 17, 19}) {
-      while (length % factor == 0) length /= factor;
-    }
-    return length == 1;
+    return (length & (length - 1)) == 0;
   }
 
   bool npu_generated_pipeline_enabled(const FFTRequest &request) {
@@ -1957,7 +1954,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_fft_stages(
     // Bound the paired codelet's output-frequency dimension as well as its
     // independent FFT lanes. Four accumulators and temporary products must
     // fit the same local-memory budget for every odd radix.
-    const int64_t vector_limit = paired ? std::min<int64_t>(128, 1024 / width) : 128;
+    const int64_t vector_limit = paired ? std::min<int64_t>(128, 256 / width) : 128;
     int64_t block = 8;
     while (block < ndiv && block < vector_limit) block *= 2;
     int64_t pack = 1;

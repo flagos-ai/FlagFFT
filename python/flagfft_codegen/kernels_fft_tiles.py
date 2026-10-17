@@ -37,6 +37,8 @@ class TensorFFTConfig:
     def __post_init__(self):
         if self.length < 1:
             raise ValueError("tensor FFT length must be >= 1")
+        if self.exchange == "split_register" and self.length & (self.length - 1):
+            raise ValueError("register exchange requires a power-of-two length")
         factors = tuple(self.factors) or _static_factors(self.length)
         if math.prod(factors) != self.length or any(
             radix not in _NATURAL_ORDER_CODELET_RADICES for radix in factors
@@ -104,7 +106,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     """
     n, pack = config.length, config.rows_per_program
     tile_n = 1 << (n - 1).bit_length()
-    identity = hashlib.sha256(json.dumps({"version": 15, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 16, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
@@ -264,29 +266,13 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             return name
         real = join_output(tuple(range(tile_n)), "r")
         imag = join_output(tuple(range(tile_n)), "i") if config.mode != "c2r" else ""
-        if output_length != n or n != tile_n:
-            output_tile = 1 << (pack * output_length - 1).bit_length()
-            output_mask = f"offset < valid_rows * {output_length}"
-            lines += [f"    offset = tl.arange(0, {output_tile})",
-                f"    source = tl.minimum(offset, {pack * output_length - 1})",
-                f"    source = (source // {output_length}) * {tile_n} + source % {output_length}",
-                f"    flat_r = tl.gather(tl.reshape({real}, ({pack * tile_n},)), source, 0)",
-                f"    target = first_row * {output_length} + offset",
-                f"    valid_output = {output_mask}"]
-            if config.mode == "c2r":
-                lines += ["    tl.store(out_ptr + target, flat_r, valid_output)"]
-            else:
-                lines += [f"    flat_i = tl.gather(tl.reshape({imag}, ({pack * tile_n},)), source, 0)",
-                    "    tl.store(out_ptr + target * 2, flat_r, valid_output)",
-                    "    tl.store(out_ptr + target * 2 + 1, flat_i, valid_output)"]
+        lines += ["    target = output_base[:, None] + frequency[None, :]",
+            f"    valid = mask[:, None] & (frequency[None, :] < {output_length})"]
+        if config.mode == "c2r":
+            lines += [f"    tl.store(out_ptr + target, {real}, valid)"]
         else:
-            lines += ["    target = output_base[:, None] + frequency[None, :]",
-                f"    valid = mask[:, None] & (frequency[None, :] < {output_length})"]
-            if config.mode == "c2r":
-                lines += [f"    tl.store(out_ptr + target, {real}, valid)"]
-            else:
-                lines += [f"    tl.store(out_ptr + target * 2, {real}, valid)",
-                    f"    tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
+            lines += [f"    tl.store(out_ptr + target * 2, {real}, valid)",
+                f"    tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
     else:
         for index in range(output_length):
             position = f"(output_base + {index * step})"
@@ -318,7 +304,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "programs_per_row_group": (extent + config.rows_per_program - 1) // config.rows_per_program if extent else 1,
         "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
         "kernel_type": "tensor_fft", "dtype": "complex64", "implementation": "triton",
-        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 15,
+        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 16,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
