@@ -40,6 +40,9 @@ class Language:
     def full(shape, value, dtype):
         return np.full(shape, value, dtype).view(Tensor)
 
+    where = staticmethod(np.where)
+    gather = staticmethod(np.take_along_axis)
+
     @staticmethod
     def load(pointer, mask=True, other=0):
         return np.where(mask, pointer.values[np.where(mask, pointer.offset, 0)], other).view(Tensor)
@@ -54,10 +57,13 @@ class Language:
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("stride,permuted", [(1, 0), (3, 0), (1, 7)])
-def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction, stride, permuted):
+@pytest.mark.parametrize("exchange", ["static", "flat"])
+def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction, stride, permuted, exchange):
+    if exchange == "flat" and length & (length - 1):
+        pytest.skip("tensor exchange currently supports powers of two")
     config = TensorFFTConfig(length, 8, mode=mode, direction=direction, input_stride=stride,
         output_stride=stride if not permuted else 1, output_rows_per_batch=permuted,
-        exchange="static", factors=factors)
+        exchange=exchange, factors=factors)
     metadata = emit_tensor_fft(config, tmp_path)
     tree = ast.parse(Path(metadata["module_path"]).read_text())
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
@@ -87,12 +93,14 @@ def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction
         np.nan, np.float32 if mode == "c2r" else np.complex64)
     untouched = np.ones(output.size, dtype=bool)
     kernel = namespace[metadata["kernel_name"]]
+    sign = -1 if direction == "forward" else 1
+    twiddle = np.exp(sign * 2j * np.pi * np.arange(length // 2) / length).astype(np.complex64)
     # Two host chunks exercise row_offset with global input/output indexing.
     for offset, count in ((0, 8), (8, 11)):
         for pid in range((count + 7) // 8):
             language.pid = pid
             kernel(Pointer(source.view(np.float32)), Pointer(output.view(np.float32)),
-                Pointer(np.empty(0, np.float32)), offset + count, offset)
+                Pointer(twiddle.view(np.float32)), offset + count, offset)
     actual = np.empty_like(expected)
     for row in range(rows):
         base = row // output_step * out_length * output_step + row % output_step
