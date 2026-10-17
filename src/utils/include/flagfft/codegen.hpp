@@ -112,6 +112,7 @@ struct JitKernel {
   // Nonzero only for the private NPU transpose with a byte-offset table ABI.
   int64_t transpose_tile_size = 0;
   bool tle_fused_twiddle = false;
+  bool npu_permutation_table = false;
   void *jit_function = nullptr;
   std::mutex mutex;
 };
@@ -1787,7 +1788,8 @@ class TritonCompiler {
                                                                       int64_t cols,
                                                                       int64_t batch);
   std::shared_ptr<JitKernel> compile_transpose3d_kernel(
-      const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order);
+      const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order,
+      bool npu_native_replacement = false);
   std::shared_ptr<JitKernel> compile_kernel(const KernelKey &key) const;
   std::filesystem::path out_dir() const;
   std::string python_executable() const;

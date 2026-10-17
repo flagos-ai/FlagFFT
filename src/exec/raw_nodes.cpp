@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <complex>
 #include <cstdlib>
+#include <initializer_list>
 #include <cstdio>
 #include <limits>
 #include <sstream>
@@ -259,6 +260,20 @@ namespace {
         const int64_t chunk = std::min(batch_chunk, batch - batch_offset);
         const adaptor::DevicePtr byte_offset = static_cast<adaptor::DevicePtr>(
             batch_offset * elements_per_batch * element_bytes);
+        if (kernel && kernel->npu_permutation_table) {
+          if (kernel->grid_x_override != static_cast<int64_t>(per_batch_tiles)) {
+            return FLAGFFT_INVALID_SIZE;
+          }
+          // The generated masked copy retains the unshifted source window.
+          // Only the native padded copy needs the edge-shifted index table.
+          kernel->launch(stream,
+                         {JitKernelArg::device(input + byte_offset),
+                          JitKernelArg::device(output + byte_offset),
+                          JitKernelArg::device(npu_indices[index].get()),
+                          JitKernelArg::i32(static_cast<int32_t>(chunk))},
+                         static_cast<int64_t>(per_batch_tiles), 1, chunk);
+          continue;
+        }
         const flagfftResult result = adaptor::npu::launch_ascendc_transpose3d(
             input + byte_offset,
             output + byte_offset,
@@ -279,6 +294,12 @@ namespace {
 #endif
     launch_perm3d(kernel, stream, input, output, n0 * n1 * n2, batch, element_bytes);
     return FLAGFFT_SUCCESS;
+  }
+
+  bool uses_npu_table_transpose(std::initializer_list<std::shared_ptr<JitKernel>> kernels) {
+    return std::any_of(kernels.begin(), kernels.end(), [](const auto &kernel) {
+      return kernel && kernel->npu_permutation_table;
+    });
   }
 
 }  // namespace
@@ -3492,6 +3513,8 @@ CompiledRaw3DNode::CompiledRaw3DNode(int64_t n0,
 
 std::string CompiledRaw3DNode::describe() const {
   std::ostringstream oss;
+  const bool triton_transpose = uses_npu_table_transpose(
+      {perm_021_fwd, perm_210_fwd, perm_201_fwd, perm_120_inv, perm_210_inv, perm_021_inv});
   oss << "CompiledRaw3D(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
@@ -3499,9 +3522,10 @@ std::string CompiledRaw3DNode::describe() const {
       << ", perm_021_fwd=" << (perm_021_fwd ? perm_021_fwd->execution_description() : "null")
       << ", perm_210_fwd=" << (perm_210_fwd ? perm_210_fwd->execution_description() : "null")
       << ", perm_201_fwd=" << (perm_201_fwd ? perm_201_fwd->execution_description() : "null")
-      << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty() && !triton_transpose)
       << ", npu_pair_fused_store=" << npu_pair_fused_store
       << ", final_permuted_store=" << (final_permuted_store ? 1 : 0) << ")";
+  if (triton_transpose) oss << "[triton-transpose3d]";
   return oss.str();
 }
 
@@ -4330,16 +4354,18 @@ CompiledRaw3DRealRTRTNode::CompiledRaw3DRealRTRTNode(
 
 std::string CompiledRaw3DRealRTRTNode::describe() const {
   std::ostringstream oss;
+  const bool triton_transpose = uses_npu_table_transpose({perm_021, perm_210, perm_201});
   oss << "CompiledRaw3DRealRTRT(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", inverse=" << inverse
       << ", fused_first=" << (perm_021 == nullptr && npu_transpose_indices.empty())
       << ", fused_middle=" << (perm_210 == nullptr && npu_transpose_indices.empty())
       << ", fused_n0=" << (perm_201 == nullptr && npu_transpose_indices.empty())
-      << ", npu_native_transpose=" << (!npu_transpose_indices.empty())
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty() && !triton_transpose)
       << ", npu_fused_outer_stores=" << npu_fused_outer_stores
       << ", npu_fused_small_final_store=" << npu_fused_small_final_store
       << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
+  if (triton_transpose) oss << "[triton-transpose3d]";
   return oss.str();
 }
 
@@ -4503,13 +4529,15 @@ CompiledRaw3DR2CNode::CompiledRaw3DR2CNode(int64_t n0,
 
 std::string CompiledRaw3DR2CNode::describe() const {
   std::ostringstream oss;
+  const bool triton_transpose = uses_npu_table_transpose({perm_021, perm_210, perm_201});
   oss << "CompiledRaw3DR2C(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
       << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
       << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
-      << ", npu_native_transpose=" << (!npu_transpose_indices.empty()) << ")";
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty() && !triton_transpose) << ")";
+  if (triton_transpose) oss << "[triton-transpose3d]";
   return oss.str();
 }
 
@@ -4656,13 +4684,15 @@ CompiledRaw3DC2RNode::CompiledRaw3DC2RNode(int64_t n0,
 
 std::string CompiledRaw3DC2RNode::describe() const {
   std::ostringstream oss;
+  const bool triton_transpose = uses_npu_table_transpose({perm_120, perm_210, perm_021});
   oss << "CompiledRaw3DC2R(n0=" << n0 << ", n1=" << n1 << ", n2=" << n2
       << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
       << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
       << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
-      << ", npu_native_transpose=" << (!npu_transpose_indices.empty()) << ")";
+      << ", npu_native_transpose=" << (!npu_transpose_indices.empty() && !triton_transpose) << ")";
+  if (triton_transpose) oss << "[triton-transpose3d]";
   return oss.str();
 }
 
