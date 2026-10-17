@@ -16,8 +16,10 @@ from .kernels_leaf import _emit_natural_order_codelet_call
 from .metadata import _module_source
 
 
-def _paired_radix(radix: int) -> bool:
-    return radix not in _NATURAL_ORDER_CODELET_RADICES and 13 <= radix <= 31 and radix % 2 == 1
+def _paired_radix(radix: int, strategy: str = "auto") -> bool:
+    eligible = 3 <= radix <= 31 and radix % 2 == 1
+    return eligible and (strategy == "paired" or
+        strategy == "auto" and radix not in _NATURAL_ORDER_CODELET_RADICES)
 
 
 @dataclass(frozen=True)
@@ -32,10 +34,15 @@ class FFTStageConfig:
     input_stride: int = 1
     output_stride: int = 1
     output_rows_per_batch: int = 0
+    prime_strategy: str = "auto"
 
     def __post_init__(self):
-        if self.radix not in _NATURAL_ORDER_CODELET_RADICES and not _paired_radix(self.radix):
+        if self.prime_strategy not in {"auto", "natural", "paired"}:
+            raise ValueError("unsupported prime codelet strategy")
+        if self.radix not in _NATURAL_ORDER_CODELET_RADICES and not _paired_radix(self.radix, self.prime_strategy):
             raise ValueError("unsupported DIF radix")
+        if self.prime_strategy == "paired" and not _paired_radix(self.radix, "paired"):
+            raise ValueError("paired codelet requires an odd radix from 3 through 31")
         if self.length < 2 or self.span < self.radix or self.length % self.span or self.span % self.radix:
             raise ValueError("invalid DIF transform or stage span")
         if self.direction not in {"forward", "inverse"}:
@@ -80,7 +87,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 4, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 5, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -157,7 +164,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
                 f"{indent}tl.store(out_ptr + target[:, None] * 2 + tl.arange(0, 2)[None, :], point, valid[:, None])"]
         return result
 
-    if not _paired_radix(radix):
+    if not _paired_radix(radix, config.prime_strategy):
         for digit in range(radix):
             lines += input_lines(str(digit), f"r{digit}", f"i{digit}")
         lines += _emit_natural_order_codelet_call("    ", radix, config.direction)
@@ -203,6 +210,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 4, "fft_stage_config": asdict(config)}
+        "generator_version": 5, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

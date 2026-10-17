@@ -10,12 +10,14 @@ from flagfft_codegen.kernels_fft_stages import FFTStageConfig, emit_fft_stage, s
 from test_tensor_fft_numpy import Language, Pointer
 
 
-@pytest.mark.parametrize("factors", [(4, 4), (8, 8), (2, 3, 5, 7), (11, 13), (13, 17),
-    (17, 19), (23,), (29,), (3, 23)])
+@pytest.mark.parametrize("factors,prime_strategy", [((4, 4), "auto"), ((8, 8), "auto"),
+    ((2, 3, 5, 7), "auto"), ((11, 13), "auto"), ((13, 17), "auto"),
+    ((17, 19), "auto"), ((23,), "auto"), ((29,), "auto"), ((3, 23), "auto"),
+    ((13,), "paired"), ((17, 19), "paired")])
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("block,pack,stride,permuted", [(8, 1, 1, 0), (16, 4, 3, 0), (8, 2, 1, 7)])
-def test_dif_sequence(tmp_path, factors, mode, direction, block, pack, stride, permuted):
+def test_dif_sequence(tmp_path, factors, prime_strategy, mode, direction, block, pack, stride, permuted):
     n, batch = int(np.prod(factors)), 5
     rng = np.random.default_rng(20261017)
     real = rng.normal(size=(batch, n)).astype(np.float32)
@@ -39,7 +41,7 @@ def test_dif_sequence(tmp_path, factors, mode, direction, block, pack, stride, p
         extent = permuted if last else 0
         config = FFTStageConfig(n, radix, span, mode=mode, direction=direction, block=block,
             rows_per_program=pack, input_stride=stride if stage == 0 else 1,
-            output_stride=output_stride, output_rows_per_batch=extent)
+            output_stride=output_stride, output_rows_per_batch=extent, prime_strategy=prime_strategy)
         meta = emit_fft_stage(config, tmp_path / f"stage{stage}")
         tree = ast.parse(Path(meta["module_path"]).read_text())
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
