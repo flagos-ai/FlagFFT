@@ -728,10 +728,14 @@ def _emit_tiled_transpose_jit_kernel(
     n0: int,
     n1: int,
     dtype: str = "complex64",
-    tile_size: int = 32,  # must match constexpr tile_size in raw_nodes.cpp CompiledRaw2DNode::execute()
+    tile_size: int = 32,
     out_dir: Path,
 ) -> dict[str, Any]:
     if _npu_backend_active() and dtype == "complex64":
+        # Larger tiles amortize DMA setup on sufficiently large matrices.
+        # Emit matching grid metadata; other backends retain their caller grid.
+        if tile_size == 32 and min(n0, n1) >= 32 and n0 * n1 >= 1024 * 1024:
+            tile_size = 64
         kernel_name, kernel_source, arg_names = _build_complex_pair_transpose_kernel_source(
             n0, n1, tile_size
         )
@@ -767,6 +771,9 @@ def _emit_tiled_transpose_jit_kernel(
         "tile_size": int(tile_size),
         "block": tile_size * tile_size,
     }
+    if _npu_backend_active() and dtype == "complex64":
+        metadata["grid_x_override"] = (n1 + tile_size - 1) // tile_size
+        metadata["grid_y_override"] = (n0 + tile_size - 1) // tile_size
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 

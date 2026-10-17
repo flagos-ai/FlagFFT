@@ -31,6 +31,8 @@ class Language:
     int32 = np.int32
     int64 = np.int64
     arange = staticmethod(np.arange)
+    reshape = staticmethod(np.reshape)
+    gather = staticmethod(lambda values, indices, axis: np.take_along_axis(values, indices, axis))
     split = staticmethod(lambda values: (values[..., 0], values[..., 1]))
     join = staticmethod(lambda real, imag: np.stack((real, imag), axis=-1))
     trans = staticmethod(np.transpose)
@@ -48,7 +50,7 @@ class Language:
         pointer.values[offsets[mask]] = values[mask]
 
 
-@pytest.mark.parametrize("shape", [(1, 3), (17, 33), (65, 17), (257, 129)])
+@pytest.mark.parametrize("shape", [(1, 3), (17, 33), (65, 17), (257, 129), (129, 257)])
 @pytest.mark.parametrize("tile", [16, 32, 64])
 def test_pair_transpose_preserves_bits_and_guards(shape, tile):
     rows, cols = shape
@@ -108,3 +110,20 @@ def test_coordinate_width_keeps_outer_batch_wide(shape, index_type):
     assert f"tl.program_id(1).to(tl.{index_type})" in source
     assert "batch = tl.program_id(2).to(tl.int64)" in source
     assert "input_batch = in_ptr + batch *" in source
+
+
+@pytest.mark.parametrize("shape,tile", [((128, 128), 32), ((2048, 2048), 64),
+    ((2048, 1025), 64), ((32, 46189), 64), ((16, 131072), 32)])
+def test_npu_transpose_grid_matches_selected_tile(monkeypatch, tmp_path, shape, tile):
+    from flagfft_codegen import emit
+    monkeypatch.setattr(emit, "_npu_backend_active", lambda: True)
+    rows, cols = shape
+    meta = emit._emit_tiled_transpose_jit_kernel(n0=rows, n1=cols, out_dir=tmp_path)
+    assert meta["tile_size"] == tile
+    assert meta["grid_x_override"] == (cols + tile - 1) // tile
+    assert meta["grid_y_override"] == (rows + tile - 1) // tile
+    source = Path(meta["module_path"]).read_text()
+    assert "tl.gather(point, index, 0)" in source
+    assert "tl.split(" not in source and "tl.join(" not in source
+    tree = ast.parse(source)
+    assert not any(isinstance(node, (ast.FloorDiv, ast.Mod)) for node in ast.walk(tree))
