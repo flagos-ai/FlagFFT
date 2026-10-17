@@ -194,7 +194,8 @@ struct CompiledRawStridedLeafNode final : CompiledRawNode {
   CompiledRawStridedLeafNode(int64_t length,
                              int64_t outer_stride,
                              std::shared_ptr<JitKernel> kernel,
-                             std::vector<DeviceAllocation> tables);
+                             std::vector<DeviceAllocation> tables,
+                             int64_t rows_per_transform = 0);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -202,6 +203,7 @@ struct CompiledRawStridedLeafNode final : CompiledRawNode {
 
   int64_t length;
   int64_t outer_stride;
+  int64_t rows_per_transform;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
 };
@@ -1681,7 +1683,8 @@ class TritonCompiler {
                                                                     const FFTRequest &request,
                                                                     int64_t perm_span,
                                                                     const std::string &perm_form,
-                                                                    bool strided_input = false);
+                                                                    bool strided_input = false,
+                                                                    int64_t rows_per_transform = 0);
   std::shared_ptr<CompiledRawNode> compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
                                                             int64_t outer_stride);

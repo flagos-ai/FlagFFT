@@ -2974,7 +2974,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                                                 const FFTRequest &request,
                                                                                 int64_t perm_span,
                                                                                 const std::string &perm_form,
-                                                                                bool strided_input) {
+                                                                                bool strided_input,
+                                                                                int64_t rows_per_transform) {
   std::string target = triton_target_for_request(request);
   // The fused store vectorizes along the batch slots. FP64 length-256 uses a
   // smaller pack than FP32, and one warp measured faster than two on S5000.
@@ -3012,6 +3013,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.smem_size,
                                                  perm_form);
   if (strided_input) key.kind = KernelKind::LeafStridedPermutedStore;
+  if (rows_per_transform > 0) {
+    if (perm_form.rfind("inner", 0) != 0) {
+      throw std::invalid_argument("batched permutation requires an inner store");
+    }
+    // A distinct form versions the JIT argument signature and cache entry.
+    key.perm_form += "_batched";
+  }
   mark_npu_portable_leaf(key, request);
   const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
   // Forcing FP64 256-point stores to use the full 64 KiB shared-memory pack
@@ -3029,7 +3037,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
   return std::make_shared<CompiledRawStridedLeafNode>(leaf.length,
                                                       perm_span,
                                                       std::move(kernel),
-                                                      build_raw_leaf_tables(leaf, request));
+                                                      build_raw_leaf_tables(leaf, request),
+                                                      rows_per_transform);
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const LeafPlanNode &leaf,
@@ -4201,7 +4210,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     std::shared_ptr<CompiledRawNode> n2_fft =
         compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, n2_perm_form);
     std::shared_ptr<CompiledRawNode> n1_fft =
-        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, n1_perm_form);
+        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, n1_perm_form,
+                                        false, batch > 1 ? n0 * n2 : 0);
     const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
     std::shared_ptr<CompiledRawNode> n0_fft =
         last_transpose ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
@@ -4788,7 +4798,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                                  request, "FLAGFFT_HCU_3D_MIDDLE_PACK",
                                                  "inner_middle", "inner");
       n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, n1_perm_form,
-                                                n1_strided_input);
+                                                n1_strided_input, batch > 1 ? n0 * half : 0);
     }
     n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, n0_perm_form);
   }
