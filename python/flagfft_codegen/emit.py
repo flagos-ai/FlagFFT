@@ -35,6 +35,7 @@ from .kernels_common import (
     _declared_backend,
     _ix_backend_active,
     _maca_backend_active,
+    _npu_backend_active,
     _maca_knob,
     _zero_other,
     codelet_radices_for,
@@ -729,7 +730,8 @@ def _emit_tiled_transpose_jit_kernel(
     tile_size: int = 32,  # must match constexpr tile_size in raw_nodes.cpp CompiledRaw2DNode::execute()
     out_dir: Path,
 ) -> dict[str, Any]:
-    if (
+    npu_packed = _npu_backend_active() and dtype == "complex64"
+    if npu_packed or (
         _maca_backend_active()
         and dtype == "complex64"
         and _maca_knob("2D_TRANSPOSE") == "packed"
@@ -749,7 +751,7 @@ def _emit_tiled_transpose_jit_kernel(
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
-        "signature": _signature(arg_names, dtype),
+        "signature": "*i64:16,*i64:16,i32" if npu_packed else _signature(arg_names, dtype),
         "num_warps": 4,
         "num_stages": 1,
         "batch_per_block": 1,

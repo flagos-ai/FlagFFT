@@ -1057,6 +1057,24 @@ def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, pack
     assert metadata["num_warps"] == 4
 
 
+@pytest.mark.parametrize("backend,dtype,packed", [
+    ("npu", "complex64", True), ("npu", "complex128", False),
+    ("ix", "complex64", False), ("cuda", "complex64", False),
+])
+def test_npu_packed_transpose_signature_is_backend_scoped(monkeypatch, tmp_path, backend, dtype, packed):
+    from flagfft_codegen import emit
+
+    monkeypatch.setattr(emit, "_npu_backend_active", lambda: backend == "npu")
+    monkeypatch.setattr(emit, "_maca_backend_active", lambda: False)
+    metadata = emit._emit_tiled_transpose_jit_kernel(
+        n0=257, n1=129, dtype=dtype, out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+    assert ("tl.pointer_type(tl.uint64)" in source) == packed
+    assert metadata["signature"].startswith("*i64") == packed
+    assert metadata["tile_size"] == 32
+
+
 def test_tiled_transpose3d_tile_uses_portable_register_transpose(kernels) -> None:
     (
         kernel_name,
