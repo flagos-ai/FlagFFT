@@ -97,15 +97,17 @@ class Grid(Language):
     (512,4,8,17),(1024,8,16,3),(8192,4,256,2),
     (131072,8,1,1),(131072,4,8,3),(131072,8,32,3),
     (131072,4,256,1),(131072,8,1024,1),(131072,4,8192,1),(131072,4,32768,1),
+    (46189,19,1,1),(46189,17,19,1),(46189,13,323,1),(46189,11,4199,1),
 ])
 @pytest.mark.parametrize('inverse',[False,True])
-def test_table_stockham_keeps_native_bits_and_grid_stride(n,r,span,batch,inverse):
+@pytest.mark.parametrize('compact_loop',[False,True])
+def test_table_stockham_keeps_native_bits_and_grid_stride(n,r,span,batch,inverse,compact_loop):
     params = parameters(n,r,span)
     rng = np.random.default_rng(20261018)
     data = rng.standard_normal((batch,n,2)).astype(np.float32)
     tw,roots,indices,store = tables(n,r,span,inverse)
     reference = expected(data,r,span,tw,roots)
-    name,body = kernel_source(n,r,span)
+    name,body = kernel_source(n,r,span,compact_loop=compact_loop)
     tree = ast.parse(body); tree.body[0].decorator_list=[]
     language = Grid()
     namespace = dict(tl=language,tle=SimpleNamespace(dsa=SimpleNamespace(insert_slice=insert_slice)),
@@ -130,11 +132,14 @@ def test_table_stockham_rejects_invalid_parameters(n,r,span):
 
 @pytest.mark.parametrize('backend,dtype',[('npu','complex64'),('cuda','complex64'),
     ('ix','complex64'),('maca','complex64'),('npu','complex128')])
-def test_table_stockham_cli_scope_and_abi(tmp_path,backend,dtype):
+@pytest.mark.parametrize('compact_loop',[False,True])
+def test_table_stockham_cli_scope_and_abi(tmp_path,backend,dtype,compact_loop):
     repo=Path(__file__).resolve().parents[2]
     command=[sys.executable,'-m','flagfft_codegen.jit_source','--kernel','npu_table_stockham',
         '--length','131072','--factors','4,8','--direction','forward','--dtype',dtype,
         '--target',f'{backend}:source-contract:32','--out-dir',str(tmp_path)]
+    if compact_loop:
+        command.append('--npu-stockham-loop')
     result=subprocess.run(command,text=True,capture_output=True,
         env=dict(os.environ,PYTHONPATH=str(repo/'python'),PYTHONDONTWRITEBYTECODE='1'))
     if backend!='npu' or dtype!='complex64':
@@ -142,6 +147,7 @@ def test_table_stockham_cli_scope_and_abi(tmp_path,backend,dtype):
         return
     assert result.returncode==0,result.stderr
     metadata=json.loads(result.stdout)
+    assert metadata.get('compact_loop',False)==compact_loop
     assert metadata['signature']==','.join(['*fp32:16']*4+['*u32:16']*2+['i32']*4)
     assert metadata['tile']==128 and metadata['batch_group']==16 and metadata['tiles_per_transform']==4096
     assert metadata['num_warps']==4 and metadata['num_stages']==1

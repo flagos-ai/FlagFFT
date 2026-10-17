@@ -982,7 +982,10 @@ std::string CompiledRawStockhamNode::describe() const {
     description += stage < aiv_stages.size() && aiv_stages[stage].enabled
                        ? ":AIV"
                        : ":JIT";
-    if (stage < aiv_stages.size() && aiv_stages[stage].replacement) description += "[triton]";
+    if (stage < aiv_stages.size() && aiv_stages[stage].replacement) {
+      description += aiv_stages[stage].replacement->kernel_name.ends_with("_loop")
+          ? "[triton-loop]" : "[triton]";
+    }
   }
   description += "])";
   return description;

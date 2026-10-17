@@ -39,7 +39,73 @@ def npu_stockham_layout(n, radix, span):
                 store_lanes=min(ndiv, 128) if span == 1 else extent)
 
 
-def build_npu_table_stockham_source(n, radix, span):
+def _digit_lines(n, radix, span, p, digit):
+    nd, extent, bg = p['ndiv'], p['extent'], p['batch_group']
+    bpad = 1 << (bg - 1).bit_length()
+    input_offset = digit * nd if isinstance(digit, int) else f"digit * {nd}"
+    twiddle_offset = (digit * p['twiddle_stride'] if isinstance(digit, int)
+                      else f"digit * {p['twiddle_stride']}")
+    lines = []
+    if bg == 1:
+        lines += ['        scalar = tl.arange(0, 256)',
+            f'        src = (batch_base * {n} + k_start + {input_offset}) * 2',
+            '        raw = tl.load(in_ptr + src + scalar, (scalar < valid * 2) & (batch_base < nbatch), 0.0)',
+            '        xr = tl.gather(raw, lane * 2, 0)',
+            '        xi = tl.gather(raw, lane * 2 + 1, 0)']
+    else:
+        width = 1 << (2 * extent - 1).bit_length()
+        lines += [f'        transform = tl.arange(0, {bpad})',
+            f'        scalar = tl.arange(0, {width})',
+            f'        src = ((batch_base + transform[:, None]) * {n} + k_start + {input_offset}) * 2 + scalar[None, :]',
+            f'        mask = (transform[:, None] < {bg}) & (batch_base + transform[:, None] < nbatch) & (scalar[None, :] < valid * 2)',
+            '        raw2d = tl.load(in_ptr + src, mask, 0.0)',
+            f'        raw = tl.reshape(raw2d, ({bpad * width},))',
+            f'        local_real = (lane // {extent}) * {width} + (lane % {extent}) * 2',
+            f'        xr = tl.where(lane < {bg * extent}, tl.gather(raw, local_real, 0), 0.0)',
+            f'        xi = tl.where(lane < {bg * extent}, tl.gather(raw, local_real + 1, 0), 0.0)']
+    if digit and span > 1:
+        # A short-batch input slab can have a different width. Do not carry
+        # that name across the dynamic digit loop with two tensor shapes.
+        tw_lane = 'tw_scalar' if isinstance(digit, str) else 'scalar'
+        lines += [f'        {tw_lane} = tl.arange(0, 256)',
+            f'        twbase = ({twiddle_offset} + j_start) * 2',
+            f'        twraw = tl.load(stage_twiddles + twbase + {tw_lane}, {tw_lane} < valid * 2, 0.0)']
+        if bg == 1:
+            lines += ['        wr = tl.gather(twraw, lane * 2, 0)',
+                      '        wi = tl.gather(twraw, lane * 2 + 1, 0)']
+        else:
+            lines += [f'        wr = tl.gather(twraw, (lane % {extent}) * 2, 0)',
+                      f'        wi = tl.gather(twraw, (lane % {extent}) * 2 + 1, 0)']
+        lines += ['        xr, xi = _cmul(xr, xi, wr, wi)']
+    if digit == 0:
+        lines += ['        acc_r = acc_r + xr[None, :]',
+                  '        acc_i = acc_i + xi[None, :]']
+    else:
+        lines += [f'        qr = tl.gather(roots, (q % {radix}) * 24 + {digit}, 0)',
+            f'        qi = tl.gather(roots, {radix * 24} + (q % {radix}) * 24 + {digit}, 0)',
+            '        pr, pi = _cmul(xr[None, :], xi[None, :], qr[:, None], qi[:, None])',
+            '        acc_r = acc_r + pr', '        acc_i = acc_i + pi']
+    return lines
+
+
+def _packed_group_store_lines(n, radix, span, p):
+    """Write one q segment at a time to limit padded live UB storage."""
+    gp = 1 << (p['packed_groups'] - 1).bit_length()
+    width = 1 << (2 * span - 1).bit_length()
+    lines = [f'        slot = tl.arange(0, {gp})',
+             f'        scalar = tl.arange(0, {width})',
+             f'        local_lane = slot[:, None] * {span} + (scalar[None, :] >> 1)']
+    for q in range(radix):
+        lines += [f'        mapping = {q * 128} + (local_lane % 128) + (scalar[None, :] & 1) * {radix * 128}',
+                  f'        mapping = tl.reshape(mapping, ({gp * width},))',
+                  f'        values = tl.reshape(tl.gather(packed, mapping, 0), ({gp}, {width}))',
+                  f'        out_base = (batch_base * {n} + {radix} * k_start - {radix - 1} * j_start + slot[:, None] * {radix * span} + {q * span}) * 2',
+                  '        mask = (batch_base < nbatch) & (slot[:, None] < groups_in_tile) & (scalar[None, :] < valid_per_group * 2)',
+                  '        tl.store(out_ptr + out_base + scalar[None, :], values, mask)']
+    return lines
+
+
+def build_npu_table_stockham_source(n, radix, span, *, compact_loop=False):
     p = npu_stockham_layout(n, radix, span)
     nd, extent, bg, pg, gt, ng, nt = [p[k] for k in
         ('ndiv', 'extent', 'batch_group', 'packed_groups', 'group_tiles', 'groups', 'tiles')]
@@ -47,7 +113,7 @@ def build_npu_table_stockham_source(n, radix, span):
     root_width = 1 << (2 * radix * 24 - 1).bit_length()
     packed_width = 1 << (2 * radix * 128 - 1).bit_length()
     bpad = 1 << (bg - 1).bit_length()
-    name = f'npu_table_stockham_n{n}_r{radix}_s{span}'
+    name = f'npu_table_stockham_n{n}_r{radix}_s{span}' + ('_loop' if compact_loop else '')
     lines = ['@triton.jit',
         f'def {name}(in_ptr, out_ptr, stage_twiddles, roots_ptr, indices_ptr, store_indices, length_arg, radix_arg, span_arg, nbatch):',
         '    block = tl.program_id(0).to(tl.int64)',
@@ -73,43 +139,13 @@ def build_npu_table_stockham_source(n, radix, span):
                   '        valid = valid_per_group']
     lines += [f'        acc_r = tl.zeros(({rpad}, 128), tl.float32)',
               f'        acc_i = tl.zeros(({rpad}, 128), tl.float32)']
-    for digit in range(radix):
-        if bg == 1:
-            lines += ['        scalar = tl.arange(0, 256)',
-                f'        src = (batch_base * {n} + k_start + {digit * nd}) * 2',
-                '        raw = tl.load(in_ptr + src + scalar, (scalar < valid * 2) & (batch_base < nbatch), 0.0)',
-                '        xr = tl.gather(raw, lane * 2, 0)',
-                '        xi = tl.gather(raw, lane * 2 + 1, 0)']
-        else:
-            width = 1 << (2 * extent - 1).bit_length()
-            lines += [f'        transform = tl.arange(0, {bpad})',
-                f'        scalar = tl.arange(0, {width})',
-                f'        src = ((batch_base + transform[:, None]) * {n} + k_start + {digit * nd}) * 2 + scalar[None, :]',
-                f'        mask = (transform[:, None] < {bg}) & (batch_base + transform[:, None] < nbatch) & (scalar[None, :] < valid * 2)',
-                '        raw2d = tl.load(in_ptr + src, mask, 0.0)',
-                f'        raw = tl.reshape(raw2d, ({bpad * width},))',
-                f'        local_real = (lane // {extent}) * {width} + (lane % {extent}) * 2',
-                f'        xr = tl.where(lane < {bg * extent}, tl.gather(raw, local_real, 0), 0.0)',
-                f'        xi = tl.where(lane < {bg * extent}, tl.gather(raw, local_real + 1, 0), 0.0)']
-        if digit and span > 1:
-            lines += ['        scalar = tl.arange(0, 256)',
-                f'        twbase = ({digit * p["twiddle_stride"]} + j_start) * 2',
-                '        twraw = tl.load(stage_twiddles + twbase + scalar, scalar < valid * 2, 0.0)']
-            if bg == 1:
-                lines += ['        wr = tl.gather(twraw, lane * 2, 0)',
-                          '        wi = tl.gather(twraw, lane * 2 + 1, 0)']
-            else:
-                lines += [f'        wr = tl.gather(twraw, (lane % {extent}) * 2, 0)',
-                          f'        wi = tl.gather(twraw, (lane % {extent}) * 2 + 1, 0)']
-            lines += ['        xr, xi = _cmul(xr, xi, wr, wi)']
-        if digit == 0:
-            lines += ['        acc_r = acc_r + xr[None, :]',
-                      '        acc_i = acc_i + xi[None, :]']
-        else:
-            lines += [f'        qr = tl.gather(roots, (q % {radix}) * 24 + {digit}, 0)',
-                f'        qi = tl.gather(roots, {radix * 24} + (q % {radix}) * 24 + {digit}, 0)',
-                '        pr, pi = _cmul(xr[None, :], xi[None, :], qr[:, None], qi[:, None])',
-                '        acc_r = acc_r + pr', '        acc_i = acc_i + pi']
+    if compact_loop:
+        lines += _digit_lines(n, radix, span, p, 0)
+        lines += [f'        for digit in range(1, {radix}):']
+        lines += ['    ' + line for line in _digit_lines(n, radix, span, p, 'digit')]
+    else:
+        for digit in range(radix):
+            lines += _digit_lines(n, radix, span, p, digit)
     lines += [f'        packed = tl.zeros(({packed_width},), tl.float32)',
         f'        packed = tle.dsa.insert_slice(packed, tl.reshape(acc_r, ({rpad * 128},)), [0], [{rpad * 128}], [1])',
         f'        packed = tle.dsa.insert_slice(packed, tl.reshape(acc_i, ({rpad * 128},)), [{radix * 128}], [{rpad * 128}], [1])']
@@ -134,6 +170,8 @@ def build_npu_table_stockham_source(n, radix, span):
                 '        values = tl.gather(packed, mapping, 0)',
                 f'        out_base = (batch_base * {n} + {radix} * k_start - {radix - 1} * j_start + {output * span}) * 2',
                 '        tl.store(out_ptr + out_base + scalar, values, (batch_base < nbatch) & (scalar < valid_per_group * 2))']
+    elif compact_loop:
+        lines += _packed_group_store_lines(n, radix, span, p)
     else:
         # q, packed group and contiguous AoS columns are explicit tensor axes.
         gp = 1 << (pg - 1).bit_length()
@@ -152,13 +190,14 @@ def build_npu_table_stockham_source(n, radix, span):
 
 
 def emit_npu_table_stockham(*, length: int, radix: int, span: int,
-                            direction: str, out_dir: Path) -> dict:
+                            direction: str, out_dir: Path, compact_loop: bool = False) -> dict:
     if direction not in ("forward", "inverse"):
         raise ValueError("Stockham direction must be forward or inverse")
-    name, source = build_npu_table_stockham_source(length, radix, span)
+    name, source = build_npu_table_stockham_source(length, radix, span, compact_loop=compact_loop)
     layout = npu_stockham_layout(length, radix, span)
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"flagfft_npu_stockham_n{length}_r{radix}_s{span}_{direction}.py"
+    suffix = "_loop" if compact_loop else ""
+    path = out_dir / f"flagfft_npu_stockham_n{length}_r{radix}_s{span}_{direction}{suffix}.py"
     write_text_atomic(path, _module_source(source))
     metadata = {
         "module_path": str(path), "kernel_name": name,
@@ -171,5 +210,7 @@ def emit_npu_table_stockham(*, length: int, radix: int, span: int,
         "tile": 128, "batch_group": layout["batch_group"],
         "tiles_per_transform": layout["tiles"],
     }
+    if compact_loop:
+        metadata["compact_loop"] = True
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

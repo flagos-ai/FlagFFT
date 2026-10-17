@@ -1937,6 +1937,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" &&
                                    flag_or_default("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM", true);
+  const char *stockham_mode = npu_2d_aiv_stockham
+      ? std::getenv("FLAGFFT_NPU_TRITON_STOCKHAM") : nullptr;
+  const std::string stockham_replacement_mode = stockham_mode ? stockham_mode : "0";
+  const bool replace_stockham = stockham_replacement_mode == "1" ||
+      stockham_replacement_mode == "packed" || stockham_replacement_mode == "loop";
+  const bool replace_packed_stockham = stockham_replacement_mode == "packed" ||
+      stockham_replacement_mode == "loop";
   const bool use_npu_2d_aiv128 = npu_2d_complex_child &&
                                  flag_or_default("FLAGFFT_NPU_2D_AIV128", true);
   const bool use_npu_2d_aiv1024 = npu_2d_complex_child &&
@@ -2158,6 +2165,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
               ? adaptor::npu::kAscendCStockhamTile /
                     static_cast<uint64_t>(stage_span)
               : 1;
+      // Short odd spans combine independent groups within a tile. Counting
+      // only one span wrongly rejects a mostly full generated vector (e.g.
+      // eleven groups of eleven lanes) and falls back to the generic stage.
+      // Keep the established native/mode-1 threshold unchanged for A/B.
+      const uint64_t qualified_stage_lanes = effective_stage_lanes *
+          (replace_packed_stockham
+               ? std::min(stage_groups_per_tile, stage_groups_per_transform) : 1);
       const int64_t stage_tiles_per_transform = stage_span == 1
           ? (ndiv + adaptor::npu::kAscendCStockhamTile - 1) /
                 adaptor::npu::kAscendCStockhamTile
@@ -2194,7 +2208,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           stage_span <= std::numeric_limits<uint32_t>::max() &&
           stockham->length % radix == 0 &&
           stockham->length % (radix * stage_span) == 0 &&
-          effective_stage_lanes >= adaptor::npu::kAscendCStockhamTile / 8 &&
+          qualified_stage_lanes >= adaptor::npu::kAscendCStockhamTile / 8 &&
           enough_stage_work;
       if (use_aiv_stage) {
         if (aiv_indices.get() == 0) {
@@ -2236,10 +2250,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         tables.enabled = true;
         tables.tiles_per_transform = stage_tiles_per_transform;
         tables.batch_group = static_cast<int64_t>(stage_batch_group);
-        if (flag_or_default("FLAGFFT_NPU_TRITON_STOCKHAM", false)) {
-          tables.replacement = compile_kernel(KernelKey::npu_table_stockham(
+        if (replace_stockham) {
+          auto key = KernelKey::npu_table_stockham(
               triton_target_for_request(request), request.direction,
-              stockham->length, radix, stage_span));
+              stockham->length, radix, stage_span);
+          if (stockham_replacement_mode == "loop" && radix > 8) {
+            key.perm_form = "compact_loop";
+          }
+          tables.replacement = compile_kernel(key);
         }
         tables.roots = DeviceAllocation::from_floats(roots);
         if (stage_span > 1) {

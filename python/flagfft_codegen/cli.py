@@ -147,6 +147,8 @@ def main() -> None:
                         help="Use the replacement body for an eligible native NPU 2D transpose")
     parser.add_argument("--npu-table-transpose3d", action="store_true",
                         help="Replace a native NPU 3D tile with the same permutation table")
+    parser.add_argument("--npu-stockham-loop", action="store_true",
+                        help="Use a compact digit loop and bounded q stores for table Stockham")
     parser.add_argument(
         "--perm-form",
         choices=(
@@ -234,6 +236,8 @@ def main() -> None:
         parser.error("--npu-vector-complex-io requires an NPU FP32 transfer body")
     if args.npu_fft_radix4_pair and args.kernel != "npu_grouped_fft64":
         parser.error("--npu-fft-radix4-pair requires --kernel npu_grouped_fft64")
+    if args.npu_stockham_loop and args.kernel != "npu_table_stockham":
+        parser.error("--npu-stockham-loop requires --kernel npu_table_stockham")
     if args.npu_vector_transpose and args.kernel != "tiled_transpose":
         parser.error("--npu-vector-transpose requires --kernel tiled_transpose")
     if args.npu_table_transpose3d and (
@@ -471,7 +475,8 @@ def main() -> None:
         if args.length is None or len(args.factors) != 2:
             parser.error("NPU table Stockham requires --length and --factors radix,span")
         metadata = emit_npu_table_stockham(length=args.length, radix=args.factors[0],
-            span=args.factors[1], direction=args.direction, out_dir=args.out_dir)
+            span=args.factors[1], direction=args.direction, out_dir=args.out_dir,
+            compact_loop=args.npu_stockham_loop)
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
             parser.error(

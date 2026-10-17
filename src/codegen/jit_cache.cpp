@@ -673,6 +673,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
 
   if (key.kind == KernelKind::NpuTableStockham) {
+    if (key.perm_form == "compact_loop") jit_command << " --npu-stockham-loop";
     if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64" || key.factors.size() != 2) {
       throw std::runtime_error("Table Stockham body requires NPU FP32 radix/span parameters");
     }
