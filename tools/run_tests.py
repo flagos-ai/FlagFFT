@@ -27,6 +27,7 @@ import multiprocessing
 import os
 import platform
 import queue
+import re
 import shutil
 import signal
 import subprocess
