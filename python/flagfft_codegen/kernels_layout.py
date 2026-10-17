@@ -1208,7 +1208,7 @@ def _build_tiled_transpose3d_kernel_source(
 def _build_complex_pair_transpose_kernel_source(
     n0: int, n1: int, tile_size: int = 32
 ) -> tuple[str, str, list[str]]:
-    """Transpose complex64 tiles with contiguous pairs around FP32 exchanges.
+    """Transpose interleaved complex64 with one on-chip vector permutation.
 
     This implements the existing 2D transpose IO contract. The caller retains
     the original FFT plan, scratch buffers and launch grid.
@@ -1216,6 +1216,7 @@ def _build_complex_pair_transpose_kernel_source(
     if n0 < 1 or n1 < 1 or tile_size < 1 or tile_size & (tile_size - 1):
         raise ValueError("transpose dimensions must be positive and tile_size a power of two")
     name = f"_complex_pair_transpose_n{n0}_{n1}_t{tile_size}"
+    log_tile = tile_size.bit_length() - 1
     # Keep per-matrix coordinates narrow when even masked tile offsets fit.
     # The outer batch address remains 64-bit for every matrix size.
     index_type = "int32" if 2 * (n0 + tile_size) * (n1 + tile_size) < 2**31 else "int64"
@@ -1223,18 +1224,25 @@ def _build_complex_pair_transpose_kernel_source(
         @triton.jit
         def {name}(in_ptr, out_ptr, nbatch):
             row = tl.program_id(1).to(tl.{index_type}) * {tile_size} + tl.arange(0, {tile_size})
-            col = tl.program_id(0).to(tl.{index_type}) * {tile_size} + tl.arange(0, {tile_size})
             batch = tl.program_id(2).to(tl.int64)
-            word = tl.arange(0, 2)
+            word = tl.program_id(0).to(tl.{index_type}) * {2 * tile_size} + tl.arange(0, {2 * tile_size})
             input_batch = in_ptr + batch * {2 * n0 * n1}
             output_batch = out_ptr + batch * {2 * n0 * n1}
-            source = (row[:, None, None] * {n1} + col[None, :, None]) * 2 + word[None, None, :]
-            mask = (row[:, None, None] < {n0}) & (col[None, :, None] < {n1}) & (batch < nbatch)
+            source = row[:, None] * {2 * n1} + word[None, :]
+            mask = (row[:, None] < {n0}) & (word[None, :] < {2 * n1}) & (batch < nbatch)
             point = tl.load(input_batch + source, mask, 0.0)
-            real, imag = tl.split(point)
-            point = tl.join(tl.trans(real), tl.trans(imag))
-            target = (col[:, None, None] * {n0} + row[None, :, None]) * 2 + word[None, None, :]
-            mask = (col[:, None, None] < {n1}) & (row[None, :, None] < {n0}) & (batch < nbatch)
+            point = tl.reshape(point, ({2 * tile_size * tile_size},))
+            z = tl.arange(0, {2 * tile_size * tile_size})
+            # All local coordinates are nonnegative powers-of-two ranges.
+            # Signed // and % otherwise expand into division/conversion buffers
+            # on the Ascend compiler, even for these constant denominators.
+            index = ((z >> {log_tile + 1}) << 1) + (((z >> 1) & {tile_size - 1}) << {log_tile + 1}) + (z & 1)
+            point = tl.gather(point, index, 0)
+            point = tl.reshape(point, ({tile_size}, {2 * tile_size}))
+            col = tl.program_id(0).to(tl.{index_type}) * {tile_size} + tl.arange(0, {tile_size})
+            word = tl.program_id(1).to(tl.{index_type}) * {2 * tile_size} + tl.arange(0, {2 * tile_size})
+            target = col[:, None] * {2 * n0} + word[None, :]
+            mask = (col[:, None] < {n1}) & (word[None, :] < {2 * n0}) & (batch < nbatch)
             tl.store(output_batch + target, point, mask)
     """)
     return name, source, ["in_ptr", "out_ptr", "nbatch"]

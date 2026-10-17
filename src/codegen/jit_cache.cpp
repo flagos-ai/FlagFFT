@@ -639,6 +639,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::Transpose3D) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
   }
+  if (key.kind == KernelKind::TiledTranspose && key.target.rfind("npu:", 0) == 0 &&
+      key.dtype == "complex64") {
+    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
+  }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
