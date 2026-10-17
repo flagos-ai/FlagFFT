@@ -42,6 +42,7 @@ class Language:
         return np.full(shape, value, dtype).view(Tensor)
 
     where = staticmethod(np.where)
+    minimum = staticmethod(np.minimum)
     gather = staticmethod(np.take_along_axis)
     cos = staticmethod(np.cos)
     sin = staticmethod(np.sin)

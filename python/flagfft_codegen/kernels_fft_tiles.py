@@ -104,7 +104,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     """
     n, pack = config.length, config.rows_per_program
     tile_n = 1 << (n - 1).bit_length()
-    identity = hashlib.sha256(json.dumps({"version": 12, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 13, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
@@ -119,15 +119,47 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         tiles = (extent + pack - 1) // pack
         lines += [f"    inner_row = (program % {tiles}) * {pack} + lane",
             f"    group_row = (program // {tiles}) * {extent}",
+            f"    first_row = group_row + (program % {tiles}) * {pack}",
             "    row = group_row + inner_row",
             f"    mask = (row < nbatch) & (inner_row < {extent})"]
     else:
-        lines += [f"    row = program * {pack} + lane", "    mask = row < nbatch"]
+        lines += [f"    first_row = program * {pack}", "    row = first_row + lane", "    mask = row < nbatch"]
     if extent and config.input_stride > 1:
         lines += [f"    input_base = (group_row // {config.input_stride}) * {input_length * config.input_stride} + group_row % {config.input_stride} + inner_row"]
     else:
         lines += [f"    input_base = row * {input_length}"]
-    if (config.exchange == "split_register" and config.mode != "c2r" and
+    if (config.exchange == "split_register" and config.input_stride == 1 and
+            (config.mode == "c2r" or n != tile_n)):
+        # Compact rows cross alignment boundaries. Read their complete packed
+        # tile once, then route coefficients inside the local tensor.
+        input_tile = 1 << (pack * input_length - 1).bit_length()
+        flat_mask = f"(offset < {pack * input_length}) & (first_row + offset // {input_length} < nbatch)"
+        if extent:
+            flat_mask += f" & (offset // {input_length} + (program % {tiles}) * {pack} < {extent})"
+        lines += [f"    offset = tl.arange(0, {input_tile})",
+            f"    valid_input = {flat_mask}",
+            f"    source = first_row * {input_length} + offset"]
+        if config.mode == "r2c":
+            lines += ["    flat_r = tl.load(in_ptr + source, valid_input, 0.0)",
+                f"    flat_i = tl.full(({input_tile},), 0.0, tl.float32)"]
+        else:
+            lines += ["    point = tl.load(in_ptr + source[:, None] * 2 + tl.arange(0, 2)[None, :], valid_input[:, None], 0.0)",
+                "    flat_r, flat_i = tl.split(point)"]
+        for frequency in range(input_length):
+            lines += [f"    sample_index = lane * {input_length} + {frequency}",
+                f"    sample_r{frequency} = tl.gather(flat_r, sample_index, 0)",
+                f"    sample_i{frequency} = tl.gather(flat_i, sample_index, 0)"]
+        for index in range(n):
+            frequency = _digit_reversed_index(index, config.factors)
+            conjugate = config.mode == "c2r" and frequency > n // 2
+            source = n - frequency if conjugate else frequency
+            lines += [f"    r{index} = sample_r{source}"]
+            if config.mode == "c2r" and (source == 0 or n % 2 == 0 and source == n // 2):
+                lines += [f"    i{index} = tl.full(({pack},), 0.0, tl.float32)"]
+            else:
+                sign = "-" if conjugate else ""
+                lines += [f"    i{index} = {sign}sample_i{source}"]
+    elif (config.exchange == "split_register" and config.mode != "c2r" and
             config.input_stride == 1 and not n & (n - 1)):
         frequency = "tl.arange(0, " + str(tile_n) + ")"
         lines += [f"    frequency = {frequency}", "    source_frequency = frequency"]
@@ -217,7 +249,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         lines += [f"    output_base = (group_row // {step}) * {output_length * step} + group_row % {step} + inner_row"]
     else:
         lines += [f"    output_base = row * {output_length}"]
-    if config.exchange == "split_register" and step == 1 and not n & (n - 1):
+    if config.exchange == "split_register" and step == 1:
         lines += [f"    frequency = tl.arange(0, {tile_n})"]
         def join_output(points, prefix, path=""):
             if len(points) == 1:
@@ -231,13 +263,31 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             return name
         real = join_output(tuple(range(tile_n)), "r")
         imag = join_output(tuple(range(tile_n)), "i") if config.mode != "c2r" else ""
-        lines += ["    target = output_base[:, None] + frequency[None, :]",
-            f"    valid = mask[:, None] & (frequency[None, :] < {output_length})"]
-        if config.mode == "c2r":
-            lines += [f"    tl.store(out_ptr + target, {real}, valid)"]
+        if output_length != n or n != tile_n:
+            output_tile = 1 << (pack * output_length - 1).bit_length()
+            output_mask = f"(offset < {pack * output_length}) & (first_row + offset // {output_length} < nbatch)"
+            if config.row_tile_extent:
+                output_mask += f" & (offset // {output_length} + (program % {tiles}) * {pack} < {config.row_tile_extent})"
+            lines += [f"    offset = tl.arange(0, {output_tile})",
+                f"    source = tl.minimum(offset, {pack * output_length - 1})",
+                f"    source = (source // {output_length}) * {tile_n} + source % {output_length}",
+                f"    flat_r = tl.gather(tl.reshape({real}, ({pack * tile_n},)), source, 0)",
+                f"    target = first_row * {output_length} + offset",
+                f"    valid_output = {output_mask}"]
+            if config.mode == "c2r":
+                lines += ["    tl.store(out_ptr + target, flat_r, valid_output)"]
+            else:
+                lines += [f"    flat_i = tl.gather(tl.reshape({imag}, ({pack * tile_n},)), source, 0)",
+                    "    point = tl.join(flat_r, flat_i)",
+                    "    tl.store(out_ptr + target[:, None] * 2 + tl.arange(0, 2)[None, :], point, valid_output[:, None])"]
         else:
-            lines += [f"    tl.store(out_ptr + target * 2, {real}, valid)",
-                f"    tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
+            lines += ["    target = output_base[:, None] + frequency[None, :]",
+                f"    valid = mask[:, None] & (frequency[None, :] < {output_length})"]
+            if config.mode == "c2r":
+                lines += [f"    tl.store(out_ptr + target, {real}, valid)"]
+            else:
+                lines += [f"    tl.store(out_ptr + target * 2, {real}, valid)",
+                    f"    tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
     else:
         for index in range(output_length):
             position = f"(output_base + {index * step})"
@@ -269,7 +319,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "programs_per_row_group": (extent + config.rows_per_program - 1) // config.rows_per_program if extent else 1,
         "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
         "kernel_type": "tensor_fft", "dtype": "complex64", "implementation": "triton",
-        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 12,
+        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 13,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
