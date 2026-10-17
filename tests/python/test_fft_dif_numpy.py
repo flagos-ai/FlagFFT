@@ -10,7 +10,8 @@ from flagfft_codegen.kernels_fft_stages import FFTStageConfig, emit_fft_stage, s
 from test_tensor_fft_numpy import Language, Pointer
 
 
-@pytest.mark.parametrize("factors", [(4, 4), (8, 8), (2, 3, 5, 7), (11, 13), (13, 17), (17, 19)])
+@pytest.mark.parametrize("factors", [(4, 4), (8, 8), (2, 3, 5, 7), (11, 13), (13, 17),
+    (17, 19), (23,), (29,), (3, 23)])
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("block,pack,stride,permuted", [(8, 1, 1, 0), (16, 4, 3, 0), (8, 2, 1, 7)])

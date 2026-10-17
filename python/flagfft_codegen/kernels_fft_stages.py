@@ -16,6 +16,10 @@ from .kernels_leaf import _emit_natural_order_codelet_call
 from .metadata import _module_source
 
 
+def _paired_radix(radix: int) -> bool:
+    return 13 <= radix <= 31 and radix % 2 == 1
+
+
 @dataclass(frozen=True)
 class FFTStageConfig:
     length: int
@@ -30,7 +34,7 @@ class FFTStageConfig:
     output_rows_per_batch: int = 0
 
     def __post_init__(self):
-        if self.radix not in _NATURAL_ORDER_CODELET_RADICES:
+        if self.radix not in _NATURAL_ORDER_CODELET_RADICES and not _paired_radix(self.radix):
             raise ValueError("unsupported DIF radix")
         if self.length < 2 or self.span < self.radix or self.length % self.span or self.span % self.radix:
             raise ValueError("invalid DIF transform or stage span")
@@ -138,7 +142,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
                 f"{indent}tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
         return result
 
-    if radix not in {13, 17, 19}:
+    if not _paired_radix(radix):
         for digit in range(radix):
             lines += input_lines(str(digit), f"r{digit}", f"i{digit}")
         lines += _emit_natural_order_codelet_call("    ", radix, config.direction)
@@ -180,7 +184,9 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "signature": "*fp32:16,*fp32:16,*fp32:16,i32,i64", "num_warps": 4,
         "num_stages": 1, "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
         "batch_per_block": config.rows_per_program,
+        "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
-        "kernel_type": "fft_dif_stage", "implementation": "triton", "fft_stage_config": asdict(config)}
+        "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
+        "generator_version": 1, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

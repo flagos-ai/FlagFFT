@@ -25,6 +25,7 @@ class Pointer:
 
 class Language:
     float32 = np.float32
+    int32 = np.int32
     int64 = np.int64
     pid = 0
 
@@ -48,6 +49,7 @@ class Language:
     reshape = staticmethod(np.reshape)
     split = staticmethod(lambda values: (values[..., 0], values[..., 1]))
     join = staticmethod(lambda even, odd: np.stack((even, odd), axis=-1))
+    cat = staticmethod(lambda lo, hi, axis: np.concatenate((lo, hi), axis=axis))
 
     @staticmethod
     def load(pointer, mask=True, other=0):
