@@ -104,7 +104,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     """
     n, pack = config.length, config.rows_per_program
     tile_n = 1 << (n - 1).bit_length()
-    identity = hashlib.sha256(json.dumps({"version": 10, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 12, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
@@ -127,7 +127,8 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         lines += [f"    input_base = (group_row // {config.input_stride}) * {input_length * config.input_stride} + group_row % {config.input_stride} + inner_row"]
     else:
         lines += [f"    input_base = row * {input_length}"]
-    if config.exchange == "split_register" and config.mode != "c2r" and config.input_stride == 1:
+    if (config.exchange == "split_register" and config.mode != "c2r" and
+            config.input_stride == 1 and not n & (n - 1)):
         frequency = "tl.arange(0, " + str(tile_n) + ")"
         lines += [f"    frequency = {frequency}", "    source_frequency = frequency"]
         lines += ["    source = input_base[:, None] + source_frequency[None, :]"]
@@ -150,6 +151,23 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             split_input(odd, points[1::2], prefix, path + "o")
         split_input("loaded_r", tuple(range(tile_n)), "r")
         split_input("loaded_i", tuple(range(tile_n)), "i")
+    elif config.exchange == "split_register" and config.mode == "c2r":
+        # Read each compact coefficient once; reflected inputs reuse the
+        # loaded value with a sign change on its imaginary component.
+        for frequency in range(input_length):
+            position = f"(input_base + {frequency * config.input_stride})"
+            lines += [f"    point = tl.load(in_ptr + {position}[:, None] * 2 + tl.arange(0, 2)[None, :], mask[:, None], 0.0)",
+                f"    sample_r{frequency}, sample_i{frequency} = tl.split(point)"]
+        for index in range(n):
+            frequency = _digit_reversed_index(index, config.factors)
+            conjugate = frequency > n // 2
+            source = n - frequency if conjugate else frequency
+            lines += [f"    r{index} = sample_r{source}"]
+            if source == 0 or n % 2 == 0 and source == n // 2:
+                lines += [f"    i{index} = tl.full(({pack},), 0.0, tl.float32)"]
+            else:
+                sign = "-" if conjugate else ""
+                lines += [f"    i{index} = {sign}sample_i{source}"]
     else:
         for index in range(n):
             source_index = _digit_reversed_index(index, config.factors)
@@ -199,7 +217,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         lines += [f"    output_base = (group_row // {step}) * {output_length * step} + group_row % {step} + inner_row"]
     else:
         lines += [f"    output_base = row * {output_length}"]
-    if config.exchange == "split_register" and step == 1:
+    if config.exchange == "split_register" and step == 1 and not n & (n - 1):
         lines += [f"    frequency = tl.arange(0, {tile_n})"]
         def join_output(points, prefix, path=""):
             if len(points) == 1:
@@ -251,7 +269,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "programs_per_row_group": (extent + config.rows_per_program - 1) // config.rows_per_program if extent else 1,
         "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
         "kernel_type": "tensor_fft", "dtype": "complex64", "implementation": "triton",
-        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 10,
+        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 12,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
