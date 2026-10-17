@@ -80,7 +80,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 1, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 2, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -103,8 +103,8 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
             result += [f"{indent}{real} = tl.load(in_ptr + source, mask, 0.0)",
                 f"{indent}{imag} = tl.full(({pack}, {block}), 0.0, tl.float32)"]
         else:
-            result += [f"{indent}{real} = tl.load(in_ptr + source * 2, mask, 0.0)",
-                f"{indent}{imag} = tl.load(in_ptr + source * 2 + 1, mask, 0.0)"]
+            result += [f"{indent}point = tl.load(in_ptr + source[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], mask[:, :, None], 0.0)",
+                f"{indent}{real}, {imag} = tl.split(point)"]
             if first and config.mode == "c2r":
                 boundary = f"(frequency[None, :] == 0)"
                 if n % 2 == 0:
@@ -119,12 +119,14 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
             if expanded:
                 result += [f"{indent}root = ({digit}[:, None] * {ndiv} + k[None, :]) * 2",
                     f"{indent}root_mask = ({digit}[:, None] < {radix}) & valid_k[None, :]",
-                    f"{indent}wr = tl.load(twiddle_ptr + root, root_mask, 0.0)[:, None, :]",
-                    f"{indent}wi = tl.load(twiddle_ptr + root + 1, root_mask, 0.0)[:, None, :]"]
+                    f"{indent}root_point = tl.load(twiddle_ptr + root[:, :, None] + tl.arange(0, 2)[None, None, :], root_mask[:, :, None], 0.0)",
+                    f"{indent}wr, wi = tl.split(root_point)",
+                    f"{indent}wr, wi = wr[:, None, :], wi[:, None, :]"]
             else:
                 result += [f"{indent}root = ({digit} * {ndiv} + k) * 2",
-                    f"{indent}wr = tl.load(twiddle_ptr + root, valid_k, 0.0)[None, :]",
-                    f"{indent}wi = tl.load(twiddle_ptr + root + 1, valid_k, 0.0)[None, :]"]
+                    f"{indent}root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :], valid_k[:, None], 0.0)",
+                    f"{indent}wr, wi = tl.split(root_point)",
+                    f"{indent}wr, wi = wr[None, :], wi[None, :]"]
             result += [f"{indent}{real}, {imag} = _cmul({real}, {imag}, wr, wi)"]
         step = config.output_rows_per_batch or config.output_stride
         if expanded:
@@ -138,8 +140,11 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         if last and config.mode == "c2r":
             result += [f"{indent}tl.store(out_ptr + target, {real}, valid)"]
         else:
-            result += [f"{indent}tl.store(out_ptr + target * 2, {real}, valid)",
-                f"{indent}tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
+            result += [f"{indent}point = tl.join({real}, {imag})"]
+            if expanded:
+                result += [f"{indent}tl.store(out_ptr + target[:, :, :, None] * 2 + tl.arange(0, 2)[None, None, None, :], point, valid[:, :, :, None])"]
+            else:
+                result += [f"{indent}tl.store(out_ptr + target[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], point, valid[:, :, None])"]
         return result
 
     if not _paired_radix(radix):
@@ -161,8 +166,9 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         lines += input_lines("digit", "xr", "xi", "        ")
         lines += input_lines(f"({radix} - digit)", "yr", "yi", "        ")
         lines += [f"        root = ({n} + digit * {width} + output) * 2",
-            "        wr = tl.load(twiddle_ptr + root)[:, None, None]",
-            "        wi = tl.load(twiddle_ptr + root + 1)[:, None, None]",
+            "        root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
+            "        wr, wi = tl.split(root_point)",
+            "        wr, wi = wr[:, None, None], wi[:, None, None]",
             "        cr = cr + (xr + yr)[None, :, :] * wr",
             "        ci = ci + (xi + yi)[None, :, :] * wr",
             "        sr = sr + (xr - yr)[None, :, :] * wi",
@@ -187,6 +193,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 1, "fft_stage_config": asdict(config)}
+        "generator_version": 2, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
