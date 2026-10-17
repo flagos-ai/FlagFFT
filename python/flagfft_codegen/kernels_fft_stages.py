@@ -87,7 +87,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 7, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 8, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -139,19 +139,21 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         if expanded:
             result += [f"{indent}frequency_out = {digit}[:, None, None] * {ndiv} + k[None, None, :]",
                 f"{indent}target = base_out[None, :, None] + frequency_out * {step}",
-                f"{indent}valid = mask[None, :, :] & ({digit}[:, None, None] < {radix}) & (frequency_out < {olen})"]
+                f"{indent}valid = mask[None, :, :] & ({digit}[:, None, None] < {radix})"]
+            if last and config.mode == "r2c":
+                result += [f"{indent}valid = valid & (frequency_out < {olen})"]
         else:
             result += [f"{indent}frequency_out = {digit} * {ndiv} + k",
                 f"{indent}target = base_out[:, None] + frequency_out[None, :] * {step}",
                 f"{indent}valid = mask & (frequency_out[None, :] < {olen})"]
         if last and config.mode == "c2r":
             result += [f"{indent}tl.store(out_ptr + target, {real}, valid)"]
+        elif expanded:
+            result += [f"{indent}tl.store(out_ptr + target * 2, {real}, valid)",
+                f"{indent}tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
         else:
             result += [f"{indent}point = tl.join({real}, {imag})"]
-            if expanded:
-                result += [f"{indent}tl.store(out_ptr + target[:, :, :, None] * 2 + tl.arange(0, 2)[None, None, None, :], point, valid[:, :, :, None])"]
-            else:
-                result += [f"{indent}tl.store(out_ptr + target[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], point, valid[:, :, None])"]
+            result += [f"{indent}tl.store(out_ptr + target[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], point, valid[:, :, None])"]
         return result
 
     if not _paired_radix(radix, config.prime_strategy):
@@ -198,6 +200,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 7, "fft_stage_config": asdict(config)}
+        "generator_version": 8, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
