@@ -46,6 +46,7 @@ from .kernels_small_3d import (
 from .kernels_small_2d import emit_fused_2d_kernel
 from .kernels_npu_grouped import emit_npu_grouped_fft64
 from .kernels_npu_radix4 import emit_npu_radix4_pair
+from .kernels_npu_stockham import emit_npu_table_stockham
 from .kernels_npu_layout import emit_npu_table_transpose3d
 from .artifacts import write_text_atomic
 from .registry import (
@@ -58,6 +59,7 @@ from .registry import (
     REAL_POINTWISE,
     NPU_GROUPED_FFT,
     NPU_RADIX4_PAIR,
+    NPU_TABLE_STOCKHAM,
     RESHAPE,
     SMALL_3D,
     SMALL_2D,
@@ -463,6 +465,13 @@ def main() -> None:
             length=args.length, group=args.npu_fft_group, mode=args.npu_fft_mode,
             direction=args.direction, out_dir=args.out_dir,
         )
+    elif spec.family == NPU_TABLE_STOCKHAM:
+        if not args.target.startswith("npu:") or args.dtype != "complex64":
+            parser.error("NPU table Stockham requires an NPU FP32 target")
+        if args.length is None or len(args.factors) != 2:
+            parser.error("NPU table Stockham requires --length and --factors radix,span")
+        metadata = emit_npu_table_stockham(length=args.length, radix=args.factors[0],
+            span=args.factors[1], direction=args.direction, out_dir=args.out_dir)
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
             parser.error(

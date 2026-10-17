@@ -326,6 +326,9 @@ struct CompiledRawStridedDirectDftNode final : CompiledRawNode {
 struct CompiledRawStockhamNode final : CompiledRawNode {
   struct AivStageTables {
     bool enabled = false;
+    std::shared_ptr<JitKernel> replacement;
+    int64_t tiles_per_transform = 0;
+    int64_t batch_group = 1;
     DeviceAllocation twiddles;
     DeviceAllocation roots;
     DeviceAllocation store_indices;

@@ -244,6 +244,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "npu_grouped_fft64";
     case KernelKind::NpuRadix4Pair:
       return "npu_radix4_pair";
+    case KernelKind::NpuTableStockham:
+      return "npu_table_stockham";
   }
   return "unknown";
 }

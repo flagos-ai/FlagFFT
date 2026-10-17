@@ -982,6 +982,7 @@ std::string CompiledRawStockhamNode::describe() const {
     description += stage < aiv_stages.size() && aiv_stages[stage].enabled
                        ? ":AIV"
                        : ":JIT";
+    if (stage < aiv_stages.size() && aiv_stages[stage].replacement) description += "[triton]";
   }
   description += "])";
   return description;
@@ -1013,11 +1014,32 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
         const int64_t max_batch = std::max<int64_t>(
             1, static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) /
                    std::max<int64_t>(1, tiles_per_transform));
-        const int64_t batch_chunk = std::min(context.batch, max_batch);
+        const auto &stage_tables = aiv_stages[stage];
+        // Keep the existing native chunk policy. The generated ten-argument
+        // ABI has a signed batch count; bound its scalar tile arithmetic too.
+        const int64_t generated_limit = stage_tables.replacement
+            ? std::min<int64_t>(
+                std::numeric_limits<int32_t>::max() - stage_tables.batch_group + 1,
+                std::numeric_limits<int32_t>::max() /
+                    std::max<int64_t>(1, stage_tables.tiles_per_transform))
+            : max_batch;
+        const int64_t batch_chunk = std::min({context.batch, max_batch, generated_limit});
         for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
           const int64_t count = std::min(batch_chunk, context.batch - batch_offset);
           const int64_t byte_offset = batch_offset * length * element_bytes;
           const auto &tables = aiv_stages[stage];
+          if (tables.replacement) {
+            const int64_t groups = (count + tables.batch_group - 1) / tables.batch_group;
+            const int64_t blocks = std::min<int64_t>(65535, groups * tables.tiles_per_transform);
+            tables.replacement->launch(context.stream,
+                {JitKernelArg::device(current + byte_offset), JitKernelArg::device(dst + byte_offset),
+                 JitKernelArg::device(tables.twiddles.get()), JitKernelArg::device(tables.roots.get()),
+                 JitKernelArg::device(aiv_indices.get()), JitKernelArg::device(tables.store_indices.get()),
+                 JitKernelArg::i32(static_cast<int32_t>(length)), JitKernelArg::i32(static_cast<int32_t>(factor)),
+                 JitKernelArg::i32(static_cast<int32_t>(span)), JitKernelArg::i32(static_cast<int32_t>(count))},
+                blocks, 1, 1);
+            continue;
+          }
           const flagfftResult status = adaptor::npu::launch_ascendc_stockham_stage(
               current + byte_offset,
               dst + byte_offset,

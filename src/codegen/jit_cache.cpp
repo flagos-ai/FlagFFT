@@ -449,6 +449,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::NpuRadix4Pair:
       kernel_kind = "npu_radix4_pair";
       break;
+    case KernelKind::NpuTableStockham:
+      kernel_kind = "npu_table_stockham";
+      break;
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
@@ -666,6 +669,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --length " << key.length
                 << " --npu-fft-group " << key.lanes
                 << " --npu-fft-mode " << key.reshape_n2
+                << " --direction " << shell_quote(key.direction);
+  }
+
+  if (key.kind == KernelKind::NpuTableStockham) {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64" || key.factors.size() != 2) {
+      throw std::runtime_error("Table Stockham body requires NPU FP32 radix/span parameters");
+    }
+    jit_command << " --length " << key.length
+                << " --factors " << key.factors[0] << "," << key.factors[1]
                 << " --direction " << shell_quote(key.direction);
   }
 

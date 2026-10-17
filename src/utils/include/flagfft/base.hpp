@@ -196,7 +196,8 @@ enum class KernelKind {
   LeafRaderFinish,
   LeafPackedC2R,
   NpuGroupedFFT64,
-  NpuRadix4Pair
+  NpuRadix4Pair,
+  NpuTableStockham
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

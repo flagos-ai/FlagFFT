@@ -2234,6 +2234,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 
         CompiledRawStockhamNode::AivStageTables tables;
         tables.enabled = true;
+        tables.tiles_per_transform = stage_tiles_per_transform;
+        tables.batch_group = static_cast<int64_t>(stage_batch_group);
+        if (flag_or_default("FLAGFFT_NPU_TRITON_STOCKHAM", false)) {
+          tables.replacement = compile_kernel(KernelKey::npu_table_stockham(
+              triton_target_for_request(request), request.direction,
+              stockham->length, radix, stage_span));
+        }
         tables.roots = DeviceAllocation::from_floats(roots);
         if (stage_span > 1) {
           const int64_t twiddle_stride =

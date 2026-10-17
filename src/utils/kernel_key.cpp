@@ -712,6 +712,18 @@ KernelKey KernelKey::npu_radix4_pair(std::string target, std::string direction,
   return key;
 }
 
+KernelKey KernelKey::npu_table_stockham(std::string target, std::string direction,
+                                       int64_t length, int64_t radix, int64_t span) {
+  KernelKey key;
+  key.kind = KernelKind::NpuTableStockham;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = "complex64";
+  key.length = length;
+  key.factors = {radix, span};
+  return key;
+}
+
 KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1) {
   KernelKey key;
   key.kind = KernelKind::TiledTranspose;
