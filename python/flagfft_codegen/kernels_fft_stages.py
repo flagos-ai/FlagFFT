@@ -14,6 +14,7 @@ from .artifacts import write_text_atomic
 from .kernels_common import _NATURAL_ORDER_CODELET_RADICES
 from .kernels_leaf import _emit_natural_order_codelet_call
 from .metadata import _module_source
+from .kernels_fft_prime import emit_rader_inner, emit_rader_call, rader_factors
 
 
 def _paired_radix(radix: int, strategy: str = "auto") -> bool:
@@ -37,9 +38,11 @@ class FFTStageConfig:
     prime_strategy: str = "auto"
 
     def __post_init__(self):
-        if self.prime_strategy not in {"auto", "natural", "paired", "paired_loop"}:
+        if self.prime_strategy not in {"auto", "natural", "paired", "paired_loop", "rader"}:
             raise ValueError("unsupported prime codelet strategy")
-        if self.radix not in _NATURAL_ORDER_CODELET_RADICES and not _paired_radix(self.radix, self.prime_strategy):
+        if self.prime_strategy == "rader":
+            rader_factors(self.radix)
+        elif self.radix not in _NATURAL_ORDER_CODELET_RADICES and not _paired_radix(self.radix, self.prime_strategy):
             raise ValueError("unsupported DIF radix")
         if self.prime_strategy in {"paired", "paired_loop"} and not _paired_radix(self.radix, "paired"):
             raise ValueError("paired codelet requires an odd radix from 3 through 31")
@@ -87,7 +90,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 10, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 11, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -159,7 +162,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     if not _paired_radix(radix, config.prime_strategy):
         for digit in range(radix):
             lines += input_lines(str(digit), f"r{digit}", f"i{digit}")
-        lines += _emit_natural_order_codelet_call("    ", radix, config.direction)
+        lines += emit_rader_call(radix, config.direction) if config.prime_strategy == "rader" else _emit_natural_order_codelet_call("    ", radix, config.direction)
         for digit in range(radix):
             lines += output_lines(str(digit), f"r{digit}", f"i{digit}")
     else:
@@ -190,13 +193,15 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         # mirrored stores sharing accumulator buffers in the backend.
         lines += ["    result_r, result_i = cr - si, ci + sr"]
         lines += output_lines("output", "result_r", "result_i", expanded=True)
-    return name, "\n".join(lines) + "\n"
+    helpers = emit_rader_inner(radix) if config.prime_strategy == "rader" else ""
+    return name, helpers + "\n".join(lines) + "\n"
 
 
 def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
     name, source = build_fft_stage(config)
     path = out_dir / f"{name}.py"
-    write_text_atomic(path, _module_source(source, radices=(config.radix,)))
+    radices = rader_factors(config.radix) if config.prime_strategy == "rader" else (config.radix,)
+    write_text_atomic(path, _module_source(source, radices=tuple(sorted(set(radices)))))
     metadata = {"module_path": str(path), "kernel_name": name,
         "signature": "*fp32:16,*fp32:16,*fp32:16,i32,i64", "num_warps": 4,
         "num_stages": 1, "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
@@ -204,6 +209,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 10, "fft_stage_config": asdict(config)}
+        "generator_version": 11, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

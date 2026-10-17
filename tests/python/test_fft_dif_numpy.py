@@ -13,7 +13,8 @@ from test_tensor_fft_numpy import Language, Pointer
 @pytest.mark.parametrize("factors,prime_strategy", [((4, 4), "auto"), ((8, 8), "auto"),
     ((2, 3, 5, 7), "auto"), ((11, 13), "auto"), ((13, 17), "auto"),
     ((17, 19), "auto"), ((23,), "auto"), ((29,), "auto"), ((3, 23), "auto"),
-    ((13,), "paired"), ((17, 19), "paired"), ((17, 19), "paired_loop")])
+    ((13,), "paired"), ((17, 19), "paired"), ((17, 19), "paired_loop"),
+    ((13, 17), "rader"), ((17, 19), "rader"), ((23,), "rader"), ((29, 31), "rader")])
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("block,pack,stride,permuted", [(8, 1, 1, 0), (16, 4, 3, 0), (8, 2, 1, 7)])
@@ -67,5 +68,11 @@ def test_dif_sequence(tmp_path, factors, prime_strategy, mode, direction, block,
     for row in range(batch):
         base = row // step * olen * step + row % step
         actual[row] = source[base:base + olen * step:step]
-    np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=2e-4)
+    if n > 512 and direction == "inverse":
+        # The inverse is unnormalised. A fixed absolute per-element limit
+        # near zero does not scale with its gain; require a strict global
+        # FP32 error bound for the added long composition stress case.
+        assert np.max(np.abs(actual - expected)) / np.max(np.abs(expected)) < 5e-7
+    else:
+        np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=2e-4)
     assert np.linalg.norm(actual - expected) / np.linalg.norm(expected) < 5e-7
