@@ -458,6 +458,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::NpuFFT256Pair:
       kernel_kind = "npu_fft256_pair";
       break;
+    case KernelKind::NpuFusedStockham:
+      kernel_kind = "npu_fused_stockham";
+      break;
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
@@ -696,6 +699,18 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --npu-fft-mode " << key.reshape_n2
                 << " --direction " << shell_quote(key.direction);
     if (key.perm_form == "radix4_store") jit_command << " --npu-fft-radix4-pair";
+  }
+  if (key.kind == KernelKind::NpuFusedStockham) {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64" || key.factors.empty()) {
+      throw std::runtime_error("Fused Stockham requires bounded NPU FP32 factors");
+    }
+    jit_command << " --length " << key.length << " --factors ";
+    for (std::size_t i=0;i<key.factors.size();++i) {
+      if (i) jit_command << ",";
+      jit_command << key.factors[i];
+    }
+    jit_command << " --npu-fft-group " << key.lanes
+                << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::NpuSinglePower2) {
     if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {

@@ -49,6 +49,7 @@ from .kernels_npu_radix4 import emit_npu_radix4_pair
 from .kernels_npu_stockham import emit_npu_table_stockham
 from .kernels_npu_power2 import emit_npu_single_power2
 from .kernels_npu_fft256 import emit_npu_fft256_pair
+from .kernels_npu_fused_stockham import emit_npu_fused_stockham
 from .kernels_npu_layout import emit_npu_table_transpose3d
 from .artifacts import write_text_atomic
 from .registry import (
@@ -64,6 +65,7 @@ from .registry import (
     NPU_TABLE_STOCKHAM,
     NPU_SINGLE_POWER2,
     NPU_FFT256_PAIR,
+    NPU_FUSED_STOCKHAM,
     RESHAPE,
     SMALL_3D,
     SMALL_2D,
@@ -487,6 +489,11 @@ def main() -> None:
         metadata = emit_npu_fft256_pair(mode=args.npu_fft_mode,
             radix4_store=args.npu_fft_radix4_pair, direction=args.direction,
             out_dir=args.out_dir)
+    elif spec.family == NPU_FUSED_STOCKHAM:
+        if not args.target.startswith("npu:") or args.dtype != "complex64":
+            parser.error("Fused Stockham requires an NPU FP32 target")
+        metadata = emit_npu_fused_stockham(length=args.length,factors=args.factors,
+            group=args.npu_fft_group,direction=args.direction,out_dir=args.out_dir)
     elif spec.family == NPU_SINGLE_POWER2:
         if not args.target.startswith("npu:") or args.dtype != "complex64":
             parser.error("Single-row power2 requires an NPU FP32 target")

@@ -282,6 +282,17 @@ struct CompiledRawNpuAivFFTNode final : CompiledRawNode {
   std::shared_ptr<DeviceAllocation> twiddles;
 };
 
+struct CompiledRawNpuFusedStockhamNode final : CompiledRawNode {
+  CompiledRawNpuFusedStockhamNode(int64_t length, int64_t group,
+      std::shared_ptr<JitKernel> kernel, DeviceAllocation indices, DeviceAllocation twiddles);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+      const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  int64_t length, group;
+  std::shared_ptr<JitKernel> kernel;
+  DeviceAllocation indices, twiddles;
+};
+
 struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   CompiledRawNpuAivFFT256Node(std::shared_ptr<DeviceAllocation> indices,
                               std::shared_ptr<DeviceAllocation> twiddles,
@@ -1670,6 +1681,8 @@ class TritonCompiler {
       const FFTRequest &request, int64_t batch, NpuAivFFT256Mode mode);
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_complex_child(
       const FFTRequest &request, bool allow_transposed_store);
+  std::shared_ptr<CompiledRawNode> make_npu_fused_stockham_child(
+      const FFTRequest &request, const StockhamPlanNode &plan);
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft1024_child(const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft2048_child(
       const FFTRequest &request, bool radix4_pair = false);

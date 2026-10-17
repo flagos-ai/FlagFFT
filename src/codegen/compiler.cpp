@@ -22,6 +22,7 @@
 #include <optional>
 #include <utility>
 #include <limits>
+#include <map>
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
@@ -651,6 +652,60 @@ namespace {
             static_cast<uint32_t>((source + n * group_size) * sizeof(float));
       }
     }
+  }
+
+  void build_npu_fused_stockham_tables(int64_t n, const std::vector<int64_t> &factors,
+      int64_t group, bool inverse, std::vector<uint32_t> &indices,
+      std::vector<float> &twiddles) {
+    auto power2 = [](int64_t value) {
+      int64_t result=1;
+      while (result<value) result*=2;
+      return result;
+    };
+    const int64_t size=power2(n*group);
+    std::map<std::vector<uint32_t>,std::size_t> seen;
+    auto add = [&](int64_t count, auto index) {
+      std::vector<uint32_t> values;
+      values.reserve(count);
+      for (int64_t k=0;k<count;++k) values.push_back(static_cast<uint32_t>(index(k)));
+      if (seen.find(values)==seen.end()) {
+        seen.emplace(values,indices.size());
+        indices.insert(indices.end(),values.begin(),values.end());
+      }
+    };
+    add(size,[](int64_t k){return 2*k;});
+    add(size,[](int64_t k){return 2*k+1;});
+    int64_t span=1,tw_base=0;
+    const double sign=inverse ? 1.0 : -1.0;
+    constexpr double pi=3.141592653589793238462643383279502884;
+    for (int64_t radix:factors) {
+      const int64_t nd=n/radix,bp=power2(group*nd);
+      for (int64_t digit=0;digit<radix;++digit) {
+        add(bp,[&](int64_t k){return std::min(k/nd,group-1)*n+k%nd+digit*nd;});
+        if (digit && span>1) {
+          add(bp,[&](int64_t k){return tw_base+2*(digit*span+(k%nd)%span);});
+          add(bp,[&](int64_t k){return tw_base+2*(digit*span+(k%nd)%span)+1;});
+        }
+      }
+      add(size,[&](int64_t k) {
+        return (((k%n)/span)%radix)*bp+std::min(k/n,group-1)*nd+
+            ((k%n)/(radix*span))*span+(k%n)%span;
+      });
+      if (span>1) {
+        for (int64_t digit=0;digit<radix;++digit) {
+          for (int64_t j=0;j<span;++j) {
+            const double angle=sign*2.0*pi*static_cast<double>(digit)*static_cast<double>(j)/
+                static_cast<double>(radix*span);
+            twiddles.push_back(static_cast<float>(std::cos(angle)));
+            twiddles.push_back(static_cast<float>(std::sin(angle)));
+          }
+        }
+        tw_base+=2*radix*span;
+      }
+      span*=radix;
+    }
+    add(2*size,[&](int64_t k){return (k>>1)+(k&1)*size;});
+    if (twiddles.empty()) twiddles.push_back(0.0f);
   }
 
   void build_npu_aiv_fft64_group_tables(const FFTRequest &request,
@@ -1879,6 +1934,37 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft256_complex_chi
                                                         std::move(replacement));
   }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_fused_stockham_child(
+    const FFTRequest &request, const StockhamPlanNode &plan) {
+  if (request.device_type!="npu" || request.origin_rank!=2 ||
+      request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
+      !flag_or_default("FLAGFFT_NPU_TRITON_STOCKHAM_FUSED",false) ||
+      plan.length<=1 || plan.length>256 || plan.factors.empty())
+    return nullptr;
+  int64_t product=1;
+  for (int64_t radix:plan.factors) {
+    if (radix<2 || radix>19 || radix==14 || radix==18 || product>plan.length/radix)
+      return nullptr;
+    product*=radix;
+  }
+  if (product!=plan.length) return nullptr;
+  // Bound vector-local storage independently of the public matrix shape.
+  int64_t group=1;
+  while (group<32 && plan.length*(group*2)<=2048) group*=2;
+  std::vector<uint32_t> host_indices;
+  std::vector<float> host_twiddles;
+  build_npu_fused_stockham_tables(plan.length,plan.factors,group,
+      request.direction=="inverse",host_indices,host_twiddles);
+  DeviceAllocation indices(host_indices.size()*sizeof(uint32_t));
+  DeviceAllocation twiddles(host_twiddles.size()*sizeof(float));
+  indices.copy_from_host(host_indices.data(),host_indices.size()*sizeof(uint32_t));
+  twiddles.copy_from_host(host_twiddles.data(),host_twiddles.size()*sizeof(float));
+  auto kernel=compile_kernel(KernelKey::npu_fused_stockham(
+      triton_target_for_request(request),request.direction,plan.length,plan.factors,group));
+  return std::make_shared<CompiledRawNpuFusedStockhamNode>(plan.length,group,
+      std::move(kernel),std::move(indices),std::move(twiddles));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft1024_child(const FFTRequest &request) {
   std::vector<uint32_t> host_indices;
   std::vector<float> host_twiddles;
@@ -2152,6 +2238,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       return make_npu_aiv_fft2048_child(request, radix4_pair);
     }
+    if (auto child=make_npu_fused_stockham_child(request,*stockham)) return child;
 #endif
     std::vector<std::shared_ptr<JitKernel>> kernels;
     std::vector<CompiledRawStockhamNode::AivStageTables> aiv_stages;

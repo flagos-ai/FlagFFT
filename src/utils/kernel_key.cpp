@@ -748,6 +748,19 @@ KernelKey KernelKey::npu_fft256_pair(std::string target, std::string direction,
   return key;
 }
 
+KernelKey KernelKey::npu_fused_stockham(std::string target, std::string direction,
+    int64_t length, std::vector<int64_t> factors, int64_t group) {
+  KernelKey key;
+  key.kind = KernelKind::NpuFusedStockham;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = "complex64";
+  key.length = length;
+  key.factors = std::move(factors);
+  key.lanes = group;
+  return key;
+}
+
 KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1) {
   KernelKey key;
   key.kind = KernelKind::TiledTranspose;

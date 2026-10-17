@@ -820,6 +820,36 @@ flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
   return FLAGFFT_SUCCESS;
 }
 
+CompiledRawNpuFusedStockhamNode::CompiledRawNpuFusedStockhamNode(
+    int64_t length, int64_t group, std::shared_ptr<JitKernel> kernel,
+    DeviceAllocation indices, DeviceAllocation twiddles)
+    : length(length), group(group), kernel(std::move(kernel)),
+      indices(std::move(indices)), twiddles(std::move(twiddles)) {}
+
+std::string CompiledRawNpuFusedStockhamNode::describe() const {
+  return "CompiledRawNpuFusedStockham(n=" + std::to_string(length) +
+      ", group=" + std::to_string(group) + ", kernel=" +
+      kernel->execution_description() + ")";
+}
+
+flagfftResult CompiledRawNpuFusedStockhamNode::execute(
+    adaptor::DevicePtr input, adaptor::DevicePtr output,
+    const RawExecutionContext &context) const {
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max())
+    return FLAGFFT_INVALID_SIZE;
+  try {
+    const int64_t blocks = std::min<int64_t>(65535, ceil_div(context.batch,group));
+    kernel->launch(context.stream, {
+        JitKernelArg::device(input), JitKernelArg::device(output),
+        JitKernelArg::device(indices.get()), JitKernelArg::device(twiddles.get()),
+        JitKernelArg::i32(static_cast<int32_t>(context.batch))},blocks,1,1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr,"[flagfft] fused Stockham execute failed: %s\n",e.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     std::shared_ptr<DeviceAllocation> indices,
     std::shared_ptr<DeviceAllocation> twiddles,

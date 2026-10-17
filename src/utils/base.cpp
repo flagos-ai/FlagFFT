@@ -250,6 +250,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "npu_single_power2";
     case KernelKind::NpuFFT256Pair:
       return "npu_fft256_pair";
+    case KernelKind::NpuFusedStockham:
+      return "npu_fused_stockham";
   }
   return "unknown";
 }
