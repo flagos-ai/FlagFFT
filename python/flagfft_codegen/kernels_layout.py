@@ -16,9 +16,10 @@ from __future__ import annotations
 
 """Layout kernels: reshape packs and tiled 2D/3D transposes."""
 
+import os
 from textwrap import dedent
 
-from .kernels_common import _dtype_suffix, _zero_other
+from .kernels_common import _dtype_suffix, _zero_other, _npu_backend_active
 
 
 def _build_reshape_pack_kernel_source(
@@ -30,6 +31,10 @@ def _build_reshape_pack_kernel_source(
     final natural-order pack (stage 5). Complex elements are stored interleaved
     (real, imag) with stride 2.
     """
+    if (dtype == "complex64" and _npu_backend_active()
+            and os.environ.get("FLAGFFT_NPU_TRITON_RESHAPE_TILE") == "1"):
+        from .kernels_npu_fourstep_layout import build_npu_tiled_reshape_source
+        return build_npu_tiled_reshape_source(n1, n2)
     R = n1
     C = n2
     total = R * C
@@ -74,6 +79,10 @@ def _build_twiddle_reshape_pack_kernel_source(
     build_raw_four_step_twiddle uses (row=j2, col=k1) → (row * n1 + col) which
     matches twiddle[r * C + c] when (R, C) = (n2, n1).
     """
+    if (dtype == "complex64" and _npu_backend_active()
+            and os.environ.get("FLAGFFT_NPU_TRITON_RESHAPE_TILE") == "1"):
+        from .kernels_npu_fourstep_layout import build_npu_tiled_reshape_source
+        return build_npu_tiled_reshape_source(n1, n2, twiddle=True)
     R = n1
     C = n2
     total = R * C

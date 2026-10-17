@@ -219,6 +219,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (npu_vector_io_key) {
     cache_key += std::string(";npu-vector-complex-io=") + (npu_vector_complex_io ? "1" : "0");
   }
+  if (key.target.rfind("npu:", 0) == 0 && key.dtype == "complex64" &&
+      (key.kind == KernelKind::ReshapePack || key.kind == KernelKind::TwiddleReshapePack)) {
+    const bool tiled = env_flag_enabled(std::getenv("FLAGFFT_NPU_TRITON_RESHAPE_TILE"));
+    cache_key += std::string(";npu-reshape-tile=") + (tiled ? "1" : "0");
+  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
