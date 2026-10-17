@@ -106,9 +106,13 @@ def test_fused_body_and_host_tables(host_tables,n,factors,inverse,mode):
     reference=np.fft.ifft(z,axis=1)*n if inverse else np.fft.fft(z,axis=1)
     data=z.view(np.float32).reshape(-1)
     output=np.full(data.size+128,31415.25,np.float32)
-    for pid in range(grid):
-        language.pid=pid
-        ns[name](Pointer(data),Pointer(output,64),Pointer(index),Pointer(twiddle),count)
+    # Use a smaller host grid cap here to exercise independent launch offsets.
+    for offset in range(0,count,group*grid):
+        chunk=min(group*grid,count-offset)
+        for pid in range((chunk+group-1)//group):
+            language.pid=pid
+            ns[name](Pointer(data,offset*n*2),Pointer(output,64+offset*n*2),
+                Pointer(index),Pointer(twiddle),chunk)
     value=output[64:-64].view(np.complex64).reshape(z.shape)
     error=value.astype(np.complex128)-reference
     assert np.isfinite(value).all()

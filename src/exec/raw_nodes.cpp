@@ -838,11 +838,15 @@ flagfftResult CompiledRawNpuFusedStockhamNode::execute(
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max())
     return FLAGFFT_INVALID_SIZE;
   try {
-    const int64_t blocks = std::min<int64_t>(65535, ceil_div(context.batch,group));
-    kernel->launch(context.stream, {
-        JitKernelArg::device(input), JitKernelArg::device(output),
-        JitKernelArg::device(indices.get()), JitKernelArg::device(twiddles.get()),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch))},blocks,1,1);
+    const int64_t limit=block_limit_per_launch()*group;
+    for (int64_t offset=0;offset<context.batch;offset+=limit) {
+      const int64_t count=std::min(limit,context.batch-offset);
+      const int64_t byte_offset=offset*length*complex_element_bytes(context.request.input_dtype);
+      kernel->launch(context.stream, {
+          JitKernelArg::device(input+byte_offset),JitKernelArg::device(output+byte_offset),
+          JitKernelArg::device(indices.get()),JitKernelArg::device(twiddles.get()),
+          JitKernelArg::i32(static_cast<int32_t>(count))},ceil_div(count,group),1,1);
+    }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr,"[flagfft] fused Stockham execute failed: %s\n",e.what());

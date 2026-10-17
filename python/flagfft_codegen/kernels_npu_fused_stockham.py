@@ -58,52 +58,52 @@ def build_npu_fused_stockham_source(n,factors,group,direction):
         f'    lane=tl.arange(0,{size})',f'    scalar=tl.arange(0,{2*size})',
         f'    twl=tl.arange(0,{tp})',
         f'    twiddles=tl.load(twiddle_ptr+twl,twl<{tc},0.0)',
-        f'    for group_base in range(pid*{group},nbatch,tl.num_programs(0).to(tl.int64)*{group}):',
-        '        base=group_base.to(tl.int64)',
-        f'        valid=tl.minimum(tl.maximum(nbatch-group_base,0),{group}).to(tl.int32)',
-        f'        raw=tl.load(in_ptr+base*{2*n}+scalar,scalar<valid*{2*n},0.0)',
-        f'        real=tl.gather(raw,tl.load(idx_ptr+{p["incoming"][0]}+lane),0)',
-        f'        imag=tl.gather(raw,tl.load(idx_ptr+{p["incoming"][1]}+lane),0)']
+        f'    group_base=pid*{group}',
+        '    base=group_base',
+        f'    valid=tl.minimum(tl.maximum(nbatch-group_base,0),{group}).to(tl.int32)',
+        f'    raw=tl.load(in_ptr+base*{2*n}+scalar,scalar<valid*{2*n},0.0)',
+        f'    real=tl.gather(raw,tl.load(idx_ptr+{p["incoming"][0]}+lane),0)',
+        f'    imag=tl.gather(raw,tl.load(idx_ptr+{p["incoming"][1]}+lane),0)']
     for stage in p["stages"]:
         r,bp,qp,span=[stage[k] for k in ("radix","bp","qp","span")]
-        lines += [f'        bf=tl.arange(0,{bp})']
+        lines += [f'    bf=tl.arange(0,{bp})']
         for d in range(r):
             at=stage["source"][d]
-            lines += [f'        input_index=tl.load(idx_ptr+{at}+bf)',
-                f'        r{d}=tl.where(bf<{group*(n//r)},tl.gather(real,input_index,0),0.0)',
-                f'        i{d}=tl.where(bf<{group*(n//r)},tl.gather(imag,input_index,0),0.0)']
+            lines += [f'    input_index=tl.load(idx_ptr+{at}+bf)',
+                f'    r{d}=tl.where(bf<{group*(n//r)},tl.gather(real,input_index,0),0.0)',
+                f'    i{d}=tl.where(bf<{group*(n//r)},tl.gather(imag,input_index,0),0.0)']
             if stage["twiddle"][d] is not None:
                 wr,wi=stage["twiddle"][d]
-                lines += [f'        wr=tl.gather(twiddles,tl.load(idx_ptr+{wr}+bf),0)',
-                    f'        wi=tl.gather(twiddles,tl.load(idx_ptr+{wi}+bf),0)',
-                    f'        r{d},i{d}=_cmul(r{d},i{d},wr,wi)']
-        lines += (_emit_radix16_codelet_call('        ',direction) if r==16 else
-            _emit_natural_order_codelet_call('        ',r,direction))
-        lines += [f'        stage_r=tl.zeros(({qp*bp},),tl.float32)',
-            f'        stage_i=tl.zeros(({qp*bp},),tl.float32)']
+                lines += [f'    wr=tl.gather(twiddles,tl.load(idx_ptr+{wr}+bf),0)',
+                    f'    wi=tl.gather(twiddles,tl.load(idx_ptr+{wi}+bf),0)',
+                    f'    r{d},i{d}=_cmul(r{d},i{d},wr,wi)']
+        lines += (_emit_radix16_codelet_call('    ',direction) if r==16 else
+            _emit_natural_order_codelet_call('    ',r,direction))
+        lines += [f'    stage_r=tl.zeros(({qp*bp},),tl.float32)',
+            f'    stage_i=tl.zeros(({qp*bp},),tl.float32)']
         for d in range(r):
-            lines += [f'        stage_r=tle.dsa.insert_slice(stage_r,r{d},[{d*bp}],[{bp}],[1])',
-                f'        stage_i=tle.dsa.insert_slice(stage_i,i{d},[{d*bp}],[{bp}],[1])']
+            lines += [f'    stage_r=tle.dsa.insert_slice(stage_r,r{d},[{d*bp}],[{bp}],[1])',
+                f'    stage_i=tle.dsa.insert_slice(stage_i,i{d},[{d*bp}],[{bp}],[1])']
         at=stage["outgoing"]
-        lines += [f'        mapping=tl.load(idx_ptr+{at}+lane)',
-            f'        real=tl.where(lane<{n*group},tl.gather(stage_r,mapping,0),0.0)',
-            f'        imag=tl.where(lane<{n*group},tl.gather(stage_i,mapping,0),0.0)']
-    lines += [f'        packed=tl.zeros(({2*size},),tl.float32)',
-        f'        packed=tle.dsa.insert_slice(packed,real,[0],[{size}],[1])',
-        f'        packed=tle.dsa.insert_slice(packed,imag,[{size}],[{size}],[1])',
-        f'        values=tl.gather(packed,tl.load(idx_ptr+{p["packing"]}+scalar),0)',
-        f'        tl.store(out_ptr+base*{2*n}+scalar,values,scalar<valid*{2*n})']
+        lines += [f'    mapping=tl.load(idx_ptr+{at}+lane)',
+            f'    real=tl.where(lane<{n*group},tl.gather(stage_r,mapping,0),0.0)',
+            f'    imag=tl.where(lane<{n*group},tl.gather(stage_i,mapping,0),0.0)']
+    lines += [f'    packed=tl.zeros(({2*size},),tl.float32)',
+        f'    packed=tle.dsa.insert_slice(packed,real,[0],[{size}],[1])',
+        f'    packed=tle.dsa.insert_slice(packed,imag,[{size}],[{size}],[1])',
+        f'    values=tl.gather(packed,tl.load(idx_ptr+{p["packing"]}+scalar),0)',
+        f'    tl.store(out_ptr+base*{2*n}+scalar,values,scalar<valid*{2*n})']
     # Give every stage local names. Its butterfly width may change between
     # stages, and Triton must not infer a loop-carried value with two shapes.
     body='\n'.join(lines)+'\n'
-    chunks=body.split('        bf=')[1:]
-    prefix=body.split('        bf=')[0]
+    chunks=body.split('    bf=')[1:]
+    prefix=body.split('    bf=')[0]
     for i,chunk in enumerate(chunks):
-        part='        bf='+chunk
+        part='    bf='+chunk
         # Only block-local assignments/uses, excluding invariant lane/scalar,
         # the input/output pointers, real/imag state and final packing.
         if i==len(chunks)-1:
-            pos=part.index('        packed=')
+            pos=part.index('    packed=')
             tail=part[pos:];part=part[:pos]
         else:tail=''
         names={'bf','input_index','wr','wi','stage_r','stage_i','mapping'}
