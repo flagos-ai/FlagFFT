@@ -47,6 +47,7 @@ class Language:
     sin = staticmethod(np.sin)
     trans = staticmethod(np.transpose)
     reshape = staticmethod(np.reshape)
+    broadcast_to = staticmethod(np.broadcast_to)
     split = staticmethod(lambda values: (values[..., 0], values[..., 1]))
     join = staticmethod(lambda even, odd: np.stack((even, odd), axis=-1))
 
