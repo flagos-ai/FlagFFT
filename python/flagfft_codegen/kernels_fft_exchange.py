@@ -24,7 +24,7 @@ def build_gather_tensor_fft(config):
     n, pack = config.length, config.rows_per_program
     if n < 2 or n & (n - 1):
         raise ValueError("gather tensor exchange requires a power-of-two length >=2")
-    identity = hashlib.sha256(json.dumps({"version": 1, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 2, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_gather_n{n}_{config.mode}_{identity}"
     ilen = n // 2 + 1 if config.mode == "c2r" else n
     olen = n // 2 + 1 if config.mode == "r2c" else n
@@ -56,22 +56,22 @@ def build_gather_tensor_fft(config):
         if config.mode == "c2r":
             lines += ["    i = tl.where(reflected, -i, i)",
                 f"    i = tl.where((source_frequency == 0) | (source_frequency == {n // 2}), 0.0, i)"]
-    lines += [f"    root_frequency = tl.arange(0, {n})",
-        f"    for stage in range({bits}):",
-        f"        half = 1 << ({bits - 1} - stage)",
-        "        partner = offset ^ half",
-        "        pr, pi = tl.gather(r, partner, 0), tl.gather(i, partner, 0)",
-        "        lower = (frequency & half) == 0",
-        "        sum_r, sum_i = r + pr, i + pi",
-        "        difference_r = tl.where(lower, r - pr, pr - r)",
-        "        difference_i = tl.where(lower, i - pi, pi - i)",
-        f"        root = (stage * {n} + root_frequency) * 2",
-        "        point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
-        "        root_r, root_i = tl.split(point)",
-        "        wr, wi = tl.gather(root_r, frequency, 0), tl.gather(root_i, frequency, 0)",
-        "        product_r = difference_r * wr - difference_i * wi",
-        "        product_i = difference_r * wi + difference_i * wr",
-        "        r, i = tl.where(lower, sum_r, product_r), tl.where(lower, sum_i, product_i)"]
+    lines += [f"    root_frequency = tl.arange(0, {n})"]
+    for stage in range(bits):
+        half = 1 << (bits - 1 - stage)
+        lines += [f"    partner = offset ^ {half}",
+            "    pr, pi = tl.gather(r, partner, 0), tl.gather(i, partner, 0)",
+            f"    lower = (frequency & {half}) == 0",
+            "    sum_r, sum_i = r + pr, i + pi",
+            "    difference_r = tl.where(lower, r - pr, pr - r)",
+            "    difference_i = tl.where(lower, i - pi, pi - i)",
+            f"    root = ({stage * n} + root_frequency) * 2",
+            "    point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
+            "    root_r, root_i = tl.split(point)",
+            "    wr, wi = tl.gather(root_r, frequency, 0), tl.gather(root_i, frequency, 0)",
+            "    product_r = difference_r * wr - difference_i * wi",
+            "    product_i = difference_r * wi + difference_i * wr",
+            "    r, i = tl.where(lower, sum_r, product_r), tl.where(lower, sum_i, product_i)"]
     reversed_index = " | ".join(f"(((frequency >> {bit}) & 1) << {bits - 1 - bit})" for bit in range(bits))
     lines += [f"    reversed_index = {reversed_index}",
         f"    indices = lane * {n} + reversed_index",
