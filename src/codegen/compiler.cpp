@@ -38,18 +38,39 @@ namespace {
 
   bool npu_tensor_fft_enabled(const FFTRequest &request, int64_t length) {
     // The first qualified register tier bounds cold compilation and live values.
+    if (request.device_type != "npu" || complex_dtype_for(request.input_dtype) != "complex64" ||
+        length < 1 || length > 64 || !flag_or_default("FLAGFFT_NPU_TENSOR_FFT", false)) return false;
+    for (int64_t factor : {2, 3, 5, 7, 11, 13, 17, 19}) {
+      while (length % factor == 0) length /= factor;
+    }
+    return length == 1;
+  }
+
+  bool npu_generated_pipeline_enabled(const FFTRequest &request) {
     return request.device_type == "npu" && complex_dtype_for(request.input_dtype) == "complex64" &&
-        length >= 2 && length <= 64 && (length & (length - 1)) == 0 &&
-        flag_or_default("FLAGFFT_NPU_TENSOR_FFT", false);
+        flag_or_default("FLAGFFT_NPU_GENERATED_STAGES", false);
   }
 
   bool npu_generated_stages_enabled(const FFTRequest &request, int64_t length) {
-    if (request.device_type != "npu" || complex_dtype_for(request.input_dtype) != "complex64" ||
-        length < 2 || !flag_or_default("FLAGFFT_NPU_GENERATED_STAGES", false)) return false;
+    if (length < 2 || !npu_generated_pipeline_enabled(request)) return false;
     for (int64_t factor : {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}) {
       while (length % factor == 0) length /= factor;
     }
     return length == 1;
+  }
+
+  FFTRequest generated_axis_request(const FFTRequest &root, int64_t length,
+                                   int64_t rows, const std::string &mode = "complex") {
+    FFTRequest child = root;
+    child.fft_length = length;
+    child.requested_n = length;
+    child.batch = rows;
+    child.raw_dim = 1;
+    child.input_shape = {rows, length};
+    child.input_strides = {length, 1};
+    child.real_transform = mode != "complex";
+    child.real_transform_kind = mode == "complex" ? "" : mode;
+    return child;
   }
 
   bool npu_2d_native_transpose_enabled(const FFTRequest &request,
@@ -1973,6 +1994,98 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_fft_stages(
       std::move(stages), std::move(temp1), std::move(temp2));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_generated_2d_node(
+    const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request,
+    int64_t batch, const std::string &mode) {
+  const int64_t n0 = node->n0, n1 = node->n1;
+  const bool real = mode != "complex", inverse = mode == "c2r";
+  const int64_t columns = real ? n1 / 2 + 1 : n1;
+  const auto row_request = generated_axis_request(request, n1, batch * n0, mode);
+  const auto col_request = generated_axis_request(request, n0, batch * columns);
+  const bool strided = npu_tensor_fft_enabled(request, n0) && npu_tensor_fft_enabled(request, n1);
+  auto row = mode == "r2c" ? compile_raw_r2c_node(node->row_plan, row_request, batch * n0, false) :
+      inverse ? compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false) :
+      compile_raw_node(node->row_plan, row_request, batch * n0, false);
+  auto col = strided ? compile_tensor_fft(col_request, n0, columns, columns) :
+      compile_raw_node(node->col_plan, col_request, batch * columns, false);
+  const auto bytes = static_cast<std::size_t>(batch * n0 * columns * complex_element_bytes(request.input_dtype));
+  if (strided) {
+    if (!real) {
+      return std::make_shared<CompiledRaw2DRCNode>(n0, n1, std::move(row), std::move(col),
+          adaptor::Memory(bytes), false);
+    }
+    if (inverse) {
+      return std::make_shared<CompiledRaw2DC2RRCNode>(n0, n1, std::move(col), nullptr,
+          std::move(row), nullptr, adaptor::Memory(bytes), DeviceAllocation{});
+    }
+    return std::make_shared<CompiledRaw2DR2CRCNode>(n0, n1, nullptr, std::move(row), nullptr,
+        std::move(col), adaptor::Memory(bytes));
+  }
+  const auto transpose = [&](int64_t rows, int64_t cols) {
+    auto result = std::make_shared<CompiledRawTranspose2D>();
+    result->rows = rows;
+    result->cols = cols;
+    result->triton_kernel = compile_tiled_transpose_kernel(request, rows, cols);
+    return result;
+  };
+  auto forward = transpose(n0, columns), backward = transpose(columns, n0);
+  if (!real) {
+    return std::make_shared<CompiledRaw2DNode>(n0, n1, std::move(row), std::move(col),
+        std::move(forward), std::move(backward), adaptor::Memory(bytes), adaptor::Memory(bytes), false);
+  }
+  if (inverse) {
+    return std::make_shared<CompiledRaw2DC2RRowNode>(n0, n1, std::move(col), std::move(row),
+        std::move(forward), std::move(backward), adaptor::Memory(bytes), adaptor::Memory(bytes));
+  }
+  return std::make_shared<CompiledRaw2DR2CRowNode>(n0, n1, std::move(row), std::move(col),
+      std::move(forward), std::move(backward), adaptor::Memory(bytes), adaptor::Memory(bytes));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_generated_3d_node(
+    const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request,
+    int64_t batch, const std::string &mode) {
+  const int64_t n0 = node->n0, n1 = node->n1, n2 = node->n2;
+  const bool real = mode != "complex", inverse = mode == "c2r";
+  const int64_t columns = real ? n2 / 2 + 1 : n2;
+  const auto n2_request = generated_axis_request(request, n2, batch * n0 * n1, mode);
+  const auto n1_request = generated_axis_request(request, n1, batch * n0 * columns);
+  const auto n0_request = generated_axis_request(request, n0, batch * n1 * columns);
+  const bool strided = npu_tensor_fft_enabled(request, n0) &&
+      npu_tensor_fft_enabled(request, n1) && npu_tensor_fft_enabled(request, n2);
+  auto n2_fft = mode == "r2c" ? compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false) :
+      inverse ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false) :
+      compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+  auto n1_fft = strided ? compile_tensor_fft(n1_request, n1, columns, columns) :
+      compile_raw_node(node->n1_plan, n1_request, batch * n0 * columns, false);
+  auto n0_fft = strided ? compile_tensor_fft(n0_request, n0, n1 * columns, n1 * columns) :
+      compile_raw_node(node->n0_plan, n0_request, batch * n1 * columns, false);
+  const auto bytes = static_cast<std::size_t>(batch * n0 * n1 * columns * complex_element_bytes(request.input_dtype));
+  if (strided) {
+    if (real) {
+      return std::make_shared<CompiledRaw3DRealLeafNode>(n0, n1, n2, inverse,
+          CompiledRaw3DRealLeafNode::Layout::Strided, std::move(n2_fft), std::move(n1_fft),
+          std::move(n0_fft), nullptr, nullptr, nullptr, adaptor::Memory(bytes), adaptor::Memory(bytes));
+    }
+    return std::make_shared<CompiledRaw3DStridedNode>(n0, n1, n2, std::move(n2_fft),
+        std::move(n1_fft), std::move(n0_fft), adaptor::Memory(bytes), adaptor::Memory(bytes));
+  }
+  auto perm_021 = compile_transpose3d_kernel(request, n0, n1, columns, "021");
+  auto perm_210 = compile_transpose3d_kernel(request, n0, columns, n1, "210");
+  auto perm_201 = compile_transpose3d_kernel(request, n1, columns, n0, "201");
+  if (real) {
+    return std::make_shared<CompiledRaw3DRealRTRTNode>(n0, n1, n2, inverse,
+        std::move(n2_fft), std::move(n1_fft), std::move(n0_fft), std::move(perm_021),
+        std::move(perm_210), std::move(perm_201), adaptor::Memory(bytes), adaptor::Memory(bytes));
+  }
+  auto perm_120_inv = compile_transpose3d_kernel(request, n0, n1, n2, "120");
+  auto perm_210_inv = compile_transpose3d_kernel(request, n1, n2, n0, "210");
+  auto perm_021_inv = compile_transpose3d_kernel(request, n0, n2, n1, "021");
+  return std::make_shared<CompiledRaw3DNode>(n0, n1, n2, std::move(n2_fft), std::move(n1_fft),
+      std::move(n0_fft), std::move(perm_021), std::move(perm_210), std::move(perm_201),
+      std::move(perm_120_inv), std::move(perm_210_inv), std::move(perm_021_inv),
+      adaptor::Memory(bytes), adaptor::Memory(bytes));
+}
+
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
   maca_3d_policy_ = request.device_type == "maca" && request.origin_rank == 3;
   maca_3d_c2c32_single_cube_policy_ = request.device_type == "maca" &&
@@ -3742,6 +3855,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  if (npu_generated_pipeline_enabled(request)) return compile_generated_3d_node(node, request, batch, "complex");
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
@@ -5222,6 +5336,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  if (npu_generated_pipeline_enabled(request)) return compile_generated_3d_node(node, request, batch, "r2c");
   configure_single_transform_policies(request);
   if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, false)) return leaf_path;
   if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, false)) return rtrt_path;
@@ -5309,6 +5424,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  if (npu_generated_pipeline_enabled(request)) return compile_generated_3d_node(node, request, batch, "c2r");
   configure_single_transform_policies(request);
   if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, true)) return leaf_path;
   if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, true)) return rtrt_path;
@@ -5404,6 +5520,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_rc_row(const Pla
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  if (npu_generated_pipeline_enabled(request)) return compile_generated_2d_node(node, request, batch, "complex");
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -5714,6 +5831,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  if (npu_generated_pipeline_enabled(request)) return compile_generated_2d_node(node, request, batch, "r2c");
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -5916,6 +6034,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
+  if (npu_generated_pipeline_enabled(request)) return compile_generated_2d_node(node, request, batch, "c2r");
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);

@@ -1688,6 +1688,12 @@ class TritonCompiler {
   static void clear_kernel_cache();
 
  private:
+  std::shared_ptr<CompiledRawNode> compile_generated_2d_node(
+      const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request,
+      int64_t batch, const std::string &mode);
+  std::shared_ptr<CompiledRawNode> compile_generated_3d_node(
+      const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request,
+      int64_t batch, const std::string &mode);
   void configure_single_transform_policies(const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_3d_real_leaf_node(
       const std::shared_ptr<ThreeDimPlanNode> &node,
