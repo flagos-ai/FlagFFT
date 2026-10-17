@@ -87,17 +87,15 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 5, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 6, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
         "    program = program_offset + tl.program_id(0).to(tl.int64)",
-        f"    element = tl.arange(0, {pack * block})",
-        f"    row = (program // {programs}) * {pack} + element // {block}",
-        f"    k = (program % {programs}) * {block} + element % {block}",
-        f"    root_k = (program % {programs}) * {block} + tl.arange(0, {block})",
+        f"    row = (program // {programs}) * {pack} + tl.arange(0, {pack})",
+        f"    k = (program % {programs}) * {block} + tl.arange(0, {block})",
         f"    valid_k = k < {ndiv}", "    valid_row = row < nbatch",
-        "    mask = valid_row & valid_k",
+        "    mask = valid_row[:, None] & valid_k[None, :]",
         f"    group = k // {inner}", f"    j = k % {inner}",
         f"    base_in = (row // {config.input_stride}) * {ilen * config.input_stride} + row % {config.input_stride}",
         f"    base_out = (row // {config.output_rows_per_batch or config.output_stride}) * {olen * (config.output_rows_per_batch or config.output_stride)} + row % {config.output_rows_per_batch or config.output_stride}"]
@@ -107,18 +105,18 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         if first and config.mode == "c2r":
             result += [f"{indent}conjugate = frequency > {n // 2}",
                 f"{indent}frequency = tl.where(conjugate, {n} - frequency, frequency)"]
-        result += [f"{indent}source = base_in + frequency * {config.input_stride}"]
+        result += [f"{indent}source = base_in[:, None] + frequency[None, :] * {config.input_stride}"]
         if first and config.mode == "r2c":
             result += [f"{indent}{real} = tl.load(in_ptr + source, mask, 0.0)",
-                f"{indent}{imag} = tl.full(({pack * block},), 0.0, tl.float32)"]
+                f"{indent}{imag} = tl.full(({pack}, {block}), 0.0, tl.float32)"]
         else:
-            result += [f"{indent}point = tl.load(in_ptr + source[:, None] * 2 + tl.arange(0, 2)[None, :], mask[:, None], 0.0)",
+            result += [f"{indent}point = tl.load(in_ptr + source[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], mask[:, :, None], 0.0)",
                 f"{indent}{real}, {imag} = tl.split(point)"]
             if first and config.mode == "c2r":
-                boundary = f"(frequency == 0)"
+                boundary = f"(frequency[None, :] == 0)"
                 if n % 2 == 0:
-                    boundary += f" | (frequency == {n // 2})"
-                result += [f"{indent}{imag} = tl.where(conjugate, -{imag}, {imag})",
+                    boundary += f" | (frequency[None, :] == {n // 2})"
+                result += [f"{indent}{imag} = tl.where(conjugate[None, :], -{imag}, {imag})",
                     f"{indent}{imag} = tl.where({boundary}, 0.0, {imag})"]
         return result
 
@@ -126,42 +124,34 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         result = []
         if not last:
             if expanded:
-                width = 1 << (radix // 2).bit_length()
-                result += [f"{indent}root = ({digit}[:, None] * {ndiv} + root_k[None, :]) * 2",
-                    f"{indent}root_mask = ({digit}[:, None] < {radix}) & (root_k[None, :] < {ndiv})",
-                    f"{indent}root = tl.reshape(root, ({width * block},))",
-                    f"{indent}root_mask = tl.reshape(root_mask, ({width * block},))",
-                    f"{indent}root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :], root_mask[:, None], 0.0)",
+                result += [f"{indent}root = ({digit}[:, None] * {ndiv} + k[None, :]) * 2",
+                    f"{indent}root_mask = ({digit}[:, None] < {radix}) & valid_k[None, :]",
+                    f"{indent}root_point = tl.load(twiddle_ptr + root[:, :, None] + tl.arange(0, 2)[None, None, :], root_mask[:, :, None], 0.0)",
                     f"{indent}wr, wi = tl.split(root_point)",
-                    f"{indent}wr, wi = tl.reshape(wr, ({width}, 1, {block})), tl.reshape(wi, ({width}, 1, {block}))",
-                    f"{indent}wr = tl.reshape(tl.broadcast_to(wr, ({width}, {pack}, {block})), ({width}, {pack * block}))",
-                    f"{indent}wi = tl.reshape(tl.broadcast_to(wi, ({width}, {pack}, {block})), ({width}, {pack * block}))"]
+                    f"{indent}wr, wi = wr[:, None, :], wi[:, None, :]"]
             else:
-                result += [f"{indent}root = ({digit} * {ndiv} + root_k) * 2",
-                    f"{indent}root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :], (root_k[:, None] < {ndiv}), 0.0)",
+                result += [f"{indent}root = ({digit} * {ndiv} + k) * 2",
+                    f"{indent}root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :], valid_k[:, None], 0.0)",
                     f"{indent}wr, wi = tl.split(root_point)",
-                    f"{indent}wr = tl.reshape(tl.broadcast_to(wr[None, :], ({pack}, {block})), ({pack * block},))",
-                    f"{indent}wi = tl.reshape(tl.broadcast_to(wi[None, :], ({pack}, {block})), ({pack * block},))"]
+                    f"{indent}wr, wi = wr[None, :], wi[None, :]"]
             result += [f"{indent}{real}, {imag} = _cmul({real}, {imag}, wr, wi)"]
         step = config.output_rows_per_batch or config.output_stride
         if expanded:
-            result += [f"{indent}frequency_out = {digit}[:, None] * {ndiv} + k[None, :]",
-                f"{indent}target = base_out[None, :] + frequency_out * {step}",
-                f"{indent}valid = mask[None, :] & ({digit}[:, None] < {radix}) & (frequency_out < {olen})"]
+            result += [f"{indent}frequency_out = {digit}[:, None, None] * {ndiv} + k[None, None, :]",
+                f"{indent}target = base_out[None, :, None] + frequency_out * {step}",
+                f"{indent}valid = mask[None, :, :] & ({digit}[:, None, None] < {radix}) & (frequency_out < {olen})"]
         else:
             result += [f"{indent}frequency_out = {digit} * {ndiv} + k",
-                f"{indent}target = base_out + frequency_out * {step}",
-                f"{indent}valid = mask & (frequency_out < {olen})"]
+                f"{indent}target = base_out[:, None] + frequency_out[None, :] * {step}",
+                f"{indent}valid = mask & (frequency_out[None, :] < {olen})"]
         if last and config.mode == "c2r":
             result += [f"{indent}tl.store(out_ptr + target, {real}, valid)"]
         else:
+            result += [f"{indent}point = tl.join({real}, {imag})"]
             if expanded:
-                width = 1 << (radix // 2).bit_length()
-                elements = width * pack * block
-                result += [f"{indent}target, valid = tl.reshape(target, ({elements},)), tl.reshape(valid, ({elements},))",
-                    f"{indent}{real}, {imag} = tl.reshape({real}, ({elements},)), tl.reshape({imag}, ({elements},))"]
-            result += [f"{indent}point = tl.join({real}, {imag})",
-                f"{indent}tl.store(out_ptr + target[:, None] * 2 + tl.arange(0, 2)[None, :], point, valid[:, None])"]
+                result += [f"{indent}tl.store(out_ptr + target[:, :, :, None] * 2 + tl.arange(0, 2)[None, None, None, :], point, valid[:, :, :, None])"]
+            else:
+                result += [f"{indent}tl.store(out_ptr + target[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], point, valid[:, :, None])"]
         return result
 
     if not _paired_radix(radix, config.prime_strategy):
@@ -175,21 +165,21 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         width = 1 << half.bit_length()
         lines += [f"    output = tl.arange(0, {width})"]
         lines += input_lines("0", "x0r", "x0i")
-        lines += [f"    cr = tl.full(({width}, {pack * block}), 0.0, tl.float32) + x0r[None, :]",
-            f"    ci = tl.full(({width}, {pack * block}), 0.0, tl.float32) + x0i[None, :]",
-            f"    sr = tl.full(({width}, {pack * block}), 0.0, tl.float32)",
-            f"    si = tl.full(({width}, {pack * block}), 0.0, tl.float32)"]
+        lines += [f"    cr = tl.full(({width}, {pack}, {block}), 0.0, tl.float32) + x0r[None, :, :]",
+            f"    ci = tl.full(({width}, {pack}, {block}), 0.0, tl.float32) + x0i[None, :, :]",
+            f"    sr = tl.full(({width}, {pack}, {block}), 0.0, tl.float32)",
+            f"    si = tl.full(({width}, {pack}, {block}), 0.0, tl.float32)"]
         for digit in range(1, half + 1):
             lines += input_lines(str(digit), "xr", "xi")
             lines += input_lines(str(radix - digit), "yr", "yi")
             lines += [f"    root = ({n + digit * width} + output) * 2",
                 "    root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
                 "    wr, wi = tl.split(root_point)",
-                "    wr, wi = wr[:, None], wi[:, None]",
-                "    cr = cr + (xr + yr)[None, :] * wr",
-                "    ci = ci + (xi + yi)[None, :] * wr",
-                "    sr = sr + (xr - yr)[None, :] * wi",
-                "    si = si + (xi - yi)[None, :] * wi"]
+                "    wr, wi = wr[:, None, None], wi[:, None, None]",
+                "    cr = cr + (xr + yr)[None, :, :] * wr",
+                "    ci = ci + (xi + yi)[None, :, :] * wr",
+                "    sr = sr + (xr - yr)[None, :, :] * wi",
+                "    si = si + (xi - yi)[None, :, :] * wi"]
         lines += ["    low_r, low_i = cr - si, ci + sr",
             "    high_r, high_i = cr + si, ci - sr",
             f"    output = tl.where(output <= {half}, output, {radix})"]
@@ -210,6 +200,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 5, "fft_stage_config": asdict(config)}
+        "generator_version": 6, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
