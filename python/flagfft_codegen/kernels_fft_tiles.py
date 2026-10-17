@@ -58,7 +58,7 @@ class TensorFFTConfig:
 def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     n, pack = config.length, config.rows_per_program
     identity = hashlib.sha256(
-        json.dumps(asdict(config), sort_keys=True).encode()
+        json.dumps({"version": 2, **asdict(config)}, sort_keys=True).encode()
     ).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     bits = n.bit_length() - 1
@@ -68,6 +68,10 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     )
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
+    # The innermost tensor axis groups independent rows. Eight FP32 rows
+    # form one aligned Ascend vector block even at the two-point butterfly.
+    # Keeping this axis through every stage avoids padding a succession of
+    # one/two-element inner axes to the hardware's memory alignment.
     lines = [
         "@triton.jit",
         f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch):",
@@ -82,13 +86,13 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             f"    source_frequency = tl.where(conjugate, {n} - source_frequency, source_frequency)",
         ]
     lines += [
-        f"    source_index = input_base[:, None] + source_frequency[None, :] * {config.input_stride}",
-        "    mask = row[:, None] < nbatch",
+        f"    source_index = input_base[None, :] + source_frequency[:, None] * {config.input_stride}",
+        "    mask = row[None, :] < nbatch",
     ]
     if config.mode == "r2c":
         lines += [
             "    real = tl.load(in_ptr + source_index, mask=mask, other=0.0)",
-            f"    imag = tl.full(({pack}, {n}), 0.0, tl.float32)",
+            f"    imag = tl.full(({n}, {pack}), 0.0, tl.float32)",
         ]
     else:
         lines += [
@@ -97,8 +101,8 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         ]
         if config.mode == "c2r":
             lines += [
-                "    imag = tl.where(conjugate[None, :], -imag, imag)",
-                f"    imag = tl.where((source_frequency[None, :] == 0) | (source_frequency[None, :] == {n // 2}), 0.0, imag)",
+                "    imag = tl.where(conjugate[:, None], -imag, imag)",
+                f"    imag = tl.where((source_frequency[:, None] == 0) | (source_frequency[:, None] == {n // 2}), 0.0, imag)",
             ]
 
     for stage in range(1, bits + 1):
@@ -106,53 +110,57 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         half = span // 2
         if config.exchange == "gather":
             lines += [
-                f"    lo_index = tl.broadcast_to((frequency & ~{half})[None, :], ({pack}, {n}))",
+                f"    lo_index = tl.broadcast_to((frequency & ~{half})[:, None], ({n}, {pack}))",
                 f"    hi_index = lo_index + {half}",
-                "    ar = tl.gather(real, lo_index, 1)",
-                "    ai = tl.gather(imag, lo_index, 1)",
-                "    br = tl.gather(real, hi_index, 1)",
-                "    bi = tl.gather(imag, hi_index, 1)",
+                "    ar = tl.gather(real, lo_index, 0)",
+                "    ai = tl.gather(imag, lo_index, 0)",
+                "    br = tl.gather(real, hi_index, 0)",
+                "    bi = tl.gather(imag, hi_index, 0)",
             ]
             if half > 1:
                 lines += [
                     f"    twiddle_index = (frequency % {half}) * {n // span} * 2",
-                    "    wr = tl.load(twiddle_ptr + twiddle_index)[None, :]",
-                    "    wi = tl.load(twiddle_ptr + twiddle_index + 1)[None, :]",
+                    "    wr = tl.load(twiddle_ptr + twiddle_index)[:, None]",
+                    "    wi = tl.load(twiddle_ptr + twiddle_index + 1)[:, None]",
                     "    tr = br * wr - bi * wi",
                     "    ti = br * wi + bi * wr",
                 ]
             else:
                 lines += ["    tr = br", "    ti = bi"]
             lines += [
-                f"    real = ar + tl.where((frequency & {half})[None, :] == 0, tr, -tr)",
-                f"    imag = ai + tl.where((frequency & {half})[None, :] == 0, ti, -ti)",
+                f"    real = ar + tl.where((frequency & {half})[:, None] == 0, tr, -tr)",
+                f"    imag = ai + tl.where((frequency & {half})[:, None] == 0, ti, -ti)",
             ]
             continue
 
-        groups = pack * n // span
+        groups = n // span
+        shape = f"[{groups}, {span}, {pack}]"
+        part = f"[{groups}, {half}, {pack}]"
+        zero = "tl.full((), 0, tl.int32)"
+        high = f"tl.full((), {half}, tl.int32)"
         for component, lower, upper in (("real", "ar", "br"), ("imag", "ai", "bi")):
             if config.exchange == "split":
                 lines += [
-                    f"    stage_{component} = tl.reshape({component}, ({groups}, 2, {half}))",
-                    f"    {lower}, {upper} = tl.split(tl.trans(stage_{component}, (0, 2, 1)))",
+                    f"    stage_{component} = tl.reshape({component}, ({groups}, 2, {half}, {pack}))",
+                    f"    {lower}, {upper} = tl.split(tl.trans(stage_{component}, (0, 2, 3, 1)))",
                 ]
             elif config.exchange == "buffer":
                 lines += [
-                    f"    stage_{component} = tle.dsa.to_buffer(tl.reshape({component}, ({groups}, {span})), space=tle.dsa.ascend.UB)",
-                    f"    {lower} = tle.dsa.to_tensor(tle.dsa.subview(stage_{component}, [0, 0], [{groups}, {half}], [1, 1]), writable=False)",
-                    f"    {upper} = tle.dsa.to_tensor(tle.dsa.subview(stage_{component}, [0, {half}], [{groups}, {half}], [1, 1]), writable=False)",
+                    f"    stage_{component} = tle.dsa.to_buffer(tl.reshape({component}, {shape}), space=tle.dsa.ascend.UB)",
+                    f"    {lower} = tle.dsa.to_tensor(tle.dsa.subview(stage_{component}, [0, 0, 0], {part}, [1, 1, 1]), writable=False)",
+                    f"    {upper} = tle.dsa.to_tensor(tle.dsa.subview(stage_{component}, [0, {half}, 0], {part}, [1, 1, 1]), writable=False)",
                 ]
             else:
                 lines += [
-                    f"    stage_{component} = tl.reshape({component}, ({groups}, {span}))",
-                    f"    {lower} = tle.dsa.extract_slice(stage_{component}, [tl.full((), 0, tl.int32), tl.full((), 0, tl.int32)], [{groups}, {half}], [1, 1])",
-                    f"    {upper} = tle.dsa.extract_slice(stage_{component}, [tl.full((), 0, tl.int32), tl.full((), {half}, tl.int32)], [{groups}, {half}], [1, 1])",
+                    f"    stage_{component} = tl.reshape({component}, {shape})",
+                    f"    {lower} = tle.dsa.extract_slice(stage_{component}, [{zero}, {zero}, {zero}], {part}, [1, 1, 1])",
+                    f"    {upper} = tle.dsa.extract_slice(stage_{component}, [{zero}, {high}, {zero}], {part}, [1, 1, 1])",
                 ]
         if half > 1:
             lines += [
                 f"    twiddle_index = tl.arange(0, {half}) * {n // span} * 2",
-                "    wr = tl.load(twiddle_ptr + twiddle_index)[None, :]",
-                "    wi = tl.load(twiddle_ptr + twiddle_index + 1)[None, :]",
+                "    wr = tl.load(twiddle_ptr + twiddle_index)[None, :, None]",
+                "    wi = tl.load(twiddle_ptr + twiddle_index + 1)[None, :, None]",
                 "    tr = br * wr - bi * wi",
                 "    ti = br * wi + bi * wr",
             ]
@@ -161,36 +169,36 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         for component, base, term in (("real", "ar", "tr"), ("imag", "ai", "ti")):
             if config.exchange == "split":
                 lines += [
-                    f"    joined_{component} = tl.trans(tl.join({base} + {term}, {base} - {term}), (0, 2, 1))",
-                    f"    {component} = tl.reshape(joined_{component}, ({pack}, {n}))",
+                    f"    joined_{component} = tl.trans(tl.join({base} + {term}, {base} - {term}), (0, 3, 1, 2))",
+                    f"    {component} = tl.reshape(joined_{component}, ({n}, {pack}))",
                 ]
             elif config.exchange == "buffer":
                 lines += [
-                    f"    joined_{component} = tle.dsa.alloc([{groups}, {span}], tl.float32, tle.dsa.ascend.UB)",
-                    f"    lower_{component} = tle.dsa.to_buffer({base} + {term}, bind_buffer=tle.dsa.subview(joined_{component}, [0, 0], [{groups}, {half}], [1, 1]))",
-                    f"    upper_{component} = tle.dsa.to_buffer({base} - {term}, bind_buffer=tle.dsa.subview(joined_{component}, [0, {half}], [{groups}, {half}], [1, 1]))",
-                    f"    {component} = tl.reshape(tle.dsa.to_tensor(joined_{component}, writable=False), ({pack}, {n}))",
+                    f"    joined_{component} = tle.dsa.alloc({shape}, tl.float32, tle.dsa.ascend.UB)",
+                    f"    lower_{component} = tle.dsa.to_buffer({base} + {term}, bind_buffer=tle.dsa.subview(joined_{component}, [0, 0, 0], {part}, [1, 1, 1]))",
+                    f"    upper_{component} = tle.dsa.to_buffer({base} - {term}, bind_buffer=tle.dsa.subview(joined_{component}, [0, {half}, 0], {part}, [1, 1, 1]))",
+                    f"    {component} = tl.reshape(tle.dsa.to_tensor(joined_{component}, writable=False), ({n}, {pack}))",
                 ]
             else:
                 lines += [
-                    f"    joined_{component} = tl.full(({groups}, {span}), 0.0, tl.float32)",
-                    f"    joined_{component} = tle.dsa.insert_slice(joined_{component}, {base} + {term}, [tl.full((), 0, tl.int32), tl.full((), 0, tl.int32)], [{groups}, {half}], [1, 1])",
-                    f"    joined_{component} = tle.dsa.insert_slice(joined_{component}, {base} - {term}, [tl.full((), 0, tl.int32), tl.full((), {half}, tl.int32)], [{groups}, {half}], [1, 1])",
-                    f"    {component} = tl.reshape(joined_{component}, ({pack}, {n}))",
+                    f"    joined_{component} = tl.full({shape}, 0.0, tl.float32)",
+                    f"    joined_{component} = tle.dsa.insert_slice(joined_{component}, {base} + {term}, [{zero}, {zero}, {zero}], {part}, [1, 1, 1])",
+                    f"    joined_{component} = tle.dsa.insert_slice(joined_{component}, {base} - {term}, [{zero}, {high}, {zero}], {part}, [1, 1, 1])",
+                    f"    {component} = tl.reshape(joined_{component}, ({n}, {pack}))",
                 ]
 
     if config.output_rows_per_batch:
         extent = config.output_rows_per_batch
         lines += [
             f"    output_base = (row // {extent}) * {extent * output_length} + row % {extent}",
-            f"    output_index = output_base[:, None] + frequency[None, :] * {extent}",
+            f"    output_index = output_base[None, :] + frequency[:, None] * {extent}",
         ]
     else:
         lines += [
             f"    output_base = (row // {config.output_stride}) * {output_length * config.output_stride} + row % {config.output_stride}",
-            f"    output_index = output_base[:, None] + frequency[None, :] * {config.output_stride}",
+            f"    output_index = output_base[None, :] + frequency[:, None] * {config.output_stride}",
         ]
-    lines += [f"    output_mask = mask & (frequency[None, :] < {output_length})"]
+    lines += [f"    output_mask = mask & (frequency[:, None] < {output_length})"]
     if config.mode == "c2r":
         lines += ["    tl.store(out_ptr + output_index, real, mask=output_mask)"]
     else:
@@ -218,7 +226,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "dtype": "complex64",
         "implementation": "triton",
         "tensor_fft_config": asdict(config),
-        "generator_version": 1,
+        "generator_version": 2,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
