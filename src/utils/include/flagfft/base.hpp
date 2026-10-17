@@ -195,7 +195,8 @@ enum class KernelKind {
   LeafRaderPrepare,
   LeafRaderFinish,
   LeafPackedC2R,
-  TensorFFT
+  TensorFFT,
+  FFTStage
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

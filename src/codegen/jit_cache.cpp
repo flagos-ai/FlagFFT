@@ -277,6 +277,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::TensorFFT:
       kernel_kind = "tensor_fft";
       break;
+    case KernelKind::FFTStage:
+      kernel_kind = "fft_dif_stage";
+      break;
     case KernelKind::Leaf:
       kernel_kind = "leaf";
       break;
@@ -494,6 +497,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::TensorFFT) {
     jit_command << " --tensor-fft-config " << shell_quote(key.tensor_fft_config);
   }
+  if (key.kind == KernelKind::FFTStage) {
+    jit_command << " --fft-stage-config " << shell_quote(key.tensor_fft_config);
+  }
   if (ix_ct_single_policy_) jit_command << " --ix-ct-single";
   if (ix_ct_batch_policy_) jit_command << " --ix-ct-batch";
   if (ix_real_single_pack_) jit_command << " --ix-real-single-pack";
@@ -635,7 +641,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->profile_id = json_string_field(artifact_json, "profile_id");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
-  if (key.kind == KernelKind::TensorFFT) {
+  if (key.kind == KernelKind::TensorFFT || key.kind == KernelKind::FFTStage) {
     kernel->row_group_extent = json_int_field(artifact_json, "row_group_extent");
     kernel->programs_per_row_group = json_int_field(artifact_json, "programs_per_row_group");
   }

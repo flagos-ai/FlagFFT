@@ -45,6 +45,7 @@ from .kernels_small_3d import (
 )
 from .kernels_small_2d import emit_fused_2d_kernel
 from .kernels_fft_tiles import TensorFFTConfig, emit_tensor_fft
+from .kernels_fft_stages import FFTStageConfig, emit_fft_stage
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -59,6 +60,7 @@ from .registry import (
     SMALL_2D,
     STOCKHAM,
     TENSOR_FFT,
+    FFT_STAGE,
     TRANSPOSE,
     TRANSPOSE3D,
     kernel_spec,
@@ -120,6 +122,7 @@ def main() -> None:
     )
     parser.add_argument("--length", type=int)
     parser.add_argument("--tensor-fft-config", help="JSON tensor FFT arithmetic and IO configuration")
+    parser.add_argument("--fft-stage-config", help="JSON DIF FFT stage configuration")
     parser.add_argument("--factors", type=_csv_ints)
     parser.add_argument("--lanes", type=int)
     parser.add_argument("--num-warps", type=int)
@@ -392,7 +395,11 @@ def main() -> None:
             + ", ".join(f"--{flag.replace('_', '-')}" for flag in missing)
         )
 
-    if spec.family == TENSOR_FFT:
+    if spec.family == FFT_STAGE:
+        if args.dtype != "complex64":
+            parser.error("fft_dif_stage currently supports FP32 only")
+        metadata = emit_fft_stage(FFTStageConfig(**json.loads(args.fft_stage_config)), args.out_dir)
+    elif spec.family == TENSOR_FFT:
         if args.dtype != "complex64":
             parser.error("tensor_fft currently supports FP32 only")
         metadata = emit_tensor_fft(TensorFFTConfig(**json.loads(args.tensor_fft_config)), args.out_dir)

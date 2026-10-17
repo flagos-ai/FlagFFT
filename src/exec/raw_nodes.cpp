@@ -286,9 +286,10 @@ namespace {
 
 CompiledRawTensorFFTNode::CompiledRawTensorFFTNode(std::shared_ptr<JitKernel> kernel,
                                                    std::string configuration,
-                                                   bool in_place_safe)
+                                                   bool in_place_safe,
+                                                   DeviceAllocation constants)
     : kernel(std::move(kernel)), configuration(std::move(configuration)),
-      in_place_safe(in_place_safe) {}
+      in_place_safe(in_place_safe), constants(std::move(constants)) {}
 
 std::string CompiledRawTensorFFTNode::describe() const {
   return "CompiledRawTensorFFT(config=" + configuration + ", kernel=" +
@@ -311,13 +312,58 @@ flagfftResult CompiledRawTensorFFTNode::execute(adaptor::DevicePtr input,
       const int64_t count = std::min(chunk_limit, programs - offset);
       const std::vector<JitKernelArg> args = {
           JitKernelArg::device(input), JitKernelArg::device(output),
-          JitKernelArg::device(0), JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+          JitKernelArg::device(constants.get()), JitKernelArg::i32(static_cast<int32_t>(context.batch)),
           JitKernelArg::i64(offset)};
       kernel->launch(context.stream, args, count, 1, 1);
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "[flagfft] Tensor FFT execute failed: %s\n", error.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRawFFTStagesNode::CompiledRawFFTStagesNode(int64_t length, int64_t batch_capacity,
+    std::string mode, std::vector<std::shared_ptr<CompiledRawNode>> stages,
+    DeviceAllocation temp1, DeviceAllocation temp2)
+    : length(length), batch_capacity(batch_capacity), mode(std::move(mode)),
+      stages(std::move(stages)), temp1(std::move(temp1)), temp2(std::move(temp2)) {}
+
+std::string CompiledRawFFTStagesNode::describe() const {
+  std::ostringstream out;
+  out << "CompiledRawGeneratedFFTStages(n=" << length << ", mode=" << mode
+      << ", batch_capacity=" << batch_capacity << ")";
+  for (std::size_t i = 0; i < stages.size(); ++i) {
+    out << "\n  stage[" << i << "]=" << stages[i]->describe();
+  }
+  return out.str();
+}
+
+flagfftResult CompiledRawFFTStagesNode::execute(adaptor::DevicePtr input,
+    adaptor::DevicePtr output, const RawExecutionContext &context) const {
+  if (context.batch <= 0 || context.batch > batch_capacity || stages.empty()) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  try {
+    auto source = input;
+    const bool one_stage_alias = stages.size() == 1 && input == output;
+    for (std::size_t i = 0; i < stages.size(); ++i) {
+      const bool last = i + 1 == stages.size();
+      const auto destination = last && !one_stage_alias ? output :
+          (i % 2 == 0 ? temp1.get() : temp2.get());
+      const auto status = stages[i]->execute(source, destination, context);
+      if (status != FLAGFFT_SUCCESS) return status;
+      source = destination;
+    }
+    if (one_stage_alias) {
+      const int64_t elements = mode == "r2c" ? length / 2 + 1 : length;
+      const int64_t element_bytes = mode == "c2r" ? sizeof(float) : 2 * sizeof(float);
+      adaptor::copy_device_to_device(output, source,
+          static_cast<std::size_t>(context.batch * elements * element_bytes), context.stream);
+    }
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "[flagfft] Generated FFT stages failed: %s\n", error.what());
     return FLAGFFT_EXEC_FAILED;
   }
 }

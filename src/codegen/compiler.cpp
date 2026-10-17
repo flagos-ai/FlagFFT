@@ -1895,6 +1895,75 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_tensor_fft(
       mode == "complex" && input_stride == output_stride && output_rows_per_batch == 0);
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_fft_stages(
+    const FFTRequest &request, int64_t length, int64_t batch, const std::string &mode) {
+  if (request.device_type != "npu" || complex_dtype_for(request.input_dtype) != "complex64" ||
+      length < 2 || batch <= 0 || batch > std::numeric_limits<int32_t>::max()) {
+    throw std::runtime_error("generated FFT stages require Ascend FP32 and a positive size/batch");
+  }
+  std::vector<int64_t> factors;
+  int64_t remaining = length;
+  for (int64_t radix : {8, 4, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31}) {
+    while (remaining % radix == 0) {
+      factors.push_back(radix);
+      remaining /= radix;
+    }
+  }
+  if (remaining != 1) throw std::runtime_error("no supported generated FFT stage factorization");
+  if (static_cast<uint64_t>(length) > std::numeric_limits<std::size_t>::max() /
+          (2 * sizeof(float)) / static_cast<uint64_t>(batch)) {
+    throw std::runtime_error("generated FFT workspace size overflows");
+  }
+  const auto bytes = static_cast<std::size_t>(length * batch * (2 * sizeof(float)));
+  std::vector<std::shared_ptr<CompiledRawNode>> stages;
+  int64_t span = length;
+  const double sign = request.direction == "inverse" ? 1.0 : -1.0;
+  for (int64_t radix : factors) {
+    const int64_t ndiv = length / radix;
+    const int64_t inner = span / radix;
+    int64_t block = 8;
+    while (block < ndiv && block < 128) block *= 2;
+    int64_t pack = 1;
+    while (pack < batch && pack * block * 2 <= 128) pack *= 2;
+    nlohmann::json configuration = {
+        {"length", length}, {"radix", radix}, {"span", span},
+        {"mode", mode}, {"direction", request.direction},
+        {"block", block}, {"rows_per_program", pack}};
+    KernelKey key;
+    key.kind = KernelKind::FFTStage;
+    key.target = triton_target_for_request(request);
+    key.direction = request.direction;
+    key.dtype = "complex64";
+    key.length = length;
+    key.tensor_fft_config = configuration.dump();
+    int64_t width = 1;
+    while (width <= radix / 2) width *= 2;
+    std::vector<float> values(static_cast<std::size_t>(2 * (length + radix * width)));
+    for (int64_t digit = 0; digit < radix; ++digit) {
+      for (int64_t k = 0; k < ndiv; ++k) {
+        const double angle = sign * 2.0 * kPi * digit * (k % inner) / span;
+        const auto offset = static_cast<std::size_t>(2 * (digit * ndiv + k));
+        values[offset] = static_cast<float>(std::cos(angle));
+        values[offset + 1] = static_cast<float>(std::sin(angle));
+      }
+      for (int64_t output = 0; output < width; ++output) {
+        const double angle = sign * 2.0 * kPi * output * digit / radix;
+        const auto offset = static_cast<std::size_t>(2 * (length + digit * width + output));
+        values[offset] = static_cast<float>(std::cos(angle));
+        values[offset + 1] = static_cast<float>(std::sin(angle));
+      }
+    }
+    stages.push_back(std::make_shared<CompiledRawTensorFFTNode>(compile_kernel(key),
+        key.tensor_fft_config, false, adaptor::Memory::from_floats(values)));
+    span /= radix;
+  }
+  DeviceAllocation temp1 = adaptor::Memory(bytes);
+  DeviceAllocation temp2;
+  if (stages.size() > 2) temp2 = adaptor::Memory(bytes);
+  return std::make_shared<CompiledRawFFTStagesNode>(length, batch, mode,
+      std::move(stages), std::move(temp1), std::move(temp2));
+}
+
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
   maca_3d_policy_ = request.device_type == "maca" && request.origin_rank == 3;
   maca_3d_c2c32_single_cube_policy_ = request.device_type == "maca" &&

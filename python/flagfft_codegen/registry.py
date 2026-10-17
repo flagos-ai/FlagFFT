@@ -39,6 +39,7 @@ SMALL_3D = "small_3d"
 SMALL_2D = "small_2d"
 REAL_POINTWISE = "real_pointwise"
 TENSOR_FFT = "tensor_fft"
+FFT_STAGE = "fft_dif_stage"
 
 LEAF_LIKE_FAMILIES = frozenset(
     {CT_LEAF, FOUR_STEP, BLUESTEIN_LEAF, BLUESTEIN_FOUR_STEP}
@@ -77,6 +78,7 @@ _TRANSPOSE3D_FLAGS = (
 
 _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("tensor_fft", TENSOR_FFT, requires=("tensor_fft_config",)),
+    KernelSpec("fft_dif_stage", FFT_STAGE, requires=("fft_stage_config",)),
     KernelSpec("stockham_stage", STOCKHAM, requires=("length", "factors")),
     KernelSpec("leaf", CT_LEAF, io_mode="contiguous", requires=_BASE_LEAF_FLAGS),
     KernelSpec("leaf_strided", CT_LEAF, io_mode="strided", requires=_BASE_LEAF_FLAGS),

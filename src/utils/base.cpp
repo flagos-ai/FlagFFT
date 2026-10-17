@@ -120,6 +120,8 @@ std::string kernel_kind_name(KernelKind kind) {
   switch (kind) {
     case KernelKind::TensorFFT:
       return "tensor_fft";
+    case KernelKind::FFTStage:
+      return "fft_dif_stage";
     case KernelKind::Leaf:
       return "leaf";
     case KernelKind::LeafStrided:

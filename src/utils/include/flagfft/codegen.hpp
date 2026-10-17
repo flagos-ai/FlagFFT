@@ -169,7 +169,7 @@ struct CompiledRawGraphNode final : CompiledRawNode {
 
 struct CompiledRawTensorFFTNode final : CompiledRawNode {
   CompiledRawTensorFFTNode(std::shared_ptr<JitKernel> kernel, std::string configuration,
-                          bool in_place_safe);
+                          bool in_place_safe, DeviceAllocation constants = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -178,6 +178,23 @@ struct CompiledRawTensorFFTNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   std::string configuration;
   bool in_place_safe;
+  DeviceAllocation constants;
+};
+
+struct CompiledRawFFTStagesNode final : CompiledRawNode {
+  CompiledRawFFTStagesNode(int64_t length, int64_t batch_capacity, std::string mode,
+      std::vector<std::shared_ptr<CompiledRawNode>> stages, DeviceAllocation temp1,
+      DeviceAllocation temp2);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+      const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t length;
+  int64_t batch_capacity;
+  std::string mode;
+  std::vector<std::shared_ptr<CompiledRawNode>> stages;
+  DeviceAllocation temp1;
+  DeviceAllocation temp2;
 };
 
 struct Raw1DGraphState {
@@ -1636,6 +1653,8 @@ class TritonCompiler {
       const FFTRequest &request, int64_t length, int64_t input_stride = 1,
       int64_t output_stride = 1, const std::string &mode = "complex",
       int64_t output_rows_per_batch = 0, int64_t rows_per_program = 8);
+  std::shared_ptr<CompiledRawNode> compile_fft_stages(const FFTRequest &request,
+      int64_t length, int64_t batch, const std::string &mode = "complex");
   std::shared_ptr<CompiledRawNode> compile_raw_node(const PlanNodePtr &node,
                                                     const FFTRequest &request,
                                                     int64_t batch,
