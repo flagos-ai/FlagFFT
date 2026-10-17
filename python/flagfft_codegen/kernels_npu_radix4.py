@@ -11,6 +11,12 @@
 
 """Generated bodies for the existing Ascend radix4 pair table contract."""
 
+import json
+from pathlib import Path
+
+from .artifacts import write_text_atomic
+from .metadata import _module_source, _signature
+
 
 def build_npu_radix4_pair_source(*, length: int, group: int, mode: int):
     """Preserve quarter-vector butterflies, grouped tables and real boundaries.
@@ -107,3 +113,27 @@ def build_npu_radix4_pair_source(*, length: int, group: int, mode: int):
               '    result = tl.gather(packed, output_index, 0)',
               f'    tl.store(out_ptr + pid * {output_count} + output_lane, result, output_lane < {output_count})']
     return name, '\n'.join(lines) + '\n'
+
+
+def emit_npu_radix4_pair(*, length: int, group: int, mode: int,
+                        direction: str, out_dir: Path) -> dict:
+    if direction not in ("forward", "inverse"):
+        raise ValueError("FFT direction must be forward or inverse")
+    if (mode == 1 and direction != "forward") or (mode == 2 and direction != "inverse"):
+        raise ValueError("Real FFT mode disagrees with its direction")
+    kernel_name, source = build_npu_radix4_pair_source(length=length, group=group, mode=mode)
+    basename = f"flagfft_npu_radix4_fft{length}_g{group}_m{mode}_{direction}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    module_path = out_dir / f"{basename}.py"
+    write_text_atomic(module_path, _module_source(source))
+    arg_names = ["in_ptr", "out_ptr", "idx_ptr", "twiddle_ptr", "nbatch"]
+    metadata = {
+        "module_path": str(module_path), "kernel_name": kernel_name,
+        "signature": _signature(arg_names, "complex64"),
+        "num_warps": 4, "num_stages": 1, "batch_per_block": group,
+        "arg_names": arg_names, "kernel_type": "npu_radix4_pair",
+        "dtype": "complex64", "direction": direction, "length": length,
+        "group_size": group, "mode": mode,
+    }
+    write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
+    return metadata

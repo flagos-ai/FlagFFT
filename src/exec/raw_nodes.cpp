@@ -741,10 +741,12 @@ CompiledRawNpuAivFFTNode::CompiledRawNpuAivFFTNode(int64_t length,
                                                    std::shared_ptr<DeviceAllocation> indices,
                                                    std::shared_ptr<DeviceAllocation> twiddles,
                                                    int64_t group_size,
-                                                   bool radix4_pair)
+                                                   bool radix4_pair,
+                                                   std::shared_ptr<JitKernel> replacement)
     : length(length),
       group_size(group_size),
       radix4_pair(radix4_pair),
+      replacement(std::move(replacement)),
       indices(std::move(indices)),
       twiddles(std::move(twiddles)) {
 }
@@ -753,6 +755,7 @@ std::string CompiledRawNpuAivFFTNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawNpuAivFFT(n=" << length << ", group_size=" << group_size
       << ", radix4_pair=" << radix4_pair << ")";
+  if (replacement) oss << "[triton]";
   return oss.str();
 }
 
@@ -777,6 +780,16 @@ flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
     if (chunk % group_size != 0) return FLAGFFT_INVALID_SIZE;
     const adaptor::DevicePtr input_chunk = input + offset * length * element_bytes;
     const adaptor::DevicePtr output_chunk = output + offset * length * element_bytes;
+    if (replacement) {
+      replacement->launch(context.stream,
+                          {JitKernelArg::device(input_chunk),
+                           JitKernelArg::device(output_chunk),
+                           JitKernelArg::device(indices->get()),
+                           JitKernelArg::device(twiddles->get()),
+                           JitKernelArg::i32(static_cast<int32_t>(chunk / group_size))},
+                          chunk / group_size, 1, 1);
+      continue;
+    }
     flagfftResult result;
     if (radix4_pair) {
       result = adaptor::npu::launch_ascendc_fft_radix4_pair(static_cast<int32_t>(length),

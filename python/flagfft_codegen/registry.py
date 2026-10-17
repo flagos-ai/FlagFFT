@@ -39,6 +39,7 @@ SMALL_3D = "small_3d"
 SMALL_2D = "small_2d"
 REAL_POINTWISE = "real_pointwise"
 NPU_GROUPED_FFT = "npu_grouped_fft"
+NPU_RADIX4_PAIR = "npu_radix4_pair"
 
 LEAF_LIKE_FAMILIES = frozenset(
     {CT_LEAF, FOUR_STEP, BLUESTEIN_LEAF, BLUESTEIN_FOUR_STEP}
@@ -78,6 +79,8 @@ _TRANSPOSE3D_FLAGS = (
 _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("npu_grouped_fft64", NPU_GROUPED_FFT,
                requires=("npu_fft_group", "npu_fft_stride", "npu_fft_mode")),
+    KernelSpec("npu_radix4_pair", NPU_RADIX4_PAIR,
+               requires=("length", "npu_fft_group", "npu_fft_mode")),
     KernelSpec("stockham_stage", STOCKHAM, requires=("length", "factors")),
     KernelSpec("leaf", CT_LEAF, io_mode="contiguous", requires=_BASE_LEAF_FLAGS),
     KernelSpec("leaf_strided", CT_LEAF, io_mode="strided", requires=_BASE_LEAF_FLAGS),

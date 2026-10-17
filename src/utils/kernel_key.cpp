@@ -700,6 +700,18 @@ KernelKey KernelKey::npu_grouped_fft64(std::string target, std::string direction
   return key;
 }
 
+KernelKey KernelKey::npu_radix4_pair(std::string target, std::string direction,
+                                     int64_t length, int64_t group, int64_t mode) {
+  KernelKey key;
+  key.kind = KernelKind::NpuRadix4Pair;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.length = length;
+  key.lanes = group;
+  key.reshape_n2 = mode;
+  return key;
+}
+
 KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1) {
   KernelKey key;
   key.kind = KernelKind::TiledTranspose;

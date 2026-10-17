@@ -432,6 +432,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::NpuGroupedFFT64:
       kernel_kind = "npu_grouped_fft64";
       break;
+    case KernelKind::NpuRadix4Pair:
+      kernel_kind = "npu_radix4_pair";
+      break;
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
@@ -640,6 +643,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --npu-fft-mode " << key.reshape_n2
                 << " --direction " << shell_quote(key.direction);
     if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
+  }
+  if (key.kind == KernelKind::NpuRadix4Pair) {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {
+      throw std::runtime_error("Radix4 pair body requires NPU FP32");
+    }
+    jit_command << " --length " << key.length
+                << " --npu-fft-group " << key.lanes
+                << " --npu-fft-mode " << key.reshape_n2
+                << " --direction " << shell_quote(key.direction);
   }
 
   std::string artifact_json = run_command_capture_stdout(jit_command.str());

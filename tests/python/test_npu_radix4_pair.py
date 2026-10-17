@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from flagfft_codegen.kernels_npu_radix4 import build_npu_radix4_pair_source
+from flagfft_codegen.kernels_npu_radix4 import build_npu_radix4_pair_source, emit_npu_radix4_pair
 from flagfft_codegen.kernels_npu_grouped import build_npu_grouped_fft64_source
 from test_npu_grouped_fft64 import Language, Pointer, insert_slice
 
@@ -128,3 +128,32 @@ def test_pair_cli_scope(tmp_path, backend, dtype):
 def test_pair_rejects_strided_rows():
     with pytest.raises(ValueError, match="contiguous"):
         build_npu_grouped_fft64_source(group=32, stride=64, mode=0, radix4_pair=True)
+
+
+@pytest.mark.parametrize("length,group", [(64,32),(128,16),(2048,1)])
+@pytest.mark.parametrize("backend,dtype", [("npu","complex64"),("cuda","complex64"),
+    ("ix","complex64"),("maca","complex64"),("npu","complex128")])
+def test_general_pair_cli_is_npu_only(tmp_path,length,group,backend,dtype):
+    repo=Path(__file__).resolve().parents[2]
+    command=[sys.executable,"-m","flagfft_codegen.jit_source","--kernel","npu_radix4_pair",
+        "--length",str(length),"--npu-fft-group",str(group),"--npu-fft-mode","0",
+        "--direction","inverse","--dtype",dtype,"--target",f"{backend}:source-contract:32",
+        "--out-dir",str(tmp_path)]
+    result=subprocess.run(command,text=True,capture_output=True,
+        env=dict(os.environ,PYTHONPATH=str(repo/"python"),PYTHONDONTWRITEBYTECODE="1"))
+    if backend!="npu" or dtype!="complex64":
+        assert result.returncode!=0 and "NPU FP32" in result.stderr
+        return
+    assert result.returncode==0,result.stderr
+    metadata=json.loads(result.stdout)
+    assert metadata["length"]==length and metadata["batch_per_block"]==group
+    assert metadata["signature"]=="*fp32:16,*fp32:16,*i32:16,*fp32:16,i32"
+    name,body=build_npu_radix4_pair_source(length=length,group=group,mode=0)
+    assert metadata["kernel_name"]==name
+    assert body in Path(metadata["module_path"]).read_text()
+
+
+@pytest.mark.parametrize("mode,direction",[(1,"inverse"),(2,"forward"),(0,"invalid")])
+def test_general_pair_emitter_rejects_direction_mismatch(tmp_path,mode,direction):
+    with pytest.raises(ValueError,match="direction"):
+        emit_npu_radix4_pair(length=128,group=16,mode=mode,direction=direction,out_dir=tmp_path)
