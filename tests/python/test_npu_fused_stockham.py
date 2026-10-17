@@ -18,6 +18,7 @@ def group_size(n):
     return group
 
 class Grid(Language):
+    int32=np.int32
     programs=1
     minimum=staticmethod(np.minimum)
     maximum=staticmethod(np.maximum)
@@ -36,7 +37,7 @@ def host_tables(tmp_path_factory):
     repo=Path(__file__).resolve().parents[2]
     source=(repo/"src/codegen/compiler.cpp").read_text()
     start=source.index("  void build_npu_fused_stockham_tables(")
-    end=source.index("  void build_npu_aiv_fft64_group_tables(",start)
+    end=source.index("  // End bounded Stockham host tables.",start)
     header="""#include <algorithm>
 #include <map>
 #include <cmath>

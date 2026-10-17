@@ -314,6 +314,62 @@ namespace {
 
   }
 
+  void build_npu_fused_stockham_tables(int64_t n, const std::vector<int64_t> &factors,
+      int64_t group, bool inverse, std::vector<uint32_t> &indices,
+      std::vector<float> &twiddles) {
+    auto power2 = [](int64_t value) {
+      int64_t result=1;
+      while (result<value) result*=2;
+      return result;
+    };
+    const int64_t size=power2(n*group);
+    std::map<std::vector<uint32_t>,std::size_t> seen;
+    auto add = [&](int64_t count, auto index) {
+      std::vector<uint32_t> values;
+      values.reserve(count);
+      for (int64_t k=0;k<count;++k) values.push_back(static_cast<uint32_t>(index(k)));
+      if (seen.find(values)==seen.end()) {
+        seen.emplace(values,indices.size());
+        indices.insert(indices.end(),values.begin(),values.end());
+      }
+    };
+    add(size,[](int64_t k){return 2*k;});
+    add(size,[](int64_t k){return 2*k+1;});
+    int64_t span=1,tw_base=0;
+    const double sign=inverse ? 1.0 : -1.0;
+    constexpr double pi=3.141592653589793238462643383279502884;
+    for (int64_t radix:factors) {
+      const int64_t nd=n/radix,bp=power2(group*nd);
+      for (int64_t digit=0;digit<radix;++digit) {
+        add(bp,[&](int64_t k){return std::min(k/nd,group-1)*n+k%nd+digit*nd;});
+        if (digit && span>1) {
+          add(bp,[&](int64_t k){return tw_base+2*(digit*span+(k%nd)%span);});
+          add(bp,[&](int64_t k){return tw_base+2*(digit*span+(k%nd)%span)+1;});
+        }
+      }
+      add(size,[&](int64_t k) {
+        return (((k%n)/span)%radix)*bp+std::min(k/n,group-1)*nd+
+            ((k%n)/(radix*span))*span+(k%n)%span;
+      });
+      if (span>1) {
+        for (int64_t digit=0;digit<radix;++digit) {
+          for (int64_t j=0;j<span;++j) {
+            const double angle=sign*2.0*pi*static_cast<double>(digit)*static_cast<double>(j)/
+                static_cast<double>(radix*span);
+            twiddles.push_back(static_cast<float>(std::cos(angle)));
+            twiddles.push_back(static_cast<float>(std::sin(angle)));
+          }
+        }
+        tw_base+=2*radix*span;
+      }
+      span*=radix;
+    }
+    add(2*size,[&](int64_t k){return (k>>1)+(k&1)*size;});
+    if (twiddles.empty()) twiddles.push_back(0.0f);
+  }
+
+  // End bounded Stockham host tables.
+
   void build_npu_aiv_fft256_tables(const FFTRequest &request,
                                    std::vector<uint32_t> &indices,
                                    std::vector<float> &twiddles) {
@@ -652,60 +708,6 @@ namespace {
             static_cast<uint32_t>((source + n * group_size) * sizeof(float));
       }
     }
-  }
-
-  void build_npu_fused_stockham_tables(int64_t n, const std::vector<int64_t> &factors,
-      int64_t group, bool inverse, std::vector<uint32_t> &indices,
-      std::vector<float> &twiddles) {
-    auto power2 = [](int64_t value) {
-      int64_t result=1;
-      while (result<value) result*=2;
-      return result;
-    };
-    const int64_t size=power2(n*group);
-    std::map<std::vector<uint32_t>,std::size_t> seen;
-    auto add = [&](int64_t count, auto index) {
-      std::vector<uint32_t> values;
-      values.reserve(count);
-      for (int64_t k=0;k<count;++k) values.push_back(static_cast<uint32_t>(index(k)));
-      if (seen.find(values)==seen.end()) {
-        seen.emplace(values,indices.size());
-        indices.insert(indices.end(),values.begin(),values.end());
-      }
-    };
-    add(size,[](int64_t k){return 2*k;});
-    add(size,[](int64_t k){return 2*k+1;});
-    int64_t span=1,tw_base=0;
-    const double sign=inverse ? 1.0 : -1.0;
-    constexpr double pi=3.141592653589793238462643383279502884;
-    for (int64_t radix:factors) {
-      const int64_t nd=n/radix,bp=power2(group*nd);
-      for (int64_t digit=0;digit<radix;++digit) {
-        add(bp,[&](int64_t k){return std::min(k/nd,group-1)*n+k%nd+digit*nd;});
-        if (digit && span>1) {
-          add(bp,[&](int64_t k){return tw_base+2*(digit*span+(k%nd)%span);});
-          add(bp,[&](int64_t k){return tw_base+2*(digit*span+(k%nd)%span)+1;});
-        }
-      }
-      add(size,[&](int64_t k) {
-        return (((k%n)/span)%radix)*bp+std::min(k/n,group-1)*nd+
-            ((k%n)/(radix*span))*span+(k%n)%span;
-      });
-      if (span>1) {
-        for (int64_t digit=0;digit<radix;++digit) {
-          for (int64_t j=0;j<span;++j) {
-            const double angle=sign*2.0*pi*static_cast<double>(digit)*static_cast<double>(j)/
-                static_cast<double>(radix*span);
-            twiddles.push_back(static_cast<float>(std::cos(angle)));
-            twiddles.push_back(static_cast<float>(std::sin(angle)));
-          }
-        }
-        tw_base+=2*radix*span;
-      }
-      span*=radix;
-    }
-    add(2*size,[&](int64_t k){return (k>>1)+(k&1)*size;});
-    if (twiddles.empty()) twiddles.push_back(0.0f);
   }
 
   void build_npu_aiv_fft64_group_tables(const FFTRequest &request,
