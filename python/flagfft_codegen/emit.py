@@ -36,12 +36,14 @@ from .kernels_common import (
     _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
+    _npu_backend_active,
     _zero_other,
     codelet_radices_for,
     emitted_leaf_factors,
     lane_block_for,
 )
 from .kernels_layout import (
+    _build_complex_pair_transpose_kernel_source,
     _build_packed_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
@@ -729,7 +731,11 @@ def _emit_tiled_transpose_jit_kernel(
     tile_size: int = 32,  # must match constexpr tile_size in raw_nodes.cpp CompiledRaw2DNode::execute()
     out_dir: Path,
 ) -> dict[str, Any]:
-    if (
+    if _npu_backend_active() and dtype == "complex64":
+        kernel_name, kernel_source, arg_names = _build_complex_pair_transpose_kernel_source(
+            n0, n1, tile_size
+        )
+    elif (
         _maca_backend_active()
         and dtype == "complex64"
         and _maca_knob("2D_TRANSPOSE") == "packed"
