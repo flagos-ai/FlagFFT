@@ -24,7 +24,7 @@ class Grid(Language):
     where=staticmethod(np.where)
     def num_programs(self,axis):
         assert axis==0
-        return self.programs
+        return np.asarray(self.programs).view(Index)
 
 def local_range(*args):
     return (np.asarray(k).view(Index) for k in range(*args))
