@@ -205,14 +205,18 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
-  const bool npu_bluestein_io_key = key.target.rfind("npu:", 0) == 0 &&
+  const bool npu_vector_io_key = key.target.rfind("npu:", 0) == 0 &&
       key.dtype == "complex64" &&
       (key.kind == KernelKind::BluesteinPrepare ||
        key.kind == KernelKind::BluesteinPointwise ||
-       key.kind == KernelKind::BluesteinFinalize);
-  const bool npu_vector_complex_io = npu_bluestein_io_key &&
+       key.kind == KernelKind::BluesteinFinalize ||
+       key.kind == KernelKind::RealToComplex ||
+       key.kind == KernelKind::R2CHalfPack ||
+       key.kind == KernelKind::CompactToHermitianFull ||
+       key.kind == KernelKind::ComplexToReal);
+  const bool npu_vector_complex_io = npu_vector_io_key &&
       env_flag_enabled(std::getenv("FLAGFFT_NPU_VECTOR_COMPLEX_IO"));
-  if (npu_bluestein_io_key) {
+  if (npu_vector_io_key) {
     cache_key += std::string(";npu-vector-complex-io=") + (npu_vector_complex_io ? "1" : "0");
   }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {

@@ -129,7 +129,7 @@ def main() -> None:
     parser.add_argument("--npu-fft-mode", type=int)
     parser.add_argument("--npu-fft-radix4-pair", action="store_true")
     parser.add_argument("--npu-vector-complex-io", action="store_true",
-                        help="replace only NPU FP32 Bluestein complex transfers")
+                        help="replace only NPU FP32 Bluestein and real boundary transfers")
     parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
@@ -225,10 +225,11 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.npu_vector_complex_io and (
-        args.kernel not in ("bluestein_prepare", "bluestein_pointwise", "bluestein_finalize")
+        args.kernel not in ("bluestein_prepare", "bluestein_pointwise", "bluestein_finalize",
+                            "real_to_complex", "r2c_half_pack", "compact_to_hermitian_full", "complex_to_real")
         or not args.target.startswith("npu:") or args.dtype != "complex64"
     ):
-        parser.error("--npu-vector-complex-io requires an NPU FP32 Bluestein body")
+        parser.error("--npu-vector-complex-io requires an NPU FP32 transfer body")
     if args.npu_fft_radix4_pair and args.kernel != "npu_grouped_fft64":
         parser.error("--npu-fft-radix4-pair requires --kernel npu_grouped_fft64")
     if args.npu_vector_transpose and args.kernel != "tiled_transpose":
@@ -552,6 +553,7 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
             target=args.target,
+            npu_vector_io=args.npu_vector_complex_io,
         )
     elif spec.family in {DIRECT_DFT, STOCKHAM}:
         if args.length is None or args.length <= 0:

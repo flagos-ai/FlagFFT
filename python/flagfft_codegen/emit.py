@@ -27,7 +27,7 @@ from typing import Any
 from functools import wraps
 from .maca_tail_policy import maca_tail_kernel_scope, rader_vector_io_default, variant_suffix
 from .artifacts import write_text_atomic
-from .kernels_npu_complex_io import build_npu_bluestein_source
+from .kernels_npu_complex_io import build_npu_bluestein_source, build_npu_real_boundary_source
 
 from .kernels_common import (
     LeafPlan,
@@ -461,7 +461,11 @@ def _emit_r2c_pointwise_jit_kernel(
     dtype: str,
     out_dir: Path,
     target: str = "",
+    npu_vector_io: bool = False,
 ) -> dict[str, Any]:
+    if npu_vector_io and (not target.startswith("npu:") or dtype != "complex64" or
+        kernel not in {"real_to_complex", "r2c_half_pack", "compact_to_hermitian_full", "complex_to_real"}):
+        raise ValueError("Vector real boundary I/O requires an NPU FP32 transfer body")
     elements_per_program = 256
     num_warps = _RESHAPE_NUM_WARPS
     if target.startswith("npu:") and n == 256:
@@ -481,7 +485,10 @@ def _emit_r2c_pointwise_jit_kernel(
         if num_warps not in {4, 8, 16, 32}:
             raise ValueError("NPU 256-point real pointwise warps must be one of 4, 8, 16, 32")
         elements_per_program *= rows_per_program
-    if kernel == "real_to_complex":
+    if npu_vector_io:
+        kernel_name, kernel_source, arg_names, rows_per_block = build_npu_real_boundary_source(
+            kernel, n, elements_per_program)
+    elif kernel == "real_to_complex":
         (
             kernel_name,
             kernel_source,
@@ -528,17 +535,20 @@ def _emit_r2c_pointwise_jit_kernel(
 
     dtype_tag = _dtype_suffix(dtype)
     module_name = f"flagfft_jit_{kernel}_n{n}_{dtype_tag}"
+    if npu_vector_io:
+        module_name += "_aos"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))
 
-    sys.path.insert(0, str(module_path.parent))
-    spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"failed to load generated kernel module {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    arg_names = list(getattr(module, kernel_name).arg_names)
+    if not npu_vector_io:
+        sys.path.insert(0, str(module_path.parent))
+        spec = importlib.util.spec_from_file_location(module_path.stem, module_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"failed to load generated kernel module {module_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        arg_names = list(getattr(module, kernel_name).arg_names)
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -555,6 +565,8 @@ def _emit_r2c_pointwise_jit_kernel(
         "block": 256,
         "rows_per_block": int(rows_per_block),
     }
+    if npu_vector_io:
+        metadata["npu_vector_complex_io"] = True
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 

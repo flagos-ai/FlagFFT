@@ -52,3 +52,58 @@ def build_npu_bluestein_source(kind):
               '    values = tl.gather(planar, interleave, 0)',
               f"    tl.store(out_ptr + batch * {('n' if final else 'm')} * 2 + scalar, values, mask)"]
     return name, '\n'.join(lines) + '\n', args
+
+
+REAL_BOUNDARY_KINDS = ('real_to_complex', 'r2c_half_pack', 'compact_to_hermitian_full', 'complex_to_real')
+
+
+def build_npu_real_boundary_source(kind, n, elements=256):
+    if kind not in REAL_BOUNDARY_KINDS or n < 1:
+        raise ValueError((kind, n))
+    half = n // 2 + 1
+    cols = half if kind == 'r2c_half_pack' else n
+    block = min(elements, 1 << (cols - 1).bit_length())
+    rows = max(1, elements // block)
+    distance = 'input_distance' if kind in ('real_to_complex', 'compact_to_hermitian_full') else 'output_distance'
+    name = f'_{kind}_aos_kernel_n{n}_f32'
+    lines = ['@triton.jit', f'def {name}(in_ptr, out_ptr, {distance}, nbatch):',
+        '    tile = tl.program_id(0).to(tl.int64)',
+        '    batch_tile = tl.program_id(1).to(tl.int64)',
+        f'    row = batch_tile * {rows} + tl.arange(0, {rows})[:, None]',
+        f'    local = tl.arange(0, {block})[None, :]',
+        f'    col = tile * {block} + local',
+        f'    scalar = tl.arange(0, {2 * block})[None, :]',
+        f'    scalar_col = tile * {2 * block} + scalar']
+    if kind == 'real_to_complex':
+        lines += [f'    raw = tl.load(in_ptr + row * input_distance + col, (row < nbatch) & (col < {n}), 0.0)',
+            f'    mapping = tl.broadcast_to(scalar >> 1, ({rows}, {2 * block}))',
+            '    real = tl.gather(raw, mapping, 1)',
+            '    values = tl.where((scalar & 1) == 0, real, 0.0)',
+            f'    tl.store(out_ptr + row * {2 * n} + scalar_col, values, (row < nbatch) & (scalar_col < {2 * n}))']
+    elif kind == 'r2c_half_pack':
+        lines += [f'    mask = (row < nbatch) & (scalar_col < {2 * half})',
+            f'    raw = tl.load(in_ptr + row * {2 * n} + scalar_col, mask, 0.0)',
+            '    tl.store(out_ptr + row * output_distance * 2 + scalar_col, raw, mask)']
+    elif kind == 'complex_to_real':
+        lines += [f'    raw = tl.load(in_ptr + row * {2 * n} + scalar_col, (row < nbatch) & (scalar_col < {2 * n}), 0.0)',
+            f'    mapping = tl.broadcast_to(local * 2, ({rows}, {block}))',
+            '    values = tl.gather(raw, mapping, 1)',
+            f'    tl.store(out_ptr + row * output_distance + col, values, (row < nbatch) & (col < {n}))']
+    else:
+        lines += [f'    lo_start = tl.minimum(tile * {block}, {half - 1})',
+            '    lo_scalar = lo_start * 2 + scalar',
+            f'    lo = tl.load(in_ptr + row * input_distance * 2 + lo_scalar, (row < nbatch) & (lo_scalar < {2 * half}), 0.0)',
+            f'    mirrored_start = {n - block + 1} - tile * {block}',
+            f'    mirrored_start = tl.minimum(tl.maximum(mirrored_start, 0), {half - 1})',
+            '    mirrored_scalar = mirrored_start * 2 + scalar',
+            f'    hi = tl.load(in_ptr + row * input_distance * 2 + mirrored_scalar, (row < nbatch) & (mirrored_scalar < {2 * half}), 0.0)',
+            f'    reverse_complex = {n} - tile * {block} - (scalar >> 1) - mirrored_start',
+            f'    reverse = tl.minimum(tl.maximum(reverse_complex, 0), {block - 1}) * 2 + (scalar & 1)',
+            f'    mapping = tl.broadcast_to(reverse, ({rows}, {2 * block}))',
+            '    mirrored = tl.gather(hi, mapping, 1)',
+            '    mirrored = tl.where((scalar & 1) != 0, -mirrored, mirrored)',
+            f'    values = tl.where(scalar_col < {2 * half}, lo, mirrored)',
+            '    boundary = ((scalar_col >> 1) == 0)' + (f' | ((scalar_col >> 1) == {n // 2})' if n % 2 == 0 else ''),
+            '    values = tl.where(boundary & ((scalar & 1) != 0), 0.0, values)',
+            f'    tl.store(out_ptr + row * {2 * n} + scalar_col, values, (row < nbatch) & (scalar_col < {2 * n}))']
+    return name, '\n'.join(lines) + '\n', ['in_ptr', 'out_ptr', distance, 'nbatch'], rows

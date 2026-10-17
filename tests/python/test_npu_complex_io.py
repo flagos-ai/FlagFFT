@@ -11,7 +11,10 @@ import numpy as np
 import pytest
 
 from flagfft_codegen.emit import _bluestein_kernel_source
-from flagfft_codegen.kernels_npu_complex_io import build_npu_bluestein_source
+from flagfft_codegen.kernels_npu_complex_io import (
+    REAL_BOUNDARY_KINDS, build_npu_bluestein_source, build_npu_real_boundary_source,
+)
+from flagfft_codegen import kernels_real
 from test_npu_grouped_fft64 import Language, Pointer, insert_slice
 from test_npu_transpose2d import Index
 
@@ -65,7 +68,7 @@ def test_vector_complex_cli_is_scoped_to_npu_fp32(tmp_path,kind,backend,dtype):
     result=subprocess.run(command,text=True,capture_output=True,
         env=dict(os.environ,PYTHONPATH=str(repo/'python'),PYTHONDONTWRITEBYTECODE='1'))
     if backend!='npu' or dtype!='complex64':
-        assert result.returncode!=0 and 'NPU FP32 Bluestein' in result.stderr
+        assert result.returncode!=0 and 'NPU FP32 transfer' in result.stderr
         return
     assert result.returncode==0,result.stderr
     metadata=json.loads(result.stdout)
@@ -82,3 +85,67 @@ def test_vector_complex_source_rejects_fp64_and_unknown_kind():
         _bluestein_kernel_source('bluestein_prepare','complex128',npu_vector_io=True)
     with pytest.raises(ValueError,match='Unsupported'):
         build_npu_bluestein_source('leaf')
+
+
+class BoundaryGrid(Grid):
+    minimum = staticmethod(np.minimum)
+    maximum = staticmethod(np.maximum)
+    where = staticmethod(np.where)
+    broadcast_to = staticmethod(np.broadcast_to)
+    gather = staticmethod(np.take_along_axis)
+
+
+@pytest.mark.parametrize('kind', REAL_BOUNDARY_KINDS)
+@pytest.mark.parametrize('n,batch,elements',
+    [(n,batch,256) for n in (1,2,17,64,127,128,129,256,257,1024,2048,46189) for batch in (1,3)]
+    + [(256,3,elements) for elements in (512,1024,2048)])
+def test_real_boundaries_preserve_bits_and_padding(kind,n,batch,elements):
+    original = getattr(kernels_real, '_build_' + kind + '_kernel_source')(n,'complex64',elements)
+    generated = build_npu_real_boundary_source(kind,n,elements)
+    assert original[2:] == generated[2:]
+    half = n//2+1
+    incols = half+3 if kind=='compact_to_hermitian_full' else n+3 if kind=='real_to_complex' else n
+    outcols = half+5 if kind=='r2c_half_pack' else n+5 if kind=='complex_to_real' else n
+    ic = 1 if kind=='real_to_complex' else 2
+    oc = 1 if kind=='complex_to_real' else 2
+    distance = incols if kind in ('real_to_complex','compact_to_hermitian_full') else outcols
+    rng = np.random.default_rng(20261018)
+    data = rng.integers(0,2**32,batch*incols*ic,np.uint32).view(np.float32)
+    values = []
+    for name,body,_,rows in (original,generated):
+        tree = ast.parse(body); tree.body[0].decorator_list=[]
+        language = BoundaryGrid(); namespace = dict(tl=language)
+        exec(compile(tree,name,'exec'),namespace)
+        guard,marker = 64,np.float32(31415.25)
+        output = np.full(batch*outcols*oc+2*guard,marker,np.float32)
+        cols = half if kind=='r2c_half_pack' else n
+        block = min(elements,1<<(cols-1).bit_length())
+        for y in range((batch+rows-1)//rows+1):
+            for x in range((cols+block-1)//block+1):
+                language.ids=(x,y)
+                namespace[name](Pointer(data),Pointer(output,guard),distance,batch)
+        assert np.all(output[:guard]==marker) and np.all(output[-guard:]==marker)
+        values.append(output)
+    np.testing.assert_array_equal(values[0].view(np.uint32),values[1].view(np.uint32))
+
+
+@pytest.mark.parametrize('kind',REAL_BOUNDARY_KINDS)
+@pytest.mark.parametrize('backend,dtype', [('npu','complex64'),('cuda','complex64'),
+    ('ix','complex64'),('maca','complex64'),('npu','complex128')])
+def test_real_boundary_cli_scopes_the_new_body(tmp_path,kind,backend,dtype):
+    repo=Path(__file__).resolve().parents[2]
+    command=[sys.executable,'-m','flagfft_codegen.jit_source','--kernel',kind,
+        '--length','257','--dtype',dtype,'--target',f'{backend}:source-contract:32',
+        '--npu-vector-complex-io','--out-dir',str(tmp_path)]
+    result=subprocess.run(command,text=True,capture_output=True,
+        env=dict(os.environ,PYTHONPATH=str(repo/'python'),PYTHONDONTWRITEBYTECODE='1'))
+    if backend!='npu' or dtype!='complex64':
+        assert result.returncode!=0 and 'NPU FP32 transfer' in result.stderr
+        return
+    assert result.returncode==0,result.stderr
+    metadata=json.loads(result.stdout)
+    assert metadata['npu_vector_complex_io'] and metadata['block']==256
+    assert metadata['signature']=='*fp32:16,*fp32:16,i64,i32'
+    assert metadata['rows_per_block']==1
+    assert '_aos_kernel' in metadata['kernel_name']
+    assert 'tile = tl.program_id(0).to(tl.int64)' in Path(metadata['module_path']).read_text()
