@@ -4037,7 +4037,7 @@ std::string CompiledRaw3DR2CNode::describe() const {
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
       << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
-      << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null")
+      << ", n0_fft=" << (n0_fft ? n0_fft->describe() : "null") << ")";
   return oss.str();
 }
 
@@ -4186,7 +4186,7 @@ std::string CompiledRaw3DC2RNode::describe() const {
       << ", n1_fft=" << (n1_fft ? n1_fft->describe() : "null")
       << ", expand_kernel=" << (expand_kernel ? expand_kernel->execution_description() : "null")
       << ", n2_fft=" << (n2_fft ? n2_fft->describe() : "null")
-      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null")
+      << ", pack_kernel=" << (pack_kernel ? pack_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
