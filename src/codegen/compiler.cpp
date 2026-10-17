@@ -1905,6 +1905,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_tensor_fft(
   if (request.device_type != "npu" || complex_dtype_for(request.input_dtype) != "complex64") {
     throw std::runtime_error("tensor FFT route requires Ascend FP32");
   }
+  if (rows_per_program == 0) {
+    // Keep enough independent programs for the vector cores, while bounding
+    // the complete register FFT tile. Layout groups cannot share a program.
+    const int64_t lane_budget = std::max<int64_t>(8, 512 / length);
+    rows_per_program = 8;
+    while (rows_per_program < 64 && rows_per_program * 2 <= lane_budget &&
+           rows_per_program * 40 < request.batch) rows_per_program *= 2;
+    for (int64_t extent : {input_stride, output_stride, output_rows_per_batch}) {
+      if (extent > 1) {
+        int64_t padded_extent = 1;
+        while (padded_extent < extent && padded_extent < rows_per_program) padded_extent *= 2;
+        rows_per_program = std::min(rows_per_program, padded_extent);
+      }
+    }
+  }
   nlohmann::json config = {
       {"length", length}, {"rows_per_program", rows_per_program},
       {"direction", request.direction}, {"mode", mode},

@@ -1652,7 +1652,7 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> compile_tensor_fft(
       const FFTRequest &request, int64_t length, int64_t input_stride = 1,
       int64_t output_stride = 1, const std::string &mode = "complex",
-      int64_t output_rows_per_batch = 0, int64_t rows_per_program = 8);
+      int64_t output_rows_per_batch = 0, int64_t rows_per_program = 0);
   std::shared_ptr<CompiledRawNode> compile_fft_stages(const FFTRequest &request,
       int64_t length, int64_t batch, const std::string &mode = "complex");
   std::shared_ptr<CompiledRawNode> compile_raw_node(const PlanNodePtr &node,

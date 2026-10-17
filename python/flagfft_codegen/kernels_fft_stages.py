@@ -87,7 +87,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 8, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 9, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -149,8 +149,8 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         if last and config.mode == "c2r":
             result += [f"{indent}tl.store(out_ptr + target, {real}, valid)"]
         elif expanded:
-            result += [f"{indent}tl.store(out_ptr + target * 2, {real}, valid)",
-                f"{indent}tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
+            result += [f"{indent}point = tl.join({real}, {imag})",
+                f"{indent}tl.store(out_ptr + target[:, :, :, None] * 2 + tl.arange(0, 2)[None, None, None, :], point, valid[:, :, :, None])"]
         else:
             result += [f"{indent}point = tl.join({real}, {imag})"]
             result += [f"{indent}tl.store(out_ptr + target[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], point, valid[:, :, None])"]
@@ -200,6 +200,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 8, "fft_stage_config": asdict(config)}
+        "generator_version": 9, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
