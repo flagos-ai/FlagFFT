@@ -770,7 +770,8 @@ bool KernelKey::operator==(const KernelKey &other) const {
          fused_plane_middle == other.fused_plane_middle &&
          perm_form == other.perm_form && npu_portable_leaf == other.npu_portable_leaf &&
          hcu_full_smem == other.hcu_full_smem &&
-         hcu_3d_middle_batch_pack == other.hcu_3d_middle_batch_pack;
+         hcu_3d_middle_batch_pack == other.hcu_3d_middle_batch_pack &&
+         tensor_fft_config == other.tensor_fft_config;
 }
 
 std::string KernelKey::repr() const {
@@ -794,6 +795,7 @@ std::string KernelKey::repr() const {
       << ";npu_portable_leaf=" << npu_portable_leaf
       << ";hcu_full_smem=" << hcu_full_smem
       << ";hcu_3d_middle_batch_pack=" << hcu_3d_middle_batch_pack;
+  if (!tensor_fft_config.empty()) out << ";tensor_fft_config=" << tensor_fft_config;
   return out.str();
 }
 
@@ -828,6 +830,7 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.npu_portable_leaf);
   hash_value(seed, key.hcu_full_smem);
   hash_value(seed, key.hcu_3d_middle_batch_pack);
+  if (!key.tensor_fft_config.empty()) hash_value(seed, key.tensor_fft_config);
   return seed;
 }
 

@@ -100,6 +100,8 @@ struct KernelKey {
   bool npu_portable_leaf = false;
   bool hcu_full_smem = false;
   int64_t hcu_3d_middle_batch_pack = 0;
+  // The complete tensor IO and arithmetic configuration participates in JIT identity.
+  std::string tensor_fft_config;
 
   static KernelKey fused_16_plane(std::string target, std::string direction, std::string dtype);
   static KernelKey fused_32_real_plane(std::string target, std::string direction, std::string dtype);

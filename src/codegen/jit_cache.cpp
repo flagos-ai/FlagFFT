@@ -274,6 +274,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 
   std::string kernel_kind;
   switch (key.kind) {
+    case KernelKind::TensorFFT:
+      kernel_kind = "tensor_fft";
+      break;
     case KernelKind::Leaf:
       kernel_kind = "leaf";
       break;
@@ -488,6 +491,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
               << kernel_kind << " --out-dir " << shell_quote(request_dir.string()) << " --dtype "
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "
               << shell_quote(device_profile) << " --execution-policy " << shell_quote(policy);
+  if (key.kind == KernelKind::TensorFFT) {
+    jit_command << " --tensor-fft-config " << shell_quote(key.tensor_fft_config);
+  }
   if (ix_ct_single_policy_) jit_command << " --ix-ct-single";
   if (ix_ct_batch_policy_) jit_command << " --ix-ct-batch";
   if (ix_real_single_pack_) jit_command << " --ix-real-single-pack";

@@ -118,6 +118,8 @@ std::string plan_node_kind_name(PlanNodeKind kind) {
 
 std::string kernel_kind_name(KernelKind kind) {
   switch (kind) {
+    case KernelKind::TensorFFT:
+      return "tensor_fft";
     case KernelKind::Leaf:
       return "leaf";
     case KernelKind::LeafStrided:

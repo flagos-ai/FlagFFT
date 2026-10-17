@@ -1108,6 +1108,12 @@ namespace {
       NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex,
       int64_t output_stride = -1) {
     if (output_stride < 0) output_stride = stride;
+    if (flag_or_default("FLAGFFT_NPU_TENSOR_FFT", false)) {
+      const std::string io_mode = mode == NpuAivFFTSmallMode::RealForward ? "r2c" :
+          mode == NpuAivFFTSmallMode::RealInverse ? "c2r" : "complex";
+      TritonCompiler compiler;
+      return compiler.compile_tensor_fft(request, n, stride, output_stride, io_mode);
+    }
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     build_npu_aiv_fft_small_tables(request, n, group_size, stride != 1, output_stride != 1,
@@ -1297,6 +1303,12 @@ namespace {
                                                             int32_t group_size,
                                                             NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex,
                                                             bool radix4_pair = false) {
+    if (flag_or_default("FLAGFFT_NPU_TENSOR_FFT", false)) {
+      const std::string io_mode = mode == NpuAivFFT64Mode::RealForward ? "r2c" :
+          mode == NpuAivFFT64Mode::RealInverse ? "c2r" : "complex";
+      TritonCompiler compiler;
+      return compiler.compile_tensor_fft(request, 64, stride, stride, io_mode);
+    }
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     if (radix4_pair) {
@@ -1851,6 +1863,30 @@ namespace {
   }
 
 }  // namespace
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_tensor_fft(
+    const FFTRequest &request, int64_t length, int64_t input_stride,
+    int64_t output_stride, const std::string &mode, int64_t output_rows_per_batch,
+    int64_t rows_per_program) {
+  if (request.device_type != "npu" || complex_dtype_for(request.input_dtype) != "complex64") {
+    throw std::runtime_error("tensor FFT route requires Ascend FP32");
+  }
+  nlohmann::json config = {
+      {"length", length}, {"rows_per_program", rows_per_program},
+      {"direction", request.direction}, {"mode", mode},
+      {"input_stride", input_stride}, {"output_stride", output_stride},
+      {"output_rows_per_batch", output_rows_per_batch}, {"exchange", "static"},
+      {"num_warps", 4}};
+  KernelKey key;
+  key.kind = KernelKind::TensorFFT;
+  key.target = triton_target_for_request(request);
+  key.dtype = "complex64";
+  key.direction = request.direction;
+  key.length = length;
+  key.tensor_fft_config = config.dump();
+  return std::make_shared<CompiledRawTensorFFTNode>(compile_kernel(key), key.tensor_fft_config,
+      mode == "complex" && input_stride == output_stride && output_rows_per_batch == 0);
+}
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
   maca_3d_policy_ = request.device_type == "maca" && request.origin_rank == 3;

@@ -165,6 +165,19 @@ struct CompiledRawGraphNode final : CompiledRawNode {
   mutable bool graph_failed = false;
 };
 
+struct CompiledRawTensorFFTNode final : CompiledRawNode {
+  CompiledRawTensorFFTNode(std::shared_ptr<JitKernel> kernel, std::string configuration,
+                          bool in_place_safe);
+  flagfftResult execute(adaptor::DevicePtr input,
+                        adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  std::shared_ptr<JitKernel> kernel;
+  std::string configuration;
+  bool in_place_safe;
+};
+
 struct Raw1DGraphState {
   std::unique_ptr<adaptor::CudaGraph> graph;
   adaptor::DevicePtr input = 0;
@@ -1617,6 +1630,10 @@ struct CompiledRaw3DC2RNode final : CompiledRawNode {
 
 class TritonCompiler {
  public:
+  std::shared_ptr<CompiledRawNode> compile_tensor_fft(
+      const FFTRequest &request, int64_t length, int64_t input_stride = 1,
+      int64_t output_stride = 1, const std::string &mode = "complex",
+      int64_t output_rows_per_batch = 0, int64_t rows_per_program = 8);
   std::shared_ptr<CompiledRawNode> compile_raw_node(const PlanNodePtr &node,
                                                     const FFTRequest &request,
                                                     int64_t batch,

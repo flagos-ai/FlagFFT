@@ -284,6 +284,42 @@ namespace {
 
 }  // namespace
 
+CompiledRawTensorFFTNode::CompiledRawTensorFFTNode(std::shared_ptr<JitKernel> kernel,
+                                                   std::string configuration,
+                                                   bool in_place_safe)
+    : kernel(std::move(kernel)), configuration(std::move(configuration)),
+      in_place_safe(in_place_safe) {}
+
+std::string CompiledRawTensorFFTNode::describe() const {
+  return "CompiledRawTensorFFT(config=" + configuration + ", kernel=" +
+      kernel->execution_description() + ", module=" + kernel->module_path + ")";
+}
+
+flagfftResult CompiledRawTensorFFTNode::execute(adaptor::DevicePtr input,
+                                                adaptor::DevicePtr output,
+                                                const RawExecutionContext &context) const {
+  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
+      kernel->batch_per_block <= 0 || (input == output && !in_place_safe)) {
+    return FLAGFFT_INVALID_SIZE;
+  }
+  try {
+    const int64_t pack = kernel->batch_per_block;
+    const int64_t chunk_limit = pack * block_limit_per_launch();
+    for (int64_t offset = 0; offset < context.batch; offset += chunk_limit) {
+      const int64_t count = std::min(chunk_limit, context.batch - offset);
+      const std::vector<JitKernelArg> args = {
+          JitKernelArg::device(input), JitKernelArg::device(output),
+          JitKernelArg::device(0), JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+          JitKernelArg::i64(offset)};
+      kernel->launch(context.stream, args, ceil_div(count, pack), 1, 1);
+    }
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "[flagfft] Tensor FFT execute failed: %s\n", error.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
                                          std::shared_ptr<JitKernel> kernel,
                                          std::vector<DeviceAllocation> tables)
