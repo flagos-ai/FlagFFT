@@ -580,6 +580,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::TiledTranspose) {
     jit_command << " --reshape-n1 " << key.reshape_n1 << " --reshape-n2 " << key.reshape_n2;
   }
+  if (key.kind == KernelKind::TiledTranspose && key.perm_form == "npu_vector") {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {
+      throw std::runtime_error("NPU vector transpose requires NPU complex64");
+    }
+    jit_command << " --npu-vector-transpose";
+  }
   if (key.kind == KernelKind::Transpose3D) {
     jit_command << " --transpose3d-n0 " << key.transpose3d_n0 << " --transpose3d-n1 " << key.transpose3d_n1
                 << " --transpose3d-n2 " << key.transpose3d_n2 << " --transpose3d-order "
@@ -639,8 +645,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::Transpose3D) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
   }
-  if (key.kind == KernelKind::TiledTranspose && key.target.rfind("npu:", 0) == 0 &&
-      key.dtype == "complex64") {
+  if (key.kind == KernelKind::TiledTranspose && key.perm_form == "npu_vector") {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
     kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
   }
