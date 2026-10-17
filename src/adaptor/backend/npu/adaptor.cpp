@@ -18,6 +18,7 @@
 #include <acl/acl_rt.h>
 
 #include <cstdlib>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <sstream>
@@ -206,26 +207,59 @@ void Stream::sync() {
   check(aclrtSynchronizeStream(as_stream(stream_)), "aclrtSynchronizeStream");
 }
 
-// Ascend Graph/ACL graph capture is intentionally not used in the first NPU
-// backend.  The execution layer catches this exception and keeps the direct
-// launch path, which also avoids introducing a graph-specific dependency into
-// the plain-Triton MVP.
-CudaGraph::~CudaGraph() = default;
-
-void CudaGraph::begin_capture(StreamHandle) {
-  throw std::runtime_error("Ascend graph capture is not enabled in the plain-Triton MVP");
+namespace {
+struct CaptureState {
+  aclrtStream stream;
+};
 }
 
-void CudaGraph::end_capture(StreamHandle) {
-  throw std::runtime_error("Ascend graph capture is not enabled in the plain-Triton MVP");
+CudaGraph::~CudaGraph() {
+  // Finish an interrupted capture as well. Leaving a stream in capture mode
+  // would silently divert later direct launches into an abandoned model.
+  if (graph_ != nullptr) {
+    auto *state = static_cast<CaptureState *>(graph_);
+    aclmdlRI abandoned = nullptr;
+    aclmdlRICaptureEnd(state->stream, &abandoned);
+    if (abandoned != nullptr) aclmdlRIDestroy(abandoned);
+    delete state;
+  }
+  if (exec_ != nullptr) aclmdlRIDestroy(static_cast<aclmdlRI>(exec_));
 }
 
-void CudaGraph::launch(StreamHandle) {
-  throw std::runtime_error("Ascend graph replay is not enabled in the plain-Triton MVP");
+void CudaGraph::begin_capture(StreamHandle stream) {
+  if (graph_ != nullptr || exec_ != nullptr) throw std::runtime_error("Ascend graph already initialized");
+  ensure_current_device();
+  auto state = std::make_unique<CaptureState>();
+  state->stream = as_stream(stream);
+  check(aclmdlRICaptureBegin(state->stream, ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL),
+        "aclmdlRICaptureBegin");
+  graph_ = state.release();
+}
+
+void CudaGraph::end_capture(StreamHandle stream) {
+  auto *state = static_cast<CaptureState *>(graph_);
+  if (state == nullptr || state->stream != as_stream(stream)) {
+    throw std::runtime_error("Ascend graph capture stream mismatch");
+  }
+  aclmdlRI model = nullptr;
+  const auto result = aclmdlRICaptureEnd(state->stream, &model);
+  delete state;
+  graph_ = nullptr;
+  if (result != ACL_SUCCESS) {
+    if (model != nullptr) aclmdlRIDestroy(model);
+    check(result, "aclmdlRICaptureEnd");
+  }
+  exec_ = model;
+}
+
+void CudaGraph::launch(StreamHandle stream) {
+  if (exec_ == nullptr) throw std::runtime_error("Ascend graph is not initialized");
+  check(aclmdlRIExecuteAsync(static_cast<aclmdlRI>(exec_), as_stream(stream)),
+        "aclmdlRIExecuteAsync");
 }
 
 bool CudaGraph::valid() const noexcept {
-  return false;
+  return exec_ != nullptr;
 }
 
 EventTimer::EventTimer() {

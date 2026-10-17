@@ -50,6 +50,11 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
                                             adaptor::DevicePtr output,
                                             const RawExecutionContext &context) const {
   try {
+    if (context.request.device_type == "npu" && input == output) {
+      // The warmup execution before capture must not transform aliased input
+      // twice. Keep this API case on direct generated launches.
+      return inner->execute(input, output, context);
+    }
     if (graph != nullptr && graph_input == input && graph_output == output) {
       graph->launch(context.stream);
       return FLAGFFT_SUCCESS;
@@ -68,7 +73,10 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
         graph = std::move(captured);
         graph_input = input;
         graph_output = output;
-      } catch (const std::exception &) {
+      } catch (const std::exception &error) {
+        if (context.request.device_type == "npu") {
+          std::fprintf(stderr, "[flagfft] Ascend graph capture unavailable: %s\n", error.what());
+        }
         graph_failed = true;
       }
     }

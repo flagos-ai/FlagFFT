@@ -394,6 +394,16 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
                                                              plan->desc.batch);
       }
     }
+    const char *npu_graph = std::getenv("FLAGFFT_NPU_GENERATED_GRAPH");
+    if (plan->executable.forward_request.device_type == "npu" && npu_graph != nullptr &&
+        std::string(npu_graph) == "1" && std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+      if (plan->executable.forward) {
+        plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+      }
+      if (plan->executable.inverse) {
+        plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+      }
+    }
     plan->state.initialized = true;
 
     std::unique_ptr<flagfftPlan_t> handle(new flagfftPlan_t());
