@@ -1465,6 +1465,8 @@ def run_accuracy_capture(
                     case["direction"],
                     case["batch"],
                 )
+                if process.stdout.read(1):
+                    raise ValueError("capture emitted bytes beyond the expected binary output")
             finally:
                 stop.set()
                 close_quietly(process.stdout)
