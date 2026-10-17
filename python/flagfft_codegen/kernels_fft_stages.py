@@ -90,7 +90,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 15, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 16, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -133,7 +133,27 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
             lines += ["    cached_point = tl.load(in_ptr + cache_source[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], cache_mask[:, :, None], 0.0)",
                 "    cached_r, cached_i = tl.split(cached_point)"]
 
+    # The final power-of-two codelet reads an interleaved contiguous tile.
+    # Express its fixed deinterleave as split operations instead of an
+    # indexed local gather for every digit. Both forms share the same IO
+    # contract; this one exposes the regular permutation to the compiler.
+    split_window = cached_window and last and not radix & (radix - 1)
+    if split_window:
+        def split_digits(name, digits, component):
+            if len(digits) == 1:
+                lines.append(f"    cache_digit_{component}{digits[0]} = {name}")
+                return
+            left, right = f"{name}_even", f"{name}_odd"
+            lines.append(f"    {left}, {right} = tl.split(tl.reshape({name}, ({pack}, {block * len(digits) // 2}, 2)))")
+            split_digits(left, digits[::2], component)
+            split_digits(right, digits[1::2], component)
+        split_digits("cached_r", tuple(range(radix)), "r")
+        split_digits("cached_i", tuple(range(radix)), "i")
+
     def input_lines(digit, real, imag, indent="    "):
+        if split_window:
+            return [f"{indent}{real} = cache_digit_r{digit}",
+                f"{indent}{imag} = cache_digit_i{digit}"]
         if cached_window:
             return [f"{indent}cache_k = cache_j + tl.arange(0, {block})",
                 f"{indent}cache_index = (cache_k // {inner}) * {span} + cache_k % {inner} + {digit} * {inner}",
@@ -255,6 +275,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 15, "fft_stage_config": asdict(config)}
+        "generator_version": 16, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
