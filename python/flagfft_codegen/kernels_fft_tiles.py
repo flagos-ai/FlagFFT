@@ -33,6 +33,7 @@ class TensorFFTConfig:
     exchange: str = "gather"
     num_warps: int = 4
     factors: tuple[int, ...] = ()
+    twiddle: str = "table"
 
     def __post_init__(self):
         if self.length < 2:
@@ -63,6 +64,8 @@ class TensorFFTConfig:
             raise ValueError("permuted output uses output_stride=1")
         if self.exchange not in {"gather", "flat", "split", "dsa", "buffer", "static"}:
             raise ValueError("unsupported tensor FFT exchange")
+        if self.twiddle not in {"table", "compute"}:
+            raise ValueError("unsupported twiddle strategy")
         if self.num_warps not in {1, 2, 4, 8}:
             raise ValueError("unsupported tensor FFT launch width")
 
@@ -201,7 +204,10 @@ def _build_flat_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             "    ar = tl.gather(real, lo, 0)", "    ai = tl.gather(imag, lo, 0)",
             "    br = tl.gather(real, hi, 0)", "    bi = tl.gather(imag, hi, 0)",
             f"    tw = (frequency % {half}) * {n // span} * 2",
-            "    wr = tl.load(twiddle_ptr + tw)", "    wi = tl.load(twiddle_ptr + tw + 1)",
+            *(["    wr = tl.load(twiddle_ptr + tw)", "    wi = tl.load(twiddle_ptr + tw + 1)"]
+              if config.twiddle == "table" else [
+                  f"    angle = (frequency % {half}).to(tl.float32) * {(-1 if config.direction == 'forward' else 1) * 2 * math.pi / span!r}",
+                  "    wr = tl.cos(angle)", "    wi = tl.sin(angle)"]),
             "    tr, ti = _cmul(br, bi, wr, wi)",
             f"    real = ar + tl.where((frequency & {half}) == 0, tr, -tr)",
             f"    imag = ai + tl.where((frequency & {half}) == 0, ti, -ti)"]
