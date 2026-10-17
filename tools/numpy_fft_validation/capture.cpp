@@ -18,6 +18,7 @@
 #include "adaptor/adaptor.h"
 #include "adaptor/test_adaptor.h"
 #include "flagfft.h"
+#include "stdout_channel.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -628,7 +629,8 @@ void write_plan_description(flagfftHandle plan, const Spec& spec) {
   output << description;
 }
 
-void run_implementation(const Spec& spec, Implementation implementation) {
+void run_implementation(const Spec& spec, Implementation implementation,
+                        std::ostream* binary_stdout) {
   const Layout full_layout = make_layout(spec);
   if (!spec.input_from_stdin) {
     validate_file_size(spec.input, full_layout.input_bytes);
@@ -647,7 +649,7 @@ void run_implementation(const Spec& spec, Implementation implementation) {
     input = &input_file;
   }
   std::ofstream output_file;
-  std::ostream* output = &std::cout;
+  std::ostream* output = binary_stdout;
   if (!spec.output_to_stdout) {
     output_file.open(output_path, std::ios::binary | std::ios::trunc);
     if (!output_file.is_open()) {
@@ -761,14 +763,17 @@ void run_implementation(const Spec& spec, Implementation implementation) {
 }
 
 int run(const Spec& spec) {
+  std::optional<flagfft::validation::BinaryStdoutChannel> binary_stdout;
+  if (spec.output_to_stdout) binary_stdout.emplace();
+  std::ostream* channel = binary_stdout ? &binary_stdout->stream() : nullptr;
   if (!spec.output_to_stdout) {
     fs::create_directories(spec.output_dir);
   }
   if (spec.implementation != Implementation::kPlatform) {
-    run_implementation(spec, Implementation::kFlagFFT);
+    run_implementation(spec, Implementation::kFlagFFT, channel);
   }
   if (spec.implementation != Implementation::kFlagFFT) {
-    run_implementation(spec, Implementation::kPlatform);
+    run_implementation(spec, Implementation::kPlatform, channel);
   }
   return 0;
 }
