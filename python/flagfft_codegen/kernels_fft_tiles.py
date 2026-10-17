@@ -49,7 +49,7 @@ class TensorFFTConfig:
             raise ValueError("output_rows_per_batch must be nonnegative")
         if self.output_rows_per_batch and self.output_stride != 1:
             raise ValueError("permuted output uses output_stride=1")
-        if self.exchange not in {"gather", "split", "dsa"}:
+        if self.exchange not in {"gather", "split", "dsa", "buffer"}:
             raise ValueError("unsupported tensor FFT exchange")
         if self.num_warps not in {1, 2, 4, 8}:
             raise ValueError("unsupported tensor FFT launch width")
@@ -136,6 +136,12 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
                     f"    stage_{component} = tl.reshape({component}, ({groups}, 2, {half}))",
                     f"    {lower}, {upper} = tl.split(tl.trans(stage_{component}, (0, 2, 1)))",
                 ]
+            elif config.exchange == "buffer":
+                lines += [
+                    f"    stage_{component} = tle.dsa.to_buffer(tl.reshape({component}, ({groups}, {span})), space=tle.dsa.ascend.UB)",
+                    f"    {lower} = tle.dsa.to_tensor(tle.dsa.subview(stage_{component}, [0, 0], [{groups}, {half}], [1, 1]), writable=False)",
+                    f"    {upper} = tle.dsa.to_tensor(tle.dsa.subview(stage_{component}, [0, {half}], [{groups}, {half}], [1, 1]), writable=False)",
+                ]
             else:
                 lines += [
                     f"    stage_{component} = tl.reshape({component}, ({groups}, {span}))",
@@ -157,6 +163,13 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
                 lines += [
                     f"    joined_{component} = tl.trans(tl.join({base} + {term}, {base} - {term}), (0, 2, 1))",
                     f"    {component} = tl.reshape(joined_{component}, ({pack}, {n}))",
+                ]
+            elif config.exchange == "buffer":
+                lines += [
+                    f"    joined_{component} = tle.dsa.alloc([{groups}, {span}], tl.float32, tle.dsa.ascend.UB)",
+                    f"    lower_{component} = tle.dsa.to_buffer({base} + {term}, bind_buffer=tle.dsa.subview(joined_{component}, [0, 0], [{groups}, {half}], [1, 1]))",
+                    f"    upper_{component} = tle.dsa.to_buffer({base} - {term}, bind_buffer=tle.dsa.subview(joined_{component}, [0, {half}], [{groups}, {half}], [1, 1]))",
+                    f"    {component} = tl.reshape(tle.dsa.to_tensor(joined_{component}, writable=False), ({pack}, {n}))",
                 ]
             else:
                 lines += [
