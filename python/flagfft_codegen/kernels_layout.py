@@ -264,6 +264,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     pair: bool = False,
     vec_store: bool = False,
     tile_traversal: str = "col",
+    clamp_offsets: bool = True,
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -356,6 +357,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
         tile_row_expr = f"tile_in_slice // {num_tile_cols}"
         tile_col_expr = f"tile_in_slice % {num_tile_cols}"
     grid_x = num_slices * tiles_per_slice
+    row_address = f"tl.minimum(row_offsets, {rows - 1})" if clamp_offsets else "row_offsets"
+    col_address = f"tl.minimum(col_offsets, {cols - 1})" if clamp_offsets else "col_offsets"
     kernel_name = (
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile_name}_tile"
         + ("_u64" if packed_complex else "")
@@ -463,8 +466,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
             row_mask = row_offsets < {rows}
             col_mask = col_offsets < {cols}
             load_mask = col_mask[:, None] & row_mask[None, :]
-            safe_rows = tl.minimum(row_offsets, {rows - 1})
-            safe_cols = tl.minimum(col_offsets, {cols - 1})
+            safe_rows = {row_address}
+            safe_cols = {col_address}
 
             # Load the tile with the source-contiguous axis (rows) innermost.
             {load_store}

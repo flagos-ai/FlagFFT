@@ -806,6 +806,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     out_dir: Path,
 ) -> dict[str, Any]:
     transpose_warps = 4
+    npu_packed = _npu_backend_active() and dtype == "complex64"
     if _declared_backend() == "npu":
         raw_warps = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_WARPS")
         if raw_warps is not None:
@@ -915,7 +916,12 @@ def _emit_tiled_transpose3d_jit_kernel(
     )
     if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
         raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
-    if maca_mode == "pair64x16" and _portable_transpose3d_supported():
+    if npu_packed:
+        kernel_name, kernel_source, arg_names, grid_x = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=32, packed_complex=True,
+            clamp_offsets=False,
+        )
+    elif maca_mode == "pair64x16" and _portable_transpose3d_supported():
         if dtype != "complex64" or maca_warps != "16" or maca_traversal != "row":
             raise ValueError("pair64x16 requires complex64, 16 warps and row traversal")
         if tuple(sorted((n0, n1, n2))) != (256, 256, 256):
@@ -1123,7 +1129,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
-        "signature": _signature(arg_names, dtype),
+        "signature": "*i64:16,*i64:16,i32" if npu_packed else _signature(arg_names, dtype),
         "num_warps": int(maca_warps) if _declared_backend() == "maca" else transpose_warps,
         "num_stages": 1,
         "batch_per_block": 1,

@@ -2155,3 +2155,24 @@ def test_maca_portable_exchange_indexes_the_register_layout(
     source_index = namespace["exchange_src"]
     assert np.array_equal(source_index[valid] // lane_pack, namespace["exchange_codelet"][valid])
     assert np.array_equal(source_index[valid] % lane_pack, namespace["exchange_slot"][valid])
+
+
+@pytest.mark.parametrize('backend,dtype,packed', [
+    ('npu','complex64',True), ('npu','complex128',False),
+    ('ix','complex64',False), ('cuda','complex64',False),
+])
+def test_npu_3d_packed_transpose_scope(monkeypatch,tmp_path,backend,dtype,packed):
+    from flagfft_codegen import emit
+    monkeypatch.setattr(emit,'_npu_backend_active',lambda: backend=='npu')
+    monkeypatch.setattr(emit,'_declared_backend',lambda: backend)
+    monkeypatch.setattr(emit,'_transpose3d_v2_supported',lambda: False)
+    monkeypatch.setattr(emit,'_portable_transpose3d_supported',lambda: True)
+    metadata=emit._emit_tiled_transpose3d_jit_kernel(
+        n0=17,n1=33,n2=65,order='021',dtype=dtype,out_dir=tmp_path)
+    source=Path(metadata['module_path']).read_text()
+    assert metadata['signature'].startswith('*i64') == packed
+    assert ('tl.pointer_type(tl.uint64)' in source) == packed
+    if packed:
+        assert 'safe_rows = row_offsets' in source
+        assert 'safe_cols = col_offsets' in source
+        assert metadata['grid_x_override'] == 17*3*2
