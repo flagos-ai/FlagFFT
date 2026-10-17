@@ -400,7 +400,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       const auto wrap_sequence = [](std::shared_ptr<CompiledRawNode> &node) {
         if (!node) return;
         if (std::dynamic_pointer_cast<CompiledRawTensorFFTNode>(node) ||
-            std::dynamic_pointer_cast<CompiledRawDirectDFTNode>(node)) return;
+            std::dynamic_pointer_cast<CompiledRawDirectDftNode>(node)) return;
         if (const auto stages = std::dynamic_pointer_cast<CompiledRawFFTStagesNode>(node);
             stages && stages->stages.size() == 1) return;
         node = std::make_shared<CompiledRawGraphNode>(node);
