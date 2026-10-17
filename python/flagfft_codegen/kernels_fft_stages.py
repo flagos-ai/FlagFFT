@@ -72,7 +72,7 @@ def stage_twiddle_values(config: FFTStageConfig) -> list[float]:
             angle = sign * 2 * math.pi * digit * (k % inner) / config.span
             values.extend((math.cos(angle), math.sin(angle)))
     # Odd-radix paired-vector codelets use a small contiguous root matrix.
-    width = 1 << (config.radix // 2).bit_length()
+    width = (1 << (config.radix - 1).bit_length()) if _paired_radix(config.radix, config.prime_strategy) else (1 << (config.radix // 2).bit_length())
     for digit in range(config.radix):
         for output in range(width):
             angle = sign * 2 * math.pi * output * digit / config.radix
@@ -87,7 +87,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 6, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 7, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -162,7 +162,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
             lines += output_lines(str(digit), f"r{digit}", f"i{digit}")
     else:
         half = radix // 2
-        width = 1 << half.bit_length()
+        width = 1 << (radix - 1).bit_length()
         lines += [f"    output = tl.arange(0, {width})"]
         lines += input_lines("0", "x0r", "x0i")
         lines += [f"    cr = tl.full(({width}, {pack}, {block}), 0.0, tl.float32) + x0r[None, :, :]",
@@ -180,12 +180,10 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
                 "    ci = ci + (xi + yi)[None, :, :] * wr",
                 "    sr = sr + (xr - yr)[None, :, :] * wi",
                 "    si = si + (xi - yi)[None, :, :] * wi"]
-        lines += ["    low_r, low_i = cr - si, ci + sr",
-            "    high_r, high_i = cr + si, ci - sr",
-            f"    output = tl.where(output <= {half}, output, {radix})"]
-        lines += output_lines("output", "low_r", "low_i", expanded=True)
-        lines += [f"    output = tl.where((output > 0) & (output <= {half}), {radix} - output, {radix})"]
-        lines += output_lines("output", "high_r", "high_i", expanded=True)
+        # Keep every output frequency in one tensor. This avoids separate
+        # mirrored stores sharing accumulator buffers in the backend.
+        lines += ["    result_r, result_i = cr - si, ci + sr"]
+        lines += output_lines("output", "result_r", "result_i", expanded=True)
     return name, "\n".join(lines) + "\n"
 
 
@@ -200,6 +198,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 6, "fft_stage_config": asdict(config)}
+        "generator_version": 7, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

@@ -397,12 +397,16 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     const char *npu_graph = std::getenv("FLAGFFT_NPU_GENERATED_GRAPH");
     if (plan->executable.forward_request.device_type == "npu" && npu_graph != nullptr &&
         std::string(npu_graph) == "1" && std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
-      if (plan->executable.forward) {
-        plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
-      }
-      if (plan->executable.inverse) {
-        plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
-      }
+      const auto wrap_sequence = [](std::shared_ptr<CompiledRawNode> &node) {
+        if (!node) return;
+        if (std::dynamic_pointer_cast<CompiledRawTensorFFTNode>(node) ||
+            std::dynamic_pointer_cast<CompiledRawDirectDFTNode>(node)) return;
+        if (const auto stages = std::dynamic_pointer_cast<CompiledRawFFTStagesNode>(node);
+            stages && stages->stages.size() == 1) return;
+        node = std::make_shared<CompiledRawGraphNode>(node);
+      };
+      wrap_sequence(plan->executable.forward);
+      wrap_sequence(plan->executable.inverse);
     }
     plan->state.initialized = true;
 

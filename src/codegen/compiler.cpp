@@ -1944,21 +1944,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_fft_stages(
           (2 * sizeof(float)) / static_cast<uint64_t>(batch)) {
     throw std::runtime_error("generated FFT workspace size overflows");
   }
-  const auto bytes = static_cast<std::size_t>(length * batch * (2 * sizeof(float)));
+  const auto bytes = static_cast<std::size_t>(length) * static_cast<std::size_t>(batch) * (2 * sizeof(float));
   std::vector<std::shared_ptr<CompiledRawNode>> stages;
   int64_t span = length;
   const double sign = request.direction == "inverse" ? 1.0 : -1.0;
   for (int64_t radix : factors) {
     const int64_t ndiv = length / radix;
     const int64_t inner = span / radix;
+    const bool paired = radix >= 13 && radix % 2 == 1;
+    int64_t width = 1;
+    while (width < (paired ? radix : radix / 2 + 1)) width *= 2;
+    // Bound the paired codelet's output-frequency dimension as well as its
+    // independent FFT lanes. Four accumulators and temporary products must
+    // fit the same local-memory budget for every odd radix.
+    const int64_t vector_limit = paired ? std::min<int64_t>(128, 1024 / width) : 128;
     int64_t block = 8;
-    while (block < ndiv && block < 128) block *= 2;
+    while (block < ndiv && block < vector_limit) block *= 2;
     int64_t pack = 1;
-    while (pack < batch && pack * block * 2 <= 128) pack *= 2;
+    while (pack < batch && pack * block * 2 <= vector_limit) pack *= 2;
     nlohmann::json configuration = {
         {"length", length}, {"radix", radix}, {"span", span},
         {"mode", mode}, {"direction", request.direction},
-        {"block", block}, {"rows_per_program", pack}};
+        {"block", block}, {"rows_per_program", pack},
+        {"prime_strategy", paired ? "paired" : "auto"}};
     KernelKey key;
     key.kind = KernelKind::FFTStage;
     key.target = triton_target_for_request(request);
@@ -1966,8 +1974,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_fft_stages(
     key.dtype = "complex64";
     key.length = length;
     key.tensor_fft_config = configuration.dump();
-    int64_t width = 1;
-    while (width <= radix / 2) width *= 2;
     std::vector<float> values(static_cast<std::size_t>(2 * (length + radix * width)));
     for (int64_t digit = 0; digit < radix; ++digit) {
       for (int64_t k = 0; k < ndiv; ++k) {
