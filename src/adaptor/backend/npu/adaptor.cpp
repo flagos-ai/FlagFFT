@@ -228,7 +228,7 @@ CudaGraph::~CudaGraph() {
 
 void CudaGraph::begin_capture(StreamHandle stream) {
   const char *enabled = std::getenv("FLAGFFT_NPU_GENERATED_GRAPH");
-  if (enabled == nullptr || std::string(enabled) != "1") {
+  if (enabled != nullptr && std::string(enabled) != "1") {
     throw std::runtime_error("Ascend generated graph capture is disabled");
   }
   if (graph_ != nullptr || exec_ != nullptr) throw std::runtime_error("Ascend graph already initialized");

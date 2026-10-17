@@ -395,8 +395,9 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       }
     }
     const char *npu_graph = std::getenv("FLAGFFT_NPU_GENERATED_GRAPH");
-    if (plan->executable.forward_request.device_type == "npu" && npu_graph != nullptr &&
-        std::string(npu_graph) == "1" && std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+    if (plan->executable.forward_request.device_type == "npu" &&
+        (npu_graph == nullptr || std::string(npu_graph) == "1") &&
+        std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
       const auto wrap_sequence = [](std::shared_ptr<CompiledRawNode> &node) {
         if (!node) return;
         if (std::dynamic_pointer_cast<CompiledRawTensorFFTNode>(node) ||

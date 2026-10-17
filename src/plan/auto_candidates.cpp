@@ -245,25 +245,9 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
     const bool use_npu_3d_leaf = npu_3d_leaf_setting != nullptr &&
                                  std::string(npu_3d_leaf_setting) == "1";
-    const char *npu_3d_aiv_small_setting = std::getenv("FLAGFFT_NPU_3D_AIV_SMALL");
-    if (npu_3d_aiv_small_setting != nullptr &&
-        std::string(npu_3d_aiv_small_setting) != "0" &&
-        std::string(npu_3d_aiv_small_setting) != "1") {
-      throw std::runtime_error("FLAGFFT_NPU_3D_AIV_SMALL must be 0 or 1");
-    }
-    const bool use_npu_3d_aiv_small = npu_3d_aiv_small_setting != nullptr &&
-                                      std::string(npu_3d_aiv_small_setting) == "1";
-    if (use_npu_3d_aiv_small && context.origin_rank == 3 &&
-        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
-        (n == 16 || n == 32)) {
-      const auto factors = select_leaf_factors(n);
-      PlanNodePtr node = make_leaf_plan(n, factors);
-      return {{node, estimate_leaf_warm_cost(n, factors), priority(node)}};
-    }
-    // Generic 32-point Triton leaves generated multi-megabyte MLIR and exceeded
-    // the CANN 9 runner timeout. The native small-AIV route above can use a 32
-    // point LeafPlan without compiling that Triton module; this fallback keeps
-    // the qualified portable opt-in route at 16/256, with 64 selected by AIV64.
+    // The generated tensor/stage compiler selects its own bounded tile from
+    // the transform length. This legacy leaf hint applies only to the portable
+    // plan used when the generated tier is explicitly disabled.
     if (use_npu_3d_leaf && context.origin_rank == 3 &&
         context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
         (n == 16 || n == 256)) {

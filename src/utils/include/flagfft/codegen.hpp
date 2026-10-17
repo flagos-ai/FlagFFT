@@ -118,16 +118,11 @@ struct JitKernel {
 
 using DeviceAllocation = adaptor::Memory;
 
-// A 2D complex transpose can use the portable Triton kernel or the native
-// AscendC AIV tile kernel. Keeping both behind one compiled operation lets
-// all rank-2 complex and real schedules share the same backend-specific path.
+// Shared generated complex transpose for rank-2 schedules.
 struct CompiledRawTranspose2D {
   int64_t rows = 0;
   int64_t cols = 0;
   std::shared_ptr<JitKernel> triton_kernel;
-  DeviceAllocation npu_indices;
-  int32_t npu_tile_size = 16;
-  bool native_npu = false;
 
   void launch(adaptor::StreamHandle stream,
               const std::vector<JitKernelArg> &kernel_args,
@@ -238,102 +233,6 @@ struct CompiledRawStridedLeafNode final : CompiledRawNode {
   std::vector<DeviceAllocation> tables;
 };
 
-enum class NpuAivFFT64Mode : int32_t {
-  Complex = 0,
-  RealForward = 1,
-  RealInverse = 2,
-};
-
-using NpuAivFFT256Mode = NpuAivFFT64Mode;
-
-using NpuAivFFTSmallMode = NpuAivFFT64Mode;
-
-#if defined(FLAGFFT_BACKEND_NPU)
-struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
-  CompiledRawNpuAivFFT64Node(int64_t stride,
-                             int64_t group_size,
-                             std::shared_ptr<DeviceAllocation> indices,
-                             std::shared_ptr<DeviceAllocation> twiddles,
-                             NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex,
-                             bool radix4_pair = false);
-  flagfftResult execute(adaptor::DevicePtr input,
-                        adaptor::DevicePtr output,
-                        const RawExecutionContext &context) const override;
-  std::string describe() const override;
-
-  int64_t stride;
-  int64_t group_size;
-  NpuAivFFT64Mode mode;
-  bool radix4_pair;
-  std::shared_ptr<DeviceAllocation> indices;
-  std::shared_ptr<DeviceAllocation> twiddles;
-};
-
-struct CompiledRawNpuAivFFTSmallNode final : CompiledRawNode {
-  CompiledRawNpuAivFFTSmallNode(int64_t length,
-                                int64_t stride,
-                                int64_t output_stride,
-                                int64_t group_size,
-                                std::shared_ptr<DeviceAllocation> indices,
-                                std::shared_ptr<DeviceAllocation> twiddles,
-                                NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex);
-  flagfftResult execute(adaptor::DevicePtr input,
-                        adaptor::DevicePtr output,
-                        const RawExecutionContext &context) const override;
-  std::string describe() const override;
-
-  int64_t length;
-  int64_t stride;
-  int64_t output_stride;
-  int64_t group_size;
-  NpuAivFFTSmallMode mode;
-  std::shared_ptr<DeviceAllocation> indices;
-  std::shared_ptr<DeviceAllocation> twiddles;
-};
-
-struct CompiledRawNpuAivFFTNode final : CompiledRawNode {
-  CompiledRawNpuAivFFTNode(int64_t length,
-                           std::shared_ptr<DeviceAllocation> indices,
-                           std::shared_ptr<DeviceAllocation> twiddles,
-                           int64_t group_size = 1,
-                           bool radix4_pair = false);
-  flagfftResult execute(adaptor::DevicePtr input,
-                        adaptor::DevicePtr output,
-                        const RawExecutionContext &context) const override;
-  std::string describe() const override;
-
-  int64_t length;
-  int64_t group_size;
-  bool radix4_pair;
-  std::shared_ptr<DeviceAllocation> indices;
-  std::shared_ptr<DeviceAllocation> twiddles;
-};
-
-struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
-  CompiledRawNpuAivFFT256Node(std::shared_ptr<DeviceAllocation> indices,
-                              std::shared_ptr<DeviceAllocation> twiddles,
-                              int64_t group_size = 1,
-                              bool pair_mode = false,
-                              bool transposed_store = false,
-                              bool radix4_mode = false,
-                              int64_t transposed_output_row_stride = 0,
-                              NpuAivFFT256Mode mode = NpuAivFFT256Mode::Complex);
-  flagfftResult execute(adaptor::DevicePtr input,
-                        adaptor::DevicePtr output,
-                        const RawExecutionContext &context) const override;
-  std::string describe() const override;
-
-  std::shared_ptr<DeviceAllocation> indices;
-  std::shared_ptr<DeviceAllocation> twiddles;
-  int64_t group_size;
-  bool pair_mode;
-  bool transposed_store;
-  bool radix4_mode;
-  int64_t transposed_output_row_stride;
-  NpuAivFFT256Mode mode;
-};
-#endif
-
 struct CompiledRawStridedDirectDftNode final : CompiledRawNode {
   CompiledRawStridedDirectDftNode(int64_t length,
                                   int64_t outer_stride,
@@ -351,18 +250,9 @@ struct CompiledRawStridedDirectDftNode final : CompiledRawNode {
 };
 
 struct CompiledRawStockhamNode final : CompiledRawNode {
-  struct AivStageTables {
-    bool enabled = false;
-    DeviceAllocation twiddles;
-    DeviceAllocation roots;
-    DeviceAllocation store_indices;
-  };
-
   CompiledRawStockhamNode(int64_t length,
                           std::vector<int64_t> factors,
                           std::vector<std::shared_ptr<JitKernel>> kernels,
-                          std::vector<AivStageTables> aiv_stages,
-                          DeviceAllocation aiv_indices,
                           DeviceAllocation twiddle,
                           DeviceAllocation first,
                           DeviceAllocation second);
@@ -373,30 +263,11 @@ struct CompiledRawStockhamNode final : CompiledRawNode {
   int64_t length;
   std::vector<int64_t> factors;
   std::vector<std::shared_ptr<JitKernel>> kernels;
-  std::vector<AivStageTables> aiv_stages;
-  DeviceAllocation aiv_indices;
   DeviceAllocation twiddle;
   DeviceAllocation first;
   DeviceAllocation second;
 };
 
-#if defined(FLAGFFT_BACKEND_NPU)
-struct CompiledRawNpuPackedRealBoundaryNode final : CompiledRawNode {
-  CompiledRawNpuPackedRealBoundaryNode(int64_t length,
-                                       bool r2c_postprocess,
-                                       DeviceAllocation indices,
-                                       DeviceAllocation twiddles);
-  flagfftResult execute(adaptor::DevicePtr input,
-                        adaptor::DevicePtr output,
-                        const RawExecutionContext &context) const override;
-  std::string describe() const override;
-
-  int64_t length;
-  bool r2c_postprocess;
-  DeviceAllocation indices;
-  DeviceAllocation twiddles;
-};
-#endif
 
 struct CompiledRawDirectDftNode final : CompiledRawNode {
   CompiledRawDirectDftNode(int64_t length,
@@ -692,7 +563,7 @@ struct CompiledRawPackedR2CNode final : CompiledRawNode {
                            DeviceAllocation twiddle,
                            DeviceAllocation packed_output,
                            std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {},
-                           std::shared_ptr<CompiledRawNode> aiv_postprocess = nullptr);
+                           std::shared_ptr<CompiledRawNode> boundary_postprocess = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -704,7 +575,7 @@ struct CompiledRawPackedR2CNode final : CompiledRawNode {
   DeviceAllocation twiddle;
   DeviceAllocation packed_output;
   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
-  std::shared_ptr<CompiledRawNode> aiv_postprocess;
+  std::shared_ptr<CompiledRawNode> boundary_postprocess;
   mutable std::shared_ptr<CompiledRawNode> layout_fallback;
   mutable std::mutex layout_mutex;
 };
@@ -811,7 +682,7 @@ struct CompiledRawPackedC2RNode final : CompiledRawNode {
                            DeviceAllocation twiddle,
                            DeviceAllocation packed_input,
                            std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {},
-                           std::shared_ptr<CompiledRawNode> aiv_preprocess = nullptr);
+                           std::shared_ptr<CompiledRawNode> boundary_preprocess = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -823,7 +694,7 @@ struct CompiledRawPackedC2RNode final : CompiledRawNode {
   DeviceAllocation twiddle;
   DeviceAllocation packed_input;
   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
-  std::shared_ptr<CompiledRawNode> aiv_preprocess;
+  std::shared_ptr<CompiledRawNode> boundary_preprocess;
   mutable std::shared_ptr<CompiledRawNode> layout_fallback;
   mutable std::mutex layout_mutex;
 };
@@ -1212,9 +1083,7 @@ struct CompiledRaw3DNode final : CompiledRawNode {
                     std::shared_ptr<JitKernel> perm_210_inv,
                     std::shared_ptr<JitKernel> perm_021_inv,
                     DeviceAllocation temp1,
-                    DeviceAllocation temp2,
-                    std::vector<DeviceAllocation> npu_transpose_indices = {},
-                    bool npu_pair_fused_store = false);
+                    DeviceAllocation temp2);
   CompiledRaw3DNode(int64_t n0,
                     int64_t n1,
                     int64_t n2,
@@ -1249,8 +1118,6 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> perm_021_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
-  std::vector<DeviceAllocation> npu_transpose_indices;
-  bool npu_pair_fused_store;
   bool final_permuted_store = false;
 };
 
@@ -1531,8 +1398,7 @@ struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
   DeviceAllocation temp2;
 };
 
-// Compact real boundary with three transposes. Native NPU paths can replace
-// those transposes with indexed device operations.
+// Compact real boundary with three generated transposes.
 struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
   CompiledRaw3DRealRTRTNode(int64_t n0,
                             int64_t n1,
@@ -1545,10 +1411,7 @@ struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
                             std::shared_ptr<JitKernel> perm_210,
                             std::shared_ptr<JitKernel> perm_201,
                             DeviceAllocation temp1,
-                            DeviceAllocation temp2,
-                            std::vector<DeviceAllocation> npu_transpose_indices = {},
-                            bool npu_fused_outer_stores = false,
-                            bool npu_fused_small_final_store = false);
+                            DeviceAllocation temp2);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1566,9 +1429,6 @@ struct CompiledRaw3DRealRTRTNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> perm_201;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
-  std::vector<DeviceAllocation> npu_transpose_indices;
-  bool npu_fused_outer_stores;
-  bool npu_fused_small_final_store;
 };
 
 struct CompiledRaw3DR2CNode final : CompiledRawNode {
@@ -1585,8 +1445,7 @@ struct CompiledRaw3DR2CNode final : CompiledRawNode {
                        std::shared_ptr<JitKernel> perm_201,
                        DeviceAllocation row_fft_buf,
                        DeviceAllocation temp1,
-                       DeviceAllocation temp2,
-                       std::vector<DeviceAllocation> npu_transpose_indices = {});
+                       DeviceAllocation temp2);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1606,7 +1465,6 @@ struct CompiledRaw3DR2CNode final : CompiledRawNode {
   DeviceAllocation row_fft_buf;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
-  std::vector<DeviceAllocation> npu_transpose_indices;
 };
 
 struct CompiledRaw3DC2RNode final : CompiledRawNode {
@@ -1623,8 +1481,7 @@ struct CompiledRaw3DC2RNode final : CompiledRawNode {
                        std::shared_ptr<JitKernel> pack_kernel,
                        DeviceAllocation temp1,
                        DeviceAllocation temp2,
-                       DeviceAllocation full_buf,
-                       std::vector<DeviceAllocation> npu_transpose_indices = {});
+                       DeviceAllocation full_buf);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1644,7 +1501,6 @@ struct CompiledRaw3DC2RNode final : CompiledRawNode {
   DeviceAllocation temp1;
   DeviceAllocation temp2;
   DeviceAllocation full_buf;
-  std::vector<DeviceAllocation> npu_transpose_indices;
 };
 
 class TritonCompiler {
