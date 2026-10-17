@@ -615,6 +615,11 @@ python tools/run_tests.py --combination 1d_prime_batch --gpus 0
 python tools/run_tests.py --scales all --ops 1d_ct_single_c2c
 ```
 
+For a survey beyond the acceptance shapes, select the discovery matrix with
+`--matrix-file conf/test_matrix_generalization.yaml`. A separate fixed holdout is available
+in `conf/test_matrix_generalization_holdout.yaml`; see the
+[test matrix guide](conf/README.md) for coverage, counts and remote execution.
+
 #### Output
 
 All outputs use format version 3. `summary.json` is a flat array with one

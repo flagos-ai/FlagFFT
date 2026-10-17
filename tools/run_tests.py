@@ -828,7 +828,16 @@ def parse_scales(raw: str | None, matrix_scales: list[float]) -> list[float]:
 
 def load_test_matrix(path: Path) -> dict[str, Any]:
     matrix = yaml.safe_load(path.read_text())
-    for mode, values in matrix.get("batches", {}).items():
+    if not isinstance(matrix, dict):
+        raise ValueError("test matrix must be a mapping")
+    profile = matrix.get("profile", "acceptance")
+    if profile not in ("acceptance", "generalization"):
+        raise ValueError("matrix profile must be acceptance or generalization")
+    batches = matrix.get("batches")
+    batch_modes = {"single", "batch", "2d", "2d_batch", "3d", "3d_batch"}
+    if not isinstance(batches, dict) or set(batches) != batch_modes:
+        raise ValueError("batches must define single, batch, 2d, 2d_batch, 3d, 3d_batch")
+    for mode, values in batches.items():
         if not isinstance(values, list) or not values:
             raise ValueError(f"batches.{mode} must be a nonempty list")
         if any(type(value) is not int or value <= 0 for value in values) or len(
@@ -837,11 +846,17 @@ def load_test_matrix(path: Path) -> dict[str, Any]:
             raise ValueError(f"batches.{mode} must contain distinct positive integers")
         if mode in ("single", "2d", "3d") and values != [1]:
             raise ValueError(f"batches.{mode} must be [1]")
-        if mode == "batch" and any(value <= 1 for value in values):
-            raise ValueError("batches.batch values must be greater than 1")
-        if mode in ("2d_batch", "3d_batch") and values != [4]:
+        if mode in ("batch", "2d_batch", "3d_batch") and any(
+            value <= 1 for value in values
+        ):
+            raise ValueError(f"batches.{mode} values must be greater than 1")
+        if (
+            profile == "acceptance"
+            and mode in ("2d_batch", "3d_batch")
+            and values != [4]
+        ):
             raise ValueError(f"batches.{mode} must be [4]")
-    if matrix.get("batches", {}).get("batch") != [64]:
+    if profile == "acceptance" and batches["batch"] != [64]:
         raise ValueError("batches.batch must be [64]")
     parse_scales(None, matrix.get("scales", [1.0]))
     return matrix
@@ -960,6 +975,10 @@ def expand_test_cases(
                                     "scale": scale,
                                     "direction": direction,
                                 }
+                                if matrix.get("profile") == "generalization":
+                                    # The group labels stratify inputs; the planner
+                                    # remains free to select another legal route.
+                                    case["require_fourstep_plan"] = False
                                 case["case_id"] = case_name(case)
                                 if case["case_id"] in seen:
                                     raise ValueError(f"duplicate case: {case['case_id']}")
@@ -1367,7 +1386,11 @@ def read_plan(log_path: Path) -> str | None:
 
 
 def fourstep_path_error(case: dict, plan: str | None) -> str | None:
-    if case.get("algorithm") == "fourstep" and (not plan or "FourStep(n=" not in plan):
+    if (
+        case.get("require_fourstep_plan", True)
+        and case.get("algorithm") == "fourstep"
+        and (not plan or "FourStep(n=" not in plan)
+    ):
         return "four-step operator selected a plan without a FourStep node"
     return None
 
@@ -2356,6 +2379,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="full",
         help="Group filter: full/all, or comma-separated " + ",".join(GROUPS),
     )
+    parser.add_argument(
+        "--matrix-file",
+        type=Path,
+        default=ROOT / "conf" / "test_matrix.yaml",
+        help="YAML shape/batch matrix; default conf/test_matrix.yaml (acceptance)",
+    )
     parser.add_argument("--gpus", default="0", help="Comma-separated GPU IDs or all")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--accuracy-only", action="store_true")
@@ -2369,7 +2398,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        help="Result directory; default workspace results/<timestamp>_acceptance30",
+        help="Result directory; default workspace results/<timestamp>_<suite>",
     )
     parser.add_argument(
         "--incremental-csv", help="CSV path; default <output-dir>/incremental.csv"
@@ -2425,7 +2454,12 @@ def main(argv: list[str] | None = None) -> int:
     backend = detect_backend(build_dir)
     ENV_INFO["backend"] = backend
     ops = load_operators(ROOT / "conf" / "operators.yaml")
-    matrix = load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
+    matrix_path = args.matrix_file.resolve()
+    matrix = load_test_matrix(matrix_path)
+    matrix_source = {
+        "matrix_file": str(matrix_path),
+        "matrix_sha256": hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
+    }
     all_ids = {op["id"] for op in ops}
     selected = None
     if args.ops:
@@ -2503,6 +2537,8 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "backend": backend,
+                    **matrix_source,
+                    "test_matrix": matrix,
                     "operators": [op["id"] for op in ops],
                     "omitted_dtypes": omitted_dtypes,
                     "cases": all_cases,
@@ -2556,7 +2592,14 @@ def main(argv: list[str] | None = None) -> int:
         else (
             ROOT.parent
             / "results"
-            / (datetime.now().astimezone().strftime("%Y%m%d_%H%M%S") + "_acceptance30")
+            / (
+                datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+                + (
+                    "_generalization30"
+                    if matrix.get("profile") == "generalization"
+                    else "_acceptance30"
+                )
+            )
         )
     )
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -2570,6 +2613,7 @@ def main(argv: list[str] | None = None) -> int:
     if csv_path.exists():
         raise ValueError(f"incremental CSV already exists: {csv_path}")
     config = {
+        **matrix_source,
         "ops": [op["id"] for op in ops],
         "omitted_dtypes": omitted_dtypes,
         "combinations": combinations,

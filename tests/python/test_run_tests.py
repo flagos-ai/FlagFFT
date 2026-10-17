@@ -548,6 +548,8 @@ def test_scale_expansion_keeps_performance_unique(operators, matrix):
         ("3d", [16]),
         ("batch", []),
         ("batch", [16, 16]),
+        ("2d_batch", [3]),
+        ("3d_batch", [8]),
     ],
 )
 def test_invalid_batch_matrix_is_rejected(tmp_path, matrix, mode, values):
@@ -556,6 +558,95 @@ def test_invalid_batch_matrix_is_rejected(tmp_path, matrix, mode, values):
     path.write_text(yaml.safe_dump(matrix))
     with pytest.raises(ValueError):
         RUN_TESTS.load_test_matrix(path)
+
+
+@pytest.mark.parametrize(
+    "filename,count",
+    [
+        ("test_matrix_generalization.yaml", 736),
+        ("test_matrix_generalization_holdout.yaml", 624),
+    ],
+)
+def test_generalization_matrices_cover_all_ops_with_unseen_shapes(
+    operators, matrix, filename, count
+):
+    candidate = RUN_TESTS.load_test_matrix(ROOT / "conf" / filename)
+    cases = RUN_TESTS.expand_all_test_cases(operators, candidate)
+    assert len(cases) == count
+    assert len(RUN_TESTS.performance_cases(cases)) == count
+    assert len({case["case_id"] for case in cases}) == count
+    assert {case["op_id"] for case in cases} == {op["id"] for op in operators}
+    acceptance_shapes = {
+        tuple(case["shape"]) for case in RUN_TESTS.expand_all_test_cases(operators, matrix)
+    }
+    assert not acceptance_shapes & {tuple(case["shape"]) for case in cases}
+    assert all(not case["require_fourstep_plan"] for case in cases)
+    fourstep = next(case for case in cases if case["algorithm"] == "fourstep")
+    assert RUN_TESTS.fourstep_path_error(fourstep, PLAN) is None
+
+
+def test_discovery_and_holdout_have_distinct_transform_shapes(operators):
+    shapes = []
+    for filename in (
+        "test_matrix_generalization.yaml", "test_matrix_generalization_holdout.yaml"
+    ):
+        candidate = RUN_TESTS.load_test_matrix(ROOT / "conf" / filename)
+        cases = RUN_TESTS.expand_all_test_cases(operators, candidate)
+        shapes.append({tuple(case["shape"]) for case in cases})
+    assert not shapes[0] & shapes[1]
+
+
+@pytest.mark.parametrize(
+    "mode,values",
+    [("batch", [1, 3]), ("2d_batch", [1]), ("3d_batch", [True]), ("2d_batch", [3, 3])],
+)
+def test_generalization_keeps_batch_legality_checks(tmp_path, matrix, mode, values):
+    matrix["profile"] = "generalization"
+    matrix["batches"][mode] = values
+    path = tmp_path / "matrix.yaml"
+    path.write_text(yaml.safe_dump(matrix))
+    with pytest.raises(ValueError):
+        RUN_TESTS.load_test_matrix(path)
+
+
+def test_matrix_profile_and_batch_keys_are_validated(tmp_path, matrix):
+    path = tmp_path / "matrix.yaml"
+    matrix["profile"] = "generlization"
+    path.write_text(yaml.safe_dump(matrix))
+    with pytest.raises(ValueError, match="profile"):
+        RUN_TESTS.load_test_matrix(path)
+    matrix["profile"] = "generalization"
+    del matrix["batches"]["3d_batch"]
+    path.write_text(yaml.safe_dump(matrix))
+    with pytest.raises(ValueError, match="batches must define"):
+        RUN_TESTS.load_test_matrix(path)
+
+
+def test_generalization_dry_run_selects_matrix_and_omits_npu_fp64(tmp_path, capsys):
+    build_dir = tmp_path / "npu-build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=NPU\n")
+    path = ROOT / "conf" / "test_matrix_generalization.yaml"
+    output_dir = tmp_path / "results"
+    assert RUN_TESTS.main(
+        [
+            "--dry-run", "--matrix-file", str(path),
+            "--build-dir", str(build_dir), "--output-dir", str(output_dir),
+        ]
+    ) == 0
+    output = capsys.readouterr().out
+    payload = json.loads(output[output.index("{") :])
+    assert payload["matrix_file"] == str(path)
+    assert payload["matrix_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert payload["test_matrix"]["split"] == "discovery"
+    assert len(payload["operators"]) == 30
+    assert len(payload["cases"]) == 368
+    assert len(payload["performance_cases"]) == 368
+    assert {case["dtype"] for case in payload["cases"]} == {"torch.float32"}
+    assert {
+        case["batch"] for case in payload["cases"] if case["rank"] == 1
+    } == {1, 3, 16, 65}
+    assert not output_dir.exists()
 
 
 @pytest.mark.parametrize("scales", ["nan", "inf", "0", "-1", "1,1", ""])
