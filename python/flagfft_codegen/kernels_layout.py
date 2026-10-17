@@ -1216,21 +1216,26 @@ def _build_complex_pair_transpose_kernel_source(
     if n0 < 1 or n1 < 1 or tile_size < 1 or tile_size & (tile_size - 1):
         raise ValueError("transpose dimensions must be positive and tile_size a power of two")
     name = f"_complex_pair_transpose_n{n0}_{n1}_t{tile_size}"
+    # Keep per-matrix coordinates narrow when even masked tile offsets fit.
+    # The outer batch address remains 64-bit for every matrix size.
+    index_type = "int32" if 2 * (n0 + tile_size) * (n1 + tile_size) < 2**31 else "int64"
     source = dedent(f"""
         @triton.jit
         def {name}(in_ptr, out_ptr, nbatch):
-            row = tl.program_id(1).to(tl.int64) * {tile_size} + tl.arange(0, {tile_size})
-            col = tl.program_id(0).to(tl.int64) * {tile_size} + tl.arange(0, {tile_size})
+            row = tl.program_id(1).to(tl.{index_type}) * {tile_size} + tl.arange(0, {tile_size})
+            col = tl.program_id(0).to(tl.{index_type}) * {tile_size} + tl.arange(0, {tile_size})
             batch = tl.program_id(2).to(tl.int64)
             word = tl.arange(0, 2)
-            source = (batch * {n0 * n1} + row[:, None, None] * {n1} + col[None, :, None]) * 2 + word[None, None, :]
+            input_batch = in_ptr + batch * {2 * n0 * n1}
+            output_batch = out_ptr + batch * {2 * n0 * n1}
+            source = (row[:, None, None] * {n1} + col[None, :, None]) * 2 + word[None, None, :]
             mask = (row[:, None, None] < {n0}) & (col[None, :, None] < {n1}) & (batch < nbatch)
-            point = tl.load(in_ptr + source, mask, 0.0)
+            point = tl.load(input_batch + source, mask, 0.0)
             real, imag = tl.split(point)
             point = tl.join(tl.trans(real), tl.trans(imag))
-            target = (batch * {n0 * n1} + col[:, None, None] * {n0} + row[None, :, None]) * 2 + word[None, None, :]
+            target = (col[:, None, None] * {n0} + row[None, :, None]) * 2 + word[None, None, :]
             mask = (col[:, None, None] < {n1}) & (row[None, :, None] < {n0}) & (batch < nbatch)
-            tl.store(out_ptr + target, point, mask)
+            tl.store(output_batch + target, point, mask)
     """)
     return name, source, ["in_ptr", "out_ptr", "nbatch"]
 
