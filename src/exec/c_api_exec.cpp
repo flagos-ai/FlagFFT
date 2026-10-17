@@ -16,9 +16,6 @@
 
 #include <sstream>
 
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-#include "adaptor/backend/npu/sip_executor.hpp"
-#endif
 
 extern "C" flagfftResult flagfftExecC2C(flagfftHandle handle,
                                         flagfftComplex *idata,
@@ -40,12 +37,6 @@ extern "C" flagfftResult flagfftExecC2C(flagfftHandle handle,
 
   std::lock_guard<std::mutex> lock(plan->mutex);
   const bool inverse = direction == FLAGFFT_INVERSE;
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-  if (plan->npu_sip_enabled && static_cast<void *>(idata) != static_cast<void *>(odata)) {
-    void *sip_plan = inverse ? plan->npu_sip_inverse : plan->npu_sip_forward;
-    return flagfft::adaptor::npu::sip_plan_execute(sip_plan, idata, odata);
-  }
-#endif
   const flagfft::FFTRequest &request =
       inverse ? plan->executable.inverse_request : plan->executable.forward_request;
   const std::shared_ptr<flagfft::CompiledRawNode> &compiled =
@@ -107,11 +98,6 @@ extern "C" flagfftResult flagfftExecR2C(flagfftHandle handle, flagfftReal *idata
   }
 
   std::lock_guard<std::mutex> lock(plan->mutex);
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-  if (plan->npu_sip_enabled && static_cast<void *>(idata) != static_cast<void *>(odata)) {
-    return flagfft::adaptor::npu::sip_plan_execute(plan->npu_sip_forward, idata, odata);
-  }
-#endif
   flagfft::RawExecutionContext context {plan->executable.forward_request,
                                         plan->state.stream,
                                         plan->desc.batch,
@@ -160,11 +146,6 @@ extern "C" flagfftResult flagfftExecC2R(flagfftHandle handle, flagfftComplex *id
   }
 
   std::lock_guard<std::mutex> lock(plan->mutex);
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-  if (plan->npu_sip_enabled && static_cast<void *>(idata) != static_cast<void *>(odata)) {
-    return flagfft::adaptor::npu::sip_plan_execute(plan->npu_sip_inverse, idata, odata);
-  }
-#endif
   flagfft::RawExecutionContext context {plan->executable.inverse_request,
                                         plan->state.stream,
                                         plan->desc.batch,
@@ -206,16 +187,6 @@ extern "C" flagfftResult flagfftSetStream(flagfftHandle handle, flagfftStream_t 
     return FLAGFFT_INVALID_PLAN;
   }
   std::lock_guard<std::mutex> lock(plan->mutex);
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-  if (plan->npu_sip_enabled) {
-    const flagfftResult forward_status =
-        flagfft::adaptor::npu::sip_plan_set_stream(plan->npu_sip_forward, stream);
-    const flagfftResult inverse_status =
-        flagfft::adaptor::npu::sip_plan_set_stream(plan->npu_sip_inverse, stream);
-    if (forward_status != FLAGFFT_SUCCESS) return forward_status;
-    if (inverse_status != FLAGFFT_SUCCESS) return inverse_status;
-  }
-#endif
   plan->state.stream = stream;
   return FLAGFFT_SUCCESS;
 }
@@ -256,12 +227,6 @@ extern "C" const char *flagfftGetPlanDescription(flagfftHandle handle) {
   }
   oss << "] batch=" << plan->desc.batch << " type=" << static_cast<int>(plan->desc.type) << "\n";
 
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-  oss << "execution_backend="
-      << (plan->npu_sip_enabled ? "SiP FFT (CANN; out-of-place; Triton in-place fallback)"
-                                : "FlagFFT Triton")
-      << "\n";
-#endif
 
   oss << "\n-- Plan tree --\n";
   if (plan->executable.root) {
