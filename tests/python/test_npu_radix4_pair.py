@@ -130,7 +130,7 @@ def test_pair_rejects_strided_rows():
         build_npu_grouped_fft64_source(group=32, stride=64, mode=0, radix4_pair=True)
 
 
-@pytest.mark.parametrize("length,group", [(64,32),(128,16),(2048,1)])
+@pytest.mark.parametrize("length,group", [(64,32),(128,4),(128,8),(128,16),(2048,1)])
 @pytest.mark.parametrize("backend,dtype", [("npu","complex64"),("cuda","complex64"),
     ("ix","complex64"),("maca","complex64"),("npu","complex128")])
 def test_general_pair_cli_is_npu_only(tmp_path,length,group,backend,dtype):

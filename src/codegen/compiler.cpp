@@ -1851,7 +1851,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft128_child(
   twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
   std::shared_ptr<JitKernel> replacement;
   if (request.device_type == "npu" && request.input_dtype == "complex64" &&
-      request.output_dtype == "complex64" && radix4_pair && group_size == 16 &&
+      request.output_dtype == "complex64" && radix4_pair &&
+      (group_size == 4 || group_size == 8 || group_size == 16) &&
       flag_or_default("FLAGFFT_NPU_TRITON_FFT128_RADIX4", false)) {
     replacement = compile_kernel(KernelKey::npu_radix4_pair(
         triton_target_for_request(request), request.direction, 128, group_size, 0));
