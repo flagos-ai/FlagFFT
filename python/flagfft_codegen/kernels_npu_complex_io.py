@@ -97,13 +97,20 @@ def build_npu_real_boundary_source(kind, n, elements=256):
             f'    mirrored_start = tl.minimum(tl.maximum(mirrored_start, 0), {half - 1})',
             '    mirrored_scalar = mirrored_start * 2 + scalar',
             f'    hi = tl.load(in_ptr + row * input_distance * 2 + mirrored_scalar, (row < nbatch) & (mirrored_scalar < {2 * half}), 0.0)',
-            f'    reverse_complex = {n} - tile * {block} - (scalar >> 1) - mirrored_start',
+            # Saturate the scalar anchor before converting local coordinates.
+            # A 64-bit vector subtract/shift scalarizes on the Ascend backend;
+            # GM row/tile offsets still need their original 64-bit arithmetic.
+            f'    anchor = {n} - tile * {block} - mirrored_start',
+            f'    anchor = tl.minimum(tl.maximum(anchor, 0), {2 * block - 1}).to(tl.int32)',
+            '    reverse_complex = anchor - (scalar >> 1)',
             f'    reverse = tl.minimum(tl.maximum(reverse_complex, 0), {block - 1}) * 2 + (scalar & 1)',
             f'    mapping = tl.broadcast_to(reverse, ({rows}, {2 * block}))',
             '    mirrored = tl.gather(hi, mapping, 1)',
             '    mirrored = tl.where((scalar & 1) != 0, -mirrored, mirrored)',
             f'    values = tl.where(scalar_col < {2 * half}, lo, mirrored)',
-            '    boundary = ((scalar_col >> 1) == 0)' + (f' | ((scalar_col >> 1) == {n // 2})' if n % 2 == 0 else ''),
+            '    boundary = (tile == 0) & ((scalar >> 1) == 0)' + (
+                f' | ((tile == {(n // 2) // block}) & ((scalar >> 1) == {(n // 2) % block}))'
+                if n % 2 == 0 else ''),
             '    values = tl.where(boundary & ((scalar & 1) != 0), 0.0, values)',
             f'    tl.store(out_ptr + row * {2 * n} + scalar_col, values, (row < nbatch) & (scalar_col < {2 * n}))']
     return name, '\n'.join(lines) + '\n', ['in_ptr', 'out_ptr', distance, 'nbatch'], rows

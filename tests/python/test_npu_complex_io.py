@@ -88,6 +88,7 @@ def test_vector_complex_source_rejects_fp64_and_unknown_kind():
 
 
 class BoundaryGrid(Grid):
+    int32 = np.int32
     minimum = staticmethod(np.minimum)
     maximum = staticmethod(np.maximum)
     where = staticmethod(np.where)
