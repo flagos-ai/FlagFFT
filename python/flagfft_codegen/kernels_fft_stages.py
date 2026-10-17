@@ -18,7 +18,7 @@ from .metadata import _module_source
 
 def _paired_radix(radix: int, strategy: str = "auto") -> bool:
     eligible = 3 <= radix <= 31 and radix % 2 == 1
-    return eligible and (strategy == "paired" or
+    return eligible and (strategy in {"paired", "paired_loop"} or
         strategy == "auto" and radix not in _NATURAL_ORDER_CODELET_RADICES)
 
 
@@ -37,11 +37,11 @@ class FFTStageConfig:
     prime_strategy: str = "auto"
 
     def __post_init__(self):
-        if self.prime_strategy not in {"auto", "natural", "paired"}:
+        if self.prime_strategy not in {"auto", "natural", "paired", "paired_loop"}:
             raise ValueError("unsupported prime codelet strategy")
         if self.radix not in _NATURAL_ORDER_CODELET_RADICES and not _paired_radix(self.radix, self.prime_strategy):
             raise ValueError("unsupported DIF radix")
-        if self.prime_strategy == "paired" and not _paired_radix(self.radix, "paired"):
+        if self.prime_strategy in {"paired", "paired_loop"} and not _paired_radix(self.radix, "paired"):
             raise ValueError("paired codelet requires an odd radix from 3 through 31")
         if self.length < 2 or self.span < self.radix or self.length % self.span or self.span % self.radix:
             raise ValueError("invalid DIF transform or stage span")
@@ -87,7 +87,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 9, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 10, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -171,17 +171,21 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
             f"    ci = tl.full(({width}, {pack}, {block}), 0.0, tl.float32) + x0i[None, :, :]",
             f"    sr = tl.full(({width}, {pack}, {block}), 0.0, tl.float32)",
             f"    si = tl.full(({width}, {pack}, {block}), 0.0, tl.float32)"]
-        for digit in range(1, half + 1):
-            lines += input_lines(str(digit), "xr", "xi")
-            lines += input_lines(str(radix - digit), "yr", "yi")
-            lines += [f"    root = ({n + digit * width} + output) * 2",
-                "    root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
-                "    wr, wi = tl.split(root_point)",
-                "    wr, wi = wr[:, None, None], wi[:, None, None]",
-                "    cr = cr + (xr + yr)[None, :, :] * wr",
-                "    ci = ci + (xi + yi)[None, :, :] * wr",
-                "    sr = sr + (xr - yr)[None, :, :] * wi",
-                "    si = si + (xi - yi)[None, :, :] * wi"]
+        loop = config.prime_strategy == "paired_loop"
+        indent = "        " if loop else "    "
+        if loop:
+            lines += [f"    for digit in range(1, {half + 1}):"]
+        for digit in (["digit"] if loop else range(1, half + 1)):
+            lines += input_lines(str(digit), "xr", "xi", indent)
+            lines += input_lines(f"({radix} - {digit})", "yr", "yi", indent)
+            lines += [f"{indent}root = ({n} + {digit} * {width} + output) * 2",
+                f"{indent}root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
+                f"{indent}wr, wi = tl.split(root_point)",
+                f"{indent}wr, wi = wr[:, None, None], wi[:, None, None]",
+                f"{indent}cr = cr + (xr + yr)[None, :, :] * wr",
+                f"{indent}ci = ci + (xi + yi)[None, :, :] * wr",
+                f"{indent}sr = sr + (xr - yr)[None, :, :] * wi",
+                f"{indent}si = si + (xi - yi)[None, :, :] * wi"]
         # Keep every output frequency in one tensor. This avoids separate
         # mirrored stores sharing accumulator buffers in the backend.
         lines += ["    result_r, result_i = cr - si, ci + sr"]
@@ -200,6 +204,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 9, "fft_stage_config": asdict(config)}
+        "generator_version": 10, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
