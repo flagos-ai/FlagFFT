@@ -44,6 +44,9 @@ class Language:
     gather = staticmethod(np.take_along_axis)
     cos = staticmethod(np.cos)
     sin = staticmethod(np.sin)
+    reshape = staticmethod(np.reshape)
+    split = staticmethod(lambda values: (values[..., 0], values[..., 1]))
+    join = staticmethod(lambda even, odd: np.stack((even, odd), axis=-1))
 
     @staticmethod
     def load(pointer, mask=True, other=0):
@@ -59,7 +62,7 @@ class Language:
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("stride,permuted", [(1, 0), (3, 0), (1, 7)])
-@pytest.mark.parametrize("exchange", ["static", "flat", "interleaved"])
+@pytest.mark.parametrize("exchange", ["static", "flat", "interleaved", "split_register"])
 def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction, stride, permuted, exchange):
     if exchange != "static" and length & (length - 1):
         pytest.skip("tensor exchange currently supports powers of two")

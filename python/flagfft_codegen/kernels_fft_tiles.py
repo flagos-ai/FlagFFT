@@ -62,7 +62,7 @@ class TensorFFTConfig:
             raise ValueError("output_rows_per_batch must be nonnegative")
         if self.output_rows_per_batch and self.output_stride != 1:
             raise ValueError("permuted output uses output_stride=1")
-        if self.exchange not in {"gather", "flat", "interleaved", "split", "dsa", "buffer", "static"}:
+        if self.exchange not in {"gather", "flat", "interleaved", "split_register", "split", "dsa", "buffer", "static"}:
             raise ValueError("unsupported tensor FFT exchange")
         if self.twiddle not in {"table", "local_table", "compute"}:
             raise ValueError("unsupported twiddle strategy")
@@ -111,24 +111,52 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         "    mask = row < nbatch",
         f"    input_base = (row // {config.input_stride}) * {input_length * config.input_stride} + row % {config.input_stride}",
     ]
-    for index in range(n):
-        source_index = _digit_reversed_index(index, config.factors)
-        conjugate = config.mode == "c2r" and source_index > n // 2
-        if conjugate:
-            source_index = n - source_index
-        position = f"(input_base + {source_index * config.input_stride})"
+    if config.exchange == "split_register":
+        frequency = "tl.arange(0, " + str(n) + ")"
+        lines += [f"    frequency = {frequency}", "    source_frequency = frequency"]
+        if config.mode == "c2r":
+            lines += [f"    conjugate = frequency > {n // 2}",
+                f"    source_frequency = tl.where(conjugate, {n} - frequency, frequency)"]
+        lines += [f"    source = input_base[:, None] + source_frequency[None, :] * {config.input_stride}"]
         if config.mode == "r2c":
-            lines += [
-                f"    r{index} = tl.load(in_ptr + {position}, mask=mask, other=0.0)",
-                f"    i{index} = tl.full(({pack},), 0.0, tl.float32)",
-            ]
+            lines += ["    loaded_r = tl.load(in_ptr + source, mask[:, None], 0.0)",
+                f"    loaded_i = tl.full(({pack}, {n}), 0.0, tl.float32)"]
         else:
-            lines += [f"    r{index} = tl.load(in_ptr + {position} * 2, mask=mask, other=0.0)"]
-            if config.mode == "c2r" and (source_index == 0 or (n % 2 == 0 and source_index == n // 2)):
-                lines += [f"    i{index} = tl.full(({pack},), 0.0, tl.float32)"]
+            lines += ["    loaded_r = tl.load(in_ptr + source * 2, mask[:, None], 0.0)",
+                "    loaded_i = tl.load(in_ptr + source * 2 + 1, mask[:, None], 0.0)"]
+            if config.mode == "c2r":
+                lines += ["    loaded_i = tl.where(conjugate[None, :], -loaded_i, loaded_i)",
+                    f"    loaded_i = tl.where((frequency[None, :] == 0) | (frequency[None, :] == {n // 2}), 0.0, loaded_i)"]
+        inverse_indices = { _digit_reversed_index(i, config.factors): i for i in range(n) }
+        def split_input(name, points, prefix, path=""):
+            if len(points) == 1:
+                lines.append(f"    {prefix}{inverse_indices[points[0]]} = tl.reshape({name}, ({pack},))")
+                return
+            even, odd = f"split_{prefix}{path}e", f"split_{prefix}{path}o"
+            lines.append(f"    {even}, {odd} = tl.split(tl.reshape({name}, ({pack}, {len(points) // 2}, 2)))")
+            split_input(even, points[::2], prefix, path + "e")
+            split_input(odd, points[1::2], prefix, path + "o")
+        split_input("loaded_r", tuple(range(n)), "r")
+        split_input("loaded_i", tuple(range(n)), "i")
+    else:
+        for index in range(n):
+            source_index = _digit_reversed_index(index, config.factors)
+            conjugate = config.mode == "c2r" and source_index > n // 2
+            if conjugate:
+                source_index = n - source_index
+            position = f"(input_base + {source_index * config.input_stride})"
+            if config.mode == "r2c":
+                lines += [
+                    f"    r{index} = tl.load(in_ptr + {position}, mask=mask, other=0.0)",
+                    f"    i{index} = tl.full(({pack},), 0.0, tl.float32)",
+                ]
             else:
-                sign = "-" if conjugate else ""
-                lines += [f"    i{index} = {sign}tl.load(in_ptr + {position} * 2 + 1, mask=mask, other=0.0)"]
+                lines += [f"    r{index} = tl.load(in_ptr + {position} * 2, mask=mask, other=0.0)"]
+                if config.mode == "c2r" and (source_index == 0 or (n % 2 == 0 and source_index == n // 2)):
+                    lines += [f"    i{index} = tl.full(({pack},), 0.0, tl.float32)"]
+                else:
+                    sign = "-" if conjugate else ""
+                    lines += [f"    i{index} = {sign}tl.load(in_ptr + {position} * 2 + 1, mask=mask, other=0.0)"]
     previous_span = 1
     for radix in config.factors:
         span = previous_span * radix
@@ -154,15 +182,34 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     else:
         lines += [f"    output_base = (row // {config.output_stride}) * {output_length * config.output_stride} + row % {config.output_stride}"]
         step = config.output_stride
-    for index in range(output_length):
-        position = f"(output_base + {index * step})"
+    if config.exchange == "split_register":
+        def join_output(points, prefix, path=""):
+            if len(points) == 1:
+                return f"tl.reshape({prefix}{points[0]}, ({pack}, 1))"
+            even = join_output(points[::2], prefix, path + "e")
+            odd = join_output(points[1::2], prefix, path + "o")
+            name = f"joined_{prefix}{path}"
+            lines.append(f"    {name} = tl.reshape(tl.join({even}, {odd}), ({pack}, {len(points)}))")
+            return name
+        real = join_output(tuple(range(n)), "r")
+        lines += [f"    target = output_base[:, None] + frequency[None, :] * {step}",
+            f"    valid = mask[:, None] & (frequency[None, :] < {output_length})"]
         if config.mode == "c2r":
-            lines += [f"    tl.store(out_ptr + {position}, r{index}, mask=mask)"]
+            lines += [f"    tl.store(out_ptr + target, {real}, valid)"]
         else:
-            lines += [
-                f"    tl.store(out_ptr + {position} * 2, r{index}, mask=mask)",
-                f"    tl.store(out_ptr + {position} * 2 + 1, i{index}, mask=mask)",
-            ]
+            imag = join_output(tuple(range(n)), "i")
+            lines += [f"    tl.store(out_ptr + target * 2, {real}, valid)",
+                f"    tl.store(out_ptr + target * 2 + 1, {imag}, valid)"]
+    else:
+        for index in range(output_length):
+            position = f"(output_base + {index * step})"
+            if config.mode == "c2r":
+                lines += [f"    tl.store(out_ptr + {position}, r{index}, mask=mask)"]
+            else:
+                lines += [
+                    f"    tl.store(out_ptr + {position} * 2, r{index}, mask=mask)",
+                    f"    tl.store(out_ptr + {position} * 2 + 1, i{index}, mask=mask)",
+                ]
     return name, "\n".join(lines) + "\n"
 
 
@@ -302,7 +349,7 @@ def _build_interleaved_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
 
 
 def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
-    if config.exchange == "static":
+    if config.exchange in {"static", "split_register"}:
         return _build_static_fft_source(config)
     if config.exchange == "flat":
         return _build_flat_fft_source(config)
@@ -465,7 +512,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
     name, source = _build_tensor_fft_source(config)
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
-    write_text_atomic(module_path, _module_source(source, radices=tuple(sorted(set(config.factors))) if config.exchange == "static" else ()))
+    write_text_atomic(module_path, _module_source(source, radices=tuple(sorted(set(config.factors))) if config.exchange in {"static", "split_register"} else ()))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": name,
