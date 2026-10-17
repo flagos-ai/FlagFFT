@@ -130,6 +130,8 @@ def main() -> None:
     )
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
+    parser.add_argument("--npu-vector-transpose", action="store_true",
+                        help="Use the replacement body for an eligible native NPU 2D transpose")
     parser.add_argument(
         "--perm-form",
         choices=(
@@ -209,6 +211,8 @@ def main() -> None:
         "--execution-policy", choices=("legacy", "native", "packed", "balanced")
     )
     args = parser.parse_args()
+    if args.npu_vector_transpose and args.kernel != "tiled_transpose":
+        parser.error("--npu-vector-transpose requires --kernel tiled_transpose")
     if args.npu_portable_leaf:
         os.environ["FLAGFFT_NPU_FOURSTEP_LEAF"] = "1"
     set_codegen_target(args.target)
@@ -428,6 +432,7 @@ def main() -> None:
             dtype=args.dtype,
             tile_size=args.tile_size,
             out_dir=args.out_dir,
+            npu_vector_transpose=args.npu_vector_transpose,
         )
     elif spec.family == TRANSPOSE3D:
         if (
