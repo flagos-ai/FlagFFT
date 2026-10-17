@@ -28,6 +28,7 @@ class Pointer:
 
 class Language:
     ids = (0, 0, 0)
+    int32 = np.int32
     int64 = np.int64
     arange = staticmethod(np.arange)
     split = staticmethod(lambda values: (values[..., 0], values[..., 1]))
@@ -99,3 +100,11 @@ def test_pair_transpose_is_scoped_to_npu_fp32(monkeypatch, tmp_path, backend, dt
 def test_invalid_tile_rejected(rows, cols, tile):
     with pytest.raises(ValueError):
         _build_complex_pair_transpose_kernel_source(rows, cols, tile)
+
+
+@pytest.mark.parametrize("shape,index_type", [((2048, 2048), "int32"), ((65536, 65536), "int64")])
+def test_coordinate_width_keeps_outer_batch_wide(shape, index_type):
+    _, source, _ = _build_complex_pair_transpose_kernel_source(*shape, 64)
+    assert f"tl.program_id(1).to(tl.{index_type})" in source
+    assert "batch = tl.program_id(2).to(tl.int64)" in source
+    assert "input_batch = in_ptr + batch *" in source
