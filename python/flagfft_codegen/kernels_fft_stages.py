@@ -36,8 +36,11 @@ class FFTStageConfig:
     output_stride: int = 1
     output_rows_per_batch: int = 0
     prime_strategy: str = "auto"
+    index_bits: int = 64
 
     def __post_init__(self):
+        if self.index_bits not in {32, 64}:
+            raise ValueError("DIF index width must be 32 or 64")
         if self.prime_strategy not in {"auto", "natural", "paired", "paired_loop", "rader"}:
             raise ValueError("unsupported prime codelet strategy")
         if self.prime_strategy == "rader":
@@ -90,11 +93,11 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 19, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 20, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
-        "    program = program_offset + tl.program_id(0).to(tl.int64)",
+        f"    program = (program_offset + tl.program_id(0)).to(tl.int{config.index_bits})",
         f"    row = (program // {programs}) * {pack} + tl.arange(0, {pack})",
         f"    k = (program % {programs}) * {block} + tl.arange(0, {block})",
         f"    valid_k = k < {ndiv}", "    valid_row = row < nbatch",
@@ -287,6 +290,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 19, "fft_stage_config": asdict(config)}
+        "generator_version": 20, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

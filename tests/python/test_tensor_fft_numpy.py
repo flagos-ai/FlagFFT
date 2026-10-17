@@ -69,12 +69,12 @@ class Language:
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("stride,permuted", [(1, 0), (3, 0), (1, 7)])
 @pytest.mark.parametrize("exchange", ["static", "split_register"])
-def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction, stride, permuted, exchange):
+def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction, stride, permuted, exchange, index_bits=64):
     if exchange == "split_register" and length & (length - 1):
         pytest.skip("NPU register exchange is qualified only for powers of two")
     config = TensorFFTConfig(length, 8, mode=mode, direction=direction, input_stride=stride,
         output_stride=stride if not permuted else 1, output_rows_per_batch=permuted,
-        exchange=exchange, factors=factors)
+        exchange=exchange, factors=factors, index_bits=index_bits)
     metadata = emit_tensor_fft(config, tmp_path)
     tree = ast.parse(Path(metadata["module_path"]).read_text())
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
@@ -133,3 +133,9 @@ def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction
 def test_invalid_config_is_rejected(options):
     with pytest.raises(ValueError):
         TensorFFTConfig(**options)
+
+
+@pytest.mark.parametrize('mode,direction', [('complex','forward'),('complex','inverse'),('r2c','forward'),('c2r','inverse')])
+@pytest.mark.parametrize('stride,permuted',[(1,0),(3,0),(1,7)])
+def test_tensor_32_bit_indices(tmp_path,mode,direction,stride,permuted):
+    test_register_graph_matches_numpy(tmp_path,64,(),mode,direction,stride,permuted,'split_register',index_bits=32)

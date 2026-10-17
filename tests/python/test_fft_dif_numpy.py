@@ -19,7 +19,7 @@ from test_tensor_fft_numpy import Language, Pointer
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("block,pack,stride,permuted", [(8, 1, 1, 0), (16, 4, 3, 0), (8, 2, 1, 7)])
-def test_dif_sequence(tmp_path, factors, prime_strategy, mode, direction, block, pack, stride, permuted):
+def test_dif_sequence(tmp_path, factors, prime_strategy, mode, direction, block, pack, stride, permuted, index_bits=64):
     n, batch = int(np.prod(factors)), 5
     rng = np.random.default_rng(20261017)
     real = rng.normal(size=(batch, n)).astype(np.float32)
@@ -43,7 +43,8 @@ def test_dif_sequence(tmp_path, factors, prime_strategy, mode, direction, block,
         extent = permuted if last else 0
         config = FFTStageConfig(n, radix, span, mode=mode, direction=direction, block=block,
             rows_per_program=pack, input_stride=stride if stage == 0 else 1,
-            output_stride=output_stride, output_rows_per_batch=extent, prime_strategy=prime_strategy)
+            output_stride=output_stride, output_rows_per_batch=extent, prime_strategy=prime_strategy,
+            index_bits=index_bits)
         meta = emit_fft_stage(config, tmp_path / f"stage{stage}")
         tree = ast.parse(Path(meta["module_path"]).read_text())
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
@@ -77,3 +78,9 @@ def test_dif_sequence(tmp_path, factors, prime_strategy, mode, direction, block,
     else:
         np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=2e-4)
     assert np.linalg.norm(actual - expected) / np.linalg.norm(expected) < 5e-7
+
+
+@pytest.mark.parametrize('mode,direction', [('complex','forward'),('complex','inverse'),('r2c','forward'),('c2r','inverse')])
+@pytest.mark.parametrize('factors',[(8,8,4),(13,17)])
+def test_dif_32_bit_indices(tmp_path,mode,direction,factors):
+    test_dif_sequence(tmp_path,factors,'auto',mode,direction,16,4,1,0,index_bits=32)

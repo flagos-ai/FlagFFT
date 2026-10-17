@@ -33,8 +33,11 @@ class TensorFFTConfig:
     exchange: str = "split_register"
     num_warps: int = 4
     factors: tuple[int, ...] = ()
+    index_bits: int = 64
 
     def __post_init__(self):
+        if self.index_bits not in {32, 64}:
+            raise ValueError("tensor FFT index width must be 32 or 64")
         if self.length < 1:
             raise ValueError("tensor FFT length must be >= 1")
         if self.exchange == "split_register" and self.length & (self.length - 1):
@@ -106,14 +109,14 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     """
     n, pack = config.length, config.rows_per_program
     tile_n = 1 << (n - 1).bit_length()
-    identity = hashlib.sha256(json.dumps({"version": 17, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 18, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
     lines = [
         "@triton.jit",
         f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
-        "    program = program_offset + tl.program_id(0).to(tl.int64)",
+        f"    program = (program_offset + tl.program_id(0)).to(tl.int{config.index_bits})",
         f"    lane = tl.arange(0, {pack})",
     ]
     extent = config.row_tile_extent
@@ -304,7 +307,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "programs_per_row_group": (extent + config.rows_per_program - 1) // config.rows_per_program if extent else 1,
         "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
         "kernel_type": "tensor_fft", "dtype": "complex64", "implementation": "triton",
-        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 17,
+        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 18,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

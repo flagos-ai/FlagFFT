@@ -438,6 +438,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_tensor_fft(
       {"input_stride", input_stride}, {"output_stride", output_stride},
       {"output_rows_per_batch", output_rows_per_batch}, {"exchange", "split_register"},
       {"num_warps", 4}};
+  // Signed element indices are enough when the full strided allocation fits.
+  // Keep 64-bit arithmetic for larger layouts instead of truncating offsets.
+  const int64_t index_rows = std::max<int64_t>({1, input_stride, output_stride, output_rows_per_batch});
+  const int64_t index_length = std::max({length, request.fft_length, request.requested_n});
+  const int64_t max_index = std::numeric_limits<int32_t>::max();
+  config["index_bits"] = index_length <= max_index / 2 &&
+      index_rows <= max_index / (2 * index_length) &&
+      request.batch <= max_index / (2 * index_length) - index_rows ? 32 : 64;
   KernelKey key;
   key.kind = KernelKind::TensorFFT;
   key.target = triton_target_for_request(request);
@@ -491,6 +499,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_fft_stages(
         {"mode", mode}, {"direction", request.direction},
         {"block", block}, {"rows_per_program", pack},
         {"prime_strategy", paired ? "paired" : "auto"}};
+    configuration["index_bits"] = length <= std::numeric_limits<int32_t>::max() / 2 &&
+        batch <= std::numeric_limits<int32_t>::max() / (2 * length) ? 32 : 64;
     KernelKey key;
     key.kind = KernelKind::FFTStage;
     key.target = triton_target_for_request(request);
