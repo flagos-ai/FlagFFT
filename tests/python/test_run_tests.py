@@ -1272,3 +1272,14 @@ def test_failed_numeric_metrics_are_written_as_strict_json(tmp_path):
     )
     data = json.loads(path.read_text(), parse_constant=lambda value: pytest.fail(value))
     assert data == {"finite": False, "rel_l2": None, "rel_linf": None}
+
+
+def test_capture_rejects_extra_stdout_bytes(tmp_path, operators, matrix):
+    case = RUN_TESTS.expand_test_cases([operators[0]], matrix, scales="1")[0]
+    capture = fake_capture(tmp_path)
+    capture.write_text(capture.read_text() + '\nsys.stdout.buffer.write(b"unexpected compiler log")\nsys.stdout.buffer.flush()\n')
+    record = RUN_TESTS.run_accuracy_case(
+        case, capture, tmp_path / "output", 0, 20, tmp_path / "scratch"
+    )
+    assert record["accuracy"]["status"] == "Error"
+    assert "beyond the expected binary output" in record["accuracy"]["error"]
