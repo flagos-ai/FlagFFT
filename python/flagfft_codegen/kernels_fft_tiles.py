@@ -35,10 +35,8 @@ class TensorFFTConfig:
     factors: tuple[int, ...] = ()
 
     def __post_init__(self):
-        if self.length < 2:
-            raise ValueError("tensor FFT length must be >= 2")
-        if self.exchange == "split_register" and self.length & (self.length - 1):
-            raise ValueError("tensor exchange requires a power-of-two length")
+        if self.length < 1:
+            raise ValueError("tensor FFT length must be >= 1")
         factors = tuple(self.factors) or _static_factors(self.length)
         if math.prod(factors) != self.length or any(
             radix not in _NATURAL_ORDER_CODELET_RADICES for radix in factors
@@ -105,7 +103,8 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     reconstruct a succession of reshaped, sliced local-memory layouts.
     """
     n, pack = config.length, config.rows_per_program
-    identity = hashlib.sha256(json.dumps({"version": 9, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    tile_n = 1 << (n - 1).bit_length()
+    identity = hashlib.sha256(json.dumps({"version": 10, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
@@ -129,26 +128,28 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     else:
         lines += [f"    input_base = row * {input_length}"]
     if config.exchange == "split_register" and config.mode != "c2r" and config.input_stride == 1:
-        frequency = "tl.arange(0, " + str(n) + ")"
+        frequency = "tl.arange(0, " + str(tile_n) + ")"
         lines += [f"    frequency = {frequency}", "    source_frequency = frequency"]
         lines += ["    source = input_base[:, None] + source_frequency[None, :]"]
+        input_mask = f"mask[:, None] & (frequency[None, :] < {n})"
         if config.mode == "r2c":
-            lines += ["    loaded_r = tl.load(in_ptr + source, mask[:, None], 0.0)",
-                f"    loaded_i = tl.full(({pack}, {n}), 0.0, tl.float32)"]
+            lines += [f"    loaded_r = tl.load(in_ptr + source, {input_mask}, 0.0)",
+                f"    loaded_i = tl.full(({pack}, {tile_n}), 0.0, tl.float32)"]
         else:
-            lines += ["    loaded_r = tl.load(in_ptr + source * 2, mask[:, None], 0.0)",
-                "    loaded_i = tl.load(in_ptr + source * 2 + 1, mask[:, None], 0.0)"]
+            lines += [f"    loaded_r = tl.load(in_ptr + source * 2, {input_mask}, 0.0)",
+                f"    loaded_i = tl.load(in_ptr + source * 2 + 1, {input_mask}, 0.0)"]
         inverse_indices = { _digit_reversed_index(i, config.factors): i for i in range(n) }
         def split_input(name, points, prefix, path=""):
             if len(points) == 1:
-                lines.append(f"    {prefix}{inverse_indices[points[0]]} = tl.reshape({name}, ({pack},))")
+                if points[0] < n:
+                    lines.append(f"    {prefix}{inverse_indices[points[0]]} = tl.reshape({name}, ({pack},))")
                 return
             even, odd = f"split_{prefix}{path}e", f"split_{prefix}{path}o"
             lines.append(f"    {even}, {odd} = tl.split(tl.reshape({name}, ({pack}, {len(points) // 2}, 2)))")
             split_input(even, points[::2], prefix, path + "e")
             split_input(odd, points[1::2], prefix, path + "o")
-        split_input("loaded_r", tuple(range(n)), "r")
-        split_input("loaded_i", tuple(range(n)), "i")
+        split_input("loaded_r", tuple(range(tile_n)), "r")
+        split_input("loaded_i", tuple(range(tile_n)), "i")
     else:
         for index in range(n):
             source_index = _digit_reversed_index(index, config.factors)
@@ -199,17 +200,19 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     else:
         lines += [f"    output_base = row * {output_length}"]
     if config.exchange == "split_register" and step == 1:
-        lines += [f"    frequency = tl.arange(0, {n})"]
+        lines += [f"    frequency = tl.arange(0, {tile_n})"]
         def join_output(points, prefix, path=""):
             if len(points) == 1:
+                if points[0] >= n:
+                    return f"tl.full(({pack}, 1), 0.0, tl.float32)"
                 return f"tl.reshape({prefix}{points[0]}, ({pack}, 1))"
             even = join_output(points[::2], prefix, path + "e")
             odd = join_output(points[1::2], prefix, path + "o")
             name = f"joined_{prefix}{path}"
             lines.append(f"    {name} = tl.reshape(tl.join({even}, {odd}), ({pack}, {len(points)}))")
             return name
-        real = join_output(tuple(range(n)), "r")
-        imag = join_output(tuple(range(n)), "i") if config.mode != "c2r" else ""
+        real = join_output(tuple(range(tile_n)), "r")
+        imag = join_output(tuple(range(tile_n)), "i") if config.mode != "c2r" else ""
         lines += ["    target = output_base[:, None] + frequency[None, :]",
             f"    valid = mask[:, None] & (frequency[None, :] < {output_length})"]
         if config.mode == "c2r":
@@ -248,7 +251,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "programs_per_row_group": (extent + config.rows_per_program - 1) // config.rows_per_program if extent else 1,
         "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
         "kernel_type": "tensor_fft", "dtype": "complex64", "implementation": "triton",
-        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 9,
+        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 10,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

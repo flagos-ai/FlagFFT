@@ -17,7 +17,7 @@ from .metadata import _module_source
 
 
 def _paired_radix(radix: int) -> bool:
-    return 13 <= radix <= 31 and radix % 2 == 1
+    return radix not in _NATURAL_ORDER_CODELET_RADICES and 13 <= radix <= 31 and radix % 2 == 1
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 2, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 3, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -161,19 +161,19 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         lines += [f"    cr = tl.full(({width}, {pack}, {block}), 0.0, tl.float32) + x0r[None, :, :]",
             f"    ci = tl.full(({width}, {pack}, {block}), 0.0, tl.float32) + x0i[None, :, :]",
             f"    sr = tl.full(({width}, {pack}, {block}), 0.0, tl.float32)",
-            f"    si = tl.full(({width}, {pack}, {block}), 0.0, tl.float32)",
-            f"    for digit in range(1, {half + 1}):"]
-        lines += input_lines("digit", "xr", "xi", "        ")
-        lines += input_lines(f"({radix} - digit)", "yr", "yi", "        ")
-        lines += [f"        root = ({n} + digit * {width} + output) * 2",
-            "        root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
-            "        wr, wi = tl.split(root_point)",
-            "        wr, wi = wr[:, None, None], wi[:, None, None]",
-            "        cr = cr + (xr + yr)[None, :, :] * wr",
-            "        ci = ci + (xi + yi)[None, :, :] * wr",
-            "        sr = sr + (xr - yr)[None, :, :] * wi",
-            "        si = si + (xi - yi)[None, :, :] * wi",
-            "    low_r, low_i = cr - si, ci + sr",
+            f"    si = tl.full(({width}, {pack}, {block}), 0.0, tl.float32)"]
+        for digit in range(1, half + 1):
+            lines += input_lines(str(digit), "xr", "xi")
+            lines += input_lines(str(radix - digit), "yr", "yi")
+            lines += [f"    root = ({n + digit * width} + output) * 2",
+                "    root_point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
+                "    wr, wi = tl.split(root_point)",
+                "    wr, wi = wr[:, None, None], wi[:, None, None]",
+                "    cr = cr + (xr + yr)[None, :, :] * wr",
+                "    ci = ci + (xi + yi)[None, :, :] * wr",
+                "    sr = sr + (xr - yr)[None, :, :] * wi",
+                "    si = si + (xi - yi)[None, :, :] * wi"]
+        lines += ["    low_r, low_i = cr - si, ci + sr",
             "    high_r, high_i = cr + si, ci - sr",
             f"    output = tl.where(output <= {half}, output, {radix})"]
         lines += output_lines("output", "low_r", "low_i", expanded=True)
@@ -193,6 +193,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 2, "fft_stage_config": asdict(config)}
+        "generator_version": 3, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
