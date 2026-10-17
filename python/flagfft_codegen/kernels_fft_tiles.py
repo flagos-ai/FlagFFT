@@ -62,9 +62,9 @@ class TensorFFTConfig:
             raise ValueError("output_rows_per_batch must be nonnegative")
         if self.output_rows_per_batch and self.output_stride != 1:
             raise ValueError("permuted output uses output_stride=1")
-        if self.exchange not in {"gather", "flat", "split", "dsa", "buffer", "static"}:
+        if self.exchange not in {"gather", "flat", "interleaved", "split", "dsa", "buffer", "static"}:
             raise ValueError("unsupported tensor FFT exchange")
-        if self.twiddle not in {"table", "compute"}:
+        if self.twiddle not in {"table", "local_table", "compute"}:
             raise ValueError("unsupported twiddle strategy")
         if self.num_warps not in {1, 2, 4, 8}:
             raise ValueError("unsupported tensor FFT launch width")
@@ -100,7 +100,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     reconstruct a succession of reshaped, sliced local-memory layouts.
     """
     n, pack = config.length, config.rows_per_program
-    identity = hashlib.sha256(json.dumps({"version": 5, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 6, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
@@ -169,7 +169,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
 def _build_flat_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     """Keep exchange indices in one explicit logical vector address space."""
     n, pack = config.length, config.rows_per_program
-    identity = hashlib.sha256(json.dumps({"version": 5, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 6, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     bits = n.bit_length() - 1
     reversed_index = " | ".join(
@@ -197,20 +197,34 @@ def _build_flat_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
                 f"    imag = tl.where((source_frequency == 0) | (source_frequency == {n // 2}), 0.0, imag)"]
     lines += [f"    reverse = lane * {n} + ({reversed_index})",
         "    real = tl.gather(real, reverse, 0)", "    imag = tl.gather(imag, reverse, 0)"]
+    if config.twiddle == "local_table":
+        lines += [f"    roots = tl.load(twiddle_ptr + tl.arange(0, {n}))"]
     for stage in range(1, bits + 1):
         half, span = 1 << (stage - 1), 1 << stage
-        lines += [f"    lo = lane * {n} + (frequency & ~{half})",
-            f"    hi = lo + {half}",
-            "    ar = tl.gather(real, lo, 0)", "    ai = tl.gather(imag, lo, 0)",
-            "    br = tl.gather(real, hi, 0)", "    bi = tl.gather(imag, hi, 0)",
-            f"    tw = (frequency % {half}) * {n // span} * 2",
-            *(["    wr = tl.load(twiddle_ptr + tw)", "    wi = tl.load(twiddle_ptr + tw + 1)"]
-              if config.twiddle == "table" else [
-                  f"    angle = (frequency % {half}).to(tl.float32) * {(-1 if config.direction == 'forward' else 1) * 2 * math.pi / span!r}",
-                  "    wr = tl.cos(angle)", "    wi = tl.sin(angle)"]),
-            "    tr, ti = _cmul(br, bi, wr, wi)",
-            f"    real = ar + tl.where((frequency & {half}) == 0, tr, -tr)",
-            f"    imag = ai + tl.where((frequency & {half}) == 0, ti, -ti)"]
+        lines += [f"    partner = flat ^ {half}",
+            "    pr = tl.gather(real, partner, 0)", "    pi = tl.gather(imag, partner, 0)",
+            f"    upper = (frequency & {half}) != 0",
+            "    ar = tl.where(upper, pr, real)", "    ai = tl.where(upper, pi, imag)",
+            "    br = tl.where(upper, real, pr)", "    bi = tl.where(upper, imag, pi)"]
+        if half == 1:
+            lines += ["    tr = br", "    ti = bi"]
+        elif half == 2:
+            rr, ri = ("bi", "-br") if config.direction == "forward" else ("-bi", "br")
+            lines += [f"    tr = tl.where((frequency & 1) == 0, br, {rr})",
+                f"    ti = tl.where((frequency & 1) == 0, bi, {ri})"]
+        else:
+            if config.twiddle == "compute":
+                lines += [f"    angle = (frequency % {half}).to(tl.float32) * {(-1 if config.direction == 'forward' else 1) * 2 * math.pi / span!r}",
+                    "    wr = tl.cos(angle)", "    wi = tl.sin(angle)"]
+            else:
+                lines += [f"    tw = (frequency % {half}) * {n // span} * 2"]
+                if config.twiddle == "local_table":
+                    lines += ["    wr = tl.gather(roots, tw, 0)", "    wi = tl.gather(roots, tw + 1, 0)"]
+                else:
+                    lines += ["    wr = tl.load(twiddle_ptr + tw)", "    wi = tl.load(twiddle_ptr + tw + 1)"]
+            lines += ["    tr, ti = _cmul(br, bi, wr, wi)"]
+        lines += ["    real = ar + tl.where(upper, -tr, tr)",
+                  "    imag = ai + tl.where(upper, -ti, ti)"]
     step = config.output_rows_per_batch or config.output_stride
     lines += [f"    output_base = (row // {step}) * {olen * step} + row % {step}",
         f"    target = output_base + frequency * {step}", f"    valid = mask & (frequency < {olen})"]
@@ -222,14 +236,81 @@ def _build_flat_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     return name, "\n".join(lines) + "\n"
 
 
+def _build_interleaved_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
+    """Operate on interleaved complex vectors with contiguous GM transactions."""
+    n, pack = config.length, config.rows_per_program
+    identity = hashlib.sha256(json.dumps({"version": 6, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
+    bits = n.bit_length() - 1
+    reverse = " | ".join(f"(((frequency >> {b}) & 1) << {bits-b-1})" for b in range(bits))
+    ilen = n // 2 + 1 if config.mode == "c2r" else n
+    olen = n // 2 + 1 if config.mode == "r2c" else n
+    lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, row_offset):",
+        f"    flat = tl.arange(0, {2 * n * pack})", "    component = flat % 2",
+        f"    frequency = (flat // 2) % {n}", f"    lane = flat // {2 * n}",
+        f"    row = row_offset + tl.program_id(0).to(tl.int64) * {pack} + lane",
+        "    mask = row < nbatch", "    source_frequency = frequency",
+        f"    base = (row // {config.input_stride}) * {ilen * config.input_stride} + row % {config.input_stride}"]
+    if config.mode == "c2r":
+        lines += [f"    conjugate = frequency > {n // 2}",
+            f"    source_frequency = tl.where(conjugate, {n} - frequency, frequency)"]
+    lines += [f"    source = base + source_frequency * {config.input_stride}"]
+    if config.mode == "r2c":
+        lines += ["    value = tl.load(in_ptr + source, mask & (component == 0), 0.0)"]
+    else:
+        lines += ["    value = tl.load(in_ptr + source * 2 + component, mask, 0.0)"]
+        if config.mode == "c2r":
+            lines += ["    value = tl.where(conjugate & (component != 0), -value, value)",
+                f"    value = tl.where(((frequency == 0) | (frequency == {n // 2})) & (component != 0), 0.0, value)"]
+    lines += [f"    reverse = lane * {2 * n} + ({reverse}) * 2 + component",
+        "    value = tl.gather(value, reverse, 0)"]
+    if config.twiddle == "local_table":
+        lines += [f"    roots = tl.load(twiddle_ptr + tl.arange(0, {n}))"]
+    for stage in range(1, bits + 1):
+        half, span = 1 << (stage - 1), 1 << stage
+        lines += [f"    partner = tl.gather(value, flat ^ {half * 2}, 0)",
+            f"    upper = (frequency & {half}) != 0",
+            "    a = tl.where(upper, partner, value)", "    b = tl.where(upper, value, partner)"]
+        if half == 1:
+            lines += ["    term = b"]
+        else:
+            lines += ["    rotated = tl.gather(b, flat ^ 1, 0)"]
+            if half == 2:
+                sign = 1.0 if config.direction == "forward" else -1.0
+                lines += [f"    rotated = rotated * tl.where(component == 0, {sign}, {-sign})",
+                    "    term = tl.where((frequency & 1) == 0, b, rotated)"]
+            else:
+                if config.twiddle == "compute":
+                    lines += [f"    angle = (frequency % {half}).to(tl.float32) * {(-1 if config.direction == 'forward' else 1) * 2 * math.pi / span!r}",
+                        "    wr = tl.cos(angle)", "    wi = tl.sin(angle)"]
+                else:
+                    lines += [f"    tw = (frequency % {half}) * {n // span} * 2"]
+                    if config.twiddle == "local_table":
+                        lines += ["    wr = tl.gather(roots, tw, 0)", "    wi = tl.gather(roots, tw + 1, 0)"]
+                    else:
+                        lines += ["    wr = tl.load(twiddle_ptr + tw)", "    wi = tl.load(twiddle_ptr + tw + 1)"]
+                lines += ["    term = b * wr + rotated * tl.where(component == 0, -wi, wi)"]
+        lines += ["    value = a + tl.where(upper, -term, term)"]
+    step = config.output_rows_per_batch or config.output_stride
+    lines += [f"    base_out = (row // {step}) * {olen * step} + row % {step}",
+        f"    target = base_out + frequency * {step}", f"    valid = mask & (frequency < {olen})"]
+    if config.mode == "c2r":
+        lines += ["    tl.store(out_ptr + target, value, valid & (component == 0))"]
+    else:
+        lines += ["    tl.store(out_ptr + target * 2 + component, value, valid)"]
+    return name, "\n".join(lines) + "\n"
+
+
 def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     if config.exchange == "static":
         return _build_static_fft_source(config)
     if config.exchange == "flat":
         return _build_flat_fft_source(config)
+    if config.exchange == "interleaved":
+        return _build_interleaved_fft_source(config)
     n, pack = config.length, config.rows_per_program
     identity = hashlib.sha256(
-        json.dumps({"version": 4, **asdict(config)}, sort_keys=True).encode()
+        json.dumps({"version": 6, **asdict(config)}, sort_keys=True).encode()
     ).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     bits = n.bit_length() - 1
@@ -397,7 +478,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "dtype": "complex64",
         "implementation": "triton",
         "tensor_fft_config": json.loads(json.dumps(asdict(config))),
-        "generator_version": 4,
+        "generator_version": 6,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
