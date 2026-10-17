@@ -10,7 +10,7 @@ def build_split_tensor_fft(config):
     n, pack = config.length, config.rows_per_program
     if n & (n - 1):
         raise ValueError("tensor split exchange requires a power-of-two length")
-    identity = hashlib.sha256(json.dumps({"version": 1, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 2, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_split_n{n}_{config.mode}_{identity}"
     ilen = n // 2 + 1 if config.mode == "c2r" else n
     olen = n // 2 + 1 if config.mode == "r2c" else n
@@ -53,25 +53,26 @@ def build_split_tensor_fft(config):
     span = n
     while span > 1:
         half, groups = span // 2, n // span
-        shape = (pack, groups, 2, half)
-        lines += [f"    r0, r1 = tl.split(tl.trans(tl.reshape(r, {shape}), (0, 1, 3, 2)))",
-            f"    i0, i1 = tl.split(tl.trans(tl.reshape(i, {shape}), (0, 1, 3, 2)))",
+        shape = (pack * groups, 2, half)
+        lines += [f"    r0, r1 = tl.split(tl.trans(tl.reshape(r, {shape}), (0, 2, 1)))",
+            f"    i0, i1 = tl.split(tl.trans(tl.reshape(i, {shape}), (0, 2, 1)))",
             "    plus_r, plus_i = r0 + r1, i0 + i1",
             "    minus_r, minus_i = r0 - r1, i0 - i1"]
         if half > 1:
             angle = (-1 if config.direction == "forward" else 1) * 2 * math.pi / span
             lines += [f"    phase = tl.arange(0, {half}) * {angle!r}",
-                "    wr, wi = tl.cos(phase)[None, None, :], tl.sin(phase)[None, None, :]",
+                "    wr, wi = tl.cos(phase)[None, :], tl.sin(phase)[None, :]",
                 "    minus_r, minus_i = minus_r * wr - minus_i * wi, minus_r * wi + minus_i * wr"]
-        lines += [f"    r = tl.reshape(tl.trans(tl.join(plus_r, minus_r), (0, 1, 3, 2)), ({pack}, {n}))",
-            f"    i = tl.reshape(tl.trans(tl.join(plus_i, minus_i), (0, 1, 3, 2)), ({pack}, {n}))"]
+        lines += [f"    r = tl.reshape(tl.trans(tl.join(plus_r, minus_r), (0, 2, 1)), ({pack}, {n}))",
+            f"    i = tl.reshape(tl.trans(tl.join(plus_i, minus_i), (0, 2, 1)), ({pack}, {n}))"]
         span = half
     bits = n.bit_length() - 1
     if bits > 1:
-        shape = (pack,) + (2,) * bits
-        axes = (0,) + tuple(range(bits, 0, -1))
-        lines += [f"    r = tl.reshape(tl.trans(tl.reshape(r, {shape}), {axes}), ({pack}, {n}))",
-            f"    i = tl.reshape(tl.trans(tl.reshape(i, {shape}), {axes}), ({pack}, {n}))"]
+        reversed_index = " | ".join(f"(((frequency >> {bit}) & 1) << {bits - 1 - bit})" for bit in range(bits))
+        lines += [f"    reversed_index = {reversed_index}",
+            f"    indices = tl.broadcast_to(reversed_index[None, :], ({pack}, {n}))",
+            "    r = tl.gather(r, indices, 1)",
+            "    i = tl.gather(i, indices, 1)"]
     step = config.output_rows_per_batch or config.output_stride
     lines += [f"    output_base = (row // {step}) * {olen * step} + row % {step}",
         f"    target = output_base[:, None] + frequency[None, :] * {step}",
