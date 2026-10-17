@@ -1848,11 +1848,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft64_child(
   auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
   twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
   std::shared_ptr<JitKernel> replacement;
-  if (!radix4_pair && (group_size == 4 || group_size == 8) &&
-      request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_TRITON_FFT64", false)) {
-    replacement = compile_kernel(KernelKey::npu_grouped_fft64(
+  const bool replace_radix2 = !radix4_pair && (group_size == 4 || group_size == 8) &&
+      flag_or_default("FLAGFFT_NPU_TRITON_FFT64", false);
+  // Qualify the existing wide radix4 group separately from the radix2 body.
+  const bool replace_radix4 = radix4_pair && group_size == 32 && stride == 1 &&
+      flag_or_default("FLAGFFT_NPU_TRITON_FFT64_RADIX4", false);
+  if (request.device_type == "npu" && (replace_radix2 || replace_radix4)) {
+    auto key = KernelKey::npu_grouped_fft64(
         triton_target_for_request(request), request.direction, group_size, stride,
-        static_cast<int64_t>(mode)));
+        static_cast<int64_t>(mode));
+    if (radix4_pair) key.perm_form = "radix4_pair";
+    replacement = compile_kernel(key);
   }
   return std::make_shared<CompiledRawNpuAivFFT64Node>(
       stride, group_size, std::move(indices), std::move(twiddles), mode,

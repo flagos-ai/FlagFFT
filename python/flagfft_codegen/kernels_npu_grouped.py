@@ -13,15 +13,22 @@ from pathlib import Path
 
 from .artifacts import write_text_atomic
 from .metadata import _module_source, _signature
+from .kernels_npu_radix4 import build_npu_radix4_pair_source
 
 
-def build_npu_grouped_fft64_source(*, group: int, stride: int, mode: int) -> str:
-    """Preserve the native radix-2 stages, grouping and input/output layout.
+def build_npu_grouped_fft64_source(*, group: int, stride: int, mode: int,
+                                 radix4_pair: bool = False) -> str:
+    """Preserve the selected native stages, grouping and input/output layout.
 
     Tables contain byte offsets; all gather indices below are FP32 elements.
-    The group of eight retains its two sequential groups of four. Inverse
-    normalization is unchanged: the parent plan owns the final scale.
+    Radix2 group8 retains its two sequential groups of four; radix4 pairs use
+    the separate quarter-vector contract. The parent plan owns inverse scale.
     """
+    if radix4_pair:
+        if stride != 1:
+            raise ValueError("Radix4 pair FFT64 requires contiguous rows")
+        name, source = build_npu_radix4_pair_source(length=64, group=group, mode=mode)
+        return source.replace(f"def {name}(", "def npu_grouped_fft64_kernel(")
     if group not in (4, 8) or stride not in (1, 64) or mode not in (0, 1, 2):
         raise ValueError("FFT64 requires group 4/8, stride 1/64 and mode 0/1/2")
     if mode != 0 and stride != 1:
@@ -87,13 +94,15 @@ def npu_grouped_fft64_kernel(in_ptr, out_ptr, idx_ptr, twiddle_ptr, nbatch):
 
 
 def emit_npu_grouped_fft64(*, group: int, stride: int, mode: int,
-                         direction: str, out_dir: Path) -> dict:
+                         direction: str, out_dir: Path, radix4_pair: bool = False) -> dict:
     if direction not in ("forward", "inverse"):
         raise ValueError("FFT direction must be forward or inverse")
     if (mode == 1 and direction != "forward") or (mode == 2 and direction != "inverse"):
         raise ValueError("Real FFT mode disagrees with its direction")
-    source = build_npu_grouped_fft64_source(group=group, stride=stride, mode=mode)
-    name = f"flagfft_npu_fft64_g{group}_s{stride}_m{mode}_{direction}"
+    source = build_npu_grouped_fft64_source(group=group, stride=stride, mode=mode,
+                                           radix4_pair=radix4_pair)
+    suffix = "_r4" if radix4_pair else ""
+    name = f"flagfft_npu_fft64_g{group}_s{stride}_m{mode}_{direction}{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))
@@ -106,6 +115,7 @@ def emit_npu_grouped_fft64(*, group: int, stride: int, mode: int,
         "arg_names": arg_names, "kernel_type": "npu_grouped_fft64",
         "dtype": "complex64", "direction": direction, "length": 64,
         "group_size": group, "stride": stride, "mode": mode,
+        "radix4_pair": radix4_pair,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

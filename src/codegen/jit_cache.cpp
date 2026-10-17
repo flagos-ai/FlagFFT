@@ -639,6 +639,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --npu-fft-stride " << key.reshape_n1
                 << " --npu-fft-mode " << key.reshape_n2
                 << " --direction " << shell_quote(key.direction);
+    if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
   }
 
   std::string artifact_json = run_command_capture_stdout(jit_command.str());
