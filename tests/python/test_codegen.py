@@ -1061,7 +1061,7 @@ def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, pack
     ("npu", "complex64", True), ("npu", "complex128", False),
     ("ix", "complex64", False), ("cuda", "complex64", False),
 ])
-def test_npu_packed_transpose_signature_is_backend_scoped(monkeypatch, tmp_path, backend, dtype, packed):
+def test_npu_pair_transpose_signature_is_backend_scoped(monkeypatch, tmp_path, backend, dtype, packed):
     from flagfft_codegen import emit
 
     monkeypatch.setattr(emit, "_npu_backend_active", lambda: backend == "npu")
@@ -1070,8 +1070,8 @@ def test_npu_packed_transpose_signature_is_backend_scoped(monkeypatch, tmp_path,
         n0=257, n1=129, dtype=dtype, out_dir=tmp_path
     )
     source = Path(metadata["module_path"]).read_text()
-    assert ("tl.pointer_type(tl.uint64)" in source) == packed
-    assert metadata["signature"].startswith("*i64") == packed
+    assert metadata["kernel_name"].startswith("_complex_pair_transpose") == packed
+    assert not metadata["signature"].startswith("*i64")
     assert metadata["tile_size"] == 32
 
 
@@ -2161,7 +2161,7 @@ def test_maca_portable_exchange_indexes_the_register_layout(
     ('npu','complex64',True), ('npu','complex128',False),
     ('ix','complex64',False), ('cuda','complex64',False),
 ])
-def test_npu_3d_packed_transpose_scope(monkeypatch,tmp_path,backend,dtype,packed):
+def test_npu_3d_pair_transpose_scope(monkeypatch,tmp_path,backend,dtype,packed):
     from flagfft_codegen import emit
     monkeypatch.setattr(emit,'_npu_backend_active',lambda: backend=='npu')
     monkeypatch.setattr(emit,'_declared_backend',lambda: backend)
@@ -2170,8 +2170,9 @@ def test_npu_3d_packed_transpose_scope(monkeypatch,tmp_path,backend,dtype,packed
     metadata=emit._emit_tiled_transpose3d_jit_kernel(
         n0=17,n1=33,n2=65,order='021',dtype=dtype,out_dir=tmp_path)
     source=Path(metadata['module_path']).read_text()
-    assert metadata['signature'].startswith('*i64') == packed
-    assert ('tl.pointer_type(tl.uint64)' in source) == packed
+    assert not metadata['signature'].startswith('*i64')
+    assert metadata['kernel_name'].endswith('_pair_aos') == packed
+    compile(source,metadata['module_path'],'exec')
     if packed:
         assert 'safe_rows = row_offsets' in source
         assert 'safe_cols = col_offsets' in source

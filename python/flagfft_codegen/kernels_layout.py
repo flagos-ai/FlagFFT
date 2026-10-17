@@ -265,6 +265,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     vec_store: bool = False,
     tile_traversal: str = "col",
     clamp_offsets: bool = True,
+    pair_load: bool = False,
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -363,6 +364,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
         f"_tiled_transpose3d_kernel_{order}_n{s0}_{s1}_{s2}_{suffix}_t{tile_name}_tile"
         + ("_u64" if packed_complex else "")
         + ("_pair" if pair or pair_store else "")
+        + ("_aos" if pair_load else "")
         + ("_vec" if vec_store else "")
         + ("_rmajor" if tile_traversal == "row" else "")
     )
@@ -423,6 +425,17 @@ def _build_tiled_transpose3d_tile_kernel_source(
             {store_lines}
         """
     else:
+        if pair_load:
+            load_lines = """
+            src_pair = tl.load(in_ptr + src_base[:, :, None] + tl.arange(0, 2)[None, None, :],
+                               mask=load_mask[:, :, None], other=0.0)
+            src_r, src_i = tl.split(src_pair)
+            """
+        else:
+            load_lines = f"""
+            src_r = tl.load(in_ptr + src_base, mask=load_mask, other={zero})
+            src_i = tl.load(in_ptr + src_base + 1, mask=load_mask, other={zero})
+            """
         load_store = f"""
             src_base = (
                 pid_batch * {total_float}
@@ -430,8 +443,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
                 + safe_cols[:, None] * {src_col_stride} * 2
                 + safe_rows[None, :] * 2
             )
-            src_r = tl.load(in_ptr + src_base, mask=load_mask, other={zero})
-            src_i = tl.load(in_ptr + src_base + 1, mask=load_mask, other={zero})
+            {load_lines}
 
             dst_r = tl.trans(src_r)
             dst_i = tl.trans(src_i)
@@ -1208,7 +1220,30 @@ def _build_tiled_transpose3d_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
 
 
+def _build_complex_pair_transpose_kernel_source(n0: int, n1: int, tile_size: int = 32):
+    """Use coalesced AoS IO around two regular FP32 register transposes."""
+    name = f"_complex_pair_transpose_n{n0}_{n1}_t{tile_size}"
+    source = dedent(f"""
+        @triton.jit
+        def {name}(in_ptr, out_ptr, nbatch):
+            row = tl.program_id(1) * {tile_size} + tl.arange(0, {tile_size})
+            col = tl.program_id(0) * {tile_size} + tl.arange(0, {tile_size})
+            batch = tl.program_id(2)
+            word = tl.arange(0, 2)
+            source = (batch * {n0 * n1} + row[:, None, None] * {n1} + col[None, :, None]) * 2 + word[None, None, :]
+            mask = (row[:, None, None] < {n0}) & (col[None, :, None] < {n1}) & (batch < nbatch)
+            point = tl.load(in_ptr + source, mask, 0.0)
+            real, imag = tl.split(point)
+            point = tl.join(tl.trans(real), tl.trans(imag))
+            target = (batch * {n0 * n1} + col[:, None, None] * {n0} + row[None, :, None]) * 2 + word[None, None, :]
+            mask = (col[:, None, None] < {n1}) & (row[None, :, None] < {n0}) & (batch < nbatch)
+            tl.store(out_ptr + target, point, mask)
+    """)
+    return name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
 __all__ = [
+    "_build_complex_pair_transpose_kernel_source",
     "_build_reshape_pack_kernel_source",
     "_build_tiled_transpose3d_kernel_source",
     "_build_tiled_transpose3d_slice_group_kernel_source",
