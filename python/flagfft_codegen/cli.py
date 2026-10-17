@@ -128,6 +128,8 @@ def main() -> None:
     parser.add_argument("--npu-fft-stride", type=int)
     parser.add_argument("--npu-fft-mode", type=int)
     parser.add_argument("--npu-fft-radix4-pair", action="store_true")
+    parser.add_argument("--npu-vector-complex-io", action="store_true",
+                        help="replace only NPU FP32 Bluestein complex transfers")
     parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
@@ -222,6 +224,11 @@ def main() -> None:
         "--execution-policy", choices=("legacy", "native", "packed", "balanced")
     )
     args = parser.parse_args()
+    if args.npu_vector_complex_io and (
+        args.kernel not in ("bluestein_prepare", "bluestein_pointwise", "bluestein_finalize")
+        or not args.target.startswith("npu:") or args.dtype != "complex64"
+    ):
+        parser.error("--npu-vector-complex-io requires an NPU FP32 Bluestein body")
     if args.npu_fft_radix4_pair and args.kernel != "npu_grouped_fft64":
         parser.error("--npu-fft-radix4-pair requires --kernel npu_grouped_fft64")
     if args.npu_vector_transpose and args.kernel != "tiled_transpose":
@@ -418,6 +425,7 @@ def main() -> None:
             m=args.bluestein_m,
             dtype=args.dtype,
             out_dir=args.out_dir,
+            npu_vector_io=args.npu_vector_complex_io,
         )
     elif spec.family == RADER:
         metadata = _emit_rader_jit_kernel(

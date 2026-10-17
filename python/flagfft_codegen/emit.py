@@ -27,6 +27,7 @@ from typing import Any
 from functools import wraps
 from .maca_tail_policy import maca_tail_kernel_scope, rader_vector_io_default, variant_suffix
 from .artifacts import write_text_atomic
+from .kernels_npu_complex_io import build_npu_bluestein_source
 
 from .kernels_common import (
     LeafPlan,
@@ -87,7 +88,12 @@ _RESHAPE_NUM_WARPS = 4
 _RESHAPE_NUM_STAGES = 1
 
 
-def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]]:
+def _bluestein_kernel_source(kind: str, dtype: str, *,
+                            npu_vector_io: bool = False) -> tuple[str, str, list[str]]:
+    if npu_vector_io:
+        if dtype != "complex64":
+            raise ValueError("Vector complex I/O requires NPU FP32")
+        return build_npu_bluestein_source(kind)
     zero = _zero_other(dtype)
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
     if kind == "bluestein_prepare":
@@ -200,10 +206,16 @@ def _emit_bluestein_jit_kernel(
     m: int,
     dtype: str = "complex64",
     out_dir: Path,
+    npu_vector_io: bool = False,
 ) -> dict[str, Any]:
-    kernel_name, kernel_source, arg_names = _bluestein_kernel_source(kernel, dtype)
+    if npu_vector_io and (not _npu_backend_active() or dtype != "complex64"):
+        raise ValueError("Vector complex I/O requires NPU FP32")
+    kernel_name, kernel_source, arg_names = _bluestein_kernel_source(
+        kernel, dtype, npu_vector_io=npu_vector_io)
     suffix = _dtype_suffix(dtype)
     module_name = f"flagfft_jit_{kernel}_n{n}_m{m}_{suffix}"
+    if npu_vector_io:
+        module_name += "_aos"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))
@@ -221,6 +233,8 @@ def _emit_bluestein_jit_kernel(
         "bluestein_m": int(m),
         "block": _BLUESTEIN_BLOCK,
     }
+    if npu_vector_io:
+        metadata["npu_vector_complex_io"] = True
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
