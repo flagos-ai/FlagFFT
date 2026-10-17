@@ -19,6 +19,7 @@
 #include "adaptor/test_adaptor.h"
 #include "flagfft.h"
 #include "stdout_channel.hpp"
+#include "batch_capture.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -71,6 +72,7 @@ struct Spec {
   Placement placement = Placement::kOutOfPlace;
   bool input_from_stdin = false;
   bool output_to_stdout = false;
+  bool preserve_batch = false;
 };
 
 struct Layout {
@@ -116,7 +118,7 @@ void usage() {
   std::cout << "Usage: numpy_fft_capture --api API --shape N[,N[,N]] --batch B "
                "--direction forward|inverse --placement in-place|out-of-place "
                "--input INPUT.bin --output-dir DIR "
-               "[--implementation both|flagfft|platform]\n"
+               "[--implementation both|flagfft|platform] [--preserve-batch 0|1]\n"
                "\n"
                "API is one of c2c, z2z, r2c, d2z, c2r, z2d.\n"
                "\n"
@@ -335,6 +337,12 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
   if (implementation != args.end()) {
     spec.implementation = parse_implementation(implementation->second);
   }
+  if (auto preserve = args.find("preserve-batch"); preserve != args.end()) {
+    if (preserve->second != "0" && preserve->second != "1") {
+      throw std::runtime_error("--preserve-batch must be 0 or 1");
+    }
+    spec.preserve_batch = preserve->second == "1";
+  }
 
   if (is_real_forward(spec.type) && spec.direction != FLAGFFT_FORWARD) {
     throw std::runtime_error(spec.api + " only supports forward direction");
@@ -355,7 +363,7 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
 // platform reference, but a single invocation still used to materialize the
 // entire batch in host memory and in two device buffers.  That exceeded the
 // 8 GiB MUSA test cgroup for the largest double-complex batch cases.
-constexpr std::size_t kMaxChunkBytes = 128ULL * 1024ULL * 1024ULL;
+// --preserve-batch bypasses this policy when validating a batch-sensitive plan.
 
 void validate_file_size(const fs::path& path, std::size_t expected) {
   std::error_code error;
@@ -438,14 +446,8 @@ void release_file_cache(const fs::path& path, std::size_t offset, std::size_t by
 }
 
 int chunk_batch_size(const Spec& spec, const Layout& full_layout) {
-  if (spec.batch <= 1) {
-    return spec.batch;
-  }
-  const std::size_t batch = static_cast<std::size_t>(spec.batch);
-  const std::size_t bytes_per_batch = full_layout.input_bytes / batch + full_layout.output_bytes / batch;
-  const std::size_t max_batch =
-      bytes_per_batch == 0 ? batch : std::max<std::size_t>(1, kMaxChunkBytes / bytes_per_batch);
-  return static_cast<int>(std::min(batch, max_batch));
+  return flagfft::validation::capture_batch_chunk(
+      spec.batch, full_layout.input_bytes, full_layout.output_bytes, spec.preserve_batch);
 }
 
 void check_flagfft(flagfftResult result, const std::string& context) {
