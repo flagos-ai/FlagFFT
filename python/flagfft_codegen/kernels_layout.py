@@ -1205,7 +1205,38 @@ def _build_tiled_transpose3d_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
 
 
+def _build_complex_pair_transpose_kernel_source(
+    n0: int, n1: int, tile_size: int = 32
+) -> tuple[str, str, list[str]]:
+    """Transpose complex64 tiles with contiguous pairs around FP32 exchanges.
+
+    This implements the existing 2D transpose IO contract. The caller retains
+    the original FFT plan, scratch buffers and launch grid.
+    """
+    if n0 < 1 or n1 < 1 or tile_size < 1 or tile_size & (tile_size - 1):
+        raise ValueError("transpose dimensions must be positive and tile_size a power of two")
+    name = f"_complex_pair_transpose_n{n0}_{n1}_t{tile_size}"
+    source = dedent(f"""
+        @triton.jit
+        def {name}(in_ptr, out_ptr, nbatch):
+            row = tl.program_id(1).to(tl.int64) * {tile_size} + tl.arange(0, {tile_size})
+            col = tl.program_id(0).to(tl.int64) * {tile_size} + tl.arange(0, {tile_size})
+            batch = tl.program_id(2).to(tl.int64)
+            word = tl.arange(0, 2)
+            source = (batch * {n0 * n1} + row[:, None, None] * {n1} + col[None, :, None]) * 2 + word[None, None, :]
+            mask = (row[:, None, None] < {n0}) & (col[None, :, None] < {n1}) & (batch < nbatch)
+            point = tl.load(in_ptr + source, mask, 0.0)
+            real, imag = tl.split(point)
+            point = tl.join(tl.trans(real), tl.trans(imag))
+            target = (batch * {n0 * n1} + col[:, None, None] * {n0} + row[None, :, None]) * 2 + word[None, None, :]
+            mask = (col[:, None, None] < {n1}) & (row[None, :, None] < {n0}) & (batch < nbatch)
+            tl.store(out_ptr + target, point, mask)
+    """)
+    return name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
 __all__ = [
+    "_build_complex_pair_transpose_kernel_source",
     "_build_reshape_pack_kernel_source",
     "_build_tiled_transpose3d_kernel_source",
     "_build_tiled_transpose3d_slice_group_kernel_source",
