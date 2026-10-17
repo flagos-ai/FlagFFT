@@ -584,6 +584,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --transpose3d-n0 " << key.transpose3d_n0 << " --transpose3d-n1 " << key.transpose3d_n1
                 << " --transpose3d-n2 " << key.transpose3d_n2 << " --transpose3d-order "
                 << shell_quote(key.transpose3d_order);
+    if (key.perm_form == "npu_table") {
+      if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {
+        throw std::runtime_error("Table transpose3d requires NPU FP32");
+      }
+      jit_command << " --npu-table-transpose3d";
+    }
   }
   if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32Plane ||
       key.kind == KernelKind::Fused16RealPlane || key.kind == KernelKind::Fused32RealPlane ||
@@ -638,6 +644,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::Transpose3D) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    kernel->npu_permutation_table = key.perm_form == "npu_table";
   }
   if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
