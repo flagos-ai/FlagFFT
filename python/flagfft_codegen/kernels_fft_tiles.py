@@ -17,6 +17,8 @@ from pathlib import Path
 
 from .artifacts import write_text_atomic
 from .metadata import _module_source
+from .kernels_common import _NATURAL_ORDER_CODELET_RADICES
+from .kernels_leaf import _emit_natural_order_codelet_call
 
 
 @dataclass(frozen=True)
@@ -30,10 +32,19 @@ class TensorFFTConfig:
     output_rows_per_batch: int = 0
     exchange: str = "gather"
     num_warps: int = 4
+    factors: tuple[int, ...] = ()
 
     def __post_init__(self):
-        if self.length < 2 or self.length & (self.length - 1):
-            raise ValueError("tensor FFT length must be a power of two >= 2")
+        if self.length < 2:
+            raise ValueError("tensor FFT length must be >= 2")
+        if self.exchange != "static" and self.length & (self.length - 1):
+            raise ValueError("tensor exchange requires a power-of-two length")
+        factors = tuple(self.factors) or _static_factors(self.length)
+        if math.prod(factors) != self.length or any(
+            radix not in _NATURAL_ORDER_CODELET_RADICES for radix in factors
+        ):
+            raise ValueError("unsupported tensor FFT factorization")
+        object.__setattr__(self, "factors", factors)
         pack = self.rows_per_program
         if pack < 1 or pack & (pack - 1):
             raise ValueError("rows_per_program must be a positive power of two")
@@ -56,6 +67,28 @@ class TensorFFTConfig:
             raise ValueError("unsupported tensor FFT launch width")
 
 
+def _static_factors(length: int) -> tuple[int, ...]:
+    """Use small natural-order codelets to bound the generated arithmetic DAG."""
+    remaining = length
+    factors = []
+    for radix in (4, 2, 3, 5, 7, 11, 13, 17, 19):
+        while remaining % radix == 0:
+            factors.append(radix)
+            remaining //= radix
+    if remaining != 1:
+        raise ValueError(f"no register-codelet factorization for length {length}")
+    return tuple(factors)
+
+
+def _digit_reversed_index(index: int, factors: tuple[int, ...]) -> int:
+    source, stride = 0, math.prod(factors)
+    for radix in factors:
+        stride //= radix
+        source += (index % radix) * stride
+        index //= radix
+    return source
+
+
 def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     """Route a complete radix graph at emission time, vectorizing over rows.
 
@@ -64,20 +97,19 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     reconstruct a succession of reshaped, sliced local-memory layouts.
     """
     n, pack = config.length, config.rows_per_program
-    identity = hashlib.sha256(json.dumps({"version": 3, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 4, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
     lines = [
         "@triton.jit",
-        f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch):",
-        f"    row = tl.program_id(0).to(tl.int64) * {pack} + tl.arange(0, {pack})",
+        f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, row_offset):",
+        f"    row = row_offset + tl.program_id(0).to(tl.int64) * {pack} + tl.arange(0, {pack})",
         "    mask = row < nbatch",
         f"    input_base = (row // {config.input_stride}) * {input_length * config.input_stride} + row % {config.input_stride}",
     ]
-    bits = n.bit_length() - 1
     for index in range(n):
-        source_index = int(f"{index:0{bits}b}"[::-1], 2)
+        source_index = _digit_reversed_index(index, config.factors)
         conjugate = config.mode == "c2r" and source_index > n // 2
         if conjugate:
             source_index = n - source_index
@@ -89,33 +121,29 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             ]
         else:
             lines += [f"    r{index} = tl.load(in_ptr + {position} * 2, mask=mask, other=0.0)"]
-            if config.mode == "c2r" and source_index in {0, n // 2}:
+            if config.mode == "c2r" and (source_index == 0 or (n % 2 == 0 and source_index == n // 2)):
                 lines += [f"    i{index} = tl.full(({pack},), 0.0, tl.float32)"]
             else:
                 sign = "-" if conjugate else ""
                 lines += [f"    i{index} = {sign}tl.load(in_ptr + {position} * 2 + 1, mask=mask, other=0.0)"]
-    for stage in range(1, bits + 1):
-        span = 1 << stage
-        half = span // 2
+    previous_span = 1
+    for radix in config.factors:
+        span = previous_span * radix
         for base in range(0, n, span):
-            for lane in range(half):
-                lo, hi = base + lane, base + lane + half
-                angle = (-1 if config.direction == "forward" else 1) * 2 * math.pi * lane / span
-                c, s = math.cos(angle), math.sin(angle)
-                c = 0.0 if abs(c) < 1e-15 else c
-                s = 0.0 if abs(s) < 1e-15 else s
-                if lane == 0:
-                    real, imag = f"r{hi}", f"i{hi}"
-                elif c == 0.0:
-                    real = f"i{hi}" if s < 0 else f"-i{hi}"
-                    imag = f"r{hi}" if s > 0 else f"-r{hi}"
-                else:
+            for lane in range(previous_span):
+                indices = [base + lane + digit * previous_span for digit in range(radix)]
+                for digit, register in enumerate(indices[1:], start=1):
+                    angle = (-1 if config.direction == "forward" else 1) * 2 * math.pi * digit * lane / span
+                    if lane == 0:
+                        continue
+                    c, s = math.cos(angle), math.sin(angle)
+                    c = 0.0 if abs(c) < 1e-15 else c
+                    s = 0.0 if abs(s) < 1e-15 else s
                     lines += [
-                        f"    tr = r{hi} * {c!r} - i{hi} * {s!r}",
-                        f"    ti = r{hi} * {s!r} + i{hi} * {c!r}",
+                        f"    r{register}, i{register} = _cmul(r{register}, i{register}, {c!r}, {s!r})",
                     ]
-                    real, imag = "tr", "ti"
-                lines += [f"    r{lo}, r{hi}, i{lo}, i{hi} = _fwd_rad2_b1(r{lo}, {real}, i{lo}, {imag})"]
+                lines.extend(_emit_natural_order_codelet_call("    ", radix, config.direction, indices))
+        previous_span = span
     if config.output_rows_per_batch:
         extent = config.output_rows_per_batch
         lines += [f"    output_base = (row // {extent}) * {extent * output_length} + row % {extent}"]
@@ -140,7 +168,7 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         return _build_static_fft_source(config)
     n, pack = config.length, config.rows_per_program
     identity = hashlib.sha256(
-        json.dumps({"version": 2, **asdict(config)}, sort_keys=True).encode()
+        json.dumps({"version": 4, **asdict(config)}, sort_keys=True).encode()
     ).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     bits = n.bit_length() - 1
@@ -156,8 +184,8 @@ def _build_tensor_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     # one/two-element inner axes to the hardware's memory alignment.
     lines = [
         "@triton.jit",
-        f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch):",
-        f"    row = tl.program_id(0).to(tl.int64) * {pack} + tl.arange(0, {pack})",
+        f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, row_offset):",
+        f"    row = row_offset + tl.program_id(0).to(tl.int64) * {pack} + tl.arange(0, {pack})",
         f"    frequency = tl.arange(0, {n})",
         f"    source_frequency = {reversed_index}",
         f"    input_base = (row // {config.input_stride}) * {input_length * config.input_stride} + row % {config.input_stride}",
@@ -295,20 +323,20 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
     name, source = _build_tensor_fft_source(config)
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
-    write_text_atomic(module_path, _module_source(source, radices=(2,) if config.exchange == "static" else ()))
+    write_text_atomic(module_path, _module_source(source, radices=tuple(sorted(set(config.factors))) if config.exchange == "static" else ()))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": name,
-        "signature": "*fp32:16,*fp32:16,*fp32:16,i32",
+        "signature": "*fp32:16,*fp32:16,*fp32:16,i32,i64",
         "num_warps": config.num_warps,
         "num_stages": 1,
         "batch_per_block": config.rows_per_program,
-        "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch"],
+        "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "row_offset"],
         "kernel_type": "tensor_fft",
         "dtype": "complex64",
         "implementation": "triton",
-        "tensor_fft_config": asdict(config),
-        "generator_version": 3,
+        "tensor_fft_config": json.loads(json.dumps(asdict(config))),
+        "generator_version": 4,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
