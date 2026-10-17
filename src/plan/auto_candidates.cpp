@@ -423,6 +423,15 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         }
         if (factor != 1) throw std::runtime_error("unsupported Stockham radix");
       }
+      // The table-vector implementation can qualify the large-prime route
+      // independently from the old register codelets. An ascending order
+      // grows the early odd spans gradually, reducing padded tensor work in
+      // packed short-span stores. Keep the established order for mode 1 and
+      // for transforms without 13/17/19; this is an explicit planning probe.
+      if (prime_mode != nullptr && std::string(prime_mode) == "ascending" &&
+          (n % 13 == 0 || n % 17 == 0 || n % 19 == 0)) {
+        std::sort(factors.begin(), factors.end());
+      }
       PlanNodePtr node = std::make_shared<StockhamPlanNode>(n, factors);
       return {
           {node, static_cast<double>(n * factors.size()), priority(node)}
