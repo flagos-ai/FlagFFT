@@ -6,6 +6,89 @@ import json
 import math
 
 
+def gather_twiddle_values(config):
+    """Dense stage roots; each vector is loaded once before local broadcast."""
+    values = []
+    span = config.length
+    sign = -1 if config.direction == "forward" else 1
+    while span > 1:
+        half = span // 2
+        for frequency in range(config.length):
+            angle = sign * 2 * math.pi * (frequency % half) / span
+            values.extend((math.cos(angle), math.sin(angle)))
+        span = half
+    return values
+
+
+def build_gather_tensor_fft(config):
+    n, pack = config.length, config.rows_per_program
+    if n < 2 or n & (n - 1):
+        raise ValueError("gather tensor exchange requires a power-of-two length >=2")
+    identity = hashlib.sha256(json.dumps({"version": 1, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    name = f"_tensor_gather_n{n}_{config.mode}_{identity}"
+    ilen = n // 2 + 1 if config.mode == "c2r" else n
+    olen = n // 2 + 1 if config.mode == "r2c" else n
+    extent, bits = config.row_tile_extent, n.bit_length() - 1
+    lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
+        "    program = program_offset + tl.program_id(0).to(tl.int64)",
+        f"    offset = tl.arange(0, {pack * n})",
+        f"    lane, frequency = offset // {n}, offset % {n}"]
+    if extent:
+        tiles = (extent + pack - 1) // pack
+        lines += [f"    inner_row = (program % {tiles}) * {pack} + lane",
+            f"    row = (program // {tiles}) * {extent} + inner_row",
+            f"    valid_row = (row < nbatch) & (inner_row < {extent})"]
+    else:
+        lines += [f"    row = program * {pack} + lane", "    valid_row = row < nbatch"]
+    lines += [f"    input_base = (row // {config.input_stride}) * {ilen * config.input_stride} + row % {config.input_stride}"]
+    if config.mode == "c2r":
+        lines += [f"    reflected = frequency > {n // 2}",
+            f"    source_frequency = tl.where(reflected, {n} - frequency, frequency)"]
+    else:
+        lines += ["    source_frequency = frequency"]
+    lines += [f"    source = input_base + source_frequency * {config.input_stride}"]
+    if config.mode == "r2c":
+        lines += ["    r = tl.load(in_ptr + source, valid_row, 0.0)",
+            f"    i = tl.full(({pack * n},), 0.0, tl.float32)"]
+    else:
+        lines += ["    point = tl.load(in_ptr + source[:, None] * 2 + tl.arange(0, 2)[None, :], valid_row[:, None], 0.0)",
+            "    r, i = tl.split(point)"]
+        if config.mode == "c2r":
+            lines += ["    i = tl.where(reflected, -i, i)",
+                f"    i = tl.where((source_frequency == 0) | (source_frequency == {n // 2}), 0.0, i)"]
+    lines += [f"    root_frequency = tl.arange(0, {n})",
+        f"    for stage in range({bits}):",
+        f"        half = 1 << ({bits - 1} - stage)",
+        "        partner = offset ^ half",
+        "        pr, pi = tl.gather(r, partner, 0), tl.gather(i, partner, 0)",
+        "        lower = (frequency & half) == 0",
+        "        sum_r, sum_i = r + pr, i + pi",
+        "        difference_r = tl.where(lower, r - pr, pr - r)",
+        "        difference_i = tl.where(lower, i - pi, pi - i)",
+        f"        root = (stage * {n} + root_frequency) * 2",
+        "        point = tl.load(twiddle_ptr + root[:, None] + tl.arange(0, 2)[None, :])",
+        "        root_r, root_i = tl.split(point)",
+        "        wr, wi = tl.gather(root_r, frequency, 0), tl.gather(root_i, frequency, 0)",
+        "        product_r = difference_r * wr - difference_i * wi",
+        "        product_i = difference_r * wi + difference_i * wr",
+        "        r, i = tl.where(lower, sum_r, product_r), tl.where(lower, sum_i, product_i)"]
+    reversed_index = " | ".join(f"(((frequency >> {bit}) & 1) << {bits - 1 - bit})" for bit in range(bits))
+    lines += [f"    reversed_index = {reversed_index}",
+        f"    indices = lane * {n} + reversed_index",
+        f"    r = tl.reshape(tl.gather(r, indices, 0), ({pack}, {n}))",
+        f"    i = tl.reshape(tl.gather(i, indices, 0), ({pack}, {n}))"]
+    step = config.output_rows_per_batch or config.output_stride
+    lines += [f"    output_base = (row // {step}) * {olen * step} + row % {step}",
+        f"    target = tl.reshape(output_base + frequency * {step}, ({pack}, {n}))",
+        f"    valid = tl.reshape(valid_row & (frequency < {olen}), ({pack}, {n}))"]
+    if config.mode == "c2r":
+        lines += ["    tl.store(out_ptr + target, r, valid)"]
+    else:
+        lines += ["    tl.store(out_ptr + target * 2, r, valid)",
+            "    tl.store(out_ptr + target * 2 + 1, i, valid)"]
+    return name, "\n".join(lines) + "\n"
+
+
 def build_split_tensor_fft(config):
     n, pack = config.length, config.rows_per_program
     if n & (n - 1):
