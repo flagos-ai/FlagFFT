@@ -188,6 +188,11 @@ namespace {
            npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_TRANSPOSE");
   }
 
+  bool npu_3d_triton_transpose_enabled(const FFTRequest &request) {
+    return npu_3d_native_transpose_enabled(request) &&
+           flag_or_default("FLAGFFT_NPU_TRITON_TRANSPOSE3D", false);
+  }
+
   std::vector<DeviceAllocation> build_npu_3d_transpose_indices() {
     constexpr uint32_t kTile = 16;
     constexpr uint32_t kComplexCount = kTile * kTile * kTile;
@@ -3604,7 +3609,8 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
-    const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order) {
+    const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order,
+    bool npu_native_replacement) {
   std::string target = triton_target_for_request(request);
   // The 3D real paths permute compact complex intermediates, even when the
   // public transform starts or ends with real values.
@@ -3612,6 +3618,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
                                 ? complex_dtype_for(request.input_dtype)
                                 : request.input_dtype;
   KernelKey key = KernelKey::transpose3d(target, dtype, n0, n1, n2, order);
+  if (npu_native_replacement && npu_3d_triton_transpose_enabled(request)) {
+    key.perm_form = "npu_table";
+  }
   return compile_kernel(key);
 }
 
@@ -4276,13 +4285,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   std::shared_ptr<JitKernel> perm_021_inv;
   if (npu_3d_native_transpose_enabled(request)) {
     npu_transpose_indices = build_npu_3d_transpose_indices();
-  } else {
-    perm_021_fwd = compile_transpose3d_kernel(request, n0, n1, n2, "021");
-    perm_210_fwd = compile_transpose3d_kernel(request, n0, n2, n1, "210");
-    perm_201_fwd = compile_transpose3d_kernel(request, n1, n2, n0, "201");
-    perm_120_inv = compile_transpose3d_kernel(request, n0, n1, n2, "120");
-    perm_210_inv = compile_transpose3d_kernel(request, n1, n2, n0, "210");
-    perm_021_inv = compile_transpose3d_kernel(request, n0, n2, n1, "021");
+  }
+  if (!npu_3d_native_transpose_enabled(request) || npu_3d_triton_transpose_enabled(request)) {
+    const bool replace_native = npu_3d_triton_transpose_enabled(request);
+    perm_021_fwd = compile_transpose3d_kernel(request, n0, n1, n2, "021", replace_native);
+    perm_210_fwd = compile_transpose3d_kernel(request, n0, n2, n1, "210", replace_native);
+    perm_201_fwd = compile_transpose3d_kernel(request, n1, n2, n0, "201", replace_native);
+    perm_120_inv = compile_transpose3d_kernel(request, n0, n1, n2, "120", replace_native);
+    perm_210_inv = compile_transpose3d_kernel(request, n1, n2, n0, "210", replace_native);
+    perm_021_inv = compile_transpose3d_kernel(request, n0, n2, n1, "021", replace_native);
   }
 
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
@@ -5059,20 +5070,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   std::shared_ptr<JitKernel> perm_201;
   if (npu_3d_native_transpose_enabled(request)) {
     npu_transpose_indices = build_npu_3d_transpose_indices();
-  } else if (npu_fused_outer_stores) {
+  }
+  if ((!npu_3d_native_transpose_enabled(request) || npu_3d_triton_transpose_enabled(request)) &&
+      npu_fused_outer_stores) {
     // Reorder compact real spectra to [half,n0,n1]; the two following AIV256
     // stores produce [n1,half,n0] and then natural [n0,n1,half] directly.
-    perm_201 = compile_transpose3d_kernel(request, n0, n1, half, "201");
-  } else {
+    perm_201 = compile_transpose3d_kernel(request, n0, n1, half, "201",
+                                         npu_3d_triton_transpose_enabled(request));
+  } else if (!npu_3d_native_transpose_enabled(request) || npu_3d_triton_transpose_enabled(request)) {
+    const bool replace_native = npu_3d_triton_transpose_enabled(request);
     perm_021 = fused_first
         ? std::shared_ptr<JitKernel>{}
-        : compile_transpose3d_kernel(request, n0, n1, half, "021");
+        : compile_transpose3d_kernel(request, n0, n1, half, "021", replace_native);
     perm_210 = fused_middle
         ? std::shared_ptr<JitKernel>{}
-        : compile_transpose3d_kernel(request, n0, half, n1, "210");
+        : compile_transpose3d_kernel(request, n0, half, n1, "210", replace_native);
     perm_201 = fused_n0
         ? std::shared_ptr<JitKernel>{}
-        : compile_transpose3d_kernel(request, n1, half, n0, "201");
+        : compile_transpose3d_kernel(request, n1, half, n0, "201", replace_native);
   }
 
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -5154,10 +5169,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
   std::shared_ptr<JitKernel> perm_201;
   if (npu_3d_native_transpose_enabled(request)) {
     npu_transpose_indices = build_npu_3d_transpose_indices();
-  } else {
-    perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
-    perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
-    perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
+  }
+  if (!npu_3d_native_transpose_enabled(request) || npu_3d_triton_transpose_enabled(request)) {
+    const bool replace_native = npu_3d_triton_transpose_enabled(request);
+    perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021", replace_native);
+    perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210", replace_native);
+    perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201", replace_native);
   }
 
   DeviceAllocation row_fft_buf =
@@ -5241,10 +5258,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
   std::shared_ptr<JitKernel> perm_021;
   if (npu_3d_native_transpose_enabled(request)) {
     npu_transpose_indices = build_npu_3d_transpose_indices();
-  } else {
-    perm_120 = compile_transpose3d_kernel(request, n0, n1, half, "120");
-    perm_210 = compile_transpose3d_kernel(request, n1, half, n0, "210");
-    perm_021 = compile_transpose3d_kernel(request, n0, half, n1, "021");
+  }
+  if (!npu_3d_native_transpose_enabled(request) || npu_3d_triton_transpose_enabled(request)) {
+    const bool replace_native = npu_3d_triton_transpose_enabled(request);
+    perm_120 = compile_transpose3d_kernel(request, n0, n1, half, "120", replace_native);
+    perm_210 = compile_transpose3d_kernel(request, n1, half, n0, "210", replace_native);
+    perm_021 = compile_transpose3d_kernel(request, n0, half, n1, "021", replace_native);
   }
 
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * half * element_bytes));

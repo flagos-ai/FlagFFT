@@ -45,6 +45,7 @@ from .kernels_small_3d import (
 )
 from .kernels_small_2d import emit_fused_2d_kernel
 from .kernels_npu_grouped import emit_npu_grouped_fft64
+from .kernels_npu_layout import emit_npu_table_transpose3d
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -137,6 +138,8 @@ def main() -> None:
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--npu-vector-transpose", action="store_true",
                         help="Use the replacement body for an eligible native NPU 2D transpose")
+    parser.add_argument("--npu-table-transpose3d", action="store_true",
+                        help="Replace a native NPU 3D tile with the same permutation table")
     parser.add_argument(
         "--perm-form",
         choices=(
@@ -218,6 +221,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.npu_vector_transpose and args.kernel != "tiled_transpose":
         parser.error("--npu-vector-transpose requires --kernel tiled_transpose")
+    if args.npu_table_transpose3d and (
+        args.kernel != "transpose3d" or not args.target.startswith("npu:")
+        or args.dtype != "complex64"
+    ):
+        parser.error("--npu-table-transpose3d requires an NPU FP32 transpose3d target")
     if args.npu_portable_leaf:
         os.environ["FLAGFFT_NPU_FOURSTEP_LEAF"] = "1"
     set_codegen_target(args.target)
@@ -457,7 +465,9 @@ def main() -> None:
                 "--kernel transpose3d requires --transpose3d-n0, --transpose3d-n1, "
                 "--transpose3d-n2 and --transpose3d-order"
             )
-        metadata = _emit_tiled_transpose3d_jit_kernel(
+        transpose3d_emitter = (emit_npu_table_transpose3d if args.npu_table_transpose3d
+                               else _emit_tiled_transpose3d_jit_kernel)
+        metadata = transpose3d_emitter(
             n0=args.transpose3d_n0,
             n1=args.transpose3d_n1,
             n2=args.transpose3d_n2,
