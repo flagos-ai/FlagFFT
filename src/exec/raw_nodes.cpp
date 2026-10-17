@@ -2367,6 +2367,12 @@ void CompiledRawTranspose2D::launch(adaptor::StreamHandle stream,
   if (triton_kernel == nullptr) {
     throw std::runtime_error("missing Triton 2D transpose kernel");
   }
+#if defined(FLAGFFT_BACKEND_NPU)
+  // The NPU generator chooses its tile and supplies the corresponding grid.
+  // Keep the surrounding FFT schedule and the three-argument ABI unchanged.
+  if (triton_kernel->grid_x_override > 0) grid_x = triton_kernel->grid_x_override;
+  if (triton_kernel->grid_y_override > 0) grid_y = triton_kernel->grid_y_override;
+#endif
   triton_kernel->launch(stream, kernel_args, grid_x, grid_y, grid_z);
 }
 
