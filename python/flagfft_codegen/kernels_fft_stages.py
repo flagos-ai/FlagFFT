@@ -90,7 +90,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 14, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 15, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -102,13 +102,13 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         f"    group = k // {inner}", f"    j = k % {inner}",
         f"    base_in = (row // {config.input_stride}) * {ilen * config.input_stride} + row % {config.input_stride}",
         f"    base_out = (row // {config.output_rows_per_batch or config.output_stride}) * {olen * (config.output_rows_per_batch or config.output_stride)} + row % {config.output_rows_per_batch or config.output_stride}"]
-    transform_extent = 1 << (pack * ilen - 1).bit_length()
-    cached_transform = (config.input_stride == 1 and
-        (programs == 1 or first and config.mode == "c2r") and
-        transform_extent * (4 if first and config.mode == "r2c" else 8) <= 16 * 1024)
+    transform_extent = 1 << (ilen - 1).bit_length()
+    cached_transform = (first and config.input_stride == 1 and
+        (programs == 1 or config.mode == "c2r") and
+        pack * transform_extent * (4 if config.mode == "r2c" else 8) <= 16 * 1024)
     cache_groups = (block + 2 * inner - 2) // inner
     window_extent = 1 << (cache_groups * span - 1).bit_length()
-    cached_window = (not cached_transform and
+    cached_window = (not cached_transform and not first and
         config.input_stride == 1 and not (first and config.mode == "c2r") and
         pack * window_extent * 8 <= 32 * 1024 and
         window_extent <= 8 * block * radix)
@@ -116,10 +116,8 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         cache_extent = transform_extent if cached_transform else window_extent
         lines += [f"    cache_offset = tl.arange(0, {cache_extent})"]
         if cached_transform:
-            lines += [f"    cache_row_begin = (program // {programs}) * {pack}",
-                f"    cache_rows = tl.minimum({pack}, tl.maximum(nbatch - cache_row_begin, 0)).to(tl.int32)",
-                f"    cache_mask = cache_offset < cache_rows * {ilen}",
-                f"    cache_source = cache_row_begin * {ilen} + cache_offset"]
+            lines += ["    cache_frequency = cache_offset",
+                f"    cache_mask = valid_row[:, None] & (cache_frequency[None, :] < {ilen})"]
         else:
             lines += [f"    cache_k_begin = (program % {programs}) * {block}",
                 f"    cache_j = cache_k_begin % {inner}",
@@ -127,14 +125,12 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
                 f"    cache_count = ((cache_j + {block + inner - 1}) // {inner}) * {span}",
                 "    cache_frequency = cache_begin + cache_offset",
                 f"    cache_mask = valid_row[:, None] & (cache_frequency[None, :] < {n}) & (cache_offset[None, :] < cache_count)"]
-            lines += ["    cache_source = base_in[:, None] + cache_frequency[None, :]"]
+        lines += ["    cache_source = base_in[:, None] + cache_frequency[None, :]"]
         if first and config.mode == "r2c":
             lines += ["    cached_r = tl.load(in_ptr + cache_source, cache_mask, 0.0)",
-                f"    cached_i = tl.full({(cache_extent,) if cached_transform else (pack, cache_extent)}, 0.0, tl.float32)"]
+                f"    cached_i = tl.full(({pack}, {cache_extent}), 0.0, tl.float32)"]
         else:
-            point = ("    cached_point = tl.load(in_ptr + cache_source[:, None] * 2 + tl.arange(0, 2)[None, :], cache_mask[:, None], 0.0)" if cached_transform else
-                "    cached_point = tl.load(in_ptr + cache_source[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], cache_mask[:, :, None], 0.0)")
-            lines += [point,
+            lines += ["    cached_point = tl.load(in_ptr + cache_source[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], cache_mask[:, :, None], 0.0)",
                 "    cached_r, cached_i = tl.split(cached_point)"]
 
     def input_lines(digit, real, imag, indent="    "):
@@ -154,10 +150,9 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
                 f"{indent}frequency = tl.where(conjugate, {n} - frequency, frequency)"]
         if cached_transform:
             result += [f"{indent}cache_index = tl.where(valid_k, frequency, 0)",
-                f"{indent}cache_index = tl.arange(0, {pack})[:, None] * {ilen} + cache_index[None, :]",
-                f"{indent}cache_index = tl.reshape(cache_index, ({pack * block},))",
-                f"{indent}{real} = tl.reshape(tl.gather(cached_r, cache_index, 0), ({pack}, {block}))",
-                f"{indent}{imag} = tl.reshape(tl.gather(cached_i, cache_index, 0), ({pack}, {block}))"]
+                f"{indent}cache_index = tl.broadcast_to(cache_index[None, :], ({pack}, {block}))",
+                f"{indent}{real} = tl.gather(cached_r, cache_index, 1)",
+                f"{indent}{imag} = tl.gather(cached_i, cache_index, 1)"]
         elif first and config.mode == "r2c":
             result += [f"{indent}source = base_in[:, None] + frequency[None, :] * {config.input_stride}"]
             result += [f"{indent}{real} = tl.load(in_ptr + source, mask, 0.0)",
@@ -260,6 +255,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 14, "fft_stage_config": asdict(config)}
+        "generator_version": 15, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
