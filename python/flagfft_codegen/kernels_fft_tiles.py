@@ -97,7 +97,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     reconstruct a succession of reshaped, sliced local-memory layouts.
     """
     n, pack = config.length, config.rows_per_program
-    identity = hashlib.sha256(json.dumps({"version": 4, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 5, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
@@ -166,7 +166,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
 def _build_flat_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     """Keep exchange indices in one explicit logical vector address space."""
     n, pack = config.length, config.rows_per_program
-    identity = hashlib.sha256(json.dumps({"version": 4, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 5, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     bits = n.bit_length() - 1
     reversed_index = " | ".join(
@@ -175,9 +175,9 @@ def _build_flat_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     olen = n // 2 + 1 if config.mode == "r2c" else n
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, row_offset):",
         f"    flat = tl.arange(0, {n * pack})",
-        f"    lane = flat % {pack}", f"    frequency = flat // {pack}",
+        f"    lane = flat // {n}", f"    frequency = flat % {n}",
         f"    row = row_offset + tl.program_id(0).to(tl.int64) * {pack} + lane",
-        "    mask = row < nbatch", f"    source_frequency = {reversed_index}",
+        "    mask = row < nbatch", "    source_frequency = frequency",
         f"    input_base = (row // {config.input_stride}) * {ilen * config.input_stride} + row % {config.input_stride}"]
     if config.mode == "c2r":
         lines += [f"    conjugate = source_frequency > {n // 2}",
@@ -192,10 +192,12 @@ def _build_flat_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         if config.mode == "c2r":
             lines += ["    imag = tl.where(conjugate, -imag, imag)",
                 f"    imag = tl.where((source_frequency == 0) | (source_frequency == {n // 2}), 0.0, imag)"]
+    lines += [f"    reverse = lane * {n} + ({reversed_index})",
+        "    real = tl.gather(real, reverse, 0)", "    imag = tl.gather(imag, reverse, 0)"]
     for stage in range(1, bits + 1):
         half, span = 1 << (stage - 1), 1 << stage
-        lines += [f"    lo = (frequency & ~{half}) * {pack} + lane",
-            f"    hi = lo + {half * pack}",
+        lines += [f"    lo = lane * {n} + (frequency & ~{half})",
+            f"    hi = lo + {half}",
             "    ar = tl.gather(real, lo, 0)", "    ai = tl.gather(imag, lo, 0)",
             "    br = tl.gather(real, hi, 0)", "    bi = tl.gather(imag, hi, 0)",
             f"    tw = (frequency % {half}) * {n // span} * 2",

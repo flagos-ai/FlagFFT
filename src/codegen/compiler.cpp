@@ -36,6 +36,13 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  bool npu_tensor_fft_enabled(const FFTRequest &request, int64_t length) {
+    // The first qualified register tier bounds cold compilation and live values.
+    return request.device_type == "npu" && complex_dtype_for(request.input_dtype) == "complex64" &&
+        length >= 2 && length <= 64 && (length & (length - 1)) == 0 &&
+        flag_or_default("FLAGFFT_NPU_TENSOR_FFT", false);
+  }
+
   bool npu_2d_native_transpose_enabled(const FFTRequest &request,
                                       int64_t rows,
                                       int64_t cols,
@@ -1949,6 +1956,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                                   int64_t batch,
                                                                   bool allow_npu_aiv256_transposed_store) {
   configure_single_transform_policies(request);
+  if (npu_tensor_fft_enabled(request, node->length)) {
+    return compile_tensor_fft(request, node->length);
+  }
 #if defined(FLAGFFT_BACKEND_NPU)
   // Reuse the existing Ascend C kernels at the 1D leaves of a 2D plan. The
   // guards describe the child transform, so the route also applies to the
@@ -2722,6 +2732,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (npu_tensor_fft_enabled(request, n)) return compile_tensor_fft(request, n, 1, 1, "r2c");
   if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, false);
   }
@@ -2873,6 +2884,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  if (npu_tensor_fft_enabled(request, n)) return compile_tensor_fft(request, n, 1, 1, "c2r");
   if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, true);
   }
@@ -3070,7 +3082,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                                           const FFTRequest &request,
-                                                                          int64_t outer_stride) {
+                                                                      int64_t outer_stride) {
+  if (npu_tensor_fft_enabled(request, leaf.length)) {
+    return compile_tensor_fft(request, leaf.length, outer_stride, outer_stride);
+  }
 #if defined(FLAGFFT_BACKEND_NPU)
   const bool use_npu_3d_aiv_small =
       request.device_type == "npu" && request.origin_rank == 3 && request.real_transform_kind.empty() &&
