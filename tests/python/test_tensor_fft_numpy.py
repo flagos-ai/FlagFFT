@@ -49,7 +49,6 @@ class Language:
     reshape = staticmethod(np.reshape)
     split = staticmethod(lambda values: (values[..., 0], values[..., 1]))
     join = staticmethod(lambda even, odd: np.stack((even, odd), axis=-1))
-    cat = staticmethod(lambda lo, hi, axis: np.concatenate((lo, hi), axis=axis))
 
     @staticmethod
     def load(pointer, mask=True, other=0):
@@ -57,7 +56,8 @@ class Language:
 
     @staticmethod
     def store(pointer, values, mask):
-        pointer.values[np.asarray(pointer.offset)[mask]] = np.asarray(values)[mask]
+        offset, values, mask = np.broadcast_arrays(pointer.offset, values, mask)
+        pointer.values[offset[mask]] = values[mask]
 
 
 @pytest.mark.parametrize("length,factors", [(2, ()), (16, ()), (32, (8, 4)), (64, ()),

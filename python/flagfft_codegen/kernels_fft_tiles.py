@@ -105,7 +105,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
     reconstruct a succession of reshaped, sliced local-memory layouts.
     """
     n, pack = config.length, config.rows_per_program
-    identity = hashlib.sha256(json.dumps({"version": 8, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 9, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_tensor_fft_n{n}_{config.mode}_{config.direction}_{identity}"
     input_length = n // 2 + 1 if config.mode == "c2r" else n
     output_length = n // 2 + 1 if config.mode == "r2c" else n
@@ -128,23 +128,16 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         lines += [f"    input_base = (group_row // {config.input_stride}) * {input_length * config.input_stride} + group_row % {config.input_stride} + inner_row"]
     else:
         lines += [f"    input_base = row * {input_length}"]
-    if config.exchange == "split_register" and config.mode != "c2r":
+    if config.exchange == "split_register" and config.mode != "c2r" and config.input_stride == 1:
         frequency = "tl.arange(0, " + str(n) + ")"
         lines += [f"    frequency = {frequency}", "    source_frequency = frequency"]
-        if config.input_stride == 1:
-            lines += ["    source = input_base[:, None] + source_frequency[None, :]"]
-            load_mask = "mask[:, None]"
-            transpose = False
-        else:
-            lines += [f"    source = input_base[None, :] + source_frequency[:, None] * {config.input_stride}"]
-            load_mask = "mask[None, :]"
-            transpose = True
+        lines += ["    source = input_base[:, None] + source_frequency[None, :]"]
         if config.mode == "r2c":
-            lines += [f"    loaded_r = tl.load(in_ptr + source, {load_mask}, 0.0)",
-                f"    loaded_i = tl.full(({n}, {pack}), 0.0, tl.float32)" if transpose else f"    loaded_i = tl.full(({pack}, {n}), 0.0, tl.float32)"]
+            lines += ["    loaded_r = tl.load(in_ptr + source, mask[:, None], 0.0)",
+                f"    loaded_i = tl.full(({pack}, {n}), 0.0, tl.float32)"]
         else:
-            lines += [f"    loaded_r = tl.load(in_ptr + source * 2, {load_mask}, 0.0)",
-                f"    loaded_i = tl.load(in_ptr + source * 2 + 1, {load_mask}, 0.0)"]
+            lines += ["    loaded_r = tl.load(in_ptr + source * 2, mask[:, None], 0.0)",
+                "    loaded_i = tl.load(in_ptr + source * 2 + 1, mask[:, None], 0.0)"]
         inverse_indices = { _digit_reversed_index(i, config.factors): i for i in range(n) }
         def split_input(name, points, prefix, path=""):
             if len(points) == 1:
@@ -154,14 +147,8 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             lines.append(f"    {even}, {odd} = tl.split(tl.reshape({name}, ({pack}, {len(points) // 2}, 2)))")
             split_input(even, points[::2], prefix, path + "e")
             split_input(odd, points[1::2], prefix, path + "o")
-        if transpose:
-            for point, register in sorted(inverse_indices.items()):
-                lines += [f"    index = tl.full((1, {pack}), {point}, tl.int32)",
-                    f"    r{register} = tl.reshape(tl.gather(loaded_r, index, 0), ({pack},))",
-                    f"    i{register} = tl.reshape(tl.gather(loaded_i, index, 0), ({pack},))"]
-        else:
-            split_input("loaded_r", tuple(range(n)), "r")
-            split_input("loaded_i", tuple(range(n)), "i")
+        split_input("loaded_r", tuple(range(n)), "r")
+        split_input("loaded_i", tuple(range(n)), "i")
     else:
         for index in range(n):
             source_index = _digit_reversed_index(index, config.factors)
@@ -174,6 +161,9 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
                     f"    r{index} = tl.load(in_ptr + {position}, mask=mask, other=0.0)",
                     f"    i{index} = tl.full(({pack},), 0.0, tl.float32)",
                 ]
+            elif config.exchange == "split_register" and config.mode == "complex":
+                lines += [f"    point = tl.load(in_ptr + {position}[:, None] * 2 + tl.arange(0, 2)[None, :], mask[:, None], 0.0)",
+                    f"    r{index}, i{index} = tl.split(point)"]
             else:
                 lines += [f"    r{index} = tl.load(in_ptr + {position} * 2, mask=mask, other=0.0)"]
                 if config.mode == "c2r" and (source_index == 0 or (n % 2 == 0 and source_index == n // 2)):
@@ -208,7 +198,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
         lines += [f"    output_base = (group_row // {step}) * {output_length * step} + group_row % {step} + inner_row"]
     else:
         lines += [f"    output_base = row * {output_length}"]
-    if config.exchange == "split_register":
+    if config.exchange == "split_register" and step == 1:
         lines += [f"    frequency = tl.arange(0, {n})"]
         def join_output(points, prefix, path=""):
             if len(points) == 1:
@@ -218,25 +208,10 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             name = f"joined_{prefix}{path}"
             lines.append(f"    {name} = tl.reshape(tl.join({even}, {odd}), ({pack}, {len(points)}))")
             return name
-        if step == 1:
-            real = join_output(tuple(range(n)), "r")
-            imag = join_output(tuple(range(n)), "i") if config.mode != "c2r" else ""
-            lines += ["    target = output_base[:, None] + frequency[None, :]",
-                f"    valid = mask[:, None] & (frequency[None, :] < {output_length})"]
-        else:
-            def concatenate_output(points, prefix):
-                if len(points) == 1:
-                    return f"tl.reshape({prefix}{points[0]}, (1, {pack}))"
-                half = len(points) // 2
-                lo = concatenate_output(points[:half], prefix)
-                hi = concatenate_output(points[half:], prefix)
-                name = f"plane_{prefix}_{points[0]}_{len(points)}"
-                lines.append(f"    {name} = tl.cat({lo}, {hi}, 0)")
-                return name
-            real = concatenate_output(tuple(range(n)), "r")
-            imag = concatenate_output(tuple(range(n)), "i") if config.mode != "c2r" else ""
-            lines += [f"    target = output_base[None, :] + frequency[:, None] * {step}",
-                f"    valid = mask[None, :] & (frequency[:, None] < {output_length})"]
+        real = join_output(tuple(range(n)), "r")
+        imag = join_output(tuple(range(n)), "i") if config.mode != "c2r" else ""
+        lines += ["    target = output_base[:, None] + frequency[None, :]",
+            f"    valid = mask[:, None] & (frequency[None, :] < {output_length})"]
         if config.mode == "c2r":
             lines += [f"    tl.store(out_ptr + target, {real}, valid)"]
         else:
@@ -247,6 +222,9 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
             position = f"(output_base + {index * step})"
             if config.mode == "c2r":
                 lines += [f"    tl.store(out_ptr + {position}, r{index}, mask=mask)"]
+            elif config.exchange == "split_register":
+                lines += [f"    point = tl.join(r{index}, i{index})",
+                    f"    tl.store(out_ptr + {position}[:, None] * 2 + tl.arange(0, 2)[None, :], point, mask[:, None])"]
             else:
                 lines += [
                     f"    tl.store(out_ptr + {position} * 2, r{index}, mask=mask)",
@@ -270,7 +248,7 @@ def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
         "programs_per_row_group": (extent + config.rows_per_program - 1) // config.rows_per_program if extent else 1,
         "arg_names": ["in_ptr", "out_ptr", "twiddle_ptr", "nbatch", "program_offset"],
         "kernel_type": "tensor_fft", "dtype": "complex64", "implementation": "triton",
-        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 8,
+        "tensor_fft_config": json.loads(json.dumps(asdict(config))), "generator_version": 9,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
