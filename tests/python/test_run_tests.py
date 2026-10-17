@@ -589,6 +589,25 @@ def test_capture_command_uses_api_instead_of_id_prefix(tmp_path, operators, matr
     assert "--scale" not in perf_cmd
 
 
+def test_full_batch_capture_is_explicit_without_changing_bounded_default(tmp_path, operators, matrix):
+    case = RUN_TESTS.expand_test_cases(operators, matrix, "3d")[0]
+    for builder in (
+        lambda **kw: RUN_TESTS.build_accuracy_cmd(case,tmp_path/'capture',tmp_path,'flagfft',**kw),
+        lambda **kw: RUN_TESTS.build_stream_accuracy_cmd(case,tmp_path/'capture','flagfft',**kw),
+    ):
+        assert '--preserve-batch=1' not in builder()
+        assert '--preserve-batch=1' in builder(preserve_batch=True)
+
+
+@pytest.mark.parametrize('plan,error', [
+    ('=== FlagFFT Plan ===\nrank=3 n=[128,2048,64] batch=4 type=41\n',None),
+    ('=== FlagFFT Plan ===\nrank=3 n=[128,2048,64] batch=1 type=41\n','capture executed batch=1, requested batch=4'),
+    (None,'capture plan is missing the executed batch size'),
+])
+def test_preserved_batch_checks_the_actual_plan(plan,error):
+    assert RUN_TESTS.capture_batch_error({'batch':4},plan)==error
+
+
 @pytest.mark.parametrize("api", ["c2r", "z2d"])
 @pytest.mark.parametrize("shape", [(23,), (8, 10), (8, 7), (4, 5, 6)])
 def test_real_inverse_input_is_a_valid_multidimensional_half_spectrum(api, shape):
