@@ -43,6 +43,7 @@ class Language:
 
     where = staticmethod(np.where)
     minimum = staticmethod(np.minimum)
+    maximum = staticmethod(np.maximum)
     gather = staticmethod(np.take_along_axis)
     cos = staticmethod(np.cos)
     sin = staticmethod(np.sin)
