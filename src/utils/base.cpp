@@ -246,6 +246,8 @@ std::string kernel_kind_name(KernelKind kind) {
       return "npu_radix4_pair";
     case KernelKind::NpuTableStockham:
       return "npu_table_stockham";
+    case KernelKind::NpuSinglePower2:
+      return "npu_single_power2";
   }
   return "unknown";
 }

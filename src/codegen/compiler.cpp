@@ -1396,46 +1396,6 @@ namespace {
                                                         radix4_mode);
   }
 
-  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft2048_child(const FFTRequest &request,
-                                                              bool radix4_pair = false) {
-    std::vector<uint32_t> host_indices;
-    std::vector<float> host_twiddles;
-    if (radix4_pair) {
-      build_npu_aiv_fft_radix4_pair_tables(request,
-                                           2048,
-                                           1,
-                                           NpuAivFFT64Mode::Complex,
-                                           host_indices,
-                                           host_twiddles);
-    } else {
-      build_npu_aiv_fft_power2_tables(request, 2048, host_indices, host_twiddles);
-    }
-    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
-    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
-    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
-    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
-    return std::make_shared<CompiledRawNpuAivFFTNode>(2048,
-                                                      std::move(indices),
-                                                      std::move(twiddles),
-                                                      1,
-                                                      radix4_pair);
-  }
-
-  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft1024_child(const FFTRequest &request) {
-    std::vector<uint32_t> host_indices;
-    std::vector<float> host_twiddles;
-    build_npu_aiv_fft_power2_tables(request, 1024, host_indices, host_twiddles);
-    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
-    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
-    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
-    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
-    return std::make_shared<CompiledRawNpuAivFFTNode>(1024,
-                                                      std::move(indices),
-                                                      std::move(twiddles),
-                                                      1,
-                                                      false);
-  }
-
   int32_t npu_aiv_fft64_group_size(const char *setting, int64_t batch) {
     if (setting == nullptr) return 1;
     const std::string value(setting);
@@ -1853,13 +1813,77 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft128_child(
   if (request.device_type == "npu" && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && radix4_pair &&
       (group_size == 4 || group_size == 8 || group_size == 16) &&
-      flag_or_default("FLAGFFT_NPU_TRITON_FFT128_RADIX4", false)) {
+      (flag_or_default("FLAGFFT_NPU_TRITON_FFT128_RADIX4", false) ||
+       flag_or_default("FLAGFFT_NPU_TRITON_FFT_POWER2", false))) {
     replacement = compile_kernel(KernelKey::npu_radix4_pair(
         triton_target_for_request(request), request.direction, 128, group_size, 0));
+  } else if (request.device_type == "npu" && request.input_dtype == "complex64" &&
+             request.output_dtype == "complex64" && !radix4_pair && group_size == 1 &&
+             flag_or_default("FLAGFFT_NPU_TRITON_FFT_POWER2", false)) {
+    replacement = compile_kernel(KernelKey::npu_single_power2(
+        triton_target_for_request(request), request.direction, 128));
   }
   return std::make_shared<CompiledRawNpuAivFFTNode>(128, std::move(indices),
       std::move(twiddles), group_size, radix4_pair, std::move(replacement));
 }
+std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft2048_child(const FFTRequest &request,
+                                                            bool radix4_pair) {
+  std::vector<uint32_t> host_indices;
+  std::vector<float> host_twiddles;
+  if (radix4_pair) {
+    build_npu_aiv_fft_radix4_pair_tables(request,
+                                         2048,
+                                         1,
+                                         NpuAivFFT64Mode::Complex,
+                                         host_indices,
+                                         host_twiddles);
+  } else {
+    build_npu_aiv_fft_power2_tables(request, 2048, host_indices, host_twiddles);
+  }
+  auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+  indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+  auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+  twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+  std::shared_ptr<JitKernel> replacement;
+  if (request.device_type == "npu" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" &&
+      flag_or_default("FLAGFFT_NPU_TRITON_FFT_POWER2", false)) {
+    replacement = compile_kernel(radix4_pair
+        ? KernelKey::npu_radix4_pair(triton_target_for_request(request),
+            request.direction, 2048, 1, 0)
+        : KernelKey::npu_single_power2(triton_target_for_request(request),
+            request.direction, 2048));
+  }
+  return std::make_shared<CompiledRawNpuAivFFTNode>(2048,
+                                                    std::move(indices),
+                                                    std::move(twiddles),
+                                                    1,
+                                                    radix4_pair, std::move(replacement));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft1024_child(const FFTRequest &request) {
+  std::vector<uint32_t> host_indices;
+  std::vector<float> host_twiddles;
+  build_npu_aiv_fft_power2_tables(request, 1024, host_indices, host_twiddles);
+  auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+  indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+  auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+  twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+  std::shared_ptr<JitKernel> replacement;
+  if (request.device_type == "npu" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" &&
+      flag_or_default("FLAGFFT_NPU_TRITON_FFT_POWER2", false)) {
+    replacement = compile_kernel(KernelKey::npu_single_power2(
+        triton_target_for_request(request), request.direction, 1024));
+  }
+  return std::make_shared<CompiledRawNpuAivFFTNode>(1024,
+                                                    std::move(indices),
+                                                    std::move(twiddles),
+                                                    1,
+                                                    false, std::move(replacement));
+}
+
+
 #endif
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {

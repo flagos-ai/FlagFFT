@@ -452,6 +452,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::NpuTableStockham:
       kernel_kind = "npu_table_stockham";
       break;
+    case KernelKind::NpuSinglePower2:
+      kernel_kind = "npu_single_power2";
+      break;
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
@@ -679,6 +682,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     }
     jit_command << " --length " << key.length
                 << " --factors " << key.factors[0] << "," << key.factors[1]
+                << " --direction " << shell_quote(key.direction);
+  }
+  if (key.kind == KernelKind::NpuSinglePower2) {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {
+      throw std::runtime_error("Single-row power2 requires NPU FP32");
+    }
+    jit_command << " --length " << key.length
                 << " --direction " << shell_quote(key.direction);
   }
 

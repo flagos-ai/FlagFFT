@@ -724,6 +724,16 @@ KernelKey KernelKey::npu_table_stockham(std::string target, std::string directio
   return key;
 }
 
+KernelKey KernelKey::npu_single_power2(std::string target, std::string direction, int64_t length) {
+  KernelKey key;
+  key.kind = KernelKind::NpuSinglePower2;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.dtype = "complex64";
+  key.length = length;
+  return key;
+}
+
 KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1) {
   KernelKey key;
   key.kind = KernelKind::TiledTranspose;

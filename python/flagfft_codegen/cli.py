@@ -47,6 +47,7 @@ from .kernels_small_2d import emit_fused_2d_kernel
 from .kernels_npu_grouped import emit_npu_grouped_fft64
 from .kernels_npu_radix4 import emit_npu_radix4_pair
 from .kernels_npu_stockham import emit_npu_table_stockham
+from .kernels_npu_power2 import emit_npu_single_power2
 from .kernels_npu_layout import emit_npu_table_transpose3d
 from .artifacts import write_text_atomic
 from .registry import (
@@ -60,6 +61,7 @@ from .registry import (
     NPU_GROUPED_FFT,
     NPU_RADIX4_PAIR,
     NPU_TABLE_STOCKHAM,
+    NPU_SINGLE_POWER2,
     RESHAPE,
     SMALL_3D,
     SMALL_2D,
@@ -477,6 +479,11 @@ def main() -> None:
         metadata = emit_npu_table_stockham(length=args.length, radix=args.factors[0],
             span=args.factors[1], direction=args.direction, out_dir=args.out_dir,
             compact_loop=args.npu_stockham_loop)
+    elif spec.family == NPU_SINGLE_POWER2:
+        if not args.target.startswith("npu:") or args.dtype != "complex64":
+            parser.error("Single-row power2 requires an NPU FP32 target")
+        metadata = emit_npu_single_power2(length=args.length, direction=args.direction,
+            out_dir=args.out_dir)
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
             parser.error(

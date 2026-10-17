@@ -1664,6 +1664,9 @@ class TritonCompiler {
       NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex, bool radix4_pair = false);
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft128_child(
       const FFTRequest &request, int32_t group_size, bool radix4_pair = false);
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft1024_child(const FFTRequest &request);
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft2048_child(
+      const FFTRequest &request, bool radix4_pair = false);
 #endif
   void configure_single_transform_policies(const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_3d_real_leaf_node(
