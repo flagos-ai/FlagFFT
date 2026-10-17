@@ -90,7 +90,7 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
     first, last = span == n, span == radix
     ilen = n // 2 + 1 if first and config.mode == "c2r" else n
     olen = n // 2 + 1 if last and config.mode == "r2c" else n
-    identity = hashlib.sha256(json.dumps({"version": 17, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
+    identity = hashlib.sha256(json.dumps({"version": 19, **asdict(config)}, sort_keys=True).encode()).hexdigest()[:16]
     name = f"_fft_dif_n{n}_r{radix}_s{span}_{identity}"
     programs = (ndiv + block - 1) // block
     lines = ["@triton.jit", f"def {name}(in_ptr, out_ptr, twiddle_ptr, nbatch, program_offset):",
@@ -108,7 +108,9 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         pack * transform_extent * (4 if config.mode == "r2c" else 8) <= 16 * 1024)
     cache_groups = block // inner if block % inner == 0 else (block + 2 * inner - 2) // inner
     window_extent = 1 << (cache_groups * span - 1).bit_length()
-    cached_window = (not cached_transform and not first and
+    grouped_input = (not first and inner >= 4 and block % inner == 0 and
+        config.input_stride == 1 and not radix & (radix - 1))
+    cached_window = (not cached_transform and not grouped_input and not first and
         config.input_stride == 1 and not (first and config.mode == "c2r") and
         pack * window_extent * 8 <= 32 * 1024 and
         window_extent <= 8 * block * radix)
@@ -133,15 +135,10 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
             lines += ["    cached_point = tl.load(in_ptr + cache_source[:, :, None] * 2 + tl.arange(0, 2)[None, None, :], cache_mask[:, :, None], 0.0)",
                 "    cached_r, cached_i = tl.split(cached_point)"]
 
-    # An aligned complete set of power-of-two butterflies is a regular
-    # tensor permutation, rather than an indexed gather for every digit.
-    split_window = cached_window and block % inner == 0 and not radix & (radix - 1)
+    # The final power-of-two codelet has a fixed interleave. Keep middle
+    # stages off reshape/trans/split: the current NPU lowering loses values.
+    split_window = cached_window and last and not radix & (radix - 1)
     if split_window:
-        if inner > 1:
-            for component in ("r", "i"):
-                lines += [f"    cache_grouped_{component} = tl.reshape(cached_{component}, ({pack}, {block // inner}, {radix}, {inner}))",
-                    f"    cache_grouped_{component} = tl.trans(cache_grouped_{component}, (0, 1, 3, 2))",
-                    f"    cached_{component} = tl.reshape(cache_grouped_{component}, ({pack}, {block * radix}))"]
         def split_digits(name, digits, component):
             if len(digits) == 1:
                 lines.append(f"    cache_digit_{component}{digits[0]} = {name}")
@@ -154,6 +151,18 @@ def build_fft_stage(config: FFTStageConfig) -> tuple[str, str]:
         split_digits("cached_i", tuple(range(radix)), "i")
 
     def input_lines(digit, real, imag, indent="    "):
+        if grouped_input:
+            groups = block // inner
+            return [f"{indent}group_index = (program % {programs}) * {groups} + tl.arange(0, {groups})",
+                f"{indent}inner_index = tl.arange(0, {inner})",
+                f"{indent}group_frequency = group_index[:, None] * {span} + {digit} * {inner} + inner_index[None, :]",
+                f"{indent}group_k = group_index[:, None] * {inner} + inner_index[None, :]",
+                f"{indent}group_mask = valid_row[:, None, None] & (group_k[None, :, :] < {ndiv})",
+                f"{indent}group_source = base_in[:, None, None] + group_frequency[None, :, :]",
+                f"{indent}group_point = tl.load(in_ptr + group_source[:, :, :, None] * 2 + tl.arange(0, 2)[None, None, None, :], group_mask[:, :, :, None], 0.0)",
+                f"{indent}group_r, group_i = tl.split(group_point)",
+                f"{indent}{real} = tl.reshape(group_r, ({pack}, {block}))",
+                f"{indent}{imag} = tl.reshape(group_i, ({pack}, {block}))"]
         if split_window:
             return [f"{indent}{real} = cache_digit_r{digit}",
                 f"{indent}{imag} = cache_digit_i{digit}"]
@@ -278,6 +287,6 @@ def emit_fft_stage(config: FFTStageConfig, out_dir: Path) -> dict:
         "row_group_extent": config.rows_per_program,
         "programs_per_row_group": (config.length // config.radix + config.block - 1) // config.block,
         "kernel_type": "fft_dif_stage", "dtype": "complex64", "implementation": "triton",
-        "generator_version": 17, "fft_stage_config": asdict(config)}
+        "generator_version": 19, "fft_stage_config": asdict(config)}
     write_text_atomic(path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata
