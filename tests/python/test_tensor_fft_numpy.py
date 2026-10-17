@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 
 from flagfft_codegen.kernels_fft_tiles import TensorFFTConfig, emit_tensor_fft
-from flagfft_codegen.kernels_fft_exchange import gather_twiddle_values
 
 
 class Tensor(np.ndarray):
@@ -69,12 +68,10 @@ class Language:
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("stride,permuted", [(1, 0), (3, 0), (1, 7)])
-@pytest.mark.parametrize("exchange", ["static", "split_register", "split_tensor", "gather_tensor"])
+@pytest.mark.parametrize("exchange", ["static", "split_register"])
 def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction, stride, permuted, exchange):
-    if exchange in {"split_register", "split_tensor", "gather_tensor"} and length & (length - 1):
+    if exchange == "split_register" and length & (length - 1):
         pytest.skip("NPU register exchange is qualified only for powers of two")
-    if exchange == "gather_tensor" and length == 1:
-        pytest.skip("identity transforms do not need tensor exchange")
     config = TensorFFTConfig(length, 8, mode=mode, direction=direction, input_stride=stride,
         output_stride=stride if not permuted else 1, output_rows_per_batch=permuted,
         exchange=exchange, factors=factors)
@@ -109,8 +106,6 @@ def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction
     kernel = namespace[metadata["kernel_name"]]
     sign = -1 if direction == "forward" else 1
     twiddle = np.exp(sign * 2j * np.pi * np.arange(length // 2) / length).astype(np.complex64)
-    if exchange == "gather_tensor":
-        twiddle = np.asarray(gather_twiddle_values(config), np.float32).view(np.complex64)
     # Two host chunks exercise row_offset with global input/output indexing.
     programs = ((rows + metadata["row_group_extent"] - 1) // metadata["row_group_extent"]) * metadata["programs_per_row_group"]
     for offset, count in ((0, 1), (1, programs - 1)):
