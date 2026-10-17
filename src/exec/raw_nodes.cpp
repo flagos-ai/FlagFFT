@@ -488,13 +488,15 @@ flagfftResult CompiledRawFourStepStridedNode::execute(adaptor::DevicePtr input,
 CompiledRawStridedLeafNode::CompiledRawStridedLeafNode(int64_t length,
                                                        int64_t outer_stride,
                                                        std::shared_ptr<JitKernel> kernel,
-                                                       std::vector<DeviceAllocation> tables)
-    : length(length), outer_stride(outer_stride), kernel(std::move(kernel)), tables(std::move(tables)) {
+                                                       std::vector<DeviceAllocation> tables,
+                                                       int64_t rows_per_transform)
+    : length(length), outer_stride(outer_stride), rows_per_transform(rows_per_transform), kernel(std::move(kernel)), tables(std::move(tables)) {
 }
 
 std::string CompiledRawStridedLeafNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawStridedLeaf(n=" << length << ", outer_stride=" << outer_stride
+      << ", rows_per_transform=" << rows_per_transform
       << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
@@ -513,6 +515,9 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
       args.push_back(JitKernelArg::device(table.get()));
     }
     args.push_back(JitKernelArg::i64(outer_stride));
+    if (rows_per_transform > 0) {
+      args.push_back(JitKernelArg::i64(rows_per_transform));
+    }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
     kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
     return FLAGFFT_SUCCESS;

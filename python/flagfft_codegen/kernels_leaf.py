@@ -2430,6 +2430,7 @@ def _leaf_kernel_params_for_io(
     *,
     io_mode: LeafIoMode,
     include_four_step_twiddle: bool = False,
+    batched_permutation: bool = False,
 ) -> list[str]:
     params = _leaf_kernel_params(
         plan, include_four_step_twiddle=include_four_step_twiddle
@@ -2442,6 +2443,8 @@ def _leaf_kernel_params_for_io(
         params.append("outer_stride")
     if io_mode in {"permuted_store", "strided_permuted_store"}:
         params.append("perm_span")
+        if batched_permutation:
+            params.append("rows_per_transform")
     elif io_mode == "permuted_store_r2c":
         params.extend(("input_distance", "perm_span"))
     if io_mode == "bluestein_prepare_leaf":
@@ -2965,6 +2968,12 @@ def _build_leaf_kernel_source_for_io(
     perm_form: str = "outer",
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
+    kernel_perm_form = perm_form
+    batched_permutation = perm_form.endswith("_batched")
+    if batched_permutation:
+        perm_form = perm_form.removesuffix("_batched")
+        if io_mode not in {"permuted_store", "strided_permuted_store"} or not perm_form.startswith("inner"):
+            raise ValueError("batched permutation requires an inner permuted store")
     kernel_io_mode = io_mode
     bluestein_real_kind = ""
     if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
@@ -3102,6 +3111,7 @@ def _build_leaf_kernel_source_for_io(
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
+        batched_permutation=batched_permutation,
         include_four_step_twiddle=(
             io_mode
             in {
@@ -3163,7 +3173,7 @@ def _build_leaf_kernel_source_for_io(
     elif io_mode in {"permuted_store", "strided_permuted_store"}:
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
         kernel_name = (
-            f"permuted_store_{perm_form}_{kernel_prefix}_kernel_{suffix}"
+            f"permuted_store_{kernel_perm_form}_{kernel_prefix}_kernel_{suffix}"
             f"_l{plan.lanes}_b{lane_block}"
         )
     elif io_mode == "permuted_store_r2c":
@@ -3263,8 +3273,13 @@ def _build_leaf_kernel_source_for_io(
                 body.append("    perm_batch = perm_base + perm_slot * perm_span")
                 body.append("    perm_i0 = perm_batch // perm_span")
                 body.append("    perm_i1 = perm_batch - perm_i0 * perm_span")
-                body.append("    perm_gbase = perm_i1 * (nbatch // perm_span) + perm_i0")
-                body.append("    perm_k_stride = nbatch")
+                if batched_permutation:
+                    body.append("    perm_outer = rows_per_transform // perm_span")
+                    body.append(f"    perm_gbase = (perm_i0 // perm_outer) * ({n} * rows_per_transform) + perm_i1 * perm_outer + perm_i0 % perm_outer")
+                    body.append("    perm_k_stride = rows_per_transform")
+                else:
+                    body.append("    perm_gbase = perm_i1 * (nbatch // perm_span) + perm_i0")
+                    body.append("    perm_k_stride = nbatch")
             else:
                 body.append("    perm_batch = batch_id + perm_slot")
                 body.append("    perm_i0 = perm_batch // perm_span")
@@ -3278,8 +3293,11 @@ def _build_leaf_kernel_source_for_io(
             if batch_pack > 1 and _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
                 body.append("    perm_i0_vector = current_batch // perm_span")
                 body.append("    perm_i1_vector = current_batch - perm_i0_vector * perm_span")
-                if perm_form == "inner":
-                    body.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
+                if inner_perm_form:
+                    if batched_permutation:
+                        body.append(f"    perm_gbase_vector = (perm_i0_vector // perm_outer) * ({n} * rows_per_transform) + perm_i1_vector * perm_outer + perm_i0_vector % perm_outer")
+                    else:
+                        body.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
                 else:
                     body.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
             if batch_pack == 1:
@@ -3296,10 +3314,13 @@ def _build_leaf_kernel_source_for_io(
                     "perm_i0_scalar * perm_span"
                 )
                 if inner_perm_form:
-                    body.append(
-                        "    perm_gbase_scalar = perm_i1_scalar * "
-                        "(nbatch // perm_span) + perm_i0_scalar"
-                    )
+                    if batched_permutation:
+                        body.append(f"    perm_gbase_scalar = (perm_i0_scalar // perm_outer) * ({n} * rows_per_transform) + perm_i1_scalar * perm_outer + perm_i0_scalar % perm_outer")
+                    else:
+                        body.append(
+                            "    perm_gbase_scalar = perm_i1_scalar * "
+                            "(nbatch // perm_span) + perm_i0_scalar"
+                        )
                 else:
                     out_length = n // 2 + 1 if io_mode in {"permuted_r2c", "permuted_store_r2c"} else n
                     body.append(

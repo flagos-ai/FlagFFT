@@ -107,6 +107,7 @@ def _arg_signature(name: str, dtype: str) -> str:
         "output_distance",
         "outer_stride",
         "perm_span",
+        "rows_per_transform",
         "span",
     }:
         return "i64"

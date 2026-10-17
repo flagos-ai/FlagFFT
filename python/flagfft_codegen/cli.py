@@ -135,6 +135,9 @@ def main() -> None:
         choices=(
             "outer",
             "inner",
+            "inner_batched",
+            "inner_middle_batched",
+            "inner_middle_c2r_cube_batched",
             "outer_first",
             "inner_middle",
             "inner_middle_c2r_cube",
