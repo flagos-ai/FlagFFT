@@ -527,11 +527,13 @@ CompiledRawNpuAivFFT64Node::CompiledRawNpuAivFFT64Node(int64_t stride,
                                                        std::shared_ptr<DeviceAllocation> indices,
                                                        std::shared_ptr<DeviceAllocation> twiddles,
                                                        NpuAivFFT64Mode mode,
-                                                       bool radix4_pair)
+                                                       bool radix4_pair,
+                                                       std::shared_ptr<JitKernel> replacement)
     : stride(stride),
       group_size(group_size),
       mode(mode),
       radix4_pair(radix4_pair),
+      replacement(std::move(replacement)),
       indices(std::move(indices)),
       twiddles(std::move(twiddles)) {
 }
@@ -623,6 +625,7 @@ std::string CompiledRawNpuAivFFT64Node::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawNpuAivFFT64(stride=" << stride << ", group_size=" << group_size
       << ", radix4_pair=" << radix4_pair << ")";
+  if (replacement) oss << "[triton]";
   if (mode == NpuAivFFT64Mode::RealForward) oss << "[r2c-row]";
   if (mode == NpuAivFFT64Mode::RealInverse) oss << "[c2r-row]";
   return oss.str();
@@ -676,6 +679,16 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
 
     const adaptor::DevicePtr input_chunk = input + input_offset;
     const adaptor::DevicePtr output_chunk = output + output_offset;
+    if (replacement) {
+      replacement->launch(context.stream,
+                          {JitKernelArg::device(input_chunk),
+                           JitKernelArg::device(output_chunk),
+                           JitKernelArg::device(indices->get()),
+                           JitKernelArg::device(twiddles->get()),
+                           JitKernelArg::i32(static_cast<int32_t>(chunk_blocks))},
+                          chunk_blocks, 1, 1);
+      continue;
+    }
     const flagfftResult result =
         radix4_pair
             ? adaptor::npu::launch_ascendc_fft_radix4_pair(64,

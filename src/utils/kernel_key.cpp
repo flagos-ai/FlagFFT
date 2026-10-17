@@ -685,6 +685,21 @@ KernelKey KernelKey::twiddle_reshape_pack(std::string target, std::string dtype,
   return key;
 }
 
+KernelKey KernelKey::npu_grouped_fft64(std::string target, std::string direction,
+                                       int64_t group, int64_t stride, int64_t mode) {
+  KernelKey key;
+  key.kind = KernelKind::NpuGroupedFFT64;
+  key.target = std::move(target);
+  key.direction = std::move(direction);
+  key.length = 64;
+  // This family reuses the existing packing/layout key fields. All three
+  // participate in equality, repr and hashing, including the real I/O mode.
+  key.lanes = group;
+  key.reshape_n1 = stride;
+  key.reshape_n2 = mode;
+  return key;
+}
+
 KernelKey KernelKey::tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1) {
   KernelKey key;
   key.kind = KernelKind::TiledTranspose;
