@@ -19,6 +19,7 @@ from .artifacts import write_text_atomic
 from .metadata import _module_source
 from .kernels_common import _NATURAL_ORDER_CODELET_RADICES
 from .kernels_leaf import _emit_natural_order_codelet_call
+from .kernels_fft_exchange import build_split_tensor_fft
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,7 @@ class TensorFFTConfig:
     def __post_init__(self):
         if self.length < 1:
             raise ValueError("tensor FFT length must be >= 1")
-        if self.exchange == "split_register" and self.length & (self.length - 1):
+        if self.exchange in {"split_register", "split_tensor"} and self.length & (self.length - 1):
             raise ValueError("register exchange requires a power-of-two length")
         factors = tuple(self.factors) or _static_factors(self.length)
         if math.prod(factors) != self.length or any(
@@ -61,7 +62,7 @@ class TensorFFTConfig:
             raise ValueError("output_rows_per_batch must be nonnegative")
         if self.output_rows_per_batch and self.output_stride != 1:
             raise ValueError("permuted output uses output_stride=1")
-        if self.exchange not in {"static", "split_register"}:
+        if self.exchange not in {"static", "split_register", "split_tensor"}:
             raise ValueError("unsupported tensor FFT exchange")
         if self.num_warps not in {1, 2, 4, 8}:
             raise ValueError("unsupported tensor FFT launch width")
@@ -290,7 +291,7 @@ def _build_static_fft_source(config: TensorFFTConfig) -> tuple[str, str]:
 
 
 def emit_tensor_fft(config: TensorFFTConfig, out_dir: Path) -> dict:
-    name, source = _build_static_fft_source(config)
+    name, source = build_split_tensor_fft(config) if config.exchange == "split_tensor" else _build_static_fft_source(config)
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source, radices=tuple(sorted(set(config.factors)))))

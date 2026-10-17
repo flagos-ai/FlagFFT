@@ -68,9 +68,9 @@ class Language:
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("stride,permuted", [(1, 0), (3, 0), (1, 7)])
-@pytest.mark.parametrize("exchange", ["static", "split_register"])
+@pytest.mark.parametrize("exchange", ["static", "split_register", "split_tensor"])
 def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction, stride, permuted, exchange):
-    if exchange == "split_register" and length & (length - 1):
+    if exchange in {"split_register", "split_tensor"} and length & (length - 1):
         pytest.skip("NPU register exchange is qualified only for powers of two")
     config = TensorFFTConfig(length, 8, mode=mode, direction=direction, input_stride=stride,
         output_stride=stride if not permuted else 1, output_rows_per_batch=permuted,
