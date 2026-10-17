@@ -635,6 +635,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->profile_id = json_string_field(artifact_json, "profile_id");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
+  if (key.kind == KernelKind::TensorFFT) {
+    kernel->row_group_extent = json_int_field(artifact_json, "row_group_extent");
+    kernel->programs_per_row_group = json_int_field(artifact_json, "programs_per_row_group");
+  }
   if (key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {
     kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");

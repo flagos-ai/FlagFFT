@@ -104,6 +104,8 @@ struct JitKernel {
   std::string profile_id;
   int64_t num_stages = 1;
   int64_t batch_per_block = 1;
+  int64_t row_group_extent = 1;
+  int64_t programs_per_row_group = 1;
   int64_t inner_pack = 1;
   int64_t rows_per_block = 1;
   int64_t butterflies_per_block = 128;

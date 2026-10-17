@@ -1882,7 +1882,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_tensor_fft(
       {"length", length}, {"rows_per_program", rows_per_program},
       {"direction", request.direction}, {"mode", mode},
       {"input_stride", input_stride}, {"output_stride", output_stride},
-      {"output_rows_per_batch", output_rows_per_batch}, {"exchange", "static"},
+      {"output_rows_per_batch", output_rows_per_batch}, {"exchange", "split_register"},
       {"num_warps", 4}};
   KernelKey key;
   key.kind = KernelKind::TensorFFT;

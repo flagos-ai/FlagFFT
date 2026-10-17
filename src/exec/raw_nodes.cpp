@@ -299,19 +299,21 @@ flagfftResult CompiledRawTensorFFTNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
-      kernel->batch_per_block <= 0 || (input == output && !in_place_safe)) {
+      kernel->batch_per_block <= 0 || kernel->row_group_extent <= 0 ||
+      kernel->programs_per_row_group <= 0 || (input == output && !in_place_safe)) {
     return FLAGFFT_INVALID_SIZE;
   }
   try {
-    const int64_t pack = kernel->batch_per_block;
-    const int64_t chunk_limit = pack * block_limit_per_launch();
-    for (int64_t offset = 0; offset < context.batch; offset += chunk_limit) {
-      const int64_t count = std::min(chunk_limit, context.batch - offset);
+    const int64_t programs = ceil_div(context.batch, kernel->row_group_extent) *
+        kernel->programs_per_row_group;
+    const int64_t chunk_limit = block_limit_per_launch();
+    for (int64_t offset = 0; offset < programs; offset += chunk_limit) {
+      const int64_t count = std::min(chunk_limit, programs - offset);
       const std::vector<JitKernelArg> args = {
           JitKernelArg::device(input), JitKernelArg::device(output),
           JitKernelArg::device(0), JitKernelArg::i32(static_cast<int32_t>(context.batch)),
           JitKernelArg::i64(offset)};
-      kernel->launch(context.stream, args, ceil_div(count, pack), 1, 1);
+      kernel->launch(context.stream, args, count, 1, 1);
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &error) {

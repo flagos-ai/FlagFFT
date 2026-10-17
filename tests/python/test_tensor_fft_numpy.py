@@ -44,6 +44,7 @@ class Language:
     gather = staticmethod(np.take_along_axis)
     cos = staticmethod(np.cos)
     sin = staticmethod(np.sin)
+    trans = staticmethod(np.transpose)
     reshape = staticmethod(np.reshape)
     split = staticmethod(lambda values: (values[..., 0], values[..., 1]))
     join = staticmethod(lambda even, odd: np.stack((even, odd), axis=-1))
@@ -62,13 +63,13 @@ class Language:
 @pytest.mark.parametrize("mode,direction", [("complex", "forward"), ("complex", "inverse"),
     ("r2c", "forward"), ("c2r", "inverse")])
 @pytest.mark.parametrize("stride,permuted", [(1, 0), (3, 0), (1, 7)])
-@pytest.mark.parametrize("exchange", ["static", "flat", "interleaved", "split_register"])
+@pytest.mark.parametrize("exchange", ["static", "split_register"])
 def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction, stride, permuted, exchange):
     if exchange != "static" and length & (length - 1):
         pytest.skip("tensor exchange currently supports powers of two")
     config = TensorFFTConfig(length, 8, mode=mode, direction=direction, input_stride=stride,
         output_stride=stride if not permuted else 1, output_rows_per_batch=permuted,
-        exchange=exchange, factors=factors, twiddle="table" if exchange == "static" else "compute")
+        exchange=exchange, factors=factors)
     metadata = emit_tensor_fft(config, tmp_path)
     tree = ast.parse(Path(metadata["module_path"]).read_text())
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
@@ -101,11 +102,12 @@ def test_register_graph_matches_numpy(tmp_path, length, factors, mode, direction
     sign = -1 if direction == "forward" else 1
     twiddle = np.exp(sign * 2j * np.pi * np.arange(length // 2) / length).astype(np.complex64)
     # Two host chunks exercise row_offset with global input/output indexing.
-    for offset, count in ((0, 8), (8, 11)):
-        for pid in range((count + 7) // 8):
+    programs = ((rows + metadata["row_group_extent"] - 1) // metadata["row_group_extent"]) * metadata["programs_per_row_group"]
+    for offset, count in ((0, 1), (1, programs - 1)):
+        for pid in range(count):
             language.pid = pid
             kernel(Pointer(source.view(np.float32)), Pointer(output.view(np.float32)),
-                Pointer(twiddle.view(np.float32)), offset + count, offset)
+                Pointer(twiddle.view(np.float32)), rows, offset)
     actual = np.empty_like(expected)
     for row in range(rows):
         base = row // output_step * out_length * output_step + row % output_step
