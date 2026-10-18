@@ -3591,8 +3591,15 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
                                          complex_dtype_for(request.input_dtype), rows, cols);
     // This private variant replaces an eligible native transpose only.
     // Existing generated transposes retain their original source/cache key.
-    key.perm_form = "npu_vector";
+    key.perm_form = "npu_table";
     transpose->triton_kernel = compile_kernel(key);
+    transpose->npu_tile_size = static_cast<int32_t>(transpose->triton_kernel->transpose_tile_size);
+    if (transpose->npu_tile_size != 16 && transpose->npu_tile_size != 32 &&
+        transpose->npu_tile_size != 64) {
+      throw std::runtime_error("invalid generated NPU transpose tile metadata");
+    }
+    transpose->npu_indices = build_npu_2d_transpose_indices(
+        static_cast<uint32_t>(transpose->npu_tile_size));
   } else {
     transpose->triton_kernel = compile_tiled_transpose_kernel(request, rows, cols);
   }

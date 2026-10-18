@@ -735,11 +735,12 @@ def _emit_tiled_transpose_jit_kernel(
     if npu_vector_transpose:
         if not _npu_backend_active() or dtype != "complex64":
             raise ValueError("NPU vector transpose requires NPU complex64")
+        from .kernels_npu_transpose2d import build_npu_table_transpose2d_source
         # Larger tiles amortize DMA setup on sufficiently large matrices.
         # Emit matching grid metadata; other backends retain their caller grid.
         if tile_size == 32 and min(n0, n1) >= 32 and n0 * n1 >= 1024 * 1024:
             tile_size = 64
-        kernel_name, kernel_source, arg_names = _build_complex_pair_transpose_kernel_source(
+        kernel_name, kernel_source, arg_names, npu_programs = build_npu_table_transpose2d_source(
             n0, n1, tile_size
         )
     elif (
@@ -775,8 +776,9 @@ def _emit_tiled_transpose_jit_kernel(
         "block": tile_size * tile_size,
     }
     if npu_vector_transpose:
-        metadata["grid_x_override"] = (n1 + tile_size - 1) // tile_size
-        metadata["grid_y_override"] = (n0 + tile_size - 1) // tile_size
+        metadata["grid_x_override"] = npu_programs
+        metadata["grid_y_override"] = 1
+        metadata["npu_table_transpose"] = True
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
