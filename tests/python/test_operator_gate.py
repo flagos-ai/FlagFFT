@@ -104,7 +104,7 @@ def test_unlisted_reference_skip_fails(tmp_path):
 
 
 @pytest.mark.parametrize("field,value", [("speedup", float("nan")), ("flagfft_median_ms", 0),
-    ("ref_median_ms", -1), ("speedup", True), ("speedup", 7), ("baseline_valid", None),
+    ("ref_median_ms", -1), ("speedup", True), ("speedup", 7), ("baseline_valid", False),
     ("reference_available", False), ("batch", 7), ("case_id", "wrong"), ("plan", "different plan")])
 def test_invalid_or_inconsistent_timing_fails(tmp_path, field, value):
     manifest, accuracy, platform, timing = fixture(tmp_path)
@@ -116,6 +116,24 @@ def test_invalid_or_inconsistent_timing_fails(tmp_path, field, value):
 def test_reference_input_hash_is_checked(tmp_path):
     manifest, accuracy, platform, timing = fixture(tmp_path)
     next(iter(platform.values()))["input_sha256"] = "different"
+    write(tmp_path, accuracy, platform, timing)
+    assert not gate.audit(manifest, tmp_path, tmp_path)["passed"]
+
+
+def test_performance_only_uses_the_supplied_accuracy_evidence(tmp_path):
+    manifest, accuracy, platform, timing = fixture(tmp_path)
+    for row in timing.values():
+        row["baseline_valid"] = None
+    write(tmp_path, accuracy, platform, timing)
+    assert gate.audit(manifest, tmp_path, tmp_path)["passed"]
+    next(iter(platform.values()))["status"] = "Failed"
+    write(tmp_path, accuracy, platform, timing)
+    assert not gate.audit(manifest, tmp_path, tmp_path)["passed"]
+
+
+def test_missing_reference_verdict_is_rejected(tmp_path):
+    manifest, accuracy, platform, timing = fixture(tmp_path)
+    next(iter(timing.values())).pop("baseline_valid")
     write(tmp_path, accuracy, platform, timing)
     assert not gate.audit(manifest, tmp_path, tmp_path)["passed"]
 

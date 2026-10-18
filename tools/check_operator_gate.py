@@ -122,7 +122,14 @@ def audit(manifest, accuracy_dir, performance_dir, threshold=0.815):
             else:
                 if timing.get("status") != "Passed":
                     reasons.append("performance missing or failed")
-                if timing.get("reference_available") is not True or timing.get("baseline_valid") is not True:
+                # performance-only runs deliberately leave this aggregate flag
+                # null. The supplied accuracy run is checked case by case above;
+                # an explicit invalid verdict or a malformed/missing flag must
+                # still fail. Never require a redundant combined runner pass.
+                validity = timing.get("baseline_valid")
+                if (timing.get("reference_available") is not True
+                        or "baseline_valid" not in timing
+                        or (validity is not True and validity is not None)):
                     reasons.append("reference timing is not validated")
                 values = [timing.get(k) for k in ("flagfft_median_ms", "ref_median_ms", "speedup")]
                 if not all(type(v) in (int, float) and math.isfinite(v) and v > 0 for v in values):
