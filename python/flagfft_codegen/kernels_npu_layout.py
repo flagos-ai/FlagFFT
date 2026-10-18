@@ -23,7 +23,13 @@ from .kernels_common import _npu_backend_active
 from .metadata import _module_source, _signature
 
 
-def build_npu_table_transpose3d_source(n0: int, n1: int, n2: int, order: str):
+# The current build targets Ascend910B4's vector wave. Each program reuses the
+# original native permutation table while covering its remaining logical tiles.
+NPU_TRANSPOSE3D_PROGRAM_BUDGET = 40
+
+
+def build_npu_table_transpose3d_source(n0: int, n1: int, n2: int, order: str,
+                                     programs: int = NPU_TRANSPOSE3D_PROGRAM_BUDGET):
     """Keep the native 16³ tile and byte-offset permutation table contract.
 
     AoS GM addresses and masks retain their affine scalar coordinate. Rebuilding
@@ -31,45 +37,49 @@ def build_npu_table_transpose3d_source(n0: int, n1: int, n2: int, order: str):
     current Ascend compiler. Outer batch addressing remains 64 bit.
     """
     dims = (n0, n1, n2)
-    if min(dims) <= 0 or order not in {"021", "210", "201", "120"}:
+    if min(dims) <= 0 or order not in {"012", "021", "102", "120", "201", "210"} or programs <= 0:
         raise ValueError("NPU transpose3d requires positive dimensions and a supported order")
-    if 2 * math.prod(dims) > 2**31 - 1:
-        raise ValueError("NPU transpose3d tile coordinates require a 32-bit matrix offset")
+    if 2 * math.prod(dims) > 2**63 - 1:
+        raise ValueError("NPU transpose3d matrix exceeds signed 64-bit addressing")
     tile = 16
     axes = tuple(map(int, order))
     output = tuple(dims[axis] for axis in axes)
     tiles = tuple((dim + tile - 1) // tile for dim in output)
+    total_tiles = math.prod(tiles)
+    coordinate_type = "int32" if 2 * math.prod(d + tile for d in dims) < 2**31 else "int64"
+    tile_type = "int32" if total_tiles < 2**31 else "int64"
     starts = [f"tile{axes.index(axis)} * {tile}" for axis in range(3)]
-    name = f"npu_table_transpose3d_n{n0}_{n1}_{n2}_o{order}"
+    name = f"npu_table_transpose3d_n{n0}_{n1}_{n2}_o{order}_p{programs}"
     source = f"""@triton.jit
 def {name}(in_ptr, out_ptr, idx_ptr, nbatch):
-    pid = tl.program_id(0)
+    pid = tl.program_id(0).to(tl.{tile_type})
     batch = tl.program_id(2).to(tl.int64)
-    tile0 = pid // {tiles[1] * tiles[2]}
-    tile1 = (pid // {tiles[2]}) % {tiles[1]}
-    tile2 = pid % {tiles[2]}
     a = tl.arange(0, 16)[:, None, None]
     b = tl.arange(0, 16)[None, :, None]
     c = tl.arange(0, 32)[None, None, :]
-    i0 = {starts[0]} + a
-    i1 = {starts[1]} + b
     input_batch = in_ptr + batch * {2 * n0 * n1 * n2}
-    offset = ((i0 * {n1} + i1) * {n2} + ({starts[2]})) * 2 + c
-    data = tl.load(input_batch + offset,
-                   (i0 < {n0}) & (i1 < {n1})
-                   & (c < 2 * ({n2} - ({starts[2]}))) & (batch < nbatch), 0.0)
-    data = tl.reshape(data, (8192,))
-    index = tl.load(idx_ptr + tl.arange(0, 8192)) >> 2
-    result = tl.reshape(tl.gather(data, index, 0), (16, 16, 32))
-    o0 = tile0 * 16 + a
-    o1 = tile1 * 16 + b
     output_batch = out_ptr + batch * {2 * n0 * n1 * n2}
-    destination = ((o0 * {output[1]} + o1) * {output[2]} + tile2 * 16) * 2 + c
-    tl.store(output_batch + destination, result,
-             (o0 < {output[0]}) & (o1 < {output[1]})
-             & (c < 2 * ({output[2]} - tile2 * 16)) & (batch < nbatch))
+    index = tl.load(idx_ptr + tl.arange(0, 8192)) >> 2
+    for tile_id in range(pid, {total_tiles}, tl.num_programs(0)):
+        tile0 = (tile_id // {tiles[1] * tiles[2]}).to(tl.{coordinate_type})
+        tile1 = ((tile_id // {tiles[2]}) % {tiles[1]}).to(tl.{coordinate_type})
+        tile2 = (tile_id % {tiles[2]}).to(tl.{coordinate_type})
+        i0 = {starts[0]} + a
+        i1 = {starts[1]} + b
+        offset = ((i0 * {n1} + i1) * {n2} + ({starts[2]})) * 2 + c
+        data = tl.load(input_batch + offset,
+                       (i0 < {n0}) & (i1 < {n1})
+                       & (c < 2 * ({n2} - ({starts[2]}))) & (batch < nbatch), 0.0)
+        data = tl.reshape(data, (8192,))
+        result = tl.reshape(tl.gather(data, index, 0), (16, 16, 32))
+        o0 = tile0 * 16 + a
+        o1 = tile1 * 16 + b
+        destination = ((o0 * {output[1]} + o1) * {output[2]} + tile2 * 16) * 2 + c
+        tl.store(output_batch + destination, result,
+                 (o0 < {output[0]}) & (o1 < {output[1]})
+                 & (c < 2 * ({output[2]} - tile2 * 16)) & (batch < nbatch))
 """
-    return name, source, math.prod(tiles)
+    return name, source, min(programs, total_tiles)
 
 
 def emit_npu_table_transpose3d(*, n0: int, n1: int, n2: int, order: str,

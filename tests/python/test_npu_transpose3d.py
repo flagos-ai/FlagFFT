@@ -1,6 +1,7 @@
 """Check the isolated native-table 3D transpose and its backend boundary."""
 
 import ast
+import builtins
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,7 @@ class Pointer:
 
 class TableLanguage:
     ids = (0, 0, 0)
+    grid = (1, 1, 1)
     int32 = np.int32
     int64 = np.int64
     arange = staticmethod(np.arange)
@@ -34,6 +36,9 @@ class TableLanguage:
 
     def program_id(self, axis):
         return np.asarray(self.ids[axis]).view(Index)
+
+    def num_programs(self, axis):
+        return self.grid[axis]
 
     @staticmethod
     def load(pointer, mask=True, other=0):
@@ -55,15 +60,20 @@ def native_table(order):
 
 @pytest.mark.parametrize("dims,batch", [((16, 16, 16), 3), ((17, 33, 65), 3),
     ((1, 17, 5), 2), ((4, 7, 9), 5), ((5, 1, 31), 2)])
-@pytest.mark.parametrize("order", ["021", "210", "201", "120"])
-def test_table_transpose_bits_tails_and_extra_batch(dims, batch, order):
+@pytest.mark.parametrize("order", ["012", "021", "102", "120", "201", "210"])
+@pytest.mark.parametrize("programs", [1, 3, 40])
+def test_table_transpose_bits_tails_and_extra_batch(dims, batch, order, programs):
     rng = np.random.default_rng(20261018)
     data = rng.integers(0, 2**32, (batch, *dims, 2), dtype=np.uint32)
-    name, source, blocks = build_npu_table_transpose3d_source(*dims, order)
+    name, source, blocks = build_npu_table_transpose3d_source(*dims, order, programs)
     tree = ast.parse(source)
     tree.body[0].decorator_list = []
     language = TableLanguage()
-    namespace = {"tl": language}
+    language.grid = (blocks, 1, batch)
+    def tensor_range(start, stop, step):
+        for i in builtins.range(start, stop, step):
+            yield np.asarray(i, dtype=np.int64).view(Index)
+    namespace = {"tl": language, "range": tensor_range}
     exec(compile(tree, "generated_transpose3d", "exec"), namespace)
     marker = np.uint32(0x3FA3FFFF)
     output = np.full(data.size + 128, marker, dtype=np.uint32)
@@ -81,7 +91,7 @@ def test_table_transpose_bits_tails_and_extra_batch(dims, batch, order):
 
 
 @pytest.mark.parametrize("dims,order", [((0, 2, 3), "021"), ((2, -1, 3), "021"),
-    ((2, 3, 4), "102"), ((65536, 65536, 1), "021")])
+    ((2, 3, 4), "112"), ((2**32, 2**32, 2), "021")])
 def test_unsupported_table_contract_rejected(dims, order):
     with pytest.raises(ValueError):
         build_npu_table_transpose3d_source(*dims, order)
@@ -103,6 +113,20 @@ def test_cli_table_transpose_scope(tmp_path, backend, dtype):
     assert result.returncode == 0, result.stderr
     meta = json.loads(result.stdout)
     assert meta["signature"] == "*fp32:16,*fp32:16,*i32:16,i32"
-    assert meta["grid_x_override"] == 2 * 3 * 5
+    assert meta["grid_x_override"] == min(40, 2 * 3 * 5)
     assert meta["tile_size"] == 16 and meta["num_warps"] == 4
     compile(Path(meta["module_path"]).read_text(), meta["module_path"], "exec")
+
+
+@pytest.mark.parametrize("dims,width", [((16, 32, 65), "int32"), ((65536, 65536, 1), "int64")])
+def test_local_coordinates_widen_without_narrowing_batch(dims, width):
+    _, source, blocks = build_npu_table_transpose3d_source(*dims, "021")
+    assert f".to(tl.{width})" in source
+    assert "batch = tl.program_id(2).to(tl.int64)" in source
+    assert blocks <= 40
+    assert source.index("index = tl.load") < source.index("for tile_id in range")
+
+
+def test_nonpositive_program_count_is_rejected():
+    with pytest.raises(ValueError):
+        build_npu_table_transpose3d_source(16, 16, 16, "021", 0)
