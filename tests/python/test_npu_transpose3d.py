@@ -4,6 +4,7 @@ import ast
 import builtins
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -121,7 +122,7 @@ def test_cli_table_transpose_scope(tmp_path, backend, dtype):
 @pytest.mark.parametrize("dims,width", [((16, 32, 65), "int32"), ((65536, 65536, 1), "int64")])
 def test_local_coordinates_widen_without_narrowing_batch(dims, width):
     _, source, blocks = build_npu_table_transpose3d_source(*dims, "021")
-    assert f".to(tl.{width})" in source
+    assert re.search(r"tile0 = .*\.to\(tl\." + width + r"\)", source)
     assert "batch = tl.program_id(2).to(tl.int64)" in source
     assert blocks <= 40
     assert source.index("index = tl.load") < source.index("for tile_id in range")
@@ -130,3 +131,44 @@ def test_local_coordinates_widen_without_narrowing_batch(dims, width):
 def test_nonpositive_program_count_is_rejected():
     with pytest.raises(ValueError):
         build_npu_table_transpose3d_source(16, 16, 16, "021", 0)
+
+
+def test_last_tile_uses_wide_addresses_without_a_large_allocation():
+    # Model only the final tile of a legal 32-GiB matrix. Absolute word offsets
+    # cross 2**32; sparse host storage keeps this a small CPU contract check.
+    dims = (65536, 65536, 1)
+    name, source, blocks = build_npu_table_transpose3d_source(*dims, "021")
+    tree = ast.parse(source)
+    tree.body[0].decorator_list = []
+    language = TableLanguage()
+    language.grid = (blocks, 1, 1)
+    tiles = 4096 * 4096
+    language.ids = ((tiles - 1) % blocks, 0, 0)
+
+    def word_bits(offsets):
+        return ((np.asarray(offsets, dtype=np.uint64) * 2654435761) & 0xFFFFFFFF).astype(np.uint32)
+
+    class SparseWords:
+        def __init__(self):
+            self.written = {}
+
+        def __getitem__(self, offsets):
+            return word_bits(offsets).view(np.float32)
+
+        def __setitem__(self, offsets, values):
+            self.written.update(zip(map(int, offsets), map(int, values.view(np.uint32))))
+
+    namespace = {"tl": language,
+                 "range": lambda start, stop, step: [np.asarray(stop - 1, dtype=np.int64).view(Index)]}
+    exec(compile(tree, "wide_generated_transpose3d", "exec"), namespace)
+    output = SparseWords()
+    namespace[name](Pointer(SparseWords()), Pointer(output), Pointer(native_table("021")), 1)
+    expected = {}
+    for i in range(65520, 65536):
+        for j in range(65520, 65536):
+            for part in range(2):
+                # Output [i,0,j] maps to original [i,j,0].
+                offset = (i * 65536 + j) * 2 + part
+                expected[offset] = int(word_bits(offset))
+    assert min(output.written) > 2**32
+    assert output.written == expected
