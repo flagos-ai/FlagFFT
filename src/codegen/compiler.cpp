@@ -3608,7 +3608,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
                                 : request.input_dtype;
   KernelKey key = KernelKey::transpose3d(target, dtype, n0, n1, n2, order);
   if (npu_native_replacement && npu_3d_triton_transpose_enabled(request)) {
-    key.perm_form = "npu_table";
+    key.perm_form = "npu_table_loop";
   }
   return compile_kernel(key);
 }

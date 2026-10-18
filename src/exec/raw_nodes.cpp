@@ -249,8 +249,15 @@ namespace {
       else if (axis0 == 1 && axis1 == 0 && axis2 == 2) index = 4;  // 102
       const uint64_t per_batch_tiles =
           static_cast<uint64_t>((n0 + 15) / 16) * ((n1 + 15) / 16) * ((n2 + 15) / 16);
+      const bool generated = kernel && kernel->npu_permutation_table;
+      if (generated && (kernel->grid_x_override <= 0 ||
+                        static_cast<uint64_t>(kernel->grid_x_override) > per_batch_tiles)) {
+        return FLAGFFT_INVALID_SIZE;
+      }
+      const uint64_t launched_tiles = generated
+          ? static_cast<uint64_t>(kernel->grid_x_override) : per_batch_tiles;
       const int64_t batch_chunk = std::max<int64_t>(
-          1, static_cast<int64_t>(block_limit_per_launch() / std::max<uint64_t>(1, per_batch_tiles)));
+          1, static_cast<int64_t>(block_limit_per_launch() / std::max<uint64_t>(1, launched_tiles)));
       const int64_t elements_per_batch = n0 * n1 * n2;
       const int32_t remainder = static_cast<int32_t>(n2 % 16);
       const int32_t tail_shift = remainder % 4 == 0
@@ -261,10 +268,7 @@ namespace {
         const int64_t chunk = std::min(batch_chunk, batch - batch_offset);
         const adaptor::DevicePtr byte_offset = static_cast<adaptor::DevicePtr>(
             batch_offset * elements_per_batch * element_bytes);
-        if (kernel && kernel->npu_permutation_table) {
-          if (kernel->grid_x_override != static_cast<int64_t>(per_batch_tiles)) {
-            return FLAGFFT_INVALID_SIZE;
-          }
+        if (generated) {
           // The generated masked copy retains the unshifted source window.
           // Only the native padded copy needs the edge-shifted index table.
           kernel->launch(stream,
@@ -272,7 +276,7 @@ namespace {
                           JitKernelArg::device(output + byte_offset),
                           JitKernelArg::device(npu_indices[index].get()),
                           JitKernelArg::i32(static_cast<int32_t>(chunk))},
-                         static_cast<int64_t>(per_batch_tiles), 1, chunk);
+                         static_cast<int64_t>(launched_tiles), 1, chunk);
           continue;
         }
         const flagfftResult result = adaptor::npu::launch_ascendc_transpose3d(
