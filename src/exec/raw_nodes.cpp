@@ -2369,9 +2369,22 @@ void CompiledRawTranspose2D::launch(adaptor::StreamHandle stream,
   }
 #if defined(FLAGFFT_BACKEND_NPU)
   // The NPU generator chooses its tile and supplies the corresponding grid.
-  // Keep the surrounding FFT schedule and the three-argument ABI unchanged.
+  // Keep the surrounding FFT schedule; the table stays owned by this node.
   if (triton_kernel->grid_x_override > 0) grid_x = triton_kernel->grid_x_override;
   if (triton_kernel->grid_y_override > 0) grid_y = triton_kernel->grid_y_override;
+  if (triton_kernel->transpose_tile_size > 0) {
+    if (kernel_args.size() != 3 ||
+        kernel_args[0].kind != JitArgKind::DevicePtr ||
+        kernel_args[1].kind != JitArgKind::DevicePtr ||
+        kernel_args[2].kind != JitArgKind::Int32 ||
+        kernel_args[2].int32_value <= 0 || npu_indices.get() == 0) {
+      throw std::runtime_error("invalid arguments for generated NPU table transpose");
+    }
+    std::vector<JitKernelArg> table_args {
+        kernel_args[0], kernel_args[1], JitKernelArg::device(npu_indices.get()), kernel_args[2]};
+    triton_kernel->launch(stream, table_args, grid_x, grid_y, grid_z);
+    return;
+  }
 #endif
   triton_kernel->launch(stream, kernel_args, grid_x, grid_y, grid_z);
 }

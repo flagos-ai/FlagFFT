@@ -109,6 +109,8 @@ struct JitKernel {
   int64_t butterflies_per_block = 128;
   int64_t grid_x_override = 0;
   int64_t grid_y_override = 0;
+  // Nonzero only for the private NPU transpose with a byte-offset table ABI.
+  int64_t transpose_tile_size = 0;
   bool tle_fused_twiddle = false;
   void *jit_function = nullptr;
   std::mutex mutex;
