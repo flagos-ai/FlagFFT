@@ -1833,6 +1833,11 @@ def worker_proc(
 
 def policy_skip_message(case: dict, phase: str) -> dict:
     """Create a report/CSV message for a case excluded by backend policy."""
+    if phase == "performance":
+        # Timing identities have no accuracy scale. Keep the skip on the same
+        # key as the pre-created performance row instead of adding a duplicate.
+        case = {key: value for key, value in case.items() if key != "scale"}
+        case["case_id"] = case_name(case, performance=True)
     reason = case.get("skip_reason", "unsupported by backend policy")
     reference = ENV_INFO.get("reference_library", "unknown")
     result = {
@@ -2748,7 +2753,7 @@ def main(argv: list[str] | None = None) -> int:
                     messages.append(message)
                     writer.writerow(incremental_row(message))
                     stream.flush()
-            for case in reference_skipped_cases:
+            for case in performance_cases(reference_skipped_cases):
                 if not args.accuracy_only:
                     message = policy_skip_message(case, "performance")
                     messages.append(message)

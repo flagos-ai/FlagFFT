@@ -339,6 +339,28 @@ def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
     assert op_result["performance"]["status"] == "Skipped"
 
 
+def test_reference_performance_skip_has_one_identity_across_scales(operators):
+    op = next(op for op in operators if op["id"] == "2d_c2c")
+    cases = []
+    for scale in (0.5, 1.0, 2.0):
+        case = dict(op_id=op["id"], op_api="c2c", api="c2c", dtype="torch.float32",
+                    rank=2, algorithm="2d", batch_mode="single", shape=[32, 997], batch=1,
+                    placement="out-of-place", direction="forward", scale=scale,
+                    skip_reason="fixed SiP reference factor limit")
+        case["case_id"] = RUN_TESTS.case_name(case)
+        cases.append(case)
+    direct = RUN_TESTS.policy_skip_message(cases[0], "performance")
+    expected = RUN_TESTS.case_name(cases[0], performance=True)
+    assert direct["case_id"] == expected and "scale" not in direct
+    messages = [RUN_TESTS.policy_skip_message(case, "performance")
+                for case in RUN_TESTS.performance_cases(cases)]
+    assert len(messages) == 1
+    result = RUN_TESTS.aggregate_results(messages, [op], cases, False, True)
+    performance = result[op["id"]]["performance"]
+    assert performance["status"] == "Skipped"
+    assert performance["total"] == 1 and list(performance["cases"]) == [expected]
+
+
 def test_dtype_and_placement_are_visible_in_incremental_csv(operators, matrix):
     op = operators[0]
     case = next(
