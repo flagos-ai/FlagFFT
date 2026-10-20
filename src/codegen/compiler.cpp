@@ -36,7 +36,7 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
-  bool npu_2d_native_transpose_supported(const FFTRequest &request,
+  bool npu_2d_table_transpose_supported(const FFTRequest &request,
                                       int64_t rows,
                                       int64_t cols,
                                       int64_t batch) {
@@ -51,9 +51,9 @@ namespace {
         batch > std::numeric_limits<int32_t>::max()) {
       return false;
     }
-    // Use the AIV route when the transposed working set is large enough to
-    // amortize a native launch. This volume-based gate applies across shapes
-    // and batches instead of selecting named benchmark dimensions.
+    // Use the generated table route when the transposed working set is large
+    // enough to amortize a dedicated launch. This volume-based gate applies
+    // across shapes and batches instead of selecting named benchmark dimensions.
     constexpr uint64_t kMinimumBytes = 64 * 1024;
     uint64_t elements = static_cast<uint64_t>(rows);
     if (elements > std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(cols)) {
@@ -3533,73 +3533,18 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
   auto transpose = std::make_shared<CompiledRawTranspose2D>();
   transpose->rows = rows;
   transpose->cols = cols;
-  const bool npu_native_supported = npu_2d_native_transpose_supported(request, rows, cols, batch);
-  if (npu_native_supported && flag_or_default("FLAGFFT_NPU_2D_NATIVE_TRANSPOSE", true)) {
-    transpose->native_npu = true;
-    // Use larger tiles only when the matrix has enough total traffic and the
-    // resulting grid still exposes multiple waves of independent work.
-    constexpr uint64_t kWideTileMinimumElements = 32 * 1024;
-    constexpr uint64_t kLargeTileMinimumElements = 1024 * 1024;
-    constexpr uint64_t kLargeTileMinimumBlocks = 64;
-    const bool dimensions_support_wide_tile = rows >= 32 && cols >= 32;
-    const bool working_set_supports_wide_tile =
-        dimensions_support_wide_tile &&
-        static_cast<uint64_t>(rows) <= std::numeric_limits<uint64_t>::max() /
-                                           static_cast<uint64_t>(cols) &&
-        static_cast<uint64_t>(rows) * static_cast<uint64_t>(cols) >=
-            kWideTileMinimumElements;
-    uint64_t elements = 0;
-    if (static_cast<uint64_t>(rows) <= std::numeric_limits<uint64_t>::max() /
-                                           static_cast<uint64_t>(cols)) {
-      elements = static_cast<uint64_t>(rows) * static_cast<uint64_t>(cols);
-      if (elements <= std::numeric_limits<uint64_t>::max() /
-                          static_cast<uint64_t>(batch)) {
-        elements *= static_cast<uint64_t>(batch);
-      } else {
-        elements = std::numeric_limits<uint64_t>::max();
-      }
-    }
-    const auto saturating_multiply = [](uint64_t lhs, uint64_t rhs) {
-      if (rhs != 0 && lhs > std::numeric_limits<uint64_t>::max() / rhs) {
-        return std::numeric_limits<uint64_t>::max();
-      }
-      return lhs * rhs;
-    };
-    uint64_t large_tile_blocks = saturating_multiply(
-        static_cast<uint64_t>(batch), (static_cast<uint64_t>(rows) + 63) / 64);
-    large_tile_blocks = saturating_multiply(
-        large_tile_blocks, (static_cast<uint64_t>(cols) + 63) / 64);
-    const bool working_set_supports_large_tile =
-        working_set_supports_wide_tile &&
-        elements >= kLargeTileMinimumElements &&
-        large_tile_blocks >= kLargeTileMinimumBlocks;
-    int32_t selected_tile = working_set_supports_large_tile
-                                ? 64
-                                : (working_set_supports_wide_tile ? 32 : 16);
-    // An explicit override is reserved for controlled hardware screening.
-    if (const char *setting = std::getenv("FLAGFFT_NPU_2D_TRANSPOSE_TILE")) {
-      const std::string value(setting);
-      if (value == "16" || value == "32" || value == "64") {
-        selected_tile = std::stoi(value);
-      }
-    }
-    transpose->npu_tile_size = selected_tile;
-    transpose->npu_indices = build_npu_2d_transpose_indices(
-        static_cast<uint32_t>(transpose->npu_tile_size));
-  } else if (npu_native_supported) {
+  // NPU FP32 transposes that meet the volume gate use the generated table body.
+  // Smaller or non-FP32 transposes keep the portable generated kernel.
+  if (npu_2d_table_transpose_supported(request, rows, cols, batch)) {
     auto key = KernelKey::tiled_transpose(triton_target_for_request(request),
                                          complex_dtype_for(request.input_dtype), rows, cols);
-    // This private variant replaces an eligible native transpose only.
-    // Existing generated transposes retain their original source/cache key.
     key.perm_form = "npu_table";
     transpose->triton_kernel = compile_kernel(key);
-    transpose->npu_tile_size = static_cast<int32_t>(transpose->triton_kernel->transpose_tile_size);
-    if (transpose->npu_tile_size != 16 && transpose->npu_tile_size != 32 &&
-        transpose->npu_tile_size != 64) {
+    const int32_t tile = static_cast<int32_t>(transpose->triton_kernel->transpose_tile_size);
+    if (tile != 16 && tile != 32 && tile != 64) {
       throw std::runtime_error("invalid generated NPU transpose tile metadata");
     }
-    transpose->npu_indices = build_npu_2d_transpose_indices(
-        static_cast<uint32_t>(transpose->npu_tile_size));
+    transpose->npu_indices = build_npu_2d_transpose_indices(static_cast<uint32_t>(tile));
   } else {
     transpose->triton_kernel = compile_tiled_transpose_kernel(request, rows, cols);
   }

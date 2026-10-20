@@ -23,7 +23,6 @@
 #include "adaptor/backend/npu/ascendc_fft_radix4_pair.hpp"
 #include "adaptor/backend/npu/ascendc_fft_small.hpp"
 #include "adaptor/backend/npu/ascendc_transpose3d.hpp"
-#include "adaptor/backend/npu/ascendc_transpose2d.hpp"
 #include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
 #include "adaptor/backend/npu/ascendc_packed_real_boundary.hpp"
 #endif
@@ -2336,34 +2335,6 @@ void CompiledRawTranspose2D::launch(adaptor::StreamHandle stream,
                                     int64_t grid_x,
                                     int64_t grid_y,
                                     int64_t grid_z) const {
-  if (native_npu) {
-#if defined(FLAGFFT_BACKEND_NPU)
-    if (kernel_args.size() != 3 ||
-        kernel_args[0].kind != JitArgKind::DevicePtr ||
-        kernel_args[1].kind != JitArgKind::DevicePtr ||
-        kernel_args[2].kind != JitArgKind::Int32 ||
-        rows > std::numeric_limits<int32_t>::max() ||
-        cols > std::numeric_limits<int32_t>::max() ||
-        kernel_args[2].int32_value <= 0) {
-      throw std::runtime_error("invalid arguments for native AscendC 2D transpose");
-    }
-    const flagfftResult result = adaptor::npu::launch_ascendc_transpose2d(
-        kernel_args[0].device_ptr,
-        kernel_args[1].device_ptr,
-        npu_indices.get(),
-        static_cast<int32_t>(rows),
-        static_cast<int32_t>(cols),
-        kernel_args[2].int32_value,
-        npu_tile_size,
-        stream);
-    if (result != FLAGFFT_SUCCESS) {
-      throw std::runtime_error("native AscendC 2D transpose launch failed");
-    }
-    return;
-#else
-    throw std::runtime_error("native AscendC transpose selected for a non-NPU build");
-#endif
-  }
   if (triton_kernel == nullptr) {
     throw std::runtime_error("missing Triton 2D transpose kernel");
   }
@@ -2390,11 +2361,6 @@ void CompiledRawTranspose2D::launch(adaptor::StreamHandle stream,
 }
 
 std::string CompiledRawTranspose2D::execution_description() const {
-  if (native_npu) {
-    return "AscendCTranspose2D(rows=" + std::to_string(rows) +
-           ", cols=" + std::to_string(cols) +
-           ", tile=" + std::to_string(npu_tile_size) + ")";
-  }
   return triton_kernel ? triton_kernel->execution_description() : "null";
 }
 

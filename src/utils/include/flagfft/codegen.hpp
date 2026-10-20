@@ -118,16 +118,13 @@ struct JitKernel {
 
 using DeviceAllocation = adaptor::Memory;
 
-// A 2D complex transpose can use the portable Triton kernel or the native
-// AscendC AIV tile kernel. Keeping both behind one compiled operation lets
-// all rank-2 complex and real schedules share the same backend-specific path.
+// Rank-2 transposes use the generated Triton body. The NPU table variant keeps
+// its byte-offset table in npu_indices and supplies its own launch grid.
 struct CompiledRawTranspose2D {
   int64_t rows = 0;
   int64_t cols = 0;
   std::shared_ptr<JitKernel> triton_kernel;
   DeviceAllocation npu_indices;
-  int32_t npu_tile_size = 16;
-  bool native_npu = false;
 
   void launch(adaptor::StreamHandle stream,
               const std::vector<JitKernelArg> &kernel_args,
