@@ -1929,7 +1929,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
   const bool npu_2d_aiv_stockham = request.device_type == "npu" &&
                                    (request.origin_rank == 2 ||
-                                    flag_or_default("FLAGFFT_NPU_STOCKHAM_AIV_1D", false)) &&
+                                    flag_or_default("FLAGFFT_NPU_STOCKHAM_AIV_1D", true)) &&
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" &&
                                    flag_or_default("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM", true);
@@ -2297,7 +2297,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         const bool tle_span_ok = stage_span <= tle_tile &&
             ndiv % tle_tile == 0 &&
             tle_tile % stage_span == 0 && ndiv % stage_span == 0;
-        if (flag_or_default("FLAGFFT_NPU_STOCKHAM_TLE_AIV", false) &&
+        if (flag_or_default("FLAGFFT_NPU_STOCKHAM_TLE_AIV", true) &&
             npu_stockham_tle_allowed_ &&
             request.input_dtype == "complex64" && tle_span_ok) {
           const int64_t tle_packed =
