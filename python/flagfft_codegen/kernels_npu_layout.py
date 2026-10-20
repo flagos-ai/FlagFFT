@@ -23,9 +23,9 @@ from .kernels_common import _npu_backend_active
 from .metadata import _module_source, _signature
 
 
-# The current build targets Ascend910B4's vector wave. Each program reuses the
-# original native permutation table while covering its remaining logical tiles.
-NPU_TRANSPOSE3D_PROGRAM_BUDGET = 40
+# Ascend ACL limits one launch to 65535 blocks. Use one program per output
+# tile up to that limit; smaller matrices launch exactly their tile count.
+NPU_TRANSPOSE3D_PROGRAM_BUDGET = 65535
 
 
 def build_npu_table_transpose3d_source(n0: int, n1: int, n2: int, order: str,

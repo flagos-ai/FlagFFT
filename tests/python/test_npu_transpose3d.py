@@ -114,7 +114,7 @@ def test_cli_table_transpose_scope(tmp_path, backend, dtype):
     assert result.returncode == 0, result.stderr
     meta = json.loads(result.stdout)
     assert meta["signature"] == "*fp32:16,*fp32:16,*i32:16,i32"
-    assert meta["grid_x_override"] == min(40, 2 * 3 * 5)
+    assert meta["grid_x_override"] == min(65535, 2 * 3 * 5)
     assert meta["tile_size"] == 16 and meta["num_warps"] == 4
     compile(Path(meta["module_path"]).read_text(), meta["module_path"], "exec")
 
@@ -124,7 +124,7 @@ def test_local_coordinates_widen_without_narrowing_batch(dims, width):
     _, source, blocks = build_npu_table_transpose3d_source(*dims, "021")
     assert re.search(r"tile0 = .*\.to\(tl\." + width + r"\)", source)
     assert "batch = tl.program_id(2).to(tl.int64)" in source
-    assert blocks <= 40
+    assert blocks <= 65535
     assert source.index("index = tl.load") < source.index("for tile_id in range")
 
 
