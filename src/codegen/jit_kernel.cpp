@@ -119,6 +119,16 @@ void JitKernel::launch(adaptor::StreamHandle stream,
 #if !defined(BACKEND_MACA)
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
 #endif
+#if defined(BACKEND_NPU)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (direct_launch == nullptr) {
+      direct_launch = function->prepare_direct_launch(signature,
+                                                      static_cast<unsigned int>(num_warps),
+                                                      static_cast<unsigned int>(num_stages));
+    }
+  }
+#endif
   // Diagnostic timings synchronise each launch and must not be used as
   // end-to-end benchmark results. Disabled unless explicitly requested.
   static const bool profile = env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS"));
@@ -127,7 +137,14 @@ void JitKernel::launch(adaptor::StreamHandle stream,
     timer.emplace();
     timer->start(stream);
   }
-#if defined(BACKEND_MACA)
+#if defined(BACKEND_NPU)
+  auto *direct = static_cast<triton_jit::DefaultBackend::DirectLaunch *>(direct_launch.get());
+  direct->launch(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+                 static_cast<unsigned int>(grid_x),
+                 static_cast<unsigned int>(grid_y),
+                 static_cast<unsigned int>(grid_z),
+                 args.data());
+#elif defined(BACKEND_MACA)
   auto *kernel = static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
   kernel->launch_with_signature(static_cast<unsigned int>(grid_x),
                                 static_cast<unsigned int>(grid_y),

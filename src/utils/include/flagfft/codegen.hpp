@@ -114,6 +114,7 @@ struct JitKernel {
   bool tle_fused_twiddle = false;
   bool npu_permutation_table = false;
   void *jit_function = nullptr;
+  std::shared_ptr<void> direct_launch;
   std::mutex mutex;
 };
 
