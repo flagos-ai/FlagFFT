@@ -1789,7 +1789,7 @@ class TritonCompiler {
                                                                       int64_t batch);
   std::shared_ptr<JitKernel> compile_transpose3d_kernel(
       const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order,
-      bool npu_native_replacement = false);
+      bool npu_table = false);
   std::shared_ptr<JitKernel> compile_kernel(const KernelKey &key) const;
   std::filesystem::path out_dir() const;
   std::string python_executable() const;

@@ -22,7 +22,6 @@
 #include "adaptor/backend/npu/ascendc_fft64.hpp"
 #include "adaptor/backend/npu/ascendc_fft_radix4_pair.hpp"
 #include "adaptor/backend/npu/ascendc_fft_small.hpp"
-#include "adaptor/backend/npu/ascendc_transpose3d.hpp"
 #include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
 #include "adaptor/backend/npu/ascendc_packed_real_boundary.hpp"
 #endif
@@ -233,11 +232,12 @@ namespace {
       int64_t element_bytes) {
 #if defined(FLAGFFT_BACKEND_NPU)
     if (!npu_indices.empty()) {
-      if (npu_indices.size() != 24 || element_bytes != 2 * sizeof(float) ||
+      if (npu_indices.size() != 6 || element_bytes != 2 * sizeof(float) ||
           n0 > std::numeric_limits<int32_t>::max() ||
           n1 > std::numeric_limits<int32_t>::max() ||
           n2 > std::numeric_limits<int32_t>::max() ||
-          batch > std::numeric_limits<int32_t>::max()) {
+          batch > std::numeric_limits<int32_t>::max() || !kernel ||
+          !kernel->npu_permutation_table) {
         return FLAGFFT_INVALID_SIZE;
       }
       std::size_t index = 5;
@@ -248,50 +248,24 @@ namespace {
       else if (axis0 == 1 && axis1 == 0 && axis2 == 2) index = 4;  // 102
       const uint64_t per_batch_tiles =
           static_cast<uint64_t>((n0 + 15) / 16) * ((n1 + 15) / 16) * ((n2 + 15) / 16);
-      const bool generated = kernel && kernel->npu_permutation_table;
-      if (generated && (kernel->grid_x_override <= 0 ||
-                        static_cast<uint64_t>(kernel->grid_x_override) > per_batch_tiles)) {
+      if (kernel->grid_x_override <= 0 ||
+          static_cast<uint64_t>(kernel->grid_x_override) > per_batch_tiles) {
         return FLAGFFT_INVALID_SIZE;
       }
-      const uint64_t launched_tiles = generated
-          ? static_cast<uint64_t>(kernel->grid_x_override) : per_batch_tiles;
+      const uint64_t launched_tiles = static_cast<uint64_t>(kernel->grid_x_override);
       const int64_t batch_chunk = std::max<int64_t>(
           1, static_cast<int64_t>(block_limit_per_launch() / std::max<uint64_t>(1, launched_tiles)));
       const int64_t elements_per_batch = n0 * n1 * n2;
-      const int32_t remainder = static_cast<int32_t>(n2 % 16);
-      const int32_t tail_shift = remainder % 4 == 0
-          ? 0 : ((remainder + 3) / 4) * 4 - remainder;
-      const adaptor::DevicePtr edge_indices = tail_shift == 0
-          ? 0 : npu_indices[6 + (tail_shift - 1) * 6 + index].get();
       for (int64_t batch_offset = 0; batch_offset < batch; batch_offset += batch_chunk) {
         const int64_t chunk = std::min(batch_chunk, batch - batch_offset);
         const adaptor::DevicePtr byte_offset = static_cast<adaptor::DevicePtr>(
             batch_offset * elements_per_batch * element_bytes);
-        if (generated) {
-          // The generated masked copy retains the unshifted source window.
-          // Only the native padded copy needs the edge-shifted index table.
-          kernel->launch(stream,
-                         {JitKernelArg::device(input + byte_offset),
-                          JitKernelArg::device(output + byte_offset),
-                          JitKernelArg::device(npu_indices[index].get()),
-                          JitKernelArg::i32(static_cast<int32_t>(chunk))},
-                         static_cast<int64_t>(launched_tiles), 1, chunk);
-          continue;
-        }
-        const flagfftResult result = adaptor::npu::launch_ascendc_transpose3d(
-            input + byte_offset,
-            output + byte_offset,
-            npu_indices[index].get(),
-            edge_indices,
-            static_cast<int32_t>(n0),
-            static_cast<int32_t>(n1),
-            static_cast<int32_t>(n2),
-            static_cast<int32_t>(chunk),
-            axis0,
-            axis1,
-            axis2,
-            stream);
-        if (result != FLAGFFT_SUCCESS) return result;
+        kernel->launch(stream,
+                       {JitKernelArg::device(input + byte_offset),
+                        JitKernelArg::device(output + byte_offset),
+                        JitKernelArg::device(npu_indices[index].get()),
+                        JitKernelArg::i32(static_cast<int32_t>(chunk))},
+                       static_cast<int64_t>(launched_tiles), 1, chunk);
       }
       return FLAGFFT_SUCCESS;
     }
