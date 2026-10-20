@@ -2600,7 +2600,9 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
         graph_ = std::move(graph);
         graph_in_ = input;
         graph_out_ = output;
-      } catch (const std::exception &) {
+      } catch (const std::exception &e) {
+        std::fprintf(stderr, "[flagfft] 2D RC graph capture failed: %s\n", e.what());
+        std::fflush(stderr);
         graph_failed_ = true;
       }
     }
