@@ -2295,10 +2295,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         }
         constexpr int64_t tle_tile = adaptor::npu::kAscendCStockhamTile;
         const bool tle_span_ok = stage_span <= tle_tile &&
-            (stage_span == 1
-                 ? (ndiv % tle_tile == 0)
-                 : (tle_tile % stage_span == 0 && ndiv % stage_span == 0));
+            ndiv % tle_tile == 0 &&
+            tle_tile % stage_span == 0 && ndiv % stage_span == 0;
         if (flag_or_default("FLAGFFT_NPU_STOCKHAM_TLE_AIV", false) &&
+            npu_stockham_tle_allowed_ &&
             request.input_dtype == "complex64" && tle_span_ok) {
           const int64_t tle_packed =
               stage_span <= tle_tile ? tle_tile / stage_span : 1;
@@ -2450,8 +2450,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(bluestein->fft_plan);
     auto row_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan) : nullptr;
     auto col_leaf = four_step ? std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) : nullptr;
-    std::shared_ptr<CompiledRawNode> fft = compile_raw_node(
-        bluestein->fft_plan, child_request, chunk_batch, allow_npu_aiv256_transposed_store);
+    std::shared_ptr<CompiledRawNode> fft;
+    {
+      const bool previous_tle_allowed = npu_stockham_tle_allowed_;
+      npu_stockham_tle_allowed_ = false;
+      try {
+        fft = compile_raw_node(
+            bluestein->fft_plan, child_request, chunk_batch, allow_npu_aiv256_transposed_store);
+      } catch (...) {
+        npu_stockham_tle_allowed_ = previous_tle_allowed;
+        throw;
+      }
+      npu_stockham_tle_allowed_ = previous_tle_allowed;
+    }
     DeviceAllocation chirp =
         build_raw_bluestein_chirp(request, bluestein->length, request.direction == "inverse");
     DeviceAllocation b_time = build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);

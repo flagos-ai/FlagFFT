@@ -1687,6 +1687,9 @@ class TritonCompiler {
   bool ix_real_single_pack_ = false;
   int ix_ct_single_tle_policy_ = 0;
   std::string maca_tail_policy_ = "off";
+  // The Bluestein convolution FFT has a row/column layout the TLE AIV stage
+  // does not support yet; keep it on the native/JIT path.
+  bool npu_stockham_tle_allowed_ = true;
 
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
