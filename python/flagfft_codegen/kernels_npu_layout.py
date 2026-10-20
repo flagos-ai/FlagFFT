@@ -82,11 +82,23 @@ def {name}(in_ptr, out_ptr, idx_ptr, nbatch):
     return name, source, min(programs, total_tiles)
 
 
+def _program_budget() -> int:
+    raw = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_PROGRAMS")
+    if raw is None:
+        return NPU_TRANSPOSE3D_PROGRAM_BUDGET
+    value = int(raw)
+    if value <= 0:
+        raise ValueError("FLAGFFT_NPU_3D_TRANSPOSE_PROGRAMS must be positive")
+    return value
+
+
 def emit_npu_table_transpose3d(*, n0: int, n1: int, n2: int, order: str,
                              dtype: str, out_dir: Path) -> dict:
     if not _npu_backend_active() or dtype != "complex64":
         raise ValueError("Table transpose3d requires an NPU FP32 target")
-    name, source, blocks = build_npu_table_transpose3d_source(n0, n1, n2, order)
+    name, source, blocks = build_npu_table_transpose3d_source(
+        n0, n1, n2, order, _program_budget()
+    )
     warps = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_WARPS", "4")
     if warps not in {"4", "8"}:
         raise ValueError("FLAGFFT_NPU_3D_TRANSPOSE_WARPS must be 4 or 8")
