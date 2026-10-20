@@ -125,6 +125,7 @@ def main() -> None:
     parser.add_argument("--npu-fft-group", type=int)
     parser.add_argument("--npu-fft-stride", type=int)
     parser.add_argument("--npu-fft-mode", type=int)
+    parser.add_argument("--npu-fft-radix4-pair", action="store_true")
     parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
@@ -219,6 +220,8 @@ def main() -> None:
         "--execution-policy", choices=("legacy", "native", "packed", "balanced")
     )
     args = parser.parse_args()
+    if args.npu_fft_radix4_pair and args.kernel != "npu_grouped_fft64":
+        parser.error("--npu-fft-radix4-pair requires --kernel npu_grouped_fft64")
     if args.npu_vector_transpose and args.kernel != "tiled_transpose":
         parser.error("--npu-vector-transpose requires --kernel tiled_transpose")
     if args.npu_table_transpose3d and (
@@ -440,6 +443,7 @@ def main() -> None:
         metadata = emit_npu_grouped_fft64(
             group=args.npu_fft_group, stride=args.npu_fft_stride,
             mode=args.npu_fft_mode, direction=args.direction, out_dir=args.out_dir,
+            radix4_pair=args.npu_fft_radix4_pair,
         )
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
