@@ -1923,7 +1923,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.output_dtype == "complex64" &&
                                    flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
   const bool npu_2d_aiv_stockham = request.device_type == "npu" &&
-                                   request.origin_rank == 2 &&
+                                   (request.origin_rank == 2 ||
+                                    flag_or_default("FLAGFFT_NPU_STOCKHAM_AIV_1D", false)) &&
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" &&
                                    flag_or_default("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM", true);
