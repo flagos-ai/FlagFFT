@@ -46,6 +46,7 @@ from .kernels_small_3d import (
 from .kernels_small_2d import emit_fused_2d_kernel
 from .kernels_npu_layout import emit_npu_table_transpose3d
 from .kernels_npu_grouped import emit_npu_grouped_fft64
+from .kernels_npu_stockham_aiv import emit_npu_stockham_aiv
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -126,6 +127,7 @@ def main() -> None:
     parser.add_argument("--npu-fft-stride", type=int)
     parser.add_argument("--npu-fft-mode", type=int)
     parser.add_argument("--npu-fft-radix4-pair", action="store_true")
+    parser.add_argument("--npu-stockham-aiv", action="store_true")
     parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
@@ -222,6 +224,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.npu_fft_radix4_pair and args.kernel != "npu_grouped_fft64":
         parser.error("--npu-fft-radix4-pair requires --kernel npu_grouped_fft64")
+    if args.npu_stockham_aiv and args.kernel != "stockham_stage":
+        parser.error("--npu-stockham-aiv requires --kernel stockham_stage")
     if args.npu_vector_transpose and args.kernel != "tiled_transpose":
         parser.error("--npu-vector-transpose requires --kernel tiled_transpose")
     if args.npu_table_transpose3d and (
@@ -539,21 +543,35 @@ def main() -> None:
     elif spec.family in {DIRECT_DFT, STOCKHAM}:
         if args.length is None or args.length <= 0:
             parser.error("--kernel direct_dft requires --length")
-        metadata = emit_jit_kernel(
-            kernel=args.kernel,
-            length=args.length,
-            factors=args.factors if spec.family == STOCKHAM else (),
-            lanes=1,
-            num_warps=1,
-            generic_radices=(),
-            smem_size=0,
-            direction=args.direction,
-            dtype=args.dtype,
-            prime_n=0,
-            four_step_n1=0,
-            four_step_n2=0,
-            out_dir=args.out_dir,
-        )
+        if spec.family == STOCKHAM and args.npu_stockham_aiv:
+            factors = args.factors or ()
+            if len(factors) not in (1, 2, 3):
+                parser.error("--npu-stockham-aiv requires --factors radix[,span[,tile]]")
+            metadata = emit_npu_stockham_aiv(
+                length=args.length,
+                radix=factors[0],
+                span=factors[1] if len(factors) >= 2 else 1,
+                direction=args.direction,
+                dtype=args.dtype,
+                out_dir=args.out_dir,
+                tile=factors[2] if len(factors) == 3 else 128,
+            )
+        else:
+            metadata = emit_jit_kernel(
+                kernel=args.kernel,
+                length=args.length,
+                factors=args.factors if spec.family == STOCKHAM else (),
+                lanes=1,
+                num_warps=1,
+                generic_radices=(),
+                smem_size=0,
+                direction=args.direction,
+                dtype=args.dtype,
+                prime_n=0,
+                four_step_n1=0,
+                four_step_n2=0,
+                out_dir=args.out_dir,
+            )
     elif spec.is_leaf_like:
         if spec.family in {BLUESTEIN_LEAF, BLUESTEIN_FOUR_STEP} and (
             args.bluestein_n is None or args.bluestein_n <= 0

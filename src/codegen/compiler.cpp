@@ -2293,6 +2293,64 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           tables.store_indices.copy_from_host(
               store_indices.data(), store_indices.size() * sizeof(uint32_t));
         }
+        constexpr int64_t tle_tile = adaptor::npu::kAscendCStockhamTile;
+        const bool tle_span_ok = stage_span <= tle_tile &&
+            (stage_span == 1
+                 ? (ndiv % tle_tile == 0)
+                 : (tle_tile % stage_span == 0 && ndiv % stage_span == 0));
+        if (flag_or_default("FLAGFFT_NPU_STOCKHAM_TLE_AIV", false) &&
+            request.input_dtype == "complex64" && tle_span_ok) {
+          const int64_t tle_packed =
+              stage_span <= tle_tile ? tle_tile / stage_span : 1;
+          tables.tle_tiles = stage_span <= tle_tile
+              ? (ndiv / stage_span + tle_packed - 1) / tle_packed
+              : (ndiv / stage_span) * (stage_span / tle_tile);
+          const int64_t tw_stride =
+              (stage_span <= tle_tile && tle_packed > 1) ? tle_tile : stage_span;
+          if (stage_span > 1) {
+            std::vector<float> tle_tw(
+                static_cast<std::size_t>(2 * radix * tw_stride), 0.0f);
+            for (int64_t digit = 0; digit < radix; ++digit) {
+              for (int64_t idx = 0; idx < tw_stride; ++idx) {
+                const int64_t j = tw_stride == tle_tile ? idx % stage_span : idx;
+                const double angle =
+                    sign * 2.0 * kPi * static_cast<double>(digit * j) /
+                    static_cast<double>(radix * stage_span);
+                const std::size_t at = static_cast<std::size_t>(
+                    2 * (digit * tw_stride + idx));
+                tle_tw[at] = static_cast<float>(std::cos(angle));
+                tle_tw[at + 1] = static_cast<float>(std::sin(angle));
+              }
+            }
+            tables.tle_twiddles = DeviceAllocation::from_floats(tle_tw);
+          }
+          std::vector<uint32_t> tle_store(
+              static_cast<std::size_t>(2 * radix * tle_tile), 0);
+          for (int64_t q = 0; q < radix; ++q) {
+            for (int64_t lane = 0; lane < tle_tile; ++lane) {
+              const int64_t dst = stage_span <= tle_tile
+                  ? radix * lane - (radix - 1) * (lane % stage_span) +
+                        q * stage_span
+                  : lane + q * stage_span;
+              tle_store[static_cast<std::size_t>(2 * dst)] =
+                  static_cast<uint32_t>((q * tle_tile + lane) * sizeof(float));
+              tle_store[static_cast<std::size_t>(2 * dst + 1)] =
+                  static_cast<uint32_t>(
+                      (radix * tle_tile + q * tle_tile + lane) * sizeof(float));
+            }
+          }
+          tables.tle_store =
+              DeviceAllocation(tle_store.size() * sizeof(uint32_t));
+          tables.tle_store.copy_from_host(
+              tle_store.data(), tle_store.size() * sizeof(uint32_t));
+          KernelKey tle_key = KernelKey::direct_dft(
+              triton_target_for_request(request), request.direction,
+              request.input_dtype, stockham->length);
+          tle_key.kind = KernelKind::StockhamStage;
+          tle_key.factors = {radix, stage_span, tle_tile};
+          tle_key.perm_form = "tle_aiv";
+          tables.tle_kernel = compile_kernel(tle_key);
+        }
         kernels.push_back(nullptr);
         aiv_stages.push_back(std::move(tables));
         stage_span *= radix;

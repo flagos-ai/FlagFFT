@@ -982,6 +982,20 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
           const int64_t count = std::min(batch_chunk, context.batch - batch_offset);
           const int64_t byte_offset = batch_offset * length * element_bytes;
           const auto &tables = aiv_stages[stage];
+          if (tables.tle_kernel) {
+            const DeviceAllocation &tle_twiddles =
+                tables.tle_twiddles.get() ? tables.tle_twiddles : twiddle;
+            tables.tle_kernel->launch(
+                context.stream,
+                {JitKernelArg::device(current + byte_offset),
+                 JitKernelArg::device(dst + byte_offset),
+                 JitKernelArg::device(tle_twiddles.get()),
+                 JitKernelArg::device(tables.roots.get()),
+                 JitKernelArg::device(tables.tle_store.get()),
+                 JitKernelArg::i32(static_cast<int32_t>(count))},
+                count * tables.tle_tiles, 1, 1);
+            continue;
+          }
           const flagfftResult status = adaptor::npu::launch_ascendc_stockham_stage(
               current + byte_offset,
               dst + byte_offset,

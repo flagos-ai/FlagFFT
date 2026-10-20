@@ -327,6 +327,10 @@ struct CompiledRawStockhamNode final : CompiledRawNode {
     DeviceAllocation twiddles;
     DeviceAllocation roots;
     DeviceAllocation store_indices;
+    std::shared_ptr<JitKernel> tle_kernel;
+    DeviceAllocation tle_twiddles;
+    DeviceAllocation tle_store;
+    int64_t tle_tiles = 0;
   };
 
   CompiledRawStockhamNode(int64_t length,
