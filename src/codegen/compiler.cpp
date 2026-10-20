@@ -5349,38 +5349,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const char *column_group_setting = std::getenv("FLAGFFT_NPU_2D_ASCENDC_COL_GROUP");
     const int32_t row_group_size = parse_group_size(row_group_setting, batch);
     const int32_t col_group_size = parse_group_size(column_group_setting, batch);
-    std::vector<uint32_t> host_indices;
-    std::vector<float> host_twiddles;
-    build_npu_aiv_fft64_tables(request, host_indices, host_twiddles);
-    auto upload_tables = [](const std::vector<uint32_t> &indices,
-                            const std::vector<float> &twiddles) {
-      auto index_allocation = std::make_shared<DeviceAllocation>(indices.size() * sizeof(uint32_t));
-      index_allocation->copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
-      auto twiddle_allocation = std::make_shared<DeviceAllocation>(twiddles.size() * sizeof(float));
-      twiddle_allocation->copy_from_host(twiddles.data(), twiddles.size() * sizeof(float));
-      return std::make_pair(std::move(index_allocation), std::move(twiddle_allocation));
-    };
-    auto [base_indices, base_twiddles] = upload_tables(host_indices, host_twiddles);
-    std::shared_ptr<DeviceAllocation> row_indices = base_indices;
-    std::shared_ptr<DeviceAllocation> row_twiddles = base_twiddles;
-    if (row_group_size > 1) {
-      build_npu_aiv_fft64_group_tables(request, row_group_size, false, host_indices, host_twiddles);
-      auto grouped_tables = upload_tables(host_indices, host_twiddles);
-      row_indices = std::move(grouped_tables.first);
-      row_twiddles = std::move(grouped_tables.second);
-    }
-    std::shared_ptr<DeviceAllocation> col_indices = base_indices;
-    std::shared_ptr<DeviceAllocation> col_twiddles = base_twiddles;
-    if (col_group_size > 1) {
-      build_npu_aiv_fft64_group_tables(request, col_group_size, true, host_indices, host_twiddles);
-      auto grouped_tables = upload_tables(host_indices, host_twiddles);
-      col_indices = std::move(grouped_tables.first);
-      col_twiddles = std::move(grouped_tables.second);
-    }
     std::shared_ptr<CompiledRawNode> row_fft =
-        std::make_shared<CompiledRawNpuAivFFT64Node>(1, row_group_size, row_indices, row_twiddles);
+        make_npu_aiv_fft64_child(request, 1, row_group_size, NpuAivFFT64Mode::Complex, false);
     std::shared_ptr<CompiledRawNode> col_fft =
-        std::make_shared<CompiledRawNpuAivFFT64Node>(n1, col_group_size, col_indices, col_twiddles);
+        make_npu_aiv_fft64_child(request, n1, col_group_size, NpuAivFFT64Mode::Complex, false);
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                  n1,
