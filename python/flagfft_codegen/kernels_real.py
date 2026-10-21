@@ -21,6 +21,7 @@ from textwrap import dedent
 
 from .kernels_common import _dtype_suffix, _maca_backend_active, _next_power_of_two, _zero_other
 from .maca_tail_policy import real_tree_default
+from .backend_profile import current_profile
 
 
 def _build_real_direct_dft_kernel_source(
@@ -223,6 +224,56 @@ def _build_r2c_half_pack_kernel_source(
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_r2c_half_pack_kernel_n{n}_{suffix}"
+    npu = current_profile().backend == "npu" and dtype == "complex64"
+    if npu:
+        R, C = rows_per_block, block_cols
+        source = dedent(
+            f"""
+            @triton.jit
+            def {kernel_name}(
+                in_ptr,
+                out_ptr,
+                output_distance,
+                nbatch,
+            ):
+                pid_block = tl.program_id(0)
+                pid_batch = tl.program_id(1)
+                rows = pid_batch * {R} + tl.arange(0, {R})[:, None]
+                lane = tl.arange(0, {2 * C})[None, :]
+                col = pid_block * {C} + tl.arange(0, {C})[None, :]
+                row_mask = rows < nbatch
+                src_mask = row_mask & (lane < 2 * ({half} - pid_block * {C}))
+                safe_rows = tl.minimum(rows, nbatch - 1)
+                src = tl.load(
+                    in_ptr + (safe_rows * {n} + pid_block * {C}) * 2 + lane,
+                    mask=src_mask,
+                    other={zero},
+                )
+                col_idx = tl.arange(0, {C})[None, :] + 0 * safe_rows
+                xr = tl.gather(src, col_idx * 2, 1)
+                xi = tl.gather(src, col_idx * 2 + 1, 1)
+                packed = tl.zeros(({R}, {2 * C}), tl.float32)
+                packed = tle.dsa.insert_slice(
+                    packed, xr, [0, 0], [{R}, {C}], [1, 1])
+                packed = tle.dsa.insert_slice(
+                    packed, xi, [0, {C}], [{R}, {C}], [1, 1])
+                out_lane = tl.arange(0, {2 * C})[None, :]
+                out_idx = (
+                    (out_lane // 2) + (out_lane % 2) * {C} + 0 * safe_rows)
+                result = tl.gather(packed, out_idx, 1)
+                out_mask = row_mask & (
+                    out_lane < 2 * ({half} - pid_block * {C}))
+                tl.store(
+                    out_ptr + (safe_rows * output_distance + pid_block * {C}) * 2
+                    + out_lane,
+                    result,
+                    mask=out_mask,
+                )
+            """
+        )
+        return (kernel_name, source,
+                ["in_ptr", "out_ptr", "output_distance", "nbatch"],
+                rows_per_block)
     source = dedent(
         f"""
         @triton.jit
