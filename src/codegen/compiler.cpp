@@ -2030,6 +2030,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    // The 1D CT planner uses Stockham stages, but the fused AIV1024/2048 leaf
+    // is the fast path (the 2D planner already uses it). Route the 1D
+    // 1024/2048 child through the same tables when the batch fits.
+    const bool use_npu_1d_aiv_leaf =
+        request.device_type == "npu" && request.origin_rank <= 1 &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        flag_or_default("FLAGFFT_NPU_AIV_LEAF_1D", true);
+    if (use_npu_1d_aiv_leaf && stockham->length == 1024) {
+      return make_npu_aiv_fft1024_child(request);
+    }
+    if (use_npu_1d_aiv_leaf && stockham->length == 2048) {
+      return make_npu_aiv_fft2048_child(request, false);
+    }
     if (use_npu_2d_aiv1024 && stockham->length == 1024) {
       return make_npu_aiv_fft1024_child(request);
     }
