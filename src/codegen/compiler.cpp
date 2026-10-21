@@ -76,7 +76,9 @@ namespace {
     // batched transforms. This policy is independent of the benchmark shape.
     constexpr int64_t kMinimumRows = 32;
     constexpr int64_t kMinimumElements = 16 * 1024;
-    return request.device_type == "npu" && request.origin_rank == 2 &&
+    const bool rank_ok = request.origin_rank == 2 ||
+        (request.origin_rank == 1 && flag_or_default("FLAGFFT_NPU_1D_PACKED_REAL", true));
+    return request.device_type == "npu" && rank_ok &&
            request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
            length >= 128 && length <= 2048 && (length & 1) == 0 &&
            batch >= kMinimumRows && batch <= std::numeric_limits<int32_t>::max() &&
