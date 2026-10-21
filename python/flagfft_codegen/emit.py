@@ -67,6 +67,7 @@ from .kernels_real import (
 from .kernels_special import _build_cube_dft_2d_kernel_source, _build_direct_dft_kernel_source
 from .kernels_real import _build_real_direct_dft_kernel_source
 from .kernels_stockham import build_stockham_stage
+from .backend_profile import current_profile
 from .metadata import _metadata, _module_source, _signature
 from .registry import (
     DIRECT_DFT,
@@ -89,8 +90,40 @@ _RESHAPE_NUM_STAGES = 1
 
 def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]]:
     zero = _zero_other(dtype)
+    npu = current_profile().backend == "npu" and dtype == "complex64"
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
     if kind == "bluestein_prepare":
+        if npu:
+            return (
+                "_bluestein_prepare_kernel",
+                dedent(
+                    f"""
+                    @triton.jit
+                    def _bluestein_prepare_kernel(in_ptr, chirp_ptr, out_ptr, n, m, nbatch):
+                        pid_block = tl.program_id(0)
+                        pid_batch = tl.program_id(1)
+                        base = pid_block * 512
+                        lane = tl.arange(0, 512)
+                        lane2 = tl.arange(0, 1024)
+                        in_mask = lane2 < 2 * (n - base)
+                        out_mask = lane2 < 2 * (m - base)
+                        src = tl.load(in_ptr + (pid_batch * n + base) * 2 + lane2, mask=in_mask, other={zero})
+                        xr = tl.gather(src, lane * 2, 0)
+                        xi = tl.gather(src, lane * 2 + 1, 0)
+                        chirp = tl.load(chirp_ptr + base * 2 + lane2, mask=in_mask, other={zero})
+                        cr = tl.gather(chirp, lane * 2, 0)
+                        ci = tl.gather(chirp, lane * 2 + 1, 0)
+                        yr, yi = _cmul(xr, xi, cr, ci)
+                        packed = tl.zeros((1024,), tl.float32)
+                        packed = tle.dsa.insert_slice(packed, yr, [0], [512], [1])
+                        packed = tle.dsa.insert_slice(packed, yi, [512], [512], [1])
+                        index = lane2 // 2 + (lane2 % 2) * 512
+                        result = tl.gather(packed, index, 0)
+                        tl.store(out_ptr + (pid_batch * m + base) * 2 + lane2, result, mask=out_mask)
+                    """
+                ),
+                ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
+            )
         return (
             "_bluestein_prepare_kernel",
             dedent(
@@ -125,6 +158,36 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
             ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     if kind == "bluestein_pointwise":
+        if npu:
+            return (
+                "_bluestein_pointwise_kernel",
+                dedent(
+                    f"""
+                    @triton.jit
+                    def _bluestein_pointwise_kernel(a_ptr, b_ptr, out_ptr, m, nbatch):
+                        pid_block = tl.program_id(0)
+                        pid_batch = tl.program_id(1)
+                        base = pid_block * 512
+                        lane = tl.arange(0, 512)
+                        lane2 = tl.arange(0, 1024)
+                        mask = lane2 < 2 * (m - base)
+                        a = tl.load(a_ptr + (pid_batch * m + base) * 2 + lane2, mask=mask, other={zero})
+                        b = tl.load(b_ptr + base * 2 + lane2, mask=mask, other={zero})
+                        ar = tl.gather(a, lane * 2, 0)
+                        ai = tl.gather(a, lane * 2 + 1, 0)
+                        br = tl.gather(b, lane * 2, 0)
+                        bi = tl.gather(b, lane * 2 + 1, 0)
+                        pr, pi = _cmul(ar, ai, br, bi)
+                        packed = tl.zeros((1024,), tl.float32)
+                        packed = tle.dsa.insert_slice(packed, pr, [0], [512], [1])
+                        packed = tle.dsa.insert_slice(packed, -pi, [512], [512], [1])
+                        index = lane2 // 2 + (lane2 % 2) * 512
+                        result = tl.gather(packed, index, 0)
+                        tl.store(out_ptr + (pid_batch * m + base) * 2 + lane2, result, mask=mask)
+                    """
+                ),
+                ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
+            )
         return (
             "_bluestein_pointwise_kernel",
             dedent(
@@ -158,6 +221,36 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
             ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
         )
     if kind == "bluestein_finalize":
+        if npu:
+            return (
+                "_bluestein_finalize_kernel",
+                dedent(
+                    f"""
+                    @triton.jit
+                    def _bluestein_finalize_kernel(in_ptr, chirp_ptr, out_ptr, n, m, nbatch):
+                        pid_block = tl.program_id(0)
+                        pid_batch = tl.program_id(1)
+                        base = pid_block * 512
+                        lane = tl.arange(0, 512)
+                        lane2 = tl.arange(0, 1024)
+                        mask = lane2 < 2 * (n - base)
+                        src = tl.load(in_ptr + (pid_batch * m + base) * 2 + lane2, mask=mask, other={zero})
+                        xr = tl.gather(src, lane * 2, 0) / {div_cast}
+                        xi = -tl.gather(src, lane * 2 + 1, 0) / {div_cast}
+                        chirp = tl.load(chirp_ptr + base * 2 + lane2, mask=mask, other={zero})
+                        cr = tl.gather(chirp, lane * 2, 0)
+                        ci = tl.gather(chirp, lane * 2 + 1, 0)
+                        yr, yi = _cmul(xr, xi, cr, ci)
+                        packed = tl.zeros((1024,), tl.float32)
+                        packed = tle.dsa.insert_slice(packed, yr, [0], [512], [1])
+                        packed = tle.dsa.insert_slice(packed, yi, [512], [512], [1])
+                        index = lane2 // 2 + (lane2 % 2) * 512
+                        result = tl.gather(packed, index, 0)
+                        tl.store(out_ptr + (pid_batch * n + base) * 2 + lane2, result, mask=mask)
+                    """
+                ),
+                ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
+            )
         return (
             "_bluestein_finalize_kernel",
             dedent(
