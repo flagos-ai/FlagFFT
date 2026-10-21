@@ -2439,7 +2439,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // The prepare/pointwise/finalize kernels launch ceil(conv_length/256)
     // column blocks times the chunk in grid.y, so the chunk also has to respect
     // the backend's per-launch block limit (for example 65535 on Ascend NPU).
-    const int64_t bluestein_columns = (bluestein->conv_length + 255) / 256;
+    const int64_t bluestein_columns = (bluestein->conv_length + 511) / 512;
     const int64_t bluestein_grid_chunk =
         std::max<int64_t>(1, adaptor::max_launch_blocks() / std::max<int64_t>(1, bluestein_columns));
     const int64_t chunk_batch =

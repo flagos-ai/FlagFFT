@@ -106,7 +106,7 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                 ):
                     pid_block = tl.program_id(0)
                     pid_batch = tl.program_id(1)
-                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    offsets = pid_block * 512 + tl.arange(0, 512)
                     mask = offsets < m
                     in_mask = mask & (offsets < n)
 
@@ -139,7 +139,7 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                 ):
                     pid_block = tl.program_id(0)
                     pid_batch = tl.program_id(1)
-                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    offsets = pid_block * 512 + tl.arange(0, 512)
                     mask = offsets < m
 
                     a = a_ptr + (pid_batch * m + offsets) * 2
@@ -173,7 +173,7 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                 ):
                     pid_block = tl.program_id(0)
                     pid_batch = tl.program_id(1)
-                    offsets = pid_block * 256 + tl.arange(0, 256)
+                    offsets = pid_block * 512 + tl.arange(0, 512)
                     mask = offsets < n
 
                     src = in_ptr + (pid_batch * m + offsets) * 2

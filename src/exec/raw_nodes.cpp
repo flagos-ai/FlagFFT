@@ -1157,7 +1157,7 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
           JitKernelArg::i64(conv_length),
           JitKernelArg::i32(static_cast<int32_t>(chunk)),
       };
-      prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), chunk, 1);
+      prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 512), chunk, 1);
 
       RawExecutionContext child_context {context.request, context.stream, chunk};
       flagfftResult result = fft->execute(a_buf.get(), work_buf.get(), child_context);
@@ -1172,7 +1172,7 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
           JitKernelArg::i64(conv_length),
           JitKernelArg::i32(static_cast<int32_t>(chunk)),
       };
-      pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 256), chunk, 1);
+      pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 512), chunk, 1);
 
       result = fft->execute(a_buf.get(), work_buf.get(), child_context);
       if (result != FLAGFFT_SUCCESS) {
@@ -1187,7 +1187,7 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
           JitKernelArg::i64(conv_length),
           JitKernelArg::i32(static_cast<int32_t>(chunk)),
       };
-      finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, 256), chunk, 1);
+      finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, 512), chunk, 1);
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
@@ -1587,7 +1587,7 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(conv_length),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 256), context.batch, 1);
+    prepare_kernel->launch(context.stream, prepare_args, ceil_div(conv_length, 512), context.batch, 1);
 
     RawExecutionContext child_context {context.request, context.stream, context.batch};
     flagfftResult result = fft->execute(a_buf.get(), work_buf.get(), child_context);
@@ -1605,7 +1605,7 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(conv_length),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 256), context.batch, 1);
+    pointwise_kernel->launch(context.stream, pointwise_args, ceil_div(conv_length, 512), context.batch, 1);
 
     result = fft->execute(a_buf.get(), work_buf.get(), child_context);
     if (result != FLAGFFT_SUCCESS) {
@@ -1621,7 +1621,7 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(conv_length),
         JitKernelArg::i32(static_cast<int32_t>(context.batch)),
     };
-    finalize_kernel->launch(context.stream, finalize_args, ceil_div(conv_length, 256), context.batch, 1);
+    finalize_kernel->launch(context.stream, finalize_args, ceil_div(conv_length, 512), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] Rader execute failed: %s\n", e.what());
