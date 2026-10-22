@@ -20,7 +20,12 @@ import os
 from textwrap import dedent
 from typing import Literal
 
-from .kernels_common import _dtype_suffix, _maca_backend_active, lane_block_for
+from .kernels_common import (
+    _dtype_suffix,
+    _maca_backend_active,
+    direct_dft_batch_tile,
+    lane_block_for,
+)
 from .maca_tail_policy import resource_default
 
 
@@ -61,11 +66,10 @@ def _build_direct_dft_kernel_source(
         kernel_name += "_tree"
     in_placeholder = "base + j * outer_stride" if strided else f"pid_batch * {n} + j"
     out_placeholder = "base + k * outer_stride" if strided else f"pid_batch * {n} + k"
-    param_extra = "            outer_stride,\n" if strided else ""
     base_init = (
-        "            batch_index = pid_batch // outer_stride\n"
-        f"            base = batch_index * ({n} * outer_stride) + "
-        "(pid_batch - batch_index * outer_stride)\n"
+        "batch_index = pid_batch // outer_stride\n"
+        f"base = batch_index * ({n} * outer_stride) + "
+        "(pid_batch - batch_index * outer_stride)"
         if strided
         else ""
     )
@@ -120,29 +124,66 @@ def _build_direct_dft_kernel_source(
                 wi = tl.load(dft_i_ptr + k * {n} + j, mask=mask, other=0.0)
                 {accumulation}
         """
-    source = dedent(
-        f"""
-        @triton.jit
-        def {kernel_name}(
-            in_ptr,
-            out_ptr,
-            dft_r_ptr,
-            dft_i_ptr,
-{param_extra}            nbatch,
-        ):
-            pid_batch = tl.program_id(0)
-            if pid_batch >= nbatch:
-                return
-{base_init}            k = tl.arange(0, {block})
-            mask = k < {n}
-            acc_r = tl.zeros(({block},), dtype={acc_dtype})
-            acc_i = tl.zeros(({block},), dtype={acc_dtype})
-            {compensation_init}
-            {loop}
-            dst = out_ptr + ({out_placeholder}) * 2
-            tl.store(dst, acc_r, mask=mask)
-            tl.store(dst + 1, acc_i, mask=mask)
-        """
+    statements = [line for line in dedent(base_init).splitlines() if line]
+    statements.extend([
+        f"k = tl.arange(0, {block})",
+        f"mask = k < {n}",
+        f"acc_r = tl.zeros(({block},), dtype={acc_dtype})",
+        f"acc_i = tl.zeros(({block},), dtype={acc_dtype})",
+    ])
+    statements.extend(dedent(compensation_init).strip("\n").splitlines())
+    statements.extend(dedent(loop).strip("\n").splitlines())
+    statements.extend([
+        f"dst = out_ptr + ({out_placeholder}) * 2",
+        "tl.store(dst, acc_r, mask=mask)",
+        "tl.store(dst + 1, acc_i, mask=mask)",
+    ])
+    batch_tile = direct_dft_batch_tile(n, strided=strided, dtype=dtype)
+    if batch_tile > 1:
+        kernel_name += f"_bt{batch_tile}"
+        bt = batch_tile
+        statements = [
+            "pid = tl.program_id(0)",
+            f"batch = pid * {bt} + tl.arange(0, {bt})",
+            "bmask = batch < nbatch",
+            f"k = tl.arange(0, {block})",
+            f"mask = k < {n}",
+            f"acc_r = tl.zeros(({bt}, {block}), dtype={acc_dtype})",
+            f"acc_i = tl.zeros(({bt}, {block}), dtype={acc_dtype})",
+        ]
+        for j in range(n):
+            statements.extend([
+                f"xr = tl.load(in_ptr + (batch * {n} + {j}) * 2, mask=bmask, other=0.0)",
+                f"xi = tl.load(in_ptr + (batch * {n} + {j}) * 2 + 1, mask=bmask, other=0.0)",
+                f"wr = tl.load(dft_r_ptr + {j} * {n} + k, mask=mask, other=0.0)",
+                f"wi = tl.load(dft_i_ptr + {j} * {n} + k, mask=mask, other=0.0)",
+                "acc_r += xr[:, None] * wr[None, :] - xi[:, None] * wi[None, :]",
+                "acc_i += xr[:, None] * wi[None, :] + xi[:, None] * wr[None, :]",
+            ])
+        statements.extend([
+            "store_mask = bmask[:, None] & mask[None, :]",
+            f"dst = out_ptr + (batch[:, None] * {n} + k[None, :]) * 2",
+            "tl.store(dst, acc_r, mask=store_mask)",
+            "tl.store(dst + 1, acc_i, mask=store_mask)",
+        ])
+    else:
+        statements = [
+            "pid_batch = tl.program_id(0)",
+            "if pid_batch >= nbatch:",
+            "    return",
+        ] + statements
+    params = ["    in_ptr,", "    out_ptr,", "    dft_r_ptr,", "    dft_i_ptr,"]
+    if strided:
+        params.append("    outer_stride,")
+    params.append("    nbatch,")
+    body = "\n".join(f"    {line}" if line else line for line in statements)
+    source = (
+        "@triton.jit\n"
+        f"def {kernel_name}(\n"
+        + "\n".join(params)
+        + "\n):\n"
+        + body
+        + "\n"
     )
     return (
         kernel_name,

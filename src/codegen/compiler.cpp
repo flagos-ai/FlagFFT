@@ -1780,8 +1780,15 @@ namespace {
                                  request.input_strides.front() ==
                                      (request.real_transform_kind == "c2r" ? 12 : 23) &&
                                  (ix_setting == nullptr || std::string(ix_setting) != "0");
+    // NPU rank-1 real transforms at N=23 are already a direct DFT internally;
+    // fusing the real boundary removes the compact/pack launches and their
+    // global-memory round trips.
+    const bool npu_target = request.device_type == "npu" &&
+                            request.origin_rank <= 1 && request.requested_n == 23 &&
+                            flag_or_default("FLAGFFT_NPU_REAL_DIRECT_DFT", true);
     return request.raw_dim == 1 &&
-           ((request.device_type == "maca" && (single_target || batch_target)) || ix_batch_target) &&
+           ((request.device_type == "maca" && (single_target || batch_target)) ||
+            ix_batch_target || npu_target) &&
            direct != nullptr &&
            direct->length == request.requested_n && direct->length > 0 &&
            direct->length <= kDirectDftMaxN &&

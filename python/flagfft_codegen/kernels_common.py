@@ -1134,6 +1134,22 @@ def _npu_backend_active() -> bool:
     )
 
 
+def direct_dft_batch_tile(n: int, *, strided: bool = False, dtype: str = "complex64") -> int:
+    """Batches per program for tiny direct DFTs on the NPU.
+
+    Small transforms are launch-bound: at batch 64 the per-program dispatch
+    dominates the arithmetic. Folding a fixed group of batches into one
+    program's vector lanes keeps the grid small without lengthening the
+    dependency chain.
+    """
+    if strided or dtype != "complex64" or not _npu_backend_active() or n > 32:
+        return 1
+    override = os.environ.get("FLAGFFT_NPU_DIRECT_DFT_BT")
+    if override:
+        return max(1, int(override))
+    return 8
+
+
 def _hcu_backend_active() -> bool:
     """Whether the installed Triton targets Hygon BW1000/HCU."""
     backend = _declared_backend()

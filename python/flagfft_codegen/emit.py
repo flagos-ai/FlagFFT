@@ -39,6 +39,7 @@ from .kernels_common import (
     _npu_backend_active,
     _zero_other,
     codelet_radices_for,
+    direct_dft_batch_tile,
     emitted_leaf_factors,
     lane_block_for,
 )
@@ -807,6 +808,8 @@ def emit_jit_kernel(
         metadata["butterflies_per_block"] = stockham_block
     if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:
         metadata["batch_per_block"] = 16
+    if kernel in {"direct_dft", "direct_dft_r2c", "direct_dft_c2r"}:
+        metadata["batch_per_block"] = direct_dft_batch_tile(length, dtype=dtype)
     if kernel == "direct_dft_cube_transposed":
         metadata["grid_y_override"] = 1
     if kernel in {"direct_dft_cube_2d_row", "direct_dft_cube_2d_col"}:

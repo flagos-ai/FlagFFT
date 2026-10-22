@@ -19,7 +19,13 @@ from __future__ import annotations
 import os
 from textwrap import dedent
 
-from .kernels_common import _dtype_suffix, _maca_backend_active, _next_power_of_two, _zero_other
+from .kernels_common import (
+    _dtype_suffix,
+    _maca_backend_active,
+    _next_power_of_two,
+    _zero_other,
+    direct_dft_batch_tile,
+)
 from .maca_tail_policy import real_tree_default
 from .backend_profile import current_profile
 
@@ -148,20 +154,90 @@ def _build_real_direct_dft_kernel_source(
             acc_i = tl.where((k == 0){nyquist}, 0.0, acc_i)
             tl.store(dst + 1, acc_i, mask=mask)
         """
-    source = dedent(f"""
-        @triton.jit
-        def {name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
-            pid_batch = tl.program_id(0)
-            if pid_batch >= nbatch:
-                return
-            k = tl.arange(0, {block})
-            mask = k < {outputs}
-            acc_r = tl.zeros(({block},), dtype={acc_dtype})
-            {init_i}
-            {init}
-            {loop}
-            {stores}
-    """)
+    statements = [
+        f"k = tl.arange(0, {block})",
+        f"mask = k < {outputs}",
+        f"acc_r = tl.zeros(({block},), dtype={acc_dtype})",
+    ]
+    statements.extend(line for line in init_i.splitlines() if line)
+    statements.extend(dedent(init).strip("\n").splitlines())
+    statements.extend(dedent(loop).strip("\n").splitlines())
+    statements.extend(dedent(stores).strip("\n").splitlines())
+    batch_tile = direct_dft_batch_tile(n, dtype=dtype)
+    if batch_tile > 1:
+        name += f"_bt{batch_tile}"
+        bt = batch_tile
+        statements = [
+            "pid = tl.program_id(0)",
+            f"batch = pid * {bt} + tl.arange(0, {bt})",
+            "bmask = batch < nbatch",
+            f"k = tl.arange(0, {block})",
+            f"mask = k < {outputs}",
+            f"acc_r = tl.zeros(({bt}, {block}), dtype={acc_dtype})",
+        ]
+        if inverse:
+            for j in range(n):
+                source_j = j if j < half else n - j
+                nyquist_j = j == 0 or (n % 2 == 0 and j == n // 2)
+                statements.append(
+                    f"xr = tl.load(in_ptr + (batch * {half} + {source_j}) * 2, "
+                    "mask=bmask, other=0.0)"
+                )
+                if not nyquist_j:
+                    statements.append(
+                        f"xi = tl.load(in_ptr + (batch * {half} + {source_j}) * 2 + 1, "
+                        "mask=bmask, other=0.0)"
+                    )
+                    if j >= half:
+                        statements.append("xi = -xi")
+                statements.append(
+                    f"wr = tl.load(dft_r_ptr + {j} * {n} + k, mask=mask, other=0.0)"
+                )
+                if nyquist_j:
+                    statements.append("acc_r += xr[:, None] * wr[None, :]")
+                else:
+                    statements.append(
+                        f"wi = tl.load(dft_i_ptr + {j} * {n} + k, mask=mask, other=0.0)"
+                    )
+                    statements.append(
+                        "acc_r += xr[:, None] * wr[None, :] - xi[:, None] * wi[None, :]"
+                    )
+        else:
+            statements.append(f"acc_i = tl.zeros(({bt}, {block}), dtype={acc_dtype})")
+            for j in range(n):
+                statements.extend([
+                    f"xr = tl.load(in_ptr + (batch * {n} + {j}), mask=bmask, other=0.0)",
+                    f"wr = tl.load(dft_r_ptr + {j} * {n} + k, mask=mask, other=0.0)",
+                    f"wi = tl.load(dft_i_ptr + {j} * {n} + k, mask=mask, other=0.0)",
+                    "acc_r += xr[:, None] * wr[None, :]",
+                    "acc_i += xr[:, None] * wi[None, :]",
+                ])
+        statements.append("store_mask = bmask[:, None] & mask[None, :]")
+        if inverse:
+            statements.append(
+                f"tl.store(out_ptr + batch[:, None] * {n} + k[None, :], acc_r, "
+                "mask=store_mask)"
+            )
+        else:
+            statements.extend([
+                f"dst = out_ptr + (batch[:, None] * {half} + k[None, :]) * 2",
+                "acc_i = tl.where(k[None, :] == 0, 0.0, acc_i)",
+                "tl.store(dst, acc_r, mask=store_mask)",
+                "tl.store(dst + 1, acc_i, mask=store_mask)",
+            ])
+    else:
+        statements = [
+            "pid_batch = tl.program_id(0)",
+            "if pid_batch >= nbatch:",
+            "    return",
+        ] + statements
+    body = "\n".join(f"    {line}" if line else line for line in statements)
+    source = (
+        "@triton.jit\n"
+        f"def {name}(\n    in_ptr,\n    out_ptr,\n    dft_r_ptr,\n    dft_i_ptr,\n    nbatch,\n):\n"
+        + body
+        + "\n"
+    )
     return name, source, ["in_ptr", "out_ptr", "dft_r_ptr", "dft_i_ptr", "nbatch"]
 
 
