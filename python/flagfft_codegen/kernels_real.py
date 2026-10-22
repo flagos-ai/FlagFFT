@@ -557,7 +557,11 @@ def _build_compact_to_hermitian_full_kernel_source(
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_compact_to_hermitian_full_kernel_n{n}_{suffix}"
-    npu = current_profile().backend == "npu" and dtype == "complex64"
+    npu = (
+        current_profile().backend == "npu"
+        and dtype == "complex64"
+        and (1 << (2 * half - 1).bit_length()) <= 4096
+    )
     if npu:
         R, C = rows_per_block, block_cols
         src_len = 1 << (2 * half - 1).bit_length()
