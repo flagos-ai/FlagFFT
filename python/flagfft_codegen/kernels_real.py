@@ -106,11 +106,11 @@ def _build_real_direct_dft_kernel_source(
                     parents.append(terms[-1])
                 terms = parents
             lines.append(f"acc_{component} = {terms[0]}")
-        loop = "\n            ".join(lines)
+        loop = "            " + "\n            ".join(lines)
     elif dtype == "complex128":
         init = f"comp_r = tl.zeros(({block},), dtype={acc_dtype})"
         if not inverse:
-            init += f"\n            comp_i = tl.zeros(({block},), dtype={acc_dtype})"
+            init += f"\ncomp_i = tl.zeros(({block},), dtype={acc_dtype})"
         imag = "" if inverse else """
                 corrected_i = xr * wi - comp_i
                 next_i = acc_i + corrected_i
