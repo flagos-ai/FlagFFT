@@ -238,6 +238,17 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     const bool npu_2d_real_transform = context.real_transform_kind == "r2c" ||
                                        context.real_transform_kind == "c2r";
     const bool npu_2d_c2c = context.real_transform_kind.empty();
+    // Ascend Stockham stages launch once per radix and the scalar kernel
+    // serialises across active butterflies, so a short 1D transform costs more
+    // in stage launches than a single batch-tiled direct DFT.
+    const char *npu_1d_direct_setting = std::getenv("FLAGFFT_NPU_1D_DIRECT_DFT");
+    const bool npu_1d_direct_enabled =
+        npu_1d_direct_setting == nullptr || std::string(npu_1d_direct_setting) != "0";
+    if (npu_1d_direct_enabled && context.origin_rank <= 1 &&
+        context.input_dtype == "complex64" && n > 1 && n <= kDirectDftMaxN) {
+      PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+      return {{node, estimate_direct_dft_cost(n), priority(node)}};
+    }
     const char *npu_3d_leaf_setting = std::getenv("FLAGFFT_NPU_3D_LEAF");
     if (npu_3d_leaf_setting != nullptr && std::string(npu_3d_leaf_setting) != "0" &&
         std::string(npu_3d_leaf_setting) != "1") {

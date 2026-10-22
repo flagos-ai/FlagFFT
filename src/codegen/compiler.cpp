@@ -1784,7 +1784,8 @@ namespace {
     // fusing the real boundary removes the compact/pack launches and their
     // global-memory round trips.
     const bool npu_target = request.device_type == "npu" &&
-                            request.origin_rank <= 1 && request.requested_n == 23 &&
+                            request.origin_rank <= 1 &&
+                            (request.requested_n == 23 || request.requested_n == 16) &&
                             flag_or_default("FLAGFFT_NPU_REAL_DIRECT_DFT", true);
     return request.raw_dim == 1 &&
            ((request.device_type == "maca" && (single_target || batch_target)) ||
