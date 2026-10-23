@@ -69,7 +69,8 @@ def _npu_reshape_pack_source(n1: int, n2: int, *, twiddle: bool) -> tuple[str, l
         f"    dst_base = out_ptr + batch * {2 * total}",
     ])
     if twiddle:
-        lines.append(f"    tw_base = twiddle_ptr + batch * {2 * total}")
+        # The twiddle table is shared by every batch row.
+        lines.append("    tw_base = twiddle_ptr")
     lines.extend([
         f"    flat_lane = tl.arange(0, {n_flat})",
         "    perm = tl.load(idx_ptr + flat_lane) >> 2",
