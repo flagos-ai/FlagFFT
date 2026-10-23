@@ -6,7 +6,7 @@ from .kernels_leaf import _emit_natural_order_codelet_call
 
 def build_stockham_stage(n: int, radix: int, direction: str, dtype: str, stage_span: int = 0,
                         block: int = 128):
-    if (radix not in _NATURAL_ORDER_CODELET_RADICES and radix != 16) or n % radix:
+    if radix not in _NATURAL_ORDER_CODELET_RADICES or n % radix:
         raise ValueError(f"unsupported Stockham stage n={n}, radix={radix}")
     if stage_span < 0 or (stage_span and n % (radix * stage_span)):
         raise ValueError(f"invalid Stockham span {stage_span} for n={n}, radix={radix}")
