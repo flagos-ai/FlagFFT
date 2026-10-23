@@ -1663,6 +1663,7 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft64_child(
       const FFTRequest &request, int64_t stride, int32_t group_size,
       NpuAivFFT64Mode mode = NpuAivFFT64Mode::Complex, bool radix4_pair = false);
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft512_child(const FFTRequest &request);
 #endif
   void configure_single_transform_policies(const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_3d_real_leaf_node(

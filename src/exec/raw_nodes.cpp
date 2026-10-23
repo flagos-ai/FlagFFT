@@ -744,7 +744,7 @@ flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
        !(radix4_pair && group_size == 16)) ||
       (length == 128 && group_size == 1 && radix4_pair) ||
       ((length == 1024 || length == 2048) && group_size != 1) ||
-      (length != 128 && length != 1024 && length != 2048) ||
+      (length != 128 && length != 512 && length != 1024 && length != 2048) ||
       context.batch % group_size != 0) {
     return FLAGFFT_INVALID_SIZE;
   }

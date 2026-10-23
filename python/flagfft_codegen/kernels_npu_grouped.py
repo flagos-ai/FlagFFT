@@ -27,8 +27,8 @@ def build_npu_grouped_fft64_source(*, group: int, stride: int, mode: int,
     if radix4_pair:
         if stride != 1:
             raise ValueError("Radix4 pair FFT requires contiguous rows")
-        if length not in (64, 128, 1024, 2048):
-            raise ValueError("Radix4 pair FFT supports length 64, 128, 1024 or 2048")
+        if length not in (64, 128, 512, 1024, 2048):
+            raise ValueError("Radix4 pair FFT supports length 64, 128, 512, 1024 or 2048")
         name, source = build_npu_radix4_pair_source(length=length, group=group, mode=mode)
         return source.replace(f"def {name}(", "def npu_grouped_fft64_kernel(")
     if length != 64:

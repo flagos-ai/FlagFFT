@@ -76,8 +76,10 @@ namespace {
     // batched transforms. This policy is independent of the benchmark shape.
     constexpr int64_t kMinimumRows = 32;
     constexpr int64_t kMinimumElements = 16 * 1024;
-    const bool rank_ok = request.origin_rank == 2 ||
-        (request.origin_rank == 1 && flag_or_default("FLAGFFT_NPU_1D_PACKED_REAL", true));
+    // The native packed boundary only pays off for 2D row batches; 1D
+    // transforms use the generated preprocess/postprocess kernels, which are
+    // faster and keep the whole real boundary in Triton.
+    const bool rank_ok = request.origin_rank == 2;
     return request.device_type == "npu" && rank_ok &&
            request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
            length >= 128 && length <= 2048 && (length & 1) == 0 &&
@@ -1610,7 +1612,13 @@ namespace {
     // layouts on their existing paths until they are qualified independently;
     // 2^20 is the upper end of the single-transform qualification range.
     const bool is_npu_single_fp32_target = request.device_type == "npu" &&
-        request.input_dtype == "complex64" && batch == 1 && n >= 1024 && n <= 1048576;
+        request.input_dtype == "complex64" && batch == 1 &&
+        ((n >= 1024 && n <= 1048576) || n == 210);
+    const bool is_npu_1d_batched_fp32_target = request.device_type == "npu" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch > 1 &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        n >= 128 && n <= 1048576 && n % 2 == 0 &&
+        !request.input_strides.empty() && request.input_strides.back() == 1;
     // Two-dimensional real transforms apply this boundary to many independent
     // rows. The packed even/odd formulation is batch independent, so allow it
     // for contiguous FP32 rows as well as the previously qualified 1D case.
@@ -1621,6 +1629,7 @@ namespace {
         request.requested_n == n && !request.input_strides.empty() &&
         request.input_strides.back() == 1;
     const bool is_npu_fp32_target = is_npu_single_fp32_target ||
+                                    is_npu_1d_batched_fp32_target ||
                                     is_npu_2d_batched_fp32_target;
     const bool is_ix_single_fp32_target = batch == 1 && ix_packed_real_policy_enabled(request);
     const bool is_ix_batch_fp32_target = batch == 64 && n == 16384 &&
@@ -1686,8 +1695,10 @@ namespace {
       // Do not implicitly enable unmeasured Bluestein children or GPU tuning
       // cache entries. New radices qualify naturally when the NPU planner
       // supplies a Stockham plan for both the original and half length.
+      const bool child_is_direct =
+          std::dynamic_pointer_cast<DirectDFTPlanNode>(child_plan) != nullptr;
       if (!std::dynamic_pointer_cast<StockhamPlanNode>(original_plan) ||
-          !std::dynamic_pointer_cast<StockhamPlanNode>(child_plan)) {
+          (!std::dynamic_pointer_cast<StockhamPlanNode>(child_plan) && !child_is_direct)) {
         return std::nullopt;
       }
       return PackedRealChild {std::move(child_request), std::move(child_plan)};
@@ -1882,6 +1893,32 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft64_child(
       radix4_pair, std::move(replacement));
 }
 #endif
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft512_child(
+    const FFTRequest &request) {
+  std::vector<uint32_t> host_indices;
+  std::vector<float> host_twiddles;
+  build_npu_aiv_fft_radix4_pair_tables(request, 512, 1, NpuAivFFT64Mode::Complex,
+                                       host_indices, host_twiddles);
+  auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+  indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+  auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+  twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+  std::shared_ptr<JitKernel> replacement;
+  if (request.device_type == "npu" &&
+      flag_or_default("FLAGFFT_NPU_TRITON_FFT512", true)) {
+    auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
+                                            request.direction, 1, 1, 0, 512);
+    key.perm_form = "radix4_pair";
+    replacement = compile_kernel(key);
+  }
+  return std::make_shared<CompiledRawNpuAivFFTNode>(512,
+                                                    std::move(indices),
+                                                    std::move(twiddles),
+                                                    1,
+                                                    true,
+                                                    std::move(replacement));
+}
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
   maca_3d_policy_ = request.device_type == "maca" && request.origin_rank == 3;
@@ -2095,6 +2132,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.device_type == "npu" && request.origin_rank <= 1 &&
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
         flag_or_default("FLAGFFT_NPU_AIV_LEAF_1D", true);
+    if (use_npu_1d_aiv_leaf && stockham->length == 512) {
+      return make_npu_aiv_fft512_child(request);
+    }
     if (use_npu_1d_aiv_leaf && stockham->length == 1024) {
       return make_npu_aiv1024_child();
     }
