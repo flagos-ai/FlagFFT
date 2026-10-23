@@ -659,6 +659,42 @@ def _build_complex_to_real_kernel_source(
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_complex_to_real_kernel_n{n}_{suffix}"
+    npu = current_profile().backend == "npu" and dtype == "complex64"
+    if npu:
+        R, C = rows_per_block, block_cols
+        source = dedent(
+            f"""
+            @triton.jit
+            def {kernel_name}(
+                in_ptr,
+                out_ptr,
+                output_distance,
+                nbatch,
+            ):
+                pid_block = tl.program_id(0)
+                pid_batch = tl.program_id(1)
+                rows = pid_batch * {R} + tl.arange(0, {R})[:, None]
+                lane = tl.arange(0, {2 * C})[None, :]
+                row_mask = rows < nbatch
+                safe_rows = tl.minimum(rows, nbatch - 1)
+                src_mask = row_mask & (lane < 2 * ({n} - pid_block * {C}))
+                src = tl.load(
+                    in_ptr + (safe_rows * {n} + pid_block * {C}) * 2 + lane,
+                    mask=src_mask,
+                    other={zero},
+                )
+                idx = 2 * tl.arange(0, {C})[None, :] + 0 * safe_rows
+                xr = tl.gather(src, idx, 1)
+                cols = pid_block * {C} + tl.arange(0, {C})[None, :]
+                out_mask = row_mask & (cols < {n})
+                tl.store(
+                    out_ptr + safe_rows * output_distance + cols,
+                    xr,
+                    mask=out_mask,
+                )
+            """
+        )
+        return kernel_name, source, ["in_ptr", "out_ptr", "output_distance", "nbatch"], rows_per_block
     source = dedent(
         f"""
         @triton.jit
