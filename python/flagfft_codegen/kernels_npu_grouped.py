@@ -25,11 +25,11 @@ def build_npu_grouped_fft64_source(*, group: int, stride: int, mode: int,
     the separate quarter-vector contract. The parent plan owns inverse scale.
     """
     if radix4_pair:
-        if length not in (16, 32, 64, 128, 1024, 2048):
-            raise ValueError("Radix4 pair FFT supports length 16, 32, 64, 128, 1024 or 2048")
-        name, source = build_npu_radix4_pair_source(
-            length=length, group=group, mode=mode,
-            input_stride=stride, output_stride=stride)
+        if stride != 1:
+            raise ValueError("Radix4 pair FFT requires contiguous rows")
+        if length not in (64, 128, 1024, 2048):
+            raise ValueError("Radix4 pair FFT supports length 64, 128, 1024 or 2048")
+        name, source = build_npu_radix4_pair_source(length=length, group=group, mode=mode)
         return source.replace(f"def {name}(", "def npu_grouped_fft64_kernel(")
     if length != 64:
         raise ValueError("the scalar grouped FFT body supports length 64 only")
@@ -112,8 +112,6 @@ def emit_npu_grouped_fft64(*, group: int, stride: int, mode: int,
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))
     arg_names = ["in_ptr", "out_ptr", "idx_ptr", "twiddle_ptr", "nbatch"]
-    if radix4_pair and stride != 1:
-        arg_names.append("program_base")
     metadata = {
         "module_path": str(module_path),
         "kernel_name": "npu_grouped_fft64_kernel",

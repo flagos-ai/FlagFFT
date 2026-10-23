@@ -12,24 +12,16 @@
 """Generated bodies for the existing Ascend radix4 pair table contract."""
 
 
-def build_npu_radix4_pair_source(*, length: int, group: int, mode: int,
-                                 input_stride: int = 1, output_stride: int = 1):
+def build_npu_radix4_pair_source(*, length: int, group: int, mode: int):
     """Preserve quarter-vector butterflies, grouped tables and real boundaries.
 
     TLE insert_slice keeps the native contiguous UB vector partitions between
     pairs. Inverse scaling is owned by the parent plan, as in the native body.
-    A stride above one addresses the 3D axis form, where the group's transforms
-    are adjacent and each transform's samples are `stride` apart.
     """
-    supported = {16: (1, 4, 8), 32: (1, 4, 8), 64: (1, 4, 8, 16, 32),
-                 128: (4, 8, 16), 1024: (1,), 2048: (1,)}
+    supported = {64: (1, 4, 8, 16, 32), 128: (4, 8, 16), 1024: (1,), 2048: (1,)}
     if (length not in supported or group not in supported[length]
             or mode not in (0, 1, 2) or (length in (1024, 2048) and mode != 0)):
         raise ValueError("Unsupported Ascend radix4 pair length, group or mode")
-    if mode != 0 and (input_stride != 1 or output_stride != 1):
-        raise ValueError("Strided radix4 pair FFT is complex-only")
-    if input_stride != output_stride:
-        raise ValueError("Radix4 pair FFT requires matching input/output strides")
     n = length
     count = n * group
     quarter = count // 4
@@ -43,30 +35,12 @@ def build_npu_radix4_pair_source(*, length: int, group: int, mode: int,
     output_base = pairs * count
     expansion_base = output_base + 4 * count
     expansion_sign = pairs * 6 * quarter + 2 * count
-    strided = input_stride != 1 or output_stride != 1
-    stride_tag = f"_is{input_stride}_os{output_stride}" if strided else ""
-    name = f'radix4_pair_fft{n}_g{group}_m{mode}{stride_tag}'
-    program_base_arg = ", program_base" if strided else ""
-    lines = [f'@triton.jit\ndef {name}(in_ptr, out_ptr, idx_ptr, twiddle_ptr, nbatch{program_base_arg}):']
-    if not strided:
-        lines += [
-            '    pid = tl.program_id(0).to(tl.int64)',
-            f'    source_lane = tl.arange(0, {input_size})',
-            f'    source = tl.load(in_ptr + pid * {input_count} + source_lane, source_lane < {input_count}, 0.0)',
-        ]
-    else:
-        # Element (transform t, sample s, component c) of a group lives at
-        # base + (t + s * stride) * 2 + c floats.
-        lines += [
-            '    pid = (tl.program_id(0) + program_base).to(tl.int64)',
-            f'    source_lane = tl.arange(0, {input_size})',
-            f'    lane_group = source_lane // {2 * n}',
-            f'    lane_rem = source_lane % {2 * n}',
-            f'    in_base = ((pid * {group}) // {input_stride}) * {n * input_stride} + ((pid * {group}) % {input_stride})',
-            f'    source_offset = (in_base + lane_group + (lane_rem // 2) * {input_stride}) * 2 + (lane_rem % 2)',
-            f'    source = tl.load(in_ptr + source_offset, source_lane < {input_count}, 0.0)',
-        ]
-    lines.append(f'    lane = tl.arange(0, {quarter})')
+    name = f'radix4_pair_fft{n}_g{group}_m{mode}'
+    lines = [f'@triton.jit\ndef {name}(in_ptr, out_ptr, idx_ptr, twiddle_ptr, nbatch):',
+             '    pid = tl.program_id(0).to(tl.int64)',
+             f'    source_lane = tl.arange(0, {input_size})',
+             f'    source = tl.load(in_ptr + pid * {input_count} + source_lane, source_lane < {input_count}, 0.0)',
+             f'    lane = tl.arange(0, {quarter})']
     if mode == 2:
         lines += [f'    expand_lane = tl.arange(0, {count})',
                   f'    expand_real = tl.load(idx_ptr + {expansion_base} + expand_lane) >> 2',
@@ -130,15 +104,6 @@ def build_npu_radix4_pair_source(*, length: int, group: int, mode: int,
                   f'    packed = tle.dsa.insert_slice(packed, imag, [{count}], [{count}], [1])']
     lines += [f'    output_lane = tl.arange(0, {output_size})',
               f'    output_index = tl.load(idx_ptr + {output_base} + output_lane, output_lane < {output_count}, 0) >> 2',
-              '    result = tl.gather(packed, output_index, 0)']
-    if not strided:
-        lines.append(f'    tl.store(out_ptr + pid * {output_count} + output_lane, result, output_lane < {output_count})')
-    else:
-        lines += [
-            f'    out_group = output_lane // {2 * n}',
-            f'    out_rem = output_lane % {2 * n}',
-            f'    out_base = ((pid * {group}) // {output_stride}) * {n * output_stride} + ((pid * {group}) % {output_stride})',
-            f'    out_offset = (out_base + out_group + (out_rem // 2) * {output_stride}) * 2 + (out_rem % 2)',
-            f'    tl.store(out_ptr + out_offset, result, output_lane < {output_count})',
-        ]
+              '    result = tl.gather(packed, output_index, 0)',
+              f'    tl.store(out_ptr + pid * {output_count} + output_lane, result, output_lane < {output_count})']
     return name, '\n'.join(lines) + '\n'

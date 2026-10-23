@@ -1098,6 +1098,30 @@ namespace {
     }
   }
 
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft_small_child(
+      const FFTRequest &request,
+      int64_t n,
+      int64_t stride,
+      int64_t group_size,
+      NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex,
+      int64_t output_stride = -1) {
+    if (output_stride < 0) output_stride = stride;
+    std::vector<uint32_t> host_indices;
+    std::vector<float> host_twiddles;
+    build_npu_aiv_fft_small_tables(request, n, group_size, stride != 1, output_stride != 1,
+                                   host_indices, host_twiddles, mode);
+    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
+    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
+    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
+    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n,
+                                                           stride,
+                                                           output_stride,
+                                                           group_size,
+                                                           std::move(indices),
+                                                           std::move(twiddles),
+                                                           mode);
+  }
 
   void build_npu_aiv_fft_radix4_pair_tables(const FFTRequest &request,
                                             int64_t n,
@@ -1822,44 +1846,6 @@ namespace {
   }
 
 }  // namespace
-
-std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft_small_child(
-    const FFTRequest &request, int64_t n, int64_t stride, int64_t group_size,
-    NpuAivFFTSmallMode mode, int64_t output_stride) {
-  if (output_stride < 0) output_stride = stride;
-  std::vector<uint32_t> host_indices;
-  std::vector<float> host_twiddles;
-  std::shared_ptr<JitKernel> replacement;
-  const bool triton_small = request.device_type == "npu" &&
-      (n == 16 || n == 32) && (group_size == 1 || group_size == 4 || group_size == 8) &&
-      mode == NpuAivFFTSmallMode::Complex &&
-      flag_or_default("FLAGFFT_NPU_TRITON_FFT_SMALL", false);
-  if (triton_small) {
-    auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
-                                            request.direction, group_size, stride,
-                                            static_cast<int64_t>(mode), n);
-    key.perm_form = "radix4_pair";
-    replacement = compile_kernel(key);
-    build_npu_aiv_fft_radix4_pair_tables(request, n, group_size, mode,
-                                         host_indices, host_twiddles);
-  } else {
-    build_npu_aiv_fft_small_tables(request, n, group_size, stride != 1, output_stride != 1,
-                                   host_indices, host_twiddles, mode);
-  }
-  auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
-  indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
-  auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
-  twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
-  return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n,
-                                                         stride,
-                                                         output_stride,
-                                                         group_size,
-                                                         std::move(indices),
-                                                         std::move(twiddles),
-                                                         mode,
-                                                         std::move(replacement));
-}
-
 
 #if defined(FLAGFFT_BACKEND_NPU)
 std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft64_child(
