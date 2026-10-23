@@ -544,12 +544,14 @@ CompiledRawNpuAivFFTSmallNode::CompiledRawNpuAivFFTSmallNode(int64_t length,
                                                              int64_t group_size,
                                                              std::shared_ptr<DeviceAllocation> indices,
                                                              std::shared_ptr<DeviceAllocation> twiddles,
-                                                             NpuAivFFTSmallMode mode)
+                                                             NpuAivFFTSmallMode mode,
+                                                             std::shared_ptr<JitKernel> replacement)
     : length(length),
       stride(stride),
       output_stride(output_stride),
       group_size(group_size),
       mode(mode),
+      replacement(std::move(replacement)),
       indices(std::move(indices)),
       twiddles(std::move(twiddles)) {
 }
@@ -561,6 +563,7 @@ std::string CompiledRawNpuAivFFTSmallNode::describe() const {
   oss << ", group_size=" << group_size;
   if (mode == NpuAivFFTSmallMode::RealForward) oss << ", mode=r2c";
   if (mode == NpuAivFFTSmallMode::RealInverse) oss << ", mode=c2r";
+  if (replacement) oss << "[triton]";
   oss << ")";
   return oss.str();
 }
@@ -604,6 +607,30 @@ flagfftResult CompiledRawNpuAivFFTSmallNode::execute(adaptor::DevicePtr input,
                           ? transform_offset * length * complex_bytes
                           : (transform_offset / output_stride) * length * output_stride * complex_bytes +
                                 (transform_offset % output_stride) * complex_bytes;
+    }
+    if (replacement) {
+      const bool strided = stride != 1 || output_stride != 1;
+      if (strided) {
+        // The strided kernel resolves each program's matrix position itself,
+        // so it needs the unshifted buffers and the global program index.
+        replacement->launch(context.stream,
+                            {JitKernelArg::device(input),
+                             JitKernelArg::device(output),
+                             JitKernelArg::device(indices->get()),
+                             JitKernelArg::device(twiddles->get()),
+                             JitKernelArg::i32(static_cast<int32_t>(chunk_blocks)),
+                             JitKernelArg::i32(static_cast<int32_t>(block_offset))},
+                            chunk_blocks, 1, 1);
+      } else {
+        replacement->launch(context.stream,
+                            {JitKernelArg::device(input + input_offset),
+                             JitKernelArg::device(output + output_offset),
+                             JitKernelArg::device(indices->get()),
+                             JitKernelArg::device(twiddles->get()),
+                             JitKernelArg::i32(static_cast<int32_t>(chunk_blocks))},
+                            chunk_blocks, 1, 1);
+      }
+      continue;
     }
     const flagfftResult result = adaptor::npu::launch_ascendc_fft_small(static_cast<int32_t>(length),
                                                                         input + input_offset,
