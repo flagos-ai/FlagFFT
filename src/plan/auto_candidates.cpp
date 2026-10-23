@@ -426,7 +426,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       std::vector<int64_t> factors;
       for (int64_t factor : factorization.factors) {
         // Split composite register layouts into natural-order shared codelets.
-        for (int64_t radix : {19, 17, 15, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2}) {
+        for (int64_t radix : {19, 17, 16, 15, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2}) {
           while (factor % radix == 0) {
             factors.push_back(radix);
             factor /= radix;
