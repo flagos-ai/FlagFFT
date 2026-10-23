@@ -639,6 +639,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --npu-fft-group " << key.lanes
                 << " --npu-fft-stride " << key.reshape_n1
                 << " --npu-fft-mode " << key.reshape_n2
+                << " --length " << key.length
                 << " --direction " << shell_quote(key.direction);
     if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
   }

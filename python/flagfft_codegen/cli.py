@@ -448,6 +448,7 @@ def main() -> None:
             group=args.npu_fft_group, stride=args.npu_fft_stride,
             mode=args.npu_fft_mode, direction=args.direction, out_dir=args.out_dir,
             radix4_pair=args.npu_fft_radix4_pair,
+            length=args.length if args.length is not None else 64,
         )
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:

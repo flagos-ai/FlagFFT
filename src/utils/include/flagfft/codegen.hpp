@@ -267,7 +267,8 @@ struct CompiledRawNpuAivFFTNode final : CompiledRawNode {
                            std::shared_ptr<DeviceAllocation> indices,
                            std::shared_ptr<DeviceAllocation> twiddles,
                            int64_t group_size = 1,
-                           bool radix4_pair = false);
+                           bool radix4_pair = false,
+                           std::shared_ptr<JitKernel> replacement = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -276,6 +277,7 @@ struct CompiledRawNpuAivFFTNode final : CompiledRawNode {
   int64_t length;
   int64_t group_size;
   bool radix4_pair;
+  std::shared_ptr<JitKernel> replacement;
   std::shared_ptr<DeviceAllocation> indices;
   std::shared_ptr<DeviceAllocation> twiddles;
 };

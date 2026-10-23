@@ -1392,7 +1392,8 @@ namespace {
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft128_child(const FFTRequest &request,
                                                              int32_t group_size,
-                                                             bool radix4_pair = false) {
+                                                             bool radix4_pair = false,
+                                                             std::shared_ptr<JitKernel> replacement = nullptr) {
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     if (radix4_pair) {
@@ -1418,11 +1419,13 @@ namespace {
                                                       std::move(indices),
                                                       std::move(twiddles),
                                                       group_size,
-                                                      radix4_pair);
+                                                      radix4_pair,
+                                                      std::move(replacement));
   }
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft2048_child(const FFTRequest &request,
-                                                              bool radix4_pair = false) {
+                                                              bool radix4_pair = false,
+                                                              std::shared_ptr<JitKernel> replacement = nullptr) {
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     if (radix4_pair) {
@@ -1443,13 +1446,25 @@ namespace {
                                                       std::move(indices),
                                                       std::move(twiddles),
                                                       1,
-                                                      radix4_pair);
+                                                      radix4_pair,
+                                                      std::move(replacement));
   }
 
-  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft1024_child(const FFTRequest &request) {
+  std::shared_ptr<CompiledRawNode> make_npu_aiv_fft1024_child(
+      const FFTRequest &request, bool radix4_pair = false,
+      std::shared_ptr<JitKernel> replacement = nullptr) {
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
-    build_npu_aiv_fft_power2_tables(request, 1024, host_indices, host_twiddles);
+    if (radix4_pair) {
+      build_npu_aiv_fft_radix4_pair_tables(request,
+                                           1024,
+                                           1,
+                                           NpuAivFFT64Mode::Complex,
+                                           host_indices,
+                                           host_twiddles);
+    } else {
+      build_npu_aiv_fft_power2_tables(request, 1024, host_indices, host_twiddles);
+    }
     auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
     indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
     auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
@@ -1458,7 +1473,8 @@ namespace {
                                                       std::move(indices),
                                                       std::move(twiddles),
                                                       1,
-                                                      false);
+                                                      radix4_pair,
+                                                      std::move(replacement));
   }
 
   int32_t npu_aiv_fft64_group_size(const char *setting, int64_t batch) {
@@ -1950,6 +1966,35 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   const bool use_npu_2d_aiv2048 = npu_2d_complex_child &&
                                   flag_or_default("FLAGFFT_NPU_2D_AIV2048", true);
   const bool npu_2d_radix4_pair = flag_or_default("FLAGFFT_NPU_2D_RADIX4_PAIR", true);
+  auto make_npu_aiv128_triton = [&](int32_t group_size,
+                                    bool radix4_pair) -> std::shared_ptr<JitKernel> {
+    if (!radix4_pair || (group_size != 4 && group_size != 8 && group_size != 16)) {
+      return nullptr;
+    }
+    if (!flag_or_default("FLAGFFT_NPU_TRITON_FFT128", true)) return nullptr;
+    auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
+                                            request.direction, group_size, 1, 0, 128);
+    key.perm_form = "radix4_pair";
+    return compile_kernel(key);
+  };
+  auto make_npu_aiv1024_triton = [&]() -> std::shared_ptr<JitKernel> {
+    if (!flag_or_default("FLAGFFT_NPU_TRITON_FFT1024", true)) return nullptr;
+    auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
+                                            request.direction, 1, 1, 0, 1024);
+    key.perm_form = "radix4_pair";
+    return compile_kernel(key);
+  };
+  auto make_npu_aiv1024_child = [&]() -> std::shared_ptr<CompiledRawNode> {
+    auto kernel = make_npu_aiv1024_triton();
+    return make_npu_aiv_fft1024_child(request, kernel != nullptr, std::move(kernel));
+  };
+  auto make_npu_aiv2048_triton = [&](bool radix4_pair) -> std::shared_ptr<JitKernel> {
+    if (!radix4_pair || !flag_or_default("FLAGFFT_NPU_TRITON_FFT2048", true)) return nullptr;
+    auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
+                                            request.direction, 1, 1, 0, 2048);
+    key.perm_form = "radix4_pair";
+    return compile_kernel(key);
+  };
   auto make_npu_2d_aiv128_child = [&]() -> std::shared_ptr<CompiledRawNode> {
     const char *group_setting = std::getenv("FLAGFFT_NPU_2D_AIV128_GROUP");
     if (group_setting == nullptr) group_setting = "auto";
@@ -1961,19 +2006,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // transform cannot use the radix-4 pair kernel, so fall back to the
     // ordinary 128-point index tables when the batch cannot fill a group.
     if (group_size == 1) return make_npu_aiv_fft128_child(request, 1, false);
-    return make_npu_aiv_fft128_child(request, group_size, npu_2d_radix4_pair);
+    return make_npu_aiv_fft128_child(request, group_size, npu_2d_radix4_pair,
+                                     make_npu_aiv128_triton(group_size, npu_2d_radix4_pair));
   };
 #endif
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
     if (use_npu_2d_aiv1024 && leaf->length == 1024) {
-      return make_npu_aiv_fft1024_child(request);
+      return make_npu_aiv1024_child();
     }
     if (use_npu_2d_aiv128 && leaf->length == 128) {
       if (auto child = make_npu_2d_aiv128_child()) return child;
     }
     if (use_npu_2d_aiv2048 && leaf->length == 2048) {
-      return make_npu_aiv_fft2048_child(request, npu_2d_radix4_pair);
+      return make_npu_aiv_fft2048_child(request, npu_2d_radix4_pair,
+                                         make_npu_aiv2048_triton(npu_2d_radix4_pair));
     }
     const bool use_npu_3d_aiv_small =
         request.device_type == "npu" && request.origin_rank == 3 && request.real_transform_kind.empty() &&
@@ -1998,7 +2045,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       if (group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) group_size = 8;
       group_size = npu_aiv_fft_group_size_for_batch(group_size, batch);
       if (batch % group_size == 0) {
-        return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
+        return make_npu_aiv_fft128_child(request, group_size, radix4_pair,
+                                         make_npu_aiv128_triton(group_size, radix4_pair));
       }
     }
     const bool use_npu_3d_aiv256 = request.device_type == "npu" && request.origin_rank == 3 &&
@@ -2027,7 +2075,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
     if (use_npu_2d_aiv1024 && direct->length == 1024) {
-      return make_npu_aiv_fft1024_child(request);
+      return make_npu_aiv1024_child();
     }
     // Some planner versions represent the power-of-two 128-point child as a
     // DirectDFT node. The native AIV implementation is a radix-2 FFT and is
@@ -2048,19 +2096,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
         flag_or_default("FLAGFFT_NPU_AIV_LEAF_1D", true);
     if (use_npu_1d_aiv_leaf && stockham->length == 1024) {
-      return make_npu_aiv_fft1024_child(request);
+      return make_npu_aiv1024_child();
     }
     if (use_npu_1d_aiv_leaf && stockham->length == 2048) {
       return make_npu_aiv_fft2048_child(request, false);
     }
     if (use_npu_2d_aiv1024 && stockham->length == 1024) {
-      return make_npu_aiv_fft1024_child(request);
+      return make_npu_aiv1024_child();
     }
     if (use_npu_2d_aiv128 && stockham->length == 128) {
       if (auto child = make_npu_2d_aiv128_child()) return child;
     }
     if (use_npu_2d_aiv2048 && stockham->length == 2048) {
-      return make_npu_aiv_fft2048_child(request, npu_2d_radix4_pair);
+      return make_npu_aiv_fft2048_child(request, npu_2d_radix4_pair,
+                                         make_npu_aiv2048_triton(npu_2d_radix4_pair));
     }
     const bool use_npu_3d_aiv_small =
         request.device_type == "npu" && request.origin_rank == 3 &&
@@ -2102,7 +2151,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       if (group_size != 4 && group_size != 8 && !(radix4_pair && group_size == 16)) group_size = 8;
       group_size = npu_aiv_fft_group_size_for_batch(group_size, batch);
       if (batch % group_size == 0) {
-        return make_npu_aiv_fft128_child(request, group_size, radix4_pair);
+        return make_npu_aiv_fft128_child(request, group_size, radix4_pair,
+                                         make_npu_aiv128_triton(group_size, radix4_pair));
       }
     }
     const bool use_npu_3d_aiv256 = request.device_type == "npu" && request.origin_rank == 3 &&
@@ -2120,7 +2170,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                     npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV2048");
     if (use_npu_3d_aiv2048) {
       const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
-      return make_npu_aiv_fft2048_child(request, radix4_pair);
+      return make_npu_aiv_fft2048_child(request, radix4_pair,
+                                         make_npu_aiv2048_triton(radix4_pair));
     }
 #endif
     std::vector<std::shared_ptr<JitKernel>> kernels;

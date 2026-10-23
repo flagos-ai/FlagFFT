@@ -337,7 +337,8 @@ struct KernelKey {
   static KernelKey twiddle_reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
   static KernelKey tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1);
   static KernelKey npu_grouped_fft64(std::string target, std::string direction,
-                                     int64_t group, int64_t stride, int64_t mode);
+                                     int64_t group, int64_t stride, int64_t mode,
+                                     int64_t length = 64);
   static KernelKey transpose3d(
       std::string target, std::string dtype, int64_t n0, int64_t n1, int64_t n2, std::string order);
   static KernelKey real_to_complex(std::string target, std::string dtype, int64_t length);
