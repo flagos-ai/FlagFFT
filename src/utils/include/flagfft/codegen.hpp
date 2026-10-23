@@ -623,7 +623,8 @@ struct CompiledRawFourStepGenericNode final : CompiledRawNode {
                                  std::shared_ptr<JitKernel> final_pack_kernel,
                                  DeviceAllocation twiddle,
                                  DeviceAllocation stage1,
-                                 DeviceAllocation stage2);
+                                 DeviceAllocation stage2,
+                                 DeviceAllocation pack_indices = DeviceAllocation {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -640,6 +641,7 @@ struct CompiledRawFourStepGenericNode final : CompiledRawNode {
   DeviceAllocation twiddle;
   DeviceAllocation stage1;
   DeviceAllocation stage2;
+  DeviceAllocation pack_indices;
 };
 
 struct CompiledRawR2CNode final : CompiledRawNode {

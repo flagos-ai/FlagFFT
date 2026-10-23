@@ -1654,7 +1654,8 @@ CompiledRawFourStepGenericNode::CompiledRawFourStepGenericNode(
     std::shared_ptr<JitKernel> final_pack_kernel,
     DeviceAllocation twiddle,
     DeviceAllocation stage1,
-    DeviceAllocation stage2)
+    DeviceAllocation stage2,
+    DeviceAllocation pack_indices)
     : length(length),
       n1(n1),
       n2(n2),
@@ -1665,7 +1666,8 @@ CompiledRawFourStepGenericNode::CompiledRawFourStepGenericNode(
       final_pack_kernel(std::move(final_pack_kernel)),
       twiddle(std::move(twiddle)),
       stage1(std::move(stage1)),
-      stage2(std::move(stage2)) {
+      stage2(std::move(stage2)),
+      pack_indices(std::move(pack_indices)) {
 }
 
 std::string CompiledRawFourStepGenericNode::describe() const {
@@ -1682,7 +1684,9 @@ flagfftResult CompiledRawFourStepGenericNode::execute(adaptor::DevicePtr input,
   try {
     const int64_t total = n1 * n2;
     const int64_t reshape_block = 256;
-    const int64_t grid_x = ceil_div(total, reshape_block);
+    const int64_t grid_x = reshape_in_kernel->grid_x_override > 0
+                               ? reshape_in_kernel->grid_x_override
+                               : ceil_div(total, reshape_block);
     int64_t batch_chunk = context.batch;
     if (context.request.device_type == "npu") {
       // The input, twiddle and final layout kernels use grid_y=batch. Chunk
@@ -1699,11 +1703,13 @@ flagfftResult CompiledRawFourStepGenericNode::execute(adaptor::DevicePtr input,
       const adaptor::DevicePtr stage1_chunk = stage1.get() + byte_offset;
       const adaptor::DevicePtr stage2_chunk = stage2.get() + byte_offset;
 
+      const bool npu_pack = pack_indices.get() != 0;
       std::vector<JitKernelArg> reshape_in_args = {
           JitKernelArg::device(input_chunk),
-          JitKernelArg::device(stage1_chunk),
-          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
       };
+      if (npu_pack) reshape_in_args.push_back(JitKernelArg::device(pack_indices.get()));
+      reshape_in_args.push_back(JitKernelArg::device(stage1_chunk));
+      reshape_in_args.push_back(JitKernelArg::i32(static_cast<int32_t>(chunk_batch)));
       reshape_in_kernel->launch(context.stream, reshape_in_args, grid_x, chunk_batch, 1);
 
       RawExecutionContext row_context {context.request, context.stream, chunk_batch * n2};
@@ -1715,9 +1721,10 @@ flagfftResult CompiledRawFourStepGenericNode::execute(adaptor::DevicePtr input,
       std::vector<JitKernelArg> twiddle_args = {
           JitKernelArg::device(stage2_chunk),
           JitKernelArg::device(twiddle.get()),
-          JitKernelArg::device(stage1_chunk),
-          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
       };
+      if (npu_pack) twiddle_args.push_back(JitKernelArg::device(pack_indices.get()));
+      twiddle_args.push_back(JitKernelArg::device(stage1_chunk));
+      twiddle_args.push_back(JitKernelArg::i32(static_cast<int32_t>(chunk_batch)));
       twiddle_reshape_kernel->launch(context.stream, twiddle_args, grid_x, chunk_batch, 1);
 
       RawExecutionContext col_context {context.request, context.stream, chunk_batch * n1};
@@ -1728,9 +1735,10 @@ flagfftResult CompiledRawFourStepGenericNode::execute(adaptor::DevicePtr input,
 
       std::vector<JitKernelArg> final_args = {
           JitKernelArg::device(stage2_chunk),
-          JitKernelArg::device(output_chunk),
-          JitKernelArg::i32(static_cast<int32_t>(chunk_batch)),
       };
+      if (npu_pack) final_args.push_back(JitKernelArg::device(pack_indices.get()));
+      final_args.push_back(JitKernelArg::device(output_chunk));
+      final_args.push_back(JitKernelArg::i32(static_cast<int32_t>(chunk_batch)));
       final_pack_kernel->launch(context.stream, final_args, grid_x, chunk_batch, 1);
     }
     return FLAGFFT_SUCCESS;

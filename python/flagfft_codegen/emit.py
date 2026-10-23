@@ -55,6 +55,8 @@ from .kernels_layout import (
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
     _build_twiddle_reshape_pack_kernel_source,
+    npu_reshape_pack_grid,
+    npu_tiled_reshape_pack,
 )
 from .kernels_leaf import _build_leaf_kernel_source_for_io
 from .kernels_real import (
@@ -530,6 +532,8 @@ def _emit_reshape_jit_kernel(
         "reshape_n2": int(n2),
         "block": 256,
     }
+    if npu_tiled_reshape_pack(n1, n2, dtype):
+        metadata["grid_x_override"] = npu_reshape_pack_grid(n1, n2)
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 

@@ -6180,6 +6180,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_generic(c
   auto reshape_in_kernel = compile_reshape_pack_kernel(request, n1, n2);
   auto twiddle_reshape_kernel = compile_twiddle_reshape_pack_kernel(request, n2, n1);
   auto final_pack_kernel = compile_reshape_pack_kernel(request, n1, n2);
+  DeviceAllocation pack_indices;
+  if (request.device_type == "npu") {
+    pack_indices = build_npu_2d_transpose_indices(32);
+  }
 
   return std::make_shared<CompiledRawFourStepGenericNode>(n,
                                                           n1,
@@ -6191,7 +6195,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_generic(c
                                                           std::move(final_pack_kernel),
                                                           std::move(twiddle),
                                                           std::move(stage1),
-                                                          std::move(stage2));
+                                                          std::move(stage2),
+                                                          std::move(pack_indices));
 }
 
 }  // namespace flagfft
