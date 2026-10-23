@@ -1428,6 +1428,9 @@ namespace {
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft2048_child(const FFTRequest &request,
                                                               bool radix4_pair = false,
                                                               std::shared_ptr<JitKernel> replacement = nullptr) {
+    // Ascend C has no place in the shipped path: always use the radix4-pair
+    // tables so a Triton replacement can be attached.
+    if (request.device_type == "npu") radix4_pair = true;
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     if (radix4_pair) {
@@ -2005,7 +2008,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   const bool npu_2d_radix4_pair = flag_or_default("FLAGFFT_NPU_2D_RADIX4_PAIR", true);
   auto make_npu_aiv128_triton = [&](int32_t group_size,
                                     bool radix4_pair) -> std::shared_ptr<JitKernel> {
-    if (!radix4_pair || (group_size != 4 && group_size != 8 && group_size != 16)) {
+    if (!radix4_pair ||
+        (group_size != 1 && group_size != 4 && group_size != 8 && group_size != 16)) {
       return nullptr;
     }
     if (!flag_or_default("FLAGFFT_NPU_TRITON_FFT128", true)) return nullptr;
@@ -2042,7 +2046,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // The radix-2 AIV kernel supports one transform per block. A single
     // transform cannot use the radix-4 pair kernel, so fall back to the
     // ordinary 128-point index tables when the batch cannot fill a group.
-    if (group_size == 1) return make_npu_aiv_fft128_child(request, 1, false);
+    if (group_size == 1) {
+      return make_npu_aiv_fft128_child(request, 1, true,
+                                       make_npu_aiv128_triton(1, true));
+    }
     return make_npu_aiv_fft128_child(request, group_size, npu_2d_radix4_pair,
                                      make_npu_aiv128_triton(group_size, npu_2d_radix4_pair));
   };
@@ -2139,7 +2146,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return make_npu_aiv1024_child();
     }
     if (use_npu_1d_aiv_leaf && stockham->length == 2048) {
-      return make_npu_aiv_fft2048_child(request, false);
+      return make_npu_aiv_fft2048_child(request, true,
+                                         make_npu_aiv2048_triton(true));
     }
     if (use_npu_2d_aiv1024 && stockham->length == 1024) {
       return make_npu_aiv1024_child();

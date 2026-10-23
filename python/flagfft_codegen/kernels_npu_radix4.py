@@ -18,7 +18,7 @@ def build_npu_radix4_pair_source(*, length: int, group: int, mode: int):
     TLE insert_slice keeps the native contiguous UB vector partitions between
     pairs. Inverse scaling is owned by the parent plan, as in the native body.
     """
-    supported = {64: (1, 4, 8, 16, 32), 128: (4, 8, 16), 512: (1,), 1024: (1,), 2048: (1,)}
+    supported = {64: (1, 4, 8, 16, 32), 128: (1, 4, 8, 16), 512: (1,), 1024: (1,), 2048: (1,)}
     if (length not in supported or group not in supported[length]
             or mode not in (0, 1, 2) or (length in (512, 1024, 2048) and mode != 0)):
         raise ValueError("Unsupported Ascend radix4 pair length, group or mode")
