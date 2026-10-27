@@ -321,12 +321,16 @@ def main():
     p.add_argument('--rounds',type=int,default=5)
     args=p.parse_args()
     n,batch=args.n,args.batch
+    if n<16 or n&(n-1) or batch<1 or args.steps<1 or args.rounds<1:
+        p.error('require power-of-two n>=16 and positive batch, steps and rounds')
+    if args.factor and (args.factor&(args.factor-1) or n%args.factor):
+        p.error('factor must be a power of two dividing n')
     torch.npu.set_device(0)
     source_sha=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     torch.manual_seed(args.seed)
     cpu=torch.randn(batch,n,2)
     if args.input=='impulse':
-        cpu.zero_();cpu[:,0,0]=1
+        cpu.zero_();cpu[torch.arange(batch),torch.arange(batch)%n,0]=1
     elif args.input=='constant':
         cpu.fill_(1)
     elif args.input=='tone':
@@ -393,6 +397,8 @@ def main():
     for name,data in ck.asm.items():
         if isinstance(data,str):
             args.output.with_suffix('.'+name).write_text(data)
+        elif isinstance(data,(bytes,bytearray)):
+            args.output.with_suffix('.'+name).write_bytes(data)
     ref=torch.fft.fft(torch.view_as_complex(cpu),dim=-1)
     def check():
         got=torch.view_as_complex(y.cpu())
@@ -414,7 +420,14 @@ def main():
         for _ in range(30): g.replay()
         b.record(); b.synchronize()
         trials.append(a.elapsed_time(b)*1000/30/args.steps/batch)
-    result.update(keep_slices=args.keep_slices,source_sha256=source_sha,tuning=args.tuning,seed=args.seed,input=args.input,
+    from triton.backends.ascend.driver import NPUUtils
+    from triton.backends.ascend.utils import _is_auto_map_parallel_blocks_enabled
+    automatic=ck.metadata.enable_auto_blockify
+    if automatic is None:
+        automatic=_is_auto_map_parallel_blocks_enabled()
+    launch_blocks=min(batch,NPUUtils().get_aivector_core_num()) if automatic else batch
+    result.update(status='pass',launch_blocks=launch_blocks,logical_grid=batch,
+                  kernel_us=statistics.median(trials)*batch,keep_slices=args.keep_slices,source_sha256=source_sha,tuning=args.tuning,seed=args.seed,input=args.input,
                   all_blocks_parallel=os.environ.get('TRITON_ALL_BLOCKS_PARALLEL'),
                   n=n,batch=batch,factor=args.factor,sliced_fourstep=args.sliced_fourstep,fused_fourstep=args.fused_fourstep,native_interleave=args.native_interleave,autosort=args.autosort,us_per_transform=statistics.median(trials),
                   trials=trials,steps=args.steps,triton=triton.__file__,metadata=str(ck.metadata),
