@@ -950,6 +950,8 @@ TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
                               static_cast<flagfftComplex *>(destination.data()),
                               FLAGFFT_FORWARD), FLAGFFT_SUCCESS);
       stream.sync();
+      EXPECT_NE(std::string(flagfftGetPlanDescription(plan.handle)).find("captured=true"),
+                std::string::npos);
       destination.copy_to_host(output.data(), bytes);
       for (int b = 0; b < batch; ++b) {
         for (int i = 0; i < total; ++i) {
