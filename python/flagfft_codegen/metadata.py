@@ -28,6 +28,7 @@ from .kernels_common import (
     _dtype_suffix,
     _hcu_backend_active,
     _maca_knob,
+    _mthreads_backend_active,
     _npu_backend_active,
     _portable_leaf_backend_active,
     _ix_backend_active,
@@ -161,6 +162,7 @@ def _metadata(
               and kernel_name.startswith("r2c_permuted_store"))) and (
         current_profile().backend == "cuda"
         or _ix_backend_active()
+        or _mthreads_backend_active()
         or (
             _npu_backend_active()
             and os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_STORE") == "1"

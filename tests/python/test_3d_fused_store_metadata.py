@@ -51,6 +51,59 @@ def test_hcu_permuted_store_grid_matches_generated_batch_pack(monkeypatch, pack)
         reset_profile(token)
 
 
+@pytest.mark.parametrize("dtype, expected_pack", (("complex64", 4), ("complex128", 2)))
+@pytest.mark.parametrize(
+    "io_mode,kernel_type",
+    (("permuted_store", "leaf_permuted_store"),
+     ("strided_permuted_store", "leaf_strided_permuted_store")),
+)
+def test_musa_permuted_store_launch_pack_matches_generated_batch_pack(
+    monkeypatch, dtype, expected_pack, io_mode, kernel_type
+):
+    monkeypatch.setenv("FLAGFFT_MUSA_3D_PACK", "auto")
+    monkeypatch.setenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1")
+    token = set_profile(
+        BackendProfile(
+            backend="musa",
+            device_arch="31",
+            warp_size=32,
+            max_threads_per_block=1024,
+            max_dynamic_shared_memory=196608,
+            policy="legacy",
+        )
+    )
+    try:
+        plan = LeafPlan(
+            length=256,
+            factors=(16, 16),
+            remainder=1,
+            lanes=16,
+            num_warps=1,
+            generic_radices=(),
+            smem_size=256,
+            dtype=dtype,
+        )
+        pack = permuted_store_batch_pack_for(plan)
+        kernel_name, source = _build_leaf_kernel_source_for_io(
+            plan, io_mode=io_mode, perm_form="outer"
+        )
+        metadata = _metadata(
+            module_path=Path("generated.py"),
+            kernel_name=kernel_name,
+            arg_names=["in_ptr", "out_ptr", "outer_stride", "perm_span", "nbatch"],
+            plan=plan,
+            kernel_type=kernel_type,
+            n1=0,
+            n2=0,
+            dtype=dtype,
+        )
+        assert pack == expected_pack
+        assert f"batch_id = pid * {pack}" in source
+        assert metadata["batch_per_block"] == pack
+    finally:
+        reset_profile(token)
+
+
 @pytest.mark.parametrize("warps", (1, 2, 4, 8))
 def test_hcu_permuted_store_warp_override(monkeypatch, warps):
     monkeypatch.setenv("FLAGFFT_HCU_3D_FUSED_WARPS", str(warps))
