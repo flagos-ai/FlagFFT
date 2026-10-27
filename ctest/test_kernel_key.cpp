@@ -163,3 +163,24 @@ TEST(CudaWideLeafPlan, BoundedByHardwareAndPrecision) {
     EXPECT_TRUE(!double_leaf || double_leaf->lanes != 256);
   }
 }
+
+
+TEST(CudaMeasuredFourStep, MiddleBatchRangeHasNoPolicyGap) {
+  for (const std::string dtype : {"complex64", "complex128"}) {
+    for (int64_t batch : {9, 32, 64}) {
+      flagfft::FFTRequest request;
+      request.device_type = "unit-test";
+      request.device_arch = "sm_80";
+      request.raw_dim = request.normalized_dim = request.origin_rank = 1;
+      request.batch = batch;
+      request.fft_length = request.requested_n = 8192;
+      request.input_dtype = request.output_dtype = dtype;
+      request.direction = "forward";
+      flagfft::PlanBuilder builder;
+      auto split = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(8192,request));
+      ASSERT_NE(split,nullptr);
+      EXPECT_EQ(split->n1,128);
+      EXPECT_EQ(split->n2,64);
+    }
+  }
+}
