@@ -2349,3 +2349,25 @@ def test_cuda_wide_leaf_preserves_complete_fft_groups(n, factors, tmp_path):
     assert meta['num_warps'] == 8
     assert meta['batch_per_block'] == 1
     assert f'tle.gpu.alloc([{n}]' in source
+
+
+@pytest.mark.parametrize('mode', ['four_step_row','four_step_col'])
+def test_cuda_fourstep_pack4_matches_launch_and_source(monkeypatch,tmp_path,mode):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    monkeypatch.setenv('FLAGFFT_CUDA_FOURSTEP_PACK4','1')
+    try:
+        plan=LeafPlan(128,(8,4,4),1,16,1,(),128)
+        n1,n2=(128,64) if mode=='four_step_row' else (64,128)
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=n1,four_step_n2=n2)
+        metadata=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,arg_names=['in_ptr','out_ptr','nbatch'],
+            plan=plan,kernel_type=mode,n1=n1,n2=n2,dtype=plan.dtype)
+        assert 'four_step_inner_base = tl.program_id(0) * 4' in source
+        assert metadata['inner_pack'] == 4
+        assert metadata['num_warps'] == 4
+    finally:
+        reset_profile(token)

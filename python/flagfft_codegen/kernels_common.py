@@ -946,7 +946,17 @@ def _bounded_inner_pack(
     )
 
 
+def _cuda_four_step_pack_four(plan: LeafPlan | None) -> bool:
+    profile = current_profile()
+    return (profile.backend == "cuda" and os.getenv("FLAGFFT_CUDA_FOURSTEP_PACK4") == "1"
+            and plan is not None and plan.length <= 1024 and plan.smem_size <= 1024
+            and profile.max_dynamic_shared_memory is not None
+            and profile.max_dynamic_shared_memory >= 128 * 1024)
+
+
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
+    if _cuda_four_step_pack_four(plan):
+        return 4
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
     # HCU's FP32 1024-point leaves benefit from using the exact unpadded
@@ -967,6 +977,8 @@ def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
 
 
 def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
+    if _cuda_four_step_pack_four(plan):
+        return 4
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
     extra_smem_elements = (
