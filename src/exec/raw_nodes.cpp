@@ -1028,11 +1028,13 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
 CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
                                                    std::shared_ptr<JitKernel> kernel,
                                                    std::vector<DeviceAllocation> tables,
-                                                   DeviceAllocation input_copy)
+                                                   DeviceAllocation input_copy, std::string real_kind,
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       kernel(std::move(kernel)),
       tables(std::move(tables)),
-      input_copy(std::move(input_copy)) {
+      input_copy(std::move(input_copy)), real_kind(std::move(real_kind)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawDirectDftNode::describe() const {
@@ -1046,6 +1048,21 @@ flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
+    if (!real_kind.empty()) {
+      const int64_t half = length / 2 + 1;
+      const int64_t input_distance = real_kind == "r2c" ? length : half;
+      const int64_t output_distance = real_kind == "r2c" ? half : length;
+      if ((context.input_distance > 0 && context.input_distance != input_distance) ||
+          (context.output_distance > 0 && context.output_distance != output_distance)) {
+        std::shared_ptr<CompiledRawNode> fallback;
+        {
+          std::lock_guard<std::mutex> lock(layout_mutex);
+          if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+          fallback = layout_fallback;
+        }
+        return fallback ? fallback->execute(input, output, context) : FLAGFFT_INVALID_VALUE;
+      }
+    }
     adaptor::DevicePtr effective_input = input;
     if (input == output) {
       adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);

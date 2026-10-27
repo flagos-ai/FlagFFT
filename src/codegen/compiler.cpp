@@ -1834,6 +1834,7 @@ namespace {
                                  (ix_setting == nullptr || std::string(ix_setting) != "0");
     const bool cuda_target = request.device_type == "cuda" && request.device_arch == "sm_80" &&
                              request.origin_rank <= 1 && batch == request.batch &&
+                             (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
                              flag_or_default("FLAGFFT_CUDA_REAL_DIRECT_DFT", false);
     return request.raw_dim == 1 &&
            ((request.device_type == "maca" && (single_target || batch_target)) || ix_batch_target || cuda_target) &&
@@ -3197,9 +3198,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_direct_dft(
   // actual input extent (real N scalars or compact N/2+1 complex values).
   const int64_t complex_bytes = complex_element_bytes(request.input_dtype);
   const int64_t input_bytes = inverse ? (n / 2 + 1) * complex_bytes : n * (complex_bytes / 2);
+  const bool cuda_real = request.device_type == "cuda";
+  auto fallback = [request, n, inverse]() -> std::shared_ptr<CompiledRawNode> {
+    FFTRequest fallback_request = request;
+    fallback_request.real_transform_kind.clear();
+    TritonCompiler compiler;
+    auto node = std::make_shared<DirectDFTPlanNode>(n);
+    return inverse ? compiler.compile_raw_c2r_node(node, fallback_request, request.batch, false)
+                   : compiler.compile_raw_r2c_node(node, fallback_request, request.batch, false);
+  };
   return std::make_shared<CompiledRawDirectDftNode>(
       n, compile_kernel(key), build_raw_direct_dft_tables(n, real_request),
-      adaptor::Memory(static_cast<std::size_t>(request.batch * input_bytes)));
+      adaptor::Memory(static_cast<std::size_t>(request.batch * input_bytes)),
+      cuda_real ? (inverse ? "c2r" : "r2c") : "", cuda_real ? fallback :
+          std::function<std::shared_ptr<CompiledRawNode>()>{});
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPlanNode &leaf,
