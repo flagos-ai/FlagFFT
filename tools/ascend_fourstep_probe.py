@@ -308,6 +308,7 @@ def main():
     p.add_argument('--n',type=int,default=2048)
     p.add_argument('--batch',type=int,default=2048)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--dispatch',choices=['inherit','persistent','parallel'],default='inherit')
     p.add_argument('--keep-slices',action='store_true')
     p.add_argument('--tuning',choices=['default','multi','vec2','singlebuffer','ubsave','flatten'],default='default')
     p.add_argument('--fused-fourstep',action='store_true')
@@ -339,6 +340,8 @@ def main():
     tuning={'default':{},'multi':{'hfusion_enable_multiple_consumer_fusion':True},
             'vec2':{'enable_auto_vectorize_v2':True},'singlebuffer':{'multibuffer':False},
             'ubsave':{'enable_ubuf_saving':True},'flatten':{'enable_flatten':True}}[args.tuning]
+    if args.dispatch!='inherit':
+        tuning['enable_auto_blockify']=args.dispatch=='persistent'
     x=cpu.npu(); y=torch.full_like(x,float('nan')); w=twiddles(n)
     if args.fused_fourstep:
         a=args.factor or 64; b=n//a
@@ -426,7 +429,7 @@ def main():
     if automatic is None:
         automatic=_is_auto_map_parallel_blocks_enabled()
     launch_blocks=min(batch,NPUUtils().get_aivector_core_num()) if automatic else batch
-    result.update(status='pass',launch_blocks=launch_blocks,logical_grid=batch,
+    result.update(dispatch=args.dispatch,status='pass',launch_blocks=launch_blocks,logical_grid=batch,
                   kernel_us=statistics.median(trials)*batch,keep_slices=args.keep_slices,source_sha256=source_sha,tuning=args.tuning,seed=args.seed,input=args.input,
                   all_blocks_parallel=os.environ.get('TRITON_ALL_BLOCKS_PARALLEL'),
                   n=n,batch=batch,factor=args.factor,sliced_fourstep=args.sliced_fourstep,fused_fourstep=args.fused_fourstep,native_interleave=args.native_interleave,autosort=args.autosort,us_per_transform=statistics.median(trials),
