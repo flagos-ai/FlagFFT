@@ -20,11 +20,12 @@ import torch_npu
 import triton
 from ascend_fourstep_probe import fourstep_fused, axis_twiddles
 from ascend_local_fft_codegen import generate
+from ascend_packed_fft import packed_fft, compact_twiddles
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--variant', choices=['baseline','local-first','local-both'], default='baseline')
+    parser.add_argument('--variant', choices=['baseline','local-first','local-both','packed','compact'], default='baseline')
     parser.add_argument('--pack',type=int,default=1)
     parser.add_argument('--factor',type=int,default=32)
     parser.add_argument('--radix',type=int,choices=[2,4],default=4)
@@ -60,6 +61,16 @@ def main():
         runner = ck[(batch, 1, 1)]
         def fft():
             runner(x, y, wa, wb, cross, n, a, b, a.bit_length()-1, b.bit_length()-1, False, False)
+    elif args.variant in ('packed','compact'):
+        if args.variant=='compact':
+            wa,wb=compact_twiddles(a),compact_twiddles(b)
+        else:
+            wa,wb=axis_twiddles(n*args.pack,a,b),axis_twiddles(n*args.pack,b,args.pack*a)
+        grid=triton.cdiv(batch,args.pack)
+        ck=packed_fft[(grid,)](x,y,wa,wb,cross,batch,n,a,b,args.pack,args.variant=='compact',**options)
+        runner=ck[(grid,1,1)]
+        def fft():
+            runner(x,y,wa,wb,cross,batch,n,a,b,args.pack,args.variant=='compact')
     else:
         name, source = generate(n=n, factor=a, pack=args.pack,
                                 both=args.variant=='local-both', radix=args.radix)
