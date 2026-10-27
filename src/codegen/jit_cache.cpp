@@ -265,6 +265,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "cuda") {
     const char *single_buffer = std::getenv("FLAGFFT_CUDA_LEAF_SINGLE_BUFFER");
     cache_key += ";cuda-single-buffer=" + std::string(single_buffer ? single_buffer : "0");
+    const char *swizzle = std::getenv("FLAGFFT_CUDA_SMEM_SWIZZLE");
+    cache_key += ";cuda-smem-swizzle=" + std::string(swizzle ? swizzle : "0");
   }
   if (key.kind == KernelKind::Transpose3D && adaptor::backend_name() == "cuda") {
     const char *fp64_transpose = std::getenv("FLAGFFT_CUDA_3D_FP64_TRANSPOSE");

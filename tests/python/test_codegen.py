@@ -2256,3 +2256,16 @@ def test_cuda_single_buffer_rejects_multigroup_and_fused_convolution(monkeypatch
                       generic_radices=(), smem_size=2048, dtype=dtype)
     assert not _use_single_smem_buffer(unsafe)
     assert not _use_single_smem_buffer(safe, io_mode='bluestein_full_leaf')
+
+
+@pytest.mark.parametrize('shift', [3, 4, 5])
+def test_cuda_shared_swizzle_is_bijective_and_applied_to_both_sides(monkeypatch, shift):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_CUDA_SMEM_SWIZZLE', str(shift))
+    plan = LeafPlan(length=256, factors=(16, 16), remainder=1, lanes=16, num_warps=1,
+                    generic_radices=(), smem_size=256, dtype='complex128')
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode='permuted_store', perm_form='outer')
+    assert f'dst0 ^ (dst0 >> {shift})' in source
+    assert f'logical_phys0 ^ (logical_phys0 >> {shift})' in source
+    assert len({i ^ (i >> shift) for i in range(256)}) == 256

@@ -1242,7 +1242,12 @@ def _emit_stage_block(
         )
     )
     hcu_smem_swizzle = hcu_smem_swizzle or hcu_r2c_leaf_swizzle
-    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or (
+    cuda_swizzle = os.getenv("FLAGFFT_CUDA_SMEM_SWIZZLE", "0")
+    if current_profile().backend == "cuda" and cuda_swizzle not in {"0", "3", "4", "5"}:
+        raise ValueError("FLAGFFT_CUDA_SMEM_SWIZZLE must be 0, 3, 4 or 5")
+    cuda_smem_swizzle = (current_profile().backend == "cuda" and cuda_swizzle != "0" and
+                        not portable_exchange and n & (n - 1) == 0)
+    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or cuda_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
@@ -1252,6 +1257,8 @@ def _emit_stage_block(
         and _maca_knob("SMEM_INTERLEAVE", "0") == "1"
     )
     swizzle_shift = _TLE_SMEM_SWIZZLE_SHIFT
+    if cuda_smem_swizzle:
+        swizzle_shift = int(cuda_swizzle)
     if _ix_backend_active() and smem_swizzle:
         swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
         if not 1 <= swizzle_shift <= 8:
