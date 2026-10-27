@@ -7,6 +7,8 @@ import argparse
 import ctypes
 import hashlib
 import json
+import importlib.util
+import sys
 import math
 import os
 from pathlib import Path
@@ -17,10 +19,16 @@ import torch
 import torch_npu
 import triton
 from ascend_fourstep_probe import fourstep_fused, axis_twiddles
+from ascend_local_fft_codegen import generate
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--variant', choices=['baseline','local-first','local-both'], default='baseline')
+    parser.add_argument('--pack',type=int,default=1)
+    parser.add_argument('--factor',type=int,default=32)
+    parser.add_argument('--radix',type=int,choices=[2,4],default=4)
+    parser.add_argument('--single-buffer',action='store_true')
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--seed', type=int, default=42)
@@ -30,7 +38,7 @@ def main():
     parser.add_argument('--rounds', type=int, default=7)
     parser.add_argument('--iters', type=int, default=20)
     args = parser.parse_args()
-    n, batch, a = args.n, args.batch, 32
+    n, batch, a = args.n, args.batch, args.factor
     b = n // a
     os.environ['TRITON_ALL_BLOCKS_PARALLEL'] = '1'
     torch.npu.set_device(0)
@@ -41,11 +49,39 @@ def main():
     k = torch.arange(n, dtype=torch.int64)
     angle = -2 * math.pi * (k//b) * (k%b) / n
     cross = torch.cat((angle.cos(), angle.sin())).float().npu()
-    ck = fourstep_fused[(batch,)](x, y, wa, wb, cross, n, a, b,
-            a.bit_length()-1, b.bit_length()-1, False, False, enable_auto_blockify=True)
-    runner = ck[(batch, 1, 1)]
-    def fft():
-        runner(x, y, wa, wb, cross, n, a, b, a.bit_length()-1, b.bit_length()-1, False, False)
+    options = {'enable_auto_blockify': True}
+    if args.single_buffer:
+        options['multibuffer'] = False
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    generated_sha = None
+    if args.variant == 'baseline':
+        ck = fourstep_fused[(batch,)](x, y, wa, wb, cross, n, a, b,
+                a.bit_length()-1, b.bit_length()-1, False, False, **options)
+        runner = ck[(batch, 1, 1)]
+        def fft():
+            runner(x, y, wa, wb, cross, n, a, b, a.bit_length()-1, b.bit_length()-1, False, False)
+    else:
+        name, source = generate(n=n, factor=a, pack=args.pack,
+                                both=args.variant=='local-both', radix=args.radix)
+        path = args.output.with_suffix('.generated.py')
+        path.write_text(source)
+        generated_sha = hashlib.sha256(source.encode()).hexdigest()
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        kernel = getattr(module, name)
+        if args.variant=='local-first':
+            wb = axis_twiddles(n*args.pack,b,args.pack*a)
+        grid = triton.cdiv(batch,args.pack)
+        ck = kernel[(grid,)](x,y,cross,wb,batch,**options)
+        runner = ck[(grid,1,1)]
+        def fft():
+            runner(x,y,cross,wb,batch)
+    for key,data in ck.asm.items():
+        path=args.output.with_suffix('.'+key)
+        if isinstance(data,str): path.write_text(data)
+        elif isinstance(data,(bytes,bytearray)): path.write_bytes(data)
 
     lib = ctypes.CDLL(str(args.library.resolve()))
     lib.sip_error.restype = ctypes.c_char_p
@@ -107,7 +143,7 @@ def main():
     errors.update(fourstep_after=check(y), sip_after=check(z))
     assert torch.equal(x.cpu(), cpu), 'input changed during replay'
     lib.sip_destroy(handle)
-    result = dict(status='pass', n=n, batch=batch, seed=args.seed,
+    result = dict(variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
                   graph_steps=args.steps, rounds=args.rounds, iters=args.iters,
                   results=results, rel_l2=errors, replay_verified=True,
                   scope='complete FFT execution on resident device buffers; plans/tables/JIT/copies excluded',
