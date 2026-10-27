@@ -246,6 +246,24 @@ def test_cuda_fp64_transpose_tile_selection(tmp_path, monkeypatch, order, mode) 
         assert ("tl.join(dst_r, dst_i)" in source) == mode.endswith("vec")
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("mode", ["auto", "register", "scalar", "packed"])
+def test_cuda_2d_transpose_layout_selection(tmp_path, monkeypatch, dtype, mode) -> None:
+    from flagfft_codegen.emit import _emit_tiled_transpose_jit_kernel
+
+    monkeypatch.setenv("FLAGFFT_CUDA_2D_TRANSPOSE", mode)
+    if mode == "packed" and dtype == "complex128":
+        with pytest.raises(ValueError, match="requires complex64"):
+            _emit_tiled_transpose_jit_kernel(n0=2048, n1=2048, dtype=dtype, out_dir=tmp_path)
+        return
+    metadata = _emit_tiled_transpose_jit_kernel(n0=2048, n1=2048, dtype=dtype, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, metadata["module_path"], "exec")
+    assert metadata["tile_size"] == 32
+    assert ("tl.trans(" in source) == (mode in {"register", "packed"})
+    assert ("tl.pointer_type(tl.uint64)" in source) == (mode == "packed")
+
+
 @pytest.mark.parametrize("pack", [1, 4])
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 def test_maca_packed_permuted_store_is_fp32_only(

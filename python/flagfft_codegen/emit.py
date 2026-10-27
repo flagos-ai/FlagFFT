@@ -729,17 +729,24 @@ def _emit_tiled_transpose_jit_kernel(
     tile_size: int = 32,  # must match constexpr tile_size in raw_nodes.cpp CompiledRaw2DNode::execute()
     out_dir: Path,
 ) -> dict[str, Any]:
+    cuda_mode = os.environ.get("FLAGFFT_CUDA_2D_TRANSPOSE", "auto") if _declared_backend() == "cuda" else "auto"
+    if cuda_mode not in {"auto", "register", "scalar", "packed"}:
+        raise ValueError("FLAGFFT_CUDA_2D_TRANSPOSE must be auto, register, scalar or packed")
+    if cuda_mode == "packed" and dtype != "complex64":
+        raise ValueError("CUDA packed 2D transpose requires complex64")
     if (
-        _maca_backend_active()
-        and dtype == "complex64"
-        and _maca_knob("2D_TRANSPOSE") == "packed"
+        cuda_mode == "packed"
+        or (_maca_backend_active()
+            and dtype == "complex64"
+            and _maca_knob("2D_TRANSPOSE") == "packed")
     ):
         kernel_name, kernel_source, arg_names = _build_packed_transpose_kernel_source(
             n0, n1, tile_size
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose_kernel_source(
-            n0, n1, dtype, tile_size
+            n0, n1, dtype, tile_size,
+            register_transpose={"register": True, "scalar": False}.get(cuda_mode),
         )
     suffix = _dtype_suffix(dtype)
     module_name = f"flagfft_jit_tiled_transpose_n{n0}_{n1}_{suffix}"

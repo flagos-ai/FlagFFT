@@ -266,6 +266,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const char *fp64_transpose = std::getenv("FLAGFFT_CUDA_3D_FP64_TRANSPOSE");
     cache_key += ";cuda-3d-fp64-transpose=" + std::string(fp64_transpose ? fp64_transpose : "v1");
   }
+  if (key.kind == KernelKind::TiledTranspose && adaptor::backend_name() == "cuda") {
+    const char *transpose = std::getenv("FLAGFFT_CUDA_2D_TRANSPOSE");
+    cache_key += ";cuda-2d-transpose=" + std::string(transpose ? transpose : "auto");
+  }
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);
