@@ -2696,6 +2696,33 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   throw std::runtime_error("raw C API does not support plan node kind: " + plan_node_kind_name(node->kind));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
+    const PlanNodePtr &node, const FFTRequest &request, int64_t batch, bool inverse) {
+  const int64_t n = request.requested_n;
+  if (request.device_type != "cuda" || request.device_arch != "sm_80" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || batch <= 1 || batch != request.batch ||
+      n < 997 || n % 2 == 0 || request.input_strides.empty() || request.input_strides.back() != 1 ||
+      !flag_or_default("FLAGFFT_CUDA_REAL_BATCH_PAIR", false)) return nullptr;
+  const int64_t pairs = (batch + 1) / 2;
+  FFTRequest child = request;
+  child.batch = pairs;
+  child.output_dtype = child.input_dtype;
+  child.input_shape = {pairs, n};
+  child.input_strides = {n, 1};
+  child.real_transform_kind.clear();
+  child.real_transform = false;
+  child.direction = inverse ? "inverse" : "forward";
+  auto pack_key = KernelKey::real_to_complex(triton_target_for_request(child), child.input_dtype, n);
+  auto unpack_key = pack_key;
+  pack_key.kind = inverse ? KernelKind::RealPairC2RPack : KernelKind::RealPairR2CPack;
+  unpack_key.kind = inverse ? KernelKind::RealPairC2RUnpack : KernelKind::RealPairR2CUnpack;
+  const auto bytes = static_cast<std::size_t>(pairs * n * complex_element_bytes(request.input_dtype));
+  auto fft = compile_raw_node(node, child, pairs);
+  return std::make_shared<CompiledRawRealPairNode>(n, batch, inverse, std::move(child),
+      std::move(fft), compile_kernel(pack_key), compile_kernel(unpack_key),
+      adaptor::Memory(bytes), adaptor::Memory(bytes));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const PlanNodePtr &node,
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
@@ -2706,6 +2733,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, false);
   }
+  if (auto pair = compile_raw_real_batch_pair(node, request, batch, false)) return pair;
   if (use_ix_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
@@ -2857,6 +2885,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, true);
   }
+  if (auto pair = compile_raw_real_batch_pair(node, request, batch, true)) return pair;
   if (use_ix_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }

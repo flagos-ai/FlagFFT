@@ -56,6 +56,7 @@ from .kernels_layout import (
 from .kernels_leaf import _build_leaf_kernel_source_for_io
 from .kernels_real import (
     _build_c2r_packed_preprocess_kernel_source,
+    _build_real_pair_kernel_source,
     _build_compact_to_hermitian_full_kernel_source,
     _build_complex_to_real_kernel_source,
     _build_r2c_half_pack_kernel_source,
@@ -465,7 +466,9 @@ def _emit_r2c_pointwise_jit_kernel(
         if num_warps not in {4, 8, 16, 32}:
             raise ValueError("NPU 256-point real pointwise warps must be one of 4, 8, 16, 32")
         elements_per_program *= rows_per_program
-    if kernel == "real_to_complex":
+    if kernel in {"r2c_pair_pack", "r2c_pair_unpack", "c2r_pair_pack", "c2r_pair_unpack"}:
+        kernel_name, kernel_source, arg_names, rows_per_block = _build_real_pair_kernel_source(n, dtype, kernel)
+    elif kernel == "real_to_complex":
         (
             kernel_name,
             kernel_source,

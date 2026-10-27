@@ -653,6 +653,25 @@ struct CompiledRawR2CNode final : CompiledRawNode {
   DeviceAllocation full_output;
 };
 
+struct CompiledRawRealPairNode final : CompiledRawNode {
+  CompiledRawRealPairNode(int64_t n, int64_t batch, bool inverse,
+      FFTRequest complex_request, std::shared_ptr<CompiledRawNode> fft,
+      std::shared_ptr<JitKernel> pack, std::shared_ptr<JitKernel> unpack,
+      DeviceAllocation work_input, DeviceAllocation work_output);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  int64_t n;
+  int64_t batch;
+  bool inverse;
+  FFTRequest complex_request;
+  std::shared_ptr<CompiledRawNode> fft;
+  std::shared_ptr<JitKernel> pack;
+  std::shared_ptr<JitKernel> unpack;
+  DeviceAllocation work_input;
+  DeviceAllocation work_output;
+};
+
 struct CompiledRawPackedR2CNode final : CompiledRawNode {
   CompiledRawPackedR2CNode(int64_t length,
                            std::shared_ptr<CompiledRawNode> fft,
@@ -1650,6 +1669,8 @@ class TritonCompiler {
   static void clear_kernel_cache();
 
  private:
+  std::shared_ptr<CompiledRawNode> compile_raw_real_batch_pair(
+      const PlanNodePtr &node, const FFTRequest &request, int64_t batch, bool inverse);
   void configure_single_transform_policies(const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_3d_real_leaf_node(
       const std::shared_ptr<ThreeDimPlanNode> &node,

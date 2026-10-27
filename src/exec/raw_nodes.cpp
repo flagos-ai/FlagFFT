@@ -1832,6 +1832,47 @@ flagfftResult CompiledRawNpuPackedRealBoundaryNode::execute(
 }
 #endif
 
+CompiledRawRealPairNode::CompiledRawRealPairNode(int64_t n, int64_t batch, bool inverse,
+    FFTRequest complex_request, std::shared_ptr<CompiledRawNode> fft,
+    std::shared_ptr<JitKernel> pack, std::shared_ptr<JitKernel> unpack,
+    DeviceAllocation work_input, DeviceAllocation work_output)
+    : n(n), batch(batch), inverse(inverse), complex_request(std::move(complex_request)),
+      fft(std::move(fft)), pack(std::move(pack)), unpack(std::move(unpack)),
+      work_input(std::move(work_input)), work_output(std::move(work_output)) {}
+
+std::string CompiledRawRealPairNode::describe() const {
+  std::ostringstream out;
+  out << "CompiledRawRealPair(n=" << n << ", batch=" << batch << ", inverse=" << inverse
+      << ", complex_batch=" << (batch + 1) / 2 << ", fft=" << fft->describe() << ")";
+  return out.str();
+}
+
+flagfftResult CompiledRawRealPairNode::execute(adaptor::DevicePtr input,
+    adaptor::DevicePtr output, const RawExecutionContext &context) const {
+  try {
+    if (context.batch != batch) return FLAGFFT_INVALID_VALUE;
+    const int64_t pairs = (batch + 1) / 2;
+    const int64_t half = n / 2 + 1;
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : (inverse ? half : n);
+    const int64_t output_distance = context.output_distance > 0 ? context.output_distance : (inverse ? n : half);
+    const auto args = [&](adaptor::DevicePtr src, adaptor::DevicePtr dst) {
+      return std::vector<JitKernelArg>{JitKernelArg::device(src), JitKernelArg::device(dst),
+          JitKernelArg::i64(input_distance), JitKernelArg::i64(output_distance),
+          JitKernelArg::i32(static_cast<int32_t>(batch))};
+    };
+    pack->launch(context.stream, args(input, work_input.get()), ceil_div(n, int64_t{256}), pairs, 1);
+    RawExecutionContext child {complex_request, context.stream, pairs};
+    const auto status = fft->execute(work_input.get(), work_output.get(), child);
+    if (status != FLAGFFT_SUCCESS) return status;
+    unpack->launch(context.stream, args(work_output.get(), output),
+                   ceil_div(inverse ? n : half, int64_t{256}), pairs, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] real-pair execute failed: %s\n", e.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(
     int64_t length,
     std::shared_ptr<CompiledRawNode> fft,

@@ -437,6 +437,18 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::TwiddleReshapePack:
       kernel_kind = "twiddle_reshape_pack";
       break;
+    case KernelKind::RealPairR2CPack:
+      kernel_kind = "r2c_pair_pack";
+      break;
+    case KernelKind::RealPairR2CUnpack:
+      kernel_kind = "r2c_pair_unpack";
+      break;
+    case KernelKind::RealPairC2RPack:
+      kernel_kind = "c2r_pair_pack";
+      break;
+    case KernelKind::RealPairC2RUnpack:
+      kernel_kind = "c2r_pair_unpack";
+      break;
     case KernelKind::RealToComplex:
       kernel_kind = "real_to_complex";
       break;
@@ -645,7 +657,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       jit_command << " --fused-2d-transpose";
     }
   }
-  if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
+  if (key.kind == KernelKind::RealPairR2CPack || key.kind == KernelKind::RealPairR2CUnpack ||
+      key.kind == KernelKind::RealPairC2RPack || key.kind == KernelKind::RealPairC2RUnpack ||
+      key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     jit_command << " --length " << key.length;
@@ -674,7 +688,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::Transpose3D) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
   }
-  if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
+  if (key.kind == KernelKind::RealPairR2CPack || key.kind == KernelKind::RealPairR2CUnpack ||
+      key.kind == KernelKind::RealPairC2RPack || key.kind == KernelKind::RealPairC2RUnpack ||
+      key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     kernel->rows_per_block = json_int_field(artifact_json, "rows_per_block");
