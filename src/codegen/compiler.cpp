@@ -1576,10 +1576,26 @@ namespace {
     return length == 256 && batch == 256 * 256;
   }
 
-  bool use_ix_prime_real_bluestein(const PlanNodePtr &node,
+  bool use_fused_prime_real_bluestein(const PlanNodePtr &node,
                                    const FFTRequest &request,
                                    int64_t batch) {
     const auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
+    const bool cuda_real = bluestein && request.device_type == "cuda" && request.device_arch == "sm_80" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch == request.batch &&
+        !request.packed_real_child && request.fft_length == request.requested_n &&
+        request.requested_n == bluestein->length && !request.input_strides.empty() &&
+        request.input_strides.back() == 1 &&
+        (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
+        flag_or_default("FLAGFFT_CUDA_REAL_BLUESTEIN", false);
+    if (cuda_real) {
+      if (std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan))
+        return bluestein->conv_length <= 4096;
+      const auto split = std::dynamic_pointer_cast<FourStepPlanNode>(bluestein->fft_plan);
+      if (!split) return false;
+      const auto row = std::dynamic_pointer_cast<LeafPlanNode>(split->row_plan);
+      const auto col = std::dynamic_pointer_cast<LeafPlanNode>(split->col_plan);
+      return row && col && row->length <= 1024 && col->length <= 1024;
+    }
     if (!bluestein || request.device_type != "ix" || request.device_arch != "71" ||
         request.raw_dim != 1 || request.origin_rank > 1 || batch != 64 ||
         request.packed_real_child || request.fft_length != request.requested_n ||
@@ -2361,7 +2377,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return compile_raw_four_step_generic(*four_step, request, batch);
   }
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
-    const std::string real_kind = use_ix_prime_real_bluestein(node, request, batch)
+    const std::string real_kind = use_fused_prime_real_bluestein(node, request, batch)
                                       ? request.real_transform_kind : "";
     auto make_real_layout_fallback = [node, request, batch]() -> std::shared_ptr<CompiledRawNode> {
       FFTRequest fallback_request = request;
@@ -2405,7 +2421,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                          request.input_dtype == "complex128" &&
                                          (batch == 1 ||
                                           (bluestein->conv_length <= 4096 &&
-                                           flag_or_default("FLAGFFT_CUDA_FP64_BLUESTEIN_FULL_LEAF", false)));
+                                           (flag_or_default("FLAGFFT_CUDA_FP64_BLUESTEIN_FULL_LEAF", false) || !real_kind.empty())));
     const bool use_musa_s5000_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
                                                request.input_dtype == "complex128" && batch == 1;
     const bool use_musa_3d_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
@@ -2441,7 +2457,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::string(ix_3d_boundary) == "1";
     const bool use_cuda_boundary_leaf =
         request.device_type == "cuda" && request.device_arch == "sm_80" &&
-        leaf != nullptr && bluestein->conv_length <= 4096 && batch == chunk_batch &&
+        leaf != nullptr && real_kind.empty() && bluestein->conv_length <= 4096 && batch == chunk_batch &&
         flag_or_default("FLAGFFT_CUDA_BLUESTEIN_BOUNDARY", false);
     const bool use_full_leaf =
         allow_bluestein_fusion &&
@@ -2469,7 +2485,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_cuda_four_step = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
-        flag_or_default("FLAGFFT_CUDA_BLUESTEIN_FOURSTEP", false);
+        (flag_or_default("FLAGFFT_CUDA_BLUESTEIN_FOURSTEP", false) || !real_kind.empty());
     const bool use_four_step = use_default_four_step || use_maca_four_step || use_cuda_four_step;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
@@ -2743,7 +2759,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     return compile_raw_real_direct_dft(request, false);
   }
   if (auto pair = compile_raw_real_batch_pair(node, request, batch, false)) return pair;
-  if (use_ix_prime_real_bluestein(node, request, batch)) {
+  if (use_fused_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
   // Pack even/odd input samples, run a half-length complex leaf, and
@@ -2895,7 +2911,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     return compile_raw_real_direct_dft(request, true);
   }
   if (auto pair = compile_raw_real_batch_pair(node, request, batch, true)) return pair;
-  if (use_ix_prime_real_bluestein(node, request, batch)) {
+  if (use_fused_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
   if (auto packed_child =
@@ -4174,8 +4190,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // plan while the short outer axes retain their fused stores.
   const bool elongated_3d = n1 >= 4 * std::max(n0, n2) &&
                             batch * n0 * n1 * n2 > kStridedMaxElements;
+  const char *musa_hybrid_override = std::getenv("FLAGFFT_MUSA_3D_HYBRID");
   const bool musa_hybrid = request.device_type == "musa" &&
-                           request.input_dtype == "complex64" && n1_leaf && n1 >= 1024;
+      request.input_dtype == "complex64" && n1_leaf && n1 >= 1024 &&
+      (musa_hybrid_override == nullptr || std::string(musa_hybrid_override) != "0");
   const bool ix_hybrid = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       (n2 == 64 || n2 == 256) && flag_or_default("FLAGFFT_IX_3D_HYBRID", true) &&
