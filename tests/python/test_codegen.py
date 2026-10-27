@@ -187,6 +187,7 @@ def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     ("permuted_store", "leaf_permuted_store"),
     ("strided_permuted_store", "leaf_strided_permuted_store"),
     ("permuted_store_r2c", "leaf_r2c_permuted_store"),
+    ("permuted_r2c", "leaf_r2c"),
 ])
 @pytest.mark.parametrize("factors,lanes,warps", [((16, 16), 16, 1), ((4, 4, 4, 4), 64, 2)])
 def test_permuted_store_launch_grid_matches_generated_batch_pack(

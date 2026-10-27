@@ -156,7 +156,9 @@ def _metadata(
         batch_per_block = permuted_store_batch_pack_for(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )
-    elif kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"} and (
+    elif (kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
+          or (current_profile().backend == "cuda" and kernel_type == "leaf_r2c"
+              and kernel_name.startswith("permuted_r2c_"))) and (
         current_profile().backend == "cuda"
         or _ix_backend_active()
         or (

@@ -272,7 +272,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (adaptor::backend_name() == "cuda" &&
       (key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafStridedPermutedStore ||
-       key.kind == KernelKind::LeafR2CPermutedStore)) {
+       key.kind == KernelKind::LeafR2CPermutedStore ||
+       (key.kind == KernelKind::LeafR2C && key.perm_form == "permuted"))) {
     const char *pack = std::getenv("FLAGFFT_CUDA_PERMSTORE_PACK");
     const char *padding = std::getenv("FLAGFFT_CUDA_PERMSTORE_PAD");
     cache_key += ";cuda-permstore-pack=" + std::string(pack ? pack : "auto");
