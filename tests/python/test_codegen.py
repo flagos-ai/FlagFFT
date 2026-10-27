@@ -2269,3 +2269,18 @@ def test_cuda_shared_swizzle_is_bijective_and_applied_to_both_sides(monkeypatch,
     assert f'dst0 ^ (dst0 >> {shift})' in source
     assert f'logical_phys0 ^ (logical_phys0 >> {shift})' in source
     assert len({i ^ (i >> shift) for i in range(256)}) == 256
+
+
+def test_cuda_short_cooperative_parallelizes_all_radix_groups(monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan, cooperative_stage_lanes_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    plan = LeafPlan(length=76, factors=(19, 2, 2), remainder=1, lanes=2, num_warps=1,
+                    generic_radices=(19,), smem_size=128)
+    monkeypatch.delenv('FLAGFFT_CUDA_SHORT_COOPERATIVE', raising=False)
+    assert cooperative_stage_lanes_for(plan) == (2, 2, 2)
+    monkeypatch.setenv('FLAGFFT_CUDA_SHORT_COOPERATIVE', '1')
+    assert cooperative_stage_lanes_for(plan) == (4, 38, 38)
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode='contiguous_r2c')
+    compile(source, '<short-cooperative>', 'exec')
+    assert 'tl.range(0, 19)' not in source
+    assert 'lane < 38' in source

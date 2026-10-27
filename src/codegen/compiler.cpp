@@ -1816,8 +1816,11 @@ namespace {
                                  request.input_strides.front() ==
                                      (request.real_transform_kind == "c2r" ? 12 : 23) &&
                                  (ix_setting == nullptr || std::string(ix_setting) != "0");
+    const bool cuda_target = request.device_type == "cuda" && request.device_arch == "sm_80" &&
+                             request.origin_rank <= 1 && batch == request.batch &&
+                             flag_or_default("FLAGFFT_CUDA_REAL_DIRECT_DFT", false);
     return request.raw_dim == 1 &&
-           ((request.device_type == "maca" && (single_target || batch_target)) || ix_batch_target) &&
+           ((request.device_type == "maca" && (single_target || batch_target)) || ix_batch_target || cuda_target) &&
            direct != nullptr &&
            direct->length == request.requested_n && direct->length > 0 &&
            direct->length <= kDirectDftMaxN &&

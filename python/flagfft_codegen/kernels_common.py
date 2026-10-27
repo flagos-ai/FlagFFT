@@ -276,8 +276,13 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
     fixed_lanes_are_compatible = all(
         (plan.length // radix) % plan.lanes == 0 for radix in plan.factors
     )
+    min_length = _COOPERATIVE_STAGE_MIN_LENGTH
+    short_cooperative = (current_profile().backend == "cuda" and plan.length < min_length and
+                         os.getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE") == "1")
+    if short_cooperative:
+        min_length = 32
     if not (
-        _COOPERATIVE_STAGE_MIN_LENGTH <= plan.length <= _COOPERATIVE_STAGE_MAX_LENGTH
+        min_length <= plan.length <= _COOPERATIVE_STAGE_MAX_LENGTH
         and len(plan.factors) >= 2
         and (
             plan.lanes <= _COOPERATIVE_STAGE_MAX_BASE_LANES
@@ -299,6 +304,7 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
         )
     if (
         not _is_double_dtype(plan.dtype)
+        and not short_cooperative
         and fixed_lanes_are_compatible
         and min(stage_lanes) * 4 < max(stage_lanes)
     ):
