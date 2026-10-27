@@ -2331,3 +2331,21 @@ def test_cuda_double_direct_tree_is_explicit_and_preserves_f64(monkeypatch):
         _, real, _ = _build_real_direct_dft_kernel_source(23, 'complex128', inverse=inverse)
         compile(real, '<real-dft-tree>', 'exec')
         assert 'tree_r_' in real and 'comp_r' not in real
+
+
+@pytest.mark.parametrize('n,factors', [(4096,(16,16,16)), (8192,(16,16,32))])
+def test_cuda_wide_leaf_preserves_complete_fft_groups(n, factors, tmp_path):
+    from flagfft_codegen.kernels_common import LeafPlan, cooperative_stage_lanes_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    plan = LeafPlan(length=n,factors=factors,remainder=1,lanes=256,num_warps=8,
+                    generic_radices=(),smem_size=n,dtype='complex64')
+    assert cooperative_stage_lanes_for(plan) == (256,256,256)
+    name,source = _build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
+    compile(source,'<cuda-wide-leaf>','exec')
+    assert all(n % (256*radix) == 0 for radix in factors)
+    meta=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,
+        arg_names=['in_ptr','out_ptr','nbatch'],plan=plan,kernel_type='leaf',n1=0,n2=0,dtype=plan.dtype)
+    assert meta['num_warps'] == 8
+    assert meta['batch_per_block'] == 1
+    assert f'tle.gpu.alloc([{n}]' in source
