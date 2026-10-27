@@ -2490,3 +2490,29 @@ def test_cuda_wide_stages_preserve_single_group_overwrite(monkeypatch,tmp_path,d
         assert meta['num_warps']>=8
     finally:
         reset_profile(token)
+
+
+@pytest.mark.parametrize('dtype', ['complex64','complex128'])
+@pytest.mark.parametrize('n,factors,lanes', [(128,(8,4,4),16),(4096,(16,16,16),256)])
+def test_cuda_fused_real_leaf_uses_barrier_before_shared_reconstruction(monkeypatch,dtype,n,factors,lanes):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    monkeypatch.setenv('FLAGFFT_CUDA_FUSED_PACKED_REAL','1')
+    plan=LeafPlan(n,factors,1,lanes,8 if lanes==256 else 1,(),n,dtype=dtype)
+    try:
+        for mode in ['packed_r2c','packed_c2r']:
+            _,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+            compile(source,'<cuda-fused-packed>', 'exec')
+            if mode=='packed_r2c':
+                assert source.rfind('tl.debug_barrier()') < source.index('packed_ar = tl.load')
+                assert 'packed_r = tle.gpu.alloc' in source
+                assert 'tl.gather(packed_r' not in source
+                assert 'packed_nyquist' in source
+            else:
+                assert 'packed_sum_r' in source and 'packed_prod_i' in source
+                assert 'input_distance' in source
+    finally:
+        reset_profile(token)

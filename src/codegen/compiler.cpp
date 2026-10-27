@@ -1631,7 +1631,10 @@ namespace {
                                                           bool inverse) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
     const int64_t n = request.requested_n;
-    const bool force = (setting != nullptr && std::string(setting) == "1") ||
+    const bool cuda_fused = request.device_type == "cuda" && request.device_arch == "sm_80" &&
+        request.origin_rank <= 1 && request.raw_dim == 1 && n >= 256 && n <= 8192 &&
+        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
+    const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
     const bool disable = setting != nullptr && std::string(setting) == "0";
     if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") || n <= 0 ||
@@ -2858,6 +2861,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   if (auto packed_child =
           allow_packed ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;
+    if (request.device_type == "cuda" && request.device_arch == "sm_80" &&
+        request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
+        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false)) {
+      if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+        auto key = KernelKey::leaf_r2c(triton_target_for_request(packed_child->request),
+            packed_child->request.direction, packed_child->request.input_dtype,
+            leaf->length,leaf->factors,leaf->lanes,leaf->num_warps,leaf->generic_radices,leaf->smem_size);
+        key.kind = KernelKind::LeafPackedR2C;
+        return std::make_shared<CompiledRawR2CLeafNode>(n,compile_kernel(key),
+            build_raw_leaf_tables(*leaf,packed_child->request),build_raw_packed_real_twiddle(request,n));
+      }
+    }
     DeviceAllocation packed_output =
         adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
     std::shared_ptr<JitKernel> postprocess_kernel;
@@ -2950,9 +2965,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const bool packed_fuse_enabled = packed_fuse_setting == nullptr
                                          ? packed_fuse_default
                                          : std::string(packed_fuse_setting) == "1";
-    const bool use_packed_fused_leaf = request.device_type == "hcu" &&
+    const bool cuda_fused_leaf = request.device_type == "cuda" && request.device_arch == "sm_80" &&
+        request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
+        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
+    const bool use_packed_fused_leaf = cuda_fused_leaf || (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
-                                       batch == 256 * 256 && packed_fuse_enabled;
+                                       batch == 256 * 256 && packed_fuse_enabled);
     if (use_packed_fused_leaf) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
         KernelKey key = KernelKey::leaf_c2r(

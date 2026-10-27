@@ -1104,7 +1104,7 @@ def _use_single_smem_buffer(
     if (current_profile().backend == "cuda" and
             os.getenv("FLAGFFT_CUDA_LEAF_SINGLE_BUFFER") == "1"):
         allowed_modes = {
-            "contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
+            "contiguous", "strided", "contiguous_r2c", "contiguous_c2r", "packed_r2c", "packed_c2r",
             "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c",
             "bluestein_prepare_leaf", "bluestein_finish_leaf",
         }

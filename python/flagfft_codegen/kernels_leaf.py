@@ -2009,8 +2009,12 @@ def _emit_stage_block(
                     f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
                 )
             elif io_mode == "packed_r2c":
+                packed_index = f"out_idx{j}"
+                if not portable_exchange and smem_pack > 1:
+                    lines.append(f"{indent}packed_index{j} = out_idx{j} + smem_offset")
+                    packed_index = f"packed_index{j}"
                 lines.extend(_emit_exchange_store(
-                    indent, "packed", f"out_idx{j}", j, f"r{j}", f"i{j}", portable_exchange
+                    indent, "packed", packed_index, j, f"r{j}", f"i{j}", portable_exchange
                 ))
             elif io_mode == "contiguous_c2r":
                 lines.append(
@@ -3081,7 +3085,9 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
-    if io_mode == "packed_r2c" and not portable_exchange:
+    cuda_packed_r2c = (io_mode == "packed_r2c" and current_profile().backend == "cuda"
+        and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
+    if io_mode == "packed_r2c" and not portable_exchange and not cuda_packed_r2c:
         raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
@@ -3469,6 +3475,11 @@ def _build_leaf_kernel_source_for_io(
             f"nv_mma_shared_layout=False)"
         )
 
+    if cuda_packed_r2c and not portable_exchange:
+        tl_dtype = _tl_real_dtype(plan.dtype)
+        body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+        body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+
     if io_mode in {"bluestein_full_leaf", "rader_full_leaf"}:
         if len(factors) < 2:
             raise ValueError("fused convolution leaf requires at least two FFT stages")
@@ -3509,6 +3520,8 @@ def _build_leaf_kernel_source_for_io(
         # The final codelet outputs were gathered into natural frequency order
         # by the portable exchange. Reconstruct the real FFT's half spectrum
         # without a second kernel launch or a global intermediate buffer.
+        if not portable_exchange:
+            body.append("    tl.debug_barrier()")
         body.extend([
             f"    packed_pos = tl.arange(0, {smem_n})",
             f"    packed_slot = packed_pos // {smem_slot_stride}",
@@ -3516,10 +3529,13 @@ def _build_leaf_kernel_source_for_io(
             f"    packed_mask = (packed_slot < {batch_pack}) & (packed_k < {n}) & (batch_id + packed_slot < nbatch)",
             f"    packed_partner = packed_slot * {smem_slot_stride} + tl.where(packed_k == 0, 0, {n} - packed_k)",
             "    packed_partner = tl.where(packed_mask, packed_partner, 0)",
-            "    packed_ar = packed_r",
-            "    packed_ai = packed_i",
-            "    packed_br = tl.gather(packed_r, packed_partner, 0)",
-            "    packed_bi = tl.gather(packed_i, packed_partner, 0)",
+            *( ["    packed_ar = packed_r", "    packed_ai = packed_i",
+                "    packed_br = tl.gather(packed_r, packed_partner, 0)",
+                "    packed_bi = tl.gather(packed_i, packed_partner, 0)"] if portable_exchange else [
+                "    packed_ar = tl.load(tle.gpu.local_ptr(packed_r, (packed_pos,)), mask=packed_mask, other=0.0)",
+                "    packed_ai = tl.load(tle.gpu.local_ptr(packed_i, (packed_pos,)), mask=packed_mask, other=0.0)",
+                "    packed_br = tl.load(tle.gpu.local_ptr(packed_r, (packed_partner,)), mask=packed_mask, other=0.0)",
+                "    packed_bi = tl.load(tle.gpu.local_ptr(packed_i, (packed_partner,)), mask=packed_mask, other=0.0)"]),
             "    packed_twiddle_k = tl.where(packed_mask, packed_k, 0)",
             "    packed_wr = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2, mask=packed_mask, other=0.0)",
             "    packed_wi = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2 + 1, mask=packed_mask, other=0.0)",
