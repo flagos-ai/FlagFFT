@@ -15,6 +15,8 @@
 #include "flagfft/core.hpp"
 #include "flagfft_test.h"
 
+#include <cstdlib>
+#include <optional>
 #include <string>
 
 // The in-process kernel cache is keyed by KernelKey::repr().  A key entering
