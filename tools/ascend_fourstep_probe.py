@@ -13,7 +13,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-import triton.experimental.tle.language as tle
+import triton.language.extra.cann.extension as al
 
 
 @triton.jit
@@ -71,10 +71,10 @@ def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:t
 @triton.jit
 def pack4(a,b,c,d,N:tl.constexpr):
     v=tl.zeros((N,),tl.float32)
-    v=tle.dsa.insert_slice(v,a,[0],[N//4],[1])
-    v=tle.dsa.insert_slice(v,b,[N//4],[N//4],[1])
-    v=tle.dsa.insert_slice(v,c,[N//2],[N//4],[1])
-    return tle.dsa.insert_slice(v,d,[3*N//4],[N//4],[1])
+    v=al.insert_slice(v,a,[0],[N//4],[1])
+    v=al.insert_slice(v,b,[N//4],[N//4],[1])
+    v=al.insert_slice(v,c,[N//2],[N//4],[1])
+    return al.insert_slice(v,d,[3*N//4],[N//4],[1])
 
 
 @triton.jit
@@ -89,10 +89,10 @@ def fft_autosort(X,Y,W,N:tl.constexpr,LOGN:tl.constexpr):
         ai,bi=tl.split(tl.reshape(i,(N//2,2)))
         rr=tl.zeros((N,),tl.float32)
         ii=tl.zeros((N,),tl.float32)
-        rr=tle.dsa.insert_slice(rr,ar+br,[0],[N//2],[1])
-        r=tle.dsa.insert_slice(rr,ar-br,[N//2],[N//2],[1])
-        ii=tle.dsa.insert_slice(ii,ai+bi,[0],[N//2],[1])
-        i=tle.dsa.insert_slice(ii,ai-bi,[N//2],[N//2],[1])
+        rr=al.insert_slice(rr,ar+br,[0],[N//2],[1])
+        r=al.insert_slice(rr,ar-br,[N//2],[N//2],[1])
+        ii=al.insert_slice(ii,ai+bi,[0],[N//2],[1])
+        i=al.insert_slice(ii,ai-bi,[N//2],[N//2],[1])
     out=tl.reshape(tl.join(r,i),(2*N,))
     tl.store(Y+bid*2*N+tl.arange(0,2*N),out)
 
