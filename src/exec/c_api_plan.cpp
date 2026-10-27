@@ -506,10 +506,13 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     const bool real_multid = plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z ||
                             plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D;
     const char *cuda_graph = std::getenv("FLAGFFT_CUDA_MULTID_GRAPH");
+    const char *cuda_1d_graph = std::getenv("FLAGFFT_CUDA_1D_GRAPH");
+    const bool graph_requested =
+        ((is_3d || (is_2d && real_multid)) &&
+         (cuda_graph == nullptr || std::string(cuda_graph) == "1")) ||
+        (!is_2d && !is_3d && cuda_1d_graph != nullptr && std::string(cuda_1d_graph) == "1");
     if (multid_request.device_type == "cuda" && multid_request.device_arch == "sm_80" &&
-        (is_3d || (is_2d && real_multid)) &&
-        std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
-        (cuda_graph == nullptr || std::string(cuda_graph) == "1")) {
+        graph_requested && std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
       if (plan->executable.forward) {
         plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
       }

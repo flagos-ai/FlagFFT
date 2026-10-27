@@ -902,19 +902,22 @@ TEST_P(D2ZZ2DRoundtrip3D, ForwardInverse) {
 
 INSTANTIATE_TEST_SUITE_P(All, D2ZZ2DRoundtrip3D, ::testing::ValuesIn(Filter3DParams(All3DParams())));
 
-TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
+void CheckCudaExecutionGraphReplay(bool rank_one) {
   if (flagfft::adaptor::backend_name() != "cuda" || !HasUsableDevice()) {
     GTEST_SKIP() << "requires CUDA";
   }
   struct GraphSetting {
-    bool existed = std::getenv("FLAGFFT_CUDA_MULTID_GRAPH") != nullptr;
-    std::string previous = existed ? std::getenv("FLAGFFT_CUDA_MULTID_GRAPH") : "";
-    GraphSetting() { setenv("FLAGFFT_CUDA_MULTID_GRAPH", "1", 1); }
+    const char *name;
+    bool existed;
+    std::string previous;
+    explicit GraphSetting(const char *variable)
+        : name(variable), existed(std::getenv(name) != nullptr),
+          previous(existed ? std::getenv(name) : "") { setenv(name, "1", 1); }
     ~GraphSetting() {
-      if (existed) setenv("FLAGFFT_CUDA_MULTID_GRAPH", previous.c_str(), 1);
-      else unsetenv("FLAGFFT_CUDA_MULTID_GRAPH");
+      if (existed) setenv(name, previous.c_str(), 1);
+      else unsetenv(name);
     }
-  } setting;
+  } setting(rank_one ? "FLAGFFT_CUDA_1D_GRAPH" : "FLAGFFT_CUDA_MULTID_GRAPH");
   constexpr int n = 16;
   constexpr int total = n * n * n;
   constexpr int batch = 2;
@@ -924,8 +927,12 @@ TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
       flagfftHandle handle = nullptr;
       ~PlanGuard() { if (handle) flagfftDestroy(handle); }
     } plan;
-    ASSERT_NO_FATAL_FAILURE(
-        flagfft_test::PlanMany3d(&plan.handle, n, n, n, FLAGFFT_C2C, batch));
+    if (rank_one) {
+      ASSERT_EQ(flagfftPlan1d(&plan.handle, total, FLAGFFT_C2C, batch), FLAGFFT_SUCCESS);
+    } else {
+      ASSERT_NO_FATAL_FAILURE(
+          flagfft_test::PlanMany3d(&plan.handle, n, n, n, FLAGFFT_C2C, batch));
+    }
     ASSERT_NE(plan.handle, nullptr);
     flagfft::adaptor::Stream stream;
     ASSERT_EQ(flagfftSetStream(plan.handle, stream.get()), FLAGFFT_SUCCESS);
@@ -964,6 +971,14 @@ TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
       }
     }
   }
+}
+
+TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
+  CheckCudaExecutionGraphReplay(false);
+}
+
+TEST(Cuda1DGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
+  CheckCudaExecutionGraphReplay(true);
 }
 
 }  // namespace
