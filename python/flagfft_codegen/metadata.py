@@ -158,7 +158,7 @@ def _metadata(
         )
     elif (kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
           or (current_profile().backend == "cuda" and kernel_type == "leaf_r2c"
-              and kernel_name.startswith("permuted_r2c_"))) and (
+              and kernel_name.startswith("r2c_permuted_store"))) and (
         current_profile().backend == "cuda"
         or _ix_backend_active()
         or (
