@@ -86,6 +86,82 @@ def fft_planar(X, Y, W, N: tl.constexpr, LOGN: tl.constexpr):
     tl.store(Y + bid*2*N + 2*out+1, i)
 
 
+@triton.jit
+def digit_reverse(k, L: tl.constexpr, LOG: tl.constexpr):
+    out = tl.full(k.shape, 0, tl.int32)
+    for s in tl.static_range(0, LOG//2):
+        out = out + ((k // (L//(4**(s+1)))) % 4) * (4**s)
+    if LOG % 2:
+        out = out + (k%2)*(L//2)
+    return out
+
+
+@triton.jit
+def fft_axis(r, i, W, N: tl.constexpr, L: tl.constexpr,
+             C: tl.constexpr, LOG: tl.constexpr):
+    for s in tl.static_range(0, LOG//2):
+        r, i = stage4(r, i, W, N, L*C//(4**s), s)
+    if LOG % 2:
+        p = tl.permute(tl.reshape(r, (N//(2*C),2,C)),0,2,1)
+        q = tl.permute(tl.reshape(i, (N//(2*C),2,C)),0,2,1)
+        ar, br = tl.split(p)
+        ai, bi = tl.split(q)
+        rr = tl.join(ar+br, ar-br)
+        ii = tl.join(ai+bi, ai-bi)
+        r = tl.reshape(tl.permute(rr,0,2,1),(N,))
+        i = tl.reshape(tl.permute(ii,0,2,1),(N,))
+    return r, i
+
+
+@triton.jit
+def fourstep_first(X,T,W,CROSS,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LOGA:tl.constexpr):
+    bid=tl.program_id(0)
+    v=tl.load(X+bid*2*N+tl.arange(0,2*N))
+    r,i=tl.split(tl.reshape(v,(N,2)))
+    r,i=fft_axis(r,i,W,N,A,B,LOGA)
+    k=tl.arange(0,N)
+    c=tl.load(CROSS+k)
+    d=tl.load(CROSS+N+k)
+    yr,yi=r*c-i*d,r*d+i*c
+    row=digit_reverse(k//B,A,LOGA)
+    dest=row*B+k%B
+    tl.store(T+bid*2*N+dest,yr)
+    tl.store(T+bid*2*N+N+dest,yi)
+
+
+@triton.jit
+def fourstep_second(T,Y,W,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LOGB:tl.constexpr):
+    bid=tl.program_id(0)
+    k=tl.arange(0,N)
+    r=tl.load(T+bid*2*N+k)
+    i=tl.load(T+bid*2*N+N+k)
+    r,i=fft_axis(r,i,W,N,B,1,LOGB)
+    col=digit_reverse(k%B,B,LOGB)
+    dest=col*A+k//B
+    tl.store(Y+bid*2*N+2*dest,r)
+    tl.store(Y+bid*2*N+2*dest+1,i)
+
+
+def axis_twiddles(n,l,c):
+    stages=[]
+    for s in range((l.bit_length()-1)//2):
+        span=l//4**s
+        j=(torch.arange(n//4,dtype=torch.int64)//c)%(span//4)
+        for b in (1,2,3):
+            angle=-2*math.pi*b*j.double()/span
+            stages.extend((angle.cos().float(),angle.sin().float()))
+    return torch.cat(stages).npu()
+
+
+def reverse_cpu(k,l):
+    log=l.bit_length()-1
+    out=torch.zeros_like(k)
+    for s in range(log//2):
+        out+=((k//(l//4**(s+1)))%4)*4**s
+    if log%2: out+=(k%2)*(l//2)
+    return out
+
+
 def twiddles(n):
     stages = []
     for s in range((n.bit_length()-1)//2):
@@ -102,6 +178,7 @@ def main():
     p.add_argument('--n',type=int,default=2048)
     p.add_argument('--batch',type=int,default=2048)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--factor',type=int,default=0,help='first FFT length; 0 uses one kernel')
     p.add_argument('--steps',type=int,default=16)
     p.add_argument('--rounds',type=int,default=5)
     args=p.parse_args()
@@ -110,7 +187,24 @@ def main():
     torch.manual_seed(20261027)
     cpu=torch.randn(batch,n,2)
     x=cpu.npu(); y=torch.full_like(x,float('nan')); w=twiddles(n)
-    ck=fft_planar[(batch,)](x,y,w,N=n,LOGN=n.bit_length()-1)
+    if args.factor:
+        a=args.factor; b=n//a
+        assert n%a==0 and a>=4 and b>=4
+        wa,wb=axis_twiddles(n,a,b),axis_twiddles(n,b,1)
+        k=torch.arange(n,dtype=torch.int64)
+        angle=-2*math.pi*reverse_cpu(k//b,a)*(k%b)/n
+        cross=torch.cat((angle.cos(),angle.sin())).float().npu()
+        tmp=torch.empty_like(x)
+        ca=fourstep_first[(batch,)](x,tmp,wa,cross,n,a,b,a.bit_length()-1)
+        ck=fourstep_second[(batch,)](tmp,y,wb,n,a,b,b.bit_length()-1)
+        ra,rb=ca[(batch,1,1)],ck[(batch,1,1)]
+        def launch():
+            ra(x,tmp,wa,cross,n,a,b,a.bit_length()-1)
+            rb(tmp,y,wb,n,a,b,b.bit_length()-1)
+    else:
+        ck=fft_planar[(batch,)](x,y,w,N=n,LOGN=n.bit_length()-1)
+        runner=ck[(batch,1,1)]
+        def launch(): runner(x,y,w,n,n.bit_length()-1)
     torch.npu.synchronize()
     args.output.parent.mkdir(parents=True,exist_ok=True)
     for name,data in ck.asm.items():
@@ -124,8 +218,6 @@ def main():
         assert torch.allclose(got,ref,atol=3e-4,rtol=3e-5),(rel,error)
         return dict(rel_l2=rel,max_abs_err=error)
     result=check()
-    runner=ck[(batch,1,1)]
-    def launch(): runner(x,y,w,n,n.bit_length()-1)
     g=torch.npu.NPUGraph()
     with torch.npu.graph(g):
         for _ in range(args.steps): launch()
@@ -139,7 +231,7 @@ def main():
         for _ in range(30): g.replay()
         b.record(); b.synchronize()
         trials.append(a.elapsed_time(b)*1000/30/args.steps/batch)
-    result.update(n=n,batch=batch,us_per_transform=statistics.median(trials),
+    result.update(n=n,batch=batch,factor=args.factor,us_per_transform=statistics.median(trials),
                   trials=trials,steps=args.steps,triton=triton.__file__,metadata=str(ck.metadata),
                   replay_pass=True)
     args.output.write_text(json.dumps(result,indent=2)+'\n')
