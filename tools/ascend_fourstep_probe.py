@@ -64,7 +64,7 @@ def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr):
 
 
 @triton.jit
-def fft_planar(X, Y, W, N: tl.constexpr, LOGN: tl.constexpr):
+def fft_planar(X, Y, W, N: tl.constexpr, LOGN: tl.constexpr, SHAPE:tl.constexpr, ORDER:tl.constexpr):
     bid = tl.program_id(0)
     v = tl.load(X + bid*2*N + tl.arange(0, 2*N))
     r, i = tl.split(tl.reshape(v, (N, 2)))
@@ -75,15 +75,11 @@ def fft_planar(X, Y, W, N: tl.constexpr, LOGN: tl.constexpr):
         ai, bi = tl.split(tl.reshape(i, (N//2, 2)))
         r = tl.reshape(tl.join(ar+br, ar-br), (N,))
         i = tl.reshape(tl.join(ai+bi, ai-bi), (N,))
-    # Move digit reversal into the final HBM store. No extra kernel or pass.
-    k = tl.arange(0, N)
-    out = tl.full((N,), 0, tl.int32)
-    for s in tl.static_range(0, (LOGN)//2):
-        out = out + ((k // (N//(4**(s+1)))) % 4) * (4**s)
-    if (LOGN) % 2:
-        out = out + (k % 2)*(N//2)
-    tl.store(Y + bid*2*N + 2*out, r)
-    tl.store(Y + bid*2*N + 2*out+1, i)
+    r = tl.reshape(tl.permute(tl.reshape(r,SHAPE),ORDER),(N,))
+    i = tl.reshape(tl.permute(tl.reshape(i,SHAPE),ORDER),(N,))
+    out = tl.reshape(tl.join(r,i),(2*N,))
+    tl.store(Y+bid*2*N+tl.arange(0,2*N),out)
+
 
 
 @triton.jit
@@ -114,32 +110,35 @@ def fft_axis(r, i, W, N: tl.constexpr, L: tl.constexpr,
 
 
 @triton.jit
-def fourstep_first(X,T,W,CROSS,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LOGA:tl.constexpr):
+def fourstep_first(X,T,W,CROSS,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LOGA:tl.constexpr,SHAPE:tl.constexpr,ORDER:tl.constexpr):
     bid=tl.program_id(0)
     v=tl.load(X+bid*2*N+tl.arange(0,2*N))
     r,i=tl.split(tl.reshape(v,(N,2)))
     r,i=fft_axis(r,i,W,N,A,B,LOGA)
+    r=tl.reshape(tl.permute(tl.reshape(r,SHAPE),ORDER),(N,))
+    i=tl.reshape(tl.permute(tl.reshape(i,SHAPE),ORDER),(N,))
     k=tl.arange(0,N)
     c=tl.load(CROSS+k)
     d=tl.load(CROSS+N+k)
     yr,yi=r*c-i*d,r*d+i*c
-    row=digit_reverse(k//B,A,LOGA)
-    dest=row*B+k%B
+    dest=k
     tl.store(T+bid*2*N+dest,yr)
     tl.store(T+bid*2*N+N+dest,yi)
 
 
 @triton.jit
-def fourstep_second(T,Y,W,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LOGB:tl.constexpr):
+def fourstep_second(T,Y,W,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LOGB:tl.constexpr,SHAPE:tl.constexpr,ORDER:tl.constexpr):
     bid=tl.program_id(0)
     k=tl.arange(0,N)
     r=tl.load(T+bid*2*N+k)
     i=tl.load(T+bid*2*N+N+k)
     r,i=fft_axis(r,i,W,N,B,1,LOGB)
-    col=digit_reverse(k%B,B,LOGB)
-    dest=col*A+k//B
-    tl.store(Y+bid*2*N+2*dest,r)
-    tl.store(Y+bid*2*N+2*dest+1,i)
+    r=tl.reshape(tl.permute(tl.reshape(r,SHAPE),ORDER),(N,))
+    i=tl.reshape(tl.permute(tl.reshape(i,SHAPE),ORDER),(N,))
+    r=tl.reshape(tl.trans(tl.reshape(r,(A,B))),(N,))
+    i=tl.reshape(tl.trans(tl.reshape(i,(A,B))),(N,))
+    out=tl.reshape(tl.join(r,i),(2*N,))
+    tl.store(Y+bid*2*N+tl.arange(0,2*N),out)
 
 
 def axis_twiddles(n,l,c):
@@ -192,19 +191,25 @@ def main():
         assert n%a==0 and a>=4 and b>=4
         wa,wb=axis_twiddles(n,a,b),axis_twiddles(n,b,1)
         k=torch.arange(n,dtype=torch.int64)
-        angle=-2*math.pi*reverse_cpu(k//b,a)*(k%b)/n
+        angle=-2*math.pi*(k//b)*(k%b)/n
         cross=torch.cat((angle.cos(),angle.sin())).float().npu()
         tmp=torch.empty_like(x)
-        ca=fourstep_first[(batch,)](x,tmp,wa,cross,n,a,b,a.bit_length()-1)
-        ck=fourstep_second[(batch,)](tmp,y,wb,n,a,b,b.bit_length()-1)
+        da=(4,)*((a.bit_length()-1)//2)+((2,) if (a.bit_length()-1)%2 else ())
+        db=(4,)*((b.bit_length()-1)//2)+((2,) if (b.bit_length()-1)%2 else ())
+        sa,oa=da+(b,),tuple(reversed(range(len(da))))+(len(da),)
+        sb,ob=(a,)+db,(0,)+tuple(reversed(range(1,1+len(db))))
+        ca=fourstep_first[(batch,)](x,tmp,wa,cross,n,a,b,a.bit_length()-1,sa,oa)
+        ck=fourstep_second[(batch,)](tmp,y,wb,n,a,b,b.bit_length()-1,sb,ob)
         ra,rb=ca[(batch,1,1)],ck[(batch,1,1)]
         def launch():
-            ra(x,tmp,wa,cross,n,a,b,a.bit_length()-1)
-            rb(tmp,y,wb,n,a,b,b.bit_length()-1)
+            ra(x,tmp,wa,cross,n,a,b,a.bit_length()-1,sa,oa)
+            rb(tmp,y,wb,n,a,b,b.bit_length()-1,sb,ob)
     else:
-        ck=fft_planar[(batch,)](x,y,w,N=n,LOGN=n.bit_length()-1)
+        shape=(4,)*((n.bit_length()-1)//2)+((2,) if (n.bit_length()-1)%2 else ())
+        order=tuple(reversed(range(len(shape))))
+        ck=fft_planar[(batch,)](x,y,w,N=n,LOGN=n.bit_length()-1,SHAPE=shape,ORDER=order)
         runner=ck[(batch,1,1)]
-        def launch(): runner(x,y,w,n,n.bit_length()-1)
+        def launch(): runner(x,y,w,n,n.bit_length()-1,shape,order)
     torch.npu.synchronize()
     args.output.parent.mkdir(parents=True,exist_ok=True)
     for name,data in ck.asm.items():
