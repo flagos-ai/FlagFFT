@@ -479,7 +479,14 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
         override = os.getenv("FLAGFFT_MUSA_1D_BATCH_PACK", "auto")
         if override not in {"auto", "1", "2", "4", "8"}:
             raise ValueError("FLAGFFT_MUSA_1D_BATCH_PACK must be auto, 1, 2, 4 or 8")
-        requested_pack = 4 if override == "auto" else int(override)
+        # Packing four FP64 C2C transforms improved N=1024 batch throughput.
+        # The same pack regressed the FP32 and real-boundary variants, so keep
+        # those on the legacy layout while retaining explicit A/B overrides.
+        requested_pack = (
+            4 if override == "auto" and plan.dtype == "complex128" and not real_boundary
+            else 1 if override == "auto"
+            else int(override)
+        )
         profile = current_profile()
         resource_limit = profile.max_dynamic_shared_memory or _LEAF_PACK_SMEM_BUDGET_BYTES
         bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
