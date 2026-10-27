@@ -38,7 +38,7 @@ def merge4(a, b, c, d, N: tl.constexpr, SPAN: tl.constexpr):
 
 
 @triton.jit
-def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:tl.constexpr=False, SLICE:tl.constexpr=False):
+def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:tl.constexpr=False, SLICE:tl.constexpr=False, C:tl.constexpr=1):
     if SLICE:
         x0r,x1r,x2r,x3r=split4_slice(r,N,SPAN)
         x0i,x1i,x2i,x3i=split4_slice(i,N,SPAN)
@@ -53,7 +53,7 @@ def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:t
     a1r, a1i = t1r+t3i, t1i-t3r
     a2r, a2i = t0r-t2r, t0i-t2i
     a3r, a3i = t1r-t3i, t1i+t3r
-    if SPAN > 4:
+    if SPAN > 4*C:
         j = tl.arange(0, N//4)
         w1r = tl.load(W + S*6*(N//4) + j)
         w1i = tl.load(W + S*6*(N//4) + N//4 + j)
@@ -86,7 +86,7 @@ def split4_slice(v,N:tl.constexpr,SPAN:tl.constexpr):
 @triton.jit
 def fft_axis_sliced(r,i,W,N:tl.constexpr,L:tl.constexpr,C:tl.constexpr,LOG:tl.constexpr):
     for s in tl.static_range(0,LOG//2):
-        r,i=stage4(r,i,W,N,L*C//4**s,s,True,True)
+        r,i=stage4(r,i,W,N,L*C//4**s,s,True,True,C)
     if LOG%2:
         p=tl.reshape(r,(N//(2*C),2*C))
         q=tl.reshape(i,(N//(2*C),2*C))
@@ -101,6 +101,28 @@ def fft_axis_sliced(r,i,W,N:tl.constexpr,L:tl.constexpr,C:tl.constexpr,LOG:tl.co
         ii=al.insert_slice(ii,ai+bi,[0],[N//2],[1])
         i=al.insert_slice(ii,ai-bi,[N//2],[N//2],[1])
     return r,i
+
+
+@triton.jit
+def fourstep_fused(X,Y,WA,WB,CROSS,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,
+                   LOGA:tl.constexpr,LOGB:tl.constexpr,NATIVE:tl.constexpr):
+    bid=tl.program_id(0)
+    v=tl.load(X+bid*2*N+tl.arange(0,2*N))
+    r,i=tl.split(tl.reshape(v,(N,2)))
+    r,i=fft_axis_sliced(r,i,WA,N,A,B,LOGA)
+    k=tl.arange(0,N)
+    c=tl.load(CROSS+k);d=tl.load(CROSS+N+k)
+    rr,ii=r*c-i*d,r*d+i*c
+    rr=tl.reshape(tl.trans(tl.reshape(rr,(A,B))),(N,))
+    ii=tl.reshape(tl.trans(tl.reshape(ii,(A,B))),(N,))
+    r,i=fft_axis_sliced(rr,ii,WB,N,B,A,LOGB)
+    if NATIVE:
+        out=tl.zeros((2*N,),tl.float32)
+        out=al.insert_slice(out,r,[0],[N],[2])
+        out=al.insert_slice(out,i,[1],[N],[2])
+    else:
+        out=tl.reshape(tl.join(r,i),(2*N,))
+    tl.store(Y+bid*2*N+tl.arange(0,2*N),out)
 
 
 @triton.jit
@@ -272,6 +294,8 @@ def main():
     p.add_argument('--n',type=int,default=2048)
     p.add_argument('--batch',type=int,default=2048)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--fused-fourstep',action='store_true')
+    p.add_argument('--native-interleave',action='store_true')
     p.add_argument('--sliced-fourstep',action='store_true')
     p.add_argument('--autosort',action='store_true')
     p.add_argument('--factor',type=int,default=0,help='first FFT length; 0 uses one kernel')
@@ -283,7 +307,17 @@ def main():
     torch.manual_seed(20261027)
     cpu=torch.randn(batch,n,2)
     x=cpu.npu(); y=torch.full_like(x,float('nan')); w=twiddles(n)
-    if args.sliced_fourstep:
+    if args.fused_fourstep:
+        a=args.factor or 64; b=n//a
+        assert n%a==0 and a>=4 and b>=4
+        wa,wb=axis_twiddles(n,a,b),axis_twiddles(n,b,a)
+        k=torch.arange(n,dtype=torch.int64)
+        angle=-2*math.pi*(k//b)*(k%b)/n
+        cross=torch.cat((angle.cos(),angle.sin())).float().npu()
+        ck=fourstep_fused[(batch,)](x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave)
+        runner=ck[(batch,1,1)]
+        def launch(): runner(x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave)
+    elif args.sliced_fourstep:
         a=args.factor or 64; b=n//a
         assert n%a==0 and a>=4 and b>=4
         wa,wb=axis_twiddles(n,a,b),axis_twiddles(n,b,a)
@@ -351,7 +385,7 @@ def main():
         for _ in range(30): g.replay()
         b.record(); b.synchronize()
         trials.append(a.elapsed_time(b)*1000/30/args.steps/batch)
-    result.update(n=n,batch=batch,factor=args.factor,sliced_fourstep=args.sliced_fourstep,autosort=args.autosort,us_per_transform=statistics.median(trials),
+    result.update(n=n,batch=batch,factor=args.factor,sliced_fourstep=args.sliced_fourstep,fused_fourstep=args.fused_fourstep,native_interleave=args.native_interleave,autosort=args.autosort,us_per_transform=statistics.median(trials),
                   trials=trials,steps=args.steps,triton=triton.__file__,metadata=str(ck.metadata),
                   replay_pass=True)
     args.output.write_text(json.dumps(result,indent=2)+'\n')
