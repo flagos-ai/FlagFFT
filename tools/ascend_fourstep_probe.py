@@ -38,9 +38,13 @@ def merge4(a, b, c, d, N: tl.constexpr, SPAN: tl.constexpr):
 
 
 @triton.jit
-def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:tl.constexpr=False):
-    x0r, x1r, x2r, x3r = split4(r, N, SPAN)
-    x0i, x1i, x2i, x3i = split4(i, N, SPAN)
+def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:tl.constexpr=False, SLICE:tl.constexpr=False):
+    if SLICE:
+        x0r,x1r,x2r,x3r=split4_slice(r,N,SPAN)
+        x0i,x1i,x2i,x3i=split4_slice(i,N,SPAN)
+    else:
+        x0r, x1r, x2r, x3r = split4(r, N, SPAN)
+        x0i, x1i, x2i, x3i = split4(i, N, SPAN)
     t0r, t0i = x0r+x2r, x0i+x2i
     t1r, t1i = x0r-x2r, x0i-x2i
     t2r, t2i = x1r+x3r, x1i+x3i
@@ -66,6 +70,63 @@ def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:t
         return pack4(g0r,g1r,g2r,g3r,N), pack4(g0i,g1i,g2i,g3i,N)
     return (merge4(g0r,g1r,g2r,g3r,N,SPAN),
             merge4(g0i,g1i,g2i,g3i,N,SPAN))
+
+
+@triton.jit
+def split4_slice(v,N:tl.constexpr,SPAN:tl.constexpr):
+    p=tl.reshape(v,(N//SPAN,SPAN))
+    a=al.extract_slice(p,[0,0],[N//SPAN,SPAN//4],[1,1])
+    b=al.extract_slice(p,[0,SPAN//4],[N//SPAN,SPAN//4],[1,1])
+    c=al.extract_slice(p,[0,SPAN//2],[N//SPAN,SPAN//4],[1,1])
+    d=al.extract_slice(p,[0,3*SPAN//4],[N//SPAN,SPAN//4],[1,1])
+    return (tl.reshape(a,(N//4,)),tl.reshape(b,(N//4,)),
+            tl.reshape(c,(N//4,)),tl.reshape(d,(N//4,)))
+
+
+@triton.jit
+def fft_axis_sliced(r,i,W,N:tl.constexpr,L:tl.constexpr,C:tl.constexpr,LOG:tl.constexpr):
+    for s in tl.static_range(0,LOG//2):
+        r,i=stage4(r,i,W,N,L*C//4**s,s,True,True)
+    if LOG%2:
+        p=tl.reshape(r,(N//(2*C),2*C))
+        q=tl.reshape(i,(N//(2*C),2*C))
+        ar=tl.reshape(al.extract_slice(p,[0,0],[N//(2*C),C],[1,1]),(N//2,))
+        br=tl.reshape(al.extract_slice(p,[0,C],[N//(2*C),C],[1,1]),(N//2,))
+        ai=tl.reshape(al.extract_slice(q,[0,0],[N//(2*C),C],[1,1]),(N//2,))
+        bi=tl.reshape(al.extract_slice(q,[0,C],[N//(2*C),C],[1,1]),(N//2,))
+        rr=tl.zeros((N,),tl.float32)
+        ii=tl.zeros((N,),tl.float32)
+        rr=al.insert_slice(rr,ar+br,[0],[N//2],[1])
+        r=al.insert_slice(rr,ar-br,[N//2],[N//2],[1])
+        ii=al.insert_slice(ii,ai+bi,[0],[N//2],[1])
+        i=al.insert_slice(ii,ai-bi,[N//2],[N//2],[1])
+    return r,i
+
+
+@triton.jit
+def fourstep_sliced_first(X,T,W,CROSS,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LOG:tl.constexpr):
+    bid=tl.program_id(0)
+    v=tl.load(X+bid*2*N+tl.arange(0,2*N))
+    r,i=tl.split(tl.reshape(v,(N,2)))
+    r,i=fft_axis_sliced(r,i,W,N,A,B,LOG)
+    k=tl.arange(0,N)
+    c=tl.load(CROSS+k);d=tl.load(CROSS+N+k)
+    rr,ii=r*c-i*d,r*d+i*c
+    rr=tl.reshape(tl.trans(tl.reshape(rr,(A,B))),(N,))
+    ii=tl.reshape(tl.trans(tl.reshape(ii,(A,B))),(N,))
+    tl.store(T+bid*2*N+k,rr)
+    tl.store(T+bid*2*N+N+k,ii)
+
+
+@triton.jit
+def fourstep_sliced_second(T,Y,W,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LOG:tl.constexpr):
+    bid=tl.program_id(0)
+    k=tl.arange(0,N)
+    r=tl.load(T+bid*2*N+k)
+    i=tl.load(T+bid*2*N+N+k)
+    r,i=fft_axis_sliced(r,i,W,N,B,A,LOG)
+    out=tl.reshape(tl.join(r,i),(2*N,))
+    tl.store(Y+bid*2*N+tl.arange(0,2*N),out)
 
 
 @triton.jit
@@ -211,6 +272,7 @@ def main():
     p.add_argument('--n',type=int,default=2048)
     p.add_argument('--batch',type=int,default=2048)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--sliced-fourstep',action='store_true')
     p.add_argument('--autosort',action='store_true')
     p.add_argument('--factor',type=int,default=0,help='first FFT length; 0 uses one kernel')
     p.add_argument('--steps',type=int,default=16)
@@ -221,7 +283,21 @@ def main():
     torch.manual_seed(20261027)
     cpu=torch.randn(batch,n,2)
     x=cpu.npu(); y=torch.full_like(x,float('nan')); w=twiddles(n)
-    if args.autosort:
+    if args.sliced_fourstep:
+        a=args.factor or 64; b=n//a
+        assert n%a==0 and a>=4 and b>=4
+        wa,wb=axis_twiddles(n,a,b),axis_twiddles(n,b,a)
+        k=torch.arange(n,dtype=torch.int64)
+        angle=-2*math.pi*(k//b)*(k%b)/n
+        cross=torch.cat((angle.cos(),angle.sin())).float().npu()
+        tmp=torch.empty_like(x)
+        ca=fourstep_sliced_first[(batch,)](x,tmp,wa,cross,n,a,b,a.bit_length()-1)
+        ck=fourstep_sliced_second[(batch,)](tmp,y,wb,n,a,b,b.bit_length()-1)
+        ra,rb=ca[(batch,1,1)],ck[(batch,1,1)]
+        def launch():
+            ra(x,tmp,wa,cross,n,a,b,a.bit_length()-1)
+            rb(tmp,y,wb,n,a,b,b.bit_length()-1)
+    elif args.autosort:
         ck=fft_autosort[(batch,)](x,y,w,n,n.bit_length()-1)
         runner=ck[(batch,1,1)]
         def launch(): runner(x,y,w,n,n.bit_length()-1)
@@ -275,7 +351,7 @@ def main():
         for _ in range(30): g.replay()
         b.record(); b.synchronize()
         trials.append(a.elapsed_time(b)*1000/30/args.steps/batch)
-    result.update(n=n,batch=batch,factor=args.factor,autosort=args.autosort,us_per_transform=statistics.median(trials),
+    result.update(n=n,batch=batch,factor=args.factor,sliced_fourstep=args.sliced_fourstep,autosort=args.autosort,us_per_transform=statistics.median(trials),
                   trials=trials,steps=args.steps,triton=triton.__file__,metadata=str(ck.metadata),
                   replay_pass=True)
     args.output.write_text(json.dumps(result,indent=2)+'\n')
