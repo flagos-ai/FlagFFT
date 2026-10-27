@@ -277,6 +277,9 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
     fixed_lanes_are_compatible = all(
         (plan.length // radix) % plan.lanes == 0 for radix in plan.factors
     )
+    wide_cuda = (current_profile().backend == "cuda" and current_profile().device_arch == "sm_80"
+                 and os.getenv("FLAGFFT_CUDA_WIDE_STAGE") == "1")
+    max_lanes = 256 if wide_cuda else _COOPERATIVE_STAGE_MAX_LANES
     min_length = _COOPERATIVE_STAGE_MIN_LENGTH
     short_cooperative = (current_profile().backend == "cuda" and plan.length < min_length and
                          os.getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE") == "1")
@@ -286,7 +289,7 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
         min_length <= plan.length <= _COOPERATIVE_STAGE_MAX_LENGTH
         and len(plan.factors) >= 2
         and (
-            plan.lanes <= _COOPERATIVE_STAGE_MAX_BASE_LANES
+            wide_cuda or plan.lanes <= _COOPERATIVE_STAGE_MAX_BASE_LANES
             or not fixed_lanes_are_compatible
         )
     ):
@@ -295,7 +298,7 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
     stage_lanes: list[int] = []
     for radix in plan.factors:
         codelets = plan.length // radix
-        upper = min(codelets, _COOPERATIVE_STAGE_MAX_LANES)
+        upper = min(codelets, max_lanes)
         stage_lanes.append(
             next(
                 candidate
@@ -1109,8 +1112,10 @@ def _use_single_smem_buffer(
         # the barrier and its first write. Multi-group stages cannot do that.
         stage_lanes = cooperative_stage_lanes_for(plan)
         if (io_mode in allowed_modes and len(plan.factors) >= 2 and
-                all(lanes == plan.lanes for lanes in stage_lanes) and
-                all(plan.length == plan.lanes * radix for radix in plan.factors[:-1])):
+                (all(lanes == plan.lanes for lanes in stage_lanes) or
+                 os.getenv("FLAGFFT_CUDA_WIDE_STAGE") == "1") and
+                all(plan.length == lanes * radix
+                    for lanes,radix in zip(stage_lanes,plan.factors[:-1]))):
             return True
     if _leaf_single_smem_buffer_eligible(
         plan,

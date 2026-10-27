@@ -2465,3 +2465,28 @@ def test_cuda_power2_register_source_masks_short_physical_lanes(monkeypatch,tmp_
         assert metadata['tle_fused_twiddle']
     finally:
         reset_profile(token)
+
+
+@pytest.mark.parametrize('dtype', ['complex64','complex128'])
+@pytest.mark.parametrize('mode', ['contiguous','permuted_store'])
+def test_cuda_wide_stages_preserve_single_group_overwrite(monkeypatch,tmp_path,dtype,mode):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan,cooperative_stage_lanes_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    plan=LeafPlan(2048,(16,16,8),1,128,4,(),2048,dtype=dtype)
+    monkeypatch.setenv('FLAGFFT_CUDA_WIDE_STAGE','1')
+    monkeypatch.setenv('FLAGFFT_CUDA_LEAF_SINGLE_BUFFER','1')
+    try:
+        assert cooperative_stage_lanes_for(plan)==(128,128,256)
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+        compile(source,'<cuda-wide-stage>','exec')
+        assert 'smem_a_r = tle.gpu.alloc' not in source
+        meta=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,
+            arg_names=['in_ptr','out_ptr','nbatch'],plan=plan,
+            kernel_type='leaf' if mode=='contiguous' else 'leaf_permuted_store',n1=0,n2=0,dtype=dtype)
+        assert meta['num_warps']>=8
+    finally:
+        reset_profile(token)

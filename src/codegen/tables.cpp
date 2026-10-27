@@ -55,6 +55,12 @@ namespace {
   inline constexpr int64_t kCooperativeStageMaxLength = 4096;
   inline constexpr int64_t kCooperativeStageMaxBaseLanes = 32;
 
+  bool cuda_wide_stage_lanes(const FFTRequest &request) {
+    const char *setting = std::getenv("FLAGFFT_CUDA_WIDE_STAGE");
+    return request.device_type == "cuda" && request.device_arch == "sm_80" &&
+           setting && std::string(setting) == "1";
+  }
+
   bool use_cooperative_stage_lanes(const LeafPlanNode &leaf, const FFTRequest &request) {
     const char *short_setting = std::getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE");
     const bool short_cuda = request.device_type == "cuda" && leaf.length >= 32 &&
@@ -65,7 +71,7 @@ namespace {
         });
     if ((!short_cuda && leaf.length < kCooperativeStageMinLength) || leaf.length > kCooperativeStageMaxLength ||
         leaf.factors.size() < 2 ||
-        (leaf.lanes > kCooperativeStageMaxBaseLanes && fixed_lanes_are_compatible)) {
+        (leaf.lanes > kCooperativeStageMaxBaseLanes && fixed_lanes_are_compatible && !cuda_wide_stage_lanes(request))) {
       return false;
     }
     const bool is_double = request.input_dtype == "complex128" || request.input_dtype == "float64";
@@ -73,11 +79,12 @@ namespace {
       return true;
     }
 
-    int64_t min_stage_lanes = kMaxLanes;
+    const int64_t lane_limit = cuda_wide_stage_lanes(request) ? 256 : kMaxLanes;
+    int64_t min_stage_lanes = lane_limit;
     int64_t max_stage_lanes = 1;
     for (int64_t radix : leaf.factors) {
       const int64_t codelets = leaf.length / radix;
-      const int64_t upper = std::min(codelets, kMaxLanes);
+      const int64_t upper = std::min(codelets, lane_limit);
       int64_t stage_lanes = 1;
       for (int64_t candidate = upper; candidate > 0; --candidate) {
         if (codelets % candidate == 0) {
@@ -91,9 +98,10 @@ namespace {
     return min_stage_lanes * 4 >= max_stage_lanes;
   }
 
-  int64_t cooperative_stage_lanes(int64_t n, int64_t radix) {
+  int64_t cooperative_stage_lanes(int64_t n, int64_t radix, const FFTRequest &request) {
+    const int64_t lane_limit = cuda_wide_stage_lanes(request) ? 256 : kMaxLanes;
     const int64_t codelets = n / radix;
-    const int64_t upper = std::min(codelets, kMaxLanes);
+    const int64_t upper = std::min(codelets, lane_limit);
     for (int64_t candidate = upper; candidate > 0; --candidate) {
       if (codelets % candidate == 0) {
         return candidate;
@@ -372,7 +380,7 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
     const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix || portable_cuda) ? leaf.length / leaf.factors[stage]
                           : use_cooperative_stage_lanes(leaf, request)
-                              ? cooperative_stage_lanes(leaf.length, leaf.factors[stage])
+                              ? cooperative_stage_lanes(leaf.length, leaf.factors[stage], request)
                               : leaf.lanes;
     if (is_double) {
       auto twiddles =
