@@ -227,6 +227,25 @@ def test_permuted_store_launch_grid_matches_generated_batch_pack(
     assert "batch_id = pid * 4" in source
 
 
+@pytest.mark.parametrize("order", ["021", "210", "201", "120"])
+@pytest.mark.parametrize("mode", ["v1", "tile16", "tile32", "tile64", "tile16vec", "tile32vec"])
+def test_cuda_fp64_transpose_tile_selection(tmp_path, monkeypatch, order, mode) -> None:
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+
+    monkeypatch.setenv("FLAGFFT_CUDA_3D_FP64_TRANSPOSE", mode)
+    metadata = _emit_tiled_transpose3d_jit_kernel(
+        n0=16, n1=997, n2=64, order=order, dtype="complex128", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, metadata["module_path"], "exec")
+    if mode == "v1":
+        assert metadata["grid_x_override"] == 0
+    else:
+        assert metadata["grid_x_override"] > 0
+        assert "tl.trans(src_r)" in source
+        assert ("tl.join(dst_r, dst_i)" in source) == mode.endswith("vec")
+
+
 @pytest.mark.parametrize("pack", [1, 4])
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 def test_maca_packed_permuted_store_is_fp32_only(

@@ -804,6 +804,15 @@ def _emit_tiled_transpose3d_jit_kernel(
     out_dir: Path,
 ) -> dict[str, Any]:
     transpose_warps = 4
+    cuda_fp64_mode = (
+        os.environ.get("FLAGFFT_CUDA_3D_FP64_TRANSPOSE", "v1")
+        if _declared_backend() == "cuda" and dtype == "complex128"
+        else "v1"
+    )
+    if cuda_fp64_mode not in {"v1", "tile16", "tile32", "tile64", "tile16vec", "tile32vec"}:
+        raise ValueError(
+            "FLAGFFT_CUDA_3D_FP64_TRANSPOSE must be v1, tile16, tile32, tile64, tile16vec or tile32vec"
+        )
     if _declared_backend() == "npu":
         raw_warps = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_WARPS")
         if raw_warps is not None:
@@ -961,6 +970,13 @@ def _emit_tiled_transpose3d_jit_kernel(
             n0, n1, n2, order, tile=16, slice_group=2,
             row_group=2,
             tile_traversal=maca_traversal,
+        )
+    elif cuda_fp64_mode != "v1":
+        # CUDA's FP64 fallback gathers strided source values. Screen the
+        # portable tile that coalesces both sides, independently of FP32 PTX.
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=int(cuda_fp64_mode[4:6]),
+            vec_store=cuda_fp64_mode.endswith("vec"),
         )
     elif dtype == "complex64" and _transpose3d_v2_supported():
         (
