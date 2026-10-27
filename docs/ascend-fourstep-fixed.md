@@ -37,8 +37,10 @@ python3 tools/ascend_fourstep_probe.py \
   --output /absolute/results/path/fft2048.json
 ```
 
-`--dispatch persistent` 显式设置 `enable_auto_blockify=True`，逻辑 grid
-为 2048，实际 launch blocks 为 40；该选项不依赖环境变量默认值。
+`--dispatch persistent` 同时设置 `enable_auto_blockify=True` 和
+`TRITON_ALL_BLOCKS_PARALLEL=1`，逻辑 grid 为 2048，实际 launch blocks
+为 40。当前编译器的 SIMD 编译阶段和启动器读取不同的开关，二者必须
+保持一致；实验入口负责同时设置，显式 CLI 选择覆盖环境默认值。
 `TRITON_ALL_BLOCKS_PARALLEL=1` 在此工具链中表示启用自动映射，不能
 按变量名字将它解释为启动 2048 个物理 block。结果 JSON 保存实际
 launch 数、编译选项、源码 SHA256、误差和每轮计时。

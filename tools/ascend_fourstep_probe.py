@@ -341,7 +341,11 @@ def main():
             'vec2':{'enable_auto_vectorize_v2':True},'singlebuffer':{'multibuffer':False},
             'ubsave':{'enable_ubuf_saving':True},'flatten':{'enable_flatten':True}}[args.tuning]
     if args.dispatch!='inherit':
-        tuning['enable_auto_blockify']=args.dispatch=='persistent'
+        persistent=args.dispatch=='persistent'
+        # This compiler revision's SIMD CANN stage reads the environment,
+        # while the launcher reads the explicit option. Keep both consistent.
+        os.environ['TRITON_ALL_BLOCKS_PARALLEL']='1' if persistent else '0'
+        tuning['enable_auto_blockify']=persistent
     x=cpu.npu(); y=torch.full_like(x,float('nan')); w=twiddles(n)
     if args.fused_fourstep:
         a=args.factor or 64; b=n//a
