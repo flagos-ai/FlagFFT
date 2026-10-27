@@ -2399,7 +2399,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         build_raw_bluestein_chirp(request, bluestein->length, request.direction == "inverse");
     DeviceAllocation b_time = build_raw_bluestein_b(request, bluestein->length, bluestein->conv_length);
     const bool use_a100_fp64_full_leaf = request.device_type == "cuda" && request.device_arch == "sm_80" &&
-                                         request.input_dtype == "complex128" && batch == 1;
+                                         request.input_dtype == "complex128" &&
+                                         (batch == 1 ||
+                                          (bluestein->conv_length <= 4096 &&
+                                           flag_or_default("FLAGFFT_CUDA_FP64_BLUESTEIN_FULL_LEAF", false)));
     const bool use_musa_s5000_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
                                                request.input_dtype == "complex128" && batch == 1;
     const bool use_musa_3d_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
