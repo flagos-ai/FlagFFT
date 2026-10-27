@@ -216,6 +216,14 @@ def _metadata(
         "direct_dft_c2r",
     } and dtype == "complex64":
         num_warps = 4
+    if profile.backend == "cuda" and kernel_type in {
+        "direct_dft", "direct_dft_strided", "direct_dft_r2c", "direct_dft_c2r"
+    }:
+        override = os.getenv("FLAGFFT_CUDA_DIRECT_DFT_WARPS", "auto")
+        if override != "auto":
+            if override not in {"1", "2", "4"}:
+                raise ValueError("FLAGFFT_CUDA_DIRECT_DFT_WARPS must be auto, 1, 2 or 4")
+            num_warps = int(override)
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)

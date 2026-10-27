@@ -21,6 +21,7 @@ from textwrap import dedent
 
 from .kernels_common import _dtype_suffix, _maca_backend_active, _next_power_of_two, _zero_other
 from .maca_tail_policy import real_tree_default
+from .backend_profile import current_profile
 
 
 def _build_real_direct_dft_kernel_source(
@@ -48,6 +49,8 @@ def _build_real_direct_dft_kernel_source(
         and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION", "tree" if real_tree_default(n) else "kahan") == "tree"
         and _maca_backend_active()
     )
+    tree = tree or (dtype == "complex128" and n <= 32 and current_profile().backend == "cuda"
+                    and os.getenv("FLAGFFT_CUDA_DIRECT_DFT_TREE") == "1")
     if tree:
         name += "_tree"
     # Scalar FP64 loads and vector FP32 loads share the same boundary rules.

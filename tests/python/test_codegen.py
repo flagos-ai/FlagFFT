@@ -2315,3 +2315,19 @@ def test_cuda_permutation_constants_preserve_runtime_argument_order(monkeypatch)
     monkeypatch.setenv('FLAGFFT_CUDA_PERMUTE_BATCH', '0')
     with pytest.raises(ValueError, match='positive span and batch'):
         _build_leaf_kernel_source_for_io(plan, io_mode='permuted_store', perm_form='outer')
+
+
+def test_cuda_double_direct_tree_is_explicit_and_preserves_f64(monkeypatch):
+    from flagfft_codegen.kernels_special import _build_direct_dft_kernel_source
+    from flagfft_codegen.kernels_real import _build_real_direct_dft_kernel_source
+    monkeypatch.delenv('FLAGFFT_CUDA_DIRECT_DFT_TREE', raising=False)
+    _, original, _ = _build_direct_dft_kernel_source(23, 'forward', 'complex128')
+    assert 'comp_r' in original
+    monkeypatch.setenv('FLAGFFT_CUDA_DIRECT_DFT_TREE', '1')
+    _, source, _ = _build_direct_dft_kernel_source(23, 'forward', 'complex128')
+    assert 'tl.float64' in source and 'comp_r' not in source
+    assert 'tl.sum' in source
+    for inverse in [False, True]:
+        _, real, _ = _build_real_direct_dft_kernel_source(23, 'complex128', inverse=inverse)
+        compile(real, '<real-dft-tree>', 'exec')
+        assert 'tree_r_' in real and 'comp_r' not in real

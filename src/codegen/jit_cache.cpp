@@ -269,6 +269,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";cuda-smem-swizzle=" + std::string(swizzle ? swizzle : "0");
     const char *short_cooperative = std::getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE");
     cache_key += ";cuda-short-cooperative=" + std::string(short_cooperative ? short_cooperative : "0");
+    const char *tree = std::getenv("FLAGFFT_CUDA_DIRECT_DFT_TREE");
+    const char *dft_warps = std::getenv("FLAGFFT_CUDA_DIRECT_DFT_WARPS");
+    cache_key += ";cuda-dft-tree=" + std::string(tree ? tree : "0");
+    cache_key += ";cuda-dft-warps=" + std::string(dft_warps ? dft_warps : "auto");
     const char *portable = std::getenv("FLAGFFT_CUDA_PORTABLE_LEAF");
     cache_key += ";cuda-portable-leaf=" + std::string(portable ? portable : "0");
   }
