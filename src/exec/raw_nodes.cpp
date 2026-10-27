@@ -2528,7 +2528,9 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
         graph->begin_capture(context.stream);
         run_sequence();
         graph->end_capture(context.stream);
-        graph->launch(context.stream);
+        // The direct sequence above already produced this call's result.
+        // Capture only records launches; replaying here would transform an
+        // in-place input a second time on the first execution.
         graph_ = std::move(graph);
         graph_in_ = input;
         graph_out_ = output;
@@ -2607,7 +2609,8 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
         graph->begin_capture(context.stream);
         run_sequence();
         graph->end_capture(context.stream);
-        graph->launch(context.stream);
+        // The direct sequence already produced the result, including when
+        // input and output alias. Replay starts on the next execution.
         graph_ = std::move(graph);
         graph_in_ = input;
         graph_out_ = output;
