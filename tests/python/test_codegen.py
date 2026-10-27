@@ -2284,3 +2284,17 @@ def test_cuda_short_cooperative_parallelizes_all_radix_groups(monkeypatch):
     compile(source, '<short-cooperative>', 'exec')
     assert 'tl.range(0, 19)' not in source
     assert 'lane < 38' in source
+
+
+@pytest.mark.parametrize('mode', ['contiguous', 'bluestein_full_leaf'])
+def test_cuda_tensor_exchange_emits_no_explicit_shared_allocations(monkeypatch, mode):
+    from flagfft_codegen.kernels_common import LeafPlan, cooperative_stage_lanes_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_CUDA_PORTABLE_LEAF', '1')
+    plan = LeafPlan(length=2048, factors=(16, 16, 8), remainder=1, lanes=128, num_warps=4,
+                    generic_radices=(), smem_size=2048, dtype='complex128')
+    assert cooperative_stage_lanes_for(plan) == (128, 128, 256)
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode=mode, prime_n=997)
+    compile(source, '<cuda-tensor-exchange>', 'exec')
+    assert 'tle.gpu.alloc' not in source
+    assert 'tl.gather' in source

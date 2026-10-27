@@ -56,17 +56,20 @@ namespace {
   inline constexpr int64_t kCooperativeStageMaxBaseLanes = 32;
 
   bool use_cooperative_stage_lanes(const LeafPlanNode &leaf, const FFTRequest &request) {
+    const char *short_setting = std::getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE");
+    const bool short_cuda = request.device_type == "cuda" && leaf.length >= 32 &&
+        leaf.length < kCooperativeStageMinLength && short_setting && std::string(short_setting) == "1";
     const bool fixed_lanes_are_compatible =
         std::all_of(leaf.factors.begin(), leaf.factors.end(), [&](int64_t radix) {
           return (leaf.length / radix) % leaf.lanes == 0;
         });
-    if (leaf.length < kCooperativeStageMinLength || leaf.length > kCooperativeStageMaxLength ||
+    if ((!short_cuda && leaf.length < kCooperativeStageMinLength) || leaf.length > kCooperativeStageMaxLength ||
         leaf.factors.size() < 2 ||
         (leaf.lanes > kCooperativeStageMaxBaseLanes && fixed_lanes_are_compatible)) {
       return false;
     }
     const bool is_double = request.input_dtype == "complex128" || request.input_dtype == "float64";
-    if (is_double || !fixed_lanes_are_compatible) {
+    if (short_cuda || is_double || !fixed_lanes_are_compatible) {
       return true;
     }
 
@@ -363,8 +366,11 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   const bool portable_ix = adaptor::backend_name() == "ix" &&
       (portable_setting ? std::string(portable_setting) == "1"
                         : (ix_ct_single_policy_enabled(request) || ix_ct_batch_policy_enabled(request)));
+  const char *cuda_portable = std::getenv("FLAGFFT_CUDA_PORTABLE_LEAF");
+  const bool portable_cuda = adaptor::backend_name() == "cuda" && cuda_portable &&
+                              std::string(cuda_portable) == "1";
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-    const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix) ? leaf.length / leaf.factors[stage]
+    const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix || portable_cuda) ? leaf.length / leaf.factors[stage]
                           : use_cooperative_stage_lanes(leaf, request)
                               ? cooperative_stage_lanes(leaf.length, leaf.factors[stage])
                               : leaf.lanes;

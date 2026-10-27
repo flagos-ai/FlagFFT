@@ -1142,7 +1142,8 @@ def _maca_backend_active() -> bool:
 
 def _portable_leaf_backend_active() -> bool:
     """Select tensor exchange when the backend's TLE shared memory is unavailable."""
-    return _maca_backend_active() or (
+    return (current_profile().backend == "cuda" and
+            os.getenv("FLAGFFT_CUDA_PORTABLE_LEAF") == "1") or _maca_backend_active() or (
         _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1"
     ) or (
         _ix_backend_active() and _maca_knob("PORTABLE_LEAF") == "1"

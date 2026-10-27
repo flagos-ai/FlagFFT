@@ -269,6 +269,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";cuda-smem-swizzle=" + std::string(swizzle ? swizzle : "0");
     const char *short_cooperative = std::getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE");
     cache_key += ";cuda-short-cooperative=" + std::string(short_cooperative ? short_cooperative : "0");
+    const char *portable = std::getenv("FLAGFFT_CUDA_PORTABLE_LEAF");
+    cache_key += ";cuda-portable-leaf=" + std::string(portable ? portable : "0");
   }
   if (key.kind == KernelKind::Transpose3D && adaptor::backend_name() == "cuda") {
     const char *fp64_transpose = std::getenv("FLAGFFT_CUDA_3D_FP64_TRANSPOSE");
