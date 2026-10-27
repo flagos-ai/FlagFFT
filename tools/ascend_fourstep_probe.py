@@ -90,8 +90,9 @@ def split4_slice(v,N:tl.constexpr,SPAN:tl.constexpr,KEEP:tl.constexpr):
     d=al.extract_slice(p,[0,3*SPAN//4],[N//SPAN,SPAN//4],[1,1])
     if KEEP:
         return a,b,c,d
-    return (tl.reshape(a,(N//4,)),tl.reshape(b,(N//4,)),
-            tl.reshape(c,(N//4,)),tl.reshape(d,(N//4,)))
+    else:
+        return (tl.reshape(a,(N//4,)),tl.reshape(b,(N//4,)),
+                tl.reshape(c,(N//4,)),tl.reshape(d,(N//4,)))
 
 
 @triton.jit
