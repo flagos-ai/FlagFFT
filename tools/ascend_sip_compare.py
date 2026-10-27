@@ -67,10 +67,10 @@ def main():
         else:
             wa,wb=axis_twiddles(n*args.pack,a,b),axis_twiddles(n*args.pack,b,args.pack*a)
         grid=triton.cdiv(batch,args.pack)
-        ck=packed_fft[(grid,)](x,y,wa,wb,cross,batch,n,a,b,args.pack,args.variant=='compact',**options)
+        ck=packed_fft[(grid,)](x,y,wa,wb,cross,batch,n,a,b,args.pack,args.variant=='compact',a.bit_length()-1,b.bit_length()-1,**options)
         runner=ck[(grid,1,1)]
         def fft():
-            runner(x,y,wa,wb,cross,batch,n,a,b,args.pack,args.variant=='compact')
+            runner(x,y,wa,wb,cross,batch,n,a,b,args.pack,args.variant=='compact',a.bit_length()-1,b.bit_length()-1)
     else:
         name, source = generate(n=n, factor=a, pack=args.pack,
                                 both=args.variant=='local-both', radix=args.radix)

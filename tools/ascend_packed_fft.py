@@ -21,7 +21,7 @@ def compact_stage(r,i,W,N:tl.constexpr,L:tl.constexpr,C:tl.constexpr,SPAN:tl.con
     a3r,a3i=t1r-t3i,t1i+t3r
     if SPAN>4*C:
         K:tl.constexpr=SPAN//(4*C)
-        PAD:tl.constexpr=max(8,L//4)
+        PAD:tl.constexpr=8 if L<32 else L//4
         j=tl.arange(0,K)
         w1r=tl.reshape(tl.broadcast_to(tl.load(W+S*6*PAD+j)[None,:,None],(N//SPAN,K,C)),(N//4,))
         w1i=tl.reshape(tl.broadcast_to(tl.load(W+S*6*PAD+PAD+j)[None,:,None],(N//SPAN,K,C)),(N//4,))
@@ -54,16 +54,16 @@ def compact_axis(r,i,W,N:tl.constexpr,L:tl.constexpr,C:tl.constexpr,LOG:tl.const
 
 
 @triton.jit
-def packed_fft(X,Y,WA,WB,CROSS,NB:tl.constexpr,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,P:tl.constexpr,COMPACT:tl.constexpr):
+def packed_fft(X,Y,WA,WB,CROSS,NB:tl.constexpr,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,P:tl.constexpr,COMPACT:tl.constexpr,LOGA:tl.constexpr,LOGB:tl.constexpr):
     bid=tl.program_id(0)
     batch=bid*P+tl.arange(0,P)
     lane=tl.arange(0,2*N)
     raw=tl.load(X+batch[:,None]*2*N+lane[None,:],batch[:,None]<NB,0)
     r,i=tl.split(tl.reshape(raw,(P*N,2)))
     if COMPACT:
-        r,i=compact_axis(r,i,WA,P*N,A,B,A.bit_length()-1)
+        r,i=compact_axis(r,i,WA,P*N,A,B,LOGA)
     else:
-        r,i=fft_axis_sliced(r,i,WA,P*N,A,B,A.bit_length()-1)
+        r,i=fft_axis_sliced(r,i,WA,P*N,A,B,LOGA)
     k=tl.arange(0,N)
     c=tl.reshape(tl.load(CROSS+k),(A,1,B))
     d=tl.reshape(tl.load(CROSS+N+k),(A,1,B))
@@ -72,9 +72,9 @@ def packed_fft(X,Y,WA,WB,CROSS,NB:tl.constexpr,N:tl.constexpr,A:tl.constexpr,B:t
     rr=tl.reshape(tl.permute(rr,2,1,0),(P*N,))
     ii=tl.reshape(tl.permute(ii,2,1,0),(P*N,))
     if COMPACT:
-        r,i=compact_axis(rr,ii,WB,P*N,B,P*A,B.bit_length()-1)
+        r,i=compact_axis(rr,ii,WB,P*N,B,P*A,LOGB)
     else:
-        r,i=fft_axis_sliced(rr,ii,WB,P*N,B,P*A,B.bit_length()-1)
+        r,i=fft_axis_sliced(rr,ii,WB,P*N,B,P*A,LOGB)
     r=tl.reshape(tl.permute(tl.reshape(r,(B,P,A)),1,0,2),(P,N))
     i=tl.reshape(tl.permute(tl.reshape(i,(B,P,A)),1,0,2),(P,N))
     for p in tl.static_range(0,P):
