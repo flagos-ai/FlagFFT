@@ -20,9 +20,11 @@ def split4(v, N: tl.constexpr, SPAN: tl.constexpr):
     G: tl.constexpr = N // SPAN
     Q: tl.constexpr = SPAN // 4
     p = tl.permute(tl.reshape(v, (G, 2, 2, Q)), 0, 3, 1, 2)
-    a, b = tl.split(p)
-    x0, x2 = tl.split(a)
-    x1, x3 = tl.split(b)
+    # Flatten before split: keep both channels in compact one-dimensional
+    # storage instead of creating a strided slice in a small middle axis.
+    a, b = tl.split(tl.reshape(p,(N//2,2)))
+    x0, x2 = tl.split(tl.reshape(a,(N//4,2)))
+    x1, x3 = tl.split(tl.reshape(b,(N//4,2)))
     return (tl.reshape(x0, (N//4,)), tl.reshape(x1, (N//4,)),
             tl.reshape(x2, (N//4,)), tl.reshape(x3, (N//4,)))
 
@@ -100,10 +102,10 @@ def fft_axis(r, i, W, N: tl.constexpr, L: tl.constexpr,
     if LOG % 2:
         p = tl.permute(tl.reshape(r, (N//(2*C),2,C)),0,2,1)
         q = tl.permute(tl.reshape(i, (N//(2*C),2,C)),0,2,1)
-        ar, br = tl.split(p)
-        ai, bi = tl.split(q)
-        rr = tl.join(ar+br, ar-br)
-        ii = tl.join(ai+bi, ai-bi)
+        ar, br = tl.split(tl.reshape(p,(N//2,2)))
+        ai, bi = tl.split(tl.reshape(q,(N//2,2)))
+        rr = tl.reshape(tl.join(ar+br, ar-br),(N//(2*C),C,2))
+        ii = tl.reshape(tl.join(ai+bi, ai-bi),(N//(2*C),C,2))
         r = tl.reshape(tl.permute(rr,0,2,1),(N,))
         i = tl.reshape(tl.permute(ii,0,2,1),(N,))
     return r, i
