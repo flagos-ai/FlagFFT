@@ -64,7 +64,9 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
         result = inner->execute(input, output, context);
         captured->end_capture(context.stream);
         if (result != FLAGFFT_SUCCESS) return result;
-        captured->launch(context.stream);
+        // The direct execution above already produced this call's output.
+        // Capture records the next execution without running it. Launching
+        // here would apply an in-place transform twice on the first call.
         graph = std::move(captured);
         graph_input = input;
         graph_output = output;

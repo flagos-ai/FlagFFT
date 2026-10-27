@@ -502,6 +502,21 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
                                                              plan->desc.batch);
       }
     }
+    const auto &multid_request = plan->executable.forward_request;
+    const bool real_multid = plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z ||
+                            plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D;
+    const char *cuda_graph = std::getenv("FLAGFFT_CUDA_MULTID_GRAPH");
+    if (multid_request.device_type == "cuda" && multid_request.device_arch == "sm_80" &&
+        (is_3d || (is_2d && real_multid)) &&
+        std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
+        cuda_graph != nullptr && std::string(cuda_graph) == "1") {
+      if (plan->executable.forward) {
+        plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+      }
+      if (plan->executable.inverse) {
+        plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+      }
+    }
 #if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
     const flagfftResult sip_result = configure_npu_sip_execution(*plan);
     if (sip_result != FLAGFFT_SUCCESS) return sip_result;

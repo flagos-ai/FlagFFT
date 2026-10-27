@@ -36,6 +36,11 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  bool cuda_multid_flag(const FFTRequest &request, const char *name) {
+    return request.device_type == "cuda" && request.device_arch == "sm_80" &&
+           request.origin_rank > 1 && flag_or_default(name, false);
+  }
+
   bool npu_2d_native_transpose_enabled(const FFTRequest &request,
                                       int64_t rows,
                                       int64_t cols,
@@ -3860,8 +3865,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
   // A small square plane fits in one block. Transform n2 and n1 together,
   // then run the outer strided leaf in a second launch.
+  const bool cuda_fused_plane = cuda_multid_flag(request, "FLAGFFT_CUDA_3D_FUSED_PLANE");
   const bool small_plane_backend = request.device_type == "musa" || request.device_type == "hcu" ||
-                                   request.device_type == "maca";
+                                   request.device_type == "maca" || cuda_fused_plane;
   const char *fused16_override = std::getenv(request.device_type == "hcu"
                                                   ? "FLAGFFT_HCU_3D_FUSED16"
                                                   : request.device_type == "maca"
@@ -3869,13 +3875,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                         : "FLAGFFT_MUSA_3D_FUSED16");
   const char *fused32_override = std::getenv("FLAGFFT_HCU_3D_FUSED32");
   const bool fused16 = small_plane_backend && n0 == 16 && n1 == 16 && n2 == 16 &&
-                       (fused16_override == nullptr || std::string(fused16_override) != "0");
-  const bool fused32 = request.device_type == "hcu" && n0 == 32 && n1 == 32 && n2 == 32 &&
-                       (fused32_override == nullptr || std::string(fused32_override) != "0");
+                       (cuda_fused_plane || fused16_override == nullptr ||
+                        std::string(fused16_override) != "0");
+  const bool fused32 = (request.device_type == "hcu" || cuda_fused_plane) && n0 == 32 && n1 == 32 && n2 == 32 &&
+                       (cuda_fused_plane || fused32_override == nullptr ||
+                        std::string(fused32_override) != "0");
   const char *fused_cube_override = std::getenv("FLAGFFT_HCU_3D_FUSED16_CUBE");
-  const bool fused_cube = request.device_type == "hcu" && n0 == 16 && n1 == 16 && n2 == 16 &&
+  const bool fused_cube = (request.device_type == "hcu" ||
+                           cuda_multid_flag(request, "FLAGFFT_CUDA_3D_FUSED_CUBE")) &&
+                          n0 == 16 && n1 == 16 && n2 == 16 &&
                           batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
-                          (fused_cube_override == nullptr || std::string(fused_cube_override) != "0");
+                          (request.device_type == "cuda" || fused_cube_override == nullptr ||
+                           std::string(fused_cube_override) != "0");
   if (fused_cube) {
     std::vector<double> tw_r_d(16);
     std::vector<double> tw_i_d(16);
@@ -4338,9 +4349,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   // compact node with a measured 16/32-plane and long-axis layout policy.
   const bool maca_real_compact = request.device_type == "maca" &&
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_COMPACT", true);
+  const bool cuda_real_compact = cuda_multid_flag(request, "FLAGFFT_CUDA_3D_REAL_COMPACT");
   if (request.device_type != "musa" && request.device_type != "hcu" &&
       !ix_real_leaf_screen && !ix_real_fused_screen && !npu_real_leaf_screen &&
-      !maca_real_compact) return nullptr;
+      !maca_real_compact && !cuda_real_compact) return nullptr;
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
   const int64_t n2 = node->n2;
@@ -4416,7 +4428,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   // HCU can keep an elongated Bluestein middle axis in the compact real
   // layout; the real_hybrid shape gate below decides whether that route applies.
   if (!n2_leaf || !n0_leaf ||
-      (!n1_leaf && !maca_prime_compact && request.device_type != "hcu")) {
+      (!n1_leaf && !maca_prime_compact && !cuda_real_compact && request.device_type != "hcu")) {
     return nullptr;
   }
 
@@ -4536,9 +4548,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   if (ix_real_leaf_screen && !ix_real_fused_screen && !small) return nullptr;
   // Large NPU real transforms use the native compact 3D route below.
   if (npu_real_leaf_screen && !small) return nullptr;
-  if (!n1_leaf && !real_hybrid && !maca_prime_compact) return nullptr;
+  if (!n1_leaf && !real_hybrid && !maca_prime_compact && !cuda_real_compact) return nullptr;
   if (!small && !fused_3d_store_enabled() && !ix_real_fused_screen &&
-      !maca_real_compact) return nullptr;
+      !maca_real_compact && !cuda_real_compact) return nullptr;
   const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
 
   FFTRequest n2_request = request;
@@ -4745,7 +4757,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_210;
   std::shared_ptr<JitKernel> perm_201;
-  if (request.device_type == "maca") {
+  if (request.device_type == "maca" || cuda_real_compact) {
     if (small) {
       n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
       n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
@@ -4806,7 +4818,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
   DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
-  if (request.device_type == "maca") {
+  if (request.device_type == "maca" || cuda_real_compact) {
     const auto layout = small ? CompiledRaw3DRealLeafNode::Layout::Strided
         : maca_r2c_first_store ? CompiledRaw3DRealLeafNode::Layout::R2CFirstStore
                                : CompiledRaw3DRealLeafNode::Layout::Transposed;
@@ -5687,7 +5699,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
-    const bool use_npu_real_row = request.device_type == "npu" &&
+    const bool use_npu_real_row =
+        cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") &&
+            has_real_boundary_row_plan(node->row_plan) ||
+        request.device_type == "npu" &&
                                   has_real_boundary_row_plan(node->row_plan) &&
                                   flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true);
     if (use_npu_real_row) {
@@ -5729,15 +5744,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   col_request.requested_n = n0;
   col_request.batch = batch * half_n1;
 
-#if defined(FLAGFFT_BACKEND_NPU)
   // Keep the real boundary compact through both dimensions. Compiling the
   // row transform as a batched 1D real child enables the existing even/odd
   // packed route for eligible long rows.
-  if (request.device_type == "npu" && request.origin_rank == 2 &&
+  if ((cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") &&
+       has_real_boundary_row_plan(node->row_plan)) ||
+      (request.device_type == "npu" && request.origin_rank == 2 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) {
+      flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true))) {
     std::shared_ptr<CompiledRawNode> row_r2c =
-        compile_raw_r2c_node(node->row_plan, row_request, batch * n0, true);
+        compile_raw_r2c_node(node->row_plan, row_request, batch * n0, request.device_type == "npu");
     std::shared_ptr<CompiledRawNode> col_fft =
         compile_raw_node(node->col_plan, col_request, batch * half_n1);
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
@@ -5755,7 +5771,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                                      std::move(temp1),
                                                      std::move(temp2));
   }
-#endif
 
   // Compile kernels
   auto expand_kernel = compile_real_to_complex_kernel(request, n1);
@@ -5904,7 +5919,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
-    const bool use_npu_real_row = request.device_type == "npu" &&
+    const bool use_npu_real_row =
+        cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") &&
+            has_real_boundary_row_plan(node->row_plan) ||
+        request.device_type == "npu" &&
                                   has_real_boundary_row_plan(node->row_plan) &&
                                   flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true);
     if (use_npu_real_row) {
@@ -5942,17 +5960,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   }
 
   // Compile kernels
-#if defined(FLAGFFT_BACKEND_NPU)
   // Symmetric compact-row schedule for NPU C2R. The existing 1D real child
   // consumes compact rows after the column IFFT, so Hermitian expansion (when
   // needed for odd lengths) stays local to the row transform.
-  if (request.device_type == "npu" && request.origin_rank == 2 &&
+  if ((cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") &&
+       has_real_boundary_row_plan(node->row_plan)) ||
+      (request.device_type == "npu" && request.origin_rank == 2 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) {
+      flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true))) {
     std::shared_ptr<CompiledRawNode> col_fft =
         compile_raw_node(node->col_plan, col_request, batch * half_n1);
     std::shared_ptr<CompiledRawNode> row_c2r =
-        compile_raw_c2r_node(node->row_plan, row_request, batch * n0, true);
+        compile_raw_c2r_node(node->row_plan, row_request, batch * n0, request.device_type == "npu");
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
     auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes =
@@ -5968,7 +5987,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
                                                      std::move(temp1),
                                                      std::move(temp2));
   }
-#endif
 
   auto expand_kernel = compile_compact_to_hermitian_full_kernel(request, n1);
   std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
