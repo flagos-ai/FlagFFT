@@ -2237,3 +2237,22 @@ def test_cuda_permuted_store_vector_preserves_mask_and_pair_address(monkeypatch,
     monkeypatch.delenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE")
     assert "st.global.v2" not in "\n".join(
         _emit_permuted_store("    ", 1, (16, 16), pack, 16, dtype, compact_length=129))
+
+
+@pytest.mark.parametrize('dtype', ['complex64', 'complex128'])
+def test_cuda_single_buffer_rejects_multigroup_and_fused_convolution(monkeypatch, dtype):
+    from flagfft_codegen.kernels_common import LeafPlan, _use_single_smem_buffer
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+
+    monkeypatch.setenv('FLAGFFT_CUDA_LEAF_SINGLE_BUFFER', '1')
+    safe = LeafPlan(length=2048, factors=(16, 16, 8), remainder=1, lanes=128, num_warps=4,
+                    generic_radices=(), smem_size=2048, dtype=dtype)
+    assert _use_single_smem_buffer(safe)
+    _, source = _build_leaf_kernel_source_for_io(safe, io_mode="contiguous")
+    assert 'smem_a_r = tle.gpu.alloc' not in source
+    assert 'smem_b_r = tle.gpu.alloc' in source
+    assert 'tl.debug_barrier()' in source
+    unsafe = LeafPlan(length=2048, factors=(8, 8, 32), remainder=1, lanes=64, num_warps=2,
+                      generic_radices=(), smem_size=2048, dtype=dtype)
+    assert not _use_single_smem_buffer(unsafe)
+    assert not _use_single_smem_buffer(safe, io_mode='bluestein_full_leaf')

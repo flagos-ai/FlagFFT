@@ -5501,13 +5501,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       n0 <= 128 && n1 <= 128 && npu_2d_transpose_store != nullptr &&
       std::string(npu_2d_transpose_store) == "1";
-  auto npu_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
-  auto npu_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-  if (use_npu_2d_transpose_store && npu_row_leaf && npu_col_leaf) {
+  const bool use_cuda_2d_transpose_store = request.device_type == "cuda" &&
+      request.device_arch == "sm_80" && flag_or_default("FLAGFFT_CUDA_2D_FUSED_STORE", false);
+  auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+  auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+  if ((use_npu_2d_transpose_store || use_cuda_2d_transpose_store) && row_leaf && col_leaf) {
     std::shared_ptr<CompiledRawNode> row_fft =
-        compile_raw_permuted_store_leaf(*npu_row_leaf, row_request, n0, "outer");
+        compile_raw_permuted_store_leaf(*row_leaf, row_request, n0, "outer");
     std::shared_ptr<CompiledRawNode> col_fft =
-        compile_raw_permuted_store_leaf(*npu_col_leaf, col_request, n1, "outer");
+        compile_raw_permuted_store_leaf(*col_leaf, col_request, n1, "outer");
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                  n1,

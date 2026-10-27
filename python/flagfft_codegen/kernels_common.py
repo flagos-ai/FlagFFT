@@ -1056,6 +1056,20 @@ def _use_single_smem_buffer(
     four_step_n2: int = 0,
 ) -> bool:
     """Reuse one shared buffer between generated mixed-radix stages."""
+    if (current_profile().backend == "cuda" and
+            os.getenv("FLAGFFT_CUDA_LEAF_SINGLE_BUFFER") == "1"):
+        allowed_modes = {
+            "contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
+            "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c",
+            "bluestein_prepare_leaf", "bluestein_finish_leaf",
+        }
+        # Every overwriting stage must consume its entire shared input before
+        # the barrier and its first write. Multi-group stages cannot do that.
+        stage_lanes = cooperative_stage_lanes_for(plan)
+        if (io_mode in allowed_modes and len(plan.factors) >= 2 and
+                all(lanes == plan.lanes for lanes in stage_lanes) and
+                all(plan.length == plan.lanes * radix for radix in plan.factors[:-1])):
+            return True
     if _leaf_single_smem_buffer_eligible(
         plan,
         io_mode=io_mode,
