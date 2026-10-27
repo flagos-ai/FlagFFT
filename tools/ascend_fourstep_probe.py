@@ -4,6 +4,8 @@ Run on Ascend with the isolated FlagTree/FLIR build. Output is natural order.
 This probe does not alter planner defaults.
 """
 import argparse
+import hashlib
+import os
 import json
 import math
 import statistics
@@ -294,18 +296,32 @@ def main():
     p.add_argument('--n',type=int,default=2048)
     p.add_argument('--batch',type=int,default=2048)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--tuning',choices=['default','multi','vec2','singlebuffer','ubsave','flatten'],default='default')
     p.add_argument('--fused-fourstep',action='store_true')
     p.add_argument('--native-interleave',action='store_true')
     p.add_argument('--sliced-fourstep',action='store_true')
     p.add_argument('--autosort',action='store_true')
     p.add_argument('--factor',type=int,default=0,help='first FFT length; 0 uses one kernel')
+    p.add_argument('--seed',type=int,default=20261027)
+    p.add_argument('--input',choices=['random','impulse','constant','tone'],default='random')
     p.add_argument('--steps',type=int,default=16)
     p.add_argument('--rounds',type=int,default=5)
     args=p.parse_args()
     n,batch=args.n,args.batch
     torch.npu.set_device(0)
-    torch.manual_seed(20261027)
+    source_sha=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    torch.manual_seed(args.seed)
     cpu=torch.randn(batch,n,2)
+    if args.input=='impulse':
+        cpu.zero_();cpu[:,0,0]=1
+    elif args.input=='constant':
+        cpu.fill_(1)
+    elif args.input=='tone':
+        angle=2*math.pi*17*torch.arange(n,dtype=torch.float64)/n
+        cpu=torch.stack((angle.cos(),angle.sin()),dim=-1).float().repeat(batch,1,1)
+    tuning={'default':{},'multi':{'hfusion_enable_multiple_consumer_fusion':True},
+            'vec2':{'enable_auto_vectorize_v2':True},'singlebuffer':{'multibuffer':False},
+            'ubsave':{'enable_ubuf_saving':True},'flatten':{'enable_flatten':True}}[args.tuning]
     x=cpu.npu(); y=torch.full_like(x,float('nan')); w=twiddles(n)
     if args.fused_fourstep:
         a=args.factor or 64; b=n//a
@@ -314,7 +330,7 @@ def main():
         k=torch.arange(n,dtype=torch.int64)
         angle=-2*math.pi*(k//b)*(k%b)/n
         cross=torch.cat((angle.cos(),angle.sin())).float().npu()
-        ck=fourstep_fused[(batch,)](x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave)
+        ck=fourstep_fused[(batch,)](x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave,**tuning)
         runner=ck[(batch,1,1)]
         def launch(): runner(x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave)
     elif args.sliced_fourstep:
@@ -385,7 +401,9 @@ def main():
         for _ in range(30): g.replay()
         b.record(); b.synchronize()
         trials.append(a.elapsed_time(b)*1000/30/args.steps/batch)
-    result.update(n=n,batch=batch,factor=args.factor,sliced_fourstep=args.sliced_fourstep,fused_fourstep=args.fused_fourstep,native_interleave=args.native_interleave,autosort=args.autosort,us_per_transform=statistics.median(trials),
+    result.update(source_sha256=source_sha,tuning=args.tuning,seed=args.seed,input=args.input,
+                  all_blocks_parallel=os.environ.get('TRITON_ALL_BLOCKS_PARALLEL'),
+                  n=n,batch=batch,factor=args.factor,sliced_fourstep=args.sliced_fourstep,fused_fourstep=args.fused_fourstep,native_interleave=args.native_interleave,autosort=args.autosort,us_per_transform=statistics.median(trials),
                   trials=trials,steps=args.steps,triton=triton.__file__,metadata=str(ck.metadata),
                   replay_pass=True)
     args.output.write_text(json.dumps(result,indent=2)+'\n')
