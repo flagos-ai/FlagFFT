@@ -4583,6 +4583,34 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     n0_request.real_transform = false;
   }
 
+  // Preserve the compact real spectrum while fusing the short outer-axis
+  // stores. An explicit middle transpose also supports a Bluestein child.
+  if (cuda_real_compact && !small &&
+      flag_or_default("FLAGFFT_CUDA_3D_REAL_HYBRID", false)) {
+    std::shared_ptr<CompiledRawNode> real_axis;
+    if (inverse) {
+      real_axis = compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+    } else {
+      auto key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
+          n2_request.direction, n2_request.input_dtype, n2_leaf->length,
+          n2_leaf->factors, n2_leaf->lanes, n2_leaf->num_warps,
+          n2_leaf->generic_radices, n2_leaf->smem_size);
+      key.kind = KernelKind::LeafR2CPermutedStore;
+      key.perm_form = "outer";
+      real_axis = std::make_shared<CompiledRawR2CLeafNode>(n2, compile_kernel(key),
+          build_raw_leaf_tables(*n2_leaf, n2_request), DeviceAllocation{}, n1);
+    }
+    auto middle = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+    auto outer = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer");
+    std::shared_ptr<JitKernel> first;
+    if (inverse) first = compile_transpose3d_kernel(request, n0, n1, half, "021");
+    auto second = compile_transpose3d_kernel(request, n0, half, n1, "210");
+    const auto bytes = static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype));
+    return std::make_shared<CompiledRaw3DRealLeafNode>(n0, n1, n2, inverse,
+        true, !inverse, false, std::move(real_axis), std::move(middle), std::move(outer),
+        std::move(first), adaptor::Memory(bytes), adaptor::Memory(bytes), std::move(second));
+  }
+
   // For a small cube, fuse the contiguous real axis and adjacent complex axis
   // into one plane transform. The remaining outer axis stays on the existing
   // strided leaf. Keep the 16^3 path narrow and allow an explicit rollback.
