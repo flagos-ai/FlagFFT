@@ -14,7 +14,9 @@
 
 #include "flagfft_test.h"
 
+#include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <exception>
 #include <vector>
 
@@ -898,5 +900,66 @@ TEST_P(D2ZZ2DRoundtrip3D, ForwardInverse) {
 }
 
 INSTANTIATE_TEST_SUITE_P(All, D2ZZ2DRoundtrip3D, ::testing::ValuesIn(Filter3DParams(All3DParams())));
+
+TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
+  if (flagfft::adaptor::backend_name() != "cuda" || !HasUsableDevice()) {
+    GTEST_SKIP() << "requires CUDA";
+  }
+  struct GraphSetting {
+    bool existed = std::getenv("FLAGFFT_CUDA_MULTID_GRAPH") != nullptr;
+    std::string previous = existed ? std::getenv("FLAGFFT_CUDA_MULTID_GRAPH") : "";
+    GraphSetting() { setenv("FLAGFFT_CUDA_MULTID_GRAPH", "1", 1); }
+    ~GraphSetting() {
+      if (existed) setenv("FLAGFFT_CUDA_MULTID_GRAPH", previous.c_str(), 1);
+      else unsetenv("FLAGFFT_CUDA_MULTID_GRAPH");
+    }
+  } setting;
+  constexpr int n = 16;
+  constexpr int total = n * n * n;
+  constexpr int batch = 2;
+  constexpr std::size_t bytes = total * batch * sizeof(flagfftComplex);
+  for (bool inplace : {false, true}) {
+    struct PlanGuard {
+      flagfftHandle handle = nullptr;
+      ~PlanGuard() { if (handle) flagfftDestroy(handle); }
+    } plan;
+    ASSERT_NO_FATAL_FAILURE(
+        flagfft_test::PlanMany3d(&plan.handle, n, n, n, FLAGFFT_C2C, batch));
+    ASSERT_NE(plan.handle, nullptr);
+    flagfft::adaptor::Stream stream;
+    ASSERT_EQ(flagfftSetStream(plan.handle, stream.get()), FLAGFFT_SUCCESS);
+    // The route is qualified for sm_80. Other CUDA architectures keep their
+    // existing dispatch and do not participate in this replay regression.
+    if (std::string(flagfftGetPlanDescription(plan.handle)).find("CompiledRawGraph") ==
+        std::string::npos) GTEST_SKIP() << "graph route not selected on this device";
+    flagfft::adaptor::Memory inputs[2] = {
+        flagfft::adaptor::Memory(bytes), flagfft::adaptor::Memory(bytes)};
+    flagfft::adaptor::Memory outputs[2] = {
+        flagfft::adaptor::Memory(bytes), flagfft::adaptor::Memory(bytes)};
+    std::vector<flagfftComplex> input(total * batch), output(total * batch);
+    for (int iteration = 0; iteration < 4; ++iteration) {
+      const int slot = iteration % 2;
+      std::fill(input.begin(), input.end(), flagfftComplex{0.0f, 0.0f});
+      for (int b = 0; b < batch; ++b) {
+        input[b * total].x = static_cast<float>(1 + iteration + b);
+      }
+      inputs[slot].copy_from_host(input.data(), bytes);
+      auto &destination = inplace ? inputs[slot] : outputs[slot];
+      ASSERT_EQ(flagfftExecC2C(plan.handle,
+                              static_cast<flagfftComplex *>(inputs[slot].data()),
+                              static_cast<flagfftComplex *>(destination.data()),
+                              FLAGFFT_FORWARD), FLAGFFT_SUCCESS);
+      stream.sync();
+      destination.copy_to_host(output.data(), bytes);
+      for (int b = 0; b < batch; ++b) {
+        for (int i = 0; i < total; ++i) {
+          ASSERT_NEAR(output[b * total + i].x, 1 + iteration + b, 1e-5f)
+              << "inplace=" << inplace << " iteration=" << iteration << " index=" << i;
+          ASSERT_NEAR(output[b * total + i].y, 0.0f, 1e-5f);
+        }
+      }
+    }
+  }
+}
 
 }  // namespace
