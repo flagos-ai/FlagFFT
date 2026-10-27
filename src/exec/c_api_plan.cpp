@@ -509,7 +509,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     if (multid_request.device_type == "cuda" && multid_request.device_arch == "sm_80" &&
         (is_3d || (is_2d && real_multid)) &&
         std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr &&
-        cuda_graph != nullptr && std::string(cuda_graph) == "1") {
+        (cuda_graph == nullptr || std::string(cuda_graph) == "1")) {
       if (plan->executable.forward) {
         plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
       }

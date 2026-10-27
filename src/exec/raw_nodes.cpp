@@ -43,7 +43,8 @@ CompiledRawGraphNode::CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inne
     : inner(std::move(inner)) {}
 
 std::string CompiledRawGraphNode::describe() const {
-  return "CompiledRawGraph(inner=" + inner->describe() + ")";
+  return std::string("CompiledRawGraph(captured=") + (graph ? "true" : "false") +
+         ", inner=" + inner->describe() + ")";
 }
 
 flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
@@ -70,8 +71,9 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
         graph = std::move(captured);
         graph_input = input;
         graph_output = output;
-      } catch (const std::exception &) {
+      } catch (const std::exception &e) {
         graph_failed = true;
+        std::fprintf(stderr, "[flagfft] graph capture failed: %s\n", e.what());
       }
     }
     return FLAGFFT_SUCCESS;

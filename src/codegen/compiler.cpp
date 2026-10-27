@@ -36,9 +36,11 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  // Compact real boundaries and graph replay are qualified on A100. Keep
+  // the policy local to sm_80 and retain explicit rollback for comparisons.
   bool cuda_multid_flag(const FFTRequest &request, const char *name) {
     return request.device_type == "cuda" && request.device_arch == "sm_80" &&
-           request.origin_rank > 1 && flag_or_default(name, false);
+           request.origin_rank > 1 && flag_or_default(name, true);
   }
 
   bool npu_2d_native_transpose_enabled(const FFTRequest &request,
@@ -3865,9 +3867,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 
   // A small square plane fits in one block. Transform n2 and n1 together,
   // then run the outer strided leaf in a second launch.
-  const bool cuda_fused_plane = cuda_multid_flag(request, "FLAGFFT_CUDA_3D_FUSED_PLANE");
   const bool small_plane_backend = request.device_type == "musa" || request.device_type == "hcu" ||
-                                   request.device_type == "maca" || cuda_fused_plane;
+                                   request.device_type == "maca";
   const char *fused16_override = std::getenv(request.device_type == "hcu"
                                                   ? "FLAGFFT_HCU_3D_FUSED16"
                                                   : request.device_type == "maca"
@@ -3875,18 +3876,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                         : "FLAGFFT_MUSA_3D_FUSED16");
   const char *fused32_override = std::getenv("FLAGFFT_HCU_3D_FUSED32");
   const bool fused16 = small_plane_backend && n0 == 16 && n1 == 16 && n2 == 16 &&
-                       (cuda_fused_plane || fused16_override == nullptr ||
-                        std::string(fused16_override) != "0");
-  const bool fused32 = (request.device_type == "hcu" || cuda_fused_plane) && n0 == 32 && n1 == 32 && n2 == 32 &&
-                       (cuda_fused_plane || fused32_override == nullptr ||
-                        std::string(fused32_override) != "0");
+                       (fused16_override == nullptr || std::string(fused16_override) != "0");
+  const bool fused32 = request.device_type == "hcu" && n0 == 32 && n1 == 32 && n2 == 32 &&
+                       (fused32_override == nullptr || std::string(fused32_override) != "0");
   const char *fused_cube_override = std::getenv("FLAGFFT_HCU_3D_FUSED16_CUBE");
-  const bool fused_cube = (request.device_type == "hcu" ||
-                           cuda_multid_flag(request, "FLAGFFT_CUDA_3D_FUSED_CUBE")) &&
-                          n0 == 16 && n1 == 16 && n2 == 16 &&
+  const bool fused_cube = request.device_type == "hcu" && n0 == 16 && n1 == 16 && n2 == 16 &&
                           batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
-                          (request.device_type == "cuda" || fused_cube_override == nullptr ||
-                           std::string(fused_cube_override) != "0");
+                          (fused_cube_override == nullptr || std::string(fused_cube_override) != "0");
   if (fused_cube) {
     std::vector<double> tw_r_d(16);
     std::vector<double> tw_i_d(16);
