@@ -40,10 +40,10 @@ def merge4(a, b, c, d, N: tl.constexpr, SPAN: tl.constexpr):
 
 
 @triton.jit
-def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:tl.constexpr=False, SLICE:tl.constexpr=False, C:tl.constexpr=1):
+def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:tl.constexpr=False, SLICE:tl.constexpr=False, C:tl.constexpr=1, KEEP:tl.constexpr=False):
     if SLICE:
-        x0r,x1r,x2r,x3r=split4_slice(r,N,SPAN)
-        x0i,x1i,x2i,x3i=split4_slice(i,N,SPAN)
+        x0r,x1r,x2r,x3r=split4_slice(r,N,SPAN,KEEP)
+        x0i,x1i,x2i,x3i=split4_slice(i,N,SPAN,KEEP)
     else:
         x0r, x1r, x2r, x3r = split4(r, N, SPAN)
         x0i, x1i, x2i, x3i = split4(i, N, SPAN)
@@ -63,6 +63,13 @@ def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:t
         w2i = tl.load(W + S*6*(N//4) + 3*(N//4) + j)
         w3r = tl.load(W + S*6*(N//4) + 4*(N//4) + j)
         w3i = tl.load(W + S*6*(N//4) + 5*(N//4) + j)
+        if KEEP:
+            w1r=tl.reshape(w1r,(N//SPAN,SPAN//4))
+            w1i=tl.reshape(w1i,(N//SPAN,SPAN//4))
+            w2r=tl.reshape(w2r,(N//SPAN,SPAN//4))
+            w2i=tl.reshape(w2i,(N//SPAN,SPAN//4))
+            w3r=tl.reshape(w3r,(N//SPAN,SPAN//4))
+            w3i=tl.reshape(w3i,(N//SPAN,SPAN//4))
         g1r, g1i = a1r*w1r-a1i*w1i, a1r*w1i+a1i*w1r
         g2r, g2i = a2r*w2r-a2i*w2i, a2r*w2i+a2i*w2r
         g3r, g3i = a3r*w3r-a3i*w3i, a3r*w3i+a3i*w3r
@@ -75,20 +82,22 @@ def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:t
 
 
 @triton.jit
-def split4_slice(v,N:tl.constexpr,SPAN:tl.constexpr):
+def split4_slice(v,N:tl.constexpr,SPAN:tl.constexpr,KEEP:tl.constexpr):
     p=tl.reshape(v,(N//SPAN,SPAN))
     a=al.extract_slice(p,[0,0],[N//SPAN,SPAN//4],[1,1])
     b=al.extract_slice(p,[0,SPAN//4],[N//SPAN,SPAN//4],[1,1])
     c=al.extract_slice(p,[0,SPAN//2],[N//SPAN,SPAN//4],[1,1])
     d=al.extract_slice(p,[0,3*SPAN//4],[N//SPAN,SPAN//4],[1,1])
+    if KEEP:
+        return a,b,c,d
     return (tl.reshape(a,(N//4,)),tl.reshape(b,(N//4,)),
             tl.reshape(c,(N//4,)),tl.reshape(d,(N//4,)))
 
 
 @triton.jit
-def fft_axis_sliced(r,i,W,N:tl.constexpr,L:tl.constexpr,C:tl.constexpr,LOG:tl.constexpr):
+def fft_axis_sliced(r,i,W,N:tl.constexpr,L:tl.constexpr,C:tl.constexpr,LOG:tl.constexpr,KEEP:tl.constexpr=False):
     for s in tl.static_range(0,LOG//2):
-        r,i=stage4(r,i,W,N,L*C//4**s,s,True,True,C)
+        r,i=stage4(r,i,W,N,L*C//4**s,s,True,True,C,KEEP)
     if LOG%2:
         p=tl.reshape(r,(N//(2*C),2*C))
         q=tl.reshape(i,(N//(2*C),2*C))
@@ -107,17 +116,17 @@ def fft_axis_sliced(r,i,W,N:tl.constexpr,L:tl.constexpr,C:tl.constexpr,LOG:tl.co
 
 @triton.jit
 def fourstep_fused(X,Y,WA,WB,CROSS,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,
-                   LOGA:tl.constexpr,LOGB:tl.constexpr,NATIVE:tl.constexpr):
+                   LOGA:tl.constexpr,LOGB:tl.constexpr,NATIVE:tl.constexpr,KEEP:tl.constexpr):
     bid=tl.program_id(0)
     v=tl.load(X+bid*2*N+tl.arange(0,2*N))
     r,i=tl.split(tl.reshape(v,(N,2)))
-    r,i=fft_axis_sliced(r,i,WA,N,A,B,LOGA)
+    r,i=fft_axis_sliced(r,i,WA,N,A,B,LOGA,KEEP)
     k=tl.arange(0,N)
     c=tl.load(CROSS+k);d=tl.load(CROSS+N+k)
     rr,ii=r*c-i*d,r*d+i*c
     rr=tl.reshape(tl.trans(tl.reshape(rr,(A,B))),(N,))
     ii=tl.reshape(tl.trans(tl.reshape(ii,(A,B))),(N,))
-    r,i=fft_axis_sliced(rr,ii,WB,N,B,A,LOGB)
+    r,i=fft_axis_sliced(rr,ii,WB,N,B,A,LOGB,KEEP)
     if NATIVE:
         out=tl.zeros((2*N,),tl.float32)
         out=al.insert_slice(out,r,[0],[N],[2])
@@ -155,6 +164,8 @@ def fourstep_sliced_second(T,Y,W,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,LO
 
 @triton.jit
 def pack4(a,b,c,d,N:tl.constexpr):
+    a=tl.reshape(a,(N//4,));b=tl.reshape(b,(N//4,))
+    c=tl.reshape(c,(N//4,));d=tl.reshape(d,(N//4,))
     v=tl.zeros((N,),tl.float32)
     v=al.insert_slice(v,a,[0],[N//4],[1])
     v=al.insert_slice(v,b,[N//4],[N//4],[1])
@@ -296,6 +307,7 @@ def main():
     p.add_argument('--n',type=int,default=2048)
     p.add_argument('--batch',type=int,default=2048)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--keep-slices',action='store_true')
     p.add_argument('--tuning',choices=['default','multi','vec2','singlebuffer','ubsave','flatten'],default='default')
     p.add_argument('--fused-fourstep',action='store_true')
     p.add_argument('--native-interleave',action='store_true')
@@ -330,9 +342,9 @@ def main():
         k=torch.arange(n,dtype=torch.int64)
         angle=-2*math.pi*(k//b)*(k%b)/n
         cross=torch.cat((angle.cos(),angle.sin())).float().npu()
-        ck=fourstep_fused[(batch,)](x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave,**tuning)
+        ck=fourstep_fused[(batch,)](x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave,args.keep_slices,**tuning)
         runner=ck[(batch,1,1)]
-        def launch(): runner(x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave)
+        def launch(): runner(x,y,wa,wb,cross,n,a,b,a.bit_length()-1,b.bit_length()-1,args.native_interleave,args.keep_slices)
     elif args.sliced_fourstep:
         a=args.factor or 64; b=n//a
         assert n%a==0 and a>=4 and b>=4
@@ -401,7 +413,7 @@ def main():
         for _ in range(30): g.replay()
         b.record(); b.synchronize()
         trials.append(a.elapsed_time(b)*1000/30/args.steps/batch)
-    result.update(source_sha256=source_sha,tuning=args.tuning,seed=args.seed,input=args.input,
+    result.update(keep_slices=args.keep_slices,source_sha256=source_sha,tuning=args.tuning,seed=args.seed,input=args.input,
                   all_blocks_parallel=os.environ.get('TRITON_ALL_BLOCKS_PARALLEL'),
                   n=n,batch=batch,factor=args.factor,sliced_fourstep=args.sliced_fourstep,fused_fourstep=args.fused_fourstep,native_interleave=args.native_interleave,autosort=args.autosort,us_per_transform=statistics.median(trials),
                   trials=trials,steps=args.steps,triton=triton.__file__,metadata=str(ck.metadata),
