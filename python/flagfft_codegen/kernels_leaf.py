@@ -2523,13 +2523,20 @@ def _use_thread_local_mixed_leaf(
         return False
     if io_mode.endswith("_strided"):
         return False
-    if io_mode.startswith("bluestein_four_step_"):
+    if io_mode.startswith("bluestein_four_step_") and not (
+        os.getenv("FLAGFFT_CUDA_BLUESTEIN_REGISTER") == "1"
+        and current_profile().backend == "cuda"
+        and four_step_n1 == four_step_n2 == 1024
+        and tuple(plan.factors) == (32, 32)
+    ):
         return False
     if len(plan.factors) != 2:
         return False
     register_radix, cross_radix = plan.factors
     row_modes = {
         "four_step_row",
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_pointwise_row",
         "four_step_real_row",
         "four_step_hermitian_row",
     }
@@ -2537,6 +2544,7 @@ def _use_thread_local_mixed_leaf(
         "four_step_col",
         "four_step_r2c_col",
         "four_step_c2r_col",
+        "bluestein_four_step_finish_col",
     }
     expected_length = four_step_n1 if io_mode in row_modes else four_step_n2
     return (
@@ -2611,6 +2619,8 @@ def _build_thread_local_mixed_four_step_kernel_source(
     io_mode: LeafIoMode,
     four_step_n1: int,
     four_step_n2: int,
+    prime_n: int = 0,
+    bluestein_real_kind: str = "",
 ) -> tuple[str, str]:
     # Each thread owns the first composite register FFT, followed by one
     # shared exchange and a full register-only radix-32 FFT.
@@ -2630,6 +2640,8 @@ def _build_thread_local_mixed_four_step_kernel_source(
     asm_store_constraints = f'"=r,l,{vector_reg},{vector_reg}"'
     row_modes = {
         "four_step_row",
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_pointwise_row",
         "four_step_real_row",
         "four_step_hermitian_row",
     }
@@ -2637,6 +2649,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
         "four_step_col",
         "four_step_r2c_col",
         "four_step_c2r_col",
+        "bluestein_four_step_finish_col",
     }
     if io_mode not in row_modes | col_modes:
         raise ValueError(f"unsupported thread-local four-step I/O mode {io_mode}")
@@ -2654,6 +2667,9 @@ def _build_thread_local_mixed_four_step_kernel_source(
         f"_n{four_step_n1}_{four_step_n2}_l{plan.lanes}_b32_t{smem_chunk}"
         "_v5g_itwsincos_otwrec_nw4"
     )
+
+    if io_mode.startswith("bluestein_four_step_"):
+        kernel_name += f"_p{prime_n}_{bluestein_real_kind or 'complex'}"
 
     body: list[str] = ["@triton.jit", f"def {kernel_name}("]
     for idx, param in enumerate(params):
@@ -2694,7 +2710,35 @@ def _build_thread_local_mixed_four_step_kernel_source(
         body.append(
             f"    src_idx{idx} = input_idx{idx} * {source_stride} + " "four_step_inner"
         )
-        if io_mode == "four_step_real_row":
+        if io_mode == "bluestein_four_step_prepare_row":
+            body.append(f"    prime_mask{idx} = lane_mask & (src_idx{idx} < {prime_n})")
+            if bluestein_real_kind == "r2c":
+                offset = f"four_step_batch * {prime_n} + src_idx{idx}"
+                body.append(f"    r{idx} = tl.load(in_ptr + {offset}, mask=prime_mask{idx}, other=0.0)")
+                body.append(f"    i{idx} = r{idx} * 0.0")
+            else:
+                if bluestein_real_kind == "c2r":
+                    body.append(f"    compact_idx{idx} = tl.minimum(src_idx{idx}, {prime_n} - src_idx{idx})")
+                    offset = f"(four_step_batch * {prime_n // 2 + 1} + compact_idx{idx}) * 2"
+                else:
+                    offset = f"(four_step_batch * {prime_n} + src_idx{idx}) * 2"
+                body.append(f"    input_offset{idx} = {offset}")
+                body.append(f"    r{idx} = tl.load(in_ptr + input_offset{idx}, mask=prime_mask{idx}, other=0.0)")
+                body.append(f"    i{idx} = tl.load(in_ptr + input_offset{idx} + 1, mask=prime_mask{idx}, other=0.0)")
+                if bluestein_real_kind == "c2r":
+                    body.append(f"    i{idx} = tl.where(src_idx{idx} == 0, 0.0, tl.where(src_idx{idx} <= {prime_n // 2}, i{idx}, -i{idx}))")
+            body.append(f"    chirp_r{idx} = tl.load(chirp_ptr + src_idx{idx} * 2, mask=prime_mask{idx}, other=0.0)")
+            body.append(f"    chirp_i{idx} = tl.load(chirp_ptr + src_idx{idx} * 2 + 1, mask=prime_mask{idx}, other=0.0)")
+            body.append(f"    r{idx}, i{idx} = _cmul(r{idx}, i{idx}, chirp_r{idx}, chirp_i{idx})")
+        elif io_mode == "bluestein_four_step_pointwise_row":
+            body.append(f"    input_offset{idx} = (four_step_batch_base + src_idx{idx}) * 2")
+            body.append(f"    ar{idx} = tl.load(in_ptr + input_offset{idx})")
+            body.append(f"    ai{idx} = tl.load(in_ptr + input_offset{idx} + 1)")
+            body.append(f"    br{idx} = tl.load(b_fft_ptr + src_idx{idx} * 2)")
+            body.append(f"    bi{idx} = tl.load(b_fft_ptr + src_idx{idx} * 2 + 1)")
+            body.append(f"    r{idx}, point_i{idx} = _cmul(ar{idx}, ai{idx}, br{idx}, bi{idx})")
+            body.append(f"    i{idx} = -point_i{idx}")
+        elif io_mode == "four_step_real_row":
             body.append(
                 f"    input_offset{idx} = "
                 f"four_step_batch * input_distance + src_idx{idx}"
@@ -2921,7 +2965,22 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    dst_idx{idx} = "
                 f"out_idx{idx} * {four_step_n1} + four_step_inner"
             )
-        if io_mode == "four_step_r2c_col":
+        if io_mode == "bluestein_four_step_finish_col":
+            output_length = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+            body.append(f"    prime_mask{idx} = output_lane_mask & (dst_idx{idx} < {output_length})")
+            body.append(f"    scaled_r{idx} = r{idx} / {four_step_n1 * four_step_n2}")
+            body.append(f"    scaled_i{idx} = -i{idx} / {four_step_n1 * four_step_n2}")
+            body.append(f"    chirp_r{idx} = tl.load(chirp_ptr + dst_idx{idx} * 2, mask=prime_mask{idx}, other=0.0)")
+            body.append(f"    chirp_i{idx} = tl.load(chirp_ptr + dst_idx{idx} * 2 + 1, mask=prime_mask{idx}, other=0.0)")
+            body.append(f"    final_r{idx}, final_i{idx} = _cmul(scaled_r{idx}, scaled_i{idx}, chirp_r{idx}, chirp_i{idx})")
+            if bluestein_real_kind == "c2r":
+                body.append(f"    output_offset{idx} = four_step_batch * {prime_n} + dst_idx{idx}")
+                body.append(f"    tl.store(out_ptr + output_offset{idx}, final_r{idx}, mask=prime_mask{idx})")
+            else:
+                body.append(f"    output_offset{idx} = (four_step_batch * {output_length} + dst_idx{idx}) * 2")
+                body.append(f"    tl.store(out_ptr + output_offset{idx}, final_r{idx}, mask=prime_mask{idx})")
+                body.append(f"    tl.store(out_ptr + output_offset{idx} + 1, final_i{idx}, mask=prime_mask{idx})")
+        elif io_mode == "four_step_r2c_col":
             half_n = four_step_n1 * four_step_n2 // 2 + 1
             body.append(
                 f"    compact_mask{idx} = "
@@ -3003,6 +3062,8 @@ def _build_leaf_kernel_source_for_io(
             io_mode=io_mode,
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
+            prime_n=prime_n,
+            bluestein_real_kind=bluestein_real_kind,
         )
 
     portable_exchange = _portable_leaf_backend_active()

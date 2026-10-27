@@ -2371,3 +2371,42 @@ def test_cuda_fourstep_pack4_matches_launch_and_source(monkeypatch,tmp_path,mode
         assert metadata['num_warps'] == 4
     finally:
         reset_profile(token)
+
+
+@pytest.mark.parametrize('mode', [
+    'bluestein_four_step_prepare_row', 'bluestein_four_step_pointwise_row',
+    'bluestein_four_step_finish_col', 'bluestein_four_step_prepare_row_r2c',
+    'bluestein_four_step_prepare_row_c2r', 'bluestein_four_step_finish_col_r2c',
+    'bluestein_four_step_finish_col_c2r'])
+@pytest.mark.parametrize('dtype', ['complex64','complex128'])
+def test_cuda_register_bluestein_keeps_boundary_abi(monkeypatch,tmp_path,mode,dtype):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    plan=LeafPlan(1024,(32,32),1,32,1,(),1024,dtype=dtype)
+    kwargs=dict(io_mode=mode,prime_n=524287,four_step_n1=1024,four_step_n2=1024)
+    try:
+        monkeypatch.delenv('FLAGFFT_CUDA_BLUESTEIN_REGISTER',raising=False)
+        default_name,default_source=_build_leaf_kernel_source_for_io(plan,**kwargs)
+        monkeypatch.setenv('FLAGFFT_CUDA_BLUESTEIN_REGISTER','1')
+        name,source=_build_leaf_kernel_source_for_io(plan,**kwargs)
+        assert 'thread_local' not in default_name and 'thread_local' in name
+        compile(source,'<cuda-register-bluestein>','exec')
+        # The executor's pointer and twiddle order must remain unchanged.
+        signature=lambda text: text.split('@triton.jit',1)[1].split('):',1)[0].split('(',1)[1]
+        assert signature(default_source)==signature(source)
+        meta=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,
+            arg_names=['in_ptr','out_ptr','nbatch'],plan=plan,kernel_type=mode,n1=1024,n2=1024,dtype=dtype)
+        assert meta['inner_pack']==4 and meta['num_warps']==4
+        if 'prepare' in mode:
+            assert 'prime_mask0' in source and 'chirp_r0' in source
+        elif 'pointwise' in mode:
+            assert 'i0 = -point_i0' in source
+        else:
+            assert 'scaled_i0 = -i0 / 1048576' in source
+            assert 'mask=prime_mask0' in source
+    finally:
+        reset_profile(token)
