@@ -43,8 +43,7 @@ CompiledRawGraphNode::CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inne
     : inner(std::move(inner)) {}
 
 std::string CompiledRawGraphNode::describe() const {
-  return std::string("CompiledRawGraph(captured=") + (graph ? "true" : "false") +
-         ", inner=" + inner->describe() + ")";
+  return "CompiledRawGraph(inner=" + inner->describe() + ")";
 }
 
 flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,

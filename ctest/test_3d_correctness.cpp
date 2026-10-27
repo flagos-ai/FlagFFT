@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flagfft_test.h"
+#include "exec/c_api_internal.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -930,8 +931,10 @@ TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
     ASSERT_EQ(flagfftSetStream(plan.handle, stream.get()), FLAGFFT_SUCCESS);
     // The route is qualified for sm_80. Other CUDA architectures keep their
     // existing dispatch and do not participate in this replay regression.
-    if (std::string(flagfftGetPlanDescription(plan.handle)).find("CompiledRawGraph") ==
-        std::string::npos) GTEST_SKIP() << "graph route not selected on this device";
+    auto *implementation = static_cast<flagfft::FlagFFTPlan *>(plan.handle->impl);
+    auto graph = std::dynamic_pointer_cast<flagfft::CompiledRawGraphNode>(
+        implementation->executable.forward);
+    if (!graph) GTEST_SKIP() << "graph route not selected on this device";
     flagfft::adaptor::Memory inputs[2] = {
         flagfft::adaptor::Memory(bytes), flagfft::adaptor::Memory(bytes)};
     flagfft::adaptor::Memory outputs[2] = {
@@ -950,8 +953,7 @@ TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
                               static_cast<flagfftComplex *>(destination.data()),
                               FLAGFFT_FORWARD), FLAGFFT_SUCCESS);
       stream.sync();
-      EXPECT_NE(std::string(flagfftGetPlanDescription(plan.handle)).find("captured=true"),
-                std::string::npos);
+      EXPECT_NE(graph->graph, nullptr);
       destination.copy_to_host(output.data(), bytes);
       for (int b = 0; b < batch; ++b) {
         for (int i = 0; i < total; ++i) {
