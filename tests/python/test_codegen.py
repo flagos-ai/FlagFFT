@@ -182,31 +182,48 @@ def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     assert "nbatch" in source
 
 
-def test_permuted_store_launch_grid_matches_generated_batch_pack(kernels, jit_source, tmp_path) -> None:
-    plan = kernels.LeafPlan(
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("io_mode,kernel_type", [
+    ("permuted_store", "leaf_permuted_store"),
+    ("strided_permuted_store", "leaf_strided_permuted_store"),
+    ("permuted_store_r2c", "leaf_r2c_permuted_store"),
+])
+@pytest.mark.parametrize("factors,lanes,warps", [((16, 16), 16, 1), ((4, 4, 4, 4), 64, 2)])
+def test_permuted_store_launch_grid_matches_generated_batch_pack(
+    tmp_path, dtype, io_mode, kernel_type, factors, lanes, warps
+) -> None:
+    # Source generation and launch metadata are CPU-only contracts. These
+    # checks must also run on a controller without Triton installed.
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+
+    plan = LeafPlan(
         length=256,
-        factors=(4, 4, 4, 4),
+        factors=factors,
         remainder=1,
-        lanes=64,
-        num_warps=2,
+        lanes=lanes,
+        num_warps=warps,
         generic_radices=(),
         smem_size=256,
+        dtype=dtype,
     )
-    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
-        plan, io_mode="permuted_store", perm_form="outer"
+    kernel_name, source = _build_leaf_kernel_source_for_io(
+        plan, io_mode=io_mode, perm_form="outer"
     )
-    metadata = jit_source._metadata(
+    metadata = _metadata(
         module_path=tmp_path / "unused.py",
         kernel_name=kernel_name,
         arg_names=["in_ptr", "out_ptr", "nbatch", "perm_span"],
         plan=plan,
-        kernel_type="leaf_permuted_store",
+        kernel_type=kernel_type,
         n1=0,
         n2=0,
         dtype=plan.dtype,
     )
 
     assert metadata["batch_per_block"] == 4
+    assert metadata["num_warps"] == max(warps, lanes * 4 // 32)
     assert "batch_id = pid * 4" in source
 
 

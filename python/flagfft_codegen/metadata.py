@@ -157,7 +157,8 @@ def _metadata(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )
     elif kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"} and (
-        _ix_backend_active()
+        current_profile().backend == "cuda"
+        or _ix_backend_active()
         or (
             _npu_backend_active()
             and os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_STORE") == "1"
