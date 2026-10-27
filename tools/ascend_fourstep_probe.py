@@ -13,6 +13,7 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
+import triton.experimental.tle.language as tle
 
 
 @triton.jit
@@ -37,7 +38,7 @@ def merge4(a, b, c, d, N: tl.constexpr, SPAN: tl.constexpr):
 
 
 @triton.jit
-def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr):
+def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr, SORT:tl.constexpr=False):
     x0r, x1r, x2r, x3r = split4(r, N, SPAN)
     x0i, x1i, x2i, x3i = split4(i, N, SPAN)
     t0r, t0i = x0r+x2r, x0i+x2i
@@ -61,8 +62,39 @@ def stage4(r, i, W, N: tl.constexpr, SPAN: tl.constexpr, S: tl.constexpr):
         g3r, g3i = a3r*w3r-a3i*w3i, a3r*w3i+a3i*w3r
     else:
         g1r, g1i, g2r, g2i, g3r, g3i = a1r, a1i, a2r, a2i, a3r, a3i
+    if SORT:
+        return pack4(g0r,g1r,g2r,g3r,N), pack4(g0i,g1i,g2i,g3i,N)
     return (merge4(g0r,g1r,g2r,g3r,N,SPAN),
             merge4(g0i,g1i,g2i,g3i,N,SPAN))
+
+
+@triton.jit
+def pack4(a,b,c,d,N:tl.constexpr):
+    v=tl.zeros((N,),tl.float32)
+    v=tle.dsa.insert_slice(v,a,[0],[N//4],[1])
+    v=tle.dsa.insert_slice(v,b,[N//4],[N//4],[1])
+    v=tle.dsa.insert_slice(v,c,[N//2],[N//4],[1])
+    return tle.dsa.insert_slice(v,d,[3*N//4],[N//4],[1])
+
+
+@triton.jit
+def fft_autosort(X,Y,W,N:tl.constexpr,LOGN:tl.constexpr):
+    bid=tl.program_id(0)
+    v=tl.load(X+bid*2*N+tl.arange(0,2*N))
+    r,i=tl.split(tl.reshape(v,(N,2)))
+    for s in tl.static_range(0,LOGN//2):
+        r,i=stage4(r,i,W,N,N//4**s,s,True)
+    if LOGN%2:
+        ar,br=tl.split(tl.reshape(r,(N//2,2)))
+        ai,bi=tl.split(tl.reshape(i,(N//2,2)))
+        rr=tl.zeros((N,),tl.float32)
+        ii=tl.zeros((N,),tl.float32)
+        rr=tle.dsa.insert_slice(rr,ar+br,[0],[N//2],[1])
+        r=tle.dsa.insert_slice(rr,ar-br,[N//2],[N//2],[1])
+        ii=tle.dsa.insert_slice(ii,ai+bi,[0],[N//2],[1])
+        i=tle.dsa.insert_slice(ii,ai-bi,[N//2],[N//2],[1])
+    out=tl.reshape(tl.join(r,i),(2*N,))
+    tl.store(Y+bid*2*N+tl.arange(0,2*N),out)
 
 
 @triton.jit
@@ -179,6 +211,7 @@ def main():
     p.add_argument('--n',type=int,default=2048)
     p.add_argument('--batch',type=int,default=2048)
     p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--autosort',action='store_true')
     p.add_argument('--factor',type=int,default=0,help='first FFT length; 0 uses one kernel')
     p.add_argument('--steps',type=int,default=16)
     p.add_argument('--rounds',type=int,default=5)
@@ -188,7 +221,11 @@ def main():
     torch.manual_seed(20261027)
     cpu=torch.randn(batch,n,2)
     x=cpu.npu(); y=torch.full_like(x,float('nan')); w=twiddles(n)
-    if args.factor:
+    if args.autosort:
+        ck=fft_autosort[(batch,)](x,y,w,n,n.bit_length()-1)
+        runner=ck[(batch,1,1)]
+        def launch(): runner(x,y,w,n,n.bit_length()-1)
+    elif args.factor:
         a=args.factor; b=n//a
         assert n%a==0 and a>=4 and b>=4
         wa,wb=axis_twiddles(n,a,b),axis_twiddles(n,b,1)
@@ -238,7 +275,7 @@ def main():
         for _ in range(30): g.replay()
         b.record(); b.synchronize()
         trials.append(a.elapsed_time(b)*1000/30/args.steps/batch)
-    result.update(n=n,batch=batch,factor=args.factor,us_per_transform=statistics.median(trials),
+    result.update(n=n,batch=batch,factor=args.factor,autosort=args.autosort,us_per_transform=statistics.median(trials),
                   trials=trials,steps=args.steps,triton=triton.__file__,metadata=str(ck.metadata),
                   replay_pass=True)
     args.output.write_text(json.dumps(result,indent=2)+'\n')
