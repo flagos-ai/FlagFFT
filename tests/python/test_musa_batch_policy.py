@@ -49,6 +49,20 @@ def test_musa_1d_batch_pack_is_scoped_resource_bounded_and_matches_metadata(
         assert f"batch_id = pid * {expected_pack}" in source
         assert metadata["batch_per_block"] == expected_pack
 
+        monkeypatch.setenv("FLAGFFT_MUSA_1D_BATCH_PACK", "1")
+        monkeypatch.setenv("FLAGFFT_MUSA_1D_BATCH_WARPS", "2")
+        metadata = _metadata(
+            module_path=Path("unused.py"),
+            kernel_name=name,
+            arg_names=[],
+            plan=plan,
+            kernel_type="leaf",
+            n1=0,
+            n2=0,
+            dtype=dtype,
+        )
+        assert metadata["num_warps"] == 2
+
         monkeypatch.setenv("FLAGFFT_MUSA_1D_BATCH_PACK", "2")
         assert contiguous_batch_pack_for(plan) == 2
         _, source = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")

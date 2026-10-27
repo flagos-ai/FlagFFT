@@ -207,8 +207,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   if (musa_1d_batch_policy_) {
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
+    const char *batch_warps = std::getenv("FLAGFFT_MUSA_1D_BATCH_WARPS");
     cache_key += ";musa-1d-batch=1;pack=" +
-        std::string(batch_pack != nullptr ? batch_pack : "auto");
+        std::string(batch_pack != nullptr ? batch_pack : "auto") + ";warps=" +
+        std::string(batch_warps != nullptr ? batch_warps : "auto");
   }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");

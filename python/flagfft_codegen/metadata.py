@@ -48,6 +48,7 @@ from .registry import (
     STRIDED_FOUR_STEP_KERNELS,
     is_four_step_twiddle_eligible,
 )
+from .target import musa_1d_batch_default_enabled
 
 
 def _pointer_signature(dtype: str) -> str:
@@ -277,6 +278,14 @@ def _metadata(
         # normal leaf. Four warps caused a large batch-64 regression on V150;
         # the measured two-warp launch retains the one-kernel benefit.
         num_warps = 2
+    if (profile.backend == "musa" and musa_1d_batch_default_enabled()
+            and plan.length == 1024):
+        warp_override = os.getenv("FLAGFFT_MUSA_1D_BATCH_WARPS", "auto")
+        if warp_override not in {"auto", "1", "2", "4", "8"}:
+            raise ValueError("FLAGFFT_MUSA_1D_BATCH_WARPS must be auto, 1, 2, 4 or 8")
+        if warp_override != "auto":
+            num_warps = int(warp_override)
+            profile.validate(num_warps)
     if profile.backend == "hcu" and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store"}:
         is_final_axis = "permuted_store_outer_last_" in kernel_name
         is_middle_axis = "permuted_store_inner_" in kernel_name
