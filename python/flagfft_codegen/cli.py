@@ -65,6 +65,7 @@ from .target import (
     set_codegen_target,
     set_maca_1d_single_default,
     set_maca_1d_batch_default,
+    set_musa_1d_batch_default,
     set_maca_2d_single_default,
     set_maca_3d_default,
     set_maca_3d_c2c32_single_cube,
@@ -175,6 +176,8 @@ def main() -> None:
     )
     parser.add_argument("--maca-1d-batch", action="store_true",
                         help="enable measured MACA rank-1 batch-64 code-generation defaults")
+    parser.add_argument("--musa-1d-batch", action="store_true",
+                        help="enable scoped MUSA rank-1 batched-leaf packing")
     parser.add_argument("--ix-ct-single", action="store_true",
                         help="enable the scoped IX FP32 portable single policy")
     parser.add_argument("--ix-ct-batch", action="store_true",
@@ -214,6 +217,7 @@ def main() -> None:
     set_codegen_target(args.target)
     set_maca_1d_single_default(args.maca_1d_single)
     set_maca_1d_batch_default(args.maca_1d_batch)
+    set_musa_1d_batch_default(args.musa_1d_batch)
     from .target import (set_ix_ct_single_default, set_ix_ct_batch_default,
                          set_ix_ct_single_tle_default, set_ix_real_single_pack)
     set_ix_ct_single_default(args.ix_ct_single)
@@ -279,6 +283,11 @@ def main() -> None:
         if permuted_pack not in {"auto", "1", "2", "4", "8"}:
             parser.error("FLAGFFT_MUSA_3D_PACK must be auto, 1, 2, 4 or 8")
         profile_dir += f"-musa-3d-pair-store-{pair_store}-pack-{permuted_pack}"
+        if args.musa_1d_batch:
+            batch_pack = os.getenv("FLAGFFT_MUSA_1D_BATCH_PACK", "auto")
+            if batch_pack not in {"auto", "1", "2", "4", "8"}:
+                parser.error("FLAGFFT_MUSA_1D_BATCH_PACK must be auto, 1, 2, 4 or 8")
+            profile_dir += f"-musa-1d-batch-pack-{batch_pack}"
     if profile.backend == "hcu":
         pair_store = os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")

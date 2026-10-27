@@ -31,6 +31,7 @@ from .target import (
     ix_real_single_pack_enabled,
     maca_1d_single_default_enabled,
     maca_1d_batch_default_enabled,
+    musa_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
     maca_3d_default_enabled,
     maca_3d_c2c32_single_cube_enabled,
@@ -473,6 +474,17 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
             return int(middle_batch_pack)
     if real_boundary and plan.length == 210 and ix_real_single_pack_enabled():
         return 1
+    if (_mthreads_backend_active() and musa_1d_batch_default_enabled()
+            and plan.length == 1024):
+        override = os.getenv("FLAGFFT_MUSA_1D_BATCH_PACK", "auto")
+        if override not in {"auto", "1", "2", "4", "8"}:
+            raise ValueError("FLAGFFT_MUSA_1D_BATCH_PACK must be auto, 1, 2, 4 or 8")
+        requested_pack = 4 if override == "auto" else int(override)
+        profile = current_profile()
+        resource_limit = profile.max_dynamic_shared_memory or _LEAF_PACK_SMEM_BUDGET_BYTES
+        bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
+        resource_pack = _floor_power_of_two(max(1, resource_limit // bytes_per_fft))
+        return min(requested_pack, resource_pack)
     if _portable_leaf_backend_active():
         override = _maca_knob("BATCH_PACK")
         if override == "auto":

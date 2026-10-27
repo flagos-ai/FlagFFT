@@ -1695,6 +1695,7 @@ class TritonCompiler {
 
   bool maca_1d_single_policy_ = false;
   bool maca_1d_batch_policy_ = false;
+  bool musa_1d_batch_policy_ = false;
   bool maca_2d_single_policy_ = false;
   bool maca_3d_policy_ = false;
   bool maca_3d_c2c32_single_cube_policy_ = false;

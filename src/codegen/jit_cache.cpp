@@ -205,6 +205,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  if (musa_1d_batch_policy_) {
+    const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
+    cache_key += ";musa-1d-batch=1;pack=" +
+        std::string(batch_pack != nullptr ? batch_pack : "auto");
+  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
@@ -545,6 +550,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_ct_batch_policy_) jit_command << " --ix-ct-batch";
   if (ix_real_single_pack_) jit_command << " --ix-real-single-pack";
   if (ix_ct_single_tle_policy_) jit_command << " --ix-ct-single-tle " << ix_ct_single_tle_policy_;
+  if (musa_1d_batch_policy_) jit_command << " --musa-1d-batch";
 #if defined(BACKEND_MACA)
   jit_command << " --compile-script "
               << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());
