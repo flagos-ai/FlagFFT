@@ -278,6 +278,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const char *padding = std::getenv("FLAGFFT_CUDA_PERMSTORE_PAD");
     cache_key += ";cuda-permstore-pack=" + std::string(pack ? pack : "auto");
     cache_key += ";cuda-permstore-pad=" + std::string(padding ? padding : "1");
+    const char *vector_store = std::getenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE");
+    cache_key += ";cuda-permstore-vec=" + std::string(vector_store ? vector_store : "0");
   }
   KernelCacheState &state = kernel_cache_state();
   {

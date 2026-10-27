@@ -2218,3 +2218,22 @@ def test_maca_portable_exchange_indexes_the_register_layout(
     source_index = namespace["exchange_src"]
     assert np.array_equal(source_index[valid] // lane_pack, namespace["exchange_codelet"][valid])
     assert np.array_equal(source_index[valid] % lane_pack, namespace["exchange_slot"][valid])
+
+
+@pytest.mark.parametrize("pack", [1, 4])
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_cuda_permuted_store_vector_preserves_mask_and_pair_address(monkeypatch, pack, dtype):
+    from flagfft_codegen.kernels_leaf import _emit_permuted_store
+
+    monkeypatch.setenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE", "1")
+    lines = _emit_permuted_store("    ", 1, (16, 16), pack, 16, dtype, compact_length=129)
+    source = "\n".join(lines)
+    compile("def generated():\n" + source, "<permuted-store>", "exec")
+    assert ("st.global.v2.f64" if dtype == "complex128" else "st.global.v2.f32") in source
+    assert "out_ptr + perm_addr1 * 2" in source
+    assert "< 129" in source
+    assert "is_pure=False" in source
+    assert ("tl.trans" in source) == (pack > 1)
+    monkeypatch.delenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE")
+    assert "st.global.v2" not in "\n".join(
+        _emit_permuted_store("    ", 1, (16, 16), pack, 16, dtype, compact_length=129))

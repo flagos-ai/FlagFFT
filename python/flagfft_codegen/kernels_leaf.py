@@ -546,6 +546,8 @@ def _emit_permuted_store(
     """
     offset = digit * math.prod(factors[: len(factors) - 1])
     base = "output_base_lane" if offset == 0 else f"(output_base_lane + {offset})"
+    vector_store = (current_profile().backend == "cuda" and
+                    os.getenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE") == "1")
     if pack == 1:
         # A one-slot tile has no real batch dimension.  Avoid materializing a
         # degenerate (lane, 1) transpose: MUSA's legacy lowering can associate
@@ -555,6 +557,10 @@ def _emit_permuted_store(
         mask = "lane_mask"
         if compact_length is not None:
             mask = f"lane_mask & ({base} < {compact_length})"
+        if vector_store:
+            return [f"{indent}perm_addr{digit} = {address}"] + _emit_vectorized_complex_store(
+                indent, f"out_ptr + perm_addr{digit} * 2", f"r{digit}", f"i{digit}", mask, dtype
+            )
         if _packed_maca_fp32_complex_io(dtype):
             return [
                 f"{indent}perm_addr{digit} = {address}",
@@ -592,6 +598,14 @@ def _emit_permuted_store(
         (_mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1")
         or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1") == "1")
     )
+    if vector_store:
+        return [
+            f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
+            f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
+            f"{indent}perm_addr{digit} = {address}",
+        ] + _emit_vectorized_complex_store(
+            indent, f"out_ptr + perm_addr{digit} * 2", f"zr{digit}", f"zi{digit}", mask, dtype
+        )
     if pair_store:
         return [
             f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",

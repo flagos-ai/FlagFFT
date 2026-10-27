@@ -2436,6 +2436,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.origin_rank == 3 && request.input_dtype == "complex64" &&
         bluestein->length == 997 && leaf != nullptr && ix_3d_boundary != nullptr &&
         std::string(ix_3d_boundary) == "1";
+    const bool use_cuda_boundary_leaf =
+        request.device_type == "cuda" && request.device_arch == "sm_80" &&
+        leaf != nullptr && bluestein->conv_length <= 4096 && batch == chunk_batch &&
+        flag_or_default("FLAGFFT_CUDA_BLUESTEIN_BOUNDARY", false);
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
@@ -2463,7 +2467,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
-    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf) {
+    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf) {
       DeviceAllocation work_buf =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
       return std::make_shared<CompiledRawBluesteinLeafNode>(
@@ -4136,7 +4140,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                           (hcu_hybrid_override == nullptr || std::string(hcu_hybrid_override) != "0");
   const bool portable_hybrid = fused_3d_store_enabled() && elongated_3d &&
                                (musa_hybrid || hcu_hybrid);
-  if (n2_leaf && n0_leaf && (portable_hybrid || ix_hybrid)) {
+  const bool cuda_hybrid = request.device_type == "cuda" && request.device_arch == "sm_80" &&
+                           elongated_3d && flag_or_default("FLAGFFT_CUDA_3D_HYBRID", false);
+  if (n2_leaf && n0_leaf && (portable_hybrid || ix_hybrid || cuda_hybrid)) {
     const char *first_transpose_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_FIRST_TRANSPOSE");
     const bool first_transpose = request.device_type == "hcu" &&
                                  first_transpose_override != nullptr &&
@@ -4194,7 +4200,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // the chain because the per-axis transforms commute and only the final
   // layout has to be the natural one.  Small cubes keep the strided path
   // below, whose win there is already established, so the two are disjoint.
-  if (n2_leaf && n1_leaf && n0_leaf && fused_3d_store_enabled() &&
+  // The inner-store chain is currently validated only for cubes on CUDA.
+  // Elongated shapes use the hybrid chain above with an explicit transpose.
+  const bool cuda_fused_shape = request.device_type != "cuda" || (n0 == n1 && n1 == n2);
+  if (n2_leaf && n1_leaf && n0_leaf && cuda_fused_shape && fused_3d_store_enabled() &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_LAST_TRANSPOSE");
     const bool last_transpose_default = request.device_type == "hcu" &&
