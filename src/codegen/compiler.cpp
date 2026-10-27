@@ -1585,7 +1585,8 @@ namespace {
         !request.packed_real_child && request.fft_length == request.requested_n &&
         request.requested_n == bluestein->length && !request.input_strides.empty() &&
         request.input_strides.back() == 1 &&
-        (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
+        (request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z" ||
+         request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d") &&
         flag_or_default("FLAGFFT_CUDA_REAL_BLUESTEIN", false);
     if (cuda_real) {
       if (std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan))
@@ -1834,7 +1835,8 @@ namespace {
                                  (ix_setting == nullptr || std::string(ix_setting) != "0");
     const bool cuda_target = request.device_type == "cuda" && request.device_arch == "sm_80" &&
                              request.origin_rank <= 1 && batch == request.batch &&
-                             (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
+                             (request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z" ||
+                              request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d") &&
                              flag_or_default("FLAGFFT_CUDA_REAL_DIRECT_DFT", false);
     return request.raw_dim == 1 &&
            ((request.device_type == "maca" && (single_target || batch_target)) || ix_batch_target || cuda_target) &&
@@ -2379,12 +2381,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node)) {
     const std::string real_kind = use_fused_prime_real_bluestein(node, request, batch)
-                                      ? request.real_transform_kind : "";
-    auto make_real_layout_fallback = [node, request, batch]() -> std::shared_ptr<CompiledRawNode> {
+        ? ((request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z") ? "r2c" : "c2r")
+        : "";
+    auto make_real_layout_fallback = [node, request, batch, real_kind]() -> std::shared_ptr<CompiledRawNode> {
       FFTRequest fallback_request = request;
       fallback_request.real_transform_kind.clear();
       TritonCompiler compiler;
-      return request.real_transform_kind == "r2c"
+      return real_kind == "r2c"
                  ? compiler.compile_raw_r2c_node(node, fallback_request, batch, false)
                  : compiler.compile_raw_c2r_node(node, fallback_request, batch, false);
     };
