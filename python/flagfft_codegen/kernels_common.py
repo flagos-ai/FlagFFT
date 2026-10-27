@@ -548,6 +548,17 @@ def permuted_store_batch_pack_for(
         1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
     )
     target_pack = 2 if _mthreads_backend_active() and _is_double_dtype(plan.dtype) else 4
+    if _declared_backend() == "cuda":
+        override = os.getenv("FLAGFFT_CUDA_PERMSTORE_PACK", "auto")
+        if override != "auto":
+            if override not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError("FLAGFFT_CUDA_PERMSTORE_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+            target_pack = int(override)
+            padding = os.getenv("FLAGFFT_CUDA_PERMSTORE_PAD", "1")
+            if padding not in {"0", "1"}:
+                raise ValueError("FLAGFFT_CUDA_PERMSTORE_PAD must be 0 or 1")
+            cuda_bytes_per_fft = 4 * (plan.smem_size + int(padding)) * _real_element_bytes(plan.dtype)
+            smem_pack = max(1, profile.shared_budget(128 * 1024) // cuda_bytes_per_fft)
     # On C550, pack=8 (2 warps / 128 threads) measured about 1% faster than
     # pack=16 (4 warps / 256 threads) for the validated 128x2048x64 C2C
     # first-store path, across single/batch and both directions. The smaller

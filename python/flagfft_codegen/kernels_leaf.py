@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import os
+from .backend_profile import current_profile
 from typing import Literal
 
 from .kernels_common import (
@@ -3098,6 +3099,14 @@ def _build_leaf_kernel_source_for_io(
         lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    if current_profile().backend == "cuda" and io_mode in {
+        "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
+    }:
+        padding = os.getenv("FLAGFFT_CUDA_PERMSTORE_PAD", "1")
+        if padding not in {"0", "1"}:
+            raise ValueError("FLAGFFT_CUDA_PERMSTORE_PAD must be 0 or 1")
+        if padding == "0":
+            smem_slot_stride = plan.smem_size
     smem_n = lane_block_for(smem_slot_stride * smem_pack)
     params = _leaf_kernel_params_for_io(
         plan,

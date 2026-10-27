@@ -264,6 +264,32 @@ def test_cuda_2d_transpose_layout_selection(tmp_path, monkeypatch, dtype, mode) 
     assert ("tl.pointer_type(tl.uint64)" in source) == (mode == "packed")
 
 
+@pytest.mark.parametrize("pack", [4, 8, 16])
+@pytest.mark.parametrize("pad", [0, 1])
+def test_cuda_permuted_store_resource_and_grid_agree(tmp_path, monkeypatch, pack, pad) -> None:
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+
+    monkeypatch.setenv("FLAGFFT_CUDA_PERMSTORE_PACK", str(pack))
+    monkeypatch.setenv("FLAGFFT_CUDA_PERMSTORE_PAD", str(pad))
+    plan = LeafPlan(length=256, factors=(16, 16), remainder=1, lanes=16, num_warps=1,
+                    generic_radices=(), smem_size=256, dtype="complex128")
+    name, source = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store", perm_form="outer")
+    meta = _metadata(module_path=tmp_path / 'unused.py', kernel_name=name,
+                     arg_names=['in_ptr', 'out_ptr', 'nbatch', 'perm_span'], plan=plan,
+                     kernel_type='leaf_permuted_store', n1=0, n2=0, dtype=plan.dtype)
+    # A requested pack can be capped by the shared-memory budget. Source and
+    # launch metadata must use that same capped value.
+    selected = meta['batch_per_block']
+    assert selected == (pack if not pad else min(pack, 8))
+    assert f'batch_id = pid * {selected}' in source
+    slots = (256 + pad) * selected
+    allocation = 1 << (slots - 1).bit_length()
+    assert f'tle.gpu.alloc([{allocation}]' in source
+    assert meta['num_warps'] == max(1, 16 * selected // 32)
+
+
 @pytest.mark.parametrize("pack", [1, 4])
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 def test_maca_packed_permuted_store_is_fp32_only(

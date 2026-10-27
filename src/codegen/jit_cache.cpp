@@ -270,6 +270,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const char *transpose = std::getenv("FLAGFFT_CUDA_2D_TRANSPOSE");
     cache_key += ";cuda-2d-transpose=" + std::string(transpose ? transpose : "auto");
   }
+  if (adaptor::backend_name() == "cuda" &&
+      (key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafStridedPermutedStore ||
+       key.kind == KernelKind::LeafR2CPermutedStore)) {
+    const char *pack = std::getenv("FLAGFFT_CUDA_PERMSTORE_PACK");
+    const char *padding = std::getenv("FLAGFFT_CUDA_PERMSTORE_PAD");
+    cache_key += ";cuda-permstore-pack=" + std::string(pack ? pack : "auto");
+    cache_key += ";cuda-permstore-pad=" + std::string(padding ? padding : "1");
+  }
   KernelCacheState &state = kernel_cache_state();
   {
     std::lock_guard<std::mutex> lock(state.mutex);
