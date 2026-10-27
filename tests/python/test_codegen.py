@@ -2410,3 +2410,58 @@ def test_cuda_register_bluestein_keeps_boundary_abi(monkeypatch,tmp_path,mode,dt
             assert 'mask=prime_mask0' in source
     finally:
         reset_profile(token)
+
+
+@pytest.mark.parametrize('factors', [(16,16),(16,32),(32,16)])
+@pytest.mark.parametrize('direction', ['forward','inverse'])
+def test_cuda_power2_register_routes_match_numpy(factors,direction):
+    import numpy as np
+    from pathlib import Path
+    from flagfft_codegen import kernels_leaf as leaf
+    # Execute the emitted register arithmetic on CPU arrays, including its
+    # radix-32 input permutation and the exchange between the two codelets.
+    env={}
+    code=(Path(leaf.__file__).parent/'codelet/radix16.py').read_text().replace('@triton.jit','')
+    exec(code,env)
+    def codelet(values):
+        radix=len(values)
+        order=[2*(i%16)+i//16 for i in range(radix)] if radix==32 else list(range(radix))
+        scope=dict(env,_cmul=lambda ar,ai,br,bi:(ar*br-ai*bi,ar*bi+ai*br))
+        for i,j in enumerate(order):scope['r'+str(i)],scope['i'+str(i)]=values[j].real.copy(),values[j].imag.copy()
+        lines=leaf._emit_radix16_codelet_call('',direction) if radix==16 else leaf._emit_local_radix32_codelet_call('',direction)
+        exec('\n'.join(lines),scope)
+        return np.stack([scope['r'+str(i)]+1j*scope['i'+str(i)] for i in range(radix)])
+    register,cross=factors
+    rng=np.random.default_rng(25)
+    values=rng.normal(size=register*cross)+1j*rng.normal(size=register*cross)
+    first=codelet(values.reshape(register,cross))
+    sign=-1 if direction=='forward' else 1
+    first *= np.exp(sign*2j*np.pi*np.arange(register)[:,None]*np.arange(cross)[None,:]/len(values))
+    result=codelet(first.T).reshape(-1)
+    expected=np.fft.fft(values) if direction=='forward' else np.fft.ifft(values)*len(values)
+    np.testing.assert_allclose(result,expected,rtol=1e-12,atol=1e-12)
+
+
+@pytest.mark.parametrize('factors', [(16,16),(16,32),(32,16)])
+@pytest.mark.parametrize('mode', ['four_step_row','four_step_col','four_step_real_row','four_step_hermitian_row','four_step_r2c_col','four_step_c2r_col'])
+def test_cuda_power2_register_source_masks_short_physical_lanes(monkeypatch,tmp_path,factors,mode):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    monkeypatch.setenv('FLAGFFT_CUDA_POWER2_REGISTER','1')
+    n=__import__('math').prod(factors)
+    plan=LeafPlan(n,factors,1,32,2,(),n,dtype='complex128')
+    try:
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=n,four_step_n2=n)
+        compile(source,'<cuda-power2-register>','exec')
+        assert 'thread_local' in name
+        assert f'input_lane_mask = lane_mask & (fft_thread < {factors[1]})' in source
+        metadata=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,arg_names=['in_ptr','out_ptr','nbatch'],
+            plan=plan,kernel_type=mode,n1=n,n2=n,dtype=plan.dtype)
+        assert metadata['inner_pack']==4 and metadata['num_warps']==4
+        assert metadata['tle_fused_twiddle']
+    finally:
+        reset_profile(token)

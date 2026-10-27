@@ -967,7 +967,9 @@ def _bounded_inner_pack(
 
 def _cuda_four_step_pack_four(plan: LeafPlan | None) -> bool:
     profile = current_profile()
-    return (profile.backend == "cuda" and os.getenv("FLAGFFT_CUDA_FOURSTEP_PACK4") == "1"
+    return (profile.backend == "cuda" and (os.getenv("FLAGFFT_CUDA_FOURSTEP_PACK4") == "1"
+            or (os.getenv("FLAGFFT_CUDA_POWER2_REGISTER") == "1" and plan is not None
+                and len(plan.factors)==2 and all(r in {16,32} for r in plan.factors)))
             and plan is not None and plan.length <= 1024 and plan.smem_size <= 1024
             and profile.max_dynamic_shared_memory is not None
             and profile.max_dynamic_shared_memory >= 128 * 1024)
@@ -1040,6 +1042,9 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     loading the precomputed twiddle table in the row pass instead of issuing
     the same reads with the strided column access pattern.
     """
+    if (current_profile().backend == "cuda" and os.getenv("FLAGFFT_CUDA_POWER2_REGISTER") == "1"
+            and n1 in {256,512,1024} and n2 in {256,512,1024}):
+        return True
     if _portable_leaf_backend_active():
         return False
     return use_tle_fused_twiddle(n1, n2, dtype) or (

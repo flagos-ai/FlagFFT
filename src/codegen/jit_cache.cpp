@@ -268,6 +268,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                                          std::string(packed) == "1" ? "1" : "0");
   }
   if (adaptor::backend_name() == "cuda") {
+    const char *power_register = std::getenv("FLAGFFT_CUDA_POWER2_REGISTER");
+    cache_key += ";cuda-power2-register=" + std::string(power_register ? power_register : "0");
     const char *blue_register = std::getenv("FLAGFFT_CUDA_BLUESTEIN_REGISTER");
     cache_key += ";cuda-bluestein-register=" + std::string(blue_register ? blue_register : "0");
     const char *fourstep_pack = std::getenv("FLAGFFT_CUDA_FOURSTEP_PACK4");

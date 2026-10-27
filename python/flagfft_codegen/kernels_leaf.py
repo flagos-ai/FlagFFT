@@ -2533,6 +2533,9 @@ def _use_thread_local_mixed_leaf(
     if len(plan.factors) != 2:
         return False
     register_radix, cross_radix = plan.factors
+    power2_register = (current_profile().backend == "cuda"
+        and os.getenv("FLAGFFT_CUDA_POWER2_REGISTER") == "1"
+        and register_radix in {16,32} and cross_radix in {16,32})
     row_modes = {
         "four_step_row",
         "bluestein_four_step_prepare_row",
@@ -2550,8 +2553,8 @@ def _use_thread_local_mixed_leaf(
     return (
         io_mode in row_modes | col_modes
         and plan.dtype in {"complex64", "complex128"}
-        and register_radix in _THREAD_LOCAL_MIXED_RADICES
-        and cross_radix == 32
+        and (register_radix in _THREAD_LOCAL_MIXED_RADICES or power2_register)
+        and (cross_radix == 32 or power2_register)
         and plan.length == register_radix * cross_radix
         and plan.length == expected_length
         and (
@@ -2624,7 +2627,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
 ) -> tuple[str, str]:
     # Each thread owns the first composite register FFT, followed by one
     # shared exchange and a full register-only radix-32 FFT.
-    register_radix = plan.factors[0]
+    register_radix, cross_radix = plan.factors
     inner_pack = 4
     physical_lanes = 32
     vector_block = physical_lanes * inner_pack
@@ -2663,7 +2666,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
     )
     kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
     kernel_name = (
-        f"{io_mode}_{kernel_prefix}_kernel_{register_radix}_32_thread_local"
+        f"{io_mode}_{kernel_prefix}_kernel_{register_radix}_{cross_radix}_thread_local"
         f"_n{four_step_n1}_{four_step_n2}_l{plan.lanes}_b32_t{smem_chunk}"
         "_v5g_itwsincos_otwrec_nw4"
     )
@@ -2688,6 +2691,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
             "    four_step_inner = four_step_inner_base + inner_slot",
             f"    lane_mask = four_step_inner < {inner_count}",
             f"    output_lane_mask = lane_mask & (fft_thread < {register_radix})",
+            f"    input_lane_mask = lane_mask & (fft_thread < {cross_radix})",
             f"    smem_offset = inner_slot * {plan.smem_size}",
             (
                 f"    four_step_batch_base = "
@@ -2706,7 +2710,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
 
     for idx in range(register_radix):
         input_digit = 2 * (idx % 16) + idx // 16 if register_radix == 32 else idx
-        body.append(f"    input_idx{idx} = fft_thread + {32 * input_digit}")
+        body.append(f"    input_idx{idx} = fft_thread + {cross_radix * input_digit}")
         body.append(
             f"    src_idx{idx} = input_idx{idx} * {source_stride} + " "four_step_inner"
         )
@@ -2743,7 +2747,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    input_offset{idx} = "
                 f"four_step_batch * input_distance + src_idx{idx}"
             )
-            body.append(f"    r{idx} = tl.load(in_ptr + input_offset{idx})")
+            body.append(f"    r{idx} = tl.load(in_ptr + input_offset{idx}, mask=input_lane_mask, other=0.0)")
             body.append(f"    i{idx} = r{idx} * 0.0")
         elif io_mode == "four_step_hermitian_row":
             full_n = four_step_n1 * four_step_n2
@@ -2759,13 +2763,17 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    input_offset{idx} = "
                 f"(four_step_batch * input_distance + compact_idx{idx}) * 2"
             )
-            body.append(
-                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
-                f"{asm_load_constraints}, "
-                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
-            )
+            if cross_radix < 32:
+                body.extend(_emit_vectorized_complex_load("    ", f"in_ptr + input_offset{idx}",
+                    "input_lane_mask", f"r{idx}, i{idx}", plan.dtype))
+            else:
+                body.append(
+                    f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+                    f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                    f"{asm_load_constraints}, "
+                    f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+                    f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                )
             body.append(
                 f"    i{idx} = tl.where(src_idx{idx} < {half_n}, i{idx}, -i{idx})"
             )
@@ -2777,20 +2785,25 @@ def _build_thread_local_mixed_four_step_kernel_source(
             body.append(
                 f"    input_offset{idx} = " f"(four_step_batch_base + src_idx{idx}) * 2"
             )
-            body.append(
-                # The selected leaves and pack=4 cover every input lane exactly.
-                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
-                f"{asm_load_constraints}, "
-                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
-            )
+            if cross_radix < 32:
+                body.extend(_emit_vectorized_complex_load("    ", f"in_ptr + input_offset{idx}",
+                    "input_lane_mask", f"r{idx}, i{idx}", plan.dtype))
+            else:
+                body.append(
+                    # The selected leaves and pack=4 cover every input lane exactly.
+                    f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+                    f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                    f"{asm_load_constraints}, "
+                    f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+                    f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                )
 
-    body.extend(_emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
+    body.extend(_emit_radix16_codelet_call("    ",plan.direction) if register_radix == 16
+                else _emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
 
     body.append(
         f"    smem_store_mask = tl.broadcast_to("
-        f"tl.reshape(lane_mask, {vector_block}, {smem_reshape_dims}), "
+        f"tl.reshape(input_lane_mask, {vector_block}, {smem_reshape_dims}), "
         f"{vector_block}, {smem_block_dims})"
     )
     body.append(
@@ -2807,11 +2820,11 @@ def _build_thread_local_mixed_four_step_kernel_source(
                         f"    inner_tw_idx{idx} = {idx} + {register_radix} * fft_thread",
                         (
                             f"    inner_tw_r{idx} = "
-                            f"tl.load(tw1_r_ptr + inner_tw_idx{idx})"
+                            f"tl.load(tw1_r_ptr + inner_tw_idx{idx}, mask=input_lane_mask, other=0.0)"
                         ),
                         (
                             f"    inner_tw_i{idx} = "
-                            f"tl.load(tw1_i_ptr + inner_tw_idx{idx})"
+                            f"tl.load(tw1_i_ptr + inner_tw_idx{idx}, mask=input_lane_mask, other=0.0)"
                         ),
                         (
                             f"    r{idx}, i{idx} = "
@@ -2820,7 +2833,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
                         ),
                     ]
                 )
-            body.append(f"    smem_logical{idx} = {idx * 32} + fft_thread")
+            body.append(f"    smem_logical{idx} = {idx * cross_radix} + fft_thread")
             body.append(
                 f"    smem_phys{idx} = smem_logical{idx} ^ "
                 f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
@@ -2854,11 +2867,11 @@ def _build_thread_local_mixed_four_step_kernel_source(
         )
     body.append("    tl.debug_barrier()")
 
-    for chunk_base in range(0, 32, smem_chunk):
+    for chunk_base in range(0, cross_radix, smem_chunk):
         chunk_indices = range(chunk_base, chunk_base + smem_chunk)
         for idx in chunk_indices:
-            second_input = 2 * (idx % 16) + idx // 16
-            body.append(f"    smem_logical{idx} = fft_thread * 32 + " f"{second_input}")
+            second_input = 2 * (idx % 16) + idx // 16 if cross_radix == 32 else idx
+            body.append(f"    smem_logical{idx} = fft_thread * {cross_radix} + " f"{second_input}")
             body.append(
                 f"    smem_phys{idx} = smem_logical{idx} ^ "
                 f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
@@ -2901,7 +2914,8 @@ def _build_thread_local_mixed_four_step_kernel_source(
             )
         )
 
-    body.extend(_emit_local_radix32_codelet_call("    ", plan.direction))
+    body.extend(_emit_radix16_codelet_call("    ",plan.direction) if cross_radix == 16
+                else _emit_local_radix32_codelet_call("    ", plan.direction))
 
     if include_outer_twiddle:
         body.extend(
@@ -2934,7 +2948,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
             ]
         )
 
-    for idx in range(32):
+    for idx in range(cross_radix):
         body.append(f"    out_idx{idx} = fft_thread + {register_radix * idx}")
         if include_outer_twiddle:
             body.append(
@@ -2945,7 +2959,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    r{idx}, i{idx} = "
                 f"_cmul(r{idx}, i{idx}, outer_tw_r, outer_tw_i)"
             )
-            if idx < 31:
+            if idx < cross_radix-1:
                 body.extend(
                     [
                         (
