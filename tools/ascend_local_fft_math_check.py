@@ -49,7 +49,7 @@ def main():
     rows=[]
     tl=SimpleNamespace(constexpr=int,program_id=lambda axis:0,arange=torch.arange,
         reshape=lambda v,s:v.reshape(s),permute=lambda v,*s:v.permute(*s),
-        split=lambda v:torch.unbind(v,dim=-1),float32=torch.float32,
+        split=lambda v:torch.unbind(v,dim=-1),join=lambda a,b:torch.stack((a,b),dim=-1),float32=torch.float32,
         zeros=lambda shape,dtype:torch.zeros(shape,dtype=dtype),load=load,store=store)
     al=SimpleNamespace(extract_slice=extract,insert_slice=insert)
     for n,a in [(256,16),(2048,32)]:
