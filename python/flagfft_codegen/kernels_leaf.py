@@ -3215,6 +3215,13 @@ def _build_leaf_kernel_source_for_io(
         suffix = "," if idx < len(params) - 1 else ""
         body.append(f"    {param}{suffix}")
     body.append("):")
+    if current_profile().backend == "cuda" and io_mode in {"permuted_store", "strided_permuted_store"}:
+        span = int(os.getenv("FLAGFFT_CUDA_PERMUTE_SPAN", "0"))
+        batch = int(os.getenv("FLAGFFT_CUDA_PERMUTE_BATCH", "0"))
+        if span < 0 or batch < 0 or bool(span) != bool(batch):
+            raise ValueError("CUDA permutation specialization requires positive span and batch together")
+        if span:
+            body.extend([f"    perm_span = {span}", f"    nbatch = {batch}"])
     if _portable_complex_vector_io():
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     if io_mode in contiguous_modes:

@@ -506,6 +506,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  // These literals belong to this kernel key, not the process-wide policy.
+  // They remove runtime layout division without changing the launch ABI.
+  if (key.cuda_permute_span > 0 && key.cuda_permute_batch > 0) {
+    jit_command << "FLAGFFT_CUDA_PERMUTE_SPAN=" << key.cuda_permute_span << " "
+                << "FLAGFFT_CUDA_PERMUTE_BATCH=" << key.cuda_permute_batch << " ";
+  }
   if (key.target.rfind("hcu:", 0) == 0) {
     jit_command << "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK="
                 << (key.hcu_3d_middle_batch_pack > 0

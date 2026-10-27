@@ -3029,6 +3029,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.smem_size,
                                                  perm_form);
   if (strided_input) key.kind = KernelKind::LeafStridedPermutedStore;
+  if (request.device_type == "cuda" && flag_or_default("FLAGFFT_CUDA_SPECIALIZE_PERMUTE", false)) {
+    key.cuda_permute_span = perm_span;
+    key.cuda_permute_batch = request.batch;
+  }
   mark_npu_portable_leaf(key, request);
   const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
   // Forcing FP64 256-point stores to use the full 64 KiB shared-memory pack

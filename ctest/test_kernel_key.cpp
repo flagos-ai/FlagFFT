@@ -112,3 +112,21 @@ TEST(KernelKeyRepr, StockhamStageDistinguishesStages) {
   EXPECT_NE(stockham_stage(target, "forward", 1024, 8, 8, 16).repr(),
             stockham_stage(target, "forward", 1024, 8, 8, 128).repr());
 }
+
+TEST(KernelKeyRepr, CudaPermutationConstantsSeparateCacheEntries) {
+  auto dynamic = flagfft::KernelKey::direct_dft("cuda:80:32", "forward", "complex128", 256);
+  dynamic.kind = flagfft::KernelKind::LeafPermutedStore;
+  auto specialized = dynamic;
+  specialized.cuda_permute_span = 256;
+  specialized.cuda_permute_batch = 65536;
+  EXPECT_FALSE(dynamic == specialized);
+  EXPECT_NE(dynamic.repr(), specialized.repr());
+  auto changed = specialized;
+  changed.cuda_permute_span = 65536;
+  EXPECT_FALSE(changed == specialized);
+  EXPECT_NE(changed.repr(), specialized.repr());
+  changed = specialized;
+  changed.cuda_permute_batch *= 4;
+  EXPECT_FALSE(changed == specialized);
+  EXPECT_NE(changed.repr(), specialized.repr());
+}

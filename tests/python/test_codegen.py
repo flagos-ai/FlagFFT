@@ -2298,3 +2298,20 @@ def test_cuda_tensor_exchange_emits_no_explicit_shared_allocations(monkeypatch, 
     compile(source, '<cuda-tensor-exchange>', 'exec')
     assert 'tle.gpu.alloc' not in source
     assert 'tl.gather' in source
+
+
+def test_cuda_permutation_constants_preserve_runtime_argument_order(monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    plan = LeafPlan(length=256, factors=(16, 16), remainder=1, lanes=16, num_warps=2,
+                    generic_radices=(), smem_size=256, dtype='complex128')
+    monkeypatch.setenv('FLAGFFT_CUDA_PERMUTE_SPAN', '65536')
+    monkeypatch.setenv('FLAGFFT_CUDA_PERMUTE_BATCH', '262144')
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode='permuted_store', perm_form='outer')
+    compile(source, '<specialized-permutation>', 'exec')
+    assert '    perm_span,\n    nbatch\n):' in source
+    assert source.index('    perm_span = 65536') < source.index('    pid = tl.program_id')
+    assert '    nbatch = 262144' in source
+    monkeypatch.setenv('FLAGFFT_CUDA_PERMUTE_BATCH', '0')
+    with pytest.raises(ValueError, match='positive span and batch'):
+        _build_leaf_kernel_source_for_io(plan, io_mode='permuted_store', perm_form='outer')
