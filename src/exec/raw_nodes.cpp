@@ -1341,9 +1341,11 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
     DeviceAllocation work_buf,
     DeviceAllocation b_fft_buf,
     std::string real_kind,
-    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback,
+    int64_t batch_chunk)
     : length(length),
       conv_length(conv_length),
+      batch_chunk(batch_chunk),
       n1(n1),
       n2(n2),
       fft(std::move(fft)),
@@ -1365,7 +1367,7 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
 
 std::string CompiledRawBluesteinFourStepNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawBluesteinFourStep(n=" << length << ", conv_length=" << conv_length << ", n1=" << n1
+  oss << "CompiledRawBluesteinFourStep(n=" << length << ", conv_length=" << conv_length << ", chunk=" << batch_chunk << ", n1=" << n1
       << ", n2=" << n2
       << ", prepare_row=" << (prepare_row_kernel ? prepare_row_kernel->execution_description() : "null")
       << ", first_col=" << (first_col_kernel ? first_col_kernel->execution_description() : "null")
@@ -1408,53 +1410,63 @@ flagfftResult CompiledRawBluesteinFourStepNode::execute(adaptor::DevicePtr input
       }
     }
     ensure_b_fft(context);
-    const bool fused_twiddle = prepare_row_kernel->tle_fused_twiddle;
+    const int64_t chunk_limit = batch_chunk > 0 ? batch_chunk : context.batch;
+    const int64_t bytes = complex_element_bytes(context.request.input_dtype);
+    const int64_t half = length / 2 + 1;
+    const int64_t input_stride = (real_kind == "c2r" ? half : length) * (real_kind == "r2c" ? bytes / 2 : bytes);
+    const int64_t output_stride = (real_kind == "r2c" ? half : length) * (real_kind == "c2r" ? bytes / 2 : bytes);
+    for (int64_t offset = 0; offset < context.batch; offset += chunk_limit) {
+      const int64_t chunk = std::min(chunk_limit, context.batch - offset);
+      const auto chunk_input = input + offset * input_stride;
+      const auto chunk_output = output + offset * output_stride;
+      const bool fused_twiddle = prepare_row_kernel->tle_fused_twiddle;
 
-    stage = "prepare-row";
-    std::vector<JitKernelArg> prepare_args =
-        fused_twiddle
-            ? raw_kernel_args({input, chirp.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
-            : raw_kernel_args({input, chirp.get(), stage1.get()}, row_tables, context.batch);
-    prepare_row_kernel->launch(context.stream,
-                               prepare_args,
-                               ceil_div(n2, prepare_row_kernel->inner_pack),
-                               context.batch,
-                               1);
-
-    stage = "first-col";
-    std::vector<JitKernelArg> first_col_args =
-        fused_twiddle
-            ? raw_kernel_args({stage1.get(), work_buf.get()}, col_tables, context.batch)
-            : raw_kernel_args({stage1.get(), twiddle.get(), work_buf.get()}, col_tables, context.batch);
-    first_col_kernel->launch(context.stream,
-                             first_col_args,
-                             ceil_div(n1, first_col_kernel->inner_pack),
-                             context.batch,
-                             1);
-
-    stage = "pointwise-row";
-    std::vector<JitKernelArg> pointwise_args =
-        fused_twiddle
-            ? raw_kernel_args({work_buf.get(), b_fft_buf.get(), twiddle.get(), stage1.get()},
-                              row_tables,
-                              context.batch)
-            : raw_kernel_args({work_buf.get(), b_fft_buf.get(), stage1.get()}, row_tables, context.batch);
-    pointwise_row_kernel->launch(context.stream,
-                                 pointwise_args,
-                                 ceil_div(n2, pointwise_row_kernel->inner_pack),
-                                 context.batch,
+      stage = "prepare-row";
+      std::vector<JitKernelArg> prepare_args =
+          fused_twiddle
+              ? raw_kernel_args({chunk_input, chirp.get(), twiddle.get(), stage1.get()}, row_tables, chunk)
+              : raw_kernel_args({chunk_input, chirp.get(), stage1.get()}, row_tables, chunk);
+      prepare_row_kernel->launch(context.stream,
+                                 prepare_args,
+                                 ceil_div(n2, prepare_row_kernel->inner_pack),
+                                 chunk,
                                  1);
 
-    stage = "finish-col";
-    std::vector<JitKernelArg> finish_args =
-        fused_twiddle
-            ? raw_kernel_args({stage1.get(), chirp.get(), output}, col_tables, context.batch)
-            : raw_kernel_args({stage1.get(), chirp.get(), twiddle.get(), output}, col_tables, context.batch);
-    finish_col_kernel->launch(context.stream,
-                              finish_args,
-                              ceil_div(n1, finish_col_kernel->inner_pack),
-                              context.batch,
-                              1);
+      stage = "first-col";
+      std::vector<JitKernelArg> first_col_args =
+          fused_twiddle
+              ? raw_kernel_args({stage1.get(), work_buf.get()}, col_tables, chunk)
+              : raw_kernel_args({stage1.get(), twiddle.get(), work_buf.get()}, col_tables, chunk);
+      first_col_kernel->launch(context.stream,
+                               first_col_args,
+                               ceil_div(n1, first_col_kernel->inner_pack),
+                               chunk,
+                               1);
+
+      stage = "pointwise-row";
+      std::vector<JitKernelArg> pointwise_args =
+          fused_twiddle
+              ? raw_kernel_args({work_buf.get(), b_fft_buf.get(), twiddle.get(), stage1.get()},
+                                row_tables,
+                                chunk)
+              : raw_kernel_args({work_buf.get(), b_fft_buf.get(), stage1.get()}, row_tables, chunk);
+      pointwise_row_kernel->launch(context.stream,
+                                   pointwise_args,
+                                   ceil_div(n2, pointwise_row_kernel->inner_pack),
+                                   chunk,
+                                   1);
+
+      stage = "finish-col";
+      std::vector<JitKernelArg> finish_args =
+          fused_twiddle
+              ? raw_kernel_args({stage1.get(), chirp.get(), chunk_output}, col_tables, chunk)
+              : raw_kernel_args({stage1.get(), chirp.get(), twiddle.get(), chunk_output}, col_tables, chunk);
+      finish_col_kernel->launch(context.stream,
+                                finish_args,
+                                ceil_div(n1, finish_col_kernel->inner_pack),
+                                chunk,
+                                1);
+    }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] BluesteinFourStep %s failed: %s\n", stage, e.what());

@@ -2466,7 +2466,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
         maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
-    const bool use_four_step = use_default_four_step || use_maca_four_step;
+    const bool use_cuda_four_step = request.device_type == "cuda" && request.device_arch == "sm_80" &&
+        four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
+        row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
+        flag_or_default("FLAGFFT_CUDA_BLUESTEIN_FOURSTEP", false);
+    const bool use_four_step = use_default_four_step || use_maca_four_step || use_cuda_four_step;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
@@ -2579,11 +2583,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         return compile_kernel(key);
       };
 
+      const int64_t work_batch = use_cuda_four_step ? chunk_batch : batch;
       DeviceAllocation twiddle = build_raw_four_step_twiddle(child_request, four_step->n1, four_step->n2);
       DeviceAllocation stage1 =
-          adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
+          adaptor::Memory(static_cast<std::size_t>(work_batch * bluestein->conv_length * element_bytes));
       DeviceAllocation work_buf =
-          adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
+          adaptor::Memory(static_cast<std::size_t>(work_batch * bluestein->conv_length * element_bytes));
       return std::make_shared<CompiledRawBluesteinFourStepNode>(
           bluestein->length,
           bluestein->conv_length,
@@ -2604,7 +2609,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           std::move(b_fft_buf),
           real_kind,
           real_kind.empty() ? std::function<std::shared_ptr<CompiledRawNode>()>{}
-                            : make_real_layout_fallback);
+                            : make_real_layout_fallback,
+          use_cuda_four_step ? chunk_batch : 0);
     }
     DeviceAllocation work_buf =
         adaptor::Memory(static_cast<std::size_t>(chunk_batch * bluestein->conv_length * element_bytes));
@@ -2699,10 +2705,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
     const PlanNodePtr &node, const FFTRequest &request, int64_t batch, bool inverse) {
   const int64_t n = request.requested_n;
-  if (request.device_type != "cuda" || request.device_arch != "sm_80" ||
-      request.raw_dim != 1 || request.origin_rank > 1 || batch <= 1 || batch != request.batch ||
-      n < 997 || n % 2 == 0 || request.input_strides.empty() || request.input_strides.back() != 1 ||
-      !flag_or_default("FLAGFFT_CUDA_REAL_BATCH_PAIR", false)) return nullptr;
+  const bool cuda_enabled = request.device_type == "cuda" && request.device_arch == "sm_80" &&
+      flag_or_default("FLAGFFT_CUDA_REAL_BATCH_PAIR", false);
+  const bool musa_enabled = request.device_type == "musa" && request.device_arch == "31" &&
+      flag_or_default("FLAGFFT_MUSA_REAL_BATCH_PAIR", false);
+  if ((!cuda_enabled && !musa_enabled) || request.raw_dim != 1 || request.origin_rank > 1 ||
+      batch <= 1 || batch != request.batch || n < 997 || n % 2 == 0 ||
+      request.input_strides.empty() || request.input_strides.back() != 1) return nullptr;
   const int64_t pairs = (batch + 1) / 2;
   FFTRequest child = request;
   child.batch = pairs;
@@ -5567,9 +5576,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       std::string(npu_2d_transpose_store) == "1";
   const bool use_cuda_2d_transpose_store = request.device_type == "cuda" &&
       request.device_arch == "sm_80" && flag_or_default("FLAGFFT_CUDA_2D_FUSED_STORE", false);
+  // Large S5000 2D transforms spend a substantial fraction of their time in
+  // the two standalone matrix transposes. Screen the same leaf-store
+  // permutation used by the validated 3D path, limited to shapes where both
+  // axes have enough rows to amortize the fused-store layout conversion.
+  const bool use_musa_2d_transpose_store = request.device_type == "musa" &&
+      request.origin_rank == 2 && n0 >= 1024 && n1 >= 1024 &&
+      flag_or_default("FLAGFFT_MUSA_2D_FUSED_STORE", false);
   auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-  if ((use_npu_2d_transpose_store || use_cuda_2d_transpose_store) && row_leaf && col_leaf) {
+  if ((use_npu_2d_transpose_store || use_cuda_2d_transpose_store || use_musa_2d_transpose_store) &&
+      row_leaf && col_leaf) {
     std::shared_ptr<CompiledRawNode> row_fft =
         compile_raw_permuted_store_leaf(*row_leaf, row_request, n0, "outer");
     std::shared_ptr<CompiledRawNode> col_fft =
@@ -5671,6 +5688,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   const int64_t n1 = node->n1;
   const int64_t half_n1 = n1 / 2 + 1;
   const bool rc_eligible = n0 <= 256;
+  const bool musa_compact_real_rows = request.device_type == "musa" &&
+      request.origin_rank == 2 && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy && n0 > 256 && n1 > 1 && (n1 % 2) == 0 &&
+      flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", false);
 
   // Build row C2C FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -5720,7 +5741,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   // discard its Hermitian half.  Restrict this to row plans that the existing
   // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.  Packed
   // real is deliberately disabled here until it is qualified for this layout.
-  if (maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) &&
+  if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
+       musa_compact_real_rows) &&
       has_real_boundary_row_plan(node->row_plan)) {
     std::shared_ptr<CompiledRawNode> row_r2c =
         compile_raw_r2c_node(node->row_plan, row_request, batch * n0, false);
@@ -5765,7 +5787,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   if (rc_col_fft != nullptr) {
     const bool use_compact_real_row = has_real_boundary_row_plan(node->row_plan) &&
         (cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
-         (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)));
+         (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
+         (request.device_type == "musa" &&
+          flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", false)));
     if (use_compact_real_row) {
       // The strided column path already accepts the compact row-major half
       // spectrum. Let the existing 1D real boundary write that layout
@@ -5873,6 +5897,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   const int64_t n1 = node->n1;
   const int64_t half_n1 = n1 / 2 + 1;
   const bool rc_eligible = n0 <= 256;
+  const bool musa_compact_real_rows = request.device_type == "musa" &&
+      request.origin_rank == 2 && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy && n0 > 256 && n1 > 1 && (n1 % 2) == 0 &&
+      flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", false);
 
   // C2R is the reverse of R2C:
   // 1. Transpose (n0, half_n1) -> (half_n1, n0)
@@ -5938,7 +5966,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   // transposes run first; the existing 1D C2R boundary node then consumes the
   // compact rows directly and writes real output.  Keep packed-real disabled
   // until its 2D row layout has a separate qualification.
-  if (maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) &&
+  if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
+       musa_compact_real_rows) &&
       has_real_boundary_row_plan(node->row_plan)) {
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -5982,7 +6011,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   if (rc_col_fft != nullptr) {
     const bool use_compact_real_row = has_real_boundary_row_plan(node->row_plan) &&
         (cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
-         (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)));
+         (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
+         (request.device_type == "musa" &&
+          flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", false)));
     if (use_compact_real_row) {
       // After the inverse column transform, each compact row is already a
       // valid 1D C2R input. Consume it directly and avoid Hermitian expansion

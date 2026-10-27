@@ -526,7 +526,8 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
                                    DeviceAllocation work_buf,
                                    DeviceAllocation b_fft_buf,
                                    std::string real_kind = "",
-                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
+                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {},
+                                   int64_t batch_chunk = 0);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -535,6 +536,7 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
 
   int64_t length;
   int64_t conv_length;
+  int64_t batch_chunk;
   int64_t n1;
   int64_t n2;
   std::shared_ptr<CompiledRawNode> fft;
