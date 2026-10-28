@@ -3111,6 +3111,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
 #endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  // Reuse the bounded complex-axis schedule for mixed real four-step
+  // transforms. The real boundaries remain separate coalesced Triton passes.
+  const bool npu_bounded_fourstep = request.device_type == "npu" &&
+      request.input_dtype == "complex64" && (n & (n - 1)) != 0 &&
+      std::dynamic_pointer_cast<FourStepPlanNode>(node) != nullptr &&
+      flag_or_default("FLAGFFT_NPU_PACKED_MIXED_AXIS", false);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (request.device_type == "npu" && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && n >= 16 && n <= 2048 &&
@@ -3206,7 +3212,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         build_raw_packed_real_twiddle(request, n));
   }
   if (auto packed_child =
-          allow_packed ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
+          allow_packed && !npu_bounded_fourstep ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;
     DeviceAllocation packed_output =
         adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
@@ -3230,7 +3236,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         },
         std::move(aiv_postprocess));
   }
-  if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+  if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);
+      four_step && !npu_bounded_fourstep) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
     if (row_leaf != nullptr && col_leaf != nullptr) {
@@ -3275,6 +3282,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
 #endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+  // Reuse the bounded complex-axis schedule for mixed real four-step
+  // transforms. The real boundaries remain separate coalesced Triton passes.
+  const bool npu_bounded_fourstep = request.device_type == "npu" &&
+      request.input_dtype == "complex64" && (n & (n - 1)) != 0 &&
+      std::dynamic_pointer_cast<FourStepPlanNode>(node) != nullptr &&
+      flag_or_default("FLAGFFT_NPU_PACKED_MIXED_AXIS", false);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (request.device_type == "npu" && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && n >= 16 && n <= 2048 &&
@@ -3295,7 +3308,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     return compile_raw_node(node, request, batch);
   }
   if (auto packed_child =
-          allow_packed ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
+          allow_packed && !npu_bounded_fourstep ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
     const int64_t packed = n / 2;
     const char *packed_fuse_setting = std::getenv("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
     if (packed_fuse_setting != nullptr && std::string(packed_fuse_setting) != "0" &&
@@ -3360,7 +3373,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         },
         std::move(aiv_preprocess));
   }
-  if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+  if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);
+      four_step && !npu_bounded_fourstep) {
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
     if (row_leaf != nullptr && col_leaf != nullptr) {
