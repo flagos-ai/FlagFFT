@@ -8,7 +8,7 @@ from flagfft_codegen import kernels_real
 from test_npu_structured_fft import Pointer, execute_module
 
 
-@pytest.mark.parametrize("n", [16, 17, 1009, 1010])
+@pytest.mark.parametrize("n", [16, 17, 1009, 1010, 4096, 46189, 524287])
 @pytest.mark.parametrize("batch", [1, 3])
 def test_half_spectrum_expansion(tmp_path, monkeypatch, n, batch):
     monkeypatch.setattr(kernels_real, "current_profile", lambda: SimpleNamespace(backend="npu"))

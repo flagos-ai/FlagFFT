@@ -368,20 +368,8 @@ def _build_r2c_half_pack_kernel_source(
                     mask=src_mask,
                     other={zero},
                 )
-                full_idx = tl.arange(0, {2 * C})[None, :] % {C} + 0 * safe_rows
-                xr = tl.gather(src, full_idx * 2, 1)
-                xi = tl.gather(src, full_idx * 2 + 1, 1)
-                packed = tl.zeros(({R}, {2 * C}), tl.float32)
-                xr_c = tle.dsa.extract_slice(xr, [0, 0], [{R}, {C}], [1, 1])
-                xi_c = tle.dsa.extract_slice(xi, [0, 0], [{R}, {C}], [1, 1])
-                packed = tle.dsa.insert_slice(
-                    packed, xr_c, [0, 0], [{R}, {C}], [1, 1])
-                packed = tle.dsa.insert_slice(
-                    packed, xi_c, [0, {C}], [{R}, {C}], [1, 1])
-                out_lane = tl.arange(0, {2 * C})[None, :]
-                out_idx = (
-                    (out_lane // 2) + (out_lane % 2) * {C} + 0 * safe_rows)
-                result = tl.gather(packed, out_idx, 1)
+                out_lane = lane
+                result = src
                 out_mask = row_mask & (
                     out_lane < 2 * ({half} - pid_block * {C}))
                 tl.store(
@@ -557,15 +545,12 @@ def _build_compact_to_hermitian_full_kernel_source(
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_compact_to_hermitian_full_kernel_n{n}_{suffix}"
-    npu = (
-        current_profile().backend == "npu"
-        and dtype == "complex64"
-        and (1 << (2 * half - 1).bit_length()) <= 4096
-    )
+    npu = current_profile().backend == "npu" and dtype == "complex64"
     if npu:
         R, C = rows_per_block, block_cols
-        src_len = 1 << (2 * half - 1).bit_length()
-        nyquist_out_guard = f" | (safe_out == {n // 2})" if n % 2 == 0 else ""
+        nyquist_out_guard = f" | (freq == {n // 2})" if n % 2 == 0 else ""
+        # A bounded contiguous input window contains every mirrored source
+        # index of this output tile, including tiles crossing the midpoint.
         source = dedent(
             f"""
             @triton.jit
@@ -578,40 +563,29 @@ def _build_compact_to_hermitian_full_kernel_source(
                 pid_block = tl.program_id(0)
                 pid_batch = tl.program_id(1)
                 rows = pid_batch * {R} + tl.arange(0, {R})[:, None]
-                cols = pid_block * {C} + tl.arange(0, {C})[None, :]
-                out_lane = tl.arange(0, {2 * C})[None, :]
+                lane = tl.arange(0, {2 * C})[None, :]
                 row_mask = rows < nbatch
                 safe_rows = tl.minimum(rows, nbatch - 1)
-                safe_cols = tl.minimum(cols, {n - 1})
-                lane = tl.arange(0, {src_len})[None, :]
-                col_out = pid_block * {C} + lane
-                safe_out = tl.minimum(col_out, {n - 1})
-                upper = safe_out >= {half}
-                src_k = tl.where(upper, {n} - safe_out, safe_out) + 0 * safe_rows
+                start = pid_block * {C}
+                end = tl.minimum(start + {C - 1}, {n - 1})
+                src_start = tl.minimum(tl.minimum(start, {half - 1}), {n} - end)
                 src = tl.load(
-                    in_ptr + safe_rows * input_distance * 2 + lane,
-                    mask=row_mask & (lane < 2 * {half}),
+                    in_ptr + (safe_rows * input_distance + src_start) * 2 + lane,
+                    mask=row_mask & (lane < 2 * ({half} - src_start)),
                     other={zero},
                 )
-                xr = tl.gather(src, src_k * 2, 1)
-                xi = tl.gather(src, src_k * 2 + 1, 1)
-                xi = tl.where(upper, -xi, xi)
-                xi = tl.where((safe_out == 0){nyquist_out_guard}, {zero}, xi)
-                packed = tl.zeros(({R}, {2 * C}), tl.float32)
-                xr_c = tle.dsa.extract_slice(xr, [0, 0], [{R}, {C}], [1, 1])
-                xi_c = tle.dsa.extract_slice(xi, [0, 0], [{R}, {C}], [1, 1])
-                packed = tle.dsa.insert_slice(
-                    packed, xr_c, [0, 0], [{R}, {C}], [1, 1])
-                packed = tle.dsa.insert_slice(
-                    packed, xi_c, [0, {C}], [{R}, {C}], [1, 1])
-                out_idx = (out_lane // 2) + (out_lane % 2) * {C} + 0 * safe_rows
-                result = tl.gather(packed, out_idx, 1)
-                out_mask = row_mask & (
-                    out_lane < 2 * ({n} - pid_block * {C}))
+                freq = tl.minimum(start + lane // 2, {n - 1})
+                upper = freq >= {half}
+                src_k = tl.where(upper, {n} - freq, freq)
+                index = 2 * (src_k - src_start) + lane % 2 + 0 * safe_rows
+                result = tl.gather(src, index, 1)
+                imag = lane % 2 == 1
+                result = tl.where(imag & upper, -result, result)
+                result = tl.where(imag & ((freq == 0){nyquist_out_guard}), {zero}, result)
                 tl.store(
-                    out_ptr + (safe_rows * {n} + pid_block * {C}) * 2 + out_lane,
+                    out_ptr + (safe_rows * {n} + start) * 2 + lane,
                     result,
-                    mask=out_mask,
+                    mask=row_mask & (lane < 2 * ({n} - start)),
                 )
             """
         )
