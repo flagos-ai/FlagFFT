@@ -1208,8 +1208,9 @@ namespace {
       for (int64_t j=0;j<length;++j) for(int64_t k=0;k<frequencies;++k) {
         const double angle=sign*2*kPi*j*k/length;
         const float c=static_cast<float>(std::cos(angle)),s=static_cast<float>(std::sin(angle));
-        values[j*columns+2*k]=c;values[j*columns+2*k+1]=s;
-        if (mode==0) {values[(pad+j)*columns+2*k]=-s;values[(pad+j)*columns+2*k+1]=c;}
+        const int64_t row=mode==0 ? 2*j : j;
+        values[row*columns+2*k]=c;values[row*columns+2*k+1]=s;
+        if (mode==0) {values[(row+1)*columns+2*k]=-s;values[(row+1)*columns+2*k+1]=c;}
       }
     } else {
       for (int64_t j=0;j<half;++j) for(int64_t k=0;k<length;++k) {

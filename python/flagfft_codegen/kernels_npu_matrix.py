@@ -34,20 +34,13 @@ def {pack_name}(X,P,input_distance,NB):
     k=tl.arange(0,{kin})[None,:]
     x=tl.load(X+b*input_distance+k,(b<NB)&(k<{ins}),0.)
 '''
-    if mode==0:
-        body+=f'''    r,i=tl.split(tl.reshape(x,({group*p},2)))
-    r=tl.reshape(r,({group},{p}));i=tl.reshape(i,({group},{p}))
-    j=tl.arange(0,{p})[None,:]
-    tl.store(P+b*{kin}+j,r,b<NB)
-    tl.store(P+b*{kin}+{p}+j,i,b<NB)
-'''
-    else:body+=f'    tl.store(P+b*{kin}+k,x,b<NB)\n'
+    body+=f'    tl.store(P+b*{kin}+k,x,b<NB)\n'
     body+=f'''@triton.jit
 def {cube_name}(P,W,Y,input_distance,output_distance,NB):
     b=tl.program_id(0).to(tl.int64)*{bm}+tl.arange(0,{bm})
     j=tl.arange(0,{kin})
     k=tl.program_id(1)*{bn}+tl.arange(0,{bn})
-    x=tl.load(P+b[:,None]*input_distance+j[None,:],(b[:,None]<NB)&(j[None,:]<{kin if mode==0 else ins}),0.)
+    x=tl.load(P+b[:,None]*input_distance+j[None,:],(b[:,None]<NB)&(j[None,:]<{ins}),0.)
     w=tl.load(W+j[:,None]*{op}+k[None,:])
     y=tl.dot(x,w,input_precision="ieee")
     tl.store(Y+b[:,None]*output_distance+k[None,:],y,(b[:,None]<NB)&(k[None,:]<{outs}))

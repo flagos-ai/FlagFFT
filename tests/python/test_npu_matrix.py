@@ -7,10 +7,11 @@ from flagfft_codegen.kernels_npu_matrix import build_matrix_source,matrix_layout
 from test_npu_structured_fft import Pointer,execute_module
 
 
+@pytest.mark.parametrize('snapshot',[False,True])
 @pytest.mark.parametrize('n',[48,49,210])
 @pytest.mark.parametrize('batch',[3,64])
 @pytest.mark.parametrize('mode,direction',[(0,'forward'),(0,'inverse'),(1,'forward'),(2,'inverse')])
-def test_real_matrix_embedding(tmp_path,n,batch,mode,direction):
+def test_real_matrix_embedding(tmp_path,n,batch,mode,direction,snapshot):
     p,ins,kin,outs,op,bm,bn=matrix_layout(n,mode)
     pack,cube,source=build_matrix_source(n,mode,direction)
     path=tmp_path/'matrix.py';path.write_text(source);ns,pid=execute_module(path)
@@ -32,8 +33,10 @@ def test_real_matrix_embedding(tmp_path,n,batch,mode,direction):
         frequencies=n if mode==0 else n//2+1
         angle=(1 if direction=='inverse' else -1)*2*math.pi*torch.arange(n,dtype=torch.float64)[:,None]*torch.arange(frequencies)[None,:]/n
         c,s=angle.cos().float(),angle.sin().float()
-        w[:n,:2*frequencies:2]=c;w[:n,1:2*frequencies:2]=s
-        if mode==0:w[p:p+n,:2*frequencies:2]=-s;w[p:p+n,1:2*frequencies:2]=c
+        if mode==0:
+            w[:2*n:2,:2*frequencies:2]=c;w[:2*n:2,1:2*frequencies:2]=s
+            w[1:2*n:2,:2*frequencies:2]=-s;w[1:2*n:2,1:2*frequencies:2]=c
+        else:w[:n,:2*frequencies:2]=c;w[:n,1:2*frequencies:2]=s
     else:
         j=torch.arange(n//2+1)[:,None];k=torch.arange(n)[None,:]
         angle=2*math.pi*j.double()*k/n
@@ -48,7 +51,7 @@ def test_real_matrix_embedding(tmp_path,n,batch,mode,direction):
     for b in range((batch+bm-1)//bm):
         pid[0]=b
         for col in range((op+bn-1)//bn):
-            pid[1]=col;ns[cube](Pointer(work if mode==0 else src),Pointer(w),Pointer(out,64),kin if mode==0 else input_distance,output_distance,batch)
+            pid[1]=col;ns[cube](Pointer(work if snapshot else src),Pointer(w),Pointer(out,64),kin if snapshot else input_distance,output_distance,batch)
     rows=out[64:-64].reshape(batch,output_distance);got=rows[:,:outs]
     assert torch.isfinite(got).all()
     assert torch.linalg.vector_norm(got-expected.reshape(batch,outs))/torch.linalg.vector_norm(expected)<2e-6
