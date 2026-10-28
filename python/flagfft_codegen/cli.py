@@ -139,6 +139,7 @@ def main() -> None:
     )
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
+    parser.add_argument("--npu-structured-fft", action="store_true")
     parser.add_argument("--npu-vector-transpose", action="store_true",
                         help="Use the replacement body for an eligible native NPU 2D transpose")
     parser.add_argument("--npu-table-transpose3d", action="store_true",
@@ -413,7 +414,15 @@ def main() -> None:
             + ", ".join(f"--{flag.replace('_', '-')}" for flag in missing)
         )
 
-    if spec.family == BLUESTEIN:
+    if args.npu_structured_fft:
+        if (not args.target.startswith('npu:') or args.dtype!='complex64'
+                or args.kernel not in ('leaf','four_step_row','four_step_col')):
+            parser.error('Structured FFT requires an NPU FP32 leaf or four-step axis')
+        from .kernels_npu_structured import emit_structured
+        metadata=emit_structured(length=args.length,direction=args.direction,out_dir=args.out_dir,
+            first=None if args.kernel=='leaf' else args.kernel=='four_step_row',
+            n1=args.four_step_n1,n2=args.four_step_n2)
+    elif spec.family == BLUESTEIN:
         metadata = _emit_bluestein_jit_kernel(
             kernel=args.kernel,
             n=args.bluestein_n,

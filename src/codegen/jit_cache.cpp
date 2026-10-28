@@ -644,6 +644,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
   }
 
+  if (key.perm_form == "npu_structured") {
+    jit_command << " --npu-structured-fft";
+  }
+
   std::string artifact_json = run_command_capture_stdout(jit_command.str());
   auto kernel = std::make_shared<JitKernel>();
   kernel->kernel_name = json_string_field(artifact_json, "kernel_name");
