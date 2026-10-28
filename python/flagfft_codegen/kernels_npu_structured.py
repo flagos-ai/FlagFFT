@@ -164,9 +164,9 @@ def {name}({','.join(args)}):
     col=tl.program_id(0)*{tile}+tl.arange(0,{tile})
     batch=tl.program_id(1)
     row=tl.arange(0,{l})
-    pair=tl.arange(0,2)
-    offsets=(batch*{n1*n2}+row[:,None]*{width}+col[None,:])*2
-    raw=tl.load(in_ptr+offsets[:,:,None]+pair[None,None,:])
+    word=tl.program_id(0)*{2*tile}+tl.arange(0,{2*tile})
+    offsets=batch*{2*n1*n2}+row[:,None]*{2*width}+word[None,:]
+    raw=tl.load(in_ptr+offsets)
     r,i=tl.split(tl.reshape(raw,({l*tile},2)))
     if {inverse}: i=-i
     r,i=fft_axis_sliced(r,i,roots_ptr,{l*tile},{l},{tile},{l.bit_length()-1})
@@ -178,14 +178,14 @@ def {name}({','.join(args)}):
     cr=tl.load(twiddle_ptr+tw);ci=tl.load(twiddle_ptr+{n1*n2}+tw)
     rr,ii=r*cr-i*ci,r*ci+i*cr
     rr=tl.reshape(tl.trans(rr),({l*tile},));ii=tl.reshape(tl.trans(ii),({l*tile},))
-    raw=tl.reshape(tl.join(rr,ii),({tile},{l},2))
-    dest=(batch*{n1*n2}+col[:,None]*{l}+row[None,:])*2
+    raw=tl.reshape(tl.join(rr,ii),({tile},{2*l}))
+    dest=batch*{2*n1*n2}+col[:,None]*{2*l}+tl.arange(0,{2*l})[None,:]
 """
         else:
-            body+=f"""    raw=tl.reshape(tl.join(tl.reshape(r,({l*tile},)),tl.reshape(i,({l*tile},))),({l},{tile},2))
+            body+=f"""    raw=tl.reshape(tl.join(tl.reshape(r,({l*tile},)),tl.reshape(i,({l*tile},))),({l},{2*tile}))
     dest=offsets
 """
-        body+='    tl.store(out_ptr+dest[:,:,None]+pair[None,None,:],raw)\n'
+        body+='    tl.store(out_ptr+dest,raw)\n'
         kind='four_step_row' if first else 'four_step_col'
     source=('import torch\nimport torch_npu\nimport triton\nimport triton.language as tl\n'
             'import triton.language.extra.cann.extension as al\n\n'+FFT_HELPERS+body)
