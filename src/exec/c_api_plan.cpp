@@ -402,15 +402,17 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       }
     }
     const char *npu_graph = std::getenv("FLAGFFT_NPU_GRAPH");
-    if (plan->executable.forward_request.device_type == "npu" &&
-        npu_graph != nullptr && std::string(npu_graph) == "1" &&
+    if (plan->executable.forward_request.device_type == "npu" && npu_graph != nullptr &&
+        (std::string(npu_graph) == "1" || std::string(npu_graph) == "auto") &&
         std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
-      if (plan->executable.forward) {
-        plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
-      }
-      if (plan->executable.inverse) {
-        plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
-      }
+      const bool force = std::string(npu_graph) == "1";
+      const auto wrap = [force](std::shared_ptr<CompiledRawNode> &node) {
+        if (node && (force || !node->is_single_kernel())) {
+          node = std::make_shared<CompiledRawGraphNode>(node);
+        }
+      };
+      wrap(plan->executable.forward);
+      wrap(plan->executable.inverse);
     }
     plan->state.initialized = true;
 

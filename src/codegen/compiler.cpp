@@ -1506,6 +1506,11 @@ namespace {
 
   void mark_npu_portable_leaf(KernelKey &key, const FFTRequest &request) {
     key.npu_portable_leaf = npu_portable_leaf_enabled(request);
+    const char *pack = std::getenv("FLAGFFT_NPU_2D_BATCH_PACK");
+    if (key.npu_portable_leaf && (pack == nullptr || std::string(pack) == "auto") &&
+        (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R)) {
+      key.npu_batch_pack = request.batch >= 4 ? 4 : (request.batch >= 2 ? 2 : 1);
+    }
   }
 
   std::string hcu_3d_final_axis_perm_form(const FFTRequest &request) {

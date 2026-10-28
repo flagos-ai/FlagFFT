@@ -166,6 +166,7 @@ struct CompiledRawNode {
                                 adaptor::DevicePtr output,
                                 const RawExecutionContext &context) const = 0;
   virtual std::string describe() const = 0;
+  virtual bool is_single_kernel() const { return false; }
 };
 
 struct CompiledRawGraphNode final : CompiledRawNode {
@@ -204,6 +205,7 @@ struct CompiledRawLeafNode final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
@@ -250,6 +252,7 @@ struct CompiledRawNpuAivFFT64Node final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   int64_t stride;
   int64_t group_size;
@@ -273,6 +276,7 @@ struct CompiledRawNpuAivFFTSmallNode final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   int64_t length;
   int64_t stride;
@@ -295,6 +299,7 @@ struct CompiledRawNpuAivFFTNode final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   int64_t length;
   int64_t group_size;
@@ -318,6 +323,7 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   std::shared_ptr<DeviceAllocation> indices;
   std::shared_ptr<DeviceAllocation> twiddles;
@@ -394,6 +400,7 @@ struct CompiledRawDirectDftNode final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
@@ -708,6 +715,7 @@ struct CompiledRawR2CLeafNode final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
@@ -848,6 +856,7 @@ struct CompiledRawC2RLeafNode final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
@@ -983,6 +992,7 @@ struct CompiledRaw2DFusedNode final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   int64_t n0;
   int64_t n1;
@@ -1333,6 +1343,7 @@ struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
 
   std::shared_ptr<JitKernel> fft;
   DeviceAllocation tw_r;

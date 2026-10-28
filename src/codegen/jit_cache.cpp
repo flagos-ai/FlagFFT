@@ -506,6 +506,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                         : std::string("auto"))
                 << " ";
   }
+  if (key.npu_batch_pack > 0) {
+    jit_command << "FLAGFFT_NPU_2D_BATCH_PACK=" << key.npu_batch_pack << " ";
+  }
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(request_dir.string()) << " --dtype "
               << shell_quote(key.dtype) << " --target " << shell_quote(key.target) << " --device-profile "
