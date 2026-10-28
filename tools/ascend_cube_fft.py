@@ -4,6 +4,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.language.extra.cann.extension as al
+from ascend_fourstep_probe import fft_axis_sliced
 
 
 @triton.jit
@@ -25,26 +26,31 @@ def dft_cube(V,WH,WL,L:tl.constexpr,C:tl.constexpr,TERMS:tl.constexpr):
 
 
 @triton.jit
-def cube_fourstep(X,Y,AH,AL,BH,BL,CROSS,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,TERMS:tl.constexpr):
+def cube_fourstep(X,Y,AH,AL,BH,BL,CROSS,WA,WB,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,TERMS:tl.constexpr,CA:tl.constexpr,CB:tl.constexpr,LOGA:tl.constexpr,LOGB:tl.constexpr):
     bid=tl.program_id(0)
     k=tl.arange(0,N)
     raw=tl.load(X+bid*2*N+tl.arange(0,2*N))
     r,i=tl.split(tl.reshape(raw,(N,2)))
-    v=tl.zeros((2*N,),tl.float32)
-    v=al.insert_slice(v,r,[0],[N],[1]);v=al.insert_slice(v,i,[N],[N],[1])
-    v=tl.reshape(v,(2*A,B))
-    first=dft_cube(v,AH,AL,A,B,TERMS)
-    r=tl.reshape(al.extract_slice(first,[0,0],[A,B],[1,1]),(N,))
-    i=tl.reshape(al.extract_slice(first,[A,0],[A,B],[1,1]),(N,))
+    if CA:
+        v=tl.zeros((2*N,),tl.float32)
+        v=al.insert_slice(v,r,[0],[N],[1]);v=al.insert_slice(v,i,[N],[N],[1])
+        first=dft_cube(tl.reshape(v,(2*A,B)),AH,AL,A,B,TERMS)
+        r=tl.reshape(al.extract_slice(first,[0,0],[A,B],[1,1]),(N,))
+        i=tl.reshape(al.extract_slice(first,[A,0],[A,B],[1,1]),(N,))
+    else:
+        r,i=fft_axis_sliced(r,i,WA,N,A,B,LOGA)
     c=tl.load(CROSS+k);d=tl.load(CROSS+N+k)
     rr,ii=r*c-i*d,r*d+i*c
     rr=tl.reshape(tl.trans(tl.reshape(rr,(A,B))),(N,))
     ii=tl.reshape(tl.trans(tl.reshape(ii,(A,B))),(N,))
-    v=tl.zeros((2*N,),tl.float32)
-    v=al.insert_slice(v,rr,[0],[N],[1]);v=al.insert_slice(v,ii,[N],[N],[1])
-    second=dft_cube(tl.reshape(v,(2*B,A)),BH,BL,B,A,TERMS)
-    r=tl.reshape(al.extract_slice(second,[0,0],[B,A],[1,1]),(N,))
-    i=tl.reshape(al.extract_slice(second,[B,0],[B,A],[1,1]),(N,))
+    if CB:
+        v=tl.zeros((2*N,),tl.float32)
+        v=al.insert_slice(v,rr,[0],[N],[1]);v=al.insert_slice(v,ii,[N],[N],[1])
+        second=dft_cube(tl.reshape(v,(2*B,A)),BH,BL,B,A,TERMS)
+        r=tl.reshape(al.extract_slice(second,[0,0],[B,A],[1,1]),(N,))
+        i=tl.reshape(al.extract_slice(second,[B,0],[B,A],[1,1]),(N,))
+    else:
+        r,i=fft_axis_sliced(rr,ii,WB,N,B,A,LOGB)
     out=tl.reshape(tl.join(r,i),(2*N,))
     tl.store(Y+bid*2*N+tl.arange(0,2*N),out)
 

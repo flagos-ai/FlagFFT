@@ -26,7 +26,7 @@ from ascend_cube_fft import cube_fourstep, dft_weights
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--variant', choices=['baseline','local-first','local-both','packed','compact','cube'], default='baseline')
+    parser.add_argument('--variant', choices=['baseline','local-first','local-both','packed','compact','cube','cube-first','cube-second'], default='baseline')
     parser.add_argument('--pack',type=int,default=1)
     parser.add_argument('--factor',type=int,default=32)
     parser.add_argument('--radix',type=int,choices=[2,4],default=4)
@@ -63,12 +63,13 @@ def main():
         runner = ck[(batch, 1, 1)]
         def fft():
             runner(x, y, wa, wb, cross, n, a, b, a.bit_length()-1, b.bit_length()-1, False, False)
-    elif args.variant=='cube':
+    elif args.variant.startswith('cube'):
         ah,al=dft_weights(a);bh,bl=dft_weights(b)
-        ck=cube_fourstep[(batch,)](x,y,ah,al,bh,bl,cross,n,a,b,args.cube_terms,**options)
+        ca=args.variant!='cube-second';cb=args.variant!='cube-first'
+        ck=cube_fourstep[(batch,)](x,y,ah,al,bh,bl,cross,wa,wb,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1,**options)
         runner=ck[(batch,1,1)]
         def fft():
-            runner(x,y,ah,al,bh,bl,cross,n,a,b,args.cube_terms)
+            runner(x,y,ah,al,bh,bl,cross,wa,wb,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1)
     elif args.variant in ('packed','compact'):
         if args.variant=='compact':
             wa,wb=compact_twiddles(a),compact_twiddles(b)
