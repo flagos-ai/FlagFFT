@@ -15,7 +15,7 @@ def npu_policy(monkeypatch):
     old=target._target.get();target.set_codegen_target('npu:Ascend910B4:1')
     for key,value in dict(FLAGFFT_NPU_FOURSTEP_LEAF='1',FLAGFFT_NPU_2D_EXCHANGE='direct_all',
             FLAGFFT_NPU_2D_LANE_MIN='1',FLAGFFT_NPU_PORTABLE_VECTOR_IO='1',
-            FLAGFFT_NPU_VECTOR_REMAINDER='1',FLAGFFT_NPU_COMPACT_STAGES='1',FLAGFFT_NPU_AFFINE_MATRIX_IO='1').items():
+            FLAGFFT_NPU_VECTOR_REMAINDER='1',FLAGFFT_NPU_COMPACT_STAGES='1',FLAGFFT_NPU_AFFINE_MATRIX_IO='1',FLAGFFT_NPU_TRIG_TWIDDLES='1').items():
         monkeypatch.setenv(key,value)
     yield
     target.set_codegen_target(old)

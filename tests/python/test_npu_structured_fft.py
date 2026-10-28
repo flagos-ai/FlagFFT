@@ -59,6 +59,7 @@ def execute_module(path):
         float32=torch.float32,int64=torch.int64,int32=torch.int32,int1=torch.bool,
         full=lambda shape,value,dtype:torch.full(shape,value,dtype=dtype),
         zeros_like=torch.zeros_like,range=range,load=load,store=store,
+        sin=torch.sin,cos=torch.cos,
         gather=lambda v,index,axis:torch.gather(v,axis,index.long()),
         minimum=lambda a,b:torch.minimum(torch.as_tensor(a),torch.as_tensor(b)),where=torch.where)
     tree = ast.parse(Path(path).read_text())

@@ -1250,6 +1250,7 @@ def _emit_stage_block(
         and not fuse_twiddle_into_row and io_mode in {"four_step_row", "four_step_col"})
     npu_batch_io = (npu_affine_tables and dtype == "complex64"
         and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"})
+    npu_trig_twiddles = npu_matrix_io and os.environ.get("FLAGFFT_NPU_TRIG_TWIDDLES") == "1"
     hcu_swizzle_override = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE")
     hcu_swizzle_default = dtype == "complex128" and n >= 64
     hcu_swizzle_enabled = (
@@ -1493,8 +1494,16 @@ def _emit_stage_block(
                     f"r{j}", f"i{j}", lane_block, inner_pack, current_lanes, offset, width,
                     "four_step_batch_base"))
                 if io_mode == "four_step_col":
-                    lines.extend(_emit_npu_matrix_load(indent, "twiddle_ptr", f"matrix_phase{j}",
-                        f"tw_r{j}", f"tw_i{j}", lane_block, inner_pack, current_lanes, offset, width, "0"))
+                    if npu_trig_twiddles:
+                        scale = _direction_sign(direction)*2*math.pi/(four_step_n1*four_step_n2)
+                        lines += [
+                            f"{indent}outer_angle{j} = in{j}.to(tl.float32)*four_step_inner.to(tl.float32)*{scale:.17g}",
+                            f"{indent}tw_r{j} = tl.cos(outer_angle{j})",
+                            f"{indent}tw_i{j} = tl.sin(outer_angle{j})",
+                        ]
+                    else:
+                        lines.extend(_emit_npu_matrix_load(indent, "twiddle_ptr", f"matrix_phase{j}",
+                            f"tw_r{j}", f"tw_i{j}", lane_block, inner_pack, current_lanes, offset, width, "0"))
                     lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
                 continue
             if io_mode in {"contiguous", "permuted_store"}:
@@ -1991,7 +2000,16 @@ def _emit_stage_block(
                 tw_index = f"logical_phys{j}"
                 if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
                     tw_index = f"(lane + {current_lanes} * (group_{stage} * {radix} + {j}))"
-                if npu_affine_tables:
+                if npu_trig_twiddles:
+                    prefix = math.prod(factors[:stage])
+                    scale = _direction_sign(direction)*2*math.pi*j/(prefix*radix)
+                    lines += [
+                        f"{indent}tw_frequency = lane-(lane//{prefix})*{prefix}",
+                        f"{indent}tw_angle = tw_frequency.to(tl.float32)*{scale:.17g}",
+                        f"{indent}twr = tl.cos(tw_angle)",
+                        f"{indent}twi = tl.sin(tw_angle)",
+                    ]
+                elif npu_affine_tables:
                     lines += [
                         f"{indent}tw_range = tl.arange(0,{lane_block})",
                         f"{indent}tw_plane_r = tl.load(tw{stage}_r_ptr + {j*current_lanes} + tw_range, tw_range < {current_lanes}, 0.0)",
