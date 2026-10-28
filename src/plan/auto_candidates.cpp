@@ -365,6 +365,22 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
 
     Factorization factorization = factorize_supported_radices(n);
+    // Resource-bounded experiment: reuse the portable fused leaf codelets
+    // instead of one global-memory Stockham launch per radix.
+    if (const char *raw = std::getenv("FLAGFFT_NPU_PORTABLE_LEAF_MAX")) {
+      std::size_t parsed = 0;
+      const int64_t limit = std::stoll(raw, &parsed);
+      if (parsed != std::string(raw).size() || limit < 0 || limit > 2048)
+        throw std::runtime_error("FLAGFFT_NPU_PORTABLE_LEAF_MAX must be in [0,2048]");
+      if (n > 1 && n <= limit && context.input_dtype == "complex64" &&
+          context.output_dtype == "complex64" && factorization.remainder == 1) {
+        const auto factors = select_leaf_factors(n);
+        if (should_use_leaf(n, factors)) {
+          PlanNodePtr node = make_leaf_plan(n, factors);
+          return {{node, estimate_leaf_warm_cost(n, factors), priority(node)}};
+        }
+      }
+    }
     const char *factor_split_setting = std::getenv("FLAGFFT_NPU_2D_FACTOR_SPLIT");
     if (factor_split_setting != nullptr && std::string(factor_split_setting) != "0" &&
         std::string(factor_split_setting) != "1") {

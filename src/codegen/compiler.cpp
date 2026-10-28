@@ -1469,7 +1469,8 @@ namespace {
   void mark_npu_portable_leaf(KernelKey &key, const FFTRequest &request) {
     const bool allow_3d_leaf = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_LEAF");
     key.npu_portable_leaf = request.device_type == "npu" &&
-                            (request.origin_rank == 2 || allow_3d_leaf);
+                            (request.origin_rank == 2 || allow_3d_leaf ||
+                             std::getenv("FLAGFFT_NPU_PORTABLE_LEAF_MAX") != nullptr);
   }
 
   std::string hcu_3d_final_axis_perm_form(const FFTRequest &request) {
