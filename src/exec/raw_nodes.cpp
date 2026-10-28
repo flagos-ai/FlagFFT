@@ -3576,11 +3576,11 @@ flagfftResult CompiledRawMatrixFFTNode::execute(adaptor::DevicePtr input,
   for (int64_t start=0;start<context.batch;start+=limit) {
     const int64_t count=std::min(limit,context.batch-start);
     auto packed=scratch.get()+start*reduction*sizeof(float);
-    if(mode==0) pack->launch(context.stream,{JitKernelArg::device(input+start*input_distance*sizeof(float)),
+    if(mode==0 || in_place) pack->launch(context.stream,{JitKernelArg::device(input+start*input_distance*sizeof(float)),
         JitKernelArg::device(packed),JitKernelArg::i64(input_distance),JitKernelArg::i32(static_cast<int32_t>(count))},
         ceil_div(count,pack->batch_per_block),1,1);
-    cube->launch(context.stream,{JitKernelArg::device(mode==0?packed:input+start*input_distance*sizeof(float)),JitKernelArg::device(weights.get()),
-        JitKernelArg::device(output+start*output_distance*sizeof(float)),JitKernelArg::i64(mode==0?reduction:input_distance),JitKernelArg::i64(output_distance),
+    cube->launch(context.stream,{JitKernelArg::device(mode==0 || in_place?packed:input+start*input_distance*sizeof(float)),JitKernelArg::device(weights.get()),
+        JitKernelArg::device(output+start*output_distance*sizeof(float)),JitKernelArg::i64(mode==0 || in_place?reduction:input_distance),JitKernelArg::i64(output_distance),
         JitKernelArg::i32(static_cast<int32_t>(count))},ceil_div(count,cube->batch_per_block),tiles,1);
   }
   return FLAGFFT_SUCCESS;
