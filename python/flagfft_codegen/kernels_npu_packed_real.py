@@ -32,7 +32,7 @@ def build_npu_packed_real_source(length,group,mode):
     source+='''@triton.jit
 def packed_real_output(r,i,W,j,M:tl.constexpr,H:tl.constexpr):
     row=j//H
-    k=j%H
+    k=j-row*H
     forward=row*M+tl.where(k==M,0,k)
     reverse=row*M+tl.where((k==0)|(k==M),0,M-k)
     ar=tl.gather(r,forward,0);ai=tl.gather(i,forward,0)

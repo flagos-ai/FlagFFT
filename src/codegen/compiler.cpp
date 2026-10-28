@@ -1109,7 +1109,7 @@ namespace {
     const bool packed_real = mode != NpuAivFFTSmallMode::Complex &&
         n >= 128 && n <= 2048 && stride == 1 && output_stride == 1 &&
         flag_or_default("FLAGFFT_NPU_PACKED_REAL_TWO_AXIS", false);
-    group_size = packed_real ? (group_size == 1 ? 1 : 4)
+    group_size = packed_real ? 1
                             : std::max({group_size, int64_t{64} / n, alignment_group});
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
     auto roots = std::make_shared<DeviceAllocation>(packed_real
