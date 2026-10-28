@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
-from flagfft_codegen.kernels_common import LeafPlan, contiguous_batch_pack_for
+from flagfft_codegen.kernels_common import (
+    LeafPlan,
+    contiguous_batch_pack_for,
+    four_step_col_inner_pack_for,
+    four_step_row_inner_pack_for,
+)
 from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
 from flagfft_codegen.metadata import _metadata
 from flagfft_codegen.target import (
@@ -174,6 +179,47 @@ def test_musa_1d_batch_warp_override_covers_512_point_fourstep_leaves(monkeypatc
                 dtype="complex64",
             )
             assert metadata["num_warps"] == 2
+    finally:
+        reset_musa_1d_batch_default(policy_token)
+        reset_profile(profile_token)
+
+
+@pytest.mark.parametrize("pack", [1, 2, 4, 8])
+def test_musa_fourstep_inner_pack_override_is_bounded_and_scoped(monkeypatch, pack):
+    profile_token = set_profile(
+        BackendProfile.from_device(
+            {
+                "backend": "musa",
+                "device_arch": "31",
+                "warp_size": 32,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 196608,
+            },
+            policy="legacy",
+        )
+    )
+    plan = LeafPlan(512, (32, 16), 1, 32, 1, (), 512, dtype="complex64")
+    other_plan = LeafPlan(256, (16, 16), 1, 32, 1, (), 256, dtype="complex64")
+    policy_token = set_musa_1d_batch_default(True)
+    try:
+        monkeypatch.delenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK", raising=False)
+        other_row_pack = four_step_row_inner_pack_for(
+            256, 1024, "complex64", other_plan
+        )
+        other_col_pack = four_step_col_inner_pack_for(
+            256, 1024, "complex64", other_plan
+        )
+        monkeypatch.setenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK", str(pack))
+        assert four_step_row_inner_pack_for(512, 512, "complex64", plan) == pack
+        assert four_step_col_inner_pack_for(512, 512, "complex64", plan) == pack
+        assert (
+            four_step_row_inner_pack_for(256, 1024, "complex64", other_plan)
+            == other_row_pack
+        )
+        assert (
+            four_step_col_inner_pack_for(256, 1024, "complex64", other_plan)
+            == other_col_pack
+        )
     finally:
         reset_musa_1d_batch_default(policy_token)
         reset_profile(profile_token)

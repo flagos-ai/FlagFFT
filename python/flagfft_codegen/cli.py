@@ -286,11 +286,17 @@ def main() -> None:
         if args.musa_1d_batch:
             batch_pack = os.getenv("FLAGFFT_MUSA_1D_BATCH_PACK", "auto")
             batch_warps = os.getenv("FLAGFFT_MUSA_1D_BATCH_WARPS", "auto")
+            fourstep_pack = os.getenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK", "auto")
             if batch_pack not in {"auto", "1", "2", "4", "8"}:
                 parser.error("FLAGFFT_MUSA_1D_BATCH_PACK must be auto, 1, 2, 4 or 8")
             if batch_warps not in {"auto", "1", "2", "4", "8"}:
                 parser.error("FLAGFFT_MUSA_1D_BATCH_WARPS must be auto, 1, 2, 4 or 8")
-            profile_dir += f"-musa-1d-batch-pack-{batch_pack}-warps-{batch_warps}"
+            if fourstep_pack not in {"auto", "1", "2", "4", "8"}:
+                parser.error("FLAGFFT_MUSA_1D_FOURSTEP_PACK must be auto, 1, 2, 4 or 8")
+            profile_dir += (
+                f"-musa-1d-batch-pack-{batch_pack}-warps-{batch_warps}"
+                f"-fourstep-pack-{fourstep_pack}"
+            )
     if profile.backend == "hcu":
         pair_store = os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")

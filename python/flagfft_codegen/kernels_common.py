@@ -992,6 +992,17 @@ def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
         return 4
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
+    if (
+        _mthreads_backend_active()
+        and musa_1d_batch_default_enabled()
+        and plan is not None
+        and plan.length == 512
+    ):
+        override = os.getenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK", "auto")
+        if override != "auto":
+            if override not in {"1", "2", "4", "8"}:
+                raise ValueError("FLAGFFT_MUSA_1D_FOURSTEP_PACK must be auto, 1, 2, 4 or 8")
+            return _bounded_inner_pack(int(override), plan)
     # HCU's FP32 1024-point leaves benefit from using the exact unpadded
     # four-step stride: pack four fills 64 KiB and improved the measured
     # large C2R cases.  Keep the generic 64-byte margin for FP64; pack two
@@ -1014,6 +1025,17 @@ def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
         return 4
     if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
         return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
+    if (
+        _mthreads_backend_active()
+        and musa_1d_batch_default_enabled()
+        and plan is not None
+        and plan.length == 512
+    ):
+        override = os.getenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK", "auto")
+        if override != "auto":
+            if override not in {"1", "2", "4", "8"}:
+                raise ValueError("FLAGFFT_MUSA_1D_FOURSTEP_PACK must be auto, 1, 2, 4 or 8")
+            return _bounded_inner_pack(int(override), plan)
     extra_smem_elements = (
         0
         if current_profile().backend == "hcu" and not _is_double_dtype(dtype)

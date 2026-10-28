@@ -208,9 +208,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (musa_1d_batch_policy_) {
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
     const char *batch_warps = std::getenv("FLAGFFT_MUSA_1D_BATCH_WARPS");
+    const char *fourstep_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK");
     cache_key += ";musa-1d-batch=1;pack=" +
         std::string(batch_pack != nullptr ? batch_pack : "auto") + ";warps=" +
-        std::string(batch_warps != nullptr ? batch_warps : "auto");
+        std::string(batch_warps != nullptr ? batch_warps : "auto") + ";fourstep-pack=" +
+        std::string(fourstep_pack != nullptr ? fourstep_pack : "auto");
   }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
