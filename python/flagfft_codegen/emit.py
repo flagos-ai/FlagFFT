@@ -642,10 +642,13 @@ def _emit_r2c_pointwise_jit_kernel(
         # supports wider NPU tiles. Row grouping belongs to grid.y.
         "block": 256,
         "grid_x_override": (
-            ((n // 2 + 1 if kernel == "r2c_half_pack" else n)
+            ((n // 2 + 1 if kernel in {"r2c_half_pack", "r2c_packed_postprocess"}
+              else n // 2 if kernel == "c2r_packed_preprocess" else n)
              + elements_per_program - 1) // elements_per_program
             if kernel in {"real_to_complex", "r2c_half_pack",
-                          "compact_to_hermitian_full", "complex_to_real"} else 0
+                          "compact_to_hermitian_full", "complex_to_real"}
+            or (target.startswith("npu:") and dtype == "complex64" and n >= 512)
+            else 0
         ),
         "rows_per_block": int(rows_per_block),
     }

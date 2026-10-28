@@ -1764,7 +1764,7 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
       return FLAGFFT_SUCCESS;
     }
 
-    const int64_t grid_x=ceil_div(half,block);
+    const int64_t grid_x=real_grid_x(postprocess_kernel,half);
     const int64_t bytes=complex_element_bytes(context.request.input_dtype);
     const int64_t limit=context.request.device_type=="npu"
         ? std::max<int64_t>(1,adaptor::max_launch_blocks()/grid_x)*postprocess_kernel->batch_per_block
@@ -2126,7 +2126,7 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
           aiv_preprocess->execute(input, packed_input.get(), boundary_context);
       if (preprocess_result != FLAGFFT_SUCCESS) return preprocess_result;
     } else {
-      const int64_t grid_x=ceil_div(packed,block);
+      const int64_t grid_x=real_grid_x(preprocess_kernel,packed);
       const int64_t bytes=complex_element_bytes(context.request.input_dtype);
       const int64_t limit=context.request.device_type=="npu"
           ? std::max<int64_t>(1,adaptor::max_launch_blocks()/grid_x)*preprocess_kernel->batch_per_block

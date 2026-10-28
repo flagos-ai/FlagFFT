@@ -33,8 +33,10 @@ namespace {
         key.perm_form=="npu_matrix_pack" || key.perm_form=="npu_matrix_cube";
     const bool long_power2 = key.length >= 512 &&
         (key.perm_form == "structured_power2" || key.perm_form == "structured_recursive_power2");
+    const bool structured_fourstep = key.perm_form.rfind("npu_structured_recursive_axis_planar",0)==0;
     const char *policy = matrix ? "FLAGFFT_NPU_MATRIX_AUTO_BLOCK" :
-                         long_power2 ? "FLAGFFT_NPU_POWER2_AUTO_BLOCK" : nullptr;
+                         long_power2 ? "FLAGFFT_NPU_POWER2_AUTO_BLOCK" :
+                         structured_fourstep ? "FLAGFFT_NPU_FOURSTEP_AUTO_BLOCK" : nullptr;
     if (policy != nullptr) {
       if (const char *value=std::getenv(policy)) {
         const std::string setting(value);

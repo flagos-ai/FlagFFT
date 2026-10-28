@@ -415,9 +415,11 @@ def _build_r2c_half_pack_kernel_source(
     )
 
 
-def _build_npu_packed_boundary(n, inverse):
+def _build_npu_packed_boundary(n, inverse, count=256):
     """Use contiguous complex windows and local reversal for the real boundary."""
-    packed=n//2;half=packed+1;count=256
+    packed=n//2;half=packed+1
+    if count not in (256,512,1024,2048):
+        raise ValueError("NPU packed boundary tile must be 256, 512, 1024 or 2048")
     name=f"_{'c2r_packed_preprocess' if inverse else 'r2c_packed_postprocess'}_kernel_n{n}_f32"
     distance='input_distance' if inverse else 'output_distance'
     source=f'''@triton.jit
@@ -471,7 +473,7 @@ def _build_r2c_packed_postprocess_kernel_source(
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
     if current_profile().backend=="npu" and dtype=="complex64" and n>=512:
-        return _build_npu_packed_boundary(n,False)
+        return _build_npu_packed_boundary(n,False,int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE","256")))
     packed = n // 2
     half = packed + 1
     block = 256
@@ -533,7 +535,7 @@ def _build_c2r_packed_preprocess_kernel_source(
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
     if current_profile().backend=="npu" and dtype=="complex64" and n>=512:
-        return _build_npu_packed_boundary(n,True)
+        return _build_npu_packed_boundary(n,True,int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE","256")))
     packed = n // 2
     block = 256
     block_cols, rows_per_block = _packed_layout(packed, block)
