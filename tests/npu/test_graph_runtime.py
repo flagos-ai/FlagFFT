@@ -6,7 +6,7 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('length,batch',[(16,1),(16,64),(1024,1)])
+@pytest.mark.parametrize('length,batch',[(16,1),(16,64),(210,1),(210,64),(1024,1)])
 def test_graph_replays_live_buffers(length,batch,capfd):
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
