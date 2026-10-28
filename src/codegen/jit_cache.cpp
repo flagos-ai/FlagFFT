@@ -31,11 +31,15 @@ namespace {
   bool npu_auto_blockify_for(const KernelKey &key) {
     const bool matrix=key.perm_form.rfind("npu_matrix_fourstep_",0)==0 ||
         key.perm_form=="npu_matrix_pack" || key.perm_form=="npu_matrix_cube";
-    if (matrix) {
-      if (const char *value=std::getenv("FLAGFFT_NPU_MATRIX_AUTO_BLOCK")) {
+    const bool long_power2 = key.length >= 512 &&
+        (key.perm_form == "structured_power2" || key.perm_form == "structured_recursive_power2");
+    const char *policy = matrix ? "FLAGFFT_NPU_MATRIX_AUTO_BLOCK" :
+                         long_power2 ? "FLAGFFT_NPU_POWER2_AUTO_BLOCK" : nullptr;
+    if (policy != nullptr) {
+      if (const char *value=std::getenv(policy)) {
         const std::string setting(value);
         if (setting!="0" && setting!="1")
-          throw std::runtime_error("FLAGFFT_NPU_MATRIX_AUTO_BLOCK must be 0 or 1");
+          throw std::runtime_error(std::string(policy) + " must be 0 or 1");
         return setting=="1";
       }
     }
