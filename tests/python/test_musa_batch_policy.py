@@ -223,3 +223,29 @@ def test_musa_fourstep_inner_pack_override_is_bounded_and_scoped(monkeypatch, pa
     finally:
         reset_musa_1d_batch_default(policy_token)
         reset_profile(profile_token)
+
+
+def test_musa_fourstep_row_col_pack_overrides_can_be_screened_independently(monkeypatch):
+    monkeypatch.delenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK", raising=False)
+    monkeypatch.setenv("FLAGFFT_MUSA_1D_FOURSTEP_ROW_PACK", "1")
+    monkeypatch.setenv("FLAGFFT_MUSA_1D_FOURSTEP_COL_PACK", "8")
+    profile_token = set_profile(
+        BackendProfile.from_device(
+            {
+                "backend": "musa",
+                "device_arch": "31",
+                "warp_size": 32,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 196608,
+            },
+            policy="legacy",
+        )
+    )
+    policy_token = set_musa_1d_batch_default(True)
+    plan = LeafPlan(512, (32, 16), 1, 32, 1, (), 512, dtype="complex64")
+    try:
+        assert four_step_row_inner_pack_for(512, 512, "complex64", plan) == 1
+        assert four_step_col_inner_pack_for(512, 512, "complex64", plan) == 8
+    finally:
+        reset_musa_1d_batch_default(policy_token)
+        reset_profile(profile_token)

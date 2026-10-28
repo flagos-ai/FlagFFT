@@ -1917,11 +1917,15 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
                           !request.input_strides.empty() && request.input_strides.back() == 1;
   const char *musa_batch_warps = std::getenv("FLAGFFT_MUSA_1D_BATCH_WARPS");
   const char *musa_fourstep_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK");
+  const char *musa_fourstep_row_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_ROW_PACK");
+  const char *musa_fourstep_col_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_COL_PACK");
   const auto explicit_musa_override = [](const char *value) {
     return value != nullptr && *value != '\0' && std::string(value) != "auto";
   };
   const bool musa_batch_tuning_requested =
-      explicit_musa_override(musa_batch_warps) || explicit_musa_override(musa_fourstep_pack);
+      explicit_musa_override(musa_batch_warps) || explicit_musa_override(musa_fourstep_pack) ||
+      explicit_musa_override(musa_fourstep_row_pack) ||
+      explicit_musa_override(musa_fourstep_col_pack);
   musa_1d_batch_policy_ = request.device_type == "musa" && request.device_arch == "31" &&
                           request.raw_dim == 1 && request.origin_rank <= 1 && request.batch > 1 &&
                           request.fft_length == request.requested_n &&

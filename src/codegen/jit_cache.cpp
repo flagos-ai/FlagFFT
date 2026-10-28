@@ -209,10 +209,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
     const char *batch_warps = std::getenv("FLAGFFT_MUSA_1D_BATCH_WARPS");
     const char *fourstep_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK");
+    const char *fourstep_row_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_ROW_PACK");
+    const char *fourstep_col_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_COL_PACK");
     cache_key += ";musa-1d-batch=1;pack=" +
         std::string(batch_pack != nullptr ? batch_pack : "auto") + ";warps=" +
         std::string(batch_warps != nullptr ? batch_warps : "auto") + ";fourstep-pack=" +
-        std::string(fourstep_pack != nullptr ? fourstep_pack : "auto");
+        std::string(fourstep_pack != nullptr ? fourstep_pack : "auto") + ";row-pack=" +
+        std::string(fourstep_row_pack != nullptr ? fourstep_row_pack : "auto") + ";col-pack=" +
+        std::string(fourstep_col_pack != nullptr ? fourstep_col_pack : "auto");
   }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
