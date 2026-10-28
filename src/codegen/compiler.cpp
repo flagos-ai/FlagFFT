@@ -5862,8 +5862,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       n0>=16 && n0<=512 && n1>=16 && n1<=512 &&
       (n0&(n0-1))==0 && (n1&(n1-1))==0 &&
       flag_or_default("FLAGFFT_NPU_2D_FUSED_FFT_STORES",false)) {
-    auto row=make_npu_aiv_fft_small_child(row_request,n1,1,8,NpuAivFFTSmallMode::Complex,n0);
-    auto col=make_npu_aiv_fft_small_child(col_request,n0,1,8,NpuAivFFTSmallMode::Complex,n1);
+    int64_t preferred=8;
+    if (const char *value=std::getenv("FLAGFFT_NPU_2D_FUSED_FFT_PACK")) {
+      preferred=std::stoll(value);
+      if (preferred<1 || preferred>16 || (preferred&(preferred-1))!=0)
+        throw std::runtime_error("FLAGFFT_NPU_2D_FUSED_FFT_PACK must be 1, 2, 4, 8 or 16");
+    }
+    const int64_t row_group=std::min(preferred,int64_t{4096}/n1);
+    const int64_t col_group=std::min(preferred,int64_t{4096}/n0);
+    auto row=make_npu_aiv_fft_small_child(row_request,n1,1,row_group,NpuAivFFTSmallMode::Complex,n0);
+    auto col=make_npu_aiv_fft_small_child(col_request,n0,1,col_group,NpuAivFFTSmallMode::Complex,n1);
     return std::make_shared<CompiledRaw2DRCNode>(n0,n1,std::move(row),std::move(col),
         adaptor::Memory(static_cast<std::size_t>(batch*n0*n1*element_bytes)),false);
   }
