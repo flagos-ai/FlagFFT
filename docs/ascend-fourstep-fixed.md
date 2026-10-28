@@ -76,3 +76,33 @@ four-step **283.516 µs/整批**、SiP **110.354 µs/整批**，加速比
 传输。它仍不是产品 API 集成后的端到端测量。0.15 µs/变换的微测达标
 不等于 SiP 性能达标。本轮结果归档于外围工作区
 `results/20261027_232944_fourstep_sip/README.md`。
+
+
+## transport P0 后的优化筛选（2026-10-28）
+
+在 FlagTree `b25bd0e8c5` / FLIR `f9cf7cade1` 的固定 wheel 上，继续按
+batch 打包、lane-local codelet、紧凑 twiddle、Vector/Cube 混合等方向
+做了筛选。当前有效候选为 `ascend_packed_fft.py` 中每个逻辑任务打包
+两次 FFT，并关闭 multibuffer；没有改变产品计划器默认值。
+
+同条件 N=2048、batch=2048，三 seed 各 7 轮的普通调用设备时间中位数
+由 283.398 降为 **267.492 µs/整批**（降低 5.61%），Graph 由 281.229
+降为 **265.010 µs/整批**（降低 5.77%）。候选配对 SiP 为普通调用
+109.484、Graph 107.381 µs，加速比分别 **0.4093× / 0.4052×**；仍未
+达到 SiP 性能目标。主机提交加最终同步的普通调用比值为 0.4225×。
+三个 seed 的数值和图重放检查通过，最大 rel_l2 小于 1.73e-7。
+
+四路打包被 192 KiB UB 上限拒绝；紧凑 twiddle 的广播 lowering 明显
+变慢；大规模 codelet 展开遇到编译时间上限。补偿 FP16 矩阵乘法可在
+随机输入上保持约 1.8e-7 的 rel_l2，但双路 Cube 完整 FFT 仍约
+0.62 ms。FP32 IEEE、单轴混合、16 点 Cube 叶子、ND/NZ 转换放到
+Vector 以及 CV 自动平衡均未超过 Vector 打包候选。
+
+msprof 的 Vector 基线活动率约 84%，Cube 原型 MAC 活动率约 8%，
+同轮 SiP MAC 约 51%。这些指标可重叠，不能当作算术峰值利用率，
+也不能据此复原 SiP 的算法。后续重点应是矩阵叶子的输入准备、物理
+布局转换与输出接续，先证明含准备开销的叶子优于 Vector，再接回
+four-step；当前证据不支持只增加 `tl.dot` 或继续扩大 batch tile。
+
+完整筛选、失败原因、复测样本及计数器归档于外围工作区
+`results/20261028_001023_fft_local_codegen/README.md`。
