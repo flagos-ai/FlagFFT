@@ -42,7 +42,8 @@ def build_npu_table_transpose2d_source(
             index = tl.load(idx_ptr + lane) >> 2
             r = tl.arange(0, {tile})
             w = tl.arange(0, {2 * tile})
-            for tile_id in range(pid, {tiles}, tl.num_programs(0)):
+            tile_id = pid
+            while tile_id < {tiles}:
                 tile_row = (tile_id // {col_tiles}).to(tl.{coordinate_type})
                 tile_col = (tile_id % {col_tiles}).to(tl.{coordinate_type})
                 row = tile_row * {tile} + r
@@ -55,5 +56,6 @@ def build_npu_table_transpose2d_source(
                 word = tile_row * {2 * tile} + w
                 tl.store(target_base + col[:, None] * {2 * rows} + word[None, :], data,
                          (col[:, None] < {cols}) & (word[None, :] < {2 * rows}) & (batch < nbatch))
+                tile_id += tl.num_programs(0)
     """)
     return name, source, ["in_ptr", "out_ptr", "idx_ptr", "nbatch"], min(programs, tiles)

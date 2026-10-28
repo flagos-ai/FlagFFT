@@ -143,7 +143,7 @@ def test_npu_transpose_grid_matches_selected_tile(monkeypatch, tmp_path, shape, 
     tree = ast.parse(source)
     # Tile decoding is scalar; the full local vector uses the shared GM table.
     assert "index = tl.load(idx_ptr + lane) >> 2" in source
-    assert "range(pid," in source and "tl.num_programs(0)" in source
+    assert "while tile_id <" in source and "tile_id += tl.num_programs(0)" in source
 
 
 def test_existing_npu_transpose_source_is_preserved(monkeypatch, tmp_path):

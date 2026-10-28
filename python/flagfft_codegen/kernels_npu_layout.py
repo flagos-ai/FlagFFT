@@ -60,7 +60,8 @@ def {name}(in_ptr, out_ptr, idx_ptr, nbatch):
     input_batch = in_ptr + batch * {2 * n0 * n1 * n2}
     output_batch = out_ptr + batch * {2 * n0 * n1 * n2}
     index = tl.load(idx_ptr + tl.arange(0, 8192)) >> 2
-    for tile_id in range(pid, {total_tiles}, tl.num_programs(0)):
+    tile_id = pid
+    while tile_id < {total_tiles}:
         tile0 = (tile_id // {tiles[1] * tiles[2]}).to(tl.{coordinate_type})
         tile1 = ((tile_id // {tiles[2]}) % {tiles[1]}).to(tl.{coordinate_type})
         tile2 = (tile_id % {tiles[2]}).to(tl.{coordinate_type})
@@ -78,6 +79,7 @@ def {name}(in_ptr, out_ptr, idx_ptr, nbatch):
         tl.store(output_batch + destination, result,
                  (o0 < {output[0]}) & (o1 < {output[1]})
                  & (c < 2 * ({output[2]} - tile2 * 16)) & (batch < nbatch))
+        tile_id += tl.num_programs(0)
 """
     return name, source, min(programs, total_tiles)
 

@@ -125,7 +125,7 @@ def test_local_coordinates_widen_without_narrowing_batch(dims, width):
     assert re.search(r"tile0 = .*\.to\(tl\." + width + r"\)", source)
     assert "batch = tl.program_id(2).to(tl.int64)" in source
     assert blocks <= 65535
-    assert source.index("index = tl.load") < source.index("for tile_id in range")
+    assert source.index("index = tl.load") < source.index("while tile_id <")
 
 
 def test_nonpositive_program_count_is_rejected():
