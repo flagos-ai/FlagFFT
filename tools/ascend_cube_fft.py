@@ -33,8 +33,8 @@ def dft_cube(V,WH,WL,L:tl.constexpr,C:tl.constexpr,TERMS:tl.constexpr):
 def reduced_cube(r,i,WH,WL,ROOT,L:tl.constexpr,C:tl.constexpr,LEAF:tl.constexpr,STEPS:tl.constexpr,TERMS:tl.constexpr):
     N:tl.constexpr=L*C
     for s in tl.static_range(0,STEPS):
-        G:tl.constexpr=2**s
-        SPAN:tl.constexpr=(L//G)*C
+        G=2**s
+        SPAN=(L//G)*C
         p=tl.reshape(r,(G,SPAN));q=tl.reshape(i,(G,SPAN))
         ar=tl.reshape(al.extract_slice(p,[0,0],[G,SPAN//2],[1,1]),(N//2,))
         br=tl.reshape(al.extract_slice(p,[0,SPAN//2],[G,SPAN//2],[1,1]),(N//2,))
