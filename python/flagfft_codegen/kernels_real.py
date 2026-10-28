@@ -565,6 +565,7 @@ def _build_compact_to_hermitian_full_kernel_source(
     if npu:
         R, C = rows_per_block, block_cols
         src_len = 1 << (2 * half - 1).bit_length()
+        nyquist_out_guard = f" | (safe_out == {n // 2})" if n % 2 == 0 else ""
         source = dedent(
             f"""
             @triton.jit
@@ -595,7 +596,7 @@ def _build_compact_to_hermitian_full_kernel_source(
                 xr = tl.gather(src, src_k * 2, 1)
                 xi = tl.gather(src, src_k * 2 + 1, 1)
                 xi = tl.where(upper, -xi, xi)
-                xi = tl.where((safe_out == 0) | (safe_out == {n // 2}), {zero}, xi)
+                xi = tl.where((safe_out == 0){nyquist_out_guard}, {zero}, xi)
                 packed = tl.zeros(({R}, {2 * C}), tl.float32)
                 xr_c = tle.dsa.extract_slice(xr, [0, 0], [{R}, {C}], [1, 1])
                 xi_c = tle.dsa.extract_slice(xi, [0, 0], [{R}, {C}], [1, 1])
