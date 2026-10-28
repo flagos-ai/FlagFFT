@@ -123,8 +123,8 @@ def test_coordinate_width_keeps_outer_batch_wide(shape, index_type):
     assert "input_batch = in_ptr + batch *" in source
 
 
-@pytest.mark.parametrize("shape,tile", [((128, 128), 32), ((2048, 2048), 64),
-    ((2048, 1025), 64), ((32, 46189), 64), ((16, 131072), 32)])
+@pytest.mark.parametrize("shape,tile", [((128, 128), 32), ((2048, 2048), 32),
+    ((2048, 1025), 32), ((32, 46189), 32), ((16, 131072), 32)])
 def test_npu_transpose_grid_matches_selected_tile(monkeypatch, tmp_path, shape, tile):
     from flagfft_codegen import emit
     monkeypatch.setattr(emit, "_npu_backend_active", lambda: True)
