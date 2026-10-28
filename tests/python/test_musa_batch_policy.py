@@ -150,7 +150,13 @@ def test_musa_1d_batch_pack_does_not_change_unscoped_leaves(monkeypatch):
         reset_profile(profile_token)
 
 
-def test_musa_1d_batch_warp_override_covers_512_point_fourstep_leaves(monkeypatch):
+@pytest.mark.parametrize(
+    "length,factors,lanes",
+    [(512, (32, 16), 32), (128, (8, 4, 4), 16), (64, (4, 4, 4), 16)],
+)
+def test_musa_1d_batch_warp_override_covers_short_fourstep_leaves(
+    monkeypatch, length, factors, lanes
+):
     monkeypatch.setenv("FLAGFFT_MUSA_1D_BATCH_WARPS", "2")
     profile_token = set_profile(
         BackendProfile.from_device(
@@ -165,7 +171,7 @@ def test_musa_1d_batch_warp_override_covers_512_point_fourstep_leaves(monkeypatc
         )
     )
     policy_token = set_musa_1d_batch_default(True)
-    plan = LeafPlan(512, (32, 16), 1, 32, 1, (), 512, dtype="complex64")
+    plan = LeafPlan(length, factors, 1, lanes, 1, (), length, dtype="complex64")
     try:
         for kernel_type in ("four_step_hermitian_row", "four_step_c2r_col"):
             metadata = _metadata(
@@ -174,8 +180,8 @@ def test_musa_1d_batch_warp_override_covers_512_point_fourstep_leaves(monkeypatc
                 arg_names=[],
                 plan=plan,
                 kernel_type=kernel_type,
-                n1=512,
-                n2=512,
+                n1=length,
+                n2=8192 // length,
                 dtype="complex64",
             )
             assert metadata["num_warps"] == 2
@@ -199,7 +205,7 @@ def test_musa_fourstep_inner_pack_override_is_bounded_and_scoped(monkeypatch, pa
         )
     )
     plan = LeafPlan(512, (32, 16), 1, 32, 1, (), 512, dtype="complex64")
-    other_plan = LeafPlan(256, (16, 16), 1, 32, 1, (), 256, dtype="complex64")
+    other_plan = LeafPlan(32, (8, 4), 1, 16, 1, (), 32, dtype="complex64")
     policy_token = set_musa_1d_batch_default(True)
     try:
         monkeypatch.delenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK", raising=False)
@@ -246,6 +252,36 @@ def test_musa_fourstep_row_col_pack_overrides_can_be_screened_independently(monk
     try:
         assert four_step_row_inner_pack_for(512, 512, "complex64", plan) == 1
         assert four_step_col_inner_pack_for(512, 512, "complex64", plan) == 8
+    finally:
+        reset_musa_1d_batch_default(policy_token)
+        reset_profile(profile_token)
+
+
+def test_musa_fourstep_inner_pack_override_covers_short_leaves(monkeypatch):
+    monkeypatch.delenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK", raising=False)
+    monkeypatch.setenv("FLAGFFT_MUSA_1D_FOURSTEP_ROW_PACK", "2")
+    monkeypatch.setenv("FLAGFFT_MUSA_1D_FOURSTEP_COL_PACK", "8")
+    profile_token = set_profile(
+        BackendProfile.from_device(
+            {
+                "backend": "musa",
+                "device_arch": "31",
+                "warp_size": 32,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 196608,
+            },
+            policy="legacy",
+        )
+    )
+    policy_token = set_musa_1d_batch_default(True)
+    row_plan = LeafPlan(128, (8, 4, 4), 1, 16, 1, (), 128, dtype="complex64")
+    col_plan = LeafPlan(64, (4, 4, 4), 1, 16, 1, (), 64, dtype="complex64")
+    other_plan = LeafPlan(32, (8, 4), 1, 16, 1, (), 32, dtype="complex64")
+    try:
+        assert four_step_row_inner_pack_for(128, 64, "complex64", row_plan) == 2
+        assert four_step_col_inner_pack_for(128, 64, "complex64", col_plan) == 8
+        assert four_step_row_inner_pack_for(128, 64, "complex64", other_plan) != 2
+        assert four_step_col_inner_pack_for(128, 64, "complex64", other_plan) != 8
     finally:
         reset_musa_1d_batch_default(policy_token)
         reset_profile(profile_token)
