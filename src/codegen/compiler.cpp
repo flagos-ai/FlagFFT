@@ -129,6 +129,54 @@ namespace {
     return DeviceAllocation::from_floats(values);
   }
 
+  std::vector<int64_t> npu_mixed_axis_factors(int64_t length) {
+    if (length < 16 || length > 2048) return {};
+    const std::vector<int64_t> radices = {32,30,28,27,25,24,20,19,18,17,16,
+        15,13,12,11,10,9,8,7,6,5,4,3,2};
+    auto pad = [](int64_t n) { int64_t p=1; while(p<n) p*=2; return p; };
+    std::vector<int64_t> best;
+    int64_t best_score = std::numeric_limits<int64_t>::max();
+    auto consider = [&](std::vector<int64_t> factors) {
+      int64_t size=1, sum=0;
+      for (auto n : factors) { size*=pad(n); sum+=n; }
+      const int64_t score=size*10000+factors.size()*100+sum;
+      if (size<=4096 && score<best_score) { best=std::move(factors); best_score=score; }
+    };
+    for (auto a : radices) for (auto b : radices) {
+      if (a*b==length) consider({a,b});
+      if (length%(a*b)==0) for (auto c : radices)
+        if (a*b*c==length) consider({a,b,c});
+    }
+    return best;
+  }
+
+  DeviceAllocation npu_mixed_axis_roots(const std::vector<int64_t> &factors) {
+    std::vector<int64_t> pads;
+    for (auto n : factors) { int64_t p=1; while(p<n) p*=2; pads.push_back(p); }
+    std::vector<float> values;
+    for (std::size_t stage=0; stage+1<factors.size(); ++stage) {
+      int64_t suffix=1, later=1;
+      for (std::size_t k=stage;k<factors.size();++k) suffix*=factors[k];
+      for (std::size_t k=stage+1;k<factors.size();++k) later*=stage==0 ? factors[k] : pads[k];
+      if (stage==0) { int64_t p=1; while(p<later) p*=2; later=p; }
+      for (int part=0;part!=2;++part) for (int64_t d=0;d<factors[stage];++d)
+        for (int64_t j=0;j<later;++j) {
+          int64_t actual=j;
+          if (stage) {
+            actual=0;
+            for (std::size_t k=stage+1;k<factors.size();++k) {
+              int64_t stride=1, weight=1;
+              for (std::size_t t=k+1;t<factors.size();++t) { stride*=pads[t]; weight*=factors[t]; }
+              actual+=(j/stride%pads[k])*weight;
+            }
+          }
+          const double angle=-2.0*kPi*d*actual/suffix;
+          values.push_back(static_cast<float>(part==0 ? std::cos(angle) : std::sin(angle)));
+        }
+    }
+    return DeviceAllocation::from_floats(values);
+  }
+
 
 
   bool npu_2d_table_transpose_supported(const FFTRequest &request,
@@ -2626,6 +2674,25 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           compile_kernel(col_key), std::move(col_tables),
           npu_structured_cross(four_step->length, n1, request.direction == "inverse"),
           adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * sizeof(float) * 2)));
+    }
+    if (request.device_type == "npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        flag_or_default("FLAGFFT_NPU_PACKED_MIXED_AXIS", false)) {
+      auto row_factors=npu_mixed_axis_factors(n1), col_factors=npu_mixed_axis_factors(n2);
+      if (!row_factors.empty() && !col_factors.empty()) {
+        auto row_key=KernelKey::four_step_row(triton_target_for_request(request),
+            request.direction,request.input_dtype,n1,n2,n1,row_factors,32,8,{},n1);
+        auto col_key=KernelKey::four_step_col(triton_target_for_request(request),
+            request.direction,request.input_dtype,n1,n2,n2,col_factors,32,8,{},n2);
+        row_key.perm_form=col_key.perm_form="npu_packed_mixed_planar";
+        std::vector<DeviceAllocation> row_tables,col_tables;
+        row_tables.push_back(npu_mixed_axis_roots(row_factors));
+        col_tables.push_back(npu_mixed_axis_roots(col_factors));
+        return std::make_shared<CompiledRawFourStepFusedNode>(four_step->length,n1,n2,
+            compile_kernel(row_key),std::move(row_tables),compile_kernel(col_key),std::move(col_tables),
+            npu_structured_cross(four_step->length,n1,request.direction=="inverse"),
+            adaptor::Memory(static_cast<std::size_t>(batch*four_step->length*sizeof(float)*2)));
+      }
     }
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
