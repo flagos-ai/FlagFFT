@@ -1454,13 +1454,6 @@ def _emit_stage_block(
             f"(compact_rows < nbatch) & (compact_cols < {2*(n//2+1)}), 0.0)",
             f"{indent}compact_input = tl.reshape(compact_input,({smem_pack*compact_row},))",
         ]
-    if npu_affine_tables and stage > 0:
-        table_block = 1 << (n-1).bit_length()
-        lines += [
-            f"{indent}tw_range = tl.arange(0,{table_block})",
-            f"{indent}tw_plane_r = tl.load(tw{stage}_r_ptr + tw_range, tw_range < {n}, 0.0)",
-            f"{indent}tw_plane_i = tl.load(tw{stage}_i_ptr + tw_range, tw_range < {n}, 0.0)",
-        ]
     for j in range(radix):
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
@@ -2000,7 +1993,10 @@ def _emit_stage_block(
                     tw_index = f"(lane + {current_lanes} * (group_{stage} * {radix} + {j}))"
                 if npu_affine_tables:
                     lines += [
-                        f"{indent}tw_lookup = tl.where(lane_mask, {tw_index}, 0)",
+                        f"{indent}tw_range = tl.arange(0,{lane_block})",
+                        f"{indent}tw_plane_r = tl.load(tw{stage}_r_ptr + {j*current_lanes} + tw_range, tw_range < {current_lanes}, 0.0)",
+                        f"{indent}tw_plane_i = tl.load(tw{stage}_i_ptr + {j*current_lanes} + tw_range, tw_range < {current_lanes}, 0.0)",
+                        f"{indent}tw_lookup = tl.where(lane_mask, lane, 0)",
                         f"{indent}twr = tl.gather(tw_plane_r, tw_lookup, 0)",
                         f"{indent}twi = tl.gather(tw_plane_i, tw_lookup, 0)",
                     ]
