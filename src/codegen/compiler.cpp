@@ -69,9 +69,9 @@ namespace {
     return DeviceAllocation::from_floats(npu_structured_root_values(length, columns));
   }
 
-  DeviceAllocation npu_recursive_axis_roots(int64_t length, int64_t columns) {
-    if (length < 512) return npu_structured_roots(length, columns);
-    const int64_t a = 32, b = length / a, points = length * columns;
+  DeviceAllocation npu_recursive_axis_roots(int64_t length, int64_t columns, int64_t minimum = 512) {
+    if (length < minimum) return npu_structured_roots(length, columns);
+    const int64_t a = length == 256 ? 16 : 32, b = length / a, points = length * columns;
     auto values = npu_structured_root_values(a, b * columns);
     auto second = npu_structured_root_values(b, a * columns);
     values.insert(values.end(), second.begin(), second.end());
@@ -112,7 +112,7 @@ namespace {
     auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
         request.direction, group, stride, mode, n);
     key.perm_form = packed_real ? "structured_packed_real" : "structured_power2";
-    if (!packed_real && n >= 512 && flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2", false))
+    if (!packed_real && n >= 256 && flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2", false))
       key.perm_form = "structured_recursive_power2";
     key.factors = {output_stride};  // Private grouped-FFT output layout is part of cache identity.
     return TritonCompiler{}.compile_kernel(key);
@@ -1179,8 +1179,8 @@ namespace {
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
     auto roots = std::make_shared<DeviceAllocation>(packed_real
         ? npu_packed_real_roots(n, group_size)
-        : n >= 512 && flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2", false)
-            ? npu_recursive_axis_roots(n, group_size) : npu_structured_roots(n, group_size));
+        : n >= 256 && flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2", false)
+            ? npu_recursive_axis_roots(n, group_size, 256) : npu_structured_roots(n, group_size));
     auto kernel = npu_power2_kernel(request, n, group_size, stride, output_stride,
         static_cast<int64_t>(mode), packed_real);
     return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n, stride, output_stride,
@@ -1445,7 +1445,8 @@ namespace {
       const FFTRequest &request, int64_t batch, NpuAivFFT256Mode mode) {
     if (batch <= 0 || batch % 8 != 0) throw std::runtime_error("Grouped real FFT256 requires batches divisible by 8");
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
-    auto roots = std::make_shared<DeviceAllocation>(npu_structured_roots(256, 8));
+    auto roots = std::make_shared<DeviceAllocation>(flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2",false)
+        ? npu_recursive_axis_roots(256,8,256) : npu_structured_roots(256,8));
     auto kernel = npu_power2_kernel(request, 256, 8, 1, 1, static_cast<int64_t>(mode));
     return std::make_shared<CompiledRawNpuAivFFT256Node>(std::move(indices),
         std::move(roots), 8, true, false, false, 0, mode, std::move(kernel));
@@ -1503,7 +1504,8 @@ namespace {
     const bool transposed_store = allow_transposed_store && pair_store_requested;
     const bool radix4_mode = allow_transposed_store && radix4_requested;
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
-    auto roots = std::make_shared<DeviceAllocation>(npu_structured_roots(256, group_size));
+    auto roots = std::make_shared<DeviceAllocation>(flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2",false)
+        ? npu_recursive_axis_roots(256,group_size,256) : npu_structured_roots(256,group_size));
     auto kernel = npu_power2_kernel(request, 256, group_size, 1, transposed_store ? 0 : 1, 0);
     return std::make_shared<CompiledRawNpuAivFFT256Node>(std::move(indices),
         std::move(roots), group_size, pair_mode, transposed_store, radix4_mode,

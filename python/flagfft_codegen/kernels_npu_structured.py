@@ -121,10 +121,11 @@ def pack4(a,b,c,d,N:tl.constexpr):
 """
 
 def recursive_axis_body(length, columns, root="roots_ptr"):
-    a, b, points = 32, length//32, length*columns
+    a = 16 if length == 256 else 32
+    b, points = length//a, length*columns
     wa_size=(a.bit_length()-1)//2*6*(points//4)
     wb_size=(b.bit_length()-1)//2*6*(points//4)
-    return f"""    r,i=fft_axis_sliced(r,i,{root},{points},{a},{b*columns},5)
+    return f"""    r,i=fft_axis_sliced(r,i,{root},{points},{a},{b*columns},{a.bit_length()-1})
     k=tl.arange(0,{points})
     cr=tl.load({root}+{wa_size+wb_size}+k)
     ci=tl.load({root}+{wa_size+wb_size+points}+k)

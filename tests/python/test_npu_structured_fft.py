@@ -99,9 +99,10 @@ def test_fused_fft_generated_body(tmp_path,n,direction):
 
 
 def axis_roots(length, columns, recursive):
-    if not recursive or length < 512:
+    if not recursive or length < 256:
         return roots(length, columns)
-    a, b = 32, length // 32
+    a = 16 if length == 256 else 32
+    b = length // a
     k = torch.arange(length * columns)
     phase = -2*math.pi*(k//(b*columns)).double()*((k//columns)%b)/length
     return torch.cat((roots(a, b*columns), roots(b, a*columns),

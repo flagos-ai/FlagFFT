@@ -25,7 +25,7 @@ def test_strided_and_transposed_with_launch_offsets(tmp_path,n,group,strides,dir
     check(tmp_path,n,group,0,direction,*strides,2*strides[0] if strides[0]>1 else 32)
 
 
-@pytest.mark.parametrize('n,group',[(512,2),(1024,1),(2048,1)])
+@pytest.mark.parametrize('n,group',[(256,8),(512,2),(1024,1),(2048,1)])
 @pytest.mark.parametrize('mode,direction',[(0,'forward'),(0,'inverse'),(1,'forward'),(2,'inverse')])
 def test_recursive_contiguous(tmp_path,n,group,mode,direction):
     check(tmp_path,n,group,mode,direction,1,1,2*group+1,recursive=True)
@@ -34,6 +34,11 @@ def test_recursive_contiguous(tmp_path,n,group,mode,direction):
 @pytest.mark.parametrize('direction',['forward','inverse'])
 def test_recursive_strided(tmp_path,direction):
     check(tmp_path,512,2,0,direction,17,17,34,recursive=True)
+
+
+@pytest.mark.parametrize('direction',['forward','inverse'])
+def test_recursive_transposed_store(tmp_path,direction):
+    check(tmp_path,256,8,0,direction,1,32,64,recursive=True)
 
 
 @pytest.mark.parametrize('direction',['forward','inverse'])

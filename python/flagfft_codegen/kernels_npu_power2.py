@@ -64,7 +64,7 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
 '''
     source += f'''    if {inverse}: i=-i
 '''
-    source += recursive_axis_body(n,g) if recursive and n>=512 else f'    r,i=fft_axis_sliced(r,i,roots_ptr,{count},{n},{g},{n.bit_length()-1})\n'
+    source += recursive_axis_body(n,g) if recursive and n>=256 else f'    r,i=fft_axis_sliced(r,i,roots_ptr,{count},{n},{g},{n.bit_length()-1})\n'
     source += f'''    if {inverse}: i=-i
     k=tl.arange(0,{n})
     r=tl.reshape(r,({n},{g}));i=tl.reshape(i,({n},{g}))
