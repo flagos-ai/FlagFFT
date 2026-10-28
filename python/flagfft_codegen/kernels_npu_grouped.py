@@ -99,7 +99,8 @@ def npu_grouped_fft64_kernel(in_ptr, out_ptr, idx_ptr, twiddle_ptr, nbatch):
 
 def emit_npu_grouped_fft64(*, group: int, stride: int, mode: int,
                          direction: str, out_dir: Path, radix4_pair: bool = False,
-                         length: int = 64, structured: bool = False, output_stride: int = 1, packed_real: bool = False) -> dict:
+                         length: int = 64, structured: bool = False, output_stride: int = 1, packed_real: bool = False,
+                         recursive: bool = False) -> dict:
     if direction not in ("forward", "inverse"):
         raise ValueError("FFT direction must be forward or inverse")
     if (mode == 1 and direction != "forward") or (mode == 2 and direction != "inverse"):
@@ -111,13 +112,14 @@ def emit_npu_grouped_fft64(*, group: int, stride: int, mode: int,
         kernel_name, source = build_npu_packed_real_source(length, group, mode)
     elif structured:
         from .kernels_npu_power2 import build_npu_power2_source
-        kernel_name, source = build_npu_power2_source(length, group, stride, output_stride, mode, direction)
+        kernel_name, source = build_npu_power2_source(length, group, stride, output_stride, mode, direction, recursive=recursive)
     else:
         kernel_name = 'npu_grouped_fft64_kernel'
         source = build_npu_grouped_fft64_source(group=group, stride=stride, mode=mode,
                                                radix4_pair=radix4_pair, length=length)
     suffix = "_packed_real" if packed_real else f"_structured_o{output_stride}" if structured else "_r4" if radix4_pair else ""
     name = f"flagfft_npu_fft{length}_g{group}_s{stride}_m{mode}_{direction}{suffix}"
+    if recursive: name += '_recursive'
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))

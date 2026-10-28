@@ -120,6 +120,21 @@ def pack4(a,b,c,d,N:tl.constexpr):
 
 """
 
+def recursive_axis_body(length, columns, root="roots_ptr"):
+    a, b, points = 32, length//32, length*columns
+    wa_size=(a.bit_length()-1)//2*6*(points//4)
+    wb_size=(b.bit_length()-1)//2*6*(points//4)
+    return f"""    r,i=fft_axis_sliced(r,i,{root},{points},{a},{b*columns},5)
+    k=tl.arange(0,{points})
+    cr=tl.load({root}+{wa_size+wb_size}+k)
+    ci=tl.load({root}+{wa_size+wb_size+points}+k)
+    rr,ii=r*cr-i*ci,r*ci+i*cr
+    rr=tl.reshape(tl.permute(tl.reshape(rr,({a},{b},{columns})),1,0,2),({points},))
+    ii=tl.reshape(tl.permute(tl.reshape(ii,({a},{b},{columns})),1,0,2),({points},))
+    r,i=fft_axis_sliced(rr,ii,{root}+{wa_size},{points},{b},{a*columns},{b.bit_length()-1})
+"""
+
+
 def emit_structured(*, length, direction, out_dir, first=None, n1=0, n2=0, tile=8, recursive=False):
     if direction not in ('forward','inverse'):
         raise ValueError('Invalid FFT direction')
@@ -199,19 +214,8 @@ def {name}({','.join(args)}):
     raw=tl.load(in_ptr+batch*{2*n1*n2}+row*{2*width}+word)
     r,i=tl.split(tl.reshape(raw,({points},2)))
     if {inverse}: i=-i
-    r,i=fft_axis_sliced(r,i,roots_ptr,{points},{a},{b*tile},5)
 """
-            # Each radix-4 stage has six arrays of points/4 floats.
-            wa_size = (a.bit_length()-1)//2 * 6 * (points//4)
-            wb_size = (b.bit_length()-1)//2 * 6 * (points//4)
-            body+=f"""    k=tl.arange(0,{points})
-    cr=tl.load(roots_ptr+{wa_size+wb_size}+k)
-    ci=tl.load(roots_ptr+{wa_size+wb_size+points}+k)
-    rr,ii=r*cr-i*ci,r*ci+i*cr
-    rr=tl.reshape(tl.permute(tl.reshape(rr,({a},{b},{tile})),1,0,2),({points},))
-    ii=tl.reshape(tl.permute(tl.reshape(ii,({a},{b},{tile})),1,0,2),({points},))
-    r,i=fft_axis_sliced(rr,ii,roots_ptr+{wa_size},{points},{b},{a*tile},{b.bit_length()-1})
-"""
+            body+=recursive_axis_body(l,tile)
             # Bound the join's live storage and preserve affine rank-two DMA.
             chunk = min(512, points)
             for start in range(0, points, chunk):

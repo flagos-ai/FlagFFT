@@ -670,9 +670,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
         throw std::runtime_error("Tensor FFT key requires two or three axes");
       jit_command << " --npu-tensor-shape " << shell_quote(join_ints(key.factors));
     }
-    if (key.perm_form == "structured_power2" || key.perm_form == "structured_packed_real") {
+    if (key.perm_form == "structured_power2" || key.perm_form == "structured_packed_real" ||
+        key.perm_form == "structured_recursive_power2") {
       if (key.factors.size() != 1) throw std::runtime_error("Grouped FFT key requires an output stride");
       jit_command << " --npu-power2 --npu-fft-output-stride " << key.factors.front();
+      if (key.perm_form == "structured_recursive_power2") jit_command << " --npu-recursive-power2";
     }
   }
 

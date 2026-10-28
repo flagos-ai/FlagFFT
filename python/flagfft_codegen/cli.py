@@ -142,6 +142,7 @@ def main() -> None:
     parser.add_argument("--npu-structured-fft", action="store_true")
     parser.add_argument("--npu-structured-recursive", action="store_true")
     parser.add_argument("--npu-power2", action="store_true")
+    parser.add_argument("--npu-recursive-power2", action="store_true")
     parser.add_argument("--npu-tensor-shape", type=_csv_ints, default=())
     parser.add_argument("--npu-packed-real", action="store_true")
     parser.add_argument("--npu-fft-output-stride", type=int, default=1)
@@ -474,6 +475,7 @@ def main() -> None:
             radix4_pair=args.npu_fft_radix4_pair,
             length=args.length if args.length is not None else 64,
             structured=args.npu_power2,output_stride=args.npu_fft_output_stride,packed_real=args.npu_packed_real,
+            recursive=args.npu_recursive_power2,
         )
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:

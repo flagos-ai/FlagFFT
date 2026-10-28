@@ -1,8 +1,8 @@
 """One Triton implementation for grouped/strided complex and real power-of-two FFTs."""
-from .kernels_npu_structured import FFT_HELPERS
+from .kernels_npu_structured import FFT_HELPERS, recursive_axis_body
 
 
-def build_npu_power2_source(length, group, stride, output_stride, mode, direction):
+def build_npu_power2_source(length, group, stride, output_stride, mode, direction, recursive=False):
     if length not in (16, 32, 64, 128, 256, 512, 1024, 2048):
         raise ValueError('Unsupported power-of-two FFT length')
     if group not in (1, 2, 4, 8, 16, 32) or stride < 1 or output_stride < 0 or mode not in (0, 1, 2):
@@ -14,7 +14,7 @@ def build_npu_power2_source(length, group, stride, output_stride, mode, directio
     n, g, h = length, group, length//2+1
     count = n*g
     inverse = direction == 'inverse'
-    name = f'npu_power2_n{n}_g{g}_s{stride}_o{output_stride}_m{mode}_{direction}'
+    name = f'npu_power2_n{n}_g{g}_s{stride}_o{output_stride}_m{mode}_{direction}'+('_recursive' if recursive else '')
     source = 'import triton.language.extra.cann.extension as al\n'+FFT_HELPERS
     source += f'''@triton.jit
 def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_offset):
@@ -23,8 +23,8 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     k=tl.arange(0,{n})
 '''
     if mode == 0 and stride == 1:
-        source += f'''    pair=tl.arange(0,2)
-    data=tl.load(in_ptr+transforms[:,None,None]*{2*n}+2*k[None,:,None]+pair[None,None,:],transforms[:,None,None]<nbatch,0)
+        source += f'''    word=tl.arange(0,{2*n})
+    data=tl.load(in_ptr+transforms[:,None]*{2*n}+word[None,:],transforms[:,None]<nbatch,0)
     r,i=tl.split(tl.reshape(data,({count},2)))
     r=tl.reshape(tl.trans(tl.reshape(r,({g},{n}))),({count},))
     i=tl.reshape(tl.trans(tl.reshape(i,({g},{n}))),({count},))
@@ -55,8 +55,10 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     i=tl.reshape(tl.trans(tl.reshape(i,({g},{n}))),({count},))
 '''
     source += f'''    if {inverse}: i=-i
-    r,i=fft_axis_sliced(r,i,roots_ptr,{count},{n},{g},{n.bit_length()-1})
-    if {inverse}: i=-i
+'''
+    source += recursive_axis_body(n,g) if recursive and n>=512 else f'    r,i=fft_axis_sliced(r,i,roots_ptr,{count},{n},{g},{n.bit_length()-1})\n'
+    source += f'''    if {inverse}: i=-i
+    k=tl.arange(0,{n})
     r=tl.reshape(r,({n},{g}));i=tl.reshape(i,({n},{g}))
 '''
     if mode == 2:
@@ -71,9 +73,9 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     tl.store(out_ptr+base*{2*h}+lane,value,(lane<{2*g*h})&(base*{2*h}+lane<nbatch*{2*h}))
 '''
     elif output_stride == 1:
-        source += f'''    pair=tl.arange(0,2)
-    packed=tl.reshape(tl.join(tl.reshape(tl.trans(r),({count},)),tl.reshape(tl.trans(i),({count},))),({g},{n},2))
-    tl.store(out_ptr+transforms[:,None,None]*{2*n}+2*k[None,:,None]+pair[None,None,:],packed,transforms[:,None,None]<nbatch)
+        source += f'''    word=tl.arange(0,{2*n})
+    packed=tl.reshape(tl.join(tl.reshape(tl.trans(r),({count},)),tl.reshape(tl.trans(i),({count},))),({g},{2*n}))
+    tl.store(out_ptr+transforms[:,None]*{2*n}+word[None,:],packed,transforms[:,None]<nbatch)
 '''
     else:
         stride_expr = str(output_stride) if output_stride else 'output_row_stride'

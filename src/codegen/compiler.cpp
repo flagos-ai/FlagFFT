@@ -112,6 +112,8 @@ namespace {
     auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
         request.direction, group, stride, mode, n);
     key.perm_form = packed_real ? "structured_packed_real" : "structured_power2";
+    if (!packed_real && n >= 512 && flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2", false))
+      key.perm_form = "structured_recursive_power2";
     key.factors = {output_stride};  // Private grouped-FFT output layout is part of cache identity.
     return TritonCompiler{}.compile_kernel(key);
   }
@@ -1128,7 +1130,9 @@ namespace {
                             : std::max({group_size, int64_t{64} / n, alignment_group});
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
     auto roots = std::make_shared<DeviceAllocation>(packed_real
-        ? npu_packed_real_roots(n, group_size) : npu_structured_roots(n, group_size));
+        ? npu_packed_real_roots(n, group_size)
+        : n >= 512 && flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2", false)
+            ? npu_recursive_axis_roots(n, group_size) : npu_structured_roots(n, group_size));
     auto kernel = npu_power2_kernel(request, n, group_size, stride, output_stride,
         static_cast<int64_t>(mode), packed_real);
     return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n, stride, output_stride,
