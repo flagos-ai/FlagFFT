@@ -35,7 +35,39 @@ def test_musa_1d_batch_pack_is_scoped_resource_bounded_and_matches_metadata(
         expected_pack = 4 if dtype == "complex128" else 1
         assert contiguous_batch_pack_for(plan) == expected_pack
         assert contiguous_batch_pack_for(plan, real_boundary=True) == 1
+        expected_c2r_pack = 4 if dtype == "complex128" else 1
+        expected_r2c_pack = 2 if dtype == "complex128" else 1
+        assert contiguous_batch_pack_for(
+            plan, real_boundary=True, real_transform="c2r"
+        ) == expected_c2r_pack
+        assert contiguous_batch_pack_for(
+            plan, real_boundary=True, real_transform="r2c"
+        ) == expected_r2c_pack
+
         name, source = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+        for kernel_type, expected in (
+            ("leaf_c2r", expected_c2r_pack),
+            ("leaf_r2c", expected_r2c_pack),
+        ):
+            metadata = _metadata(
+                module_path=Path("unused.py"),
+                kernel_name=name,
+                arg_names=[],
+                plan=plan,
+                kernel_type=kernel_type,
+                n1=0,
+                n2=0,
+                dtype=dtype,
+            )
+            assert metadata["batch_per_block"] == expected
+
+        for io_mode, expected in (
+            ("contiguous_c2r", expected_c2r_pack),
+            ("contiguous_r2c", expected_r2c_pack),
+        ):
+            _, real_source = _build_leaf_kernel_source_for_io(plan, io_mode=io_mode)
+            assert f"batch_id = pid * {expected}" in real_source
+
         metadata = _metadata(
             module_path=Path("unused.py"),
             kernel_name=name,

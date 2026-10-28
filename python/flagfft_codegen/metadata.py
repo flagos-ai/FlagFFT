@@ -189,10 +189,17 @@ def _metadata(
     ):
         batch_per_block = permuted_store_batch_pack_for(plan)
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
+        real_transform = (
+            "r2c"
+            if kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_bluestein_r2c"}
+            else "c2r"
+            if kernel_type in {"leaf_c2r", "leaf_packed_c2r", "leaf_bluestein_c2r"}
+            else None
+        )
         batch_per_block = contiguous_batch_pack_for(
             plan,
-            real_boundary=kernel_type
-            in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r", "leaf_packed_c2r"},
+            real_boundary=real_transform is not None,
+            real_transform=real_transform,
         )
     else:
         batch_per_block = 1

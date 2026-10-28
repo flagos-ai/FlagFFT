@@ -3139,10 +3139,17 @@ def _build_leaf_kernel_source_for_io(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )
     elif io_mode in contiguous_modes:
+        real_transform = (
+            "r2c"
+            if io_mode in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c", "packed_r2c"}
+            else "c2r"
+            if io_mode in {"packed_c2r", "contiguous_c2r"}
+            else None
+        )
         batch_pack = contiguous_batch_pack_for(
             plan,
-            real_boundary=io_mode
-            in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"},
+            real_boundary=real_transform is not None,
+            real_transform=real_transform,
         )
     else:
         batch_pack = 1

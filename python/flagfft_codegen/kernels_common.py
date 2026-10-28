@@ -466,7 +466,12 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
     return max(pack, min(_portable_exchange_max_pack(), _next_power_of_two(needed)))
 
 
-def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
+def contiguous_batch_pack_for(
+    plan: LeafPlan,
+    *,
+    real_boundary: bool = False,
+    real_transform: str | None = None,
+) -> int:
     if _hcu_backend_active() and plan.length == 2048:
         middle_batch_pack = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
         if middle_batch_pack != "auto":
@@ -482,14 +487,18 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
         override = os.getenv("FLAGFFT_MUSA_1D_BATCH_PACK", "auto")
         if override not in {"auto", "1", "2", "4", "8"}:
             raise ValueError("FLAGFFT_MUSA_1D_BATCH_PACK must be auto, 1, 2, 4 or 8")
-        # Packing four FP64 C2C transforms improved N=1024 batch throughput.
-        # The same pack regressed the FP32 and real-boundary variants, so keep
-        # those on the legacy layout while retaining explicit A/B overrides.
-        requested_pack = (
-            4 if override == "auto" and plan.dtype == "complex128" and not real_boundary
-            else 1 if override == "auto"
-            else int(override)
-        )
+        # Measured on MTT S5000 at N=1024: pack four for FP64 C2C/C2R, and
+        # pack two for FP64 R2C. FP32 keeps pack one; explicit A/B overrides
+        # remain available for all of these variants.
+        if override == "auto":
+            requested_pack = 1
+            if plan.dtype == "complex128":
+                if not real_boundary or real_transform == "c2r":
+                    requested_pack = 4
+                elif real_transform == "r2c":
+                    requested_pack = 2
+        else:
+            requested_pack = int(override)
         profile = current_profile()
         resource_limit = profile.max_dynamic_shared_memory or _LEAF_PACK_SMEM_BUDGET_BYTES
         bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
