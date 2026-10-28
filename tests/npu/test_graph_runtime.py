@@ -6,33 +6,36 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('length,batch',[(16,1),(16,64),(210,1),(210,64),(1024,1)])
-def test_graph_replays_live_buffers(length,batch,capfd):
+@pytest.mark.parametrize('shape,batch',[((16,),1),((16,),64),((210,),1),((210,),64),((1024,),1),((64,64),1),((64,64),4),((128,128),1)])
+def test_graph_replays_live_buffers(shape,batch,capfd):
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
     assert os.environ.get('FLAGFFT_NPU_GRAPH')=='1'
     assert os.environ.get('FLAGFFT_NPU_GRAPH_TRACE')=='1'
     lib=ctypes.CDLL(path)
-    lib.flagfftPlan1d.argtypes=[ctypes.POINTER(ctypes.c_void_p),ctypes.c_int,ctypes.c_int,ctypes.c_int]
-    lib.flagfftPlan1d.restype=ctypes.c_int
+    lib.flagfftPlanMany.argtypes=[ctypes.POINTER(ctypes.c_void_p),ctypes.c_int,ctypes.POINTER(ctypes.c_int),ctypes.POINTER(ctypes.c_int),ctypes.c_int,ctypes.c_int,ctypes.POINTER(ctypes.c_int),ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int]
+    lib.flagfftPlanMany.restype=ctypes.c_int
     lib.flagfftSetStream.argtypes=[ctypes.c_void_p,ctypes.c_void_p];lib.flagfftSetStream.restype=ctypes.c_int
     lib.flagfftExecC2C.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int];lib.flagfftExecC2C.restype=ctypes.c_int
     lib.flagfftDestroy.argtypes=[ctypes.c_void_p];lib.flagfftDestroy.restype=ctypes.c_int
     torch.npu.set_device(0)
-    handle=ctypes.c_void_p();assert lib.flagfftPlan1d(ctypes.byref(handle),length,0x29,batch)==0
+    import math
+    length=math.prod(shape)
+    dims=(ctypes.c_int*len(shape))(*shape)
+    handle=ctypes.c_void_p();assert lib.flagfftPlanMany(ctypes.byref(handle),len(shape),dims,None,1,length,None,1,length,0x29,batch)==0
     stream=torch.npu.current_stream()
     def run(x,y,direction=-1):
         assert lib.flagfftSetStream(handle,ctypes.c_void_p(stream.npu_stream))==0
         assert lib.flagfftExecC2C(handle,ctypes.c_void_p(x.data_ptr()),ctypes.c_void_p(y.data_ptr()),direction)==0
         stream.synchronize()
     def check(x,y,direction=-1):
-        ref=torch.fft.fft(x.cpu()) if direction==-1 else torch.fft.ifft(x.cpu())*length
+        ref=torch.fft.fftn(x.cpu(),dim=tuple(range(1,len(shape)+1))) if direction==-1 else torch.fft.ifftn(x.cpu(),dim=tuple(range(1,len(shape)+1)))*length
         got=y.cpu()
         assert torch.isfinite(got).all()
         assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref)<5e-7
     storage=torch.full((batch*length*2+128,),31415.25,device='npu')
-    y=torch.view_as_complex(storage[64:-64].reshape(batch,length,2))
-    x=torch.complex(torch.randn(batch,length),torch.randn(batch,length)).npu()
+    y=torch.view_as_complex(storage[64:-64].reshape((batch,)+shape+(2,)))
+    x=torch.complex(torch.randn((batch,)+shape),torch.randn((batch,)+shape)).npu()
     try:
         # First execution prepares/captures. Subsequent calls must consume
         # newly written input values and overwrite a poisoned output.

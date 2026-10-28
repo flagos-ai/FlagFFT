@@ -5531,7 +5531,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // Keep other devices and unmeasured batch sizes on the existing policy.
   // Per-kernel event timing synchronizes launches, which is invalid during
   // stream capture. Keep diagnostic runs on the direct sequence.
+  // NPU replay is owned by the whole-plan wrapper. Replaying this child
+  // graph while the outer plan is captured is rejected by CANN.
   const bool enable_graph =
+      request.device_type != "npu" &&
       !env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS")) &&
       !(request.device_type == "musa" && request.device_arch == "31" && batch == 1) &&
       (request.device_type != "maca" ||
