@@ -110,6 +110,13 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
+        pair = "_pair_" + dest.split(",")[0].strip()
+        return [
+            f"{indent}{pair} = tl.load(tl.reshape(({ptr})[:,None] + {_COMPLEX_PAIR_OFFSETS}, (-1,)), "
+            f"mask=tl.reshape({mask}[:,None] & ({_COMPLEX_PAIR_OFFSETS} >= 0), (-1,)), other=0.0)",
+            f"{indent}{dest} = tl.split(tl.reshape({pair},(-1,2)))",
+        ]
     if _packed_maca_fp32_complex_io(dtype):
         pair = "_packed_pair_" + dest.split(",")[0].strip()
         real, imag = (name.strip() for name in dest.split(","))
@@ -152,6 +159,12 @@ def _emit_vectorized_complex_store(
     mask: str,
     dtype: str,
 ) -> list[str]:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
+        return [
+            f"{indent}tl.store(tl.reshape(({ptr})[:,None] + {_COMPLEX_PAIR_OFFSETS}, (-1,)), "
+            f"tl.reshape(tl.join({r_name},{i_name}), (-1,)), "
+            f"mask=tl.reshape({mask}[:,None] & ({_COMPLEX_PAIR_OFFSETS} >= 0), (-1,)))",
+        ]
     if _packed_maca_fp32_complex_io(dtype):
         pair = "_packed_store_" + r_name
         return [

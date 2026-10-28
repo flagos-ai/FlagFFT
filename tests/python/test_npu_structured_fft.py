@@ -20,6 +20,9 @@ class Pointer:
     def __getitem__(self, key):
         return Pointer(self.data, self.offset[key])
 
+    def reshape(self, shape):
+        return Pointer(self.data, self.offset.reshape(shape))
+
 
 def roots(length, columns):
     n = length * columns
