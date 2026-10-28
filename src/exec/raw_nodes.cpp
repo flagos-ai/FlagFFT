@@ -1679,7 +1679,7 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
                          [&](int64_t row_offset, int64_t chunk_rows) {
                            std::vector<JitKernelArg> pack_args = {
                                JitKernelArg::device(full_output.get() + row_offset * length * complex_bytes),
-                               JitKernelArg::device(output + row_offset * output_distance * real_bytes),
+                               JitKernelArg::device(output + row_offset * output_distance * complex_bytes),
                                JitKernelArg::i64(output_distance),
                                JitKernelArg::i32(static_cast<int32_t>(chunk_rows)),
                            };
