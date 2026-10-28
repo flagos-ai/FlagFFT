@@ -47,6 +47,12 @@ def check(tmp_path,n,group,mode,direction,input_stride,output_stride,batch):
     for offset in range(0,batch,group):
         pid[0]=0
         ns[meta['kernel_name']](Pointer(src),Pointer(output,64),Pointer(torch.zeros(1,dtype=torch.int32)),Pointer(roots(n,group)),batch,out_stride,offset)
-    assert torch.allclose(output[64:-64].reshape(expected.shape),expected,atol=3e-4,rtol=3e-5)
+    got=output[64:-64].reshape(expected.shape)
+    error=got-expected
+    # The inverse is deliberately unnormalized. Relative norm bounds remain
+    # meaningful as its magnitude grows with N, including samples near zero.
+    assert torch.isfinite(got).all()
+    assert torch.linalg.vector_norm(error)/torch.linalg.vector_norm(expected) < 5e-7
+    assert error.abs().max()/expected.abs().max() < 2e-6
     assert torch.equal(src,saved)
     assert (output[:64]==31415.25).all() and (output[-64:]==31415.25).all()
