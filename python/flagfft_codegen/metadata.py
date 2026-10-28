@@ -24,6 +24,7 @@ from .backend_profile import current_profile
 from .kernels_common import (
     _CODELET_DIR,
     LeafPlan,
+    codelet_radices_for,
     _cooperative_warp_cap,
     _dtype_suffix,
     _hcu_backend_active,
@@ -62,6 +63,15 @@ def _csv_ints(raw: str) -> tuple[int, ...]:
 
 
 def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_RADER_CODELETS") == "1":
+        from .prime_codelets import rader_codelet
+        selected = sorted(set(radices) & {17,19})
+        deps = set(radices)
+        for prime in selected:
+            kernel_source = kernel_source.replace(f"_fwd_rad{prime}_b1(", f"_fwd_rad{prime}_rader(")
+            kernel_source = rader_codelet(prime) + "\n" + kernel_source
+            deps.update(codelet_radices_for((prime-1,)))
+        radices = tuple(sorted(deps))
     if _npu_backend_active():
         if os.environ.get("FLAGFFT_NPU_VECTOR_REMAINDER") == "1":
             from .npu_source import vector_remainders
