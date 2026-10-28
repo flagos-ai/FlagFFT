@@ -5847,7 +5847,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     // Screen writing the column pass directly into natural order. This removes
     // the final full-size transpose from the large MUSA real 2D path.
     const bool musa_col_permuted_store = request.device_type == "musa" && n0 == 2048 && n1 == 2048 &&
-        flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", false);
+        flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", true);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
     const bool use_musa_col_permuted_store = musa_col_permuted_store && col_leaf != nullptr;
     std::shared_ptr<CompiledRawNode> col_fft = use_musa_col_permuted_store
@@ -6076,8 +6076,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     col_request.input_strides = {n0, 1};
     col_request.requested_n = n0;
     col_request.batch = batch * half_n1;
+    const bool musa_single_fp32_c2r = request.device_type == "musa" && batch == 1 &&
+        request.origin_real_transform_kind == "c2r" && request.output_dtype == "float32";
     const bool musa_col_permuted_store = request.device_type == "musa" && n0 == 2048 && n1 == 2048 &&
-        flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", false);
+        !musa_single_fp32_c2r && flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", true);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
     const bool use_musa_col_permuted_store = musa_col_permuted_store && col_leaf != nullptr;
     std::shared_ptr<CompiledRawNode> col_fft = use_musa_col_permuted_store
