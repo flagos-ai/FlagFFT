@@ -1,5 +1,8 @@
 # 修复版编译器上的 Ascend four-step FFT 实验
 
+最新进展：2026-10-28 已将实际测试矩阵的 10 个 C2C case 接入 C API，
+两轮逐例均超过 0.815×。具体范围和验收结果见文末“正式矩阵的 C API 接入”。
+
 本实验针对原先因结构化置换 lowering 而停下的重写路线，验收条件是
 FP32 C2C forward、N=2048、batch=2048，完整自然序 FFT 的设备时间
 低于 0.15 µs/变换。它是独立 kernel 实验，不修改产品默认计划器，
@@ -106,3 +109,52 @@ four-step；当前证据不支持只增加 `tl.dot` 或继续扩大 batch tile�
 
 完整筛选、失败原因、复测样本及计数器归档于外围工作区
 `results/20261028_001023_fft_local_codegen/README.md`。
+
+
+## 正式矩阵的 C API 接入（2026-10-28）
+
+从 `conf/test_matrix.yaml` 固定选取以下 FP32 C2C out-of-place case，
+每点包含 forward/inverse，共 10 例：1024/2048、batch=1/64，以及
+16384、batch=1。选集在调优完成前冻结；没有删除第一次未达标的
+16384 正反向。它是原矩阵的子集验收，不能代表 30 个算子完整矩阵。
+
+- 1024/2048 使用单 kernel 的 32×(N/32) 结构化 FFT。
+- 16384 使用两个 tile=8 的轴向 kernel，在首段融合 FFT、跨段 twiddle
+  和转置写回。复用现有 `CompiledRawFourStepFusedNode` 的流和内存管理。
+- 私有 twiddle 表按 `[k1,j2]` 的实虚平面保存，使每个 tile 连续加载。
+  接入时复用旧交织转置表使首段明显变慢；修正后端到端由约 87 µs
+  降至约 22 µs（同轮筛选），正式重新验收保留全部 case。
+- 在 Ascend 910B、连续 FP32 C2C、上述已测长度和 batch 范围内默认启用。
+  `FLAGFFT_NPU_STRUCTURED_FFT=0` 可回到原执行路径。实数、其他架构和
+  未测尺寸不启用此选择。kernel 和表 ABI 通过独立 cache key 区分。
+
+统一 `tools/run_tests.py` 经公开 C API 完成 10/10 NumPy accuracy、
+10/10 SiP platform accuracy；最大 FlagFFT rel_l2 为 1.4054e-7 以下。
+首轮 warmup=20、iters=100，最低 speedup=1.0464×，选集 GM=1.3823×。
+独立复测 warmup=50、iters=500，最低 1.1335×，选集 GM=1.4120×；
+两轮 20 条记录每条都超过 0.815×。
+
+| N | batch | 复测 forward | 复测 inverse |
+|---:|---:|---:|---:|
+| 1024 | 1 | 2.2982× | 1.1416× |
+| 1024 | 64 | 1.2788× | 1.2783× |
+| 2048 | 1 | 1.2871× | 1.4033× |
+| 2048 | 64 | 1.1335× | 1.3021× |
+| 16384 | 1 | 1.4721× | 1.8715× |
+
+计时为统一 runner 的完整 FFT C API 执行，包含内部所有 kernel 和
+中间数据流；排除 plan/JIT/建表和 CPU/GPU 传输。两轮均运行在同卡，
+配对 SiP 时间有波动，因此完整逐轮结果保留，不能仅选最高比值。
+
+构建显式 `FLAGFFT_NPU_ENABLE_SIP_EXECUTION=OFF`，执行环境为
+`FLAGFFT_NPU_EXECUTION_BACKEND=triton`；最终验证未设置算法开关，
+证明默认路径生效。`libflagfft.so` 无 SiP FFT 未定义入口符号，SiP
+仅作为验收参考。工具链仍为 P0 固定 wheel，系统 CANN 未改动。
+
+新增生成体 CPU 数学/边界检查 8 项通过。额外运行的旧 codegen 测试
+有 101 项通过、16 项失败；干净基线 `42568ea` 复现完全相同的 16 个
+失败项，没有新增失败。详见结果目录中的基线对照记录。
+
+算法源码验收 commit 为 `58690065`，完整数据、严格逐例 gate、
+生成源文件和设备二进制放在外围工作区：
+`results/20261028_164236_ascend_matrix_fourstep/README.md`。
