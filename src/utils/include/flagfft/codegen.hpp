@@ -179,6 +179,10 @@ struct CompiledRawGraphNode final : CompiledRawNode {
   mutable std::unique_ptr<adaptor::CudaGraph> graph;
   mutable adaptor::DevicePtr graph_input = 0;
   mutable adaptor::DevicePtr graph_output = 0;
+  mutable adaptor::StreamHandle graph_stream = nullptr;
+  mutable int64_t graph_batch = 0;
+  mutable int64_t graph_input_distance = 0;
+  mutable int64_t graph_output_distance = 0;
   mutable bool graph_failed = false;
 };
 

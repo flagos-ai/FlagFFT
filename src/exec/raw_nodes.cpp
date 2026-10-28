@@ -42,7 +42,10 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
                                             adaptor::DevicePtr output,
                                             const RawExecutionContext &context) const {
   try {
-    if (graph != nullptr && graph_input == input && graph_output == output) {
+    if (input == output) return inner->execute(input, output, context);
+    if (graph != nullptr && graph_input == input && graph_output == output &&
+        graph_stream == context.stream && graph_batch == context.batch &&
+        graph_input_distance == context.input_distance && graph_output_distance == context.output_distance) {
       graph->launch(context.stream);
       return FLAGFFT_SUCCESS;
     }
@@ -60,6 +63,10 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
         graph = std::move(captured);
         graph_input = input;
         graph_output = output;
+        graph_stream = context.stream;
+        graph_batch = context.batch;
+        graph_input_distance = context.input_distance;
+        graph_output_distance = context.output_distance;
       } catch (const std::exception &) {
         graph_failed = true;
       }
