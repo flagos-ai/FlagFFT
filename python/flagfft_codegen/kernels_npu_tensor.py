@@ -70,21 +70,31 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
                 source+=f'    {component}=tl.reshape(tl.permute(tl.reshape({component},{old_shape}),'+','.join(map(str,permutation))+f'),({n},))\n'
         order=[axis]+[k for k in order if k!=axis]
         source+=f'    r,i=fft_axis_sliced(r,i,roots_ptr+{offsets[axis]},{n},{length},{n//length},{length.bit_length()-1})\n'
-    permutation=[order.index(k) for k in range(rank)]
-    for component in ('r','i'):
-        source+=f'    {component}=tl.reshape(tl.permute(tl.reshape({component},{tuple(shape[k] for k in order)}),'+','.join(map(str,permutation))+f'),({n},))\n'
     if inverse:source+='    i=-i\n'
-    if mode==2:
-        source+=f'    tl.store(out_ptr+transform*{n}+element,r)\n'
-    else:
-        source+=f'    packed=tl.reshape(tl.join(r,i),({2*n},))\n'
-        if mode==0:
-            source+=f'    tl.store(out_ptr+transform*{2*n}+tl.arange(0,{2*n}),packed)\n'
+    output_count=n if mode in (0,2) else compact
+    # Gather the final permutation directly into small contiguous stores.
+    # Avoid allocating full transposed real/imaginary tensors and a full AoS
+    # interleave at the same time as the tensor FFT's working set.
+    chunk=min(512,n)
+    intervals=[(start,chunk) for start in range(0,(output_count//chunk)*chunk,chunk)]
+    remainder=output_count%chunk
+    if remainder:intervals.append((output_count-remainder,remainder))
+    strides=[math.prod(shape[axis+1:]) for axis in range(rank)]
+    for number,(start,size) in enumerate(intervals):
+        source+=f'    destination{number}=tl.arange(0,{size})+{start}\n'
+        if mode==1:
+            source+=f'    natural{number}=(destination{number}//{half})*{last}+destination{number}%{half}\n'
+        else:source+=f'    natural{number}=destination{number}\n'
+        terms=[]
+        for position,axis in enumerate(order):
+            source+=f'    coordinate{number}_{axis}=(natural{number}//{strides[axis]})%{shape[axis]}\n'
+            terms.append(f'coordinate{number}_{axis}*{math.prod(shape[k] for k in order[position+1:])}')
+        source+=f'    gather_index{number}='+ '+'.join(terms)+'\n'
+        source+=f'    part_r{number}=tl.gather(r,gather_index{number},0)\n'
+        if mode==2:
+            source+=f'    tl.store(out_ptr+transform*{n}+destination{number},part_r{number})\n'
         else:
-            for label,size,start in (('main',n,0),('tail',2*outer,n)):
-                source+=f'''    lane_{label}=tl.arange(0,{size})+{start}
-    index_{label}=((lane_{label}//{2*half})*{last}+(lane_{label}//2)%{half})*2+lane_{label}%2
-    value_{label}=tl.gather(packed,index_{label},0)
-    tl.store(out_ptr+transform*{2*compact}+lane_{label},value_{label})
-'''
+            source+=f'    part_i{number}=tl.gather(i,gather_index{number},0)\n'
+            source+=f'    packed{number}=tl.reshape(tl.join(part_r{number},part_i{number}),({2*size},))\n'
+            source+=f'    tl.store(out_ptr+transform*{2*output_count}+tl.arange(0,{2*size})+{2*start},packed{number})\n'
     return name,source
