@@ -21,14 +21,16 @@ import triton
 from ascend_fourstep_probe import fourstep_fused, axis_twiddles
 from ascend_local_fft_codegen import generate
 from ascend_packed_fft import packed_fft, compact_twiddles
+from ascend_cube_fft import cube_fourstep, dft_weights
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--variant', choices=['baseline','local-first','local-both','packed','compact'], default='baseline')
+    parser.add_argument('--variant', choices=['baseline','local-first','local-both','packed','compact','cube'], default='baseline')
     parser.add_argument('--pack',type=int,default=1)
     parser.add_argument('--factor',type=int,default=32)
     parser.add_argument('--radix',type=int,choices=[2,4],default=4)
+    parser.add_argument('--cube-terms',type=int,choices=[3,4],default=3)
     parser.add_argument('--single-buffer',action='store_true')
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -61,6 +63,12 @@ def main():
         runner = ck[(batch, 1, 1)]
         def fft():
             runner(x, y, wa, wb, cross, n, a, b, a.bit_length()-1, b.bit_length()-1, False, False)
+    elif args.variant=='cube':
+        ah,al=dft_weights(a);bh,bl=dft_weights(b)
+        ck=cube_fourstep[(batch,)](x,y,ah,al,bh,bl,cross,n,a,b,args.cube_terms,**options)
+        runner=ck[(batch,1,1)]
+        def fft():
+            runner(x,y,ah,al,bh,bl,cross,n,a,b,args.cube_terms)
     elif args.variant in ('packed','compact'):
         if args.variant=='compact':
             wa,wb=compact_twiddles(a),compact_twiddles(b)
@@ -154,7 +162,7 @@ def main():
     errors.update(fourstep_after=check(y), sip_after=check(z))
     assert torch.equal(x.cpu(), cpu), 'input changed during replay'
     lib.sip_destroy(handle)
-    result = dict(variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
+    result = dict(cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
                   graph_steps=args.steps, rounds=args.rounds, iters=args.iters,
                   results=results, rel_l2=errors, replay_verified=True,
                   scope='complete FFT execution on resident device buffers; plans/tables/JIT/copies excluded',
