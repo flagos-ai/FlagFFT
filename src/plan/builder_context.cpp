@@ -84,14 +84,18 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }
-  // Allow a root 1D batched C2C transform on MUSA to screen alternative
-  // four-step decompositions without changing child plans or real transforms.
+  // Allow a root 1D batched transform on MUSA to screen alternative four-step
+  // decompositions without changing child plans.
   const char *musa_fourstep_split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  const bool musa_1d_c2c_root = !request.real_transform &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype;
+  const bool musa_1d_real_root = request.real_transform &&
+      (request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z" ||
+       request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d");
   if (request.device_type == "musa" && request.device_arch == "31" &&
       request.raw_dim == 1 && request.origin_rank == 1 && request.batch > 1 &&
-      request.requested_n == n && !request.real_transform &&
-      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
-      request.input_dtype == request.output_dtype &&
+      request.requested_n == n && (musa_1d_c2c_root || musa_1d_real_root) &&
       musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') {
     const std::string spec(musa_fourstep_split);
     const auto separator = spec.find(':');

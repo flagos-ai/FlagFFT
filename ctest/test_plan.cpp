@@ -304,6 +304,16 @@ TEST(Plan1D, MusaBatchedC2cFourStepSplitOverrideInvalidatesContextCache) {
   EXPECT_EQ(plan->n1, 512);
   EXPECT_EQ(plan->n2, 256);
 
+  auto real_request = request;
+  real_request.real_transform = true;
+  real_request.real_transform_kind = real_request.origin_real_transform_kind = "z2d";
+  real_request.input_dtype = "complex128";
+  real_request.output_dtype = "float64";
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, real_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 512);
+  EXPECT_EQ(plan->n2, 256);
+
   setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", "131072:127", 1);
   EXPECT_THROW(builder.build(131072, request), std::runtime_error);
 }
