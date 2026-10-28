@@ -17,6 +17,9 @@ class Pointer:
     def __add__(self, offset):
         return Pointer(self.data, self.offset + offset)
 
+    def __getitem__(self, key):
+        return Pointer(self.data, self.offset[key])
+
 
 def roots(length, columns):
     n = length * columns
@@ -50,7 +53,9 @@ def execute_module(path):
         arange=torch.arange,reshape=lambda v,s:v.reshape(s),permute=lambda v,*s:v.permute(*s),
         trans=lambda v:v.transpose(-1,-2),split=lambda v:torch.unbind(v,dim=-1),
         join=lambda a,b:torch.stack((a,b),-1),zeros=lambda s,dtype:torch.zeros(s,dtype=dtype),
-        float32=torch.float32,int64=torch.int64,load=load,store=store,
+        float32=torch.float32,int64=torch.int64,int32=torch.int32,int1=torch.bool,
+        full=lambda shape,value,dtype:torch.full(shape,value,dtype=dtype),
+        zeros_like=torch.zeros_like,range=range,load=load,store=store,
         gather=lambda v,index,axis:torch.gather(v,axis,index.long()),
         minimum=lambda a,b:torch.minimum(torch.as_tensor(a),torch.as_tensor(b)),where=torch.where)
     tree = ast.parse(Path(path).read_text())
