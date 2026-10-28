@@ -2228,7 +2228,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     if (shared_length == 256 && allow_npu_aiv256_transposed_store &&
         request.origin_rank == 3)
       return make_npu_aiv_fft256_complex_child(request,true);
-    const int64_t group = batch == 1 ? 1 : std::min<int64_t>(8,2048/shared_length);
+    int64_t group = batch == 1 ? 1 : std::min<int64_t>(8,2048/shared_length);
+    if (request.origin_rank<=2 && batch>=256 && shared_length<=128 &&
+        flag_or_default("FLAGFFT_NPU_WIDE_SHORT_FFT",false))
+      group=std::min<int64_t>(32,2048/shared_length);
     return make_npu_aiv_fft_small_child(request,shared_length,1,group);
   }
   // Reuse generated Triton kernels at the 1D leaves of a 2D plan. The

@@ -77,3 +77,9 @@ def check(tmp_path,n,group,mode,direction,input_stride,output_stride,batch,recur
     assert error.abs().max()/expected.abs().max() < 2e-6
     assert torch.equal(src,saved)
     assert (output[:64]==31415.25).all() and (output[-64:]==31415.25).all()
+
+
+@pytest.mark.parametrize('n,group',[(16,32),(32,32),(64,32),(128,16)])
+@pytest.mark.parametrize('direction',['forward','inverse'])
+def test_wide_short_groups_with_partial_tail(tmp_path,n,group,direction):
+    check(tmp_path,n,group,0,direction,1,1,2*group+1)
