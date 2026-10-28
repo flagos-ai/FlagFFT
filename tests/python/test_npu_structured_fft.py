@@ -106,7 +106,7 @@ def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,direction):
         ns,pid = execute_module(meta['module_path'])
         for transform in range(batch):
             pid[1] = transform
-            for col in range(a//tile):
+            for col in range((b if first else a)//tile):
                 pid[0] = col
                 args = (Pointer(x),Pointer(twiddle),Pointer(temp),Pointer(roots(a,tile)),batch) if first else (Pointer(temp),Pointer(y),Pointer(roots(b,tile)),batch)
                 ns[meta['kernel_name']](*args)
