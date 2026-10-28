@@ -5844,10 +5844,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     col_request.input_strides = {n0, 1};
     col_request.requested_n = n0;
     col_request.batch = batch * half_n1;
-    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
+    // Screen writing the column pass directly into natural order. This removes
+    // the final full-size transpose from the large MUSA real 2D path.
+    const bool musa_col_permuted_store = request.device_type == "musa" && n0 == 2048 && n1 == 2048 &&
+        flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", false);
+    auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+    const bool use_musa_col_permuted_store = musa_col_permuted_store && col_leaf != nullptr;
+    std::shared_ptr<CompiledRawNode> col_fft = use_musa_col_permuted_store
+        ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
+        : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
-    auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
+    auto transpose_inv = use_musa_col_permuted_store
+        ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
     DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
@@ -5859,7 +5868,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                                      std::move(transpose_fwd),
                                                      std::move(transpose_inv),
                                                      std::move(temp1),
-                                                     std::move(temp2));
+                                                     std::move(temp2),
+                                                     use_musa_col_permuted_store);
   }
 
   // RC fast path for real transforms: pack the half spectrum, then run the
@@ -6066,12 +6076,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     col_request.input_strides = {n0, 1};
     col_request.requested_n = n0;
     col_request.batch = batch * half_n1;
-    std::shared_ptr<CompiledRawNode> col_fft = compile_raw_node(node->col_plan, col_request, batch * half_n1);
+    const bool musa_col_permuted_store = request.device_type == "musa" && n0 == 2048 && n1 == 2048 &&
+        flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", false);
+    auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+    const bool use_musa_col_permuted_store = musa_col_permuted_store && col_leaf != nullptr;
+    std::shared_ptr<CompiledRawNode> col_fft = use_musa_col_permuted_store
+        ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
+        : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
     std::shared_ptr<CompiledRawNode> row_c2r =
         compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
-    auto transpose_inv = compile_2d_transpose_kernel(request, half_n1, n0, batch);
+    auto transpose_inv = use_musa_col_permuted_store
+        ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
     DeviceAllocation temp2 = adaptor::Memory(compact_bytes);
@@ -6083,7 +6100,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
                                                      std::move(transpose_fwd),
                                                      std::move(transpose_inv),
                                                      std::move(temp1),
-                                                     std::move(temp2));
+                                                     std::move(temp2),
+                                                     use_musa_col_permuted_store);
   }
 
   // RC fast path for inverse real transforms: column IFFT first, then expand,

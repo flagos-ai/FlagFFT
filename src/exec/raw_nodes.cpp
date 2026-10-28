@@ -2769,7 +2769,8 @@ CompiledRaw2DR2CRowNode::CompiledRaw2DR2CRowNode(int64_t n0,
                                                  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
                                                  std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                                  DeviceAllocation temp1,
-                                                 DeviceAllocation temp2)
+                                                 DeviceAllocation temp2,
+                                                 bool col_permuted_store)
     : n0(n0),
       n1(n1),
       row_r2c(std::move(row_r2c)),
@@ -2777,7 +2778,8 @@ CompiledRaw2DR2CRowNode::CompiledRaw2DR2CRowNode(int64_t n0,
       transpose_fwd(std::move(transpose_fwd)),
       transpose_inv(std::move(transpose_inv)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      col_permuted_store(col_permuted_store) {
 }
 
 std::string CompiledRaw2DR2CRowNode::describe() const {
@@ -2785,6 +2787,7 @@ std::string CompiledRaw2DR2CRowNode::describe() const {
   oss << "CompiledRaw2DR2CRow(n0=" << n0 << ", n1=" << n1
       << ", row_r2c=" << (row_r2c ? row_r2c->describe() : "null")
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
+      << ", col_permuted_store=" << col_permuted_store
       << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
       << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null") << ")";
   return oss.str();
@@ -2798,9 +2801,8 @@ flagfftResult CompiledRaw2DR2CRowNode::execute(adaptor::DevicePtr input,
     const int64_t batch = context.batch;
     const int64_t half_n1 = n1 / 2 + 1;
 
-    // The row child writes to scratch rather than directly to the user output.
-    // This preserves exact in-place safety: all real input is consumed before
-    // the final transpose writes the compact output back to `output`.
+    // The row child writes to scratch, so the full real input is consumed
+    // before either the final transpose or the fused column store writes output.
     RawExecutionContext row_context {context.request, context.stream, batch * n0, n1, half_n1};
     flagfftResult result = row_r2c->execute(input, temp1.get(), row_context);
     if (result != FLAGFFT_SUCCESS) {
@@ -2819,9 +2821,13 @@ flagfftResult CompiledRaw2DR2CRowNode::execute(adaptor::DevicePtr input,
                           batch);
 
     RawExecutionContext col_context {context.request, context.stream, batch * half_n1, n0, n0};
-    result = col_fft->execute(temp2.get(), temp1.get(), col_context);
+    result = col_fft->execute(temp2.get(), col_permuted_store ? output : temp1.get(), col_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+
+    if (col_permuted_store) {
+      return FLAGFFT_SUCCESS;
     }
 
     std::vector<JitKernelArg> transpose_inv_args = {
@@ -2849,7 +2855,8 @@ CompiledRaw2DC2RRowNode::CompiledRaw2DC2RRowNode(int64_t n0,
                                                  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
                                                  std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                                  DeviceAllocation temp1,
-                                                 DeviceAllocation temp2)
+                                                 DeviceAllocation temp2,
+                                                 bool col_permuted_store)
     : n0(n0),
       n1(n1),
       col_fft(std::move(col_fft)),
@@ -2857,7 +2864,8 @@ CompiledRaw2DC2RRowNode::CompiledRaw2DC2RRowNode(int64_t n0,
       transpose_fwd(std::move(transpose_fwd)),
       transpose_inv(std::move(transpose_inv)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      col_permuted_store(col_permuted_store) {
 }
 
 std::string CompiledRaw2DC2RRowNode::describe() const {
@@ -2865,6 +2873,7 @@ std::string CompiledRaw2DC2RRowNode::describe() const {
   oss << "CompiledRaw2DC2RRow(n0=" << n0 << ", n1=" << n1
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
       << ", row_c2r=" << (row_c2r ? row_c2r->describe() : "null")
+      << ", col_permuted_store=" << col_permuted_store
       << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
       << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null") << ")";
   return oss.str();
@@ -2895,21 +2904,23 @@ flagfftResult CompiledRaw2DC2RRowNode::execute(adaptor::DevicePtr input,
       return result;
     }
 
-    std::vector<JitKernelArg> transpose_inv_args = {
-        JitKernelArg::device(temp2.get()),
-        JitKernelArg::device(temp1.get()),
-        JitKernelArg::i32(static_cast<int32_t>(batch)),
-    };
-    transpose_inv->launch(context.stream,
-                          transpose_inv_args,
-                          ceil_div(n0, tile_size),
-                          ceil_div(half_n1, tile_size),
-                          batch);
+    if (!col_permuted_store) {
+      std::vector<JitKernelArg> transpose_inv_args = {
+          JitKernelArg::device(temp2.get()),
+          JitKernelArg::device(temp1.get()),
+          JitKernelArg::i32(static_cast<int32_t>(batch)),
+      };
+      transpose_inv->launch(context.stream,
+                            transpose_inv_args,
+                            ceil_div(n0, tile_size),
+                            ceil_div(half_n1, tile_size),
+                            batch);
+    }
 
     // The row child is the final stage and writes real output only after the
     // compact input has been consumed, so exact in-place C2R is safe here.
     RawExecutionContext row_context {context.request, context.stream, batch * n0, half_n1, n1};
-    return row_c2r->execute(temp1.get(), output, row_context);
+    return row_c2r->execute(col_permuted_store ? temp2.get() : temp1.get(), output, row_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 2D C2R row-boundary execute failed: %s\n", e.what());
     std::fflush(stderr);

@@ -1046,7 +1046,8 @@ struct CompiledRaw2DR2CRowNode final : CompiledRawNode {
                           std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
                           std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                           DeviceAllocation temp1,
-                          DeviceAllocation temp2);
+                          DeviceAllocation temp2,
+                          bool col_permuted_store = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1060,6 +1061,7 @@ struct CompiledRaw2DR2CRowNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawTranspose2D> transpose_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
+  bool col_permuted_store;
 };
 
 struct CompiledRaw2DC2RRowNode final : CompiledRawNode {
@@ -1070,7 +1072,8 @@ struct CompiledRaw2DC2RRowNode final : CompiledRawNode {
                           std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
                           std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                           DeviceAllocation temp1,
-                          DeviceAllocation temp2);
+                          DeviceAllocation temp2,
+                          bool col_permuted_store = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1084,6 +1087,7 @@ struct CompiledRaw2DC2RRowNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawTranspose2D> transpose_inv;
   DeviceAllocation temp1;
   DeviceAllocation temp2;
+  bool col_permuted_store;
 };
 
 struct CompiledRaw2DR2CNode final : CompiledRawNode {
