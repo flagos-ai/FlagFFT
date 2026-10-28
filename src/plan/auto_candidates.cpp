@@ -376,6 +376,32 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
           build_auto_node(n1,false),build_auto_node(n2,false));
       return {{node, static_cast<double>(2*n), priority(node)}};
     }
+    const char *mixed_pair = std::getenv("FLAGFFT_NPU_MIXED_FOURSTEP");
+    if (mixed_pair != nullptr && std::string(mixed_pair) == "1" &&
+        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+        n > 2048 && n <= 2048*2048 && (n & (n-1)) != 0 &&
+        factorization.remainder == 1) {
+      int64_t best_a = 0, best_b = 0;
+      std::vector<int64_t> best_row, best_col;
+      double best_cost = std::numeric_limits<double>::infinity();
+      for (int64_t a : enumerate_divisors(n)) {
+        const int64_t b = n/a;
+        if (a < 16 || a > b || b > 2048) continue;
+        auto row = select_leaf_factors(a), col = select_leaf_factors(b);
+        if (!should_use_leaf(a,row) || !should_use_leaf(b,col)) continue;
+        const double cost = estimate_leaf_warm_cost(a,row)/a +
+                            estimate_leaf_warm_cost(b,col)/b;
+        if (cost < best_cost) {
+          best_cost = cost; best_a = a; best_b = b;
+          best_row = std::move(row); best_col = std::move(col);
+        }
+      }
+      if (best_a != 0) {
+        PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,best_a,best_b,
+            make_leaf_plan(best_a,best_row),make_leaf_plan(best_b,best_col));
+        return {{node, static_cast<double>(n)*best_cost, priority(node)}};
+      }
+    }
     // Resource-bounded experiment: reuse the portable fused leaf codelets
     // instead of one global-memory Stockham launch per radix.
     if (const char *raw = std::getenv("FLAGFFT_NPU_PORTABLE_LEAF_MAX")) {
