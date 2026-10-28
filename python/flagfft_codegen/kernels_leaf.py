@@ -1204,6 +1204,14 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
+    compact_npu_stage = (portable_exchange and _npu_backend_active()
+        and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"
+        and any(factor & (factor-1) for factor in factors)
+        and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r",
+                        "four_step_row", "four_step_col", "four_step_real_row",
+                        "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"})
+    if compact_npu_stage:
+        lane_block = 1 << (current_lanes-1).bit_length()
     hcu_swizzle_override = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE")
     hcu_swizzle_default = dtype == "complex128" and n >= 64
     hcu_swizzle_enabled = (
@@ -1282,6 +1290,27 @@ def _emit_stage_block(
     )
 
     lines: list[str] = []
+    if compact_npu_stage:
+        lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
+        if inner_pack > 1:
+            width = four_step_n2 if io_mode in {"four_step_row","four_step_real_row","four_step_hermitian_row"} else four_step_n1
+            lines += [f"    inner_slot = lane_vec % {inner_pack}",
+                      f"    lane = lane_vec // {inner_pack}",
+                      "    four_step_inner = four_step_inner_base + inner_slot",
+                      f"    smem_offset = inner_slot * {exchange_slot_stride}",
+                      f"    base_lane_mask = four_step_inner < {width}"]
+        elif smem_pack > 1:
+            lines += [f"    batch_slot = lane_vec // {lane_block}",
+                      f"    lane = lane_vec - batch_slot * {lane_block}",
+                      "    current_batch = batch_id + batch_slot",
+                      f"    batch_base = current_batch * {n}",
+                      f"    smem_offset = batch_slot * {exchange_slot_stride}",
+                      "    base_lane_mask = current_batch < nbatch"]
+            if io_mode in {"contiguous_r2c","contiguous_c2r"}:
+                lines += ["    input_batch_base = current_batch * input_distance",
+                          "    output_batch_base = current_batch * output_distance"]
+        else:
+            lines += ["    lane = lane_vec", "    base_lane_mask = lane >= 0"]
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
     vector_io_allowed = not _non_nvidia_backend_active() or (
