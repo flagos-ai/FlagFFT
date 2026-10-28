@@ -82,16 +82,18 @@ def test_fused_fft_generated_body(tmp_path,n,direction):
         ns[meta['kernel_name']](Pointer(x),y,Pointer(roots(a,b)),Pointer(roots(b,a)),Pointer(cross),3)
     got = torch.view_as_complex(guarded[64:-64].reshape(3,n,2))
     ref = torch.fft.fft(torch.view_as_complex(x)) if direction=='forward' else torch.fft.ifft(torch.view_as_complex(x))*n
-    assert torch.allclose(got,ref,atol=3e-4,rtol=3e-5)
+    assert torch.isfinite(got).all()
+    assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref) < 1e-6
+    assert (got-ref).abs().max()/ref.abs().max() < 2e-6
     assert torch.equal(x,saved)
     assert (guarded[:64]==31415.25).all() and (guarded[-64:]==31415.25).all()
 
 
-@pytest.mark.parametrize('tile',[8,16])
+@pytest.mark.parametrize('a,b,tile',[(128,128,8),(128,128,16),(16,32,4),(64,128,8),(128,256,8),(512,1024,2)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
-def test_two_pass_tables_and_store_contract(tmp_path,tile,direction):
+def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,direction):
     torch.manual_seed(20261028)
-    n,a,b,batch = 16384,128,128,2
+    n,batch = a*b,1
     x = torch.randn(batch,n,2)
     saved = x.clone()
     temp,y = torch.empty_like(x),torch.full_like(x,float('nan'))
@@ -110,5 +112,7 @@ def test_two_pass_tables_and_store_contract(tmp_path,tile,direction):
                 ns[meta['kernel_name']](*args)
     got = torch.view_as_complex(y)
     ref = torch.fft.fft(torch.view_as_complex(x)) if direction=='forward' else torch.fft.ifft(torch.view_as_complex(x))*n
-    assert torch.allclose(got,ref,atol=3e-4,rtol=3e-5)
+    assert torch.isfinite(got).all()
+    assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref) < 1e-6
+    assert (got-ref).abs().max()/ref.abs().max() < 2e-6
     assert torch.equal(x,saved)
