@@ -234,6 +234,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
        key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepR2CCol ||
        key.kind == KernelKind::FourStepC2RCol || key.kind == KernelKind::FourStepRowStrided ||
        key.kind == KernelKind::FourStepColStrided)) {
+    const char *vector_remainder = std::getenv("FLAGFFT_NPU_VECTOR_REMAINDER");
+    cache_key += ";npu-vector-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
     const char *vector_io = std::getenv("FLAGFFT_NPU_PORTABLE_VECTOR_IO");
     cache_key += ";npu-vector-io=" + std::string(vector_io != nullptr ? vector_io : "0");
     const char *portable_leaf = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");

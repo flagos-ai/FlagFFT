@@ -63,6 +63,9 @@ def _csv_ints(raw: str) -> tuple[int, ...]:
 
 def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
     if _npu_backend_active():
+        if os.environ.get("FLAGFFT_NPU_VECTOR_REMAINDER") == "1":
+            from .npu_source import vector_remainders
+            kernel_source = vector_remainders(kernel_source)
         # CANN exposes tensor slice operations through the language extension.
         # Use that public surface instead of requiring the optional TLE module.
         for operation in ("insert_slice", "extract_slice"):
