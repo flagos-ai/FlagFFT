@@ -30,7 +30,7 @@ def main():
     parser.add_argument('--pack',type=int,default=1)
     parser.add_argument('--factor',type=int,default=32)
     parser.add_argument('--radix',type=int,choices=[2,4],default=4)
-    parser.add_argument('--cube-terms',type=int,choices=[3,4],default=3)
+    parser.add_argument('--cube-terms',type=int,choices=[0,3,4],default=3)
     parser.add_argument('--single-buffer',action='store_true')
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -64,12 +64,14 @@ def main():
         def fft():
             runner(x, y, wa, wb, cross, n, a, b, a.bit_length()-1, b.bit_length()-1, False, False)
     elif args.variant.startswith('cube'):
-        ah,al=dft_weights(a);bh,bl=dft_weights(b)
+        ah,al=dft_weights(a,args.cube_terms==0);bh,bl=dft_weights(b,args.cube_terms==0)
         ca=args.variant!='cube-second';cb=args.variant!='cube-first'
-        ck=cube_fourstep[(batch,)](x,y,ah,al,bh,bl,cross,wa,wb,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1,**options)
-        runner=ck[(batch,1,1)]
+        grid=triton.cdiv(batch,args.pack)
+        wa,wb=axis_twiddles(n*args.pack,a,b),axis_twiddles(n*args.pack,b,args.pack*a)
+        ck=cube_fourstep[(grid,)](x,y,ah,al,bh,bl,cross,wa,wb,batch,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1,args.pack,**options)
+        runner=ck[(grid,1,1)]
         def fft():
-            runner(x,y,ah,al,bh,bl,cross,wa,wb,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1)
+            runner(x,y,ah,al,bh,bl,cross,wa,wb,batch,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1,args.pack)
     elif args.variant in ('packed','compact'):
         if args.variant=='compact':
             wa,wb=compact_twiddles(a),compact_twiddles(b)
