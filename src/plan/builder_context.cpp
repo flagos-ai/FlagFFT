@@ -101,16 +101,25 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
       request.batch > 1 && request.requested_n == n && n == 8192 &&
       (musa_1d_c2c_root || musa_1d_real_root);
+  const bool musa_default_350000_fp64_c2c_split = request.device_type == "musa" &&
+      request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.batch > 1 && request.requested_n == n && n == 350000 &&
+      musa_1d_c2c_root && request.input_dtype == "complex128";
   if (request.device_type == "musa" && request.device_arch == "31" &&
       request.raw_dim == 1 && request.origin_rank == 1 && request.batch > 1 &&
       request.requested_n == n && (musa_1d_c2c_root || musa_1d_real_root) &&
       ((musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') ||
-       musa_default_131072_split || musa_default_8192_split)) {
-    // MTT S5000 screens favor 128x64 over the automatic 64x128 split at
-    // N=8192, and 512x256 over 128x1024 at N=131072.
+       musa_default_131072_split || musa_default_8192_split ||
+       musa_default_350000_fp64_c2c_split)) {
+    // MTT S5000 screens favor 128x64 over 64x128 at N=8192, 512x256 over
+    // 128x1024 at N=131072, and 700x500 over 500x700 for FP64 C2C at N=350000.
     const std::string spec = musa_fourstep_split != nullptr && *musa_fourstep_split != '\0'
                                  ? std::string(musa_fourstep_split)
-                                 : (musa_default_131072_split ? "131072:512" : "8192:128");
+                                 : (musa_default_131072_split
+                                        ? "131072:512"
+                                        : musa_default_8192_split
+                                              ? "8192:128"
+                                              : "350000:700");
     const auto separator = spec.find(':');
     if (separator == std::string::npos) {
       throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
