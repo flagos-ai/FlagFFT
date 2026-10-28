@@ -206,6 +206,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   if (adaptor::backend_name() == "npu") {
+    const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
+    cache_key += ";npu-join-mode=" + std::string(join != nullptr ? join : "auto");
+    cache_key += ";npu-auto-blockify=" + std::string(env_flag_enabled(std::getenv("TRITON_ALL_BLOCKS_PARALLEL")) ? "1" : "0");
     const char *vector_remainder = std::getenv("FLAGFFT_NPU_VECTOR_REMAINDER");
     cache_key += ";npu-source-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
     for (const char *name : {"FLAGFFT_NPU_COMPACT_STAGES", "FLAGFFT_NPU_FOURSTEP_PACK"}) {
@@ -675,6 +678,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 #if defined(BACKEND_MACA)
   kernel->binary_dir = json_string_field(artifact_json, "binary_dir");
 #endif
+  if (adaptor::backend_name() == "npu") {
+    const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
+    kernel->npu_join_lowering = join != nullptr ? join : "auto";
+    if (kernel->npu_join_lowering != "auto" && kernel->npu_join_lowering != "native" &&
+        kernel->npu_join_lowering != "packed")
+      throw std::runtime_error("FLAGFFT_NPU_JOIN_MODE must be auto, native or packed");
+    kernel->npu_auto_blockify = env_flag_enabled(std::getenv("TRITON_ALL_BLOCKS_PARALLEL"));
+  }
   kernel->signature = json_string_field(artifact_json, "signature");
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
   kernel->warp_size = json_int_field(artifact_json, "warp_size");

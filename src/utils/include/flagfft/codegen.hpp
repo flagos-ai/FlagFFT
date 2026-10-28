@@ -127,6 +127,8 @@ struct JitKernel {
   int64_t transpose_tile_size = 0;
   bool tle_fused_twiddle = false;
   bool npu_permutation_table = false;
+  std::string npu_join_lowering = "auto";
+  bool npu_auto_blockify = false;
   void *jit_function = nullptr;
   std::shared_ptr<void> direct_launch;
   std::mutex mutex;
