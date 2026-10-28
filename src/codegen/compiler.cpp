@@ -36,6 +36,19 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  bool use_npu_structured_fft(const FFTRequest &request, int64_t length, int64_t batch) {
+    const bool measured_size = ((length == 1024 || length == 2048) && (batch == 1 || batch == 64)) ||
+                               (length == 16384 && batch == 1);
+    return measured_size && request.device_type == "npu" &&
+           request.device_arch.rfind("Ascend910B", 0) == 0 &&
+           request.origin_rank == 1 && request.raw_dim == 1 &&
+           request.real_transform_kind.empty() && request.origin_real_transform_kind.empty() &&
+           request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+           request.fft_length == length && request.requested_n == length &&
+           !request.requires_contiguous_copy && request.input_strides == std::vector<int64_t>{length, 1} &&
+           flag_or_default("FLAGFFT_NPU_STRUCTURED_FFT", true);
+  }
+
   DeviceAllocation npu_structured_roots(int64_t length, int64_t columns) {
     const int64_t quarter = length * columns / 4;
     std::vector<float> values;
@@ -2160,11 +2173,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 #endif
     return compile_raw_direct_dft(*direct, request, batch);
   }
-  if (request.device_type == "npu" && request.origin_rank == 1 &&
-      request.real_transform_kind.empty() && request.input_dtype == "complex64" &&
-      request.output_dtype == "complex64" && node->length == request.requested_n &&
-      (node->length == 1024 || node->length == 2048) &&
-      (batch == 1 || batch == 64) && flag_or_default("FLAGFFT_NPU_STRUCTURED_FFT", false)) {
+  if (use_npu_structured_fft(request, node->length, batch) &&
+      (node->length == 1024 || node->length == 2048)) {
     const int64_t n = node->length, a = 32, b = n / a;
     auto key = KernelKey::leaf(triton_target_for_request(request), request.direction,
                                 request.input_dtype, n, {a, b}, 32, 4, {}, n);
@@ -2561,10 +2571,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                      adaptor::Memory(bytes));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
-    if (request.device_type == "npu" && request.origin_rank == 1 &&
-        request.real_transform_kind.empty() && request.input_dtype == "complex64" &&
-        request.output_dtype == "complex64" && four_step->n1 == 128 && four_step->n2 == 128 &&
-        flag_or_default("FLAGFFT_NPU_STRUCTURED_FFT", false)) {
+    if (use_npu_structured_fft(request, four_step->length, batch) &&
+        four_step->n1 == 128 && four_step->n2 == 128) {
       auto row_key = KernelKey::four_step_row(triton_target_for_request(request),
           request.direction, request.input_dtype, 128, 128, 128, {4,4,8}, 32, 4, {}, 128);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
