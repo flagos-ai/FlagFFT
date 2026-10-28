@@ -70,7 +70,7 @@ namespace {
     auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
         request.direction, group, stride, mode, n);
     key.perm_form = "structured_power2";
-    key.prime_n = output_stride;
+    key.factors = {output_stride};  // Private grouped-FFT output layout is part of cache identity.
     return TritonCompiler{}.compile_kernel(key);
   }
 
