@@ -423,7 +423,8 @@ def main() -> None:
         from .kernels_npu_structured import emit_structured
         metadata=emit_structured(length=args.length,direction=args.direction,out_dir=args.out_dir,
             first=None if args.kernel=='leaf' else args.kernel=='four_step_row',
-            n1=args.four_step_n1,n2=args.four_step_n2)
+            n1=args.four_step_n1,n2=args.four_step_n2,
+            tile=min(8,max(1,2048//max(args.four_step_n1 or 1,args.four_step_n2 or 1))))
     elif spec.family == BLUESTEIN:
         metadata = _emit_bluestein_jit_kernel(
             kernel=args.kernel,

@@ -150,8 +150,10 @@ def {name}(in_ptr,out_ptr,wa,wb,cross,nbatch):
 """
         kind='leaf'
     else:
-        if (n1,n2)!=(128,128) or tile not in (8,16):
-            raise ValueError('Tiled structured FFT currently supports 128 x 128')
+        if (any(v < 16 or v > 2048 or v & (v-1) for v in (n1,n2))
+                or tile not in (1,2,4,8,16) or n1%tile or n2%tile
+                or max(n1,n2)*tile > 4096):
+            raise ValueError('Tiled structured FFT exceeds the power-of-two axis resource bounds')
         l,width=(n1,n2) if first else (n2,n1)
         name=f'npu_structured_axis_{l}_{width}_c{tile}_{int(first)}_{direction}'
         args=(['in_ptr','twiddle_ptr','out_ptr','roots_ptr','nbatch'] if first else

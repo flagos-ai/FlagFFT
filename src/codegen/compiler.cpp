@@ -2479,21 +2479,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                      adaptor::Memory(bytes));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
-    if (use_npu_structured_fft(request, four_step->length, batch) &&
-        four_step->n1 == 128 && four_step->n2 == 128) {
+    const int64_t n1 = four_step->n1, n2 = four_step->n2;
+    const bool structured_pair = request.device_type == "npu" &&
+        request.device_arch.rfind("Ascend910B", 0) == 0 &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        n1 >= 16 && n2 >= 16 && n1 <= 2048 && n2 <= 2048 &&
+        (n1 & (n1-1)) == 0 && (n2 & (n2-1)) == 0 &&
+        flag_or_default("FLAGFFT_NPU_STRUCTURED_FOURSTEP", false);
+    if (structured_pair || (use_npu_structured_fft(request, four_step->length, batch) &&
+                            n1 == 128 && n2 == 128)) {
+      const int64_t tile = std::min<int64_t>(8, std::max<int64_t>(1, 2048 / std::max(n1,n2)));
       auto row_key = KernelKey::four_step_row(triton_target_for_request(request),
-          request.direction, request.input_dtype, 128, 128, 128, {4,4,8}, 32, 4, {}, 128);
+          request.direction, request.input_dtype, n1, n2, n1, {n1}, 32, 4, {}, n1);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
-          request.direction, request.input_dtype, 128, 128, 128, {4,4,8}, 32, 4, {}, 128);
+          request.direction, request.input_dtype, n1, n2, n2, {n2}, 32, 4, {}, n2);
       row_key.perm_form = col_key.perm_form = "npu_structured_planar";
       std::vector<DeviceAllocation> row_tables, col_tables;
-      row_tables.push_back(npu_structured_roots(128, 8));
-      col_tables.push_back(npu_structured_roots(128, 8));
-      return std::make_shared<CompiledRawFourStepFusedNode>(16384, 128, 128,
+      row_tables.push_back(npu_structured_roots(n1, tile));
+      col_tables.push_back(npu_structured_roots(n2, tile));
+      return std::make_shared<CompiledRawFourStepFusedNode>(four_step->length, n1, n2,
           compile_kernel(row_key), std::move(row_tables),
           compile_kernel(col_key), std::move(col_tables),
-          npu_structured_cross(16384, 128, request.direction == "inverse"),
-          adaptor::Memory(static_cast<std::size_t>(batch * 16384 * sizeof(float) * 2)));
+          npu_structured_cross(four_step->length, n1, request.direction == "inverse"),
+          adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * sizeof(float) * 2)));
     }
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);

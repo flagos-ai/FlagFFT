@@ -365,6 +365,17 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
 
     Factorization factorization = factorize_supported_radices(n);
+    const char *structured_pair = std::getenv("FLAGFFT_NPU_STRUCTURED_FOURSTEP");
+    if (structured_pair != nullptr && std::string(structured_pair) == "1" &&
+        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+        n > 2048 && n <= 2048 * 2048 && (n & (n-1)) == 0) {
+      int64_t n1 = 1;
+      while (n1 * n1 < n) n1 *= 2;
+      const int64_t n2 = n / n1;
+      PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,n1,n2,
+          build_auto_node(n1,false),build_auto_node(n2,false));
+      return {{node, static_cast<double>(2*n), priority(node)}};
+    }
     // Resource-bounded experiment: reuse the portable fused leaf codelets
     // instead of one global-memory Stockham launch per radix.
     if (const char *raw = std::getenv("FLAGFFT_NPU_PORTABLE_LEAF_MAX")) {
