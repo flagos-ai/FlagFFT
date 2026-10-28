@@ -1645,6 +1645,17 @@ namespace {
     // Resource bounds remain target-local; batching itself is implemented
     // by the shared packed-real kernels with a distance-aware fallback.
     const bool is_musa_s5000_fp64_target = request.device_type == "musa" && request.device_arch == "31";
+    // The batched FP32 MUSA C2R full-length real FourStep path is especially
+    // slow once transforms reach 16K. A half-length packed complex FFT passed
+    // accuracy on the full measured length grid and improved its aggregate
+    // speed by 56%; keep 8K on the original path, where packing regressed.
+    const bool is_musa_s5000_batch_fp32_c2r_target =
+        request.device_type == "musa" && request.device_arch == "31" && inverse &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch > 1 &&
+        request.fft_length == n && request.requested_n == n && n >= 16384 && n % 2 == 0 &&
+        request.input_dtype == "complex64" && !request.input_strides.empty() &&
+        request.input_strides.back() == 1 &&
+        std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr;
     // Ascend's single FP32 Stockham transforms avoid a full-length complex
     // expansion and halve the stage traffic. Keep small transforms and batch
     // layouts on their existing paths until they are qualified independently;
@@ -1694,12 +1705,14 @@ namespace {
         request.device_type == "maca" && request.raw_dim == 1 && batch == 1 && inverse &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
         (n == 185640 || n == 340200 || n == 524288 || n == 663000);
-    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target && !is_npu_fp32_target &&
+    if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target &&
+        !is_musa_s5000_batch_fp32_c2r_target && !is_npu_fp32_target &&
         !is_ix_single_fp32_target && !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target) {
       return std::nullopt;
     }
-    if (!force && !is_npu_fp32_target && !is_ix_single_fp32_target &&
+    if (!force && !is_musa_s5000_batch_fp32_c2r_target && !is_npu_fp32_target &&
+        !is_ix_single_fp32_target &&
         !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target &&
         (request.input_dtype != "complex128" || n < 65536 ||
@@ -1783,7 +1796,8 @@ namespace {
     // the general FP64 leaf bound, provided it replaces such a large leaf.
     const bool c2r_large_leaf_relief =
         original_has_large_leaf && child_is_leaf_pair && four_step->n1 <= 1536 && four_step->n2 <= 1536;
-    if (!force && !is_maca_batch_real_target && !bounded_leaf_pair && !c2r_large_leaf_relief) {
+    if (!force && !is_musa_s5000_batch_fp32_c2r_target && !is_maca_batch_real_target &&
+        !bounded_leaf_pair && !c2r_large_leaf_relief) {
       return std::nullopt;
     }
     return PackedRealChild {std::move(child_request), std::move(child_plan)};
