@@ -423,10 +423,13 @@ def main() -> None:
                 or args.kernel not in ('leaf','four_step_row','four_step_col')):
             parser.error('Structured FFT requires an NPU FP32 leaf or four-step axis')
         from .kernels_npu_structured import emit_structured
+        axis_length = args.four_step_n1 if args.kernel=='four_step_row' else args.four_step_n2
         metadata=emit_structured(length=args.length,direction=args.direction,out_dir=args.out_dir,
             first=None if args.kernel=='leaf' else args.kernel=='four_step_row',
             n1=args.four_step_n1,n2=args.four_step_n2,
-            tile=min(8,max(1,(4096 if args.npu_structured_recursive else 2048)//max(args.four_step_n1 or 1,args.four_step_n2 or 1))),
+            tile=min(8,max(1,(4096 if args.npu_structured_recursive else 2048)//
+                (max(1,axis_length) if args.npu_structured_recursive else
+                 max(args.four_step_n1 or 1,args.four_step_n2 or 1)))),
             recursive=args.npu_structured_recursive)
     elif spec.family == BLUESTEIN:
         metadata = _emit_bluestein_jit_kernel(

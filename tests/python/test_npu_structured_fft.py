@@ -111,7 +111,7 @@ def axis_roots(length, columns, recursive):
 @pytest.mark.parametrize('a,b,tile,recursive',[
     (128,128,8,False),(128,128,16,False),(16,32,4,False),
     (64,128,8,False),(128,256,8,False),(512,1024,2,False),
-    (512,1024,4,True),(1024,512,4,True),(512,2048,2,True)])
+    (512,1024,4,True),(1024,512,4,True),(512,2048,2,True),(512,1024,(8,4),True)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
 def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,recursive,direction):
     torch.manual_seed(20261028)
@@ -124,13 +124,14 @@ def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,recursive,directio
     angle = (-1 if direction=='forward' else 1)*2*math.pi*j2.double()*k1.double()/n
     twiddle = torch.cat((angle.cos().flatten(),angle.sin().flatten())).float()
     for first in (True,False):
-        meta = emit_structured(length=a,direction=direction,out_dir=tmp_path,first=first,n1=a,n2=b,tile=tile,recursive=recursive)
+        inner = tile[0 if first else 1] if isinstance(tile, tuple) else tile
+        meta = emit_structured(length=a,direction=direction,out_dir=tmp_path,first=first,n1=a,n2=b,tile=inner,recursive=recursive)
         ns,pid = execute_module(meta['module_path'])
         for transform in range(batch):
             pid[1] = transform
-            for col in range((b if first else a)//tile):
+            for col in range((b if first else a)//inner):
                 pid[0] = col
-                args = (Pointer(x),Pointer(twiddle),Pointer(temp),Pointer(axis_roots(a,tile,recursive)),batch) if first else (Pointer(temp),Pointer(y),Pointer(axis_roots(b,tile,recursive)),batch)
+                args = (Pointer(x),Pointer(twiddle),Pointer(temp),Pointer(axis_roots(a,inner,recursive)),batch) if first else (Pointer(temp),Pointer(y),Pointer(axis_roots(b,inner,recursive)),batch)
                 ns[meta['kernel_name']](*args)
     got = torch.view_as_complex(y)
     ref = torch.fft.fft(torch.view_as_complex(x)) if direction=='forward' else torch.fft.ifft(torch.view_as_complex(x))*n

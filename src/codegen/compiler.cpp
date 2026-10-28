@@ -2557,17 +2557,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     if (structured_pair || (use_npu_structured_fft(request, four_step->length, batch) &&
                             n1 == 128 && n2 == 128)) {
       const bool recursive = flag_or_default("FLAGFFT_NPU_RECURSIVE_AXIS", false);
-      const int64_t tile = std::min<int64_t>(8, std::max<int64_t>(1,
-          (recursive ? 4096 : 2048) / std::max(n1,n2)));
+      const int64_t row_tile = std::min<int64_t>(8, std::max<int64_t>(1,
+          (recursive ? 4096 : 2048) / (recursive ? n1 : std::max(n1,n2))));
+      const int64_t col_tile = std::min<int64_t>(8, std::max<int64_t>(1,
+          (recursive ? 4096 : 2048) / (recursive ? n2 : std::max(n1,n2))));
       auto row_key = KernelKey::four_step_row(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n1, {n1}, 32, 4, {}, n1);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n2, {n2}, 32, 4, {}, n2);
       row_key.perm_form = col_key.perm_form = recursive
-          ? "npu_structured_recursive_planar" : "npu_structured_planar";
+          ? "npu_structured_recursive_axis_planar" : "npu_structured_planar";
       std::vector<DeviceAllocation> row_tables, col_tables;
-      row_tables.push_back(recursive ? npu_recursive_axis_roots(n1, tile) : npu_structured_roots(n1, tile));
-      col_tables.push_back(recursive ? npu_recursive_axis_roots(n2, tile) : npu_structured_roots(n2, tile));
+      row_tables.push_back(recursive ? npu_recursive_axis_roots(n1, row_tile) : npu_structured_roots(n1, row_tile));
+      col_tables.push_back(recursive ? npu_recursive_axis_roots(n2, col_tile) : npu_structured_roots(n2, col_tile));
       return std::make_shared<CompiledRawFourStepFusedNode>(four_step->length, n1, n2,
           compile_kernel(row_key), std::move(row_tables),
           compile_kernel(col_key), std::move(col_tables),
