@@ -1248,6 +1248,8 @@ def _emit_stage_block(
         and os.environ.get("FLAGFFT_NPU_AFFINE_MATRIX_IO") == "1")
     npu_matrix_io = (npu_affine_tables and inner_pack >= 4 and dtype == "complex64"
         and not fuse_twiddle_into_row and io_mode in {"four_step_row", "four_step_col"})
+    npu_batch_io = (npu_affine_tables and dtype == "complex64"
+        and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"})
     hcu_swizzle_override = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE")
     hcu_swizzle_default = dtype == "complex128" and n >= 64
     hcu_swizzle_enabled = (
@@ -1443,6 +1445,15 @@ def _emit_stage_block(
             _emit_route_base(indent, stage, factors, current_lanes, f"group_{stage}")
         )
 
+    if npu_batch_io and stage == 0 and io_mode == "contiguous_c2r":
+        compact_row = 1 << (2*(n//2+1)-1).bit_length()
+        lines += [
+            f"{indent}compact_rows = batch_id + tl.arange(0,{smem_pack})[:,None]",
+            f"{indent}compact_cols = tl.arange(0,{compact_row})[None,:]",
+            f"{indent}compact_input = tl.load(in_ptr + compact_rows*input_distance*2 + compact_cols, "
+            f"(compact_rows < nbatch) & (compact_cols < {2*(n//2+1)}), 0.0)",
+            f"{indent}compact_input = tl.reshape(compact_input,({smem_pack*compact_row},))",
+        ]
     if npu_affine_tables and stage > 0:
         table_block = 1 << (n-1).bit_length()
         lines += [
@@ -1453,6 +1464,35 @@ def _emit_stage_block(
     for j in range(radix):
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
+            if npu_batch_io:
+                offset = j * math.prod(factors[1:])
+                if io_mode == "contiguous_c2r":
+                    half_n = n//2+1
+                    slot = "batch_slot" if smem_pack > 1 else "0"
+                    nyquist = f" | (in{j} == {n//2})" if n%2 == 0 else ""
+                    lines += [
+                        f"{indent}compact_freq = tl.where(in{j} < {half_n}, in{j}, {n}-in{j})",
+                        f"{indent}compact_lookup = tl.where(lane_mask, ({slot})*{compact_row}+compact_freq*2, 0)",
+                        f"{indent}r{j} = tl.gather(compact_input, compact_lookup, 0)",
+                        f"{indent}i{j} = tl.gather(compact_input, compact_lookup+1, 0)",
+                        f"{indent}i{j} = tl.where(in{j} < {half_n}, i{j}, -i{j})",
+                        f"{indent}i{j} = tl.where((in{j} == 0){nyquist}, 0.0, i{j})",
+                    ]
+                else:
+                    components = 1 if io_mode == "contiguous_r2c" else 2
+                    distance = "input_distance" if io_mode == "contiguous_r2c" else str(n)
+                    lines += [
+                        f"{indent}batch_rows = batch_id + tl.arange(0,{smem_pack})[:,None]",
+                        f"{indent}batch_cols = tl.arange(0,{lane_block*components})[None,:]",
+                        f"{indent}batch_input{j} = tl.load(in_ptr + batch_rows*({distance})*{components} "
+                        f"+ batch_cols+{offset*components}, (batch_rows < nbatch) & (batch_cols < {current_lanes*components}), 0.0)",
+                    ]
+                    if components == 1:
+                        lines += [f"{indent}r{j} = tl.reshape(batch_input{j},({smem_pack*lane_block},))",
+                                  f"{indent}i{j} = tl.zeros_like(r{j})"]
+                    else:
+                        lines.append(f"{indent}r{j}, i{j} = tl.split(tl.reshape(batch_input{j},({smem_pack*lane_block},2)))")
+                continue
             if npu_matrix_io:
                 width = four_step_n2 if io_mode == "four_step_row" else four_step_n1
                 offset = j * math.prod(factors[1:])
@@ -2030,6 +2070,22 @@ def _emit_stage_block(
                 )
                 continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
+            if npu_batch_io:
+                offset = j * math.prod(factors[:-1])
+                real_output = io_mode == "contiguous_c2r"
+                components = 1 if real_output else 2
+                extent = n//2+1 if io_mode == "contiguous_r2c" else n
+                distance = "output_distance" if io_mode != "contiguous" else str(n)
+                value = f"r{j}" if real_output else f"tl.join(r{j},i{j})"
+                lines += [
+                    f"{indent}batch_output{j} = tl.reshape({value},({smem_pack},{lane_block*components}))",
+                    f"{indent}batch_rows = batch_id + tl.arange(0,{smem_pack})[:,None]",
+                    f"{indent}batch_cols = tl.arange(0,{lane_block*components})[None,:]",
+                    f"{indent}tl.store(out_ptr + batch_rows*({distance})*{components} + batch_cols+{offset*components}, "
+                    f"batch_output{j}, (batch_rows < nbatch) & (batch_cols < {current_lanes*components}) "
+                    f"& (batch_cols+{offset*components} < {extent*components}))",
+                ]
+                continue
             if npu_matrix_io:
                 lines.extend(_emit_npu_matrix_store(indent, f"matrix_output{j}",
                     f"r{j}", f"i{j}", lane_block, inner_pack, current_lanes,
