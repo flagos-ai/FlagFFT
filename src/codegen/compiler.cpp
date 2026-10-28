@@ -1071,6 +1071,10 @@ namespace {
       NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex,
       int64_t output_stride = -1) {
     if (output_stride < 0) output_stride = stride;
+    // Keep a full vector of complex lanes even when an axis has an odd
+    // compact-real stride. The shared primitive masks incomplete groups;
+    // grouping therefore need not divide the matrix width or batch count.
+    group_size = std::max(group_size, int64_t{64} / n);
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
     auto roots = std::make_shared<DeviceAllocation>(npu_structured_roots(n, group_size));
     auto kernel = npu_power2_kernel(request, n, group_size, stride, output_stride, static_cast<int64_t>(mode));
