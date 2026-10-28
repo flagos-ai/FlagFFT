@@ -38,6 +38,7 @@ def main():
     parser.add_argument('--library', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--input-kind', choices=['random','impulse','tone','zero'], default='random')
     parser.add_argument('--n', type=int, default=2048)
     parser.add_argument('--batch', type=int, default=2048)
     parser.add_argument('--steps', type=int, default=64)
@@ -50,6 +51,16 @@ def main():
     torch.npu.set_device(0)
     torch.manual_seed(args.seed)
     cpu = torch.randn(batch, n, 2)
+    if args.input_kind == 'zero':
+        cpu.zero_()
+    elif args.input_kind == 'impulse':
+        cpu.zero_()
+        rows=torch.arange(batch)
+        cpu[rows,(rows*97)%n,0]=1
+        cpu[rows,(rows*97)%n,1]=0.25
+    elif args.input_kind == 'tone':
+        angle=2*math.pi*(torch.arange(batch,dtype=torch.float64)[:,None]*17+1)*torch.arange(n,dtype=torch.float64)[None,:]/n
+        cpu=torch.stack((angle.cos(),angle.sin()),-1).float()
     x, y, z = cpu.npu(), torch.empty_like(cpu, device='npu'), torch.empty_like(cpu, device='npu')
     wa, wb = axis_twiddles(n, a, b), axis_twiddles(n, b, a)
     k = torch.arange(n, dtype=torch.int64)
@@ -131,7 +142,7 @@ def main():
     ref = torch.fft.fft(torch.view_as_complex(cpu), dim=-1)
     def check(output):
         got = torch.view_as_complex(output.cpu())
-        rel = ((got-ref).abs().square().sum()/ref.abs().square().sum()).sqrt().item()
+        rel = ((got-ref).abs().square().sum()/ref.abs().square().sum().clamp_min(torch.finfo(torch.float32).tiny)).sqrt().item()
         assert torch.allclose(got, ref, atol=3e-4, rtol=3e-5), rel
         return rel
     fft(); sip(); torch.npu.synchronize()
@@ -176,7 +187,7 @@ def main():
     errors.update(fourstep_after=check(y), sip_after=check(z))
     assert torch.equal(x.cpu(), cpu), 'input changed during replay'
     lib.sip_destroy(handle)
-    result = dict(compile_options=options,cube_leaf=args.cube_leaf,cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
+    result = dict(input_kind=args.input_kind,compile_options=options,cube_leaf=args.cube_leaf,cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
                   graph_steps=args.steps, rounds=args.rounds, iters=args.iters,
                   results=results, rel_l2=errors, replay_verified=True,
                   scope='complete FFT execution on resident device buffers; plans/tables/JIT/copies excluded',
