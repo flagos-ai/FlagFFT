@@ -1174,16 +1174,7 @@ namespace {
     const bool packed_real = mode != NpuAivFFTSmallMode::Complex &&
         n >= 128 && n <= 2048 && stride == 1 && output_stride == 1 &&
         flag_or_default("FLAGFFT_NPU_PACKED_REAL_TWO_AXIS", false);
-    int64_t packed_group = 1;
-    if (const char *setting = std::getenv("FLAGFFT_NPU_PACKED_REAL_GROUP")) {
-      const std::string value(setting);
-      if (value != "1" && value != "4")
-        throw std::runtime_error("FLAGFFT_NPU_PACKED_REAL_GROUP must be 1 or 4");
-      // Bound the packed payload to 1024 complex values. Larger groups
-      // increase UB pressure and are not covered by this tuning policy.
-      if (value == "4" && n / 2 * 4 <= 1024) packed_group = 4;
-    }
-    group_size = packed_real ? packed_group
+    group_size = packed_real ? 1
                             : std::max({group_size, int64_t{64} / n, alignment_group});
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
     auto roots = std::make_shared<DeviceAllocation>(packed_real
