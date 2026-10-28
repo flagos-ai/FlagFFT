@@ -121,7 +121,7 @@ def pack4(a,b,c,d,N:tl.constexpr):
 """
 
 def recursive_axis_body(length, columns, root="roots_ptr"):
-    a = 16 if length == 256 else 32
+    a = 16 if length == 256 else 64 if length == 2048 else 32
     b, points = length//a, length*columns
     wa_size=(a.bit_length()-1)//2*6*(points//4)
     wb_size=(b.bit_length()-1)//2*6*(points//4)

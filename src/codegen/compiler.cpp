@@ -71,7 +71,8 @@ namespace {
 
   DeviceAllocation npu_recursive_axis_roots(int64_t length, int64_t columns, int64_t minimum = 512) {
     if (length < minimum) return npu_structured_roots(length, columns);
-    const int64_t a = length == 256 ? 16 : 32, b = length / a, points = length * columns;
+    const int64_t a = length == 256 ? 16 : length == 2048 ? 64 : 32;
+    const int64_t b = length / a, points = length * columns;
     auto values = npu_structured_root_values(a, b * columns);
     auto second = npu_structured_root_values(b, a * columns);
     values.insert(values.end(), second.begin(), second.end());
