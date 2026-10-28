@@ -184,6 +184,10 @@ namespace {
     return ceil_div(rows, kernel->rows_per_block);
   }
 
+  int64_t real_grid_x(const std::shared_ptr<JitKernel> &kernel, int64_t columns) {
+    return kernel->grid_x_override > 0 ? kernel->grid_x_override : ceil_div(columns, 256);
+  }
+
   // Row-oriented kernels describe their work as `rows` rows of `rows_per_block`
   // rows per block, with grid_x covering the columns or tiles of one row. Split
   // the rows so every launch stays inside both the per-dimension grid cap and
@@ -1641,7 +1645,6 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
                                           adaptor::DevicePtr output,
                                           const RawExecutionContext &context) const {
   try {
-    constexpr int64_t block = 256;
     const int64_t half = length / 2 + 1;
     const bool in_place = input == output;
     const int64_t padded_real_distance = 2 * half;
@@ -1651,7 +1654,7 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
     const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
     const int64_t real_bytes = complex_bytes / 2;
     launch_grid_y_chunks(
-        ceil_div(length, block),
+        real_grid_x(expand_kernel, length),
         context.batch,
         expand_kernel->rows_per_block,
         [&](int64_t row_offset, int64_t chunk_rows) {
@@ -1663,7 +1666,7 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
           };
           expand_kernel->launch(context.stream,
                                 expand_args,
-                                ceil_div(length, block),
+                                real_grid_x(expand_kernel, length),
                                 grid_rows(expand_kernel, chunk_rows),
                                 1);
         });
@@ -1673,7 +1676,7 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
       return result;
     }
 
-    launch_grid_y_chunks(ceil_div(length / 2 + 1, block),
+    launch_grid_y_chunks(real_grid_x(pack_kernel, length / 2 + 1),
                          context.batch,
                          pack_kernel->rows_per_block,
                          [&](int64_t row_offset, int64_t chunk_rows) {
@@ -1685,7 +1688,7 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
                            };
                            pack_kernel->launch(context.stream,
                                                pack_args,
-                                               ceil_div(length / 2 + 1, block),
+                                               real_grid_x(pack_kernel, length / 2 + 1),
                                                grid_rows(pack_kernel, chunk_rows),
                                                1);
                          });
@@ -1884,7 +1887,6 @@ flagfftResult CompiledRawR2CFourStepHalfOutNode::execute(adaptor::DevicePtr inpu
                                                          adaptor::DevicePtr output,
                                                          const RawExecutionContext &context) const {
   try {
-    constexpr int64_t block = 256;
     const int64_t half = length / 2 + 1;
     const bool in_place = input == output;
     const int64_t padded_real_distance = 2 * half;
@@ -1900,7 +1902,7 @@ flagfftResult CompiledRawR2CFourStepHalfOutNode::execute(adaptor::DevicePtr inpu
     };
     expand_kernel->launch(context.stream,
                           expand_args,
-                          ceil_div(length, block),
+                          real_grid_x(expand_kernel, length),
                           grid_rows(expand_kernel, context.batch),
                           1);
 
@@ -2020,7 +2022,6 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
                                           adaptor::DevicePtr output,
                                           const RawExecutionContext &context) const {
   try {
-    constexpr int64_t block = 256;
     const int64_t half = length / 2 + 1;
     const bool in_place = input == output;
     const int64_t padded_real_distance = 2 * half;
@@ -2030,7 +2031,7 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
                                         : (context.output_distance > 0 ? context.output_distance : length);
     const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
     const int64_t real_bytes = complex_bytes / 2;
-    launch_grid_y_chunks(ceil_div(length, block),
+    launch_grid_y_chunks(real_grid_x(expand_kernel, length),
                          context.batch,
                          expand_kernel->rows_per_block,
                          [&](int64_t row_offset, int64_t chunk_rows) {
@@ -2042,7 +2043,7 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
                            };
                            expand_kernel->launch(context.stream,
                                                  expand_args,
-                                                 ceil_div(length, block),
+                                                 real_grid_x(expand_kernel, length),
                                                  grid_rows(expand_kernel, chunk_rows),
                                                  1);
                          });
@@ -2052,7 +2053,7 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
       return result;
     }
 
-    launch_grid_y_chunks(ceil_div(length, block),
+    launch_grid_y_chunks(real_grid_x(pack_kernel, length),
                          context.batch,
                          pack_kernel->rows_per_block,
                          [&](int64_t row_offset, int64_t chunk_rows) {
@@ -2064,7 +2065,7 @@ flagfftResult CompiledRawC2RNode::execute(adaptor::DevicePtr input,
                            };
                            pack_kernel->launch(context.stream,
                                                pack_args,
-                                               ceil_div(length, block),
+                                               real_grid_x(pack_kernel, length),
                                                grid_rows(pack_kernel, chunk_rows),
                                                1);
                          });
@@ -2747,7 +2748,6 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
                                             const RawExecutionContext &context) const {
   try {
     const int64_t batch = context.batch;
-    constexpr int64_t block = 256;
     constexpr int64_t tile_size = 32;
     const int64_t half_n1 = n1 / 2 + 1;
 
@@ -2760,7 +2760,7 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
     const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
     const int64_t real_bytes = complex_bytes / 2;
     launch_grid_y_chunks(
-        ceil_div(n1, block), total_rows, expand_kernel->rows_per_block,
+        real_grid_x(expand_kernel, n1), total_rows, expand_kernel->rows_per_block,
         [&](int64_t row_offset, int64_t chunk_rows) {
           std::vector<JitKernelArg> expand_args = {
               JitKernelArg::device(input + row_offset * input_distance * real_bytes),
@@ -2770,7 +2770,7 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
           };
           expand_kernel->launch(context.stream,
                                 expand_args,
-                                ceil_div(n1, block),
+                                real_grid_x(expand_kernel, n1),
                                 grid_rows(expand_kernel, chunk_rows),
                                 1);
         });
@@ -2789,7 +2789,7 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
     // output_distance is per-row distance in the output buffer
     const int64_t output_distance = half_n1;  // Each row in output has half_n1 complex elements
     launch_grid_y_chunks(
-        ceil_div(half_n1, block), total_rows, pack_kernel->rows_per_block,
+        real_grid_x(pack_kernel, half_n1), total_rows, pack_kernel->rows_per_block,
         [&](int64_t row_offset, int64_t chunk_rows) {
           std::vector<JitKernelArg> pack_args = {
               JitKernelArg::device(row_fft_buf.get() + row_offset * n1 * complex_bytes),
@@ -2799,7 +2799,7 @@ flagfftResult CompiledRaw2DR2CNode::execute(adaptor::DevicePtr input,
           };
           pack_kernel->launch(context.stream,
                               pack_args,
-                              ceil_div(half_n1, block),
+                              real_grid_x(pack_kernel, half_n1),
                               grid_rows(pack_kernel, chunk_rows),
                               1);
         });
@@ -2877,7 +2877,6 @@ flagfftResult CompiledRaw2DR2CRCNode::execute(adaptor::DevicePtr input,
                                               const RawExecutionContext &context) const {
   try {
     const int64_t batch = context.batch;
-    constexpr int64_t block = 256;
     const int64_t half_n1 = n1 / 2 + 1;
     const int64_t total_rows = batch * n0;
 
@@ -2902,7 +2901,7 @@ flagfftResult CompiledRaw2DR2CRCNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
+    expand_kernel->launch(context.stream, expand_args, real_grid_x(expand_kernel, n1), total_rows, 1);
 
     // Step 2: Row C2C FFT (in-place on the expanded buffer).
     RawExecutionContext row_context {context.request, context.stream, total_rows};
@@ -2918,7 +2917,7 @@ flagfftResult CompiledRaw2DR2CRCNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(half_n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
-    pack_kernel->launch(context.stream, pack_args, ceil_div(half_n1, block), total_rows, 1);
+    pack_kernel->launch(context.stream, pack_args, real_grid_x(pack_kernel, half_n1), total_rows, 1);
 
     // Step 4: Column C2C FFT directly on the half-packed rows (no transposes).
     RawExecutionContext col_context {context.request, context.stream, batch * half_n1};
@@ -2967,7 +2966,6 @@ flagfftResult CompiledRawC2RFourStepRealOutNode::execute(adaptor::DevicePtr inpu
                                                          adaptor::DevicePtr output,
                                                          const RawExecutionContext &context) const {
   try {
-    constexpr int64_t block = 256;
     const int64_t half = length / 2 + 1;
     const bool in_place = input == output;
     const int64_t padded_real_distance = 2 * half;
@@ -2984,7 +2982,7 @@ flagfftResult CompiledRawC2RFourStepRealOutNode::execute(adaptor::DevicePtr inpu
     };
     expand_kernel->launch(context.stream,
                           expand_args,
-                          ceil_div(length, block),
+                          real_grid_x(expand_kernel, length),
                           grid_rows(expand_kernel, context.batch),
                           1);
 
@@ -3052,7 +3050,6 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
                                             const RawExecutionContext &context) const {
   try {
     const int64_t batch = context.batch;
-    constexpr int64_t block = 256;
     constexpr int64_t tile_size = 32;
     const int64_t half_n1 = n1 / 2 + 1;
     const int64_t total_rows = batch * n0;
@@ -3101,7 +3098,7 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
     const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
     const int64_t real_bytes = complex_bytes / 2;
     launch_grid_y_chunks(
-        ceil_div(n1, block), total_rows, expand_kernel->rows_per_block,
+        real_grid_x(expand_kernel, n1), total_rows, expand_kernel->rows_per_block,
         [&](int64_t row_offset, int64_t chunk_rows) {
           std::vector<JitKernelArg> expand_args = {
               JitKernelArg::device(temp1.get() + row_offset * half_n1 * complex_bytes),
@@ -3111,7 +3108,7 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
           };
           expand_kernel->launch(context.stream,
                                 expand_args,
-                                ceil_div(n1, block),
+                                real_grid_x(expand_kernel, n1),
                                 grid_rows(expand_kernel, chunk_rows),
                                 1);
         });
@@ -3126,7 +3123,7 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
     // Step 6: Pack complex -> real
     // temp3: (batch*n0, n1) complex -> output: (batch*n0, n1) real
     launch_grid_y_chunks(
-        ceil_div(n1, block), total_rows, pack_kernel->rows_per_block,
+        real_grid_x(pack_kernel, n1), total_rows, pack_kernel->rows_per_block,
         [&](int64_t row_offset, int64_t chunk_rows) {
           std::vector<JitKernelArg> pack_args = {
               JitKernelArg::device(temp3.get() + row_offset * n1 * complex_bytes),
@@ -3136,7 +3133,7 @@ flagfftResult CompiledRaw2DC2RNode::execute(adaptor::DevicePtr input,
           };
           pack_kernel->launch(context.stream,
                               pack_args,
-                              ceil_div(n1, block),
+                              real_grid_x(pack_kernel, n1),
                               grid_rows(pack_kernel, chunk_rows),
                               1);
         });
@@ -3182,7 +3179,6 @@ flagfftResult CompiledRaw2DC2RRCNode::execute(adaptor::DevicePtr input,
                                               const RawExecutionContext &context) const {
   try {
     const int64_t batch = context.batch;
-    constexpr int64_t block = 256;
     const int64_t half_n1 = n1 / 2 + 1;
     const int64_t total_rows = batch * n0;
 
@@ -3208,7 +3204,7 @@ flagfftResult CompiledRaw2DC2RRCNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(half_n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
-    expand_kernel->launch(context.stream, expand_args, ceil_div(n1, block), total_rows, 1);
+    expand_kernel->launch(context.stream, expand_args, real_grid_x(expand_kernel, n1), total_rows, 1);
 
     // Step 3: Row C2C IFFT (in-place on the full Hermitian buffer).
     RawExecutionContext row_context {context.request, context.stream, total_rows};
@@ -3224,7 +3220,7 @@ flagfftResult CompiledRaw2DC2RRCNode::execute(adaptor::DevicePtr input,
         JitKernelArg::i64(n1),
         JitKernelArg::i32(static_cast<int32_t>(total_rows)),
     };
-    pack_kernel->launch(context.stream, pack_args, ceil_div(n1, block), total_rows, 1);
+    pack_kernel->launch(context.stream, pack_args, real_grid_x(pack_kernel, n1), total_rows, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 2D C2R RC execute failed: %s\n", e.what());
@@ -4557,7 +4553,6 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
                                             const RawExecutionContext &context) const {
   try {
     const int64_t batch = context.batch;
-    constexpr int64_t block = 256;
     const int64_t half = n2 / 2 + 1;
     const int64_t total_rows = batch * n0 * n1;
     const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
@@ -4590,7 +4585,7 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     };
 
     // Step 1: Expand real -> complex rows of length n2.
-    launch_grid_y_chunks(ceil_div(n2, block),
+    launch_grid_y_chunks(real_grid_x(expand_kernel, n2),
                          total_rows,
                          expand_kernel->rows_per_block,
                          [&](int64_t row_offset, int64_t chunk_rows) {
@@ -4602,7 +4597,7 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
                            };
                            expand_kernel->launch(context.stream,
                                                  expand_args,
-                                                 ceil_div(n2, block),
+                                                 real_grid_x(expand_kernel, n2),
                                                  grid_rows(expand_kernel, chunk_rows),
                                                  1);
                          });
@@ -4615,7 +4610,7 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
     }
 
     // Step 3: Half-pack rows into the output (n0, n1, half) layout.
-    launch_grid_y_chunks(ceil_div(half, block),
+    launch_grid_y_chunks(real_grid_x(pack_kernel, half),
                          total_rows,
                          pack_kernel->rows_per_block,
                          [&](int64_t row_offset, int64_t chunk_rows) {
@@ -4627,7 +4622,7 @@ flagfftResult CompiledRaw3DR2CNode::execute(adaptor::DevicePtr input,
                            };
                            pack_kernel->launch(context.stream,
                                                pack_args,
-                                               ceil_div(half, block),
+                                               real_grid_x(pack_kernel, half),
                                                grid_rows(pack_kernel, chunk_rows),
                                                1);
                          });
@@ -4712,7 +4707,6 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
                                             const RawExecutionContext &context) const {
   try {
     const int64_t batch = context.batch;
-    constexpr int64_t block = 256;
     const int64_t complex_bytes = complex_element_bytes(context.request.input_dtype);
     const int64_t real_bytes = complex_bytes / 2;
     const int64_t half = n2 / 2 + 1;
@@ -4765,7 +4759,7 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     // Step 3: (n0,half,n1) -> (n0,n1,half), expand half -> full Hermitian.
     perm_result = permute(perm_021, temp2.get(), temp1.get(), n0, half, n1, 0, 2, 1);
     if (perm_result != FLAGFFT_SUCCESS) return perm_result;
-    launch_grid_y_chunks(ceil_div(n2, block),
+    launch_grid_y_chunks(real_grid_x(expand_kernel, n2),
                          total_rows,
                          expand_kernel->rows_per_block,
                          [&](int64_t row_offset, int64_t chunk_rows) {
@@ -4777,7 +4771,7 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
                            };
                            expand_kernel->launch(context.stream,
                                                  expand_args,
-                                                 ceil_div(n2, block),
+                                                 real_grid_x(expand_kernel, n2),
                                                  grid_rows(expand_kernel, chunk_rows),
                                                  1);
                          });
@@ -4788,7 +4782,7 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
-    launch_grid_y_chunks(ceil_div(n2, block),
+    launch_grid_y_chunks(real_grid_x(pack_kernel, n2),
                          total_rows,
                          pack_kernel->rows_per_block,
                          [&](int64_t row_offset, int64_t chunk_rows) {
@@ -4800,7 +4794,7 @@ flagfftResult CompiledRaw3DC2RNode::execute(adaptor::DevicePtr input,
                            };
                            pack_kernel->launch(context.stream,
                                                pack_args,
-                                               ceil_div(n2, block),
+                                               real_grid_x(pack_kernel, n2),
                                                grid_rows(pack_kernel, chunk_rows),
                                                1);
                          });

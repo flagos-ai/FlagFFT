@@ -2137,3 +2137,15 @@ def test_maca_portable_exchange_indexes_the_register_layout(
     source_index = namespace["exchange_src"]
     assert np.array_equal(source_index[valid] // lane_pack, namespace["exchange_codelet"][valid])
     assert np.array_equal(source_index[valid] % lane_pack, namespace["exchange_slot"][valid])
+
+
+@pytest.mark.parametrize("tile", [256, 512, 1024, 2048])
+@pytest.mark.parametrize("kernel", ["real_to_complex", "r2c_half_pack", "compact_to_hermitian_full", "complex_to_real"])
+def test_npu_real_boundary_launch_extent(jit_source, tmp_path, monkeypatch, tile, kernel):
+    monkeypatch.setenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE", str(tile))
+    metadata = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel=kernel, n=46189, dtype="complex64", out_dir=tmp_path,
+        target="npu:Ascend910B4:1")
+    columns = 23095 if kernel == "r2c_half_pack" else 46189
+    assert metadata["grid_x_override"] == (columns + tile - 1) // tile
+    assert metadata["rows_per_block"] == 1

@@ -547,6 +547,10 @@ def _emit_r2c_pointwise_jit_kernel(
     target: str = "",
 ) -> dict[str, Any]:
     elements_per_program = 256
+    if target.startswith("npu:") and dtype == "complex64" and n >= 512:
+        elements_per_program = int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE", "256"))
+        if elements_per_program not in {256, 512, 1024, 2048}:
+            raise ValueError("NPU real boundary tile must be 256, 512, 1024 or 2048")
     num_warps = _RESHAPE_NUM_WARPS
     if target.startswith("npu:") and n == 256:
         # AIV conversion kernels are sensitive to work per block. Keep the
@@ -634,9 +638,15 @@ def _emit_r2c_pointwise_jit_kernel(
         "kernel_type": kernel,
         "dtype": dtype,
         "length": int(n),
-        # `block` is the column extent used by raw_nodes.cpp to build grid.x;
-        # `rows_per_block` carries the selected row grouping in grid.y.
+        # Keep the historical block ABI; the explicit column grid also
+        # supports wider NPU tiles. Row grouping belongs to grid.y.
         "block": 256,
+        "grid_x_override": (
+            ((n // 2 + 1 if kernel == "r2c_half_pack" else n)
+             + elements_per_program - 1) // elements_per_program
+            if kernel in {"real_to_complex", "r2c_half_pack",
+                          "compact_to_hermitian_full", "complex_to_real"} else 0
+        ),
         "rows_per_block": int(rows_per_block),
     }
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
