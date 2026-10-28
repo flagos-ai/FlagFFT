@@ -48,7 +48,7 @@ def test_real_matrix_embedding(tmp_path,n,batch,mode,direction):
     for b in range((batch+bm-1)//bm):
         pid[0]=b
         for col in range((op+bn-1)//bn):
-            pid[1]=col;ns[cube](Pointer(work),Pointer(w),Pointer(out,64),output_distance,batch)
+            pid[1]=col;ns[cube](Pointer(work if mode==0 else src),Pointer(w),Pointer(out,64),kin if mode==0 else input_distance,output_distance,batch)
     rows=out[64:-64].reshape(batch,output_distance);got=rows[:,:outs]
     assert torch.isfinite(got).all()
     assert torch.linalg.vector_norm(got-expected.reshape(batch,outs))/torch.linalg.vector_norm(expected)<2e-6

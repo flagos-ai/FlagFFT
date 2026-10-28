@@ -3513,7 +3513,7 @@ flagfftResult CompiledRawMatrixFourStepNode::execute(adaptor::DevicePtr input,
   while(pads[0]<n1) pads[0]*=2;
   while(pads[1]<n2) pads[1]*=2;
   const int64_t matrix_bytes=2*n1*n2*sizeof(float);
-  const int64_t packed_bytes[2]={2*pads[0]*n2*sizeof(float),2*pads[1]*n1*sizeof(float)};
+  const int64_t packed_bytes[2]={2*pads[0]*n2*static_cast<int64_t>(sizeof(float)),2*pads[1]*n1*static_cast<int64_t>(sizeof(float))};
   const int64_t max_tiles=std::max(ceil_div(pads[0],16)*ceil_div(n2,16),
       ceil_div(pads[1],16)*ceil_div(n1,16));
   const int64_t limit=std::max<int64_t>(1,65535/max_tiles);
@@ -3576,11 +3576,11 @@ flagfftResult CompiledRawMatrixFFTNode::execute(adaptor::DevicePtr input,
   for (int64_t start=0;start<context.batch;start+=limit) {
     const int64_t count=std::min(limit,context.batch-start);
     auto packed=scratch.get()+start*reduction*sizeof(float);
-    pack->launch(context.stream,{JitKernelArg::device(input+start*input_distance*sizeof(float)),
+    if(mode==0) pack->launch(context.stream,{JitKernelArg::device(input+start*input_distance*sizeof(float)),
         JitKernelArg::device(packed),JitKernelArg::i64(input_distance),JitKernelArg::i32(static_cast<int32_t>(count))},
         ceil_div(count,pack->batch_per_block),1,1);
-    cube->launch(context.stream,{JitKernelArg::device(packed),JitKernelArg::device(weights.get()),
-        JitKernelArg::device(output+start*output_distance*sizeof(float)),JitKernelArg::i64(output_distance),
+    cube->launch(context.stream,{JitKernelArg::device(mode==0?packed:input+start*input_distance*sizeof(float)),JitKernelArg::device(weights.get()),
+        JitKernelArg::device(output+start*output_distance*sizeof(float)),JitKernelArg::i64(mode==0?reduction:input_distance),JitKernelArg::i64(output_distance),
         JitKernelArg::i32(static_cast<int32_t>(count))},ceil_div(count,cube->batch_per_block),tiles,1);
   }
   return FLAGFFT_SUCCESS;

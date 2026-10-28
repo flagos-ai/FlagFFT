@@ -43,11 +43,11 @@ def {pack_name}(X,P,input_distance,NB):
 '''
     else:body+=f'    tl.store(P+b*{kin}+k,x,b<NB)\n'
     body+=f'''@triton.jit
-def {cube_name}(P,W,Y,output_distance,NB):
+def {cube_name}(P,W,Y,input_distance,output_distance,NB):
     b=tl.program_id(0).to(tl.int64)*{bm}+tl.arange(0,{bm})
     j=tl.arange(0,{kin})
     k=tl.program_id(1)*{bn}+tl.arange(0,{bn})
-    x=tl.load(P+b[:,None]*{kin}+j[None,:],b[:,None]<NB,0.)
+    x=tl.load(P+b[:,None]*input_distance+j[None,:],(b[:,None]<NB)&(j[None,:]<{kin if mode==0 else ins}),0.)
     w=tl.load(W+j[:,None]*{op}+k[None,:])
     y=tl.dot(x,w,input_precision="ieee")
     tl.store(Y+b[:,None]*output_distance+k[None,:],y,(b[:,None]<NB)&(k[None,:]<{outs}))
@@ -61,9 +61,9 @@ def emit_matrix(n, mode, direction, phase, out_dir):
     name=pack if phase=='pack' else cube
     path=Path(out_dir)/(name+'.py');path.parent.mkdir(parents=True,exist_ok=True)
     write_text_atomic(path,source)
-    args=['X','P','input_distance','NB'] if phase=='pack' else ['P','W','Y','output_distance','NB']
+    args=['X','P','input_distance','NB'] if phase=='pack' else ['P','W','Y','input_distance','output_distance','NB']
     meta=dict(module_path=str(path),kernel_name=name,arg_names=args,
-        signature='*fp32:16,*fp32:16,i64,i32' if phase=='pack' else '*fp32:16,*fp32:16,*fp32:16,i64,i32',
+        signature='*fp32:16,*fp32:16,i64,i32' if phase=='pack' else '*fp32:16,*fp32:16,*fp32:16,i64,i64,i32',
         num_warps=4,num_stages=1,batch_per_block=2 if phase=='pack' else matrix_layout(n,mode)[5],
         kernel_type='npu_grouped_fft64',dtype='complex64',direction=direction,length=n)
     write_text_atomic(path.with_suffix('.json'),json.dumps(meta,sort_keys=True))
