@@ -19,16 +19,18 @@ def root_table(factors):
     return torch.cat(tables)
 
 
+@pytest.mark.parametrize('fma',[False,True])
 @pytest.mark.parametrize('factors',[(19,11),(17,13),(13,11),(19,17),(28,15),
     (17,13,2),(27,20),(15,7,6),(17,13,3),(25,10,4)])
 @pytest.mark.parametrize('first',[False,True])
 @pytest.mark.parametrize('direction',['forward','inverse'])
-def test_packed_mixed_axis(tmp_path,monkeypatch,factors,first,direction):
+def test_packed_mixed_axis(tmp_path,monkeypatch,factors,first,direction,fma):
     old=target._target.get();target.set_codegen_target('npu:Ascend910B4:1')
     monkeypatch.setenv('FLAGFFT_NPU_VECTOR_REMAINDER','1')
-    try:name,source,_,pack=build_mixed_axis(factors,17,first,direction)
+    try:name,source,_,pack=build_mixed_axis(factors,17,first,direction,fma=fma)
     finally:target.set_codegen_target(old)
     path=tmp_path/'axis.py';path.write_text(source);ns,pid=execute_module(path)
+    ns['tl'].fma=lambda a,b,c:(torch.as_tensor(a).double()*torch.as_tensor(b).double()+torch.as_tensor(c).double()).float()
     length=math.prod(factors);batch=2;width=17
     torch.manual_seed(20261029);x=torch.randn(batch,length,width,2);saved=x.clone()
     phase=(1 if direction=='inverse' else -1)*2*math.pi*torch.arange(length,dtype=torch.float64)[:,None]*torch.arange(width)[None,:]/(length*width)

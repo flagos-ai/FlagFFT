@@ -2765,7 +2765,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
             request.direction,request.input_dtype,n1,n2,n1,row_factors,32,8,{},n1);
         auto col_key=KernelKey::four_step_col(triton_target_for_request(request),
             request.direction,request.input_dtype,n1,n2,n2,col_factors,32,8,{},n2);
-        row_key.perm_form=col_key.perm_form="npu_packed_mixed_planar";
+        row_key.perm_form=col_key.perm_form=flag_or_default("FLAGFFT_NPU_FMA_CODELETS",false)
+            ? "npu_packed_mixed_planar_fma" : "npu_packed_mixed_planar";
         std::vector<DeviceAllocation> row_tables,col_tables;
         row_tables.push_back(npu_mixed_axis_roots(row_factors));
         col_tables.push_back(npu_mixed_axis_roots(col_factors));

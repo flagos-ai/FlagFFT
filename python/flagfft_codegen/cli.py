@@ -140,6 +140,7 @@ def main() -> None:
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--npu-structured-fft", action="store_true")
+    parser.add_argument("--npu-fma-codelets", action="store_true")
     parser.add_argument("--npu-packed-mixed-axis", action="store_true")
     parser.add_argument("--npu-structured-recursive", action="store_true")
     parser.add_argument("--npu-power2", action="store_true")
@@ -429,7 +430,7 @@ def main() -> None:
             parser.error('Packed mixed axis requires an NPU FP32 four-step axis')
         from .kernels_npu_mixed_axis import emit_mixed_axis
         metadata=emit_mixed_axis(args.factors,args.four_step_n1,args.four_step_n2,
-            args.kernel=='four_step_row',args.direction,args.out_dir)
+            args.kernel=='four_step_row',args.direction,args.out_dir,fma=args.npu_fma_codelets)
     elif args.npu_structured_fft:
         if (not args.target.startswith('npu:') or args.dtype!='complex64'
                 or args.kernel not in ('leaf','four_step_row','four_step_col')):

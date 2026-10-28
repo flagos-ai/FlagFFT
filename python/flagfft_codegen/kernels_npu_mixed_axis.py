@@ -27,14 +27,14 @@ def mixed_axis_layout(factors):
     return pads, pack
 
 
-def build_mixed_axis(factors, width, first, direction):
+def build_mixed_axis(factors, width, first, direction, *, fma=False):
     factors=tuple(factors)
     pads, pack=mixed_axis_layout(factors)
     length=math.prod(factors); count=math.prod(pads)*pack
     if direction not in ('forward','inverse') or width < 1:
         raise ValueError('Invalid mixed axis direction or matrix width')
     inverse=direction=='inverse'
-    name=f'npu_mixed_axis_{length}_{width}_c{pack}_{int(first)}_{direction}'
+    name=f'npu_mixed_axis_{length}_{width}_c{pack}_{int(first)}_{direction}'+('_fma' if fma else '')
     args=['X','TW','Y','R','NB'] if first else ['X','Y','R','NB']
     lines=['@triton.jit',f'def {name}({",".join(args)}):',
         f'    base=tl.program_id(0)*{pack}', '    batch=tl.program_id(1)',
@@ -108,14 +108,14 @@ def build_mixed_axis(factors, width, first, direction):
                 else:
                     lines += [f'    v=tl.reshape(tl.join(pr,pi),({pp},{2*pack}))',
                         f'    tl.store(Y+batch*{2*length*width}+(row+{d*prefix})*{2*width}+word,v,(row<{prefix})&(word<{2*width}))']
-    source=_module_source('\n'.join(lines)+'\n',tuple(sorted(codelet_radices_for(factors))))
+    source=_module_source('\n'.join(lines)+'\n',tuple(sorted(codelet_radices_for(factors))),fma_helpers=fma)
     return name,source,args,pack
 
 
-def emit_mixed_axis(factors,n1,n2,first,direction,out_dir):
+def emit_mixed_axis(factors,n1,n2,first,direction,out_dir,*,fma=False):
     length,width=(n1,n2) if first else (n2,n1)
     if math.prod(factors)!=length:raise ValueError('Mixed axis factors disagree with plan')
-    name,source,args,pack=build_mixed_axis(factors,width,first,direction)
+    name,source,args,pack=build_mixed_axis(factors,width,first,direction,fma=fma)
     path=Path(out_dir)/(name+'.py');path.parent.mkdir(parents=True,exist_ok=True)
     write_text_atomic(path,source)
     meta=dict(module_path=str(path),kernel_name=name,arg_names=args,

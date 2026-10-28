@@ -682,7 +682,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 
   if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0)
     jit_command << " --npu-matrix-fourstep-phase " << shell_quote(key.perm_form.substr(20));
-  if (key.perm_form == "npu_packed_mixed_planar") jit_command << " --npu-packed-mixed-axis";
+  if (key.perm_form == "npu_packed_mixed_planar" || key.perm_form == "npu_packed_mixed_planar_fma") {
+    jit_command << " --npu-packed-mixed-axis";
+    if(key.perm_form == "npu_packed_mixed_planar_fma") jit_command << " --npu-fma-codelets";
+  }
   if (key.perm_form == "npu_structured" || key.perm_form == "npu_structured_planar" ||
       key.perm_form == "npu_structured_recursive_axis_planar") {
     jit_command << " --npu-structured-fft";

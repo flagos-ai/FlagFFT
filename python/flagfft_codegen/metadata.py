@@ -61,7 +61,7 @@ def _csv_ints(raw: str) -> tuple[int, ...]:
     return tuple(int(part) for part in raw.split(",") if part)
 
 
-def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
+def _module_source(kernel_source: str, radices: tuple[int, ...] = (), *, fma_helpers: bool = False) -> str:
     if _npu_backend_active():
         if os.environ.get("FLAGFFT_NPU_VECTOR_REMAINDER") == "1":
             from .npu_source import vector_remainders
@@ -100,6 +100,11 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
             helpers += codelet_path.read_text() + "\n\n"
 
     source = helpers + "\n\n" + kernel_source + "\n"
+    if fma_helpers:
+        if not _npu_backend_active():
+            raise ValueError("Fused codelet arithmetic requires an NPU module")
+        from .npu_source import fused_codelet_arithmetic
+        source=fused_codelet_arithmetic(source)
     if _portable_leaf_backend_active():
         # Portable MACA kernels do not use TLE. Keep their modules independent
         # of the backend-specific TLE extensions during isolated compilation.
