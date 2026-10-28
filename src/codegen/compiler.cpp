@@ -1074,7 +1074,12 @@ namespace {
     // Keep a full vector of complex lanes even when an axis has an odd
     // compact-real stride. The shared primitive masks incomplete groups;
     // grouping therefore need not divide the matrix width or batch count.
-    group_size = std::max(group_size, int64_t{64} / n);
+    int64_t log_length = 0;
+    for (int64_t span = n; span > 1; span >>= 1) ++log_length;
+    // The final radix-4 slice has 4*group floats per row. CANN requires
+    // that row to span at least 32 bytes, including a masked single batch.
+    const int64_t alignment_group = log_length % 2 == 0 ? 2 : 1;
+    group_size = std::max({group_size, int64_t{64} / n, alignment_group});
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
     auto roots = std::make_shared<DeviceAllocation>(npu_structured_roots(n, group_size));
     auto kernel = npu_power2_kernel(request, n, group_size, stride, output_stride, static_cast<int64_t>(mode));
@@ -1931,6 +1936,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                                   bool allow_npu_aiv256_transposed_store) {
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
+  const int64_t shared_length = node->length;
+  if (request.device_type == "npu" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && shared_length >= 16 && shared_length <= 2048 &&
+      (shared_length & (shared_length-1)) == 0 && !request.input_strides.empty() &&
+      request.input_strides.back() == 1 &&
+      !use_npu_structured_fft(request,shared_length,batch) &&
+      flag_or_default("FLAGFFT_NPU_SHARED_POWER2", false)) {
+    if (shared_length == 256 && allow_npu_aiv256_transposed_store &&
+        request.origin_rank == 3)
+      return make_npu_aiv_fft256_complex_child(request,true);
+    const int64_t group = batch == 1 ? 1 : std::min<int64_t>(8,2048/shared_length);
+    return make_npu_aiv_fft_small_child(request,shared_length,1,group);
+  }
   // Reuse generated Triton kernels at the 1D leaves of a 2D plan. The
   // guards describe the child transform, so the route also applies to the
   // complex stages used internally by 2D real transforms and Bluestein.

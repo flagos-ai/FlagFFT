@@ -383,7 +383,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       const int64_t limit = std::stoll(raw, &parsed);
       if (parsed != std::string(raw).size() || limit < 0 || limit > 2048)
         throw std::runtime_error("FLAGFFT_NPU_PORTABLE_LEAF_MAX must be in [0,2048]");
-      if (n > 1 && n <= limit && context.input_dtype == "complex64" &&
+      if (n > 1 && n <= limit && (n & (n-1)) != 0 && context.input_dtype == "complex64" &&
           context.output_dtype == "complex64" && factorization.remainder == 1) {
         const auto factors = select_leaf_factors(n);
         if (should_use_leaf(n, factors)) {
