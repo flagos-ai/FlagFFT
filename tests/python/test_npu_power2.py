@@ -12,7 +12,7 @@ def layout(x,stride):
     return x.reshape(x.shape[0]//stride,stride,x.shape[1]).transpose(1,2).contiguous()
 
 
-@pytest.mark.parametrize('n,group',[(16,1),(16,8),(32,1),(32,4),(256,1),(256,4),(256,8)])
+@pytest.mark.parametrize('n,group',[(16,1),(16,8),(32,1),(32,4),(256,1),(256,4),(256,8),(64,4),(128,4),(512,2),(1024,1),(2048,1)])
 @pytest.mark.parametrize('mode,direction',[(0,'forward'),(0,'inverse'),(1,'forward'),(2,'inverse')])
 def test_contiguous_real_and_complex(tmp_path,n,group,mode,direction):
     check(tmp_path,n,group,mode,direction,1,1,2*group+1)

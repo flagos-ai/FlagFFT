@@ -2862,6 +2862,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (request.device_type == "npu" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && n >= 16 && n <= 2048 &&
+      (n & (n - 1)) == 0 && !request.input_strides.empty() &&
+      request.input_strides.back() == 1 &&
+      flag_or_default("FLAGFFT_NPU_STRUCTURED_REAL", false)) {
+    const int64_t group = batch == 1 ? 1 : std::min<int64_t>(8, 2048 / n);
+    return make_npu_aiv_fft_small_child(request, n, 1, group,
+        NpuAivFFTSmallMode::RealForward);
+  }
+#endif
   if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, false);
   }
@@ -3009,6 +3020,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   configure_single_transform_policies(request);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (request.device_type == "npu" && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && n >= 16 && n <= 2048 &&
+      (n & (n - 1)) == 0 && !request.input_strides.empty() &&
+      request.input_strides.back() == 1 &&
+      flag_or_default("FLAGFFT_NPU_STRUCTURED_REAL", false)) {
+    const int64_t group = batch == 1 ? 1 : std::min<int64_t>(8, 2048 / n);
+    return make_npu_aiv_fft_small_child(request, n, 1, group,
+        NpuAivFFTSmallMode::RealInverse);
+  }
+#endif
   if (real_direct_dft_enabled(node, request, batch)) {
     return compile_raw_real_direct_dft(request, true);
   }
