@@ -13,7 +13,7 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 
-def fixture(tmp_path, speedups=(2.0, 0.5)):
+def fixture(tmp_path, speedups=(1.25, 0.8)):
     op = "2d_c2c"
     folder = tmp_path / op
     folder.mkdir()
@@ -39,7 +39,7 @@ def write(tmp_path, accuracy, platform, timing):
         (tmp_path / "2d_c2c" / f"{name}_result.json").write_text(json.dumps(dict(cases=records)))
 
 
-def test_gate_uses_each_operator_mean_instead_of_per_case_threshold(tmp_path):
+def test_gate_accepts_operator_mean_and_case_floor_together(tmp_path):
     manifest, accuracy, platform, timing = fixture(tmp_path)
     write(tmp_path, accuracy, platform, timing)
     result = gate.audit(manifest, tmp_path, tmp_path)
@@ -186,3 +186,26 @@ def test_operators_are_not_averaged_together(tmp_path):
     assert not result["passed"]
     assert result["operators"]["2d_c2c"]["passed"]
     assert not result["operators"]["another_op"]["passed"]
+
+
+def test_fast_case_cannot_hide_a_case_below_floor(tmp_path):
+    manifest, accuracy, platform, timing = fixture(tmp_path, (2.0, 0.5))
+    write(tmp_path, accuracy, platform, timing)
+    result = gate.audit(manifest, tmp_path, tmp_path)
+    op = result["operators"]["2d_c2c"]
+    assert op["complete"] and op["geometric_mean_speedup"] == 1.0
+    assert not result["passed"] and not op["passed"]
+    assert op["minimum_case_speedup"] == 0.5 and len(op["below_case_threshold"]) == 1
+
+
+def test_case_floor_boundary_is_inclusive(tmp_path):
+    manifest, accuracy, platform, timing = fixture(tmp_path, (1.2, 0.7))
+    write(tmp_path, accuracy, platform, timing)
+    assert gate.audit(manifest, tmp_path, tmp_path)["passed"]
+
+
+@pytest.mark.parametrize("floor", [0, -1, float("nan"), float("inf")])
+def test_invalid_case_floor_is_rejected(tmp_path, floor):
+    manifest, accuracy, platform, timing = fixture(tmp_path)
+    with pytest.raises(ValueError, match="case threshold"):
+        gate.audit(manifest, tmp_path, tmp_path, case_threshold=floor)

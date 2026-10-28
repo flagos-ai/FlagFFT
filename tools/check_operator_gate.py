@@ -50,9 +50,11 @@ def matches_plan(plan, expected):
                 and int(match[3]) == expected["batch"])
 
 
-def audit(manifest, accuracy_dir, performance_dir, threshold=0.815):
+def audit(manifest, accuracy_dir, performance_dir, threshold=0.815, case_threshold=0.7):
     if not math.isfinite(threshold) or threshold <= 0:
         raise ValueError("threshold must be positive and finite")
+    if not math.isfinite(case_threshold) or case_threshold <= 0:
+        raise ValueError("case threshold must be positive and finite")
     expected = manifest["cases"]
     if not expected or len({c["case_id"] for c in expected}) != len(expected):
         raise ValueError("expected accuracy manifest must be nonempty and unique")
@@ -141,19 +143,26 @@ def audit(manifest, accuracy_dir, performance_dir, threshold=0.815):
             if speedup is not None and not reasons:
                 speedups.append(speedup)
             rows.append(dict(case_id=case_id, reference_skipped=skip, speedup=speedup,
-                             valid=not reasons, reasons=reasons))
+                             valid=not reasons, reasons=reasons,
+                             meets_case_threshold=(None if skip or reasons or speedup is None
+                                                   else speedup >= case_threshold)))
         complete = all(row["valid"] for row in rows)
         mean = math.exp(sum(math.log(s) for s in speedups) / len(speedups)) if speedups else None
         qualified_mean = mean if complete else None
+        below_floor = [r["case_id"] for r in rows if r["meets_case_threshold"] is False]
+        minimum = min(speedups) if speedups else None
         operators[op] = dict(expected_accuracy=len(requests), expected_performance=len(rows),
             reference_skips=sum(row["reference_skipped"] for row in rows), valid_performance=len(speedups),
             complete=complete, geometric_mean_speedup=qualified_mean,
             diagnostic_valid_case_mean=mean, threshold=threshold,
-            passed=complete and qualified_mean is not None and qualified_mean >= threshold,
+            case_threshold=case_threshold, minimum_case_speedup=minimum,
+            below_case_threshold=below_floor,
+            passed=complete and qualified_mean is not None and qualified_mean >= threshold
+                   and not below_floor,
             cases=rows)
     return dict(passed=not issues and all(op["passed"] for op in operators.values()),
                 operator_count=len(operators), expected_accuracy_count=len(expected),
-                threshold=threshold, scope_source_commit=manifest.get("source_commit"),
+                threshold=threshold, case_threshold=case_threshold, scope_source_commit=manifest.get("source_commit"),
                 issues=issues, operators=operators)
 
 
@@ -164,13 +173,16 @@ def main():
     parser.add_argument("--performance-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--threshold", type=float, default=0.815)
+    parser.add_argument("--case-threshold", type=float, default=0.7)
     args = parser.parse_args()
-    result = audit(read_json(args.manifest), args.accuracy_dir, args.performance_dir, args.threshold)
+    result = audit(read_json(args.manifest), args.accuracy_dir, args.performance_dir, args.threshold, args.case_threshold)
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     for op, row in result["operators"].items():
         mean = row["geometric_mean_speedup"]
         value = "incomplete" if mean is None else f"{mean:.6f}x"
-        print(f"{op}: {value} {'PASS' if row['passed'] else 'FAIL'}")
+        floor = row["minimum_case_speedup"]
+        minimum = "missing" if floor is None else f"{floor:.6f}x"
+        print(f"{op}: mean={value} min={minimum} {'PASS' if row['passed'] else 'FAIL'}")
     return 0 if result["passed"] else 1
 
 
