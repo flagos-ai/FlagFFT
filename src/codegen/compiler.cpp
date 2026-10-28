@@ -3862,7 +3862,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2, true);
     auto n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2, true);
     if (npu_pair_radix4) {
-      const auto set_row_stride = [](
+      const auto set_row_stride = [&request](
           const std::shared_ptr<CompiledRawNode> &child, int64_t row_stride) {
         auto aiv_fft = std::dynamic_pointer_cast<CompiledRawNpuAivFFT256Node>(child);
         if (!aiv_fft || !aiv_fft->radix4_mode || !aiv_fft->transposed_store ||
@@ -3871,6 +3871,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
               "3D AIV256 radix-4 fused store requires radix-4 group-of-eight children");
         }
         aiv_fft->transposed_output_row_stride = row_stride;
+        if (flag_or_default("FLAGFFT_NPU_SPECIALIZE_FUSED_STRIDE", true))
+          aiv_fft->replacement = npu_power2_kernel(request,256,aiv_fft->group_size,1,row_stride,0);
       };
       set_row_stride(n2_fft, n0 * n1);
       set_row_stride(n1_fft, n0 * n2);
@@ -5200,7 +5202,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   }
 #if defined(FLAGFFT_BACKEND_NPU)
   if (npu_fused_outer_stores) {
-    const auto set_row_stride = [](const std::shared_ptr<CompiledRawNode> &child,
+    const auto set_row_stride = [&request](const std::shared_ptr<CompiledRawNode> &child,
                                    int64_t row_stride) {
       auto aiv_fft = std::dynamic_pointer_cast<CompiledRawNpuAivFFT256Node>(child);
       if (!aiv_fft || !aiv_fft->transposed_store || !aiv_fft->radix4_mode ||
@@ -5209,6 +5211,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
             "3D real AIV256 fused stores require radix-4 group-of-eight children");
       }
       aiv_fft->transposed_output_row_stride = row_stride;
+      if (flag_or_default("FLAGFFT_NPU_SPECIALIZE_FUSED_STRIDE", true))
+        aiv_fft->replacement = npu_power2_kernel(request,256,aiv_fft->group_size,1,row_stride,0);
     };
     set_row_stride(n1_fft, n0 * half);
     set_row_stride(n0_fft, n1 * half);
