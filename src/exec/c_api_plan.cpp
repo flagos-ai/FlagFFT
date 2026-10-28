@@ -68,6 +68,13 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
   }
   *out = nullptr;
 
+  if (adaptor::backend_name() == "npu") {
+    const char *backend = std::getenv("FLAGFFT_NPU_EXECUTION_BACKEND");
+    if (backend != nullptr && std::string(backend) == "sip") {
+      return FLAGFFT_NOT_SUPPORTED;  // SiP is available only to the test oracle.
+    }
+  }
+
   // Check if this is a supported 2D descriptor
   const bool is_2d = is_supported_2d_desc(desc);
   const bool is_3d = is_supported_3d_desc(desc);

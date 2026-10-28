@@ -54,7 +54,7 @@ def execute_module(path):
         gather=lambda v,index,axis:torch.gather(v,axis,index.long()),
         minimum=lambda a,b:torch.minimum(torch.as_tensor(a),torch.as_tensor(b)),where=torch.where)
     tree = ast.parse(Path(path).read_text())
-    tree.body = [node for node in tree.body if not isinstance(node,(ast.Import,ast.ImportFrom))]
+    tree.body = [node for node in tree.body if isinstance(node,ast.FunctionDef)]
     for node in tree.body:
         if isinstance(node,ast.FunctionDef):
             node.decorator_list = []
