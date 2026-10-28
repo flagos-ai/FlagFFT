@@ -992,7 +992,8 @@ def _musa_four_step_inner_pack_override(plan, axis: str) -> int | None:
         not _mthreads_backend_active()
         or not musa_1d_batch_default_enabled()
         or plan is None
-        or plan.length not in {64, 128, 256, 512, 1024}
+        or plan.length < 64
+        or plan.length > 1024
     ):
         return None
     specific_name = f"FLAGFFT_MUSA_1D_FOURSTEP_{axis.upper()}_PACK"

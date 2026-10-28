@@ -152,7 +152,8 @@ def test_musa_1d_batch_pack_does_not_change_unscoped_leaves(monkeypatch):
 
 @pytest.mark.parametrize(
     "length,factors,lanes",
-    [(512, (32, 16), 32), (128, (8, 4, 4), 16), (64, (4, 4, 4), 16)],
+    [(600, (3, 10, 20), 32), (512, (32, 16), 32),
+     (128, (8, 4, 4), 16), (64, (4, 4, 4), 16)],
 )
 def test_musa_1d_batch_warp_override_covers_short_fourstep_leaves(
     monkeypatch, length, factors, lanes
@@ -282,6 +283,34 @@ def test_musa_fourstep_inner_pack_override_covers_short_leaves(monkeypatch):
         assert four_step_col_inner_pack_for(128, 64, "complex64", col_plan) == 8
         assert four_step_row_inner_pack_for(128, 64, "complex64", other_plan) != 2
         assert four_step_col_inner_pack_for(128, 64, "complex64", other_plan) != 8
+    finally:
+        reset_musa_1d_batch_default(policy_token)
+        reset_profile(profile_token)
+
+
+@pytest.mark.parametrize("length,factors", [(500, (10, 10, 5)), (600, (3, 10, 20))])
+def test_musa_fourstep_pack_override_covers_mixed_factor_leaves(
+    monkeypatch, length, factors
+):
+    monkeypatch.setenv("FLAGFFT_MUSA_1D_FOURSTEP_ROW_PACK", "2")
+    monkeypatch.setenv("FLAGFFT_MUSA_1D_FOURSTEP_COL_PACK", "8")
+    profile_token = set_profile(
+        BackendProfile.from_device(
+            {
+                "backend": "musa",
+                "device_arch": "31",
+                "warp_size": 32,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 196608,
+            },
+            policy="legacy",
+        )
+    )
+    policy_token = set_musa_1d_batch_default(True)
+    plan = LeafPlan(length, factors, 1, 32, 1, (), length, dtype="complex64")
+    try:
+        assert four_step_row_inner_pack_for(length, 600, "complex64", plan) == 2
+        assert four_step_col_inner_pack_for(length, 600, "complex64", plan) == 8
     finally:
         reset_musa_1d_batch_default(policy_token)
         reset_profile(profile_token)
