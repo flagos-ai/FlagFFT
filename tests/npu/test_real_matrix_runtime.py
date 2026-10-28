@@ -22,7 +22,7 @@ def test_real_matrix_replay_and_in_place(inverse):
     dims=(ctypes.c_int*1)(n)
     for in_place in (False,True):
         idist=half if inverse else 2*half if in_place else n
-        odist=2*half if inverse and in_place else n if inverse else half
+        odist=2*half if inverse else half
         handle=ctypes.c_void_p()
         assert lib.flagfftPlanMany(ctypes.byref(handle),1,dims,None,1,idist,None,1,odist,0x2c if inverse else 0x2a,batch)==0
         raw=torch.full((batch*2*half+128,),31415.25,device='npu')
