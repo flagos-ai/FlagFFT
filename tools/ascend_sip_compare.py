@@ -31,6 +31,8 @@ def main():
     parser.add_argument('--factor',type=int,default=32)
     parser.add_argument('--radix',type=int,choices=[2,4],default=4)
     parser.add_argument('--cube-leaf',type=int,default=0)
+    parser.add_argument('--nd2nz-on-vector',action='store_true')
+    parser.add_argument('--cv-balance',action='store_true')
     parser.add_argument('--cube-terms',type=int,choices=[0,3,4],default=3)
     parser.add_argument('--single-buffer',action='store_true')
     parser.add_argument('--library', type=Path, required=True)
@@ -54,6 +56,10 @@ def main():
     angle = -2 * math.pi * (k//b) * (k%b) / n
     cross = torch.cat((angle.cos(), angle.sin())).float().npu()
     options = {'enable_auto_blockify': True}
+    if args.nd2nz_on_vector:
+        options['enable_nd2nz_on_vector'] = True
+    if args.cv_balance:
+        options['enable_hivm_auto_cv_balance'] = True
     if args.single_buffer:
         options['multibuffer'] = False
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -170,7 +176,7 @@ def main():
     errors.update(fourstep_after=check(y), sip_after=check(z))
     assert torch.equal(x.cpu(), cpu), 'input changed during replay'
     lib.sip_destroy(handle)
-    result = dict(cube_leaf=args.cube_leaf,cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
+    result = dict(compile_options=options,cube_leaf=args.cube_leaf,cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
                   graph_steps=args.steps, rounds=args.rounds, iters=args.iters,
                   results=results, rel_l2=errors, replay_verified=True,
                   scope='complete FFT execution on resident device buffers; plans/tables/JIT/copies excluded',
