@@ -2830,10 +2830,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       }
       const int64_t row_budget=recursive && n1>=512?4096:2048;
       const int64_t col_budget=recursive && n2>=512?4096:2048;
-      const int64_t row_tile=std::min(preferred,std::max<int64_t>(1,
-          row_budget/(recursive?n1:std::max(n1,n2))));
-      const int64_t col_tile=std::min(preferred,std::max<int64_t>(1,
-          col_budget/(recursive?n2:std::max(n1,n2))));
+      const int64_t row_tile=std::min({preferred,n2,std::max<int64_t>(1,
+          row_budget/(recursive?n1:std::max(n1,n2)))});
+      const int64_t col_tile=std::min({preferred,n1,std::max<int64_t>(1,
+          col_budget/(recursive?n2:std::max(n1,n2)))});
       auto row_key = KernelKey::four_step_row(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n1, {n1}, 32, 4, {}, n1);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
