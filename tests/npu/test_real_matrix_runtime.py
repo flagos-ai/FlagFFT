@@ -8,10 +8,11 @@ pytest.importorskip('torch_npu')
 
 
 @pytest.mark.parametrize('inverse',[False,True])
-def test_real_matrix_replay_and_in_place(inverse):
+@pytest.mark.parametrize('n',[128,210,256])
+def test_real_matrix_replay_and_in_place(inverse,n):
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
-    lib=ctypes.CDLL(path);n=210;batch=64;half=n//2+1
+    lib=ctypes.CDLL(path);batch=64;half=n//2+1
     lib.flagfftPlanMany.argtypes=[ctypes.POINTER(ctypes.c_void_p),ctypes.c_int,ctypes.POINTER(ctypes.c_int),ctypes.POINTER(ctypes.c_int),ctypes.c_int,ctypes.c_int,ctypes.POINTER(ctypes.c_int),ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int]
     lib.flagfftPlanMany.restype=ctypes.c_int
     lib.flagfftDestroy.argtypes=[ctypes.c_void_p];lib.flagfftDestroy.restype=ctypes.c_int
