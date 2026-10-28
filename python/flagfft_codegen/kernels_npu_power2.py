@@ -85,6 +85,21 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     packed=tl.reshape(tl.join(tl.reshape(tl.trans(r),({count},)),tl.reshape(tl.trans(i),({count},))),({g},{2*n}))
     tl.store(out_ptr+transforms[:,None]*{2*n}+word[None,:],packed,transforms[:,None]<nbatch)
 '''
+    elif output_stride > 1 and output_stride % g == 0 and g < 4:
+        # Store a narrow logical row from an explicitly block-aligned UB row.
+        # Dummy columns are masked, leaving adjacent transform groups intact.
+        store_g=4;store_count=n*store_g
+        source += f'''    zr=tl.reshape(r,({count},));zi=tl.reshape(i,({count},))
+    q=tl.arange(0,{store_count})
+    ix=(q//{store_g})*{g}+q%{store_g}
+    ix=tl.minimum(ix,{count-1})
+    pr=tl.gather(zr,ix,0);pi=tl.gather(zi,ix,0)
+    packed=tl.reshape(tl.join(pr,pi),({n},{2*store_g}))
+    row=tl.arange(0,{n})[:,None]
+    word=tl.arange(0,{2*store_g})[None,:]
+    matrix_base=(base//{output_stride})*{n*output_stride}+base%{output_stride}
+    tl.store(out_ptr+matrix_base*2+row*{2*output_stride}+word,packed,(word<{2*g})&(base+word//2<nbatch))
+'''
     elif output_stride > 1 and output_stride % g == 0:
         source += f'''    packed=tl.reshape(tl.join(tl.reshape(r,({count},)),tl.reshape(i,({count},))),({n},{2*g}))
     row=tl.arange(0,{n})[:,None]
