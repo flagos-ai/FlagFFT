@@ -140,6 +140,8 @@ def main() -> None:
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--npu-structured-fft", action="store_true")
+    parser.add_argument("--npu-power2", action="store_true")
+    parser.add_argument("--npu-fft-output-stride", type=int, default=1)
     parser.add_argument("--npu-vector-transpose", action="store_true",
                         help="Use the replacement body for an eligible native NPU 2D transpose")
     parser.add_argument("--npu-table-transpose3d", action="store_true",
@@ -458,6 +460,7 @@ def main() -> None:
             mode=args.npu_fft_mode, direction=args.direction, out_dir=args.out_dir,
             radix4_pair=args.npu_fft_radix4_pair,
             length=args.length if args.length is not None else 64,
+            structured=args.npu_power2,output_stride=args.npu_fft_output_stride,
         )
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:

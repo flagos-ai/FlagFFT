@@ -642,6 +642,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --length " << key.length
                 << " --direction " << shell_quote(key.direction);
     if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
+    if (key.perm_form == "structured_power2") jit_command << " --npu-power2 --npu-fft-output-stride " << key.prime_n;
   }
 
   if (key.perm_form == "npu_structured" || key.perm_form == "npu_structured_planar") {

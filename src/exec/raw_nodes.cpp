@@ -16,14 +16,7 @@
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include <acl/acl_rt.h>
-#include "adaptor/backend/npu/ascendc_fft128.hpp"
-#include "adaptor/backend/npu/ascendc_fft2048.hpp"
-#include "adaptor/backend/npu/ascendc_fft256.hpp"
-#include "adaptor/backend/npu/ascendc_fft64.hpp"
-#include "adaptor/backend/npu/ascendc_fft_radix4_pair.hpp"
-#include "adaptor/backend/npu/ascendc_fft_small.hpp"
-#include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
-#include "adaptor/backend/npu/ascendc_packed_real_boundary.hpp"
+#include "adaptor/backend/npu/npu_fft_contract.hpp"
 #endif
 
 #include <algorithm>
@@ -544,10 +537,12 @@ CompiledRawNpuAivFFTSmallNode::CompiledRawNpuAivFFTSmallNode(int64_t length,
                                                              int64_t group_size,
                                                              std::shared_ptr<DeviceAllocation> indices,
                                                              std::shared_ptr<DeviceAllocation> twiddles,
-                                                             NpuAivFFTSmallMode mode)
+                                                             NpuAivFFTSmallMode mode,
+                                                             std::shared_ptr<JitKernel> replacement)
     : length(length),
       stride(stride),
       output_stride(output_stride),
+      replacement(std::move(replacement)),
       group_size(group_size),
       mode(mode),
       indices(std::move(indices)),
@@ -561,62 +556,23 @@ std::string CompiledRawNpuAivFFTSmallNode::describe() const {
   oss << ", group_size=" << group_size;
   if (mode == NpuAivFFTSmallMode::RealForward) oss << ", mode=r2c";
   if (mode == NpuAivFFTSmallMode::RealInverse) oss << ", mode=c2r";
-  oss << ")";
+  oss << ")[triton:" << (replacement ? replacement->kernel_name : "missing") << "]";
   return oss.str();
 }
 
 flagfftResult CompiledRawNpuAivFFTSmallNode::execute(adaptor::DevicePtr input,
                                                      adaptor::DevicePtr output,
                                                      const RawExecutionContext &context) const {
-  const int64_t preferred_group = length == 16 ? 8 : length == 32 ? 4 : 0;
-  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
-      (length != 16 && length != 32) || (group_size != 1 && group_size != preferred_group) || stride <= 0 ||
-      output_stride <= 0 ||
-      (mode != NpuAivFFTSmallMode::Complex && (stride != 1 || output_stride != 1)) ||
-      (stride != 1 && (stride < group_size || stride % group_size != 0)) || context.batch % group_size != 0 ||
-      (output_stride != 1 &&
-       (output_stride < group_size || output_stride % group_size != 0)) ||
-      indices == nullptr || twiddles == nullptr) {
-    return FLAGFFT_INVALID_SIZE;
-  }
-
-  constexpr int64_t kMaxBlocksPerLaunch = 65535;
-  const int64_t blocks = context.batch / group_size;
-  constexpr int64_t real_bytes = sizeof(float);
-  constexpr int64_t complex_bytes = 2 * sizeof(float);
-  const int64_t half = length / 2 + 1;
-  for (int64_t block_offset = 0; block_offset < blocks; block_offset += kMaxBlocksPerLaunch) {
-    const int64_t chunk_blocks = std::min(kMaxBlocksPerLaunch, blocks - block_offset);
-    const int64_t transform_offset = block_offset * group_size;
-    int64_t input_offset = 0;
-    int64_t output_offset = 0;
-    if (mode == NpuAivFFTSmallMode::RealForward) {
-      input_offset = transform_offset * length * real_bytes;
-      output_offset = transform_offset * half * complex_bytes;
-    } else if (mode == NpuAivFFTSmallMode::RealInverse) {
-      input_offset = transform_offset * half * complex_bytes;
-      output_offset = transform_offset * length * real_bytes;
-    } else {
-      input_offset = stride == 1 ? transform_offset * length * complex_bytes
-                                 : (transform_offset / stride) * length * stride * complex_bytes +
-                                       (transform_offset % stride) * complex_bytes;
-      output_offset = output_stride == 1
-                          ? transform_offset * length * complex_bytes
-                          : (transform_offset / output_stride) * length * output_stride * complex_bytes +
-                                (transform_offset % output_stride) * complex_bytes;
-    }
-    const flagfftResult result = adaptor::npu::launch_ascendc_fft_small(static_cast<int32_t>(length),
-                                                                        input + input_offset,
-                                                                        output + output_offset,
-                                                                        indices->get(),
-                                                                        twiddles->get(),
-                                                                        static_cast<int32_t>(chunk_blocks),
-                                                                        static_cast<int32_t>(group_size),
-                                                                        static_cast<int32_t>(stride),
-                                                                        static_cast<int32_t>(output_stride),
-                                                                        static_cast<int32_t>(mode),
-                                                                        context.stream);
-    if (result != FLAGFFT_SUCCESS) return result;
+  if (!replacement || !indices || !twiddles || context.batch <= 0) return FLAGFFT_INVALID_SIZE;
+  constexpr int64_t max_blocks = 65535;
+  for (int64_t start = 0; start < context.batch; start += max_blocks * group_size) {
+    const int64_t count = std::min(context.batch - start, max_blocks * group_size);
+    replacement->launch(context.stream,
+      {JitKernelArg::device(input), JitKernelArg::device(output),
+       JitKernelArg::device(indices->get()), JitKernelArg::device(twiddles->get()),
+       JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+       JitKernelArg::i64(output_stride), JitKernelArg::i64(start)},
+      ceil_div(count, group_size), 1, 1);
   }
   return FLAGFFT_SUCCESS;
 }
@@ -689,27 +645,7 @@ flagfftResult CompiledRawNpuAivFFT64Node::execute(adaptor::DevicePtr input,
                           chunk_blocks, 1, 1);
       continue;
     }
-    const flagfftResult result =
-        radix4_pair
-            ? adaptor::npu::launch_ascendc_fft_radix4_pair(64,
-                                                           input_chunk,
-                                                           output_chunk,
-                                                           indices->get(),
-                                                           twiddles->get(),
-                                                           static_cast<int32_t>(chunk_blocks * group_size),
-                                                           static_cast<int32_t>(group_size),
-                                                           static_cast<int32_t>(mode),
-                                                           context.stream)
-            : adaptor::npu::launch_ascendc_fft64(input_chunk,
-                                                 output_chunk,
-                                                 indices->get(),
-                                                 twiddles->get(),
-                                                 static_cast<int32_t>(chunk_blocks),
-                                                 static_cast<int32_t>(stride),
-                                                 static_cast<int32_t>(group_size),
-                                                 static_cast<int32_t>(mode),
-                                                 context.stream);
-    if (result != FLAGFFT_SUCCESS) return result;
+    throw std::runtime_error("Missing Triton grouped FFT64 kernel");
   }
   return FLAGFFT_SUCCESS;
 }
@@ -766,32 +702,7 @@ flagfftResult CompiledRawNpuAivFFTNode::execute(adaptor::DevicePtr input,
                           chunk / group_size, 1, 1);
       continue;
     }
-    flagfftResult result;
-    if (radix4_pair) {
-      result = adaptor::npu::launch_ascendc_fft_radix4_pair(static_cast<int32_t>(length),
-                                                            input_chunk,
-                                                            output_chunk,
-                                                            indices->get(),
-                                                            twiddles->get(),
-                                                            static_cast<int32_t>(chunk),
-                                                            static_cast<int32_t>(group_size),
-                                                            0,
-                                                            context.stream);
-    } else if (length == 128) {
-      result = adaptor::npu::launch_ascendc_fft128(
-          input_chunk, output_chunk, indices->get(), twiddles->get(),
-          static_cast<int32_t>(chunk / group_size), 1, static_cast<int32_t>(group_size), 0,
-          context.stream);
-    } else if (length == 1024) {
-      result = adaptor::npu::launch_ascendc_fft1024(
-          input_chunk, output_chunk, indices->get(), twiddles->get(),
-          static_cast<int32_t>(chunk), context.stream);
-    } else {
-      result = adaptor::npu::launch_ascendc_fft2048(
-          input_chunk, output_chunk, indices->get(), twiddles->get(),
-          static_cast<int32_t>(chunk), context.stream);
-    }
-    if (result != FLAGFFT_SUCCESS) return result;
+    throw std::runtime_error("Missing Triton grouped FFT kernel");
   }
   return FLAGFFT_SUCCESS;
 }
@@ -804,8 +715,10 @@ CompiledRawNpuAivFFT256Node::CompiledRawNpuAivFFT256Node(
     bool transposed_store,
     bool radix4_mode,
     int64_t transposed_output_row_stride,
-    NpuAivFFT256Mode mode)
-    : indices(std::move(indices)),
+    NpuAivFFT256Mode mode,
+    std::shared_ptr<JitKernel> replacement)
+    : replacement(std::move(replacement)),
+      indices(std::move(indices)),
       twiddles(std::move(twiddles)),
       group_size(group_size),
       pair_mode(pair_mode),
@@ -823,71 +736,23 @@ std::string CompiledRawNpuAivFFT256Node::describe() const {
       << ", transposed_output_row_stride=" << transposed_output_row_stride << ")";
   if (mode == NpuAivFFT256Mode::RealForward) oss << "[r2c-row]";
   if (mode == NpuAivFFT256Mode::RealInverse) oss << "[c2r-row]";
+  oss << "[triton:" << (replacement ? replacement->kernel_name : "missing") << "]";
   return oss.str();
 }
 
 flagfftResult CompiledRawNpuAivFFT256Node::execute(adaptor::DevicePtr input,
                                                    adaptor::DevicePtr output,
                                                    const RawExecutionContext &context) const {
-  if (context.batch <= 0 || context.batch > std::numeric_limits<int32_t>::max() ||
-      (group_size != 1 && group_size != 4 && group_size != 8) ||
-      (pair_mode && group_size != 8) ||
-      (transposed_store && !pair_mode) ||
-      (radix4_mode && (!pair_mode || !transposed_store || group_size != 8)) ||
-      (mode != NpuAivFFT256Mode::Complex &&
-       (mode != NpuAivFFT256Mode::RealForward && mode != NpuAivFFT256Mode::RealInverse)) ||
-      (mode != NpuAivFFT256Mode::Complex &&
-       (!pair_mode || group_size != 8 || transposed_store || radix4_mode)) ||
-      context.batch % group_size != 0 ||
-      indices == nullptr || twiddles == nullptr) {
-    return FLAGFFT_INVALID_SIZE;
-  }
-  const int64_t output_row_stride =
-      transposed_output_row_stride > 0 ? transposed_output_row_stride : context.batch;
-  if (transposed_store && (output_row_stride < group_size ||
-                           output_row_stride > std::numeric_limits<int32_t>::max() ||
-                           output_row_stride % group_size != 0)) {
-    return FLAGFFT_INVALID_SIZE;
-  }
-  const int64_t batch_chunk = mode == NpuAivFFT256Mode::Complex
-      ? block_limit_per_launch() * group_size
-      : context.batch;
-  if (batch_chunk <= 0) return FLAGFFT_INVALID_SIZE;
-  const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
-  const int64_t real_bytes = element_bytes / 2;
-  const int64_t input_transform_bytes = mode == NpuAivFFT256Mode::RealForward
-      ? 256 * real_bytes
-      : (mode == NpuAivFFT256Mode::RealInverse ? 129 * element_bytes : 256 * element_bytes);
-  const int64_t output_transform_bytes = mode == NpuAivFFT256Mode::RealForward
-      ? 129 * element_bytes
-      : (mode == NpuAivFFT256Mode::RealInverse ? 256 * real_bytes : 256 * element_bytes);
-  const int32_t default_real_blocks_per_launch =
-      context.request.device_type == "npu" && context.request.origin_rank == 3 &&
-              mode == NpuAivFFT256Mode::RealInverse && context.batch == 4 * 256 * 256
-          ? 40
-          : 32;
-  for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
-    const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
-    const adaptor::DevicePtr byte_offset =
-        static_cast<adaptor::DevicePtr>(batch_offset * input_transform_bytes);
-    const flagfftResult result = adaptor::npu::launch_ascendc_fft256(
-        input + byte_offset,
-        transposed_store
-            ? output
-            : output + static_cast<adaptor::DevicePtr>(batch_offset * output_transform_bytes),
-        indices->get(),
-        twiddles->get(),
-        static_cast<int32_t>(chunk_batch),
-        static_cast<int32_t>(group_size),
-        pair_mode,
-        transposed_store,
-        radix4_mode,
-        static_cast<int32_t>(mode),
-        default_real_blocks_per_launch,
-        transposed_store ? static_cast<int32_t>(output_row_stride) : 0,
-        transposed_store ? static_cast<int32_t>(batch_offset) : 0,
-        context.stream);
-    if (result != FLAGFFT_SUCCESS) return result;
+  if (!replacement || !indices || !twiddles || context.batch <= 0) return FLAGFFT_INVALID_SIZE;
+  constexpr int64_t max_blocks = 65535;
+  for (int64_t start = 0; start < context.batch; start += max_blocks * group_size) {
+    const int64_t count = std::min(context.batch - start, max_blocks * group_size);
+    replacement->launch(context.stream,
+      {JitKernelArg::device(input), JitKernelArg::device(output),
+       JitKernelArg::device(indices->get()), JitKernelArg::device(twiddles->get()),
+       JitKernelArg::i32(static_cast<int32_t>(context.batch)),
+       JitKernelArg::i64(transposed_store ? (transposed_output_row_stride > 0 ? transposed_output_row_stride : context.batch) : 1), JitKernelArg::i64(start)},
+      ceil_div(count, group_size), 1, 1);
   }
   return FLAGFFT_SUCCESS;
 }
@@ -981,7 +846,7 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
           last && current != output ? output : (stage % 2 == 0 ? first.get() : second.get());
 #if defined(FLAGFFT_BACKEND_NPU)
       if (aiv_stages[stage].enabled) {
-        constexpr int64_t kTile = adaptor::npu::kAscendCStockhamTile;
+        constexpr int64_t kTile = adaptor::npu::kNpuStockhamTile;
         const int64_t ndiv = length / factor;
         const int64_t tiles_per_transform = span == 1
                                                 ? (ndiv + kTile - 1) / kTile
@@ -1008,19 +873,7 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
                 count * tables.tle_tiles, 1, 1);
             continue;
           }
-          const flagfftResult status = adaptor::npu::launch_ascendc_stockham_stage(
-              current + byte_offset,
-              dst + byte_offset,
-              tables.twiddles.get(),
-              tables.roots.get(),
-              aiv_indices.get(),
-              tables.store_indices.get(),
-              static_cast<uint32_t>(length),
-              static_cast<uint32_t>(factor),
-              static_cast<uint32_t>(span),
-              static_cast<uint32_t>(count),
-              context.stream);
-          if (status != FLAGFFT_SUCCESS) return status;
+          throw std::runtime_error("Missing Triton Stockham kernel");
         }
       } else
 #endif
@@ -1831,48 +1684,7 @@ flagfftResult CompiledRawR2CNode::execute(adaptor::DevicePtr input,
   }
 }
 
-#if defined(FLAGFFT_BACKEND_NPU)
-CompiledRawNpuPackedRealBoundaryNode::CompiledRawNpuPackedRealBoundaryNode(
-    int64_t length,
-    bool r2c_postprocess,
-    DeviceAllocation indices,
-    DeviceAllocation twiddles)
-    : length(length),
-      r2c_postprocess(r2c_postprocess),
-      indices(std::move(indices)),
-      twiddles(std::move(twiddles)) {
-}
 
-std::string CompiledRawNpuPackedRealBoundaryNode::describe() const {
-  return "CompiledRawNpuPackedRealBoundary(n=" + std::to_string(length) +
-         (r2c_postprocess ? ", mode=r2c)" : ", mode=c2r)");
-}
-
-flagfftResult CompiledRawNpuPackedRealBoundaryNode::execute(
-    adaptor::DevicePtr input,
-    adaptor::DevicePtr output,
-    const RawExecutionContext &context) const {
-  const int64_t packed = length / 2;
-  const int64_t half = packed + 1;
-  const int64_t input_distance = r2c_postprocess
-                                     ? packed
-                                     : (context.input_distance > 0 ? context.input_distance : half);
-  const int64_t output_distance = r2c_postprocess
-                                      ? (context.output_distance > 0 ? context.output_distance : half)
-                                      : (context.output_distance > 0 ? context.output_distance : packed);
-  if (length < 128 || length > 2048 || (length & 1) != 0 || context.batch <= 0 ||
-      context.batch > std::numeric_limits<int32_t>::max() ||
-      input_distance > std::numeric_limits<int32_t>::max() ||
-      output_distance > std::numeric_limits<int32_t>::max() || indices.size() == 0 ||
-      twiddles.size() == 0) {
-    return FLAGFFT_INVALID_SIZE;
-  }
-  return adaptor::npu::launch_ascendc_packed_real_boundary(
-      input, output, indices.get(), twiddles.get(), static_cast<int32_t>(length),
-      static_cast<int32_t>(input_distance), static_cast<int32_t>(output_distance),
-      static_cast<int32_t>(context.batch), r2c_postprocess, context.stream);
-}
-#endif
 
 CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(
     int64_t length,

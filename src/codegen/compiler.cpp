@@ -24,8 +24,7 @@
 #include <limits>
 
 #if defined(FLAGFFT_BACKEND_NPU)
-#include "adaptor/backend/npu/ascendc_stockham_stage.hpp"
-#include "adaptor/backend/npu/ascendc_packed_real_boundary.hpp"
+#include "adaptor/backend/npu/npu_fft_contract.hpp"
 #endif
 
 namespace flagfft {
@@ -64,6 +63,15 @@ namespace {
       }
     }
     return DeviceAllocation::from_floats(values);
+  }
+
+  std::shared_ptr<JitKernel> npu_power2_kernel(const FFTRequest &request, int64_t n,
+      int64_t group, int64_t stride, int64_t output_stride, int64_t mode) {
+    auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
+        request.direction, group, stride, mode, n);
+    key.perm_form = "structured_power2";
+    key.prime_n = output_stride;
+    return TritonCompiler{}.compile_kernel(key);
   }
 
   DeviceAllocation npu_structured_cross(int64_t n, int64_t a, bool inverse) {
@@ -110,95 +118,7 @@ namespace {
     return elements >= kMinimumBytes / sizeof(uint64_t);
   }
 
-#if defined(FLAGFFT_BACKEND_NPU)
-  bool npu_2d_packed_real_boundary_enabled(const FFTRequest &request,
-                                            int64_t length,
-                                            int64_t batch) {
-    // One AIV owns one row. Require at least one hardware-sized wave and a
-    // moderate amount of work so launch/setup costs do not dominate small
-    // batched transforms. This policy is independent of the benchmark shape.
-    constexpr int64_t kMinimumRows = 32;
-    constexpr int64_t kMinimumElements = 16 * 1024;
-    // The native packed boundary only pays off for 2D row batches; 1D
-    // transforms use the generated preprocess/postprocess kernels, which are
-    // faster and keep the whole real boundary in Triton.
-    const bool rank_ok = request.origin_rank == 2;
-    return request.device_type == "npu" && rank_ok &&
-           request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-           length >= 128 && length <= 2048 && (length & 1) == 0 &&
-           batch >= kMinimumRows && batch <= std::numeric_limits<int32_t>::max() &&
-           length <= std::numeric_limits<int64_t>::max() / batch &&
-           length * batch >= kMinimumElements;
-  }
 
-  std::pair<DeviceAllocation, DeviceAllocation> build_npu_packed_real_boundary_tables(
-      int64_t length,
-      bool r2c_postprocess) {
-    constexpr uint32_t kTile = 128;
-    constexpr double kPi = 3.141592653589793238462643383279502884;
-    const uint32_t packed = static_cast<uint32_t>(length / 2);
-    const uint32_t half = packed + 1;
-    const uint32_t output_count = r2c_postprocess ? half : packed;
-    const uint32_t padded_half = ((half + kTile - 1) / kTile) * kTile;
-    uint32_t group_rows = 1;
-    while ((output_count * group_rows) % 4 != 0) ++group_rows;
-    const uint32_t staging_row_pitch =
-        ((output_count + kTile - 1) / kTile) * kTile;
-    const uint32_t compact_count =
-        ((group_rows * output_count + kTile - 1) / kTile) * kTile;
-    const uint32_t compact_index_base = 3 * padded_half + 2 * kTile;
-    const uint32_t index_count = compact_index_base + 2 * compact_count;
-    std::vector<uint32_t> indices(index_count, 0);
-    for (uint32_t k = 0; k < padded_half; ++k) {
-      const uint32_t lane = k < output_count ? k : 0;
-      const uint32_t a = r2c_postprocess ? lane % packed : lane;
-      const uint32_t b = r2c_postprocess ? (packed - a) % packed : packed - lane;
-      indices[k] = 2 * a * sizeof(float);
-      indices[padded_half + k] = 2 * b * sizeof(float);
-      indices[2 * padded_half + k] = 2 * lane * sizeof(float);
-    }
-    for (uint32_t lane = 0; lane < kTile; ++lane) {
-      indices[3 * padded_half + 2 * lane] = lane * sizeof(float);
-      indices[3 * padded_half + 2 * lane + 1] = (kTile + lane) * sizeof(float);
-    }
-    for (uint32_t flat_float = 0; flat_float < 2 * compact_count; ++flat_float) {
-      const uint32_t flat_complex = flat_float / 2;
-      const uint32_t component = flat_float % 2;
-      uint32_t source_complex = 0;
-      if (flat_complex < group_rows * output_count) {
-        const uint32_t row = flat_complex / output_count;
-        const uint32_t col = flat_complex % output_count;
-        source_complex = row * staging_row_pitch + col;
-      }
-      indices[compact_index_base + flat_float] =
-          (2 * source_complex + component) * sizeof(float);
-    }
-
-    const uint32_t twiddle_count = ((2 * half + 7) / 8) * 8;
-    std::vector<float> twiddles(twiddle_count, 0.0f);
-    for (uint32_t k = 0; k < half; ++k) {
-      const double angle = -2.0 * kPi * static_cast<double>(k) /
-                           static_cast<double>(length);
-      twiddles[2 * k] = static_cast<float>(std::cos(angle));
-      twiddles[2 * k + 1] = static_cast<float>(std::sin(angle));
-    }
-
-    DeviceAllocation index_allocation(indices.size() * sizeof(uint32_t));
-    index_allocation.copy_from_host(indices.data(), indices.size() * sizeof(uint32_t));
-    DeviceAllocation twiddle_allocation(twiddles.size() * sizeof(float));
-    twiddle_allocation.copy_from_host(twiddles.data(), twiddles.size() * sizeof(float));
-    return {std::move(index_allocation), std::move(twiddle_allocation)};
-  }
-
-  std::shared_ptr<CompiledRawNode> make_npu_packed_real_boundary_node(
-      int64_t length,
-      bool r2c_postprocess) {
-    auto [indices, twiddles] =
-        build_npu_packed_real_boundary_tables(length, r2c_postprocess);
-    return std::make_shared<CompiledRawNpuPackedRealBoundaryNode>(
-        length, r2c_postprocess, std::move(indices), std::move(twiddles));
-  }
-#endif
 
   DeviceAllocation build_npu_2d_transpose_indices(uint32_t tile) {
     const uint32_t float_count = 2 * tile * tile;
@@ -1151,21 +1071,11 @@ namespace {
       NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex,
       int64_t output_stride = -1) {
     if (output_stride < 0) output_stride = stride;
-    std::vector<uint32_t> host_indices;
-    std::vector<float> host_twiddles;
-    build_npu_aiv_fft_small_tables(request, n, group_size, stride != 1, output_stride != 1,
-                                   host_indices, host_twiddles, mode);
-    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
-    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
-    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
-    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
-    return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n,
-                                                           stride,
-                                                           output_stride,
-                                                           group_size,
-                                                           std::move(indices),
-                                                           std::move(twiddles),
-                                                           mode);
+    auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
+    auto roots = std::make_shared<DeviceAllocation>(npu_structured_roots(n, group_size));
+    auto kernel = npu_power2_kernel(request, n, group_size, stride, output_stride, static_cast<int64_t>(mode));
+    return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n, stride, output_stride,
+        group_size, std::move(indices), std::move(roots), mode, std::move(kernel));
   }
 
   void build_npu_aiv_fft_radix4_pair_tables(const FFTRequest &request,
@@ -1337,26 +1247,12 @@ namespace {
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_real_child(
       const FFTRequest &request, int64_t batch, NpuAivFFT256Mode mode) {
-    if (batch <= 0 || batch % 8 != 0 ||
-        (mode != NpuAivFFT256Mode::RealForward && mode != NpuAivFFT256Mode::RealInverse)) {
-      throw std::runtime_error("AIV256 real FFT requires a positive batch divisible by 8");
-    }
-    std::vector<uint32_t> host_indices;
-    std::vector<float> host_twiddles;
-    build_npu_aiv_fft256_pair_group8_tables(
-        request, host_indices, host_twiddles, false, mode);
-    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
-    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
-    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
-    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    if (batch <= 0 || batch % 8 != 0) throw std::runtime_error("Grouped real FFT256 requires batches divisible by 8");
+    auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
+    auto roots = std::make_shared<DeviceAllocation>(npu_structured_roots(256, 8));
+    auto kernel = npu_power2_kernel(request, 256, 8, 1, 1, static_cast<int64_t>(mode));
     return std::make_shared<CompiledRawNpuAivFFT256Node>(std::move(indices),
-                                                         std::move(twiddles),
-                                                         8,
-                                                         true,
-                                                         false,
-                                                         false,
-                                                         0,
-                                                         mode);
+        std::move(roots), 8, true, false, false, 0, mode, std::move(kernel));
   }
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_complex_child(
@@ -1410,35 +1306,26 @@ namespace {
 
     const bool transposed_store = allow_transposed_store && pair_store_requested;
     const bool radix4_mode = allow_transposed_store && radix4_requested;
-    std::vector<uint32_t> host_indices;
-    std::vector<float> host_twiddles;
-    if (radix4_mode) {
-      build_npu_aiv_fft256_pair_radix4_group8_tables(request, host_indices, host_twiddles);
-    } else if (pair_mode) {
-      build_npu_aiv_fft256_pair_group8_tables(
-          request, host_indices, host_twiddles, transposed_store);
-    } else if (group_size > 1) {
-      build_npu_aiv_fft256_grouped_tables(request, group_size, host_indices, host_twiddles);
-    } else {
-      build_npu_aiv_fft256_tables(request, host_indices, host_twiddles);
-    }
-
-    auto indices = std::make_shared<DeviceAllocation>(host_indices.size() * sizeof(uint32_t));
-    indices->copy_from_host(host_indices.data(), host_indices.size() * sizeof(uint32_t));
-    auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
-    twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
+    auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
+    auto roots = std::make_shared<DeviceAllocation>(npu_structured_roots(256, group_size));
+    auto kernel = npu_power2_kernel(request, 256, group_size, 1, transposed_store ? 0 : 1, 0);
     return std::make_shared<CompiledRawNpuAivFFT256Node>(std::move(indices),
-                                                        std::move(twiddles),
-                                                        group_size,
-                                                        pair_mode,
-                                                        transposed_store,
-                                                        radix4_mode);
+        std::move(roots), group_size, pair_mode, transposed_store, radix4_mode,
+        0, NpuAivFFT256Mode::Complex, std::move(kernel));
   }
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft128_child(const FFTRequest &request,
                                                              int32_t group_size,
                                                              bool radix4_pair = false,
                                                              std::shared_ptr<JitKernel> replacement = nullptr) {
+    if (!replacement) {
+      radix4_pair = true;
+      auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request), request.direction,
+          group_size, 1, 0, 128);
+      key.perm_form = "radix4_pair";
+      replacement = TritonCompiler{}.compile_kernel(key);
+    }
+
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     if (radix4_pair) {
@@ -1471,7 +1358,15 @@ namespace {
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft2048_child(const FFTRequest &request,
                                                               bool radix4_pair = false,
                                                               std::shared_ptr<JitKernel> replacement = nullptr) {
-    // Ascend C has no place in the shipped path: always use the radix4-pair
+    if (!replacement) {
+      radix4_pair = true;
+      auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request), request.direction,
+          1, 1, 0, 2048);
+      key.perm_form = "radix4_pair";
+      replacement = TritonCompiler{}.compile_kernel(key);
+    }
+
+    // Always use the radix4-pair
     // tables so a Triton replacement can be attached.
     if (request.device_type == "npu") radix4_pair = true;
     std::vector<uint32_t> host_indices;
@@ -1501,6 +1396,14 @@ namespace {
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft1024_child(
       const FFTRequest &request, bool radix4_pair = false,
       std::shared_ptr<JitKernel> replacement = nullptr) {
+    if (!replacement) {
+      radix4_pair = true;
+      auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request), request.direction,
+          1, 1, 0, 1024);
+      key.perm_form = "radix4_pair";
+      replacement = TritonCompiler{}.compile_kernel(key);
+    }
+
     std::vector<uint32_t> host_indices;
     std::vector<float> host_twiddles;
     if (radix4_pair) {
@@ -1908,6 +1811,12 @@ namespace {
 std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft64_child(
     const FFTRequest &request, int64_t stride, int32_t group_size,
     NpuAivFFT64Mode mode, bool radix4_pair) {
+  if (stride != 1 && (group_size == 1 || radix4_pair)) {
+    return make_npu_aiv_fft_small_child(request, 64, stride, group_size,
+        static_cast<NpuAivFFTSmallMode>(mode));
+  }
+
+  if (group_size == 1) radix4_pair = true;
   std::vector<uint32_t> host_indices;
   std::vector<float> host_twiddles;
   if (radix4_pair) {
@@ -1923,17 +1832,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft64_child(
   auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
   twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
   std::shared_ptr<JitKernel> replacement;
-  const bool replace_radix2 = !radix4_pair && (group_size == 4 || group_size == 8) &&
-      flag_or_default("FLAGFFT_NPU_TRITON_FFT64", true);
-  const bool replace_radix4 = radix4_pair && group_size == 32 && stride == 1 &&
-      flag_or_default("FLAGFFT_NPU_TRITON_FFT64_RADIX4", true);
-  if (request.device_type == "npu" && (replace_radix2 || replace_radix4)) {
-    auto key = KernelKey::npu_grouped_fft64(
-        triton_target_for_request(request), request.direction, group_size, stride,
-        static_cast<int64_t>(mode));
-    if (radix4_pair) key.perm_form = "radix4_pair";
-    replacement = compile_kernel(key);
-  }
+  auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
+      request.direction, group_size, stride, static_cast<int64_t>(mode));
+  if (radix4_pair) key.perm_form = "radix4_pair";
+  replacement = compile_kernel(key);
   return std::make_shared<CompiledRawNpuAivFFT64Node>(
       stride, group_size, std::move(indices), std::move(twiddles), mode,
       radix4_pair, std::move(replacement));
@@ -1951,8 +1853,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft512_child(
   auto twiddles = std::make_shared<DeviceAllocation>(host_twiddles.size() * sizeof(float));
   twiddles->copy_from_host(host_twiddles.data(), host_twiddles.size() * sizeof(float));
   std::shared_ptr<JitKernel> replacement;
-  if (request.device_type == "npu" &&
-      flag_or_default("FLAGFFT_NPU_TRITON_FFT512", true)) {
+  {
     auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
                                             request.direction, 1, 1, 0, 512);
     key.perm_form = "radix4_pair";
@@ -2028,20 +1929,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                                   bool allow_npu_aiv256_transposed_store) {
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
-  // Reuse the existing Ascend C kernels at the 1D leaves of a 2D plan. The
+  // Reuse generated Triton kernels at the 1D leaves of a 2D plan. The
   // guards describe the child transform, so the route also applies to the
   // complex stages used internally by 2D real transforms and Bluestein.
   const bool npu_2d_complex_child = request.device_type == "npu" &&
                                    request.origin_rank == 2 &&
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" &&
-                                   flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
+                                   flag_or_default("FLAGFFT_NPU_2D_TRITON_FFT", true);
   const bool npu_2d_aiv_stockham = request.device_type == "npu" &&
                                    (request.origin_rank == 2 ||
                                     flag_or_default("FLAGFFT_NPU_STOCKHAM_AIV_1D", true)) &&
                                    request.input_dtype == "complex64" &&
                                    request.output_dtype == "complex64" &&
-                                   flag_or_default("FLAGFFT_NPU_2D_ASCENDC_STOCKHAM", true);
+                                   flag_or_default("FLAGFFT_NPU_2D_TRITON_STOCKHAM", true);
   const bool use_npu_2d_aiv128 = npu_2d_complex_child &&
                                  flag_or_default("FLAGFFT_NPU_2D_AIV128", true);
   const bool use_npu_2d_aiv1024 = npu_2d_complex_child &&
@@ -2311,9 +2212,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const int64_t active_extent = stage_span == 1
                                         ? ndiv
                                         : std::min<int64_t>(stage_span,
-                                              adaptor::npu::kAscendCStockhamTile);
+                                              adaptor::npu::kNpuStockhamTile);
       const uint64_t stage_batch_group =
-          adaptor::npu::ascendc_stockham_batch_group(
+          adaptor::npu::npu_stockham_batch_group(
               static_cast<uint64_t>(std::max<int64_t>(active_extent, 0)));
       const uint64_t effective_batch_lanes =
           batch > 0 ? std::min<uint64_t>(stage_batch_group,
@@ -2326,19 +2227,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           stage_span == 1 ? 1 : static_cast<uint64_t>(ndiv / stage_span);
       const uint64_t stage_groups_per_tile =
           stage_span > 1 &&
-                  stage_span < adaptor::npu::kAscendCStockhamTile &&
+                  stage_span < adaptor::npu::kNpuStockhamTile &&
                   stage_batch_group == 1
-              ? adaptor::npu::kAscendCStockhamTile /
+              ? adaptor::npu::kNpuStockhamTile /
                     static_cast<uint64_t>(stage_span)
               : 1;
       const int64_t stage_tiles_per_transform = stage_span == 1
-          ? (ndiv + adaptor::npu::kAscendCStockhamTile - 1) /
-                adaptor::npu::kAscendCStockhamTile
+          ? (ndiv + adaptor::npu::kNpuStockhamTile - 1) /
+                adaptor::npu::kNpuStockhamTile
           : static_cast<int64_t>(
                 (stage_groups_per_transform + stage_groups_per_tile - 1) /
                 stage_groups_per_tile) *
-                ((stage_span + adaptor::npu::kAscendCStockhamTile - 1) /
-                 adaptor::npu::kAscendCStockhamTile);
+                ((stage_span + adaptor::npu::kNpuStockhamTile - 1) /
+                 adaptor::npu::kNpuStockhamTile);
       const uint64_t stage_batch_count = batch > 0 ? static_cast<uint64_t>(batch) : 0;
       const uint64_t stage_batch_groups =
           stage_batch_count / stage_batch_group +
@@ -2349,7 +2250,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       // otherwise fall back to the scalar-heavy JIT Stockham kernel. Keep a
       // small floor to avoid paying AIV setup for only a handful of tiles.
       constexpr uint64_t min_aiv_stage_tiles =
-          adaptor::npu::kAscendCStockhamTile / 8;
+          adaptor::npu::kNpuStockhamTile / 8;
       const uint64_t stage_groups_needed =
           stage_tiles_per_transform > 0
               ? (min_aiv_stage_tiles +
@@ -2367,21 +2268,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           stage_span <= std::numeric_limits<uint32_t>::max() &&
           stockham->length % radix == 0 &&
           stockham->length % (radix * stage_span) == 0 &&
-          effective_stage_lanes >= adaptor::npu::kAscendCStockhamTile / 8 &&
-          enough_stage_work;
+          effective_stage_lanes >= adaptor::npu::kNpuStockhamTile / 8 &&
+          enough_stage_work && npu_stockham_tle_allowed_ &&
+          flag_or_default("FLAGFFT_NPU_STOCKHAM_TLE_AIV", true) &&
+          ndiv % 128 == 0 && stage_span <= 128 && 128 % stage_span == 0;
       if (use_aiv_stage) {
         if (aiv_indices.get() == 0) {
-          constexpr uint32_t tile = adaptor::npu::kAscendCStockhamTile;
+          constexpr uint32_t tile = adaptor::npu::kNpuStockhamTile;
           std::vector<uint32_t> indices(
-              adaptor::npu::kAscendCStockhamIndexVectors * tile);
+              adaptor::npu::kNpuStockhamIndexVectors * tile);
           for (uint32_t lane = 0; lane < tile; ++lane) {
             indices[lane] = 2 * lane * sizeof(float);
             indices[tile + lane] = (2 * lane + 1) * sizeof(float);
             indices[2 * tile + 2 * lane] = lane * sizeof(float);
             indices[2 * tile + 2 * lane + 1] = (tile + lane) * sizeof(float);
             indices[4 * tile + lane] =
-                lane < adaptor::npu::kAscendCStockhamMaxRadix
-                    ? lane * adaptor::npu::kAscendCStockhamRootStride *
+                lane < adaptor::npu::kNpuStockhamMaxRadix
+                    ? lane * adaptor::npu::kNpuStockhamRootStride *
                                 sizeof(float)
                           : 0;
           }
@@ -2391,7 +2294,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 
         const double sign = request.direction == "inverse" ? 1.0 : -1.0;
         constexpr int64_t root_stride =
-            adaptor::npu::kAscendCStockhamRootStride;
+            adaptor::npu::kNpuStockhamRootStride;
         std::vector<float> roots(2 * radix * root_stride, 0.0f);
         for (int64_t q = 0; q < radix; ++q) {
           for (int64_t digit = 0; digit < radix; ++digit) {
@@ -2411,7 +2314,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         if (stage_span > 1) {
           const int64_t twiddle_stride =
               stage_groups_per_tile > 1
-                  ? adaptor::npu::kAscendCStockhamTile
+                  ? adaptor::npu::kNpuStockhamTile
                   : stage_span;
           std::vector<float> stage_twiddles(
               static_cast<std::size_t>(2 * radix * twiddle_stride), 0.0f);
@@ -2429,13 +2332,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           }
           tables.twiddles = DeviceAllocation::from_floats(stage_twiddles);
         }
-        if (stage_span <= adaptor::npu::kAscendCStockhamTile &&
+        if (stage_span <= adaptor::npu::kNpuStockhamTile &&
             stage_groups_per_tile == 1) {
           // Build a byte-offset map that repacks q-major real/imag accumulators
           // into the contiguous output order for one tile (or transform slice).
           const uint32_t store_lanes = static_cast<uint32_t>(
               stage_span == 1
-                  ? std::min<int64_t>(ndiv, adaptor::npu::kAscendCStockhamTile)
+                  ? std::min<int64_t>(ndiv, adaptor::npu::kNpuStockhamTile)
                   : stage_span);
           const uint32_t store_index_count =
               static_cast<uint32_t>(2 * radix * store_lanes);
@@ -2455,12 +2358,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                     : q * store_lanes + lane;
                 const uint32_t input_lane = transform * store_lanes + lane;
                 mapping[2 * output_complex] = static_cast<uint32_t>(
-                    (q * adaptor::npu::kAscendCStockhamTile + input_lane) *
+                    (q * adaptor::npu::kNpuStockhamTile + input_lane) *
                     sizeof(float));
                 mapping[2 * output_complex + 1] = static_cast<uint32_t>(
                     (static_cast<uint32_t>(radix) *
-                         adaptor::npu::kAscendCStockhamTile +
-                     q * adaptor::npu::kAscendCStockhamTile + input_lane) *
+                         adaptor::npu::kNpuStockhamTile +
+                     q * adaptor::npu::kNpuStockhamTile + input_lane) *
                     sizeof(float));
               }
             }
@@ -2470,7 +2373,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           tables.store_indices.copy_from_host(
               store_indices.data(), store_indices.size() * sizeof(uint32_t));
         }
-        constexpr int64_t tle_tile = adaptor::npu::kAscendCStockhamTile;
+        constexpr int64_t tle_tile = adaptor::npu::kNpuStockhamTile;
         const bool tle_span_ok = stage_span <= tle_tile &&
             ndiv % tle_tile == 0 &&
             tle_tile % stage_span == 0 && ndiv % stage_span == 0;
@@ -3043,11 +2946,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     std::shared_ptr<JitKernel> postprocess_kernel;
     std::shared_ptr<CompiledRawNode> aiv_postprocess;
     DeviceAllocation boundary_twiddle;
-#if defined(FLAGFFT_BACKEND_NPU)
-    if (npu_2d_packed_real_boundary_enabled(request, n, batch)) {
-      aiv_postprocess = make_npu_packed_real_boundary_node(n, true);
-    } else
-#endif
+
     {
       postprocess_kernel = compile_r2c_packed_postprocess_kernel(request, n);
       boundary_twiddle = build_raw_packed_real_twiddle(request, n);
@@ -3160,13 +3059,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     std::shared_ptr<JitKernel> preprocess_kernel;
     std::shared_ptr<CompiledRawNode> aiv_preprocess;
     DeviceAllocation boundary_twiddle;
-#if defined(FLAGFFT_BACKEND_NPU)
-    const bool use_npu_aiv_boundary =
-        npu_2d_packed_real_boundary_enabled(request, n, batch);
-    if (use_npu_aiv_boundary) {
-      aiv_preprocess = make_npu_packed_real_boundary_node(n, false);
-    } else
-#endif
+
     {
       preprocess_kernel = compile_c2r_packed_preprocess_kernel(request, n);
       boundary_twiddle = build_raw_packed_real_twiddle(request, n);
@@ -5593,8 +5486,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
 #if defined(FLAGFFT_BACKEND_NPU)
   // Enable the measured Ascend 64x64 route by default only for its qualified
-  // NPU shape. FLAGFFT_NPU_2D_ASCENDC_AIV=0 remains the explicit rollback.
-  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
+  // NPU shape. FLAGFFT_NPU_2D_TRITON_FFT=0 remains the explicit rollback.
+  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_TRITON_FFT", true);
   const bool use_npu_aiv_fft64 =
       request.device_type == "npu" && request.origin_rank == 2 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
@@ -5830,7 +5723,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
-  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
+  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_TRITON_FFT", true);
   const bool use_npu_aiv_fft64_real =
       request.device_type == "npu" && request.origin_rank == 2 &&
       request.real_transform_kind == "r2c" && request.input_dtype == "complex64" &&
@@ -6048,7 +5941,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
-  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
+  const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_TRITON_FFT", true);
   const bool use_npu_aiv_fft64_real =
       request.device_type == "npu" && request.origin_rank == 2 &&
       request.real_transform_kind == "c2r" && request.input_dtype == "complex64" &&

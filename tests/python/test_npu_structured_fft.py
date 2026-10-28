@@ -32,21 +32,27 @@ def roots(length, columns):
 
 def execute_module(path):
     pid = [0, 0]
-    def load(ptr):
-        return ptr.data[ptr.offset]
-    def store(ptr, value):
-        ptr.data[ptr.offset] = value
+    def load(ptr, mask=True, other=0):
+        index=torch.as_tensor(ptr.offset)
+        mask=torch.broadcast_to(torch.as_tensor(mask),index.shape)
+        return torch.where(mask,ptr.data[index.clamp(0,ptr.data.numel()-1)],other)
+    def store(ptr, value, mask=True):
+        index=torch.as_tensor(ptr.offset)
+        mask=torch.broadcast_to(torch.as_tensor(mask),index.shape)
+        ptr.data[index[mask]]=torch.broadcast_to(value,index.shape)[mask]
     def extract(v, offsets, sizes, strides):
         return v[tuple(slice(o,o+n*s,s) for o,n,s in zip(offsets,sizes,strides))]
     def insert(v, x, offsets, sizes, strides):
         out = v.clone()
         out[tuple(slice(o,o+n*s,s) for o,n,s in zip(offsets,sizes,strides))] = x
         return out
-    tl = SimpleNamespace(constexpr=int, program_id=lambda axis:pid[axis], static_range=range,
+    tl = SimpleNamespace(constexpr=int, program_id=lambda axis:torch.tensor(pid[axis]), static_range=range,
         arange=torch.arange,reshape=lambda v,s:v.reshape(s),permute=lambda v,*s:v.permute(*s),
         trans=lambda v:v.transpose(-1,-2),split=lambda v:torch.unbind(v,dim=-1),
         join=lambda a,b:torch.stack((a,b),-1),zeros=lambda s,dtype:torch.zeros(s,dtype=dtype),
-        float32=torch.float32,load=load,store=store)
+        float32=torch.float32,int64=torch.int64,load=load,store=store,
+        gather=lambda v,index,axis:torch.gather(v,axis,index.long()),
+        minimum=lambda a,b:torch.minimum(torch.as_tensor(a),torch.as_tensor(b)),where=torch.where)
     tree = ast.parse(Path(path).read_text())
     tree.body = [node for node in tree.body if not isinstance(node,(ast.Import,ast.ImportFrom))]
     for node in tree.body:

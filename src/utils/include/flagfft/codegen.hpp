@@ -247,7 +247,8 @@ struct CompiledRawNpuAivFFTSmallNode final : CompiledRawNode {
                                 int64_t group_size,
                                 std::shared_ptr<DeviceAllocation> indices,
                                 std::shared_ptr<DeviceAllocation> twiddles,
-                                NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex);
+                                NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex,
+                                std::shared_ptr<JitKernel> replacement = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -258,6 +259,7 @@ struct CompiledRawNpuAivFFTSmallNode final : CompiledRawNode {
   int64_t output_stride;
   int64_t group_size;
   NpuAivFFTSmallMode mode;
+  std::shared_ptr<JitKernel> replacement;
   std::shared_ptr<DeviceAllocation> indices;
   std::shared_ptr<DeviceAllocation> twiddles;
 };
@@ -290,7 +292,8 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
                               bool transposed_store = false,
                               bool radix4_mode = false,
                               int64_t transposed_output_row_stride = 0,
-                              NpuAivFFT256Mode mode = NpuAivFFT256Mode::Complex);
+                              NpuAivFFT256Mode mode = NpuAivFFT256Mode::Complex,
+                              std::shared_ptr<JitKernel> replacement = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -304,6 +307,7 @@ struct CompiledRawNpuAivFFT256Node final : CompiledRawNode {
   bool radix4_mode;
   int64_t transposed_output_row_stride;
   NpuAivFFT256Mode mode;
+  std::shared_ptr<JitKernel> replacement;
 };
 #endif
 
@@ -358,21 +362,7 @@ struct CompiledRawStockhamNode final : CompiledRawNode {
 };
 
 #if defined(FLAGFFT_BACKEND_NPU)
-struct CompiledRawNpuPackedRealBoundaryNode final : CompiledRawNode {
-  CompiledRawNpuPackedRealBoundaryNode(int64_t length,
-                                       bool r2c_postprocess,
-                                       DeviceAllocation indices,
-                                       DeviceAllocation twiddles);
-  flagfftResult execute(adaptor::DevicePtr input,
-                        adaptor::DevicePtr output,
-                        const RawExecutionContext &context) const override;
-  std::string describe() const override;
 
-  int64_t length;
-  bool r2c_postprocess;
-  DeviceAllocation indices;
-  DeviceAllocation twiddles;
-};
 #endif
 
 struct CompiledRawDirectDftNode final : CompiledRawNode {
@@ -1810,7 +1800,9 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_transpose3d_kernel(
       const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order,
       bool npu_table = false);
+ public:
   std::shared_ptr<JitKernel> compile_kernel(const KernelKey &key) const;
+ private:
   std::filesystem::path out_dir() const;
   std::string python_executable() const;
   std::string triton_jit_source_entrypoint() const;
