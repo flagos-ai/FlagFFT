@@ -205,6 +205,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  if (adaptor::backend_name() == "npu") {
+    const char *vector_remainder = std::getenv("FLAGFFT_NPU_VECTOR_REMAINDER");
+    cache_key += ";npu-source-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
+  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
