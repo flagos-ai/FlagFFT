@@ -21,12 +21,14 @@ import triton
 from ascend_fourstep_probe import fourstep_fused, axis_twiddles
 from ascend_local_fft_codegen import generate
 from ascend_packed_fft import packed_fft, compact_twiddles
+from ascend_tiled_fft import tiled_axis
 from ascend_cube_fft import cube_fourstep, dft_weights, pre_roots
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--variant', choices=['baseline','local-first','local-both','packed','compact','cube','cube-first','cube-second'], default='baseline')
+    parser.add_argument('--variant', choices=['baseline','local-first','local-both','packed','compact','cube','cube-first','cube-second','tiled'], default='baseline')
+    parser.add_argument('--tile',type=int,default=8)
     parser.add_argument('--pack',type=int,default=1)
     parser.add_argument('--factor',type=int,default=32)
     parser.add_argument('--radix',type=int,choices=[2,4],default=4)
@@ -81,6 +83,22 @@ def main():
         runner = ck[(batch, 1, 1)]
         def fft():
             runner(x, y, wa, wb, cross, n, a, b, a.bit_length()-1, b.bit_length()-1, False, False)
+    elif args.variant=='tiled':
+        c=args.tile
+        assert a%c==0 and b%c==0
+        temp=torch.empty_like(x)
+        wa,wb=axis_twiddles(a*c,a,c),axis_twiddles(b*c,b,c)
+        grid1,grid2=batch*(b//c),batch*(a//c)
+        ck=tiled_axis[(grid1,)](x,temp,wa,cross,batch,n,a,b,c,True,a.bit_length()-1,**options)
+        ck2=tiled_axis[(grid2,)](temp,y,wb,cross,batch,n,b,a,c,False,b.bit_length()-1,**options)
+        runner,runner2=ck[(grid1,1,1)],ck2[(grid2,1,1)]
+        def fft():
+            runner(x,temp,wa,cross,batch,n,a,b,c,True,a.bit_length()-1)
+            runner2(temp,y,wb,cross,batch,n,b,a,c,False,b.bit_length()-1)
+        for key,data in ck2.asm.items():
+            path=args.output.with_suffix('.stage2.'+key)
+            if isinstance(data,str):path.write_text(data)
+            elif isinstance(data,(bytes,bytearray)):path.write_bytes(data)
     elif args.variant.startswith('cube'):
         lea=min(a,args.cube_leaf) if args.cube_leaf else a
         leb=min(b,args.cube_leaf) if args.cube_leaf else b
@@ -187,7 +205,7 @@ def main():
     errors.update(fourstep_after=check(y), sip_after=check(z))
     assert torch.equal(x.cpu(), cpu), 'input changed during replay'
     lib.sip_destroy(handle)
-    result = dict(input_kind=args.input_kind,compile_options=options,cube_leaf=args.cube_leaf,cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
+    result = dict(tile=args.tile,input_kind=args.input_kind,compile_options=options,cube_leaf=args.cube_leaf,cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
                   graph_steps=args.steps, rounds=args.rounds, iters=args.iters,
                   results=results, rel_l2=errors, replay_verified=True,
                   scope='complete FFT execution on resident device buffers; plans/tables/JIT/copies excluded',
