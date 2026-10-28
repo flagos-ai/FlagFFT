@@ -168,8 +168,8 @@ def {name}(in_ptr,out_ptr,wa,wb,cross,nbatch):
     else:
         l,width=(n1,n2) if first else (n2,n1)
         if (any(v < 16 or v > 2048 or v & (v-1) for v in (n1,n2))
-                or tile not in (1,2,4,8,16) or n1%tile or n2%tile
-                or (l if recursive else max(n1,n2))*tile > 4096):
+                or tile not in (1,2,4,8,16,32) or n1%tile or n2%tile
+                or l*tile > (4096 if recursive and l>=512 else 2048)):
             raise ValueError('Tiled structured FFT exceeds the power-of-two axis resource bounds')
         name=f'npu_structured_axis_{l}_{width}_c{tile}_{int(first)}_{direction}'
         args=(['in_ptr','twiddle_ptr','out_ptr','roots_ptr','nbatch'] if first else
