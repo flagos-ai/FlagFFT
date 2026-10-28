@@ -62,6 +62,13 @@ def _csv_ints(raw: str) -> tuple[int, ...]:
 
 
 def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
+    if _npu_backend_active():
+        # CANN exposes tensor slice operations through the language extension.
+        # Use that public surface instead of requiring the optional TLE module.
+        for operation in ("insert_slice", "extract_slice"):
+            kernel_source = kernel_source.replace(f"tle.dsa.{operation}", f"al.{operation}")
+        if "al." in kernel_source and "import triton.language.extra.cann.extension as al" not in kernel_source:
+            kernel_source = "import triton.language.extra.cann.extension as al\n" + kernel_source
     helpers = (
         "import os\n"
         "if (os.environ.get('TRITON_BACKEND') in {'torch_npu', 'npu'}\n"

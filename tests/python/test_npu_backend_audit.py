@@ -24,3 +24,12 @@ def test_ascendc_kernel_and_build_are_rejected(tmp_path):
     p.unlink()
     (tmp_path/'CMakeLists.txt').write_text('ascendc_library(fft STATIC device.cpp)')
     assert not audit.scan_source(tmp_path)['passed']
+
+
+def test_npu_slice_modules_use_the_installed_language_extension(monkeypatch):
+    from flagfft_codegen import metadata
+    monkeypatch.setattr(metadata, '_npu_backend_active', lambda:True)
+    source=metadata._module_source('x = tle.dsa.insert_slice(v,a,[0],[64],[1])')
+    assert 'import triton.language.extra.cann.extension as al' in source
+    assert 'al.insert_slice(v,a,[0],[64],[1])' in source
+    assert 'triton.experimental.tle' not in source
