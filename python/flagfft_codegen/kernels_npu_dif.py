@@ -102,7 +102,7 @@ def switch_axes(X,TW,Y):
 ''')
  specs.append(dict(name='switch_axes',phase='transpose',grid=((p+31)//32,(rest+31)//32)))
  for i in range(switch,len(factors)):
-  s=old[i];r=s['r'];m=s['m'];prefix=s['prefix'];c=min(512,pad(prefix));tiles=(prefix+c-1)//c
+  s=old[i];r=s['r'];m=s['m'];prefix=s['prefix'];c=min(2048 if r==2 else 1024 if r<=8 else 512,pad(prefix));tiles=(prefix+c-1)//c
   lines=['@triton.jit',f'def switched_stage_{i}(X,TW,Y):',f'    batch=tl.program_id(1).to(tl.int64)',f'    X=X+batch*{2*n}',f'    Y=Y+batch*{2*n}',f'    j=tl.program_id(0)//{tiles}',f'    pf=tl.program_id(0)%{tiles}*{c}+tl.arange(0,{c})',f'    valid=pf<{prefix}']
   for d in range(r):
    lines += [f'    off=({d*m}+j)*{prefix}+pf',f'    r{d}=tl.load(X+off,valid,0.)',f'    i{d}=tl.load(X+{n}+off,valid,0.)',f'    wr=tl.load(TW+off,valid,0.)',f'    wi=tl.load(TW+{n}+off,valid,0.)',f'    r{d},i{d}=r{d}*wr-i{d}*wi,r{d}*wi+i{d}*wr']

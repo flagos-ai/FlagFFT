@@ -179,7 +179,8 @@ namespace {
       } else weights.push_back(0.0f);
       int64_t grid=0;
       if (switched) {
-        grid=m*ceiling(prefix,std::min<int64_t>(512,power(prefix)));
+        const int64_t width=radix==2?2048:radix<=8?1024:512;
+        grid=m*ceiling(prefix,std::min(width,power(prefix)));
       } else if (m>=128) {
         grid=prefix*ceiling(m,std::min<int64_t>(512,power(m)));
       } else {
