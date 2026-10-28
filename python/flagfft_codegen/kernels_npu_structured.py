@@ -172,8 +172,8 @@ def {name}({','.join(args)}):
     r=tl.reshape(r,({l},{tile}));i=tl.reshape(i,({l},{tile}))
 """
         if first:
-            body+=f"""    tw=(col[None,:]*{l}+row[:,None])*2
-    cr=tl.load(twiddle_ptr+tw);ci=tl.load(twiddle_ptr+tw+1)
+            body+=f"""    tw=row[:,None]*{width}+col[None,:]
+    cr=tl.load(twiddle_ptr+tw);ci=tl.load(twiddle_ptr+{n1*n2}+tw)
     rr,ii=r*cr-i*ci,r*ci+i*cr
     rr=tl.reshape(tl.trans(rr),({l*tile},));ii=tl.reshape(tl.trans(ii),({l*tile},))
     raw=tl.reshape(tl.join(rr,ii),({tile},{l},2))

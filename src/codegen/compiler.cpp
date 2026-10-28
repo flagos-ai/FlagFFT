@@ -53,6 +53,18 @@ namespace {
     return DeviceAllocation::from_floats(values);
   }
 
+  DeviceAllocation npu_structured_cross(int64_t n, int64_t a, bool inverse) {
+    const int64_t b = n / a;
+    std::vector<float> values(2 * n);
+    for (int64_t k = 0; k < n; ++k) {
+      const double angle = (inverse ? 2.0 : -2.0) * kPi * (k / b) * (k % b) / n;
+      values[k] = static_cast<float>(std::cos(angle));
+      values[n + k] = static_cast<float>(std::sin(angle));
+    }
+    return DeviceAllocation::from_floats(values);
+  }
+
+
 
   bool npu_2d_table_transpose_supported(const FFTRequest &request,
                                       int64_t rows,
@@ -2160,13 +2172,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     std::vector<DeviceAllocation> tables;
     tables.push_back(npu_structured_roots(a, b));
     tables.push_back(npu_structured_roots(b, a));
-    std::vector<float> cross(2 * n);
-    for (int64_t k = 0; k < n; ++k) {
-      const double angle = -2.0 * kPi * (k / b) * (k % b) / n;
-      cross[k] = static_cast<float>(std::cos(angle));
-      cross[n + k] = static_cast<float>(std::sin(angle));
-    }
-    tables.push_back(DeviceAllocation::from_floats(cross));
+    tables.push_back(npu_structured_cross(n, a, false));
     return std::make_shared<CompiledRawLeafNode>(n, compile_kernel(key), std::move(tables));
   }
   if (auto stockham = std::dynamic_pointer_cast<StockhamPlanNode>(node)) {
@@ -2563,14 +2569,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           request.direction, request.input_dtype, 128, 128, 128, {4,4,8}, 32, 4, {}, 128);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
           request.direction, request.input_dtype, 128, 128, 128, {4,4,8}, 32, 4, {}, 128);
-      row_key.perm_form = col_key.perm_form = "npu_structured";
+      row_key.perm_form = col_key.perm_form = "npu_structured_planar";
       std::vector<DeviceAllocation> row_tables, col_tables;
       row_tables.push_back(npu_structured_roots(128, 8));
       col_tables.push_back(npu_structured_roots(128, 8));
       return std::make_shared<CompiledRawFourStepFusedNode>(16384, 128, 128,
           compile_kernel(row_key), std::move(row_tables),
           compile_kernel(col_key), std::move(col_tables),
-          build_raw_four_step_twiddle(request, 128, 128),
+          npu_structured_cross(16384, 128, request.direction == "inverse"),
           adaptor::Memory(static_cast<std::size_t>(batch * 16384 * sizeof(float) * 2)));
     }
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);

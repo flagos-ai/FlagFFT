@@ -89,10 +89,10 @@ def test_two_pass_tables_and_store_contract(tmp_path,tile,direction):
     x = torch.randn(batch,n,2)
     saved = x.clone()
     temp,y = torch.empty_like(x),torch.full_like(x,float('nan'))
-    # The runtime owns an interleaved table indexed by j2*n1+k1.
-    j2,k1 = torch.arange(b)[:,None],torch.arange(a)[None,:]
+    # The private fused axis uses contiguous planar coefficients in k1,j2 order.
+    k1,j2 = torch.arange(a)[:,None],torch.arange(b)[None,:]
     angle = (-1 if direction=='forward' else 1)*2*math.pi*j2.double()*k1.double()/n
-    twiddle = torch.stack((angle.cos(),angle.sin()),-1).float()
+    twiddle = torch.cat((angle.cos().flatten(),angle.sin().flatten())).float()
     for first in (True,False):
         meta = emit_structured(length=a,direction=direction,out_dir=tmp_path,first=first,n1=a,n2=b,tile=tile)
         ns,pid = execute_module(meta['module_path'])

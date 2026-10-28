@@ -644,7 +644,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
   }
 
-  if (key.perm_form == "npu_structured") {
+  if (key.perm_form == "npu_structured" || key.perm_form == "npu_structured_planar") {
     jit_command << " --npu-structured-fft";
   }
 
