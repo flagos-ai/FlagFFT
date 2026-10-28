@@ -30,7 +30,36 @@ def dft_cube(V,WH,WL,L:tl.constexpr,C:tl.constexpr,TERMS:tl.constexpr):
 
 
 @triton.jit
-def cube_fourstep(X,Y,AH,AL,BH,BL,CROSS,WA,WB,NB:tl.constexpr,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,TERMS:tl.constexpr,CA:tl.constexpr,CB:tl.constexpr,LOGA:tl.constexpr,LOGB:tl.constexpr,P:tl.constexpr):
+def reduced_cube(r,i,WH,WL,ROOT,L:tl.constexpr,C:tl.constexpr,LEAF:tl.constexpr,STEPS:tl.constexpr,TERMS:tl.constexpr):
+    N:tl.constexpr=L*C
+    for s in tl.static_range(0,STEPS):
+        G:tl.constexpr=2**s
+        SPAN:tl.constexpr=(L//G)*C
+        p=tl.reshape(r,(G,SPAN));q=tl.reshape(i,(G,SPAN))
+        ar=tl.reshape(al.extract_slice(p,[0,0],[G,SPAN//2],[1,1]),(N//2,))
+        br=tl.reshape(al.extract_slice(p,[0,SPAN//2],[G,SPAN//2],[1,1]),(N//2,))
+        ai=tl.reshape(al.extract_slice(q,[0,0],[G,SPAN//2],[1,1]),(N//2,))
+        bi=tl.reshape(al.extract_slice(q,[0,SPAN//2],[G,SPAN//2],[1,1]),(N//2,))
+        j=tl.arange(0,N//2)
+        wr=tl.load(ROOT+s*N+j);wi=tl.load(ROOT+s*N+N//2+j)
+        dr,di=ar-br,ai-bi
+        yr,yi=dr*wr-di*wi,dr*wi+di*wr
+        rr=tl.zeros((N,),tl.float32);ii=tl.zeros((N,),tl.float32)
+        rr=al.insert_slice(rr,ar+br,[0],[N//2],[1]);r=al.insert_slice(rr,yr,[N//2],[N//2],[1])
+        ii=al.insert_slice(ii,ai+bi,[0],[N//2],[1]);i=al.insert_slice(ii,yi,[N//2],[N//2],[1])
+    GROUPS:tl.constexpr=L//LEAF
+    r=tl.reshape(tl.permute(tl.reshape(r,(GROUPS,LEAF,C)),1,0,2),(N,))
+    i=tl.reshape(tl.permute(tl.reshape(i,(GROUPS,LEAF,C)),1,0,2),(N,))
+    v=tl.zeros((2*N,),tl.float32)
+    v=al.insert_slice(v,r,[0],[N],[1]);v=al.insert_slice(v,i,[N],[N],[1])
+    out=dft_cube(tl.reshape(v,(2*LEAF,GROUPS*C)),WH,WL,LEAF,GROUPS*C,TERMS)
+    r=tl.reshape(al.extract_slice(out,[0,0],[LEAF,GROUPS*C],[1,1]),(N,))
+    i=tl.reshape(al.extract_slice(out,[LEAF,0],[LEAF,GROUPS*C],[1,1]),(N,))
+    return r,i
+
+
+@triton.jit
+def cube_fourstep(X,Y,AH,AL,BH,BL,CROSS,WA,WB,AROOT,BROOT,NB:tl.constexpr,N:tl.constexpr,A:tl.constexpr,B:tl.constexpr,TERMS:tl.constexpr,CA:tl.constexpr,CB:tl.constexpr,LOGA:tl.constexpr,LOGB:tl.constexpr,P:tl.constexpr,LEA:tl.constexpr,LEB:tl.constexpr,PREA:tl.constexpr,PREB:tl.constexpr):
     bid=tl.program_id(0)
     lane=tl.arange(0,2*N)
     batch=bid*P+tl.arange(0,P)
@@ -39,11 +68,14 @@ def cube_fourstep(X,Y,AH,AL,BH,BL,CROSS,WA,WB,NB:tl.constexpr,N:tl.constexpr,A:t
     if CA:
         r=tl.reshape(tl.permute(tl.reshape(r,(P,A,B)),1,0,2),(P*N,))
         i=tl.reshape(tl.permute(tl.reshape(i,(P,A,B)),1,0,2),(P*N,))
-        v=tl.zeros((2*P*N,),tl.float32)
-        v=al.insert_slice(v,r,[0],[P*N],[1]);v=al.insert_slice(v,i,[P*N],[P*N],[1])
-        first=dft_cube(tl.reshape(v,(2*A,P*B)),AH,AL,A,P*B,TERMS)
-        r=tl.reshape(al.extract_slice(first,[0,0],[A,P*B],[1,1]),(P*N,))
-        i=tl.reshape(al.extract_slice(first,[A,0],[A,P*B],[1,1]),(P*N,))
+        if PREA>0:
+            r,i=reduced_cube(r,i,AH,AL,AROOT,A,P*B,LEA,PREA,TERMS)
+        else:
+            v=tl.zeros((2*P*N,),tl.float32)
+            v=al.insert_slice(v,r,[0],[P*N],[1]);v=al.insert_slice(v,i,[P*N],[P*N],[1])
+            first=dft_cube(tl.reshape(v,(2*A,P*B)),AH,AL,A,P*B,TERMS)
+            r=tl.reshape(al.extract_slice(first,[0,0],[A,P*B],[1,1]),(P*N,))
+            i=tl.reshape(al.extract_slice(first,[A,0],[A,P*B],[1,1]),(P*N,))
     else:
         r,i=fft_axis_sliced(r,i,WA,P*N,A,B,LOGA)
     k=tl.arange(0,N)
@@ -53,11 +85,14 @@ def cube_fourstep(X,Y,AH,AL,BH,BL,CROSS,WA,WB,NB:tl.constexpr,N:tl.constexpr,A:t
     rr=tl.reshape(tl.permute(rr,2,1,0),(P*N,))
     ii=tl.reshape(tl.permute(ii,2,1,0),(P*N,))
     if CB:
-        v=tl.zeros((2*P*N,),tl.float32)
-        v=al.insert_slice(v,rr,[0],[P*N],[1]);v=al.insert_slice(v,ii,[P*N],[P*N],[1])
-        second=dft_cube(tl.reshape(v,(2*B,P*A)),BH,BL,B,P*A,TERMS)
-        r=tl.reshape(al.extract_slice(second,[0,0],[B,P*A],[1,1]),(P*N,))
-        i=tl.reshape(al.extract_slice(second,[B,0],[B,P*A],[1,1]),(P*N,))
+        if PREB>0:
+            r,i=reduced_cube(rr,ii,BH,BL,BROOT,B,P*A,LEB,PREB,TERMS)
+        else:
+            v=tl.zeros((2*P*N,),tl.float32)
+            v=al.insert_slice(v,rr,[0],[P*N],[1]);v=al.insert_slice(v,ii,[P*N],[P*N],[1])
+            second=dft_cube(tl.reshape(v,(2*B,P*A)),BH,BL,B,P*A,TERMS)
+            r=tl.reshape(al.extract_slice(second,[0,0],[B,P*A],[1,1]),(P*N,))
+            i=tl.reshape(al.extract_slice(second,[B,0],[B,P*A],[1,1]),(P*N,))
     else:
         r,i=fft_axis_sliced(rr,ii,WB,P*N,B,P*A,LOGB)
     r=tl.reshape(tl.permute(tl.reshape(r,(B,P,A)),1,0,2),(P,N))
@@ -79,3 +114,14 @@ def dft_weights(length,ieee=False):
     high=w.half()
     low=((w-high.float())*4096.0).half()
     return high.npu(),low.npu()
+
+
+def pre_roots(length,columns,steps):
+    n=length*columns
+    rows=[]
+    for s in range(steps):
+        span=length//2**s
+        j=(torch.arange(n//2,dtype=torch.int64)//columns)%(span//2)
+        angle=-2*math.pi*j.double()/span
+        rows.extend((angle.cos().float(),angle.sin().float()))
+    return torch.cat(rows).npu() if rows else torch.zeros(1,device="npu")

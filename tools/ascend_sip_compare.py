@@ -21,7 +21,7 @@ import triton
 from ascend_fourstep_probe import fourstep_fused, axis_twiddles
 from ascend_local_fft_codegen import generate
 from ascend_packed_fft import packed_fft, compact_twiddles
-from ascend_cube_fft import cube_fourstep, dft_weights
+from ascend_cube_fft import cube_fourstep, dft_weights, pre_roots
 
 
 def main():
@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--pack',type=int,default=1)
     parser.add_argument('--factor',type=int,default=32)
     parser.add_argument('--radix',type=int,choices=[2,4],default=4)
+    parser.add_argument('--cube-leaf',type=int,default=0)
     parser.add_argument('--cube-terms',type=int,choices=[0,3,4],default=3)
     parser.add_argument('--single-buffer',action='store_true')
     parser.add_argument('--library', type=Path, required=True)
@@ -64,14 +65,18 @@ def main():
         def fft():
             runner(x, y, wa, wb, cross, n, a, b, a.bit_length()-1, b.bit_length()-1, False, False)
     elif args.variant.startswith('cube'):
-        ah,al=dft_weights(a,args.cube_terms==0);bh,bl=dft_weights(b,args.cube_terms==0)
+        lea=min(a,args.cube_leaf) if args.cube_leaf else a
+        leb=min(b,args.cube_leaf) if args.cube_leaf else b
+        prea=a.bit_length()-lea.bit_length();preb=b.bit_length()-leb.bit_length()
+        ar=pre_roots(a,args.pack*b,prea);br=pre_roots(b,args.pack*a,preb)
+        ah,al=dft_weights(lea,args.cube_terms==0);bh,bl=dft_weights(leb,args.cube_terms==0)
         ca=args.variant!='cube-second';cb=args.variant!='cube-first'
         grid=triton.cdiv(batch,args.pack)
         wa,wb=axis_twiddles(n*args.pack,a,b),axis_twiddles(n*args.pack,b,args.pack*a)
-        ck=cube_fourstep[(grid,)](x,y,ah,al,bh,bl,cross,wa,wb,batch,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1,args.pack,**options)
+        ck=cube_fourstep[(grid,)](x,y,ah,al,bh,bl,cross,wa,wb,ar,br,batch,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1,args.pack,lea,leb,prea,preb,**options)
         runner=ck[(grid,1,1)]
         def fft():
-            runner(x,y,ah,al,bh,bl,cross,wa,wb,batch,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1,args.pack)
+            runner(x,y,ah,al,bh,bl,cross,wa,wb,ar,br,batch,n,a,b,args.cube_terms,ca,cb,a.bit_length()-1,b.bit_length()-1,args.pack,lea,leb,prea,preb)
     elif args.variant in ('packed','compact'):
         if args.variant=='compact':
             wa,wb=compact_twiddles(a),compact_twiddles(b)
@@ -165,7 +170,7 @@ def main():
     errors.update(fourstep_after=check(y), sip_after=check(z))
     assert torch.equal(x.cpu(), cpu), 'input changed during replay'
     lib.sip_destroy(handle)
-    result = dict(cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
+    result = dict(cube_leaf=args.cube_leaf,cube_terms=args.cube_terms,variant=args.variant,pack=args.pack,factor=a,radix=args.radix,single_buffer=args.single_buffer,generated_sha256=generated_sha,status='pass', n=n, batch=batch, seed=args.seed,
                   graph_steps=args.steps, rounds=args.rounds, iters=args.iters,
                   results=results, rel_l2=errors, replay_verified=True,
                   scope='complete FFT execution on resident device buffers; plans/tables/JIT/copies excluded',
