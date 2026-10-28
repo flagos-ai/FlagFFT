@@ -105,10 +105,10 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
       request.batch > 1 && request.requested_n == n && n == 8192 &&
       (musa_1d_c2c_root || musa_1d_real_root);
-  const bool musa_default_300000_fp64_c2c_split =
+  const bool musa_default_300000_c2c_split =
       request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
-      request.origin_rank == 1 && request.batch >= 64 && request.requested_n == n && n == 300000 &&
-      musa_1d_c2c_root && request.input_dtype == "complex128";
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n && n == 300000 &&
+      musa_1d_c2c_root;
   const bool musa_packed_fp32_c2r_child_root =
       request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
       request.origin_rank == 1 && request.batch > 1 && request.packed_real_child &&
@@ -119,6 +119,12 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       request.origin_rank == 1 && request.batch >= 64 && request.packed_real_child &&
       request.requested_n == n && n == 300000 && request.input_dtype == "complex128" &&
       (request.origin_real_transform_kind == "c2r" || request.real_transform_kind == "c2r");
+  const bool musa_default_packed_65536_fp32_r2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && (request.batch == 64 || request.batch == 256) &&
+      request.packed_real_child && request.requested_n == n && n == 65536 &&
+      request.input_dtype == "complex64" &&
+      (request.origin_real_transform_kind == "r2c" || request.real_transform_kind == "r2c");
   const bool musa_default_packed_c2r_32768_split = musa_packed_fp32_c2r_child_root && n == 32768;
   const bool musa_default_packed_c2r_65536_split = musa_packed_fp32_c2r_child_root && n == 65536;
   const bool musa_default_350000_fp64_c2c_split =
@@ -134,15 +140,17 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       request.origin_rank == 1 && request.batch > 1 && request.requested_n == n &&
       (musa_1d_c2c_root || musa_1d_real_root) &&
       ((musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') || musa_default_131072_split ||
-       musa_default_1024_split || musa_default_8192_split || musa_default_300000_fp64_c2c_split ||
-       musa_default_350000_fp64_c2c_split || musa_default_600000_fp64_c2c_split);
+       musa_default_1024_split || musa_default_8192_split || musa_default_300000_c2c_split ||
+       musa_default_350000_fp64_c2c_split || musa_default_600000_fp64_c2c_split ||
+       musa_default_packed_65536_fp32_r2c_split);
   if (musa_root_fourstep_split || musa_packed_fp32_c2r_child_root ||
-      musa_default_packed_300000_fp64_c2r_split) {
+      musa_default_packed_300000_fp64_c2r_split || musa_default_packed_65536_fp32_r2c_split) {
     // MTT S5000 screens favor 128x8 over the CT leaf at N=1024, 128x64 over
     // 64x128 at N=8192, 512x256 over 128x1024 at N=131072, and 256x128 / 256x256
-    // for the packed FP32 C2R children at N=32768 / 65536. FP64 C2C N=300000
-    // and the packed FP64 C2R child at N=300000 favor 750x400; the FP64 C2C
-    // roots favor 700x500 at N=350000 and 750x800 at N=600000.
+    // for the packed FP32 C2R children at N=32768 / 65536. Batched C2C N=300000
+    // favors 1000x300; the packed FP64 C2R child at N=300000 favors 750x400. The packed
+    // FP32 R2C child at N=65536 favors 256x256. FP64 C2C roots favor 700x500
+    // at N=350000 and 750x800 at N=600000.
     std::string spec;
     if (musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') {
       spec = musa_fourstep_split;
@@ -156,7 +164,11 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       spec = "32768:256";
     } else if (musa_default_packed_c2r_65536_split) {
       spec = "65536:256";
-    } else if (musa_default_300000_fp64_c2c_split || musa_default_packed_300000_fp64_c2r_split) {
+    } else if (musa_default_packed_65536_fp32_r2c_split) {
+      spec = "65536:256";
+    } else if (musa_default_300000_c2c_split) {
+      spec = "300000:1000";
+    } else if (musa_default_packed_300000_fp64_c2r_split) {
       spec = "300000:750";
     } else if (musa_default_350000_fp64_c2c_split) {
       spec = "350000:700";
