@@ -1253,6 +1253,22 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   bool final_permuted_store = false;
 };
 
+// Transform a contiguous inner plane, then the outer axis in natural layout.
+// Real inverse reverses the passes so the plane sees compact Hermitian data.
+struct CompiledRawTensorPlaneNode final : CompiledRawNode {
+  CompiledRawTensorPlaneNode(int64_t outer_length, int64_t plane_points,
+      int64_t compact_points, bool inverse_real,
+      std::shared_ptr<CompiledRawNode> plane, std::shared_ptr<CompiledRawNode> outer,
+      DeviceAllocation temp);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+      const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  int64_t outer_length, plane_points, compact_points;
+  bool inverse_real;
+  std::shared_ptr<CompiledRawNode> plane, outer;
+  DeviceAllocation temp;
+};
+
 // Small 16^3 complex transform: one kernel handles both axes in each 16x16
 // plane, then the outer axis uses the existing strided leaf.
 struct CompiledRaw3DFusedPlaneNode final : CompiledRawNode {

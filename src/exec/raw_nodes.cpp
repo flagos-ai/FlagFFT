@@ -3495,6 +3495,33 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawTensorPlaneNode::CompiledRawTensorPlaneNode(int64_t outer_length,
+    int64_t plane_points, int64_t compact_points, bool inverse_real,
+    std::shared_ptr<CompiledRawNode> plane, std::shared_ptr<CompiledRawNode> outer,
+    DeviceAllocation temp)
+    : outer_length(outer_length), plane_points(plane_points), compact_points(compact_points),
+      inverse_real(inverse_real), plane(std::move(plane)), outer(std::move(outer)), temp(std::move(temp)) {}
+
+std::string CompiledRawTensorPlaneNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawTensorPlane(outer_length=" << outer_length << ", plane_points=" << plane_points
+      << ", compact_points=" << compact_points << ", inverse_real=" << inverse_real
+      << ", plane=" << plane->describe() << ", outer=" << outer->describe() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawTensorPlaneNode::execute(adaptor::DevicePtr input,
+    adaptor::DevicePtr output, const RawExecutionContext &context) const {
+  RawExecutionContext plane_context {context.request, context.stream, context.batch * outer_length};
+  RawExecutionContext outer_context {context.request, context.stream, context.batch * compact_points};
+  if (inverse_real) {
+    auto result = outer->execute(input, temp.get(), outer_context);
+    return result == FLAGFFT_SUCCESS ? plane->execute(temp.get(), output, plane_context) : result;
+  }
+  auto result = plane->execute(input, temp.get(), plane_context);
+  return result == FLAGFFT_SUCCESS ? outer->execute(temp.get(), output, outer_context) : result;
+}
+
 CompiledRaw3DFusedPlaneNode::CompiledRaw3DFusedPlaneNode(
     int64_t plane_size,
     std::shared_ptr<JitKernel> plane_fft,

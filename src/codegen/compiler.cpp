@@ -1163,6 +1163,25 @@ namespace {
         mode, TritonCompiler{}.compile_kernel(key));
   }
 
+  std::shared_ptr<CompiledRawNode> make_npu_tensor_plane_child(
+      const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, int64_t batch,
+      NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex) {
+    if (n0 < 16 || n0 > 2048 || (n0 & (n0-1)) ||
+        !flag_or_default("FLAGFFT_NPU_TENSOR_PLANE", false)) return nullptr;
+    auto plane = make_npu_tensor_child(request, {n1,n2}, mode);
+    if (!plane) return nullptr;
+    const int64_t compact = n1 * (mode == NpuAivFFTSmallMode::Complex ? n2 : n2/2+1);
+    int64_t group = std::min<int64_t>(32, 2048/n0);
+    while (group > 1 && compact % group) group /= 2;
+    FFTRequest outer_request = request;
+    outer_request.real_transform_kind.clear();
+    outer_request.real_transform = false;
+    auto outer = make_npu_aiv_fft_small_child(outer_request, n0, compact, group);
+    return std::make_shared<CompiledRawTensorPlaneNode>(n0, n1*n2, compact,
+        mode == NpuAivFFTSmallMode::RealInverse, std::move(plane), std::move(outer),
+        adaptor::Memory(static_cast<std::size_t>(batch*n0*compact*sizeof(float)*2)));
+  }
+
   void build_npu_aiv_fft_radix4_pair_tables(const FFTRequest &request,
                                             int64_t n,
                                             int64_t group_size,
@@ -3883,6 +3902,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::Complex))
     return tensor;
+  if (auto plane = make_npu_tensor_plane_child(request, node->n0, node->n1, node->n2,
+          batch, NpuAivFFTSmallMode::Complex)) return plane;
 #endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
@@ -5388,6 +5409,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::RealForward))
     return tensor;
+  if (auto plane = make_npu_tensor_plane_child(request, node->n0, node->n1, node->n2,
+          batch, NpuAivFFTSmallMode::RealForward)) return plane;
 #endif
   if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, false)) return leaf_path;
   if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, false)) return rtrt_path;
@@ -5482,6 +5505,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::RealInverse))
     return tensor;
+  if (auto plane = make_npu_tensor_plane_child(request, node->n0, node->n1, node->n2,
+          batch, NpuAivFFTSmallMode::RealInverse)) return plane;
 #endif
   if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, true)) return leaf_path;
   if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, true)) return rtrt_path;
