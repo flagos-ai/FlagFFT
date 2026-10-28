@@ -39,11 +39,11 @@ def test_graph_replays_live_buffers(length,batch,capfd):
         run(x,y);check(x,y)
         assert '[flagfft] NPU graph captured' in capfd.readouterr().err
         for scale in (2.0,-0.5,0.125):
-            x.mul_(scale);y.fill_(complex(float('nan'),0));run(x,y);check(x,y)
+            torch.view_as_real(x).mul_(scale);torch.view_as_real(y).fill_(float('nan'));run(x,y);check(x,y)
         assert (storage[:64].cpu()==31415.25).all() and (storage[-64:].cpu()==31415.25).all()
         other_x=x.clone();other_y=torch.empty_like(y);run(other_x,other_y);check(other_x,other_y)
         original_stream=stream;stream=torch.npu.Stream();run(x,y);check(x,y)
-        stream=original_stream;x.mul_(0.25);run(x,y);check(x,y)
+        stream=original_stream;torch.view_as_real(x).mul_(0.25);run(x,y);check(x,y)
         run(x,y,1);check(x,y,1)
         # In-place calls bypass the cached out-of-place graph.
         saved=x.clone();run(x,x);check(saved,x)
