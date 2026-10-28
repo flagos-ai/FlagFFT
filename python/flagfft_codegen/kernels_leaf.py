@@ -103,18 +103,6 @@ def _packed_maca_fp32_complex_io(dtype: str) -> bool:
     )
 
 
-def _npu_flat_pair_address(ptr: str, mask: str) -> str | None:
-    # Flatten integer offsets, keeping the scalar pointer outside reshape.
-    # The installed unstructured-pointer pass cannot reshape pointer tensors.
-    for base in ("in_ptr", "out_ptr", "twiddle_ptr"):
-        prefix = base + " + "
-        if ptr.startswith(prefix):
-            offset = ptr[len(prefix):]
-            return (f"{base} + tl.reshape(({offset})[:,None] + {_COMPLEX_PAIR_OFFSETS}, "
-                    f"({mask}.shape[0]*2,))")
-    return None
-
-
 def _emit_vectorized_complex_load(
     indent: str,
     ptr: str,
@@ -122,15 +110,6 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
-    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
-        address = _npu_flat_pair_address(ptr, mask)
-        if address is not None:
-            pair = "_pair_" + dest.split(",")[0].strip()
-            return [
-                f"{indent}{pair} = tl.load({address}, "
-                f"mask=tl.reshape({mask}[:,None] & ({_COMPLEX_PAIR_OFFSETS} >= 0), ({mask}.shape[0]*2,)), other=0.0)",
-                f"{indent}{dest} = tl.split(tl.reshape({pair},({mask}.shape[0],2)))",
-            ]
     if _packed_maca_fp32_complex_io(dtype):
         pair = "_packed_pair_" + dest.split(",")[0].strip()
         real, imag = (name.strip() for name in dest.split(","))
@@ -173,14 +152,6 @@ def _emit_vectorized_complex_store(
     mask: str,
     dtype: str,
 ) -> list[str]:
-    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
-        address = _npu_flat_pair_address(ptr, mask)
-        if address is not None:
-            return [
-                f"{indent}tl.store({address}, "
-                f"tl.reshape(tl.join({r_name},{i_name}), ({mask}.shape[0]*2,)), "
-                f"mask=tl.reshape({mask}[:,None] & ({_COMPLEX_PAIR_OFFSETS} >= 0), ({mask}.shape[0]*2,)))",
-            ]
     if _packed_maca_fp32_complex_io(dtype):
         pair = "_packed_store_" + r_name
         return [
