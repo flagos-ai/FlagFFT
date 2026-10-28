@@ -82,7 +82,8 @@ def build_vector_dif(factors,direction='forward'):
  first=re.search(r'@triton.jit\ndef vector_stage_0',source).start();header=source[:first];chunks=[];specs=[]
  for i in range(switch):
   match=re.search(rf'@triton.jit\ndef vector_stage_{i}\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',source)
-  text=match.group(0).replace('def vector_stage_'+str(i)+'(X,TW,Y):', 'def vector_stage_'+str(i)+f'(X,TW,Y):\n    batch=tl.program_id(1).to(tl.int64)\n    X=X+batch*{2*n}\n    Y=Y+batch*{2*n}')
+  offset=f'    batch=tl.program_id(1).to(tl.int64)\n    X=X+batch*{2*n}\n    Y=Y+batch*{2*n}\n'
+  text=re.sub(r'(def vector_stage_\d+\([^\n]*\):\n)',lambda m:m.group(0)+offset,match.group(0),count=1)
   chunks.append(text);specs.append(dict(old[i],name=f'vector_stage_{i}',phase='early',stage=i))
  p=old[switch]['prefix'];rest=n//p
  chunks.append(f'''@triton.jit
