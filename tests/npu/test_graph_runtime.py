@@ -7,10 +7,11 @@ torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
 @pytest.mark.parametrize('length,batch',[(16,1),(16,64),(1024,1)])
-def test_graph_replays_live_buffers(length,batch):
+def test_graph_replays_live_buffers(length,batch,capfd):
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
     assert os.environ.get('FLAGFFT_NPU_GRAPH')=='1'
+    assert os.environ.get('FLAGFFT_NPU_GRAPH_TRACE')=='1'
     lib=ctypes.CDLL(path)
     lib.flagfftPlan1d.argtypes=[ctypes.POINTER(ctypes.c_void_p),ctypes.c_int,ctypes.c_int,ctypes.c_int]
     lib.flagfftPlan1d.restype=ctypes.c_int
@@ -36,6 +37,7 @@ def test_graph_replays_live_buffers(length,batch):
         # First execution prepares/captures. Subsequent calls must consume
         # newly written input values and overwrite a poisoned output.
         run(x,y);check(x,y)
+        assert '[flagfft] NPU graph captured' in capfd.readouterr().err
         for scale in (2.0,-0.5,0.125):
             x.mul_(scale);y.fill_(complex(float('nan'),0));run(x,y);check(x,y)
         assert (storage[:64].cpu()==31415.25).all() and (storage[-64:].cpu()==31415.25).all()

@@ -67,8 +67,14 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
         graph_batch = context.batch;
         graph_input_distance = context.input_distance;
         graph_output_distance = context.output_distance;
-      } catch (const std::exception &) {
+        if (context.request.device_type == "npu" && std::getenv("FLAGFFT_NPU_GRAPH_TRACE") != nullptr) {
+          std::fprintf(stderr, "[flagfft] NPU graph captured\n");
+        }
+      } catch (const std::exception &error) {
         graph_failed = true;
+        if (context.request.device_type == "npu" && std::getenv("FLAGFFT_NPU_GRAPH_TRACE") != nullptr) {
+          std::fprintf(stderr, "[flagfft] NPU graph capture fallback: %s\n", error.what());
+        }
       }
     }
     return FLAGFFT_SUCCESS;
