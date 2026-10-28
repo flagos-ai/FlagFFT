@@ -1135,6 +1135,34 @@ namespace {
         group_size, std::move(indices), std::move(roots), mode, std::move(kernel));
   }
 
+  std::shared_ptr<CompiledRawNode> make_npu_tensor_child(
+      const FFTRequest &request, const std::vector<int64_t> &shape,
+      NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex) {
+    if (request.device_type != "npu" || request.device_arch.rfind("Ascend910B",0) != 0 ||
+        request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+        request.requires_contiguous_copy || !flag_or_default("FLAGFFT_NPU_TENSOR_FFT", false))
+      return nullptr;
+    int64_t count = 1;
+    for (auto length : shape) {
+      if (length < 8 || length > 64 || (length & (length-1))) return nullptr;
+      count *= length;
+    }
+    if (count > 4096 || (shape.size() != 2 && shape.size() != 3)) return nullptr;
+    std::vector<float> values;
+    for (auto length : shape) {
+      auto axis = npu_structured_root_values(length, count / length);
+      values.insert(values.end(), axis.begin(), axis.end());
+    }
+    auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
+        request.direction, 1, 1, static_cast<int64_t>(mode), count);
+    key.perm_form = "structured_tensor";
+    key.factors = shape;
+    return std::make_shared<CompiledRawNpuAivFFTSmallNode>(count, 1, 1, 1,
+        std::make_shared<DeviceAllocation>(sizeof(uint32_t)),
+        std::make_shared<DeviceAllocation>(DeviceAllocation::from_floats(values)),
+        mode, TritonCompiler{}.compile_kernel(key));
+  }
+
   void build_npu_aiv_fft_radix4_pair_tables(const FFTRequest &request,
                                             int64_t n,
                                             int64_t group_size,
@@ -3852,6 +3880,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::Complex))
+    return tensor;
+#endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -5353,6 +5385,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::RealForward))
+    return tensor;
+#endif
   if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, false)) return leaf_path;
   if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, false)) return rtrt_path;
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -5443,6 +5479,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::RealInverse))
+    return tensor;
+#endif
   if (auto leaf_path = compile_raw_3d_real_leaf_node(node, request, batch, true)) return leaf_path;
   if (auto rtrt_path = compile_raw_3d_real_rtrt_node(node, request, batch, true)) return rtrt_path;
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -5542,6 +5582,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::Complex))
+    return tensor;
+#endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -5827,6 +5871,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::RealForward))
+    return tensor;
+#endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
@@ -6029,6 +6077,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::RealInverse))
+    return tensor;
+#endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;

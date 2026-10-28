@@ -665,6 +665,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --direction " << shell_quote(key.direction);
     if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
     if (key.perm_form == "structured_packed_real") jit_command << " --npu-packed-real";
+    if (key.perm_form == "structured_tensor") {
+      if (key.factors.size() != 2 && key.factors.size() != 3)
+        throw std::runtime_error("Tensor FFT key requires two or three axes");
+      jit_command << " --npu-tensor-shape " << shell_quote(join_ints(key.factors));
+    }
     if (key.perm_form == "structured_power2" || key.perm_form == "structured_packed_real") {
       if (key.factors.size() != 1) throw std::runtime_error("Grouped FFT key requires an output stride");
       jit_command << " --npu-power2 --npu-fft-output-stride " << key.factors.front();

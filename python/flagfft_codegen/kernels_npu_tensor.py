@@ -1,5 +1,9 @@
 """Resource-bounded fusion of short power-of-two tensor FFT axes."""
 import math
+import json
+from pathlib import Path
+from .artifacts import write_text_atomic
+from .metadata import _module_source
 from .kernels_npu_structured import FFT_HELPERS
 
 
@@ -98,3 +102,19 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
             source+=f'    packed{number}=tl.reshape(tl.join(part_r{number},part_i{number}),({2*size},))\n'
             source+=f'    tl.store(out_ptr+transform*{2*output_count}+tl.arange(0,{2*size})+{2*start},packed{number})\n'
     return name,source
+
+
+def emit_npu_tensor(shape, mode, direction, out_dir):
+    name, body = build_npu_tensor_source(shape, mode, direction)
+    path = Path(out_dir) / (name + '.py')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(path, _module_source(body))
+    meta = dict(module_path=str(path), kernel_name=name,
+        signature='*fp32:16,*fp32:16,*i32:16,*fp32:16,i32,i64,i64',
+        arg_names=['in_ptr','out_ptr','idx_ptr','roots_ptr','nbatch',
+                   'output_row_stride','transform_offset'],
+        num_warps=4, num_stages=1, batch_per_block=1,
+        kernel_type='npu_grouped_fft64', dtype='complex64', direction=direction,
+        length=math.prod(shape), tensor_shape=list(shape), mode=mode)
+    write_text_atomic(path.with_suffix('.json'), json.dumps(meta, sort_keys=True))
+    return meta

@@ -142,6 +142,7 @@ def main() -> None:
     parser.add_argument("--npu-structured-fft", action="store_true")
     parser.add_argument("--npu-structured-recursive", action="store_true")
     parser.add_argument("--npu-power2", action="store_true")
+    parser.add_argument("--npu-tensor-shape", type=_csv_ints, default=())
     parser.add_argument("--npu-packed-real", action="store_true")
     parser.add_argument("--npu-fft-output-stride", type=int, default=1)
     parser.add_argument("--npu-vector-transpose", action="store_true",
@@ -459,6 +460,11 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
+    elif args.npu_tensor_shape:
+        if spec.family != NPU_GROUPED_FFT or not args.target.startswith('npu:') or args.dtype!='complex64':
+            parser.error('Tensor FFT requires an NPU FP32 grouped FFT key')
+        from .kernels_npu_tensor import emit_npu_tensor
+        metadata=emit_npu_tensor(args.npu_tensor_shape,args.npu_fft_mode,args.direction,args.out_dir)
     elif spec.family == NPU_GROUPED_FFT:
         if not args.target.startswith("npu:") or args.dtype != "complex64":
             parser.error("npu_grouped_fft64 requires an NPU FP32 target")
