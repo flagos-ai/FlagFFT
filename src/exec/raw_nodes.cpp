@@ -1761,18 +1761,20 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
       return FLAGFFT_SUCCESS;
     }
 
-    std::vector<JitKernelArg> args = {
-        JitKernelArg::device(packed_output.get()),
-        JitKernelArg::device(twiddle.get()),
-        JitKernelArg::device(output),
-        JitKernelArg::i64(output_distance),
-        JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-    };
-    postprocess_kernel->launch(context.stream,
-                               args,
-                               ceil_div(half, block),
-                               grid_rows(postprocess_kernel, context.batch),
-                               1);
+    const int64_t grid_x=ceil_div(half,block);
+    const int64_t bytes=complex_element_bytes(context.request.input_dtype);
+    const int64_t limit=context.request.device_type=="npu"
+        ? std::max<int64_t>(1,adaptor::max_launch_blocks()/grid_x)*postprocess_kernel->batch_per_block
+        : context.batch;
+    for (int64_t start=0;start<context.batch;start+=limit) {
+      const int64_t count=std::min(limit,context.batch-start);
+      postprocess_kernel->launch(context.stream,
+          {JitKernelArg::device(packed_output.get()+start*packed*bytes),
+           JitKernelArg::device(twiddle.get()),
+           JitKernelArg::device(output+start*output_distance*bytes),
+           JitKernelArg::i64(output_distance),JitKernelArg::i32(static_cast<int32_t>(count))},
+          grid_x,grid_rows(postprocess_kernel,count),1);
+    }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] PackedR2C execute failed: %s\n", e.what());
@@ -2123,18 +2125,20 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
           aiv_preprocess->execute(input, packed_input.get(), boundary_context);
       if (preprocess_result != FLAGFFT_SUCCESS) return preprocess_result;
     } else {
-      std::vector<JitKernelArg> args = {
-          JitKernelArg::device(input),
-          JitKernelArg::device(twiddle.get()),
-          JitKernelArg::device(packed_input.get()),
-          JitKernelArg::i64(input_distance),
-          JitKernelArg::i32(static_cast<int32_t>(context.batch)),
-      };
-      preprocess_kernel->launch(context.stream,
-                                args,
-                                ceil_div(packed, block),
-                                grid_rows(preprocess_kernel, context.batch),
-                                1);
+      const int64_t grid_x=ceil_div(packed,block);
+      const int64_t bytes=complex_element_bytes(context.request.input_dtype);
+      const int64_t limit=context.request.device_type=="npu"
+          ? std::max<int64_t>(1,adaptor::max_launch_blocks()/grid_x)*preprocess_kernel->batch_per_block
+          : context.batch;
+      for (int64_t start=0;start<context.batch;start+=limit) {
+        const int64_t count=std::min(limit,context.batch-start);
+        preprocess_kernel->launch(context.stream,
+            {JitKernelArg::device(input+start*input_distance*bytes),
+             JitKernelArg::device(twiddle.get()),
+             JitKernelArg::device(packed_input.get()+start*packed*bytes),
+             JitKernelArg::i64(input_distance),JitKernelArg::i32(static_cast<int32_t>(count))},
+            grid_x,grid_rows(preprocess_kernel,count),1);
+      }
     }
 
     RawExecutionContext child_context {context.request, context.stream, context.batch};

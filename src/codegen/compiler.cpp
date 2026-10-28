@@ -1912,6 +1912,18 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    if (is_npu_fp32_target && (n&(n-1))==0 && n>=8192 &&
+        flag_or_default("FLAGFFT_NPU_STRUCTURED_PACKED_FOURSTEP",false)) {
+      const int64_t packed=n/2;
+      int64_t a=1;while(a*a<packed) a*=2;
+      const int64_t b=packed/a;
+      if (a<=2048 && b>=16) {
+        auto row=child_builder.build(a,child_request);
+        auto col=child_builder.build(b,child_request);
+        child_plan=std::make_shared<FourStepPlanNode>(packed,a,b,row,col);
+        return PackedRealChild {std::move(child_request),std::move(child_plan)};
+      }
+    }
     if (!force && is_npu_fp32_target) {
       // Do not implicitly enable unmeasured Bluestein children or GPU tuning
       // cache entries. New radices qualify naturally when the NPU planner

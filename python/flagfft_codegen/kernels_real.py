@@ -415,11 +415,63 @@ def _build_r2c_half_pack_kernel_source(
     )
 
 
+def _build_npu_packed_boundary(n, inverse):
+    """Use contiguous complex windows and local reversal for the real boundary."""
+    packed=n//2;half=packed+1;count=256
+    name=f"_{'c2r_packed_preprocess' if inverse else 'r2c_packed_postprocess'}_kernel_n{n}_f32"
+    distance='input_distance' if inverse else 'output_distance'
+    source=f'''@triton.jit
+def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
+    batch=tl.program_id(1).to(tl.int64)
+    start=tl.program_id(0)*{count}
+    lane=tl.arange(0,{count})
+    word=tl.arange(0,{2*count})
+    k=start+lane
+    valid=(batch<nbatch)&(k<{packed if inverse else half})
+    reverse_start=tl.where({packed}-start-{count}+1>0,{packed}-start-{count}+1,0)
+    stride={distance if inverse else packed}
+    forward=tl.load(in_ptr+batch*stride*2+start*2+word,
+        (batch<nbatch)&(start*2+word<{2*half if inverse else 2*packed}),0.)
+    backward=tl.load(in_ptr+batch*stride*2+reverse_start*2+word,
+        (batch<nbatch)&(reverse_start*2+word<{2*half if inverse else 2*packed}),0.)
+    ar,ai=tl.split(tl.reshape(forward,({count},2)))
+    br0,bi0=tl.split(tl.reshape(backward,({count},2)))
+    reverse_index=tl.minimum(tl.where({packed}-k-reverse_start>0,{packed}-k-reverse_start,0),{count-1})
+    br=tl.gather(br0,reverse_index,0)
+    bi=-tl.gather(bi0,reverse_index,0)
+'''
+    if inverse:
+        source+='    ai=tl.where(k==0,0.,ai);bi=tl.where(k==0,0.,bi)\n'
+    if not inverse:
+        source+=f'''    dc_r=tl.load(in_ptr+batch*{2*packed},batch<nbatch,0.)
+    dc_i=tl.load(in_ptr+batch*{2*packed}+1,batch<nbatch,0.)
+    ar=tl.where(k=={packed},dc_r,ar);ai=tl.where(k=={packed},dc_i,ai)
+    br=tl.where((k==0)|(k=={packed}),dc_r,br)
+    bi=tl.where((k==0)|(k=={packed}),-dc_i,bi)
+'''
+    source+=f'''    phase=tl.load(twiddle_ptr+start*2+word,start*2+word<{2*half},0.)
+    wr,wi=tl.split(tl.reshape(phase,({count},2)))
+    sr=ar+br;si=ai+bi;dr=ar-br;di=ai-bi
+'''
+    if inverse:
+        source+='    real=sr-(di*wr-dr*wi)\n    imag=si+(dr*wr+di*wi)\n'
+        destination=f'batch*{2*packed}+start*2+word'
+    else:
+        source+='    real=0.5*(sr+di*wr+dr*wi)\n    imag=0.5*(si-dr*wr+di*wi)\n'
+        destination='batch*output_distance*2+start*2+word'
+    source+=f'''    value=tl.reshape(tl.join(real,imag),({2*count},))
+    tl.store(out_ptr+{destination},value,(batch<nbatch)&(start*2+word<{2*packed if inverse else 2*half}))
+'''
+    return name,source,['in_ptr','twiddle_ptr','out_ptr',distance,'nbatch'],1
+
+
 def _build_r2c_packed_postprocess_kernel_source(
     n: int, dtype: str
 ) -> tuple[str, list[str], list[str]]:
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
+    if current_profile().backend=="npu" and dtype=="complex64" and n>=512:
+        return _build_npu_packed_boundary(n,False)
     packed = n // 2
     half = packed + 1
     block = 256
@@ -480,6 +532,8 @@ def _build_c2r_packed_preprocess_kernel_source(
 ) -> tuple[str, list[str], list[str]]:
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
+    if current_profile().backend=="npu" and dtype=="complex64" and n>=512:
+        return _build_npu_packed_boundary(n,True)
     packed = n // 2
     block = 256
     block_cols, rows_per_block = _packed_layout(packed, block)
