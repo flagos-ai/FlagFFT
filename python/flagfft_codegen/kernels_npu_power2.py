@@ -29,6 +29,14 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     r=tl.reshape(tl.trans(tl.reshape(r,({g},{n}))),({count},))
     i=tl.reshape(tl.trans(tl.reshape(i,({g},{n}))),({count},))
 '''
+    elif mode == 0 and stride % g == 0:
+        source += f'''    word=tl.arange(0,{2*g})[None,:]
+    row=tl.arange(0,{n})[:,None]
+    matrix_base=(base//{stride})*{n*stride}+base%{stride}
+    offsets=matrix_base*2+row*{2*stride}+word
+    data=tl.load(in_ptr+offsets,base+word//2<nbatch,0)
+    r,i=tl.split(tl.reshape(data,({count},2)))
+'''
     elif mode == 0:
         source += f'''    lane=tl.arange(0,{2*count})
     transform=base+(lane//2)%{g}
@@ -76,6 +84,13 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
         source += f'''    word=tl.arange(0,{2*n})
     packed=tl.reshape(tl.join(tl.reshape(tl.trans(r),({count},)),tl.reshape(tl.trans(i),({count},))),({g},{2*n}))
     tl.store(out_ptr+transforms[:,None]*{2*n}+word[None,:],packed,transforms[:,None]<nbatch)
+'''
+    elif output_stride > 1 and output_stride % g == 0:
+        source += f'''    packed=tl.reshape(tl.join(tl.reshape(r,({count},)),tl.reshape(i,({count},))),({n},{2*g}))
+    row=tl.arange(0,{n})[:,None]
+    word=tl.arange(0,{2*g})[None,:]
+    matrix_base=(base//{output_stride})*{n*output_stride}+base%{output_stride}
+    tl.store(out_ptr+matrix_base*2+row*{2*output_stride}+word,packed,base+word//2<nbatch)
 '''
     else:
         stride_expr = str(output_stride) if output_stride else 'output_row_stride'

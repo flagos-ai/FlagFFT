@@ -36,6 +36,11 @@ def test_recursive_strided(tmp_path,direction):
     check(tmp_path,512,2,0,direction,17,17,34,recursive=True)
 
 
+@pytest.mark.parametrize('direction',['forward','inverse'])
+def test_matrix_column_group(tmp_path,direction):
+    check(tmp_path,32,32,0,direction,1024,1024,1024)
+
+
 def check(tmp_path,n,group,mode,direction,input_stride,output_stride,batch,recursive=False):
     meta=emit_npu_grouped_fft64(group=group,stride=input_stride,mode=mode,direction=direction,
         out_dir=tmp_path,length=n,structured=True,output_stride=output_stride,recursive=recursive)
