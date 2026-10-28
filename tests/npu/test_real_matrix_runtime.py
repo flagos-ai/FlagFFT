@@ -8,7 +8,7 @@ pytest.importorskip('torch_npu')
 
 
 @pytest.mark.parametrize('inverse',[False,True])
-@pytest.mark.parametrize('n',[128,210,256])
+@pytest.mark.parametrize('n',[128,210,256,16384])
 def test_real_matrix_replay_and_in_place(inverse,n):
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
