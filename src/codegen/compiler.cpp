@@ -1915,9 +1915,17 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
                              (request.packed_real_child && request.requested_n == 262144)) &&
                             request.input_dtype == "complex128")) &&
                           !request.input_strides.empty() && request.input_strides.back() == 1;
+  const char *musa_batch_warps = std::getenv("FLAGFFT_MUSA_1D_BATCH_WARPS");
+  const char *musa_fourstep_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK");
+  const auto explicit_musa_override = [](const char *value) {
+    return value != nullptr && *value != '\0' && std::string(value) != "auto";
+  };
+  const bool musa_batch_tuning_requested =
+      explicit_musa_override(musa_batch_warps) || explicit_musa_override(musa_fourstep_pack);
   musa_1d_batch_policy_ = request.device_type == "musa" && request.device_arch == "31" &&
                           request.raw_dim == 1 && request.origin_rank <= 1 && request.batch > 1 &&
-                          request.fft_length == request.requested_n && request.requested_n == 1024 &&
+                          request.fft_length == request.requested_n &&
+                          (request.requested_n == 1024 || musa_batch_tuning_requested) &&
                           !request.input_strides.empty() && request.input_strides.back() == 1;
   if (musa_1d_batch_policy_) {
     const char *batch_override = std::getenv("FLAGFFT_MUSA_1D_BATCH");
