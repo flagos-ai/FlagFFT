@@ -1656,6 +1656,17 @@ namespace {
         request.input_dtype == "complex64" && !request.input_strides.empty() &&
         request.input_strides.back() == 1 &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr;
+    // The half-length packed route also wins for large batched FP32 R2C at
+    // N=131072 and 262144. Keep this limited to the tested large batch sizes;
+    // FP64 was effectively unchanged in the same A/B screen.
+    const bool is_musa_s5000_batch_fp32_r2c_target =
+        request.device_type == "musa" && request.device_arch == "31" && !inverse &&
+        request.raw_dim == 1 && request.origin_rank <= 1 &&
+        (batch == 64 || batch == 256) && (n == 131072 || n == 262144) &&
+        request.fft_length == n && request.requested_n == n &&
+        request.input_dtype == "complex64" && !request.input_strides.empty() &&
+        request.input_strides.back() == 1 &&
+        std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr;
     // Ascend's single FP32 Stockham transforms avoid a full-length complex
     // expansion and halve the stage traffic. Keep small transforms and batch
     // layouts on their existing paths until they are qualified independently;
@@ -1706,12 +1717,14 @@ namespace {
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
         (n == 185640 || n == 340200 || n == 524288 || n == 663000);
     if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target &&
-        !is_musa_s5000_batch_fp32_c2r_target && !is_npu_fp32_target &&
+        !is_musa_s5000_batch_fp32_c2r_target && !is_musa_s5000_batch_fp32_r2c_target &&
+        !is_npu_fp32_target &&
         !is_ix_single_fp32_target && !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target) {
       return std::nullopt;
     }
-    if (!force && !is_musa_s5000_batch_fp32_c2r_target && !is_npu_fp32_target &&
+    if (!force && !is_musa_s5000_batch_fp32_c2r_target &&
+        !is_musa_s5000_batch_fp32_r2c_target && !is_npu_fp32_target &&
         !is_ix_single_fp32_target &&
         !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
         !is_maca_batch_real_target && !is_maca_single_c2r_target &&
