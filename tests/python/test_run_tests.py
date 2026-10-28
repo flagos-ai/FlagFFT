@@ -1324,3 +1324,20 @@ def test_capture_rejects_extra_stdout_bytes(tmp_path, operators, matrix):
     )
     assert record["accuracy"]["status"] == "Error"
     assert "beyond the expected binary output" in record["accuracy"]["error"]
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_fourstep_capture_preserves_compile_failure_and_timeout(tmp_path, operators, matrix, timeout):
+    case = next(c for c in RUN_TESTS.expand_all_test_cases(operators, matrix)
+                if c["algorithm"] == "fourstep" and c["dtype"] == "torch.float32")
+    executable = tmp_path / "failed_capture"
+    executable.write_text(f"#!{sys.executable}\nimport sys,time\n"
+                          "sys.stderr.write('compiler diagnostic before plan creation\\n')\n"
+                          "sys.stderr.flush()\n" +
+                          ("time.sleep(30)\n" if timeout else "sys.exit(1)\n"))
+    executable.chmod(0o755)
+    result = RUN_TESTS.run_accuracy_capture(case, executable, tmp_path / "capture",
+                                           "flagfft", 0, 1)
+    assert result["status"] == ("Timeout" if timeout else "Error")
+    assert "compiler diagnostic before plan creation" in result["error"]
+    assert "without a FourStep node" not in result["error"]

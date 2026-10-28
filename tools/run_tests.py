@@ -1543,9 +1543,10 @@ def run_accuracy_capture(
         if preserve_batch and result["status"] == "Passed":
             if batch_error := capture_batch_error(case, result["plan"]):
                 result.update(status="Error", error=batch_error)
-        if path_error := fourstep_path_error(case, result["plan"]):
-            result["status"] = "Failed"
-            result["error"] = path_error
+        if result["status"] not in ("Error", "Timeout", "Skipped"):
+            if path_error := fourstep_path_error(case, result["plan"]):
+                result["status"] = "Failed"
+                result["error"] = path_error
     if result["status"] in ("Error", "Timeout"):
         detail = tail_text(log_path)
         if detail:
