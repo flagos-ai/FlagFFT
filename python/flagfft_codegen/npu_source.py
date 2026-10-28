@@ -22,26 +22,3 @@ def vector_remainders(source):
             return node
     tree=Rewrite().visit(ast.parse(source))
     return ast.unparse(ast.fix_missing_locations(tree))+'\n'
-
-
-def fused_codelet_arithmetic(source):
-    """Contract floating arithmetic in codelets; preserve all FFT index code."""
-    class Fuse(ast.NodeTransformer):
-        def visit_BinOp(self,node):
-            node=self.generic_visit(node)
-            if not isinstance(node.op,(ast.Add,ast.Sub)):
-                return node
-            if isinstance(node.left,ast.BinOp) and isinstance(node.left.op,ast.Mult):
-                a,b=node.left.left,node.left.right
-                c=node.right if isinstance(node.op,ast.Add) else ast.UnaryOp(ast.USub(),node.right)
-            elif isinstance(node.right,ast.BinOp) and isinstance(node.right.op,ast.Mult):
-                a,b=node.right.left,node.right.right;c=node.left
-                if isinstance(node.op,ast.Sub):a=ast.UnaryOp(ast.USub(),a)
-            else:
-                return node
-            return ast.copy_location(ast.Call(ast.Attribute(ast.Name('tl',ast.Load()),'fma',ast.Load()),[a,b,c],[]),node)
-    tree=ast.parse(source)
-    for fn in tree.body:
-        if isinstance(fn,ast.FunctionDef) and (fn.name.startswith(('_fwd_rad','_inv_rad')) or fn.name=='_cmul'):
-            Fuse().visit(fn)
-    return ast.unparse(ast.fix_missing_locations(tree))+'\n'
