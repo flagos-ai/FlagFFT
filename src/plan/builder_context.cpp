@@ -97,16 +97,20 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
       request.batch > 1 && request.requested_n == n && n == 131072 &&
       (musa_1d_c2c_root || musa_1d_real_root);
+  const bool musa_default_8192_split = request.device_type == "musa" &&
+      request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.batch > 1 && request.requested_n == n && n == 8192 &&
+      (musa_1d_c2c_root || musa_1d_real_root);
   if (request.device_type == "musa" && request.device_arch == "31" &&
       request.raw_dim == 1 && request.origin_rank == 1 && request.batch > 1 &&
       request.requested_n == n && (musa_1d_c2c_root || musa_1d_real_root) &&
       ((musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') ||
-       musa_default_131072_split)) {
-    // Measured MTT S5000 results favor this balanced child order over the
-    // automatic 128x1024 split for batched 131072-point transforms.
+       musa_default_131072_split || musa_default_8192_split)) {
+    // MTT S5000 screens favor 128x64 over the automatic 64x128 split at
+    // N=8192, and 512x256 over 128x1024 at N=131072.
     const std::string spec = musa_fourstep_split != nullptr && *musa_fourstep_split != '\0'
                                  ? std::string(musa_fourstep_split)
-                                 : "131072:512";
+                                 : (musa_default_131072_split ? "131072:512" : "8192:128");
     const auto separator = spec.find(':');
     if (separator == std::string::npos) {
       throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
