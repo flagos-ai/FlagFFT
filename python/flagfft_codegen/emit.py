@@ -836,10 +836,6 @@ def _emit_tiled_transpose_jit_kernel(
         if not _npu_backend_active() or dtype != "complex64":
             raise ValueError("NPU vector transpose requires NPU complex64")
         from .kernels_npu_transpose2d import build_npu_table_transpose2d_source
-        # Larger tiles amortize DMA setup on sufficiently large matrices.
-        # Emit matching grid metadata; other backends retain their caller grid.
-        if tile_size == 32 and min(n0, n1) >= 32 and n0 * n1 >= 1024 * 1024:
-            tile_size = 64
         kernel_name, kernel_source, arg_names, npu_programs = build_npu_table_transpose2d_source(
             n0, n1, tile_size
         )

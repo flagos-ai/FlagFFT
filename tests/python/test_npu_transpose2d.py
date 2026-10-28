@@ -178,7 +178,7 @@ def test_npu_transpose_cli_selects_only_explicit_replacement(tmp_path, vector):
     result = subprocess.run(command, env=environment, text=True, capture_output=True, check=True)
     meta = json.loads(result.stdout)
     assert meta["kernel_name"].startswith("npu_table_transpose2d_") == vector
-    assert meta["tile_size"] == (64 if vector else 32)
+    assert meta["tile_size"] == 32
     assert ("grid_x_override" in meta) == vector
 
 
