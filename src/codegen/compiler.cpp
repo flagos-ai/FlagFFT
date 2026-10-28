@@ -5859,7 +5859,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // The existing RC executor already supports transposed child layouts.
   if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
       request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
-      n0>=16 && n0<=2048 && n1>=16 && n1<=2048 &&
+      n0>=16 && n0<=512 && n1>=16 && n1<=512 &&
       (n0&(n0-1))==0 && (n1&(n1-1))==0 &&
       flag_or_default("FLAGFFT_NPU_2D_FUSED_FFT_STORES",false)) {
     int64_t preferred=8;

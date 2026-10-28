@@ -80,41 +80,10 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     value=tl.gather(packed,tl.minimum(index,{2*count-1}),0)
     tl.store(out_ptr+base*{2*h}+lane,value,(lane<{2*g*h})&(base*{2*h}+lane<nbatch*{2*h}))
 '''
-    elif output_stride == 1 and count>2048:
-        # Large joins would acquire padded intermediate rows on CANN.
-        # Bound every interleave and store to a contiguous frequency tile.
-        source += f'    zr=tl.reshape(r,({count},));zi=tl.reshape(i,({count},))\n'
-        for transform in range(g):
-            for start in range(0,n,512):
-                size=min(512,n-start)
-                source += f'''    q=tl.arange(0,{size})
-    ix=(q+{start})*{g}+{transform}
-    pr=tl.gather(zr,ix,0);pi=tl.gather(zi,ix,0)
-    packed=tl.reshape(tl.join(pr,pi),({2*size},))
-    word=tl.arange(0,{2*size})
-    tl.store(out_ptr+(base+{transform})*{2*n}+{2*start}+word,packed,base+{transform}<nbatch)
-'''
     elif output_stride == 1:
         source += f'''    word=tl.arange(0,{2*n})
     packed=tl.reshape(tl.join(tl.reshape(tl.trans(r),({count},)),tl.reshape(tl.trans(i),({count},))),({g},{2*n}))
     tl.store(out_ptr+transforms[:,None]*{2*n}+word[None,:],packed,transforms[:,None]<nbatch)
-'''
-    elif output_stride > 1 and output_stride % g == 0 and (g<4 or count>2048):
-        # Keep aligned physical rows while bounding each private interleave.
-        # Mask the padding columns so adjacent transform groups remain intact.
-        store_g=max(4,g);rows=min(n,512//store_g);tile=rows*store_g
-        source += f'''    zr=tl.reshape(r,({count},));zi=tl.reshape(i,({count},))
-    matrix_base=(base//{output_stride})*{n*output_stride}+base%{output_stride}
-    word=tl.arange(0,{2*store_g})[None,:]
-'''
-        for start in range(0,n,rows):
-            source += f'''    q=tl.arange(0,{tile})
-    ix=({start}+q//{store_g})*{g}+q%{store_g}
-    ix=tl.minimum(ix,{count-1})
-    pr=tl.gather(zr,ix,0);pi=tl.gather(zi,ix,0)
-    packed=tl.reshape(tl.join(pr,pi),({rows},{2*store_g}))
-    row={start}+tl.arange(0,{rows})[:,None]
-    tl.store(out_ptr+matrix_base*2+row*{2*output_stride}+word,packed,(word<{2*g})&(base+word//2<nbatch))
 '''
     elif output_stride > 1 and output_stride % g == 0:
         source += f'''    packed=tl.reshape(tl.join(tl.reshape(r,({count},)),tl.reshape(i,({count},))),({n},{2*g}))
