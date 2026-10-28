@@ -2777,7 +2777,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     const int64_t n1 = four_step->n1, n2 = four_step->n2;
-    if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
     if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
         request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
         n1>=16 && n1<=256 && n2>=16 && n2<=256 &&
@@ -2813,6 +2812,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
           std::move(kernels),std::move(tables),std::move(scratch),wide);
     }
+    if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
     const bool structured_pair = request.device_type == "npu" &&
         request.device_arch.rfind("Ascend910B", 0) == 0 &&
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
