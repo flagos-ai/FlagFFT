@@ -31,5 +31,5 @@ def test_npu_slice_modules_use_the_installed_language_extension(monkeypatch):
     monkeypatch.setattr(metadata, '_npu_backend_active', lambda:True)
     source=metadata._module_source('x = tle.dsa.insert_slice(v,a,[0],[64],[1])')
     assert 'import triton.language.extra.cann.extension as al' in source
-    assert 'al.insert_slice(v,a,[0],[64],[1])' in source
+    assert 'al.insert_slice(v,a,[0],[64],[1])' in ''.join(source.split())
     assert 'triton.experimental.tle' not in source
