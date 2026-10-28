@@ -34,6 +34,6 @@ def emit_matrix_fourstep(a,b,phase,direction,out_dir):
     args=['X','Y'] if phase=='transpose' else ['X','P','T'] if phase.startswith('pack') else ['P','W','Y']
     meta=dict(module_path=str(path),kernel_name=phase,arg_names=args,
         signature=','.join(['*fp32:16']*len(args)),num_warps=4,num_stages=1,
-        batch_per_block=1,kernel_type='four_step_row',dtype='complex64',direction=direction,length=a*b)
+        batch_per_block=1,inner_pack=1,tle_fused_twiddle=True,kernel_type='four_step_row',dtype='complex64',direction=direction,length=a*b)
     write_text_atomic(path.with_suffix('.json'),json.dumps(meta,sort_keys=True))
     return meta

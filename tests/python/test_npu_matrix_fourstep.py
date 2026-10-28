@@ -53,3 +53,11 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,direction):
     assert torch.linalg.vector_norm(actual-ref)/torch.linalg.vector_norm(ref)<2e-6
     assert torch.equal(x,saved)
     assert (guarded[:64]==31415.25).all() and (guarded[-64:]==31415.25).all()
+
+
+def test_emitted_fourstep_launcher_metadata(tmp_path):
+    from flagfft_codegen.kernels_npu_matrix_fourstep import emit_matrix_fourstep
+    for phase in ('pack0','cube0','pack1','cube1','transpose'):
+        meta=emit_matrix_fourstep(209,221,phase,'inverse',tmp_path)
+        assert meta['inner_pack']==1 and meta['tle_fused_twiddle'] is True
+        assert meta['signature'].count('*fp32:16')==(2 if phase=='transpose' else 3)
