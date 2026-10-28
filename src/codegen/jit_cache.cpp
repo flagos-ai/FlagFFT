@@ -664,6 +664,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --length " << key.length
                 << " --direction " << shell_quote(key.direction);
     if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
+    if (key.perm_form == "npu_matrix_pack") jit_command << " --npu-matrix-phase pack";
+    if (key.perm_form == "npu_matrix_cube") jit_command << " --npu-matrix-phase cube";
     if (key.perm_form == "structured_packed_real") jit_command << " --npu-packed-real";
     if (key.perm_form == "structured_tensor") {
       if (key.factors.size() != 2 && key.factors.size() != 3)

@@ -3495,6 +3495,52 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawMatrixFFTNode::CompiledRawMatrixFFTNode(int64_t length, int64_t mode, int64_t max_batch,
+    std::shared_ptr<JitKernel> pack, std::shared_ptr<JitKernel> cube,
+    DeviceAllocation weights, DeviceAllocation scratch)
+    : length(length), mode(mode), max_batch(max_batch), pack(std::move(pack)), cube(std::move(cube)),
+      weights(std::move(weights)), scratch(std::move(scratch)) {}
+
+std::string CompiledRawMatrixFFTNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawMatrixFFT(n=" << length << ", mode=" << mode
+      << ", pack=" << pack->execution_description() << ", cube=" << cube->execution_description() << ")";
+  return oss.str();
+}
+
+flagfftResult CompiledRawMatrixFFTNode::execute(adaptor::DevicePtr input,
+    adaptor::DevicePtr output, const RawExecutionContext &context) const {
+  if (context.batch <= 0 || context.batch > max_batch) return FLAGFFT_INVALID_SIZE;
+  const int64_t half=length/2+1;
+  const int64_t input_width=mode==1 ? length : mode==2 ? half : length;
+  const int64_t output_width=mode==1 ? half : length;
+  const bool in_place=input==output;
+  int64_t input_pitch=context.input_distance>0 ? context.input_distance : input_width;
+  int64_t output_pitch=context.output_distance>0 ? context.output_distance : output_width;
+  if (in_place && mode==1) input_pitch=std::max(input_pitch,2*half);
+  if (in_place && mode==2) output_pitch=std::max(output_pitch,2*half);
+  const int64_t input_distance=input_pitch*(mode==1 ? 1 : 2);
+  const int64_t output_distance=output_pitch*(mode==2 ? 1 : 2);
+  int64_t input_words=mode==1 ? length : mode==2 ? 2*half : 2*length;
+  int64_t reduction=1,columns=1;
+  while(reduction<input_words) reduction*=2;
+  while(columns<(mode==2 ? length : mode==1 ? 2*half : 2*length)) columns*=2;
+  const int64_t tiles=ceil_div(columns,int64_t{64});
+  const int64_t limit=std::min<int64_t>(65535*pack->batch_per_block,
+      (65535/tiles)*cube->batch_per_block);
+  for (int64_t start=0;start<context.batch;start+=limit) {
+    const int64_t count=std::min(limit,context.batch-start);
+    auto packed=scratch.get()+start*reduction*sizeof(float);
+    pack->launch(context.stream,{JitKernelArg::device(input+start*input_distance*sizeof(float)),
+        JitKernelArg::device(packed),JitKernelArg::i64(input_distance),JitKernelArg::i32(static_cast<int32_t>(count))},
+        ceil_div(count,pack->batch_per_block),1,1);
+    cube->launch(context.stream,{JitKernelArg::device(packed),JitKernelArg::device(weights.get()),
+        JitKernelArg::device(output+start*output_distance*sizeof(float)),JitKernelArg::i64(output_distance),
+        JitKernelArg::i32(static_cast<int32_t>(count))},ceil_div(count,cube->batch_per_block),tiles,1);
+  }
+  return FLAGFFT_SUCCESS;
+}
+
 CompiledRawTensorPlaneNode::CompiledRawTensorPlaneNode(int64_t outer_length,
     int64_t plane_points, int64_t compact_points, bool inverse_real,
     std::shared_ptr<CompiledRawNode> plane, std::shared_ptr<CompiledRawNode> outer,

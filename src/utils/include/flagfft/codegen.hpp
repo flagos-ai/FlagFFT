@@ -1255,6 +1255,18 @@ struct CompiledRaw3DNode final : CompiledRawNode {
 
 // Transform a contiguous inner plane, then the outer axis in natural layout.
 // Real inverse reverses the passes so the plane sees compact Hermitian data.
+struct CompiledRawMatrixFFTNode final : CompiledRawNode {
+  CompiledRawMatrixFFTNode(int64_t length, int64_t mode, int64_t max_batch,
+      std::shared_ptr<JitKernel> pack, std::shared_ptr<JitKernel> cube,
+      DeviceAllocation weights, DeviceAllocation scratch);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+      const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  int64_t length, mode, max_batch;
+  std::shared_ptr<JitKernel> pack, cube;
+  DeviceAllocation weights, scratch;
+};
+
 struct CompiledRawTensorPlaneNode final : CompiledRawNode {
   CompiledRawTensorPlaneNode(int64_t outer_length, int64_t plane_points,
       int64_t compact_points, bool inverse_real,

@@ -145,6 +145,7 @@ def main() -> None:
     parser.add_argument("--npu-power2", action="store_true")
     parser.add_argument("--npu-recursive-power2", action="store_true")
     parser.add_argument("--npu-tensor-shape", type=_csv_ints, default=())
+    parser.add_argument("--npu-matrix-phase", choices=('pack','cube'))
     parser.add_argument("--npu-packed-real", action="store_true")
     parser.add_argument("--npu-fft-output-stride", type=int, default=1)
     parser.add_argument("--npu-vector-transpose", action="store_true",
@@ -469,6 +470,11 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
+    elif args.npu_matrix_phase:
+        if spec.family != NPU_GROUPED_FFT or not args.target.startswith('npu:') or args.dtype!='complex64':
+            parser.error('Matrix FFT requires an NPU FP32 grouped FFT key')
+        from .kernels_npu_matrix import emit_matrix
+        metadata=emit_matrix(args.length,args.npu_fft_mode,args.direction,args.npu_matrix_phase,args.out_dir)
     elif args.npu_tensor_shape:
         if spec.family != NPU_GROUPED_FFT or not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Tensor FFT requires an NPU FP32 grouped FFT key')

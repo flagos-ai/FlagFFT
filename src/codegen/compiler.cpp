@@ -1187,6 +1187,46 @@ namespace {
         group_size, std::move(indices), std::move(roots), mode, std::move(kernel));
   }
 
+  std::shared_ptr<CompiledRawNode> make_npu_matrix_child(
+      const FFTRequest &request, int64_t length, int64_t batch, int64_t mode) {
+    if (request.device_type != "npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
+        request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
+        request.requires_contiguous_copy || request.input_strides.empty() || request.input_strides.back()!=1 ||
+        length<=32 || length>256 || (length&(length-1))==0 || batch<16 ||
+        !flag_or_default("FLAGFFT_NPU_MATRIX_FFT",false)) return nullptr;
+    int64_t pad=1;while(pad<length) pad*=2;
+    const int64_t half=length/2+1;
+    const int64_t input_words=mode==0 ? 2*length : mode==1 ? length : 2*half;
+    const int64_t output_words=mode==0 ? 2*length : mode==1 ? 2*half : length;
+    int64_t reduction=1,columns=1;
+    while(reduction<input_words) reduction*=2;
+    while(columns<output_words) columns*=2;
+    std::vector<float> values(reduction*columns,0.0f);
+    if (mode!=2) {
+      const int64_t frequencies=mode==0 ? length : half;
+      const double sign=request.direction=="inverse" ? 1.0 : -1.0;
+      for (int64_t j=0;j<length;++j) for(int64_t k=0;k<frequencies;++k) {
+        const double angle=sign*2*kPi*j*k/length;
+        const float c=static_cast<float>(std::cos(angle)),s=static_cast<float>(std::sin(angle));
+        values[j*columns+2*k]=c;values[j*columns+2*k+1]=s;
+        if (mode==0) {values[(pad+j)*columns+2*k]=-s;values[(pad+j)*columns+2*k+1]=c;}
+      }
+    } else {
+      for (int64_t j=0;j<half;++j) for(int64_t k=0;k<length;++k) {
+        const bool endpoint=j==0 || (length%2==0 && j==length/2);
+        const double angle=2*kPi*j*k/length, amplitude=endpoint ? 1.0 : 2.0;
+        values[(2*j)*columns+k]=static_cast<float>(amplitude*std::cos(angle));
+        values[(2*j+1)*columns+k]=endpoint ? 0.0f : static_cast<float>(-amplitude*std::sin(angle));
+      }
+    }
+    auto key=KernelKey::npu_grouped_fft64(triton_target_for_request(request),
+        request.direction,2,1,mode,length);
+    key.perm_form="npu_matrix_pack";auto pack=TritonCompiler{}.compile_kernel(key);
+    key.perm_form="npu_matrix_cube";auto cube=TritonCompiler{}.compile_kernel(key);
+    return std::make_shared<CompiledRawMatrixFFTNode>(length,mode,batch,std::move(pack),std::move(cube),
+        DeviceAllocation::from_floats(values),adaptor::Memory(static_cast<std::size_t>(batch*reduction*sizeof(float))));
+  }
+
   std::shared_ptr<CompiledRawNode> make_npu_tensor_child(
       const FFTRequest &request, const std::vector<int64_t> &shape,
       NpuAivFFTSmallMode mode = NpuAivFFTSmallMode::Complex) {
@@ -2087,6 +2127,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                                   int64_t batch,
                                                                   bool allow_npu_aiv256_transposed_store) {
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (std::dynamic_pointer_cast<LeafPlanNode>(node))
+    if (auto matrix=make_npu_matrix_child(request,node->length,batch,0)) return matrix;
+#endif
 #if defined(FLAGFFT_BACKEND_NPU)
   const int64_t shared_length = node->length;
   if (request.device_type == "npu" && request.input_dtype == "complex64" &&
@@ -3059,6 +3103,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                                                       int64_t batch,
                                                                       bool allow_packed) {
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (std::dynamic_pointer_cast<LeafPlanNode>(node))
+    if (auto matrix=make_npu_matrix_child(request,node->length,batch,1)) return matrix;
+#endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -3219,6 +3267,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                                                       int64_t batch,
                                                                       bool allow_packed) {
   configure_single_transform_policies(request);
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (std::dynamic_pointer_cast<LeafPlanNode>(node))
+    if (auto matrix=make_npu_matrix_child(request,node->length,batch,2)) return matrix;
+#endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
 #if defined(FLAGFFT_BACKEND_NPU)
