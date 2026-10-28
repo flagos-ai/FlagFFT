@@ -99,35 +99,40 @@ def npu_grouped_fft64_kernel(in_ptr, out_ptr, idx_ptr, twiddle_ptr, nbatch):
 
 def emit_npu_grouped_fft64(*, group: int, stride: int, mode: int,
                          direction: str, out_dir: Path, radix4_pair: bool = False,
-                         length: int = 64, structured: bool = False, output_stride: int = 1) -> dict:
+                         length: int = 64, structured: bool = False, output_stride: int = 1, packed_real: bool = False) -> dict:
     if direction not in ("forward", "inverse"):
         raise ValueError("FFT direction must be forward or inverse")
     if (mode == 1 and direction != "forward") or (mode == 2 and direction != "inverse"):
         raise ValueError("Real FFT mode disagrees with its direction")
-    if structured:
+    if packed_real:
+        if stride != 1 or output_stride != 1:
+            raise ValueError("Packed real FFT requires contiguous rows")
+        from .kernels_npu_packed_real import build_npu_packed_real_source
+        kernel_name, source = build_npu_packed_real_source(length, group, mode)
+    elif structured:
         from .kernels_npu_power2 import build_npu_power2_source
         kernel_name, source = build_npu_power2_source(length, group, stride, output_stride, mode, direction)
     else:
         kernel_name = 'npu_grouped_fft64_kernel'
         source = build_npu_grouped_fft64_source(group=group, stride=stride, mode=mode,
                                                radix4_pair=radix4_pair, length=length)
-    suffix = f"_structured_o{output_stride}" if structured else "_r4" if radix4_pair else ""
+    suffix = "_packed_real" if packed_real else f"_structured_o{output_stride}" if structured else "_r4" if radix4_pair else ""
     name = f"flagfft_npu_fft{length}_g{group}_s{stride}_m{mode}_{direction}{suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))
     arg_names = ["in_ptr", "out_ptr", "idx_ptr", "twiddle_ptr", "nbatch"]
-    if structured:
+    if structured or packed_real:
         arg_names += ["output_row_stride", "transform_offset"]
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
-        "signature": (_signature(arg_names[:5], "complex64")+",i64,i64" if structured else _signature(arg_names, "complex64")),
+        "signature": (_signature(arg_names[:5], "complex64")+",i64,i64" if structured or packed_real else _signature(arg_names, "complex64")),
         "num_warps": 4, "num_stages": 1, "batch_per_block": group,
         "arg_names": arg_names, "kernel_type": "npu_grouped_fft64",
         "dtype": "complex64", "direction": direction, "length": length,
         "group_size": group, "stride": stride, "mode": mode,
-        "radix4_pair": radix4_pair,
+        "radix4_pair": radix4_pair, "packed_real": packed_real,
     }
     write_text_atomic(module_path.with_suffix(".json"), json.dumps(metadata, sort_keys=True))
     return metadata

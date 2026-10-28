@@ -661,7 +661,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << " --length " << key.length
                 << " --direction " << shell_quote(key.direction);
     if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
-    if (key.perm_form == "structured_power2") {
+    if (key.perm_form == "structured_packed_real") jit_command << " --npu-packed-real";
+    if (key.perm_form == "structured_power2" || key.perm_form == "structured_packed_real") {
       if (key.factors.size() != 1) throw std::runtime_error("Grouped FFT key requires an output stride");
       jit_command << " --npu-power2 --npu-fft-output-stride " << key.factors.front();
     }

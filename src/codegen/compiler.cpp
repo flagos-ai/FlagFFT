@@ -48,8 +48,8 @@ namespace {
            flag_or_default("FLAGFFT_NPU_STRUCTURED_FFT", true);
   }
 
-  DeviceAllocation npu_structured_roots(int64_t length, int64_t columns) {
-    const int64_t quarter = length * columns / 4;
+  std::vector<float> npu_structured_root_values(int64_t length, int64_t columns, int64_t groups = 1) {
+    const int64_t quarter = length * columns * groups / 4;
     std::vector<float> values;
     for (int64_t span = length; span >= 4; span /= 4) {
       for (int branch = 1; branch <= 3; ++branch) {
@@ -62,14 +62,41 @@ namespace {
         }
       }
     }
+    return values;
+  }
+
+  DeviceAllocation npu_structured_roots(int64_t length, int64_t columns) {
+    return DeviceAllocation::from_floats(npu_structured_root_values(length, columns));
+  }
+
+  DeviceAllocation npu_packed_real_roots(int64_t n, int64_t group) {
+    const int64_t m = n / 2;
+    int64_t a = 1;
+    while (a * a < m) a *= 2;
+    const int64_t b = m / a;
+    auto values = npu_structured_root_values(a, b, group);
+    auto second = npu_structured_root_values(b, a, group);
+    values.insert(values.end(), second.begin(), second.end());
+    for (int part = 0; part != 2; ++part) {
+      for (int64_t k = 0; k < m * group; ++k) {
+        const double angle = -2.0 * kPi * (k / (group * b)) * (k % b) / m;
+        values.push_back(static_cast<float>(part == 0 ? std::cos(angle) : std::sin(angle)));
+      }
+    }
+    for (int part = 0; part != 2; ++part) {
+      for (int64_t k = 0; k <= m; ++k) {
+        const double angle = -2.0 * kPi * k / n;
+        values.push_back(static_cast<float>(part == 0 ? std::cos(angle) : std::sin(angle)));
+      }
+    }
     return DeviceAllocation::from_floats(values);
   }
 
   std::shared_ptr<JitKernel> npu_power2_kernel(const FFTRequest &request, int64_t n,
-      int64_t group, int64_t stride, int64_t output_stride, int64_t mode) {
+      int64_t group, int64_t stride, int64_t output_stride, int64_t mode, bool packed_real = false) {
     auto key = KernelKey::npu_grouped_fft64(triton_target_for_request(request),
         request.direction, group, stride, mode, n);
-    key.perm_form = "structured_power2";
+    key.perm_form = packed_real ? "structured_packed_real" : "structured_power2";
     key.factors = {output_stride};  // Private grouped-FFT output layout is part of cache identity.
     return TritonCompiler{}.compile_kernel(key);
   }
@@ -1079,10 +1106,16 @@ namespace {
     // The final radix-4 slice has 4*group floats per row. CANN requires
     // that row to span at least 32 bytes, including a masked single batch.
     const int64_t alignment_group = log_length % 2 == 0 ? 2 : 1;
-    group_size = std::max({group_size, int64_t{64} / n, alignment_group});
+    const bool packed_real = mode != NpuAivFFTSmallMode::Complex &&
+        n >= 128 && n <= 2048 && stride == 1 && output_stride == 1 &&
+        flag_or_default("FLAGFFT_NPU_PACKED_REAL_TWO_AXIS", false);
+    group_size = packed_real ? (group_size == 1 ? 1 : 4)
+                            : std::max({group_size, int64_t{64} / n, alignment_group});
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
-    auto roots = std::make_shared<DeviceAllocation>(npu_structured_roots(n, group_size));
-    auto kernel = npu_power2_kernel(request, n, group_size, stride, output_stride, static_cast<int64_t>(mode));
+    auto roots = std::make_shared<DeviceAllocation>(packed_real
+        ? npu_packed_real_roots(n, group_size) : npu_structured_roots(n, group_size));
+    auto kernel = npu_power2_kernel(request, n, group_size, stride, output_stride,
+        static_cast<int64_t>(mode), packed_real);
     return std::make_shared<CompiledRawNpuAivFFTSmallNode>(n, stride, output_stride,
         group_size, std::move(indices), std::move(roots), mode, std::move(kernel));
   }
@@ -2891,7 +2924,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       (n & (n - 1)) == 0 && !request.input_strides.empty() &&
       request.input_strides.back() == 1 &&
       flag_or_default("FLAGFFT_NPU_STRUCTURED_REAL", false)) {
-    const int64_t group = batch == 1 ? 1 : std::min<int64_t>(8, 2048 / n);
+    const int64_t group = batch == 1 ? 1 :
+        (n >= 128 && flag_or_default("FLAGFFT_NPU_PACKED_REAL_TWO_AXIS", false)
+             ? 4 : std::min<int64_t>(8, 2048 / n));
     return make_npu_aiv_fft_small_child(request, n, 1, group,
         NpuAivFFTSmallMode::RealForward);
   }
@@ -3049,7 +3084,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       (n & (n - 1)) == 0 && !request.input_strides.empty() &&
       request.input_strides.back() == 1 &&
       flag_or_default("FLAGFFT_NPU_STRUCTURED_REAL", false)) {
-    const int64_t group = batch == 1 ? 1 : std::min<int64_t>(8, 2048 / n);
+    const int64_t group = batch == 1 ? 1 :
+        (n >= 128 && flag_or_default("FLAGFFT_NPU_PACKED_REAL_TWO_AXIS", false)
+             ? 4 : std::min<int64_t>(8, 2048 / n));
     return make_npu_aiv_fft_small_child(request, n, 1, group,
         NpuAivFFTSmallMode::RealInverse);
   }

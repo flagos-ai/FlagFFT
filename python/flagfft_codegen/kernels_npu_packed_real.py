@@ -37,7 +37,10 @@ def packed_real_output(r,i,W,j,M:tl.constexpr,H:tl.constexpr):
     reverse=row*M+tl.where((k==0)|(k==M),0,M-k)
     ar=tl.gather(r,forward,0);ai=tl.gather(i,forward,0)
     br=tl.gather(r,reverse,0);bi=tl.gather(i,reverse,0)
-    wr=tl.load(W+k);wi=tl.load(W+H+k)
+    phase=tl.arange(0,M*2)
+    wr_table=tl.load(W+phase,phase<H,0)
+    wi_table=tl.load(W+H+phase,phase<H,0)
+    wr=tl.gather(wr_table,k,0);wi=tl.gather(wi_table,k,0)
     dr=ar-br;di=ai+bi
     return 0.5*(ar+br+wr*di+wi*dr),0.5*(ai-bi-wr*dr+wi*di)
 
@@ -62,21 +65,22 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     reverse=(element//{m})*{2*h}+2*({m}-k)
     ar=tl.gather(data,forward,0);ai=tl.gather(data,forward+1,0)
     br=tl.gather(data,reverse,0);bi=-tl.gather(data,reverse+1,0)
-    wr=tl.load(roots_ptr+{boundary}+k);wi=tl.load(roots_ptr+{boundary+h}+k)
+    phase=tl.arange(0,{m})
+    wr_table=tl.load(roots_ptr+{boundary}+phase)
+    wi_table=tl.load(roots_ptr+{boundary+h}+phase)
+    wr=tl.gather(wr_table,k,0);wi=tl.gather(wi_table,k,0)
     dr=ar-br;di=ai-bi
     r=ar+br-di*wr+dr*wi
     i=-(ai+bi+dr*wr+di*wi)
 '''
-    source+=f'''    r=tl.reshape(tl.permute(tl.reshape(r,({g},{a},{b})),1,2,0),({count},))
-    i=tl.reshape(tl.permute(tl.reshape(i,({g},{a},{b})),1,2,0),({count},))
-    r,i=fft_axis_sliced(r,i,roots_ptr,{count},{a},{b*g},{a.bit_length()-1})
+    source+=f'''    r,i=fft_axis_sliced(r,i,roots_ptr,{count},{a},{b},{a.bit_length()-1})
     wr=tl.load(roots_ptr+{cross}+element);wi=tl.load(roots_ptr+{cross+count}+element)
     rr=r*wr-i*wi;ii=r*wi+i*wr
-    r=tl.reshape(tl.permute(tl.reshape(rr,({a},{b},{g})),1,0,2),({count},))
-    i=tl.reshape(tl.permute(tl.reshape(ii,({a},{b},{g})),1,0,2),({count},))
-    r,i=fft_axis_sliced(r,i,roots_ptr+{wa},{count},{b},{a*g},{b.bit_length()-1})
-    r=tl.reshape(tl.permute(tl.reshape(r,({b},{a},{g})),2,0,1),({count},))
-    i=tl.reshape(tl.permute(tl.reshape(i,({b},{a},{g})),2,0,1),({count},))
+    r=tl.reshape(tl.permute(tl.reshape(rr,({a},{g},{b})),1,2,0),({count},))
+    i=tl.reshape(tl.permute(tl.reshape(ii,({a},{g},{b})),1,2,0),({count},))
+    r,i=fft_axis_sliced(r,i,roots_ptr+{wa},{count},{b},{a},{b.bit_length()-1})
+    r=tl.reshape(tl.permute(tl.reshape(r,({b},{g},{a})),1,0,2),({count},))
+    i=tl.reshape(tl.permute(tl.reshape(i,({b},{g},{a})),1,0,2),({count},))
 '''
     if mode==2:
         source+=f'''    data=tl.reshape(tl.join(r,-i),({2*count},))
