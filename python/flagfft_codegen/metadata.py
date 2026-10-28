@@ -286,7 +286,7 @@ def _metadata(
         # the measured two-warp launch retains the one-kernel benefit.
         num_warps = 2
     if (profile.backend == "musa" and musa_1d_batch_default_enabled()
-            and plan.length == 1024):
+            and plan.length in {512, 1024}):
         warp_override = os.getenv("FLAGFFT_MUSA_1D_BATCH_WARPS", "auto")
         if warp_override not in {"auto", "1", "2", "4", "8"}:
             raise ValueError("FLAGFFT_MUSA_1D_BATCH_WARPS must be auto, 1, 2, 4 or 8")

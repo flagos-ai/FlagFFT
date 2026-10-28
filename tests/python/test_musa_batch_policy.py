@@ -143,3 +143,37 @@ def test_musa_1d_batch_pack_does_not_change_unscoped_leaves(monkeypatch):
         assert contiguous_batch_pack_for(plan) == 1
     finally:
         reset_profile(profile_token)
+
+
+def test_musa_1d_batch_warp_override_covers_512_point_fourstep_leaves(monkeypatch):
+    monkeypatch.setenv("FLAGFFT_MUSA_1D_BATCH_WARPS", "2")
+    profile_token = set_profile(
+        BackendProfile.from_device(
+            {
+                "backend": "musa",
+                "device_arch": "31",
+                "warp_size": 32,
+                "max_threads_per_block": 1024,
+                "max_dynamic_shared_memory": 196608,
+            },
+            policy="legacy",
+        )
+    )
+    policy_token = set_musa_1d_batch_default(True)
+    plan = LeafPlan(512, (32, 16), 1, 32, 1, (), 512, dtype="complex64")
+    try:
+        for kernel_type in ("four_step_hermitian_row", "four_step_c2r_col"):
+            metadata = _metadata(
+                module_path=Path("unused.py"),
+                kernel_name=kernel_type,
+                arg_names=[],
+                plan=plan,
+                kernel_type=kernel_type,
+                n1=512,
+                n2=512,
+                dtype="complex64",
+            )
+            assert metadata["num_warps"] == 2
+    finally:
+        reset_musa_1d_batch_default(policy_token)
+        reset_profile(profile_token)
