@@ -377,6 +377,11 @@ def _emit_input_base(
     lanes: int,
     group_var: str,
 ) -> list[str]:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
+        # The mixed-radix digit reconstruction is the identity on active
+        # codelets. Preserve that affine address; the GM load already masks
+        # padded lanes and CANN can then issue a contiguous transfer.
+        return [f"{indent}input_base = lane + {lanes} * {group_var}"]
     lines = [
         f"{indent}codelet_in = tl.where(lane_mask, lane + {lanes} * {group_var}, 0)",
         f"{indent}rem_in = codelet_in",
@@ -409,6 +414,8 @@ def _emit_output_base(
     group_var: str,
 ) -> list[str]:
     last_stage = len(factors) - 1
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
+        return [f"{indent}output_base = lane + {lanes} * {group_var}"]
     lines = [
         f"{indent}codelet_out = tl.where(lane_mask, lane + {lanes} * {group_var}, 0)",
         f"{indent}rem_out = codelet_out",
@@ -1863,11 +1870,14 @@ def _emit_stage_block(
                 if j:
                     lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
             else:
+                tw_index = f"logical_phys{j}"
+                if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
+                    tw_index = f"(lane + {current_lanes} * (group_{stage} * {radix} + {j}))"
                 lines.append(
-                    f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+                    f"{indent}twr = tl.load(tw{stage}_r_ptr + {tw_index}, mask=lane_mask, other={zero})"
                 )
                 lines.append(
-                    f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
+                    f"{indent}twi = tl.load(tw{stage}_i_ptr + {tw_index}, mask=lane_mask, other={zero})"
                 )
                 lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
