@@ -28,6 +28,8 @@ def rader_codelet(prime):
                 _emit_local_mixed_codelet_call('    ',m,direction))
     lines += fft('forward')
     for j,w in enumerate(weights):
+        # Conjugate symmetry makes alternate components exactly zero.
+        w=complex(0. if abs(w.real)<1e-12 else w.real, 0. if abs(w.imag)<1e-12 else w.imag)
         lines += [f'    r{j},i{j}=r{j}*{w.real!r}-i{j}*{w.imag!r},r{j}*{w.imag!r}+i{j}*{w.real!r}']
     lines += fft('inverse')
     for j,k in enumerate(outputs):lines += [f'    out_r{k}=zero_r+r{j}',f'    out_i{k}=zero_i+i{j}']
