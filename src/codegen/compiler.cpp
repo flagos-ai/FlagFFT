@@ -2721,7 +2721,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         tables.push_back(DeviceAllocation::from_floats(values));
         scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*width*cols*sizeof(float))));
       }
-      tables.push_back(build_raw_four_step_twiddle(request,n2,n1));
+      tables.push_back(npu_structured_cross(n1*n2,n2,request.direction=="inverse"));
       for(int i=0;i<2;++i)
         scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*n1*n2*2*sizeof(float))));
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
