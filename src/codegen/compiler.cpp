@@ -1467,10 +1467,7 @@ namespace {
 #endif
 
   void mark_npu_portable_leaf(KernelKey &key, const FFTRequest &request) {
-    const bool allow_3d_leaf = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_LEAF");
-    key.npu_portable_leaf = request.device_type == "npu" &&
-                            (request.origin_rank == 2 || allow_3d_leaf ||
-                             std::getenv("FLAGFFT_NPU_PORTABLE_LEAF_MAX") != nullptr);
+    key.npu_portable_leaf = npu_portable_leaf_enabled(request);
   }
 
   std::string hcu_3d_final_axis_perm_form(const FFTRequest &request) {
@@ -3394,6 +3391,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const Le
                                            leaf.num_warps,
                                            leaf.generic_radices,
                                            leaf.smem_size);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -3413,6 +3411,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_strided_kernel(
                                                    leaf.num_warps,
                                                    leaf.generic_radices,
                                                    leaf.smem_size);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -3432,6 +3431,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(con
                                                 leaf.num_warps,
                                                 leaf.generic_radices,
                                                 leaf.smem_size);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -3451,6 +3451,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_hermitian_row_kerne
                                                      leaf.num_warps,
                                                      leaf.generic_radices,
                                                      leaf.smem_size);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -3470,6 +3471,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const Le
                                            leaf.num_warps,
                                            leaf.generic_radices,
                                            leaf.smem_size);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -3489,6 +3491,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_strided_kernel(
                                                    leaf.num_warps,
                                                    leaf.generic_radices,
                                                    leaf.smem_size);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -3508,6 +3511,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(cons
                                                leaf.num_warps,
                                                leaf.generic_radices,
                                                leaf.smem_size);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 
@@ -3527,6 +3531,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_c2r_col_kernel(cons
                                                leaf.num_warps,
                                                leaf.generic_radices,
                                                leaf.smem_size);
+  mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
 

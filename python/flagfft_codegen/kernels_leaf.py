@@ -31,6 +31,7 @@ from .kernels_common import (
     _is_double_dtype,
     _hcu_backend_active,
     _maca_backend_active,
+    _npu_backend_active,
     _mthreads_backend_active,
     _ix_backend_active,
     _portable_leaf_backend_active,
@@ -90,6 +91,7 @@ def _portable_complex_vector_io() -> bool:
     """
     return (
         (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
+        or (_npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1")
     )
 
 

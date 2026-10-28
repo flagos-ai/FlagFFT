@@ -229,7 +229,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "npu" &&
       (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
        key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafR2C ||
-       key.kind == KernelKind::LeafC2R)) {
+       key.kind == KernelKind::LeafC2R || key.kind == KernelKind::FourStepRow ||
+       key.kind == KernelKind::FourStepCol || key.kind == KernelKind::FourStepRealRow ||
+       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepR2CCol ||
+       key.kind == KernelKind::FourStepC2RCol || key.kind == KernelKind::FourStepRowStrided ||
+       key.kind == KernelKind::FourStepColStrided)) {
+    const char *vector_io = std::getenv("FLAGFFT_NPU_PORTABLE_VECTOR_IO");
+    cache_key += ";npu-vector-io=" + std::string(vector_io != nullptr ? vector_io : "0");
     const char *portable_leaf = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
     const bool use_portable_leaf = key.npu_portable_leaf ||
                                    (portable_leaf != nullptr && std::string(portable_leaf) == "1");

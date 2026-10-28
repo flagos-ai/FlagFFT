@@ -364,7 +364,7 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
       (portable_setting ? std::string(portable_setting) == "1"
                         : (ix_ct_single_policy_enabled(request) || ix_ct_batch_policy_enabled(request)));
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-    const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix) ? leaf.length / leaf.factors[stage]
+    const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix || npu_portable_leaf_enabled(request)) ? leaf.length / leaf.factors[stage]
                           : use_cooperative_stage_lanes(leaf, request)
                               ? cooperative_stage_lanes(leaf.length, leaf.factors[stage])
                               : leaf.lanes;
