@@ -271,6 +271,43 @@ TEST(Plan1D, HcuSingleC2rFourStepSplitOverride) {
   EXPECT_EQ(plan->n2, 512);
 }
 
+TEST(Plan1D, MusaBatchedC2cFourStepSplitOverrideInvalidatesContextCache) {
+  const char* original = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  const std::optional<std::string> saved = original ? std::optional<std::string>(original) : std::nullopt;
+  struct Restore {
+    std::optional<std::string> value;
+    ~Restore() {
+      if (value) setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", value->c_str(), 1);
+      else unsetenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+    }
+  } restore{saved};
+
+  flagfft::FFTRequest request;
+  request.device_type = "musa";
+  request.device_arch = "31";
+  request.raw_dim = request.origin_rank = 1;
+  request.n = request.fft_length = request.requested_n = 131072;
+  request.batch = 64;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_strides = {131072, 1};
+
+  flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", "131072:256", 1);
+  auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 256);
+  EXPECT_EQ(plan->n2, 512);
+
+  setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", "131072:512", 1);
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 512);
+  EXPECT_EQ(plan->n2, 256);
+
+  setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", "131072:127", 1);
+  EXPECT_THROW(builder.build(131072, request), std::runtime_error);
+}
+
 TEST(Plan1D, CreateDestroyAllTypes) {
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {

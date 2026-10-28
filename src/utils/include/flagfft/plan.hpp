@@ -161,6 +161,7 @@ class PlanBuilder {
     std::string device_type;
     int64_t device_index = -1;
     std::string device_arch;
+    std::string musa_1d_fourstep_split;
     int64_t origin_rank = 0;
     int64_t requested_n = 0;
     int64_t batch = 1;

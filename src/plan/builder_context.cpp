@@ -26,7 +26,8 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          real_transform_kind == other.real_transform_kind &&
          origin_real_transform_kind == other.origin_real_transform_kind &&
          device_type == other.device_type && device_index == other.device_index &&
-         device_arch == other.device_arch && origin_rank == other.origin_rank &&
+         device_arch == other.device_arch &&
+         musa_1d_fourstep_split == other.musa_1d_fourstep_split && origin_rank == other.origin_rank &&
          requested_n == other.requested_n &&
          batch == other.batch &&
          maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube &&
@@ -44,6 +45,10 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.device_type = request.device_type;
   context.device_index = request.device_index;
   context.device_arch = request.device_arch;
+  if (request.device_type == "musa" && request.device_arch == "31") {
+    const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+    if (split != nullptr) context.musa_1d_fourstep_split = split;
+  }
   context.origin_rank = request.origin_rank;
   context.requested_n = request.requested_n;
   context.batch = request.batch;
@@ -78,6 +83,39 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   set_request_context(request);
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
+  }
+  // Allow a root 1D batched C2C transform on MUSA to screen alternative
+  // four-step decompositions without changing child plans or real transforms.
+  const char *musa_fourstep_split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  if (request.device_type == "musa" && request.device_arch == "31" &&
+      request.raw_dim == 1 && request.origin_rank == 1 && request.batch > 1 &&
+      request.requested_n == n && !request.real_transform &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype &&
+      musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') {
+    const std::string spec(musa_fourstep_split);
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t target_length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (target_length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT n1 must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
+    }
   }
   // Opt in to an explicit HCU single C2R split while screening alternative
   // 1D four-step decompositions. Keep the override at the public root so it
