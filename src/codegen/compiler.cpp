@@ -2693,6 +2693,40 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     const int64_t n1 = four_step->n1, n2 = four_step->n2;
+    if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
+        request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
+        n1>=16 && n1<=256 && n2>=16 && n2<=256 &&
+        ((n1&(n1-1))!=0 || (n2&(n2-1))!=0) &&
+        flag_or_default("FLAGFFT_NPU_MATRIX_FFT",false)) {
+      std::vector<std::shared_ptr<JitKernel>> kernels;
+      auto key=KernelKey::four_step_row(triton_target_for_request(request),
+          request.direction,request.input_dtype,n1,n2,n1,{n1},32,4,{},n1);
+      for(const char *phase:{"pack0","cube0","pack1","cube1","transpose"}) {
+        key.perm_form=std::string("npu_matrix_fourstep_")+phase;
+        kernels.push_back(compile_kernel(key));
+      }
+      std::vector<DeviceAllocation> tables,scratch;
+      for(int stage=0;stage<2;++stage) {
+        const int64_t length=stage==0?n1:n2, width=stage==0?n2:n1;
+        int64_t pad=1;while(pad<length)pad*=2;
+        const int64_t cols=2*pad;
+        std::vector<float> values(cols*cols,0.0f);
+        const double sign=request.direction=="inverse"?1.0:-1.0;
+        for(int64_t j=0;j<length;++j)for(int64_t k=0;k<length;++k) {
+          const double angle=sign*2*kPi*j*k/length;
+          const float c=static_cast<float>(std::cos(angle)),v=static_cast<float>(std::sin(angle));
+          values[j*cols+2*k]=c;values[j*cols+2*k+1]=v;
+          values[(pad+j)*cols+2*k]=-v;values[(pad+j)*cols+2*k+1]=c;
+        }
+        tables.push_back(DeviceAllocation::from_floats(values));
+        scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*width*cols*sizeof(float))));
+      }
+      tables.push_back(build_raw_four_step_twiddle(request,n2,n1));
+      for(int i=0;i<2;++i)
+        scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*n1*n2*2*sizeof(float))));
+      return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
+          std::move(kernels),std::move(tables),std::move(scratch));
+    }
     const bool structured_pair = request.device_type == "npu" &&
         request.device_arch.rfind("Ascend910B", 0) == 0 &&
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
