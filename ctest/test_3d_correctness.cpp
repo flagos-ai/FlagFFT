@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <exception>
 #include <vector>
+#include <thread>
 
 namespace {
 
@@ -957,10 +958,17 @@ void CheckCudaExecutionGraphReplay(bool rank_one, bool rank_two = false) {
       }
       inputs[slot].copy_from_host(input.data(), bytes);
       auto &destination = inplace ? inputs[slot] : outputs[slot];
-      ASSERT_EQ(flagfftExecC2C(plan.handle,
-                              static_cast<flagfftComplex *>(inputs[slot].data()),
-                              static_cast<flagfftComplex *>(destination.data()),
-                              FLAGFFT_FORWARD), FLAGFFT_SUCCESS);
+      flagfftResult status=FLAGFFT_INTERNAL_ERROR;
+      const auto execute=[&] {
+        status=flagfftExecC2C(plan.handle,
+            static_cast<flagfftComplex *>(inputs[slot].data()),
+            static_cast<flagfftComplex *>(destination.data()),FLAGFFT_FORWARD);
+      };
+      // Replay the captured slot on a fresh host thread, whose CUDA current
+      // context must be initialized without relying on the creator thread.
+      if (iteration==2) { std::thread worker(execute);worker.join(); }
+      else execute();
+      ASSERT_EQ(status,FLAGFFT_SUCCESS);
       stream.sync();
       EXPECT_NE(graph->graph, nullptr);
       destination.copy_to_host(output.data(), bytes);
