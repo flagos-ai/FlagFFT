@@ -61,3 +61,37 @@ def test_compact_leaf(npu_policy,monkeypatch,tmp_path,factors,pack,mode,directio
     assert torch.linalg.vector_norm(got-expected)/torch.linalg.vector_norm(expected)<2e-6
     assert torch.equal(src,saved)
     assert (out[:64]==31415.25).all() and (out[-64:]==31415.25).all()
+
+
+@pytest.mark.parametrize('row_factors,col_factors',[
+    ((19,11),(17,13)),((7,6,5),(8,4)),((13,17,3),(8,4)),((17,13,2),(4,4))])
+@pytest.mark.parametrize('pack',['1','4','auto'])
+@pytest.mark.parametrize('direction',['forward','inverse'])
+def test_mixed_fourstep_contract(npu_policy,monkeypatch,tmp_path,row_factors,col_factors,pack,direction):
+    from flagfft_codegen.kernels_common import emitted_leaf_factors,four_step_row_inner_pack_for,four_step_col_inner_pack_for
+    monkeypatch.setenv('FLAGFFT_NPU_FOURSTEP_PACK',pack)
+    a,b=math.prod(row_factors),math.prod(col_factors);n=a*b
+    torch.manual_seed(20261028)
+    x=torch.randn(1,n,2);saved=x.clone();temp=torch.empty_like(x)
+    out=torch.full((x.numel()+128,),31415.25)
+    j2,k1=torch.arange(b)[:,None],torch.arange(a)[None,:]
+    angle=(1 if direction=='inverse' else -1)*2*math.pi*j2.double()*k1.double()/n
+    cross=torch.stack((angle.cos(),angle.sin()),-1).float()
+    for first,factors in ((True,row_factors),(False,col_factors)):
+        length=math.prod(factors)
+        plan=LeafPlan(length,factors,1,1,4,(),1<<(length-1).bit_length(),direction,'complex64')
+        mode='four_step_row' if first else 'four_step_col'
+        name,body=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=a,four_step_n2=b)
+        deps=codelet_radices_for(factors)|codelet_radices_for(emitted_leaf_factors(plan))
+        path=tmp_path/(mode+'.py');path.write_text(_module_source(body,tuple(sorted(deps))))
+        ns,pid=execute_module(path)
+        inner=(four_step_row_inner_pack_for if first else four_step_col_inner_pack_for)(a,b,'complex64',plan)
+        args=([Pointer(x),Pointer(temp)] if first else [Pointer(temp),Pointer(cross),Pointer(out,64)])
+        args.extend(tables(factors,direction));args.append(1)
+        for block in range(((b if first else a)+inner-1)//inner):
+            pid[0]=block;ns[name](*args)
+    got=torch.view_as_complex(out[64:-64].reshape(x.shape))
+    ref=torch.fft.fft(torch.view_as_complex(x)) if direction=='forward' else torch.fft.ifft(torch.view_as_complex(x))*n
+    assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref)<2e-6
+    assert torch.equal(x,saved)
+    assert (out[:64]==31415.25).all() and (out[-64:]==31415.25).all()
