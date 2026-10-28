@@ -671,8 +671,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     }
   }
 
-  if (key.perm_form == "npu_structured" || key.perm_form == "npu_structured_planar") {
+  if (key.perm_form == "npu_structured" || key.perm_form == "npu_structured_planar" ||
+      key.perm_form == "npu_structured_recursive_planar") {
     jit_command << " --npu-structured-fft";
+    if (key.perm_form == "npu_structured_recursive_planar")
+      jit_command << " --npu-structured-recursive";
   }
 
   std::string artifact_json = run_command_capture_stdout(jit_command.str());

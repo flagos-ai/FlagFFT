@@ -69,6 +69,21 @@ namespace {
     return DeviceAllocation::from_floats(npu_structured_root_values(length, columns));
   }
 
+  DeviceAllocation npu_recursive_axis_roots(int64_t length, int64_t columns) {
+    if (length < 512) return npu_structured_roots(length, columns);
+    const int64_t a = 32, b = length / a, points = length * columns;
+    auto values = npu_structured_root_values(a, b * columns);
+    auto second = npu_structured_root_values(b, a * columns);
+    values.insert(values.end(), second.begin(), second.end());
+    for (int part = 0; part != 2; ++part) {
+      for (int64_t k = 0; k < points; ++k) {
+        const double angle = -2.0 * kPi * (k / (b * columns)) * ((k / columns) % b) / length;
+        values.push_back(static_cast<float>(part == 0 ? std::cos(angle) : std::sin(angle)));
+      }
+    }
+    return DeviceAllocation::from_floats(values);
+  }
+
   DeviceAllocation npu_packed_real_roots(int64_t n, int64_t group) {
     const int64_t m = n / 2;
     int64_t a = 1;
@@ -2541,15 +2556,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         flag_or_default("FLAGFFT_NPU_STRUCTURED_FOURSTEP", false);
     if (structured_pair || (use_npu_structured_fft(request, four_step->length, batch) &&
                             n1 == 128 && n2 == 128)) {
-      const int64_t tile = std::min<int64_t>(8, std::max<int64_t>(1, 2048 / std::max(n1,n2)));
+      const bool recursive = flag_or_default("FLAGFFT_NPU_RECURSIVE_AXIS", false);
+      const int64_t tile = std::min<int64_t>(8, std::max<int64_t>(1,
+          (recursive ? 4096 : 2048) / std::max(n1,n2)));
       auto row_key = KernelKey::four_step_row(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n1, {n1}, 32, 4, {}, n1);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n2, {n2}, 32, 4, {}, n2);
-      row_key.perm_form = col_key.perm_form = "npu_structured_planar";
+      row_key.perm_form = col_key.perm_form = recursive
+          ? "npu_structured_recursive_planar" : "npu_structured_planar";
       std::vector<DeviceAllocation> row_tables, col_tables;
-      row_tables.push_back(npu_structured_roots(n1, tile));
-      col_tables.push_back(npu_structured_roots(n2, tile));
+      row_tables.push_back(recursive ? npu_recursive_axis_roots(n1, tile) : npu_structured_roots(n1, tile));
+      col_tables.push_back(recursive ? npu_recursive_axis_roots(n2, tile) : npu_structured_roots(n2, tile));
       return std::make_shared<CompiledRawFourStepFusedNode>(four_step->length, n1, n2,
           compile_kernel(row_key), std::move(row_tables),
           compile_kernel(col_key), std::move(col_tables),

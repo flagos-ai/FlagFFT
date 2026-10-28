@@ -120,7 +120,7 @@ def pack4(a,b,c,d,N:tl.constexpr):
 
 """
 
-def emit_structured(*, length, direction, out_dir, first=None, n1=0, n2=0, tile=8):
+def emit_structured(*, length, direction, out_dir, first=None, n1=0, n2=0, tile=8, recursive=False):
     if direction not in ('forward','inverse'):
         raise ValueError('Invalid FFT direction')
     inverse=direction=='inverse'
@@ -186,6 +186,59 @@ def {name}({','.join(args)}):
     dest=offsets
 """
         body+='    tl.store(out_ptr+dest,raw)\n'
+        if recursive and l >= 512:
+            # Reuse the leaf's two-axis decomposition. Short stage slices
+            # otherwise become many scalar UB copies at the end of a long FFT.
+            a, b, points = 32, l // 32, l * tile
+            name += '_recursive'
+            body=f"""@triton.jit
+def {name}({','.join(args)}):
+    batch=tl.program_id(1)
+    word=tl.program_id(0)*{2*tile}+tl.arange(0,{2*tile})[None,:]
+    row=tl.arange(0,{l})[:,None]
+    raw=tl.load(in_ptr+batch*{2*n1*n2}+row*{2*width}+word)
+    r,i=tl.split(tl.reshape(raw,({points},2)))
+    if {inverse}: i=-i
+    r,i=fft_axis_sliced(r,i,roots_ptr,{points},{a},{b*tile},5)
+"""
+            # Each radix-4 stage has six arrays of points/4 floats.
+            wa_size = (a.bit_length()-1)//2 * 6 * (points//4)
+            wb_size = (b.bit_length()-1)//2 * 6 * (points//4)
+            body+=f"""    k=tl.arange(0,{points})
+    cr=tl.load(roots_ptr+{wa_size+wb_size}+k)
+    ci=tl.load(roots_ptr+{wa_size+wb_size+points}+k)
+    rr,ii=r*cr-i*ci,r*ci+i*cr
+    rr=tl.reshape(tl.permute(tl.reshape(rr,({a},{b},{tile})),1,0,2),({points},))
+    ii=tl.reshape(tl.permute(tl.reshape(ii,({a},{b},{tile})),1,0,2),({points},))
+    r,i=fft_axis_sliced(rr,ii,roots_ptr+{wa_size},{points},{b},{a*tile},{b.bit_length()-1})
+"""
+            # Bound the join's live storage and preserve affine rank-two DMA.
+            chunk = min(512, points)
+            for start in range(0, points, chunk):
+                rows = chunk // tile
+                body+=f"""    q=tl.arange(0,{chunk})+{start}
+    pr=tl.gather(r,q,0)
+    pi=tl.gather(i,q,0)
+    if {inverse}: pi=-pi
+    row=tl.arange(0,{rows})[:,None]+{start//tile}
+"""
+                if first:
+                    body+=f"""    col=tl.program_id(0)*{tile}+tl.arange(0,{tile})[None,:]
+    tw=row*{width}+col
+    cr=tl.reshape(tl.load(twiddle_ptr+tw),({chunk},))
+    ci=tl.reshape(tl.load(twiddle_ptr+{n1*n2}+tw),({chunk},))
+    pr,pi=pr*cr-pi*ci,pr*ci+pi*cr
+    pr=tl.reshape(tl.trans(tl.reshape(pr,({rows},{tile}))),({chunk},))
+    pi=tl.reshape(tl.trans(tl.reshape(pi,({rows},{tile}))),({chunk},))
+    raw=tl.reshape(tl.join(pr,pi),({tile},{2*rows}))
+    col=tl.program_id(0)*{tile}+tl.arange(0,{tile})[:,None]
+    dest=batch*{2*n1*n2}+col*{2*l}+{2*start//tile}+tl.arange(0,{2*rows})[None,:]
+"""
+                else:
+                    body+=f"""    raw=tl.reshape(tl.join(pr,pi),({rows},{2*tile}))
+    dest=batch*{2*n1*n2}+row*{2*width}+word
+"""
+                body+='    tl.store(out_ptr+dest,raw)\n'
         kind='four_step_row' if first else 'four_step_col'
     source=('import torch\nimport torch_npu\nimport triton\nimport triton.language as tl\n'
             'import triton.language.extra.cann.extension as al\n\n'+FFT_HELPERS+body)

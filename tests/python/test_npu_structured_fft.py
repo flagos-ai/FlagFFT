@@ -98,9 +98,22 @@ def test_fused_fft_generated_body(tmp_path,n,direction):
     assert (guarded[:64]==31415.25).all() and (guarded[-64:]==31415.25).all()
 
 
-@pytest.mark.parametrize('a,b,tile',[(128,128,8),(128,128,16),(16,32,4),(64,128,8),(128,256,8),(512,1024,2)])
+def axis_roots(length, columns, recursive):
+    if not recursive or length < 512:
+        return roots(length, columns)
+    a, b = 32, length // 32
+    k = torch.arange(length * columns)
+    phase = -2*math.pi*(k//(b*columns)).double()*((k//columns)%b)/length
+    return torch.cat((roots(a, b*columns), roots(b, a*columns),
+                      phase.cos().float(), phase.sin().float()))
+
+
+@pytest.mark.parametrize('a,b,tile,recursive',[
+    (128,128,8,False),(128,128,16,False),(16,32,4,False),
+    (64,128,8,False),(128,256,8,False),(512,1024,2,False),
+    (512,1024,4,True),(1024,512,4,True),(512,2048,2,True)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
-def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,direction):
+def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,recursive,direction):
     torch.manual_seed(20261028)
     n,batch = a*b,1
     x = torch.randn(batch,n,2)
@@ -111,13 +124,13 @@ def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,direction):
     angle = (-1 if direction=='forward' else 1)*2*math.pi*j2.double()*k1.double()/n
     twiddle = torch.cat((angle.cos().flatten(),angle.sin().flatten())).float()
     for first in (True,False):
-        meta = emit_structured(length=a,direction=direction,out_dir=tmp_path,first=first,n1=a,n2=b,tile=tile)
+        meta = emit_structured(length=a,direction=direction,out_dir=tmp_path,first=first,n1=a,n2=b,tile=tile,recursive=recursive)
         ns,pid = execute_module(meta['module_path'])
         for transform in range(batch):
             pid[1] = transform
             for col in range((b if first else a)//tile):
                 pid[0] = col
-                args = (Pointer(x),Pointer(twiddle),Pointer(temp),Pointer(roots(a,tile)),batch) if first else (Pointer(temp),Pointer(y),Pointer(roots(b,tile)),batch)
+                args = (Pointer(x),Pointer(twiddle),Pointer(temp),Pointer(axis_roots(a,tile,recursive)),batch) if first else (Pointer(temp),Pointer(y),Pointer(axis_roots(b,tile,recursive)),batch)
                 ns[meta['kernel_name']](*args)
     got = torch.view_as_complex(y)
     ref = torch.fft.fft(torch.view_as_complex(x)) if direction=='forward' else torch.fft.ifft(torch.view_as_complex(x))*n

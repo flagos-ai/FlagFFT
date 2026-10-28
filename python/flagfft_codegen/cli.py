@@ -140,6 +140,7 @@ def main() -> None:
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--npu-structured-fft", action="store_true")
+    parser.add_argument("--npu-structured-recursive", action="store_true")
     parser.add_argument("--npu-power2", action="store_true")
     parser.add_argument("--npu-packed-real", action="store_true")
     parser.add_argument("--npu-fft-output-stride", type=int, default=1)
@@ -425,7 +426,8 @@ def main() -> None:
         metadata=emit_structured(length=args.length,direction=args.direction,out_dir=args.out_dir,
             first=None if args.kernel=='leaf' else args.kernel=='four_step_row',
             n1=args.four_step_n1,n2=args.four_step_n2,
-            tile=min(8,max(1,2048//max(args.four_step_n1 or 1,args.four_step_n2 or 1))))
+            tile=min(8,max(1,(4096 if args.npu_structured_recursive else 2048)//max(args.four_step_n1 or 1,args.four_step_n2 or 1))),
+            recursive=args.npu_structured_recursive)
     elif spec.family == BLUESTEIN:
         metadata = _emit_bluestein_jit_kernel(
             kernel=args.kernel,
