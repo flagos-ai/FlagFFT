@@ -143,7 +143,8 @@ def test_last_tile_uses_wide_addresses_without_a_large_allocation():
     language = TableLanguage()
     language.grid = (blocks, 1, 1)
     tiles = 4096 * 4096
-    language.ids = ((tiles - 1) % blocks, 0, 0)
+    # Select the last logical tile directly; do not execute earlier persistent iterations.
+    language.ids = (tiles - 1, 0, 0)
 
     def word_bits(offsets):
         return ((np.asarray(offsets, dtype=np.uint64) * 2654435761) & 0xFFFFFFFF).astype(np.uint32)
@@ -158,8 +159,7 @@ def test_last_tile_uses_wide_addresses_without_a_large_allocation():
         def __setitem__(self, offsets, values):
             self.written.update(zip(map(int, offsets), map(int, values.view(np.uint32))))
 
-    namespace = {"tl": language,
-                 "range": lambda start, stop, step: [np.asarray(stop - 1, dtype=np.int64).view(Index)]}
+    namespace = {"tl": language}
     exec(compile(tree, "wide_generated_transpose3d", "exec"), namespace)
     output = SparseWords()
     namespace[name](Pointer(SparseWords()), Pointer(output), Pointer(native_table("021")), 1)
