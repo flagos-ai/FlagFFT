@@ -110,7 +110,7 @@ def axis_roots(length, columns, recursive):
 
 
 @pytest.mark.parametrize('a,b,tile,recursive',[
-    (128,128,8,False),(128,128,16,False),(16,32,4,False),
+    (128,128,8,False),(128,128,16,False),(128,64,(16,32),False),(16,32,4,False),
     (64,128,8,False),(128,256,8,False),(512,1024,2,False),
     (512,1024,4,True),(1024,512,4,True),(512,2048,2,True),(512,1024,(8,4),True)])
 @pytest.mark.parametrize('direction',['forward','inverse'])

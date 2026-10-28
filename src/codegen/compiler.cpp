@@ -2820,16 +2820,30 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     if (structured_pair || (use_npu_structured_fft(request, four_step->length, batch) &&
                             n1 == 128 && n2 == 128)) {
       const bool recursive = flag_or_default("FLAGFFT_NPU_RECURSIVE_AXIS", false);
-      const int64_t row_tile = std::min<int64_t>(8, std::max<int64_t>(1,
-          (recursive ? 4096 : 2048) / (recursive ? n1 : std::max(n1,n2))));
-      const int64_t col_tile = std::min<int64_t>(8, std::max<int64_t>(1,
-          (recursive ? 4096 : 2048) / (recursive ? n2 : std::max(n1,n2))));
+      int64_t preferred=8;
+      const bool explicit_pack=std::getenv("FLAGFFT_NPU_STRUCTURED_PACK")!=nullptr;
+      if (explicit_pack) {
+        const std::string value=std::getenv("FLAGFFT_NPU_STRUCTURED_PACK");
+        if (value!="1" && value!="2" && value!="4" && value!="8" && value!="16" && value!="32")
+          throw std::runtime_error("FLAGFFT_NPU_STRUCTURED_PACK must be 1, 2, 4, 8, 16 or 32");
+        preferred=std::stoll(value);
+      }
+      const int64_t row_budget=recursive && n1>=512?4096:2048;
+      const int64_t col_budget=recursive && n2>=512?4096:2048;
+      const int64_t row_tile=std::min(preferred,std::max<int64_t>(1,
+          row_budget/(recursive?n1:std::max(n1,n2))));
+      const int64_t col_tile=std::min(preferred,std::max<int64_t>(1,
+          col_budget/(recursive?n2:std::max(n1,n2))));
       auto row_key = KernelKey::four_step_row(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n1, {n1}, 32, 4, {}, n1);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n2, {n2}, 32, 4, {}, n2);
       row_key.perm_form = col_key.perm_form = recursive
           ? "npu_structured_recursive_axis_planar" : "npu_structured_planar";
+      if (explicit_pack) {
+        row_key.perm_form+="_pack_"+std::to_string(row_tile);
+        col_key.perm_form+="_pack_"+std::to_string(col_tile);
+      }
       std::vector<DeviceAllocation> row_tables, col_tables;
       row_tables.push_back(recursive ? npu_recursive_axis_roots(n1, row_tile) : npu_structured_roots(n1, row_tile));
       col_tables.push_back(recursive ? npu_recursive_axis_roots(n2, col_tile) : npu_structured_roots(n2, col_tile));

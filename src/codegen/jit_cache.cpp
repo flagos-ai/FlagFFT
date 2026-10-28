@@ -685,11 +685,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0)
     jit_command << " --npu-matrix-fourstep-phase " << shell_quote(key.perm_form.substr(20));
   if (key.perm_form == "npu_packed_mixed_planar") jit_command << " --npu-packed-mixed-axis";
-  if (key.perm_form == "npu_structured" || key.perm_form == "npu_structured_planar" ||
-      key.perm_form == "npu_structured_recursive_axis_planar") {
+  const auto structured_pack=key.perm_form.find("_pack_");
+  const std::string structured_form=key.perm_form.substr(0,structured_pack);
+  if (structured_form=="npu_structured" || structured_form=="npu_structured_planar" ||
+      structured_form=="npu_structured_recursive_axis_planar") {
     jit_command << " --npu-structured-fft";
-    if (key.perm_form == "npu_structured_recursive_axis_planar")
+    if (structured_form=="npu_structured_recursive_axis_planar")
       jit_command << " --npu-structured-recursive";
+    if (structured_pack!=std::string::npos)
+      jit_command << " --npu-structured-pack " << shell_quote(key.perm_form.substr(structured_pack+6));
   }
 
   std::string artifact_json = run_command_capture_stdout(jit_command.str());

@@ -139,6 +139,7 @@ def main() -> None:
     )
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
+    parser.add_argument("--npu-structured-pack", type=int, choices=(1,2,4,8,16,32))
     parser.add_argument("--npu-structured-fft", action="store_true")
     parser.add_argument("--npu-packed-mixed-axis", action="store_true")
     parser.add_argument("--npu-structured-recursive", action="store_true")
@@ -440,7 +441,7 @@ def main() -> None:
         metadata=emit_structured(length=args.length,direction=args.direction,out_dir=args.out_dir,
             first=None if args.kernel=='leaf' else args.kernel=='four_step_row',
             n1=args.four_step_n1,n2=args.four_step_n2,
-            tile=min(8,max(1,(4096 if args.npu_structured_recursive else 2048)//
+            tile=args.npu_structured_pack or min(8,max(1,(4096 if args.npu_structured_recursive else 2048)//
                 (max(1,axis_length) if args.npu_structured_recursive else
                  max(args.four_step_n1 or 1,args.four_step_n2 or 1)))),
             recursive=args.npu_structured_recursive)
