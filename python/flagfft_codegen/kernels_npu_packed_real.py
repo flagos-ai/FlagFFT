@@ -87,6 +87,25 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     lane=tl.arange(0,{2*count})
     tl.store(out_ptr+base*{n}+lane,data,base*{n}+lane<nbatch*{n})
 '''
+    elif g==1:
+        # A program owns one row, so its main slice has no row division,
+        # repacking, or coefficient gather. Only the mirror is a permutation.
+        source+=f'''    k=tl.arange(0,{m})
+    reverse=tl.where(k==0,0,{m}-k)
+    br=tl.gather(r,reverse,0);bi=tl.gather(i,reverse,0)
+    wr=tl.load(roots_ptr+{boundary}+k)
+    wi=tl.load(roots_ptr+{boundary+h}+k)
+    dr=r-br;di=i+bi
+    fr=0.5*(r+br+wr*di+wi*dr)
+    fi=0.5*(i-bi-wr*dr+wi*di)
+    main=tl.reshape(tl.join(fr,fi),({2*m},))
+    word=tl.arange(0,{2*m})
+    tl.store(out_ptr+base*{2*h}+word,main,base<nbatch)
+    zero=tl.full((1,),0,tl.int32)
+    tail=tl.gather(r,zero,0)-tl.gather(i,zero,0)
+    nyquist=tl.reshape(tl.join(tail,tl.zeros((1,),tl.float32)),(2,))
+    tl.store(out_ptr+base*{2*h}+{2*m}+tl.arange(0,2),nyquist,base<nbatch)
+'''
     else:
         for suffix,size,start in (('main',count,0),('tail',g,count)):
             source+=f'''    j_{suffix}=tl.arange(0,{size})+{start}
