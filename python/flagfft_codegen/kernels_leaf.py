@@ -342,12 +342,13 @@ def _emit_local_mixed_codelet_call(
     indent: str,
     radix: int,
     direction: Literal["forward", "inverse"],
+    factor_pair: tuple[int, int] | None = None,
 ) -> list[str]:
     """Emit a register-only FFT for supported composite large-1D leaf radices."""
-    if radix == 32:
+    if radix == 32 and factor_pair is None:
         return _emit_local_radix32_codelet_call(indent, direction)
 
-    split = {
+    split = factor_pair or {
         18: (3, 6),
         20: (5, 4),
         24: (3, 8),
@@ -358,6 +359,8 @@ def _emit_local_mixed_codelet_call(
     }.get(radix)
     if split is None:
         raise ValueError(f"unsupported thread-local mixed radix {radix}")
+    if math.prod(split) != radix or any(n not in _NATURAL_ORDER_CODELET_RADICES for n in split):
+        raise ValueError('Thread-local factor pair must contain two natural-order codelets')
 
     outer_radix, inner_radix = split
     lines: list[str] = []
