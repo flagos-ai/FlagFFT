@@ -30,23 +30,28 @@ def dft_cube(V,WH,WL,L:tl.constexpr,C:tl.constexpr,TERMS:tl.constexpr):
 
 
 @triton.jit
+def cube_pre_stage(r,i,ROOT,N:tl.constexpr,SPAN:tl.constexpr,S:tl.constexpr):
+    G:tl.constexpr=N//SPAN
+    p=tl.reshape(r,(G,SPAN));q=tl.reshape(i,(G,SPAN))
+    ar=tl.reshape(al.extract_slice(p,[0,0],[G,SPAN//2],[1,1]),(N//2,))
+    br=tl.reshape(al.extract_slice(p,[0,SPAN//2],[G,SPAN//2],[1,1]),(N//2,))
+    ai=tl.reshape(al.extract_slice(q,[0,0],[G,SPAN//2],[1,1]),(N//2,))
+    bi=tl.reshape(al.extract_slice(q,[0,SPAN//2],[G,SPAN//2],[1,1]),(N//2,))
+    j=tl.arange(0,N//2)
+    wr=tl.load(ROOT+S*N+j);wi=tl.load(ROOT+S*N+N//2+j)
+    dr,di=ar-br,ai-bi
+    yr,yi=dr*wr-di*wi,dr*wi+di*wr
+    rr=tl.zeros((N,),tl.float32);ii=tl.zeros((N,),tl.float32)
+    rr=al.insert_slice(rr,ar+br,[0],[N//2],[1]);r=al.insert_slice(rr,yr,[N//2],[N//2],[1])
+    ii=al.insert_slice(ii,ai+bi,[0],[N//2],[1]);i=al.insert_slice(ii,yi,[N//2],[N//2],[1])
+    return r,i
+
+
+@triton.jit
 def reduced_cube(r,i,WH,WL,ROOT,L:tl.constexpr,C:tl.constexpr,LEAF:tl.constexpr,STEPS:tl.constexpr,TERMS:tl.constexpr):
     N:tl.constexpr=L*C
     for s in tl.static_range(0,STEPS):
-        G=2**s
-        SPAN=(L//G)*C
-        p=tl.reshape(r,(G,SPAN));q=tl.reshape(i,(G,SPAN))
-        ar=tl.reshape(al.extract_slice(p,[0,0],[G,SPAN//2],[1,1]),(N//2,))
-        br=tl.reshape(al.extract_slice(p,[0,SPAN//2],[G,SPAN//2],[1,1]),(N//2,))
-        ai=tl.reshape(al.extract_slice(q,[0,0],[G,SPAN//2],[1,1]),(N//2,))
-        bi=tl.reshape(al.extract_slice(q,[0,SPAN//2],[G,SPAN//2],[1,1]),(N//2,))
-        j=tl.arange(0,N//2)
-        wr=tl.load(ROOT+s*N+j);wi=tl.load(ROOT+s*N+N//2+j)
-        dr,di=ar-br,ai-bi
-        yr,yi=dr*wr-di*wi,dr*wi+di*wr
-        rr=tl.zeros((N,),tl.float32);ii=tl.zeros((N,),tl.float32)
-        rr=al.insert_slice(rr,ar+br,[0],[N//2],[1]);r=al.insert_slice(rr,yr,[N//2],[N//2],[1])
-        ii=al.insert_slice(ii,ai+bi,[0],[N//2],[1]);i=al.insert_slice(ii,yi,[N//2],[N//2],[1])
+        r,i=cube_pre_stage(r,i,ROOT,N,L*C//(2**s),s)
     GROUPS:tl.constexpr=L//LEAF
     r=tl.reshape(tl.permute(tl.reshape(r,(GROUPS,LEAF,C)),1,0,2),(N,))
     i=tl.reshape(tl.permute(tl.reshape(i,(GROUPS,LEAF,C)),1,0,2),(N,))
