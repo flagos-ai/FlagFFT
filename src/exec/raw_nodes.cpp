@@ -3495,6 +3495,40 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawVectorDIFNode::CompiledRawVectorDIFNode(int64_t length, int64_t max_batch,
+    std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second)
+    : length(length), max_batch(max_batch), passes(std::move(passes)),
+      first(std::move(first)), second(std::move(second)) {}
+
+std::string CompiledRawVectorDIFNode::describe() const {
+  return "CompiledRawVectorDIF(n="+std::to_string(length)+", triton_passes="+
+      std::to_string(passes.size())+", vector_axis_switch=1)";
+}
+
+flagfftResult CompiledRawVectorDIFNode::execute(adaptor::DevicePtr input,
+    adaptor::DevicePtr output, const RawExecutionContext &context) const {
+  if (context.batch<=0 || context.batch>max_batch) return FLAGFFT_INVALID_SIZE;
+  int64_t max_tiles=1;
+  for (const auto &pass:passes) max_tiles=std::max(max_tiles,pass.grid_x*pass.grid_y);
+  const int64_t limit=std::max<int64_t>(1,adaptor::max_launch_blocks()/max_tiles);
+  const int64_t bytes=2*length*static_cast<int64_t>(sizeof(float));
+  for (int64_t start=0;start<context.batch;start+=limit) {
+    const int64_t count=std::min(limit,context.batch-start);
+    auto current=input+start*bytes;
+    for (std::size_t i=0;i<passes.size();++i) {
+      const auto &pass=passes[i];
+      auto next=i+1==passes.size()?output+start*bytes:
+          (i%2==0?first.get():second.get())+start*bytes;
+      pass.kernel->launch(context.stream,
+          {JitKernelArg::device(current),JitKernelArg::device(pass.weights.get()),
+           JitKernelArg::device(next)},pass.grid_x,
+          pass.transpose?pass.grid_y:count,pass.transpose?count:1);
+      current=next;
+    }
+  }
+  return FLAGFFT_SUCCESS;
+}
+
 CompiledRawMatrixFourStepNode::CompiledRawMatrixFourStepNode(int64_t n1, int64_t n2,
     int64_t max_batch, std::vector<std::shared_ptr<JitKernel>> kernels,
     std::vector<DeviceAllocation> tables, std::vector<DeviceAllocation> scratch)

@@ -129,6 +129,72 @@ namespace {
     return DeviceAllocation::from_floats(values);
   }
 
+  std::shared_ptr<CompiledRawNode> make_npu_vector_dif_child(
+      const FFTRequest &request, int64_t n, int64_t batch) {
+    if (request.device_type!="npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
+        request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
+        n<8192 || n>1048576 || (n&(n-1))==0 ||
+        !flag_or_default("FLAGFFT_NPU_VECTOR_DIF",false)) return nullptr;
+    std::vector<int64_t> factors;
+    int64_t remaining=n;
+    for (int64_t radix:{19,17,13,11,7}) {
+      while (remaining%radix==0) { factors.push_back(radix); remaining/=radix; }
+    }
+    for (int64_t radix:{15,10,8,9,5,4,3,2}) {
+      while (remaining%radix==0) { factors.push_back(radix); remaining/=radix; }
+    }
+    if (remaining!=1 || factors.size()<3) return nullptr;
+    auto power=[](int64_t value) { int64_t result=1;while(result<value) result*=2;return result; };
+    auto ceiling=[](int64_t value,int64_t divisor) { return (value+divisor-1)/divisor; };
+    std::vector<CompiledRawVectorDIFNode::Pass> passes;
+    int64_t prefix=1, previous_prefix=1;
+    bool switched=false;
+    const double sign=request.direction=="inverse"?1.0:-1.0;
+    auto append=[&](DeviceAllocation weights,int64_t x,int64_t y,bool transpose) {
+      auto key=KernelKey::four_step_row(triton_target_for_request(request),
+          request.direction,request.input_dtype,n,1,n,factors,32,4,{},n);
+      key.perm_form="npu_vector_dif_"+std::to_string(passes.size());
+      passes.push_back({TritonCompiler{}.compile_kernel(key),std::move(weights),x,y,transpose});
+    };
+    for (std::size_t stage=0;stage<factors.size();++stage) {
+      const int64_t radix=factors[stage], m=n/(prefix*radix);
+      if (!switched && prefix>=64) {
+        append(DeviceAllocation(sizeof(float)),ceiling(prefix,32),ceiling(n/prefix,32),true);
+        switched=true;
+      }
+      std::vector<float> weights;
+      if (stage) {
+        const int64_t previous_radix=factors[stage-1], current=radix*m;
+        const int64_t count=switched?n:previous_radix*current;
+        weights.resize(2*count);
+        for (int64_t index=0;index<count;++index) {
+          const int64_t digit=switched?(index%prefix)/previous_prefix:index/current;
+          const int64_t sample=switched?index/prefix:index%current;
+          const double angle=sign*2*kPi*static_cast<double>(digit)*sample/
+              (previous_radix*current);
+          weights[index]=static_cast<float>(std::cos(angle));
+          weights[count+index]=static_cast<float>(std::sin(angle));
+        }
+      } else weights.push_back(0.0f);
+      int64_t grid=0;
+      if (switched) {
+        grid=m*ceiling(prefix,std::min<int64_t>(512,power(prefix)));
+      } else if (m>=128) {
+        grid=prefix*ceiling(m,std::min<int64_t>(512,power(m)));
+      } else {
+        int64_t group=std::min(std::max<int64_t>(1,256/m),
+                              std::max<int64_t>(1,4096/(radix*m)));
+        int64_t floor=1;while(floor*2<=group) floor*=2;
+        grid=ceiling(prefix,floor);
+      }
+      append(DeviceAllocation::from_floats(weights),grid,1,false);
+      previous_prefix=prefix;prefix*=radix;
+    }
+    const auto bytes=static_cast<std::size_t>(batch*n*2*sizeof(float));
+    return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
+        adaptor::Memory(bytes),adaptor::Memory(bytes));
+  }
+
   std::vector<int64_t> npu_mixed_axis_factors(int64_t length) {
     if (length < 16 || length > 2048) return {};
     const std::vector<int64_t> radices = {32,30,28,27,25,24,20,19,18,17,16,
@@ -2698,6 +2764,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
     const int64_t n1 = four_step->n1, n2 = four_step->n2;
+    if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
     if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
         request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
         n1>=16 && n1<=256 && n2>=16 && n2<=256 &&

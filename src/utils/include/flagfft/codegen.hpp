@@ -1255,6 +1255,23 @@ struct CompiledRaw3DNode final : CompiledRawNode {
 
 // Transform a contiguous inner plane, then the outer axis in natural layout.
 // Real inverse reverses the passes so the plane sees compact Hermitian data.
+struct CompiledRawVectorDIFNode final : CompiledRawNode {
+  struct Pass {
+    std::shared_ptr<JitKernel> kernel;
+    DeviceAllocation weights;
+    int64_t grid_x, grid_y;
+    bool transpose;
+  };
+  CompiledRawVectorDIFNode(int64_t length, int64_t max_batch,
+      std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+      const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  int64_t length, max_batch;
+  std::vector<Pass> passes;
+  DeviceAllocation first, second;
+};
+
 struct CompiledRawMatrixFourStepNode final : CompiledRawNode {
   CompiledRawMatrixFourStepNode(int64_t n1, int64_t n2, int64_t max_batch,
       std::vector<std::shared_ptr<JitKernel>> kernels,

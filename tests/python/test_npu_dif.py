@@ -1,0 +1,45 @@
+"""Independent FFT oracle for every pass, direction, batch, and axis exchange."""
+import math
+import pytest
+
+torch=pytest.importorskip('torch')
+from flagfft_codegen.kernels_npu_dif import build_vector_dif,emit_vector_dif
+from test_npu_structured_fft import Pointer,execute_module
+
+
+@pytest.mark.parametrize('factors,batch',[
+    ((5,5,3,8),2),((19,17,13,11),3),
+    ((17,13,7,15,8),2),((17,13,15,10,10,2),1)])
+@pytest.mark.parametrize('direction',['forward','inverse'])
+def test_vector_dif_passes(tmp_path,factors,batch,direction):
+    n=math.prod(factors);sign=-1 if direction=='forward' else 1
+    source,specs=build_vector_dif(factors,direction)
+    path=tmp_path/'dif.py';path.write_text(source);ns,pid=execute_module(path);pid.append(0)
+    torch.manual_seed(20261029);x=torch.randn(batch,n,2);saved=x.clone();current=x
+    for index,spec in enumerate(specs):
+        if spec['phase']=='transpose' or spec['stage']==0:
+            weights=torch.zeros(1)
+        else:
+            stage=spec['stage'];previous=factors[stage-1];length=spec['r']*spec['m']
+            if spec['phase']=='early':
+                phase=sign*2*math.pi*torch.arange(previous,dtype=torch.float64)[:,None]*torch.arange(length)[None,:]/(previous*length)
+            else:
+                pf=torch.arange(spec['prefix'])[None,:];sample=torch.arange(length)[:,None]
+                phase=sign*2*math.pi*(pf//spec['previous_prefix']).double()*sample/(previous*length)
+            weights=torch.cat((phase.cos().float().flatten(),phase.sin().float().flatten()))
+        out=torch.full((2*batch*n+128,),31415.25)
+        for b in range(batch):
+            for gx in range(spec['grid'][0]):
+                for gy in range(spec['grid'][1] if spec['phase']=='transpose' else 1):
+                    pid[:]=[gx,gy,b] if spec['phase']=='transpose' else [gx,b,0]
+                    ns[spec['name']](Pointer(current),Pointer(weights),Pointer(out,64))
+        assert (out[:64]==31415.25).all() and (out[-64:]==31415.25).all()
+        current=out[64:-64].clone()
+    got=torch.view_as_complex(current.reshape(batch,n,2));z=torch.view_as_complex(x)
+    reference=torch.fft.fft(z) if direction=='forward' else torch.fft.ifft(z)*n
+    assert torch.isfinite(got).all()
+    assert torch.linalg.vector_norm(got-reference)/torch.linalg.vector_norm(reference)<1e-6
+    assert torch.equal(x,saved)
+    metadata=emit_vector_dif(factors,direction,len(specs)-1,tmp_path/'metadata')
+    assert metadata['kernel_name']==specs[-1]['name']
+    assert metadata['signature']=='*fp32:16,*fp32:16,*fp32:16'

@@ -680,6 +680,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     }
   }
 
+  if (key.perm_form.rfind("npu_vector_dif_",0)==0)
+    jit_command << " --npu-vector-dif-phase " << shell_quote(key.perm_form.substr(15));
   if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0)
     jit_command << " --npu-matrix-fourstep-phase " << shell_quote(key.perm_form.substr(20));
   if (key.perm_form == "npu_packed_mixed_planar") jit_command << " --npu-packed-mixed-axis";
