@@ -19,10 +19,10 @@ def test_contiguous_real_and_complex(tmp_path,n,group,mode,direction):
 
 
 @pytest.mark.parametrize('n,group',[(16,1),(16,8),(32,4),(256,8)])
-@pytest.mark.parametrize('strides',[(16,16),(16,1),(1,16),(1,0)])
+@pytest.mark.parametrize('strides',[(16,16),(16,1),(1,16),(1,0),(17,17),(9,9)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
 def test_strided_and_transposed_with_launch_offsets(tmp_path,n,group,strides,direction):
-    check(tmp_path,n,group,0,direction,*strides,32)
+    check(tmp_path,n,group,0,direction,*strides,2*strides[0] if strides[0]>1 else 32)
 
 
 def check(tmp_path,n,group,mode,direction,input_stride,output_stride,batch):

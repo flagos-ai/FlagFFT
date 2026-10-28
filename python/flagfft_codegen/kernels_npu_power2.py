@@ -30,9 +30,10 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
     i=tl.reshape(tl.trans(tl.reshape(i,({g},{n}))),({count},))
 '''
     elif mode == 0:
-        source += f'''    pair=tl.arange(0,2)
-    offsets=((transforms//{stride})*{n*stride}+k[:,None]*{stride}+transforms[None,:]%{stride})*2
-    data=tl.load(in_ptr+offsets[:,:,None]+pair[None,None,:],transforms[None,:,None]<nbatch,0)
+        source += f'''    lane=tl.arange(0,{2*count})
+    transform=base+(lane//2)%{g}
+    offsets=((transform//{stride})*{n*stride}+(lane//{2*g})*{stride}+transform%{stride})*2+lane%2
+    data=tl.load(in_ptr+offsets,transform<nbatch,0)
     r,i=tl.split(tl.reshape(data,({count},2)))
 '''
     elif mode == 1:
@@ -76,9 +77,10 @@ def {name}(in_ptr,out_ptr,idx_ptr,roots_ptr,nbatch,output_row_stride,transform_o
 '''
     else:
         stride_expr = str(output_stride) if output_stride else 'output_row_stride'
-        source += f'''    pair=tl.arange(0,2)
-    packed=tl.reshape(tl.join(tl.reshape(r,({count},)),tl.reshape(i,({count},))),({n},{g},2))
-    offsets=((transforms//({stride_expr}))*{n}*({stride_expr})+k[:,None]*({stride_expr})+transforms[None,:]%({stride_expr}))*2
-    tl.store(out_ptr+offsets[:,:,None]+pair[None,None,:],packed,transforms[None,:,None]<nbatch)
+        source += f'''    packed=tl.reshape(tl.join(tl.reshape(r,({count},)),tl.reshape(i,({count},))),({2*count},))
+    lane=tl.arange(0,{2*count})
+    transform=base+(lane//2)%{g}
+    offsets=((transform//({stride_expr}))*{n}*({stride_expr})+(lane//{2*g})*({stride_expr})+transform%({stride_expr}))*2+lane%2
+    tl.store(out_ptr+offsets,packed,transform<nbatch)
 '''
     return name, source
