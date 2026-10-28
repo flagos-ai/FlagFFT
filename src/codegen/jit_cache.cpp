@@ -211,7 +211,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";npu-auto-blockify=" + std::string(env_flag_enabled(std::getenv("TRITON_ALL_BLOCKS_PARALLEL")) ? "1" : "0");
     const char *vector_remainder = std::getenv("FLAGFFT_NPU_VECTOR_REMAINDER");
     cache_key += ";npu-source-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
-    for (const char *name : {"FLAGFFT_NPU_COMPACT_STAGES", "FLAGFFT_NPU_FOURSTEP_PACK"}) {
+    for (const char *name : {"FLAGFFT_NPU_COMPACT_STAGES", "FLAGFFT_NPU_FOURSTEP_PACK", "FLAGFFT_NPU_AFFINE_MATRIX_IO"}) {
       const char *value = std::getenv(name);
       cache_key += ";" + std::string(name) + "=" + (value != nullptr ? value : "default");
     }

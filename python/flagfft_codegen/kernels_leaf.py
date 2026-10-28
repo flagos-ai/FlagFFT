@@ -103,6 +103,38 @@ def _packed_maca_fp32_complex_io(dtype: str) -> bool:
     )
 
 
+def _emit_npu_matrix_load(indent, ptr, tag, real, imag, lanes, pack, active, offset, width, batch_base):
+    """Keep the row/column DMA shape explicit until after the global load."""
+    return [
+        f"{indent}{tag}_row = tl.arange(0, {lanes})[:,None]",
+        f"{indent}{tag}_col = four_step_inner_base*2 + tl.arange(0, {2*pack})[None,:]",
+        f"{indent}{tag} = tl.load({ptr} + ({batch_base})*2 + ({tag}_row+{offset})*{2*width} + {tag}_col, "
+        f"({tag}_row < {active}) & ({tag}_col < {2*width}), 0.0)",
+        f"{indent}{real}, {imag} = tl.split(tl.reshape({tag}, ({lanes*pack},2)))",
+    ]
+
+
+def _emit_npu_matrix_store(indent, tag, real, imag, lanes, pack, active, offset, width, transposed, output_rows):
+    lines=[f"{indent}{tag} = tl.reshape(tl.join({real}, {imag}), ({lanes},{pack},2))"]
+    if transposed:
+        lines += [
+            f"{indent}{tag} = tl.reshape(tl.permute({tag},1,0,2), ({pack},{2*lanes}))",
+            f"{indent}{tag}_row = four_step_inner_base + tl.arange(0,{pack})[:,None]",
+            f"{indent}{tag}_col = tl.arange(0,{2*lanes})[None,:]",
+            f"{indent}tl.store(out_ptr + four_step_batch_base*2 + {tag}_row*{2*width} + {tag}_col+{2*offset}, "
+            f"{tag}, ({tag}_row < {output_rows}) & ({tag}_col < {2*active}))",
+        ]
+    else:
+        lines += [
+            f"{indent}{tag} = tl.reshape({tag}, ({lanes},{2*pack}))",
+            f"{indent}{tag}_row = tl.arange(0,{lanes})[:,None]",
+            f"{indent}{tag}_col = four_step_inner_base*2 + tl.arange(0,{2*pack})[None,:]",
+            f"{indent}tl.store(out_ptr + four_step_batch_base*2 + ({tag}_row+{offset})*{2*width} + {tag}_col, "
+            f"{tag}, ({tag}_row < {active}) & ({tag}_col < {2*width}))",
+        ]
+    return lines
+
+
 def _emit_vectorized_complex_load(
     indent: str,
     ptr: str,
@@ -1212,6 +1244,10 @@ def _emit_stage_block(
                         "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"})
     if compact_npu_stage:
         lane_block = 1 << (current_lanes-1).bit_length()
+    npu_affine_tables = (portable_exchange and _npu_backend_active()
+        and os.environ.get("FLAGFFT_NPU_AFFINE_MATRIX_IO") == "1")
+    npu_matrix_io = (npu_affine_tables and inner_pack >= 4 and dtype == "complex64"
+        and not fuse_twiddle_into_row and io_mode in {"four_step_row", "four_step_col"})
     hcu_swizzle_override = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE")
     hcu_swizzle_default = dtype == "complex128" and n >= 64
     hcu_swizzle_enabled = (
@@ -1407,9 +1443,27 @@ def _emit_stage_block(
             _emit_route_base(indent, stage, factors, current_lanes, f"group_{stage}")
         )
 
+    if npu_affine_tables and stage > 0:
+        table_block = 1 << (n-1).bit_length()
+        lines += [
+            f"{indent}tw_range = tl.arange(0,{table_block})",
+            f"{indent}tw_plane_r = tl.load(tw{stage}_r_ptr + tw_range, tw_range < {n}, 0.0)",
+            f"{indent}tw_plane_i = tl.load(tw{stage}_i_ptr + tw_range, tw_range < {n}, 0.0)",
+        ]
     for j in range(radix):
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
+            if npu_matrix_io:
+                width = four_step_n2 if io_mode == "four_step_row" else four_step_n1
+                offset = j * math.prod(factors[1:])
+                lines.extend(_emit_npu_matrix_load(indent, "in_ptr", f"matrix_input{j}",
+                    f"r{j}", f"i{j}", lane_block, inner_pack, current_lanes, offset, width,
+                    "four_step_batch_base"))
+                if io_mode == "four_step_col":
+                    lines.extend(_emit_npu_matrix_load(indent, "twiddle_ptr", f"matrix_phase{j}",
+                        f"tw_r{j}", f"tw_i{j}", lane_block, inner_pack, current_lanes, offset, width, "0"))
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
+                continue
             if io_mode in {"contiguous", "permuted_store"}:
                 if hcu_u64_load:
                     lines.append(
@@ -1904,12 +1958,19 @@ def _emit_stage_block(
                 tw_index = f"logical_phys{j}"
                 if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
                     tw_index = f"(lane + {current_lanes} * (group_{stage} * {radix} + {j}))"
-                lines.append(
-                    f"{indent}twr = tl.load(tw{stage}_r_ptr + {tw_index}, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}twi = tl.load(tw{stage}_i_ptr + {tw_index}, mask=lane_mask, other={zero})"
-                )
+                if npu_affine_tables:
+                    lines += [
+                        f"{indent}tw_lookup = tl.where(lane_mask, {tw_index}, 0)",
+                        f"{indent}twr = tl.gather(tw_plane_r, tw_lookup, 0)",
+                        f"{indent}twi = tl.gather(tw_plane_i, tw_lookup, 0)",
+                    ]
+                else:
+                    lines.append(
+                        f"{indent}twr = tl.load(tw{stage}_r_ptr + {tw_index}, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}twi = tl.load(tw{stage}_i_ptr + {tw_index}, mask=lane_mask, other={zero})"
+                    )
                 lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if single_smem_buffer and stage > 0 and not is_last:
@@ -1969,6 +2030,11 @@ def _emit_stage_block(
                 )
                 continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
+            if npu_matrix_io:
+                lines.extend(_emit_npu_matrix_store(indent, f"matrix_output{j}",
+                    f"r{j}", f"i{j}", lane_block, inner_pack, current_lanes,
+                    j * math.prod(factors[:-1]), four_step_n1, io_mode == "four_step_row", four_step_n2))
+                continue
             if io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
                            "rader_prepare_leaf"}:
                 if io_mode == "strided":
