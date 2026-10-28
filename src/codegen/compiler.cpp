@@ -1192,7 +1192,7 @@ namespace {
     if (request.device_type != "npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
         request.requires_contiguous_copy || request.input_strides.empty() || request.input_strides.back()!=1 ||
-        length<=32 || length>256 || (length&(length-1))==0 || batch<16 ||
+        length<=32 || length>256 || (length&(length-1))==0 || (mode==0 && batch<16) ||
         !flag_or_default("FLAGFFT_NPU_MATRIX_FFT",false)) return nullptr;
     int64_t pad=1;while(pad<length) pad*=2;
     const int64_t half=length/2+1;

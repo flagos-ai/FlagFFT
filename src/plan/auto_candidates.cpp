@@ -382,6 +382,9 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         n > 2048 && n <= 2048*2048 && (n & (n-1)) != 0 &&
         factorization.remainder == 1) {
       int64_t best_a = 0, best_b = 0;
+      const char *matrix_setting=std::getenv("FLAGFFT_NPU_MATRIX_FFT");
+      const bool matrix_enabled=matrix_setting && std::string(matrix_setting)=="1";
+      bool best_matrix=false;
       std::vector<int64_t> best_row, best_col;
       double best_cost = std::numeric_limits<double>::infinity();
       for (int64_t a : enumerate_divisors(n)) {
@@ -389,9 +392,12 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         if (a < 16 || a > b || b > 2048) continue;
         auto row = select_leaf_factors(a), col = select_leaf_factors(b);
         if (!should_use_leaf(a,row) || !should_use_leaf(b,col)) continue;
-        const double cost = estimate_leaf_warm_cost(a,row)/a +
-                            estimate_leaf_warm_cost(b,col)/b;
-        if (cost < best_cost) {
+        const bool matrix_candidate=matrix_enabled && a<=256 && b<=256;
+        const double cost = matrix_candidate ? static_cast<double>(a+b) :
+            estimate_leaf_warm_cost(a,row)/a + estimate_leaf_warm_cost(b,col)/b;
+        if ((matrix_candidate && !best_matrix) ||
+            (matrix_candidate==best_matrix && cost < best_cost)) {
+          best_matrix=matrix_candidate;
           best_cost = cost; best_a = a; best_b = b;
           best_row = std::move(row); best_col = std::move(col);
         }
