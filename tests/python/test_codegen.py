@@ -1989,6 +1989,8 @@ def test_jit_r2c_pointwise_source_metadata(jit_source, tmp_path) -> None:
         "nbatch",
     ]
 
+    assert (tmp_path / "flagfft_jit_c2r_packed_preprocess_n18_f64.py").is_file()
+
 
 def test_npu_256_real_pointwise_layout_is_tunable(jit_source, tmp_path, monkeypatch) -> None:
     kernels = (
@@ -2033,7 +2035,6 @@ def test_npu_256_real_pointwise_layout_is_tunable(jit_source, tmp_path, monkeypa
         target="cuda:90:32",
     )
     assert portable["rows_per_block"] == 1
-    assert (tmp_path / "flagfft_jit_c2r_packed_preprocess_n18_f64.py").is_file()
 
 
 def test_packed_real_codegen_requires_even_length_and_pairs_bins(kernels) -> None:
