@@ -147,6 +147,7 @@ def main() -> None:
     parser.add_argument("--npu-recursive-power2", action="store_true")
     parser.add_argument("--npu-tensor-shape", type=_csv_ints, default=())
     parser.add_argument("--npu-vector-dif-phase", type=int)
+    parser.add_argument("--npu-matrix-fourstep-wide", action="store_true")
     parser.add_argument("--npu-matrix-fourstep-phase", choices=("pack0","cube0","pack1","cube1","transpose"))
     parser.add_argument("--npu-matrix-phase", choices=('pack','cube'))
     parser.add_argument("--npu-packed-real", action="store_true")
@@ -482,7 +483,7 @@ def main() -> None:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Matrix four-step requires NPU FP32')
         from .kernels_npu_matrix_fourstep import emit_matrix_fourstep
-        metadata=emit_matrix_fourstep(args.four_step_n1,args.four_step_n2,args.npu_matrix_fourstep_phase,args.direction,args.out_dir)
+        metadata=emit_matrix_fourstep(args.four_step_n1,args.four_step_n2,args.npu_matrix_fourstep_phase,args.direction,args.out_dir,wide=args.npu_matrix_fourstep_wide)
     elif args.npu_matrix_phase:
         if spec.family != NPU_GROUPED_FFT or not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Matrix FFT requires an NPU FP32 grouped FFT key')

@@ -2783,11 +2783,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         n1>=16 && n1<=256 && n2>=16 && n2<=256 &&
         ((n1&(n1-1))!=0 || (n2&(n2-1))!=0) &&
         flag_or_default("FLAGFFT_NPU_MATRIX_FFT",false)) {
+      const bool wide=batch>=16 && flag_or_default("FLAGFFT_NPU_MATRIX_WIDE",false);
       std::vector<std::shared_ptr<JitKernel>> kernels;
       auto key=KernelKey::four_step_row(triton_target_for_request(request),
           request.direction,request.input_dtype,n1,n2,n1,{n1},32,4,{},n1);
       for(const char *phase:{"pack0","cube0","pack1","cube1","transpose"}) {
-        key.perm_form=std::string("npu_matrix_fourstep_")+phase;
+        key.perm_form=std::string("npu_matrix_fourstep_")+phase+(wide?"_wide":"");
         kernels.push_back(compile_kernel(key));
       }
       std::vector<DeviceAllocation> tables,scratch;
@@ -2810,7 +2811,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       for(int i=0;i<2;++i)
         scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*n1*n2*2*sizeof(float))));
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
-          std::move(kernels),std::move(tables),std::move(scratch));
+          std::move(kernels),std::move(tables),std::move(scratch),wide);
     }
     const bool structured_pair = request.device_type == "npu" &&
         request.device_arch.rfind("Ascend910B", 0) == 0 &&

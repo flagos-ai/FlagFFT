@@ -28,6 +28,20 @@
 namespace flagfft {
 namespace {
 
+  bool npu_auto_blockify_for(const KernelKey &key) {
+    const bool matrix=key.perm_form.rfind("npu_matrix_fourstep_",0)==0 ||
+        key.perm_form=="npu_matrix_pack" || key.perm_form=="npu_matrix_cube";
+    if (matrix) {
+      if (const char *value=std::getenv("FLAGFFT_NPU_MATRIX_AUTO_BLOCK")) {
+        const std::string setting(value);
+        if (setting!="0" && setting!="1")
+          throw std::runtime_error("FLAGFFT_NPU_MATRIX_AUTO_BLOCK must be 0 or 1");
+        return setting=="1";
+      }
+    }
+    return env_flag_enabled(std::getenv("TRITON_ALL_BLOCKS_PARALLEL"));
+  }
+
   // std::hash is not guaranteed to be stable across standard library versions.
   // The two independent FNV streams give request directories stable names.
   std::string request_id(const std::string &request) {
@@ -208,7 +222,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "npu") {
     const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
     cache_key += ";npu-join-mode=" + std::string(join != nullptr ? join : "auto");
-    cache_key += ";npu-auto-blockify=" + std::string(env_flag_enabled(std::getenv("TRITON_ALL_BLOCKS_PARALLEL")) ? "1" : "0");
+    cache_key += ";npu-auto-blockify=" + std::string(npu_auto_blockify_for(key) ? "1" : "0");
     const char *vector_remainder = std::getenv("FLAGFFT_NPU_VECTOR_REMAINDER");
     cache_key += ";npu-source-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
     for (const char *name : {"FLAGFFT_NPU_COMPACT_STAGES", "FLAGFFT_NPU_FOURSTEP_PACK", "FLAGFFT_NPU_AFFINE_MATRIX_IO", "FLAGFFT_NPU_TRIG_TWIDDLES"}) {
@@ -682,8 +696,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 
   if (key.perm_form.rfind("npu_vector_dif_",0)==0)
     jit_command << " --npu-vector-dif-phase " << shell_quote(key.perm_form.substr(15));
-  if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0)
-    jit_command << " --npu-matrix-fourstep-phase " << shell_quote(key.perm_form.substr(20));
+  if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0) {
+    const std::string phase=key.perm_form.substr(20);
+    const bool wide=phase.size()>5 && phase.substr(phase.size()-5)=="_wide";
+    jit_command << " --npu-matrix-fourstep-phase " << shell_quote(wide?phase.substr(0,phase.size()-5):phase);
+    if (wide) jit_command << " --npu-matrix-fourstep-wide";
+  }
   if (key.perm_form == "npu_packed_mixed_planar") jit_command << " --npu-packed-mixed-axis";
   const auto structured_pack=key.perm_form.find("_pack_");
   const std::string structured_form=key.perm_form.substr(0,structured_pack);
@@ -709,7 +727,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (kernel->npu_join_lowering != "auto" && kernel->npu_join_lowering != "native" &&
         kernel->npu_join_lowering != "packed")
       throw std::runtime_error("FLAGFFT_NPU_JOIN_MODE must be auto, native or packed");
-    kernel->npu_auto_blockify = env_flag_enabled(std::getenv("TRITON_ALL_BLOCKS_PARALLEL"));
+    kernel->npu_auto_blockify = npu_auto_blockify_for(key);
   }
   kernel->signature = json_string_field(artifact_json, "signature");
   kernel->num_warps = json_int_field(artifact_json, "num_warps");

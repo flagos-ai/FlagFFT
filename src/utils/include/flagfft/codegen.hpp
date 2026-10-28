@@ -1275,11 +1275,12 @@ struct CompiledRawVectorDIFNode final : CompiledRawNode {
 struct CompiledRawMatrixFourStepNode final : CompiledRawNode {
   CompiledRawMatrixFourStepNode(int64_t n1, int64_t n2, int64_t max_batch,
       std::vector<std::shared_ptr<JitKernel>> kernels,
-      std::vector<DeviceAllocation> tables, std::vector<DeviceAllocation> scratch);
+      std::vector<DeviceAllocation> tables, std::vector<DeviceAllocation> scratch, bool wide=false);
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
       const RawExecutionContext &context) const override;
   std::string describe() const override;
   int64_t n1, n2, max_batch;
+  bool wide;
   std::vector<std::shared_ptr<JitKernel>> kernels;
   std::vector<DeviceAllocation> tables, scratch;
 };

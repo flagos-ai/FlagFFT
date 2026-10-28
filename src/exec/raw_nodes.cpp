@@ -3535,13 +3535,13 @@ flagfftResult CompiledRawVectorDIFNode::execute(adaptor::DevicePtr input,
 
 CompiledRawMatrixFourStepNode::CompiledRawMatrixFourStepNode(int64_t n1, int64_t n2,
     int64_t max_batch, std::vector<std::shared_ptr<JitKernel>> kernels,
-    std::vector<DeviceAllocation> tables, std::vector<DeviceAllocation> scratch)
-    : n1(n1), n2(n2), max_batch(max_batch), kernels(std::move(kernels)),
+    std::vector<DeviceAllocation> tables, std::vector<DeviceAllocation> scratch, bool wide)
+    : n1(n1), n2(n2), max_batch(max_batch), wide(wide), kernels(std::move(kernels)),
       tables(std::move(tables)), scratch(std::move(scratch)) {}
 
 std::string CompiledRawMatrixFourStepNode::describe() const {
   return "CompiledRawMatrixFourStep(n1="+std::to_string(n1)+", n2="+std::to_string(n2)+
-      ", triton_fp32_ieee=1)";
+      ", triton_fp32_ieee=1, wide="+std::to_string(wide)+")";
 }
 
 flagfftResult CompiledRawMatrixFourStepNode::execute(adaptor::DevicePtr input,
@@ -3552,8 +3552,9 @@ flagfftResult CompiledRawMatrixFourStepNode::execute(adaptor::DevicePtr input,
   while(pads[1]<n2) pads[1]*=2;
   const int64_t matrix_bytes=2*n1*n2*sizeof(float);
   const int64_t packed_bytes[2]={2*pads[0]*n2*static_cast<int64_t>(sizeof(float)),2*pads[1]*n1*static_cast<int64_t>(sizeof(float))};
-  const int64_t max_tiles=std::max(ceil_div(pads[0],16)*ceil_div(n2,16),
-      ceil_div(pads[1],16)*ceil_div(n1,16));
+  const int64_t tile=wide?32:16;
+  const int64_t max_tiles=std::max(ceil_div(pads[0],tile)*ceil_div(n2,tile),
+      ceil_div(pads[1],tile)*ceil_div(n1,tile));
   const int64_t limit=std::max<int64_t>(1,65535/max_tiles);
   for(int64_t start=0;start<context.batch;start+=limit) {
     const int64_t count=std::min(limit,context.batch-start);
@@ -3565,15 +3566,17 @@ flagfftResult CompiledRawMatrixFourStepNode::execute(adaptor::DevicePtr input,
       kernels[2*stage]->launch(context.stream,
           {JitKernelArg::device(stage==0?input+start*matrix_bytes:mid),
            JitKernelArg::device(packed),JitKernelArg::device(tables[2].get())},
-          ceil_div(pads[stage],16),ceil_div(width,16),count);
-      kernels[2*stage+1]->launch(context.stream,
-          {JitKernelArg::device(packed),JitKernelArg::device(tables[stage].get()),
-           JitKernelArg::device(stage==0?mid:last)},
-          ceil_div(width,32),ceil_div(2*length,64),count);
+          ceil_div(pads[stage],tile),ceil_div(width,tile),count);
+      std::vector<JitKernelArg> cube_args={JitKernelArg::device(packed),
+          JitKernelArg::device(tables[stage].get()),JitKernelArg::device(stage==0?mid:last)};
+      if (wide) cube_args.push_back(JitKernelArg::i32(static_cast<int32_t>(count)));
+      kernels[2*stage+1]->launch(context.stream,cube_args,
+          wide?ceil_div(count*width,64):ceil_div(width,32),
+          ceil_div(2*length,wide?128:64),wide?1:count);
     }
     kernels[4]->launch(context.stream,
         {JitKernelArg::device(last),JitKernelArg::device(output+start*matrix_bytes)},
-        ceil_div(n1,16),ceil_div(n2,16),count);
+        ceil_div(n1,tile),ceil_div(n2,tile),count);
   }
   return FLAGFFT_SUCCESS;
 }
