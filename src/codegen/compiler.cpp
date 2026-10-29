@@ -35,6 +35,14 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  std::vector<int64_t> npu_vector_dif_factors(int64_t n) {
+    std::vector<int64_t> factors;
+    for (int64_t radix:{19,17,13,11,7,15,10,8,9,5,4,3,2}) {
+      while (n%radix==0) { factors.push_back(radix); n/=radix; }
+    }
+    return n==1 && factors.size()>=3 ? factors : std::vector<int64_t>{};
+  }
+
   bool use_npu_packed_mixed_real(const FFTRequest &request, int64_t n, int64_t batch) {
     return request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
         request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
@@ -42,7 +50,8 @@ namespace {
         n>=16384 && n<=1048576 && n%2==0 && (n&(n-1))!=0 &&
         !request.input_strides.empty() && request.input_strides.back()==1 &&
         !request.packed_real_child && flag_or_default("FLAGFFT_NPU_VECTOR_DIF",false) &&
-        flag_or_default("FLAGFFT_NPU_PACKED_MIXED_REAL",false);
+        flag_or_default("FLAGFFT_NPU_PACKED_MIXED_REAL",false) &&
+        !npu_vector_dif_factors(n/2).empty();
   }
 
   bool use_npu_structured_fft(const FFTRequest &request, int64_t length, int64_t batch) {
@@ -146,15 +155,8 @@ namespace {
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
         n<8192 || n>1048576 || (n&(n-1))==0 ||
         !flag_or_default("FLAGFFT_NPU_VECTOR_DIF",false)) return nullptr;
-    std::vector<int64_t> factors;
-    int64_t remaining=n;
-    for (int64_t radix:{19,17,13,11,7}) {
-      while (remaining%radix==0) { factors.push_back(radix); remaining/=radix; }
-    }
-    for (int64_t radix:{15,10,8,9,5,4,3,2}) {
-      while (remaining%radix==0) { factors.push_back(radix); remaining/=radix; }
-    }
-    if (remaining!=1 || factors.size()<3) return nullptr;
+    const auto factors=npu_vector_dif_factors(n);
+    if (factors.empty()) return nullptr;
     auto power=[](int64_t value) { int64_t result=1;while(result<value) result*=2;return result; };
     auto ceiling=[](int64_t value,int64_t divisor) { return (value+divisor-1)/divisor; };
     int64_t initial_prefix=1;
