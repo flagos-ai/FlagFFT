@@ -58,22 +58,39 @@ else()
                     "this is the likely cause.")
 endif()
 
-set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORCE)
-set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
-set(TRITON_JIT_BUILD_OPERATORS OFF CACHE BOOL "Build libtriton_jit operators" FORCE)
-set(FLAGFFT_TRITON_JIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit"
-    CACHE PATH "libtriton_jit source directory")
-if(NOT EXISTS "${FLAGFFT_TRITON_JIT_SOURCE_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "libtriton_jit source is required at ${FLAGFFT_TRITON_JIT_SOURCE_DIR}")
+# Distributions that package libtriton_jit on its own link that copy instead
+# of building the bundled deps/libtriton_jit.
+option(FLAGFFT_USE_EXTERNAL_TRITON_JIT
+       "Link an installed TritonJIT package instead of the bundled deps/libtriton_jit" OFF)
+
+if(FLAGFFT_USE_EXTERNAL_TRITON_JIT)
+    find_package(TritonJIT 0.1.0 CONFIG REQUIRED)
+    if(DEFINED TritonJIT_BACKEND AND NOT TritonJIT_BACKEND STREQUAL BACKEND)
+        message(FATAL_ERROR
+            "BACKEND=${BACKEND} requires a matching TritonJIT package, found ${TritonJIT_BACKEND}")
+    endif()
+    # The bundled build gets nlohmann_json through libtriton_jit (see below).
+    find_package(nlohmann_json 3.10.5 REQUIRED)
+else()
+    set(TRITON_JIT_BUILD_EXAMPLES OFF CACHE BOOL "Build libtriton_jit examples" FORCE)
+    set(TRITON_JIT_INSTALL OFF CACHE BOOL "Install libtriton_jit" FORCE)
+    set(TRITON_JIT_BUILD_OPERATORS OFF CACHE BOOL "Build libtriton_jit operators" FORCE)
+    set(FLAGFFT_TRITON_JIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/libtriton_jit"
+        CACHE PATH "libtriton_jit source directory")
+    if(NOT EXISTS "${FLAGFFT_TRITON_JIT_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "libtriton_jit source is required at ${FLAGFFT_TRITON_JIT_SOURCE_DIR}")
+    endif()
+    add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
+                     "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
 endif()
-add_subdirectory("${FLAGFFT_TRITON_JIT_SOURCE_DIR}"
-                 "${CMAKE_CURRENT_BINARY_DIR}/deps/libtriton_jit")
 
 if(BACKEND STREQUAL "HCU")
     # The bundled HCU backend logs every kernel launch at INFO. That host-side
     # work sits between benchmark events and adds latency to short FFTs.
     # Compile out INFO while retaining warnings and errors.
-    target_compile_definitions(triton_jit PRIVATE GOOGLE_STRIP_LOG=1)
+    if(NOT FLAGFFT_USE_EXTERNAL_TRITON_JIT)
+        target_compile_definitions(triton_jit PRIVATE GOOGLE_STRIP_LOG=1)
+    endif()
 
     # The HCU Triton backend discovers HIP in the dependency subdirectory. Keep
     # the matching hipFFT package discoverable for FlagFFT's reference adaptor
@@ -92,14 +109,16 @@ if(BACKEND STREQUAL "HCU")
     find_package(hipfft CONFIG REQUIRED)
 endif()
 
-# libtriton_jit is a private bundled dependency. Give it a FlagFFT-owned
-# soname so an installed libflagfft can coexist with the separately packaged
-# libtriton_jit project, and locate it next to libflagfft at runtime.
-set_target_properties(triton_jit PROPERTIES
-    OUTPUT_NAME flagfft_triton_jit
-    INSTALL_RPATH "$ORIGIN"
-    INSTALL_RPATH_USE_LINK_PATH FALSE
-)
+if(NOT FLAGFFT_USE_EXTERNAL_TRITON_JIT)
+    # libtriton_jit is a private bundled dependency. Give it a FlagFFT-owned
+    # soname so an installed libflagfft can coexist with the separately packaged
+    # libtriton_jit project, and locate it next to libflagfft at runtime.
+    set_target_properties(triton_jit PROPERTIES
+        OUTPUT_NAME flagfft_triton_jit
+        INSTALL_RPATH "$ORIGIN"
+        INSTALL_RPATH_USE_LINK_PATH FALSE
+    )
+endif()
 
 # libtorch's ARM OpenBLAS build has a private libgfortran dependency in
 # torch.libs.  libtriton_jit discovers this directory in its subdirectory,
@@ -279,16 +298,23 @@ set_target_properties(flagfft PROPERTIES
     INSTALL_RPATH_USE_LINK_PATH FALSE
 )
 
-install(TARGETS flagfft triton_jit
+set(_flagfft_install_targets flagfft)
+if(NOT FLAGFFT_USE_EXTERNAL_TRITON_JIT)
+    list(APPEND _flagfft_install_targets triton_jit)
+endif()
+install(TARGETS ${_flagfft_install_targets}
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-# The bundled libtriton_jit imports its Python helpers (standalone_compile)
-# from <prefix>/share/triton_jit/scripts relative to its own library path.
-install(DIRECTORY deps/libtriton_jit/scripts/
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/triton_jit/scripts"
-        FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
+if(NOT FLAGFFT_USE_EXTERNAL_TRITON_JIT)
+    # The bundled libtriton_jit imports its Python helpers (standalone_compile)
+    # from <prefix>/share/triton_jit/scripts relative to its own library path.
+    # An installed TritonJIT package ships these scripts itself.
+    install(DIRECTORY deps/libtriton_jit/scripts/
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/triton_jit/scripts"
+            FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
+endif()
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.
 # Reused by flagfft-cli (bench/verify) and the native capture target. NPU links
