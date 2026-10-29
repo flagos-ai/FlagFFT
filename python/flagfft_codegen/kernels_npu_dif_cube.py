@@ -77,7 +77,7 @@ def cube_first(X,TW,Y):
  # Stage one has a scalar previous frequency per program. Absorb its
  # radix-dependent phase into the coefficients, and defer the remaining
  # column-dependent phase to the next stage's twiddle table.
- second=specs[1];rr=second['r'];prev=factors[0];mm=second['m'];pp=max(16,1<<(rr-1).bit_length());cc=1024;tt=(mm+cc-1)//cc
+ second=specs[1];rr=second['r'];prev=factors[0];mm=second['m'];pp=max(16,1<<(rr-1).bit_length());cc=min(1024,max(32,1<<(mm-1).bit_length()));tt=(mm+cc-1)//cc
  assert second['stage']==1 and second['phase']=='early' and len([z for z in specs if z['phase']=='early'])==2
  source=re.sub(r'@triton.jit\ndef '+second['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)','',source)
  source+=f'''

@@ -246,7 +246,7 @@ namespace {
       } else weights.push_back(0.0f);
       int64_t grid=0;
       if (cube_prefix && stage<2) {
-        grid=prefix*ceiling(m,stage?1024:512);
+        grid=prefix*ceiling(m,stage?std::min<int64_t>(1024,std::max<int64_t>(32,power(m))):512);
       } else if (switched) {
         const int64_t width=radix==2?2048:radix<=8?1024:512;
         const int64_t physical_prefix=aligned ? prefix/initial_prefix*padded_prefix : prefix;
