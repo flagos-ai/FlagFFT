@@ -7,13 +7,14 @@ from flagfft_codegen.kernels_npu_direct_prefetch import build_prefetched_direct_
 from test_npu_structured_fft import Pointer, execute_module
 
 
+@pytest.mark.parametrize('pair', [False, True])
 @pytest.mark.parametrize('n', [16, 17, 23, 31, 32])
 @pytest.mark.parametrize('batch', [1, 19, 64])
 @pytest.mark.parametrize('mode,direction', [('c2c','forward'), ('c2c','inverse'),
                                            ('r2c','forward'), ('c2r','inverse')])
-def test_prefetched_direct_fft(tmp_path, n, batch, mode, direction):
+def test_prefetched_direct_fft(tmp_path, n, batch, mode, direction, pair):
     from flagfft_codegen.metadata import _module_source
-    name, source, _ = build_prefetched_direct_dft(n, mode, direction, 8)
+    name, source, _ = build_prefetched_direct_dft(n, mode, direction, 8, pair=pair)
     path = tmp_path / 'prefetch.py'
     path.write_text(_module_source(source))
     ns, pid = execute_module(path)

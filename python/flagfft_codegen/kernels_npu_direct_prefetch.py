@@ -3,7 +3,7 @@
 """Tiny direct DFTs with contiguous input and coefficient windows."""
 
 
-def build_prefetched_direct_dft(n, mode, direction, batch_tile):
+def build_prefetched_direct_dft(n, mode, direction, batch_tile, pair=False):
     if not 2 <= n <= 32 or mode not in ('c2c', 'r2c', 'c2r'):
         raise ValueError('Prefetched direct DFT requires length 2..32')
     inverse = direction == 'inverse'
@@ -22,7 +22,7 @@ def build_prefetched_direct_dft(n, mode, direction, batch_tile):
     words = 1 << (bt * ins - 1).bit_length()
     table_words = 1 << (n * n - 1).bit_length()
     prefix = ('direct_idft' if inverse else 'direct_dft') if mode == 'c2c' else f'direct_dft_{mode}'
-    name = f'{prefix}_kernel_n{n}_f32_b{p}_prefetch_bt{bt}'
+    name = f'{prefix}_kernel_n{n}_f32_b{p}_prefetch'+('_pair' if pair else '')+f'_bt{bt}'
     args = ['in_ptr', 'out_ptr', 'dft_r_ptr', 'dft_i_ptr', 'nbatch']
     lines = ['@triton.jit', f'def {name}({",".join(args)}):',
         f'    base=tl.program_id(0)*{bt}', f'    word=tl.arange(0,{words})',
@@ -33,18 +33,47 @@ def build_prefetched_direct_dft(n, mode, direction, batch_tile):
         f'    wi_all=tl.load(dft_i_ptr+wt,wt<{n*n},0.)',
         f'    ar=tl.zeros(({bt},{p}),tl.float32)']
     if mode != 'c2r': lines.append(f'    ai=tl.zeros(({bt},{p}),tl.float32)')
-    for j in range(n):
-        sample = j if mode != 'c2r' or j < half else n - j
-        offset = j if mode == 'r2c' else 2 * sample
-        lines += [f'    xr=tl.gather(data,idx*{ins}+{offset},0)',
-            f'    wr=tl.gather(wr_all,{j*n}+k,0)', f'    wi=tl.gather(wi_all,{j*n}+k,0)']
-        if mode == 'r2c':
-            lines += ['    ar=ar+xr[:,None]*wr[None,:]', '    ai=ai+xr[:,None]*wi[None,:]']
-        else:
-            imag = 'tl.zeros_like(xr)' if mode == 'c2r' and (j == 0 or n % 2 == 0 and j == n // 2) else f'tl.gather(data,idx*{ins}+{2*sample+1},0)'
-            if mode == 'c2r' and j >= half: imag = '-' + imag
-            lines += [f'    xi={imag}', '    ar=ar+(xr[:,None]*wr[None,:]-xi[:,None]*wi[None,:])']
-            if mode != 'c2r': lines.append('    ai=ai+(xr[:,None]*wi[None,:]+xi[:,None]*wr[None,:])')
+    if pair:
+        lines.append(f'    xr=tl.gather(data,idx*{ins},0)')
+        lines.append('    ar=ar+xr[:,None]')
+        if mode == 'c2c':
+            lines += [f'    xi=tl.gather(data,idx*{ins}+1,0)', '    ai=ai+xi[:,None]']
+        for j in range(1,(n+1)//2):
+            offset=j if mode=='r2c' else 2*j
+            lines += [f'    xr=tl.gather(data,idx*{ins}+{offset},0)',
+                f'    wr=tl.gather(wr_all,{j*n}+k,0)', f'    wi=tl.gather(wi_all,{j*n}+k,0)']
+            if mode == 'r2c':
+                lines += [f'    qr=tl.gather(data,idx*{ins}+{n-j},0)',
+                    '    ar=ar+(xr+qr)[:,None]*wr[None,:]',
+                    '    ai=ai+(xr-qr)[:,None]*wi[None,:]']
+            else:
+                lines.append(f'    xi=tl.gather(data,idx*{ins}+{2*j+1},0)')
+                if mode == 'c2r':
+                    lines.append('    ar=ar+2.*(xr[:,None]*wr[None,:]-xi[:,None]*wi[None,:])')
+                else:
+                    lines += [f'    qr=tl.gather(data,idx*{ins}+{2*(n-j)},0)',
+                        f'    qi=tl.gather(data,idx*{ins}+{2*(n-j)+1},0)',
+                        '    ar=ar+((xr+qr)[:,None]*wr[None,:]-(xi-qi)[:,None]*wi[None,:])',
+                        '    ai=ai+((xi+qi)[:,None]*wr[None,:]+(xr-qr)[:,None]*wi[None,:])']
+        if n%2 == 0:
+            offset=n//2 if mode=='r2c' else n
+            lines += [f'    xr=tl.gather(data,idx*{ins}+{offset},0)',
+                f'    wr=tl.gather(wr_all,{n*n//2}+k,0)', '    ar=ar+xr[:,None]*wr[None,:]']
+            if mode == 'c2c':
+                lines += [f'    xi=tl.gather(data,idx*{ins}+{n+1},0)', '    ai=ai+xi[:,None]*wr[None,:]']
+    else:
+        for j in range(n):
+            sample = j if mode != 'c2r' or j < half else n - j
+            offset = j if mode == 'r2c' else 2 * sample
+            lines += [f'    xr=tl.gather(data,idx*{ins}+{offset},0)',
+                f'    wr=tl.gather(wr_all,{j*n}+k,0)', f'    wi=tl.gather(wi_all,{j*n}+k,0)']
+            if mode == 'r2c':
+                lines += ['    ar=ar+xr[:,None]*wr[None,:]', '    ai=ai+xr[:,None]*wi[None,:]']
+            else:
+                imag = 'tl.zeros_like(xr)' if mode == 'c2r' and (j == 0 or n % 2 == 0 and j == n // 2) else f'tl.gather(data,idx*{ins}+{2*sample+1},0)'
+                if mode == 'c2r' and j >= half: imag = '-' + imag
+                lines += [f'    xi={imag}', '    ar=ar+(xr[:,None]*wr[None,:]-xi[:,None]*wi[None,:])']
+                if mode != 'c2r': lines.append('    ai=ai+(xr[:,None]*wi[None,:]+xi[:,None]*wr[None,:])')
     if mode == 'r2c':
         endpoint = f'(k==0)|(k=={n//2})' if n%2==0 else '(k==0)'
         lines.append(f'    ai=tl.where(({endpoint})[None,:],0.,ai)')

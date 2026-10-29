@@ -53,7 +53,8 @@ def _build_direct_dft_kernel_source(
             _npu_backend_active() and os.environ.get("FLAGFFT_NPU_DIRECT_DFT_PREFETCH") == "1"
             and direct_dft_batch_tile(n, dtype=dtype) in (8, 16, 32)):
         from .kernels_npu_direct_prefetch import build_prefetched_direct_dft
-        return build_prefetched_direct_dft(n, "c2c", direction, direct_dft_batch_tile(n, dtype=dtype))
+        return build_prefetched_direct_dft(n, "c2c", direction, direct_dft_batch_tile(n, dtype=dtype),
+            pair=os.environ.get("FLAGFFT_NPU_DIRECT_DFT_PAIR") == "1")
     block = lane_block_for(n)
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     suffix = _dtype_suffix(dtype)

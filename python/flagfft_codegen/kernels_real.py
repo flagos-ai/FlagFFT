@@ -49,7 +49,8 @@ def _build_real_direct_dft_kernel_source(
             and direct_dft_batch_tile(n, dtype=dtype) in (8, 16, 32)):
         from .kernels_npu_direct_prefetch import build_prefetched_direct_dft
         return build_prefetched_direct_dft(n, "c2r" if inverse else "r2c",
-            "inverse" if inverse else "forward", direct_dft_batch_tile(n, dtype=dtype))
+            "inverse" if inverse else "forward", direct_dft_batch_tile(n, dtype=dtype),
+            pair=os.environ.get("FLAGFFT_NPU_DIRECT_DFT_PAIR") == "1")
     half = n // 2 + 1
     outputs = n if inverse else half
     block = _next_power_of_two(outputs)
