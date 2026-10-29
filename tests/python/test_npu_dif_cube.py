@@ -31,6 +31,9 @@ def _tables(factors, specs, sign):
                 w[pf, imag:imag+radix, pr:pr+radix] = co
             tables.append(w)
             continue
+        if stage == 0:
+            tables.append(torch.zeros(1))
+            continue
         length = radix*s['m']
         pf = torch.arange(s['physical_prefix'])
         logical = pf//s['padded_prefix']*s['initial_prefix']+pf%s['padded_prefix']
