@@ -2794,6 +2794,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         key.perm_form=std::string("npu_matrix_fourstep_")+phase+(wide?"_wide":"");
         kernels.push_back(compile_kernel(key));
       }
+      std::vector<std::shared_ptr<JitKernel>> real_kernels;
+      if (request.direction=="forward" && flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FOURSTEP",false)) {
+        for (const char *phase:{"pack0_real","cube0_real","transpose_half"}) {
+          key.perm_form=std::string("npu_matrix_fourstep_")+phase+(wide?"_wide":"");
+          real_kernels.push_back(compile_kernel(key));
+        }
+      }
       std::vector<DeviceAllocation> tables,scratch;
       for(int stage=0;stage<2;++stage) {
         const int64_t length=stage==0?n1:n2, width=stage==0?n2:n1;
@@ -2814,7 +2821,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       for(int i=0;i<2;++i)
         scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*n1*n2*2*sizeof(float))));
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
-          std::move(kernels),std::move(tables),std::move(scratch),wide);
+          std::move(kernels),std::move(tables),std::move(scratch),wide,std::move(real_kernels));
     }
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
     const bool structured_pair = request.device_type == "npu" &&

@@ -10,8 +10,10 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('a,b',[(17,19),(48,49),(209,221)])
 @pytest.mark.parametrize('batch',[1,3])
 @pytest.mark.parametrize('wide',[False,True])
-@pytest.mark.parametrize('direction',['forward','inverse'])
-def test_full_matrix_fourstep(tmp_path,a,b,batch,direction,wide):
+@pytest.mark.parametrize('mode',['forward','inverse','r2c'])
+def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide):
+    real_forward=mode=="r2c"
+    direction="forward" if real_forward else mode
     path=tmp_path/'fourstep.py';path.write_text(build_matrix_fourstep(a,b,wide=wide))
     ns,_=execute_module(path);pid=[0,0,0]
     ns['tl'].program_id=lambda axis:torch.tensor(pid[axis])
@@ -27,9 +29,10 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,direction,wide):
         weights.append(w);packed.append(torch.full((batch,width,2*p),float('nan')))
     angle=sign*2*math.pi*torch.arange(b,dtype=torch.float64)[:,None]*torch.arange(a)[None,:]/(a*b)
     tw=torch.cat((angle.cos().float().flatten(),angle.sin().float().flatten()))
-    torch.manual_seed(20261029);x=torch.randn(batch,a*b,2);saved=x.clone()
-    mid=torch.full_like(x,float('nan'));last=torch.full_like(x,float('nan'))
-    guarded=torch.full((x.numel()+128,),31415.25)
+    torch.manual_seed(20261029);x=torch.randn((batch,a*b) if real_forward else (batch,a*b,2));saved=x.clone()
+    mid=torch.full((batch,a*b,2),float('nan'));last=torch.full_like(mid,float('nan'))
+    half=a*b//2+1;distance=half+7 if real_forward else a*b
+    guarded=torch.full((batch*distance*2+128,),31415.25)
     tile=32 if wide else 16
     bm,bn=(64,128) if wide else (32,64)
     for stage,(length,width) in enumerate(((a,b),(b,a))):
@@ -40,7 +43,7 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,direction,wide):
                 pid[0]=r
                 for col in range((width+tile-1)//tile):
                     pid[1]=col
-                    ns[f'pack{stage}'](Pointer(x if stage==0 else mid),Pointer(packed[stage]),Pointer(tw))
+                    ns['pack0_real' if real_forward and stage==0 else f'pack{stage}'](Pointer(x if stage==0 else mid),Pointer(packed[stage]),Pointer(tw))
         for bz in range(1 if wide else batch):
             pid[2]=bz
             for r in range(((batch if wide else 1)*width+bm-1)//bm):
@@ -49,15 +52,23 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,direction,wide):
                     pid[1]=col
                     args=[Pointer(packed[stage]),Pointer(weights[stage]),Pointer(mid if stage==0 else last)]
                     if wide:args.append(batch)
-                    ns[f'cube{stage}'](*args)
+                    ns['cube0_real' if real_forward and stage==0 else f'cube{stage}'](*args)
     for bz in range(batch):
         pid[2]=bz
         for r in range((a+tile-1)//tile):
             pid[0]=r
             for col in range((b+tile-1)//tile):
-                pid[1]=col;ns['transpose'](Pointer(last),Pointer(guarded,64))
-    actual=torch.view_as_complex(guarded[64:-64].reshape(batch,a*b,2))
-    ref=torch.fft.ifft(torch.view_as_complex(x))*a*b if direction=='inverse' else torch.fft.fft(torch.view_as_complex(x))
+                pid[1]=col
+                args=[Pointer(last),Pointer(guarded,64)]
+                if real_forward: args.append(distance)
+                ns['transpose_half' if real_forward else 'transpose'](*args)
+    output=guarded[64:-64].reshape(batch,distance,2)
+    if real_forward:
+        assert (output[:,half:]==31415.25).all()
+        actual=torch.view_as_complex(output[:,:half].contiguous());ref=torch.fft.rfft(x)
+    else:
+        actual=torch.view_as_complex(output)
+        ref=torch.fft.ifft(torch.view_as_complex(x))*a*b if direction=='inverse' else torch.fft.fft(torch.view_as_complex(x))
     assert torch.isfinite(actual).all()
     assert torch.linalg.vector_norm(actual-ref)/torch.linalg.vector_norm(ref)<2e-6
     assert torch.equal(x,saved)
