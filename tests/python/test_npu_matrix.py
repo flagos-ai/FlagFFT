@@ -8,7 +8,7 @@ from test_npu_structured_fft import Pointer,execute_module
 
 
 @pytest.mark.parametrize('snapshot',[False,True])
-@pytest.mark.parametrize('n',[48,49,128,210,256])
+@pytest.mark.parametrize('n',[23,48,49,128,210,256])
 @pytest.mark.parametrize('batch',[3,64])
 @pytest.mark.parametrize('mode,direction',[(0,'forward'),(0,'inverse'),(1,'forward'),(2,'inverse')])
 def test_real_matrix_embedding(tmp_path,n,batch,mode,direction,snapshot):

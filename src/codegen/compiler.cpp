@@ -1257,10 +1257,12 @@ namespace {
 
   std::shared_ptr<CompiledRawNode> make_npu_matrix_child(
       const FFTRequest &request, int64_t length, int64_t batch, int64_t mode) {
+    const bool short_matrix = length>=17 && length<=32 && batch>=16 &&
+        flag_or_default("FLAGFFT_NPU_MATRIX_SHORT",false);
     if (request.device_type != "npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
         request.requires_contiguous_copy || request.input_strides.empty() || request.input_strides.back()!=1 ||
-        length<=32 || length>256 ||
+        (length<=32 && !short_matrix) || length>256 ||
         ((length&(length-1))==0 &&
          !(mode!=0 && batch>=16 && request.origin_rank<=2 &&
            flag_or_default("FLAGFFT_NPU_MATRIX_REAL_POWER2",false))) ||
@@ -2215,7 +2217,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                                   bool allow_npu_aiv256_transposed_store) {
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
-  if (std::dynamic_pointer_cast<LeafPlanNode>(node))
+  if (std::dynamic_pointer_cast<LeafPlanNode>(node) ||
+      (std::dynamic_pointer_cast<DirectDFTPlanNode>(node) &&
+       flag_or_default("FLAGFFT_NPU_MATRIX_SHORT",false)))
     if (auto matrix=make_npu_matrix_child(request,node->length,batch,0)) return matrix;
 #endif
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -3252,6 +3256,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) ||
+      (std::dynamic_pointer_cast<DirectDFTPlanNode>(node) &&
+       flag_or_default("FLAGFFT_NPU_MATRIX_SHORT",false)) ||
       flag_or_default("FLAGFFT_NPU_MATRIX_REAL_POWER2",false))
     if (auto matrix=make_npu_matrix_child(request,node->length,batch,1)) return matrix;
 #endif
@@ -3424,6 +3430,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) ||
+      (std::dynamic_pointer_cast<DirectDFTPlanNode>(node) &&
+       flag_or_default("FLAGFFT_NPU_MATRIX_SHORT",false)) ||
       flag_or_default("FLAGFFT_NPU_MATRIX_REAL_POWER2",false))
     if (auto matrix=make_npu_matrix_child(request,node->length,batch,2)) return matrix;
 #endif
