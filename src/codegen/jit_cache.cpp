@@ -55,7 +55,9 @@ namespace {
               : std::min({int64_t{8}, width, std::max<int64_t>(1, budget / axis)});
           // Narrow structured slices currently fail under CANN loop scheduling.
           // Keep their full logical grid; wider groups have native replay coverage.
-          if (pack < 8) return false;
+          const bool dense_col=!row && key.four_step_n1>=512 && key.four_step_n2>=512 &&
+              env_flag_enabled(std::getenv("FLAGFFT_NPU_FOURSTEP_DENSE_SECOND"));
+          if (pack < 8 && !(dense_col && pack>=4 && axis*pack==budget)) return false;
         }
         return setting=="1";
       }
@@ -246,7 +248,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";npu-auto-blockify=" + std::string(npu_auto_blockify_for(key) ? "1" : "0");
     const char *vector_remainder = std::getenv("FLAGFFT_NPU_VECTOR_REMAINDER");
     cache_key += ";npu-source-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
-    for (const char *name : {"FLAGFFT_NPU_DIRECT_DFT_PAIR", "FLAGFFT_NPU_DIRECT_DFT_PREFETCH", "FLAGFFT_NPU_DIF_TRANSPOSE_TILE", "FLAGFFT_NPU_DIRECT_DFT_BT", "FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "FLAGFFT_NPU_REAL_BOUNDARY_TILE", "FLAGFFT_NPU_COMPACT_STAGES", "FLAGFFT_NPU_FOURSTEP_PACK", "FLAGFFT_NPU_AFFINE_MATRIX_IO", "FLAGFFT_NPU_TRIG_TWIDDLES"}) {
+    for (const char *name : {"FLAGFFT_NPU_FOURSTEP_DENSE_SECOND", "FLAGFFT_NPU_DIRECT_DFT_PAIR", "FLAGFFT_NPU_DIRECT_DFT_PREFETCH", "FLAGFFT_NPU_DIF_TRANSPOSE_TILE", "FLAGFFT_NPU_DIRECT_DFT_BT", "FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "FLAGFFT_NPU_REAL_BOUNDARY_TILE", "FLAGFFT_NPU_COMPACT_STAGES", "FLAGFFT_NPU_FOURSTEP_PACK", "FLAGFFT_NPU_AFFINE_MATRIX_IO", "FLAGFFT_NPU_TRIG_TWIDDLES"}) {
       const char *value = std::getenv(name);
       cache_key += ";" + std::string(name) + "=" + (value != nullptr ? value : "default");
     }

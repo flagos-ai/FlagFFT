@@ -6,6 +6,7 @@ The one-pass leaf uses a 32 x (N/32) decomposition. Larger four-step plans
 reuse the two-pass row/column execution node with fused twiddle and stores.
 """
 import json
+import os
 from pathlib import Path
 from .artifacts import write_text_atomic
 
@@ -140,6 +141,8 @@ def emit_structured(*, length, direction, out_dir, first=None, n1=0, n2=0, tile=
     if direction not in ('forward','inverse'):
         raise ValueError('Invalid FFT direction')
     inverse=direction=='inverse'
+    dense_second=(first is not None and recursive and min(n1,n2)>=512
+                  and os.environ.get('FLAGFFT_NPU_FOURSTEP_DENSE_SECOND')=='1')
     if first is None:
         if length not in (1024,2048):
             raise ValueError('Fused structured leaf supports 1024/2048')
@@ -212,9 +215,18 @@ def {name}({','.join(args)}):
     batch=tl.program_id(1)
     word=tl.program_id(0)*{2*tile}+tl.arange(0,{2*tile})[None,:]
     row=tl.arange(0,{l})[:,None]
-    raw=tl.load(in_ptr+batch*{2*n1*n2}+row*{2*width}+word)
+"""
+            if dense_second and not first:
+                body+=f"""    raw=tl.load(in_ptr+batch*{2*n1*n2}+tl.program_id(0)*{2*points}+tl.arange(0,{2*points}))
     r,i=tl.split(tl.reshape(raw,({points},2)))
-    if {inverse}: i=-i
+    r=tl.reshape(tl.permute(tl.reshape(r,({tile},{l})),1,0),({points},))
+    i=tl.reshape(tl.permute(tl.reshape(i,({tile},{l})),1,0),({points},))
+"""
+            else:
+                body+=f"""    raw=tl.load(in_ptr+batch*{2*n1*n2}+row*{2*width}+word)
+    r,i=tl.split(tl.reshape(raw,({points},2)))
+"""
+            body+=f"""    if {inverse}: i=-i
 """
             body+=recursive_axis_body(l,tile)
             # Bound the join's live storage and preserve affine rank-two DMA.
@@ -233,7 +245,13 @@ def {name}({','.join(args)}):
     cr=tl.reshape(tl.load(twiddle_ptr+tw),({chunk},))
     ci=tl.reshape(tl.load(twiddle_ptr+{n1*n2}+tw),({chunk},))
     pr,pi=pr*cr-pi*ci,pr*ci+pi*cr
-    pr=tl.reshape(tl.trans(tl.reshape(pr,({rows},{tile}))),({chunk},))
+"""
+                    if dense_second:
+                        body+=f"""    raw=tl.reshape(tl.join(pr,pi),({rows},{2*tile}))
+    dest=batch*{2*n1*n2}+row*{2*width}+word
+"""
+                    else:
+                        body+=f"""    pr=tl.reshape(tl.trans(tl.reshape(pr,({rows},{tile}))),({chunk},))
     pi=tl.reshape(tl.trans(tl.reshape(pi,({rows},{tile}))),({chunk},))
     raw=tl.reshape(tl.join(pr,pi),({tile},{2*rows}))
     col=tl.program_id(0)*{tile}+tl.arange(0,{tile})[:,None]
@@ -245,6 +263,10 @@ def {name}({','.join(args)}):
 """
                 body+='    tl.store(out_ptr+dest,raw)\n'
         kind='four_step_row' if first else 'four_step_col'
+    if dense_second:
+        previous_name=name
+        name+='_dense_second'
+        body=body.replace(f'def {previous_name}(',f'def {name}(')
     source=('import torch\nimport torch_npu\nimport triton\nimport triton.language as tl\n'
             'import triton.language.extra.cann.extension as al\n\n'+FFT_HELPERS+body)
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True)
@@ -252,6 +274,6 @@ def {name}({','.join(args)}):
     meta=dict(module_path=str(path),kernel_name=name,signature=signature,num_warps=4,
         num_stages=1,batch_per_block=1,arg_names=args,kernel_type=kind,length=length,
         inner_pack=tile if first is not None else 1,tle_fused_twiddle=first is not None,
-        dtype='complex64',direction=direction)
+        dtype='complex64',direction=direction,dense_second=dense_second)
     write_text_atomic(path.with_suffix('.json'),json.dumps(meta,sort_keys=True))
     return meta
