@@ -35,6 +35,16 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  bool use_npu_packed_mixed_real(const FFTRequest &request, int64_t n, int64_t batch) {
+    return request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
+        request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
+        request.raw_dim==1 && request.origin_rank<=1 && batch>=16 &&
+        n>=16384 && n<=1048576 && n%2==0 && (n&(n-1))!=0 &&
+        !request.input_strides.empty() && request.input_strides.back()==1 &&
+        !request.packed_real_child && flag_or_default("FLAGFFT_NPU_VECTOR_DIF",false) &&
+        flag_or_default("FLAGFFT_NPU_PACKED_MIXED_REAL",false);
+  }
+
   bool use_npu_structured_fft(const FFTRequest &request, int64_t length, int64_t batch) {
     const bool measured_size = ((length == 1024 || length == 2048) && (batch == 1 || batch == 64)) ||
                                (length == 16384 && batch == 1);
@@ -1936,6 +1946,11 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    if (use_npu_packed_mixed_real(request,n,batch) &&
+        std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) &&
+        std::dynamic_pointer_cast<FourStepPlanNode>(child_plan)) {
+      return PackedRealChild {std::move(child_request),std::move(child_plan)};
+    }
     if (is_npu_fp32_target && (n&(n-1))==0 && n>=8192 &&
         flag_or_default("FLAGFFT_NPU_STRUCTURED_PACKED_FOURSTEP",false)) {
       const int64_t packed=n/2;
@@ -3391,7 +3406,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         build_raw_packed_real_twiddle(request, n));
   }
   if (auto packed_child =
-          allow_packed && !npu_bounded_fourstep ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
+          allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
+              ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;
     DeviceAllocation packed_output =
         adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
@@ -3490,7 +3506,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     return compile_raw_node(node, request, batch);
   }
   if (auto packed_child =
-          allow_packed && !npu_bounded_fourstep ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
+          allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
+              ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
     const int64_t packed = n / 2;
     const char *packed_fuse_setting = std::getenv("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
     if (packed_fuse_setting != nullptr && std::string(packed_fuse_setting) != "0" &&
