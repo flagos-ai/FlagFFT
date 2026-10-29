@@ -415,12 +415,13 @@ def _build_r2c_half_pack_kernel_source(
     )
 
 
-def _build_npu_packed_boundary(n, inverse, count=256):
+def _build_npu_packed_boundary(n, inverse, count=256, paired=False):
     """Use contiguous complex windows and local reversal for the real boundary."""
     packed=n//2;half=packed+1
     if count not in (256,512,1024,2048):
         raise ValueError("NPU packed boundary tile must be 256, 512, 1024 or 2048")
     name=f"_{'c2r_packed_preprocess' if inverse else 'r2c_packed_postprocess'}_kernel_n{n}_f32"
+    if paired: name += "_paired"
     distance='input_distance' if inverse else 'output_distance'
     source=f'''@triton.jit
 def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
@@ -461,7 +462,29 @@ def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
     else:
         source+='    real=0.5*(sr+di*wr+dr*wi)\n    imag=0.5*(si-dr*wr+di*wi)\n'
         destination='batch*output_distance*2+start*2+word'
-    source+=f'''    value=tl.reshape(tl.join(real,imag),({2*count},))
+    if paired:
+        # One pair of loads determines both partners. Store two disjoint
+        # contiguous windows, with DC/Nyquist and the midpoint written once.
+        center=packed//2
+        if inverse:
+            source+='    mr=sr+(di*wr-dr*wi)\n    mi=-si+(dr*wr+di*wi)\n'
+            base=f'batch*{2*packed}'
+        else:
+            source+='    mr=0.5*(sr-di*wr-dr*wi)\n    mi=-0.5*(si+dr*wr-di*wi)\n'
+            base='batch*output_distance*2'
+        source+=f'''    value=tl.reshape(tl.join(real,imag),({2*count},))
+    tl.store(out_ptr+{base}+start*2+word,value,(batch<nbatch)&(start*2+word<{2*(center+1)}))
+    mirror_start=tl.maximum({packed}-start-{count}+1,0)
+    mirror_k=mirror_start+lane
+    source_k={packed}-mirror_k
+    ix=tl.minimum(tl.maximum(source_k-start,0),{count-1})
+    mr=tl.gather(mr,ix,0);mi=tl.gather(mi,ix,0)
+    mirror_value=tl.reshape(tl.join(mr,mi),({2*count},))
+    mask=(batch<nbatch)&(mirror_start*2+word>={2*(center+1)})&(mirror_start*2+word<{2*packed if inverse else 2*half})
+    tl.store(out_ptr+{base}+mirror_start*2+word,mirror_value,mask)
+'''
+    else:
+        source+=f'''    value=tl.reshape(tl.join(real,imag),({2*count},))
     tl.store(out_ptr+{destination},value,(batch<nbatch)&(start*2+word<{2*packed if inverse else 2*half}))
 '''
     return name,source,['in_ptr','twiddle_ptr','out_ptr',distance,'nbatch'],1
@@ -473,7 +496,7 @@ def _build_r2c_packed_postprocess_kernel_source(
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
     if current_profile().backend=="npu" and dtype=="complex64" and n>=512:
-        return _build_npu_packed_boundary(n,False,int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE","256")))
+        return _build_npu_packed_boundary(n,False,int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE","256")),os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY","0")=="1")
     packed = n // 2
     half = packed + 1
     block = 256
@@ -535,7 +558,7 @@ def _build_c2r_packed_preprocess_kernel_source(
     if n % 2 != 0:
         raise ValueError("packed real FFT requires an even length")
     if current_profile().backend=="npu" and dtype=="complex64" and n>=512:
-        return _build_npu_packed_boundary(n,True,int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE","256")))
+        return _build_npu_packed_boundary(n,True,int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE","256")),os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY","0")=="1")
     packed = n // 2
     block = 256
     block_cols, rows_per_block = _packed_layout(packed, block)
