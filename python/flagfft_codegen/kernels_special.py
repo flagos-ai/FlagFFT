@@ -50,7 +50,8 @@ def _build_direct_dft_kernel_source(
             n, strided=strided, transpose_output=cube_transposed
         )
     if (not strided and dtype == "complex64" and 2 <= n <= 32 and
-            _npu_backend_active() and os.environ.get("FLAGFFT_NPU_DIRECT_DFT_PREFETCH") == "1"):
+            _npu_backend_active() and os.environ.get("FLAGFFT_NPU_DIRECT_DFT_PREFETCH") == "1"
+            and direct_dft_batch_tile(n, dtype=dtype) in (8, 16, 32)):
         from .kernels_npu_direct_prefetch import build_prefetched_direct_dft
         return build_prefetched_direct_dft(n, "c2c", direction, direct_dft_batch_tile(n, dtype=dtype))
     block = lane_block_for(n)

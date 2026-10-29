@@ -9,6 +9,10 @@ def build_prefetched_direct_dft(n, mode, direction, batch_tile):
     inverse = direction == 'inverse'
     if direction not in ('forward', 'inverse') or (mode != 'c2c' and (mode == 'c2r') != inverse):
         raise ValueError('Real direct DFT direction disagrees with its boundary')
+    # Unit batch tiles have a native UB failure in this gather/reduction form.
+    # Callers retain the existing generator for narrower tiles.
+    if batch_tile not in (8, 16, 32):
+        raise ValueError("Prefetched DFT requires a batch tile of 8, 16 or 32")
     bt = batch_tile
     half = n // 2 + 1
     ins = n if mode == 'r2c' else 2 * half if mode == 'c2r' else 2 * n

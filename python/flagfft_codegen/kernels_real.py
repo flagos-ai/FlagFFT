@@ -45,7 +45,8 @@ def _build_real_direct_dft_kernel_source(
     if dtype not in {"complex64", "complex128"}:
         raise ValueError("real DirectDFT requires complex64 or complex128")
     if (dtype == "complex64" and 2 <= n <= 32 and current_profile().backend == "npu"
-            and os.environ.get("FLAGFFT_NPU_DIRECT_DFT_PREFETCH") == "1"):
+            and os.environ.get("FLAGFFT_NPU_DIRECT_DFT_PREFETCH") == "1"
+            and direct_dft_batch_tile(n, dtype=dtype) in (8, 16, 32)):
         from .kernels_npu_direct_prefetch import build_prefetched_direct_dft
         return build_prefetched_direct_dft(n, "c2r" if inverse else "r2c",
             "inverse" if inverse else "forward", direct_dft_batch_tile(n, dtype=dtype))
