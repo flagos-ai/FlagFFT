@@ -971,6 +971,7 @@ void CheckCudaExecutionGraphReplay(bool rank_one, bool rank_two = false) {
       ASSERT_EQ(status,FLAGFFT_SUCCESS);
       stream.sync();
       EXPECT_NE(graph->graph, nullptr);
+      EXPECT_FALSE(graph->graph_failed);
       destination.copy_to_host(output.data(), bytes);
       for (int b = 0; b < batch; ++b) {
         for (int i = 0; i < total; ++i) {
