@@ -20,7 +20,8 @@ def build_prefetched_direct_dft(n, mode, direction, batch_tile, pair=False):
     frequencies = half if mode == 'r2c' else n
     p = 1 << (frequencies - 1).bit_length()
     words = 1 << (bt * ins - 1).bit_length()
-    table_words = 1 << (n * n - 1).bit_length()
+    table_elements = n * (n//2+1) if pair else n*n
+    table_words = 1 << (table_elements - 1).bit_length()
     prefix = ('direct_idft' if inverse else 'direct_dft') if mode == 'c2c' else f'direct_dft_{mode}'
     name = f'{prefix}_kernel_n{n}_f32_b{p}_prefetch'+('_pair' if pair else '')+f'_bt{bt}'
     args = ['in_ptr', 'out_ptr', 'dft_r_ptr', 'dft_i_ptr', 'nbatch']
@@ -29,8 +30,8 @@ def build_prefetched_direct_dft(n, mode, direction, batch_tile, pair=False):
         f'    data=tl.load(in_ptr+base*{ins}+word,(word<{bt*ins})&(word<(nbatch-base)*{ins}),0.)',
         f'    b=base+tl.arange(0,{bt})', f'    idx=tl.arange(0,{bt})',
         f'    k=tl.arange(0,{p})', f'    wt=tl.arange(0,{table_words})',
-        f'    wr_all=tl.load(dft_r_ptr+wt,wt<{n*n},0.)',
-        f'    wi_all=tl.load(dft_i_ptr+wt,wt<{n*n},0.)',
+        f'    wr_all=tl.load(dft_r_ptr+wt,wt<{table_elements},0.)',
+        f'    wi_all=tl.load(dft_i_ptr+wt,wt<{table_elements},0.)',
         f'    ar=tl.zeros(({bt},{p}),tl.float32)']
     if mode != 'c2r': lines.append(f'    ai=tl.zeros(({bt},{p}),tl.float32)')
     if pair:
