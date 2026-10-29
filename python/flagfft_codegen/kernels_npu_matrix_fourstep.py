@@ -113,13 +113,38 @@ def cube0_real(P,W,Y):
     result=tl.dot(value,weights,input_precision="ieee")
     tl.store(Y+batch*{2*a*b}+r[:,None]*{2*a}+c[None,:],result,(r[:,None]<{b})&(c[None,:]<{2*a}))
 '''
+    bp=1 << (b - 1).bit_length()
+    compact_columns=2*(b//2+1)
+    if wide:
+        body += f'''@triton.jit
+def cube1_half(P,W,Y,NB):
+    r=tl.program_id(0)*{bm}+tl.arange(0,{bm})
+    k=tl.arange(0,{2*bp})
+    c=tl.program_id(1)*{bn}+tl.arange(0,{bn})
+    value=tl.load(P+r[:,None]*{2*bp}+k[None,:],r[:,None]<NB*{a},0.)
+    weights=tl.load(W+k[:,None]*{2*bp}+c[None,:],c[None,:]<{2*bp},0.)
+    result=tl.dot(value,weights,input_precision="ieee")
+    tl.store(Y+r[:,None]*{2*b}+c[None,:],result,(r[:,None]<NB*{a})&(c[None,:]<{compact_columns}))
+'''
+    else:
+        body += f'''@triton.jit
+def cube1_half(P,W,Y):
+    batch=tl.program_id(2).to(tl.int64)
+    r=tl.program_id(0)*32+tl.arange(0,32)
+    k=tl.arange(0,{2*bp})
+    c=tl.program_id(1)*64+tl.arange(0,64)
+    value=tl.load(P+batch*{a*2*bp}+r[:,None]*{2*bp}+k[None,:],r[:,None]<{a},0.)
+    weights=tl.load(W+k[:,None]*{2*bp}+c[None,:],c[None,:]<{2*bp},0.)
+    result=tl.dot(value,weights,input_precision="ieee")
+    tl.store(Y+batch*{2*a*b}+r[:,None]*{2*b}+c[None,:],result,(r[:,None]<{a})&(c[None,:]<{compact_columns}))
+'''
     half=a*b//2+1
     body += f'''@triton.jit
 def transpose_half(X,Y,D):
     batch=tl.program_id(2).to(tl.int64)
     r=tl.program_id(0)*{tile}+tl.arange(0,{tile})[:,None]
     w=tl.program_id(1)*{2*tile}+tl.arange(0,{2*tile})[None,:]
-    value=tl.load(X+batch*{2*a*b}+r*{2*b}+w,(r<{a})&(w<{2*b}),0.)
+    value=tl.load(X+batch*{2*a*b}+r*{2*b}+w,(r<{a})&(w<{2*(b//2+1)}),0.)
     value=tl.reshape(tl.permute(tl.reshape(value,({tile},{tile},2)),1,0,2),({tile},{2*tile}))
     rr=tl.program_id(1)*{tile}+tl.arange(0,{tile})[:,None]
     ww=tl.program_id(0)*{2*tile}+tl.arange(0,{2*tile})[None,:]
@@ -131,7 +156,7 @@ def transpose_half(X,Y,D):
 
 
 def emit_matrix_fourstep(a,b,phase,direction,out_dir,wide=False):
-    names=('pack0','cube0','pack1','cube1','transpose','pack0_real','cube0_real','transpose_half')
+    names=('pack0','cube0','pack1','cube1','transpose','pack0_real','cube0_real','cube1_half','transpose_half')
     if phase not in names or direction not in ('forward','inverse'):
         raise ValueError('Invalid matrix four-step phase or direction')
     path=Path(out_dir)/(f'npu_matrix_fourstep_{a}_{b}_{phase}_{direction}'+('_wide' if wide else '')+'.py')

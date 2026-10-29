@@ -148,7 +148,7 @@ def main() -> None:
     parser.add_argument("--npu-tensor-shape", type=_csv_ints, default=())
     parser.add_argument("--npu-vector-dif-phase", type=int)
     parser.add_argument("--npu-matrix-fourstep-wide", action="store_true")
-    parser.add_argument("--npu-matrix-fourstep-phase", choices=("pack0","cube0","pack1","cube1","transpose","pack0_real","cube0_real","transpose_half"))
+    parser.add_argument("--npu-matrix-fourstep-phase", choices=("pack0","cube0","pack1","cube1","transpose","pack0_real","cube0_real","cube1_half","transpose_half"))
     parser.add_argument("--npu-matrix-phase", choices=('pack','cube'))
     parser.add_argument("--npu-packed-real", action="store_true")
     parser.add_argument("--npu-fft-output-stride", type=int, default=1)

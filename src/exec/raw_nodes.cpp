@@ -3594,16 +3594,16 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
       std::vector<JitKernelArg> cube_args={JitKernelArg::device(packed),
           JitKernelArg::device(tables[stage].get()),JitKernelArg::device(stage==0?mid:last)};
       if (wide) cube_args.push_back(JitKernelArg::i32(static_cast<int32_t>(count)));
-      const auto &cube_kernel=real_forward && stage==0?real_kernels[1]:kernels[2*stage+1];
+      const auto &cube_kernel=real_forward?real_kernels[stage==0?1:2]:kernels[2*stage+1];
       cube_kernel->launch(context.stream,cube_args,
           wide?ceil_div(count*width,64):ceil_div(width,32),
-          ceil_div(2*length,wide?128:64),wide?1:count);
+          ceil_div(real_forward && stage==1?2*(length/2+1):2*length,wide?128:64),wide?1:count);
     }
     std::vector<JitKernelArg> final_args={JitKernelArg::device(last),JitKernelArg::device(output+start*output_bytes)};
     if (real_forward) final_args.push_back(JitKernelArg::i64(output_distance));
-    const auto &final_kernel=real_forward?real_kernels[2]:kernels[4];
+    const auto &final_kernel=real_forward?real_kernels[3]:kernels[4];
     final_kernel->launch(context.stream,final_args,
-        ceil_div(n1,tile),ceil_div(n2,tile),count);
+        ceil_div(n1,tile),ceil_div(real_forward?n2/2+1:n2,tile),count);
   }
   return FLAGFFT_SUCCESS;
 }

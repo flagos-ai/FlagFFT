@@ -2800,7 +2800,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       }
       std::vector<std::shared_ptr<JitKernel>> real_kernels;
       if (request.direction=="forward" && flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FOURSTEP",false)) {
-        for (const char *phase:{"pack0_real","cube0_real","transpose_half"}) {
+        for (const char *phase:{"pack0_real","cube0_real","cube1_half","transpose_half"}) {
           key.perm_form=std::string("npu_matrix_fourstep_")+phase+(wide?"_wide":"");
           real_kernels.push_back(compile_kernel(key));
         }

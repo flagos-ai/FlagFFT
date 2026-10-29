@@ -1283,7 +1283,7 @@ struct CompiledRawMatrixFourStepNode final : CompiledRawNode {
       const RawExecutionContext &context) const;
   flagfftResult execute_impl(adaptor::DevicePtr input, adaptor::DevicePtr output,
       const RawExecutionContext &context, bool real_forward) const;
-  bool supports_real_forward() const { return real_kernels.size() == 3; }
+  bool supports_real_forward() const { return real_kernels.size() == 4; }
   std::string describe() const override;
   int64_t n1, n2, max_batch;
   bool wide;

@@ -48,16 +48,16 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide):
             pid[2]=bz
             for r in range(((batch if wide else 1)*width+bm-1)//bm):
                 pid[0]=r
-                for col in range((2*length+bn-1)//bn):
+                for col in range(((2*(length//2+1) if real_forward and stage==1 else 2*length)+bn-1)//bn):
                     pid[1]=col
                     args=[Pointer(packed[stage]),Pointer(weights[stage]),Pointer(mid if stage==0 else last)]
                     if wide:args.append(batch)
-                    ns['cube0_real' if real_forward and stage==0 else f'cube{stage}'](*args)
+                    ns[('cube0_real' if stage==0 else 'cube1_half') if real_forward else f'cube{stage}'](*args)
     for bz in range(batch):
         pid[2]=bz
         for r in range((a+tile-1)//tile):
             pid[0]=r
-            for col in range((b+tile-1)//tile):
+            for col in range(((b//2+1 if real_forward else b)+tile-1)//tile):
                 pid[1]=col
                 args=[Pointer(last),Pointer(guarded,64)]
                 if real_forward: args.append(distance)
