@@ -169,6 +169,11 @@ namespace {
         padded_prefix*4<=initial_prefix*5 &&
         flag_or_default("FLAGFFT_NPU_DIF_PAD_PREFIX",false);
     const bool fused_finish=aligned && flag_or_default("FLAGFFT_NPU_DIF_FUSED_FINISH",false);
+    const bool cube_prefix=aligned && batch>=16 && factors.size()>=4 &&
+        factors[0]>=13 && factors[0]<=19 && factors[1]>=11 && factors[1]<=15 &&
+        flag_or_default("FLAGFFT_NPU_DIF_CUBE_PREFIX",false);
+    const bool late_auto=batch>=16 &&
+        flag_or_default("FLAGFFT_NPU_DIF_LATE_AUTO_BLOCK",false);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
@@ -177,9 +182,32 @@ namespace {
     auto append=[&](DeviceAllocation weights,int64_t x,int64_t y,bool transpose) {
       auto key=KernelKey::four_step_row(triton_target_for_request(request),
           request.direction,request.input_dtype,n,1,n,factors,32,4,{},n);
-      key.perm_form=std::string(aligned ? "npu_vector_dif_aligned_" : "npu_vector_dif_")+std::to_string(passes.size());
+      key.perm_form=std::string(cube_prefix ? "npu_vector_dif_aligned_cube_" :
+          aligned ? "npu_vector_dif_aligned_" : "npu_vector_dif_")+std::to_string(passes.size());
+      if ((cube_prefix && passes.size()<3) || (late_auto && switched && !transpose))
+        key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),std::move(weights),x,y,transpose});
     };
+    auto cube_weights=[&](int64_t radix,int64_t previous,bool compact) {
+      const int64_t pr=std::max<int64_t>(16,power(radix));
+      const int64_t matrices=previous>0?previous:1;
+      std::vector<float> result(matrices*4*pr*pr,0.0f);
+      for (int64_t pf=0;pf<matrices;++pf) for (int64_t k=0;k<radix;++k)
+        for (int64_t d=0;d<radix;++d) {
+          const double shift=previous>0?static_cast<double>(pf)/previous:0.0;
+          const double angle=sign*2*kPi*(static_cast<double>(k)+shift)*d/radix;
+          const float co=static_cast<float>(std::cos(angle));
+          const float si=static_cast<float>(std::sin(angle));
+          const int64_t base=pf*4*pr*pr, imag=(compact?radix:pr)+k;
+          result[base+k*2*pr+d]=co;
+          result[base+k*2*pr+pr+d]=-si;
+          result[base+imag*2*pr+d]=si;
+          result[base+imag*2*pr+pr+d]=co;
+        }
+      return result;
+    };
+    if (cube_prefix)
+      append(DeviceAllocation(sizeof(float)),ceiling(n,4096),1,false);
     for (std::size_t stage=0;stage<factors.size();++stage) {
       const int64_t radix=factors[stage], m=n/(prefix*radix);
       if (!switched && prefix>=64) {
@@ -190,7 +218,9 @@ namespace {
         switched=true;
       }
       std::vector<float> weights;
-      if (stage) {
+      if (cube_prefix && stage<2) {
+        weights=cube_weights(radix,stage?factors[0]:0,stage==1);
+      } else if (stage) {
         const int64_t previous_radix=factors[stage-1], current=radix*m;
         const int64_t count=switched?workspace_length:previous_radix*current;
         const int64_t physical_prefix=aligned && switched ? prefix/initial_prefix*padded_prefix : prefix;
@@ -200,14 +230,18 @@ namespace {
           const int64_t logical_pf=aligned && switched ? pf/padded_prefix*initial_prefix+pf%padded_prefix : pf;
           const int64_t digit=switched?logical_pf/previous_prefix:index/current;
           const int64_t sample=switched?index/physical_prefix:index%current;
-          const double angle=sign*2*kPi*static_cast<double>(digit)*sample/
-              (previous_radix*current);
+          // The chirped prefix defers its column phase to this input table.
+          const double angle=cube_prefix && stage==2 ?
+              sign*2*kPi*static_cast<double>(logical_pf)*sample/n :
+              sign*2*kPi*static_cast<double>(digit)*sample/(previous_radix*current);
           weights[index]=static_cast<float>(std::cos(angle));
           weights[count+index]=static_cast<float>(std::sin(angle));
         }
       } else weights.push_back(0.0f);
       int64_t grid=0;
-      if (switched) {
+      if (cube_prefix && stage<2) {
+        grid=prefix*ceiling(m,stage?1024:512);
+      } else if (switched) {
         const int64_t width=radix==2?2048:radix<=8?1024:512;
         const int64_t physical_prefix=aligned ? prefix/initial_prefix*padded_prefix : prefix;
         grid=m*ceiling(physical_prefix,std::min(width,power(physical_prefix)));

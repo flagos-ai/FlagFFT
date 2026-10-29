@@ -35,6 +35,10 @@ namespace {
         (key.perm_form == "structured_power2" || key.perm_form == "structured_recursive_power2");
     const bool structured_fourstep = key.perm_form.rfind("npu_structured_recursive_axis_planar",0)==0;
     const bool vector_dif = key.perm_form.rfind("npu_vector_dif_",0)==0;
+    // The planner records scheduling per pass, so batch-only choices cannot
+    // silently change another plan that shares the same transform length.
+    if (vector_dif && key.perm_form.size()>=5 &&
+        key.perm_form.compare(key.perm_form.size()-5,5,"_auto")==0) return true;
     const char *policy = matrix ? "FLAGFFT_NPU_MATRIX_AUTO_BLOCK" :
                          long_power2 ? "FLAGFFT_NPU_POWER2_AUTO_BLOCK" :
                          structured_fourstep ? "FLAGFFT_NPU_FOURSTEP_AUTO_BLOCK" :
@@ -722,8 +726,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 
   if (key.perm_form.rfind("npu_vector_dif_",0)==0) {
     const bool aligned=key.perm_form.rfind("npu_vector_dif_aligned_",0)==0;
-    jit_command << " --npu-vector-dif-phase " << shell_quote(key.perm_form.substr(aligned?23:15));
+    const bool cube=key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0;
+    std::string phase=key.perm_form.substr(cube?28:aligned?23:15);
+    if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
+      phase.resize(phase.size()-5);
+    jit_command << " --npu-vector-dif-phase " << shell_quote(phase);
     if (aligned) jit_command << " --npu-vector-dif-aligned";
+    if (cube) jit_command << " --npu-vector-dif-cube-prefix";
   }
   if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0) {
     const std::string phase=key.perm_form.substr(20);
