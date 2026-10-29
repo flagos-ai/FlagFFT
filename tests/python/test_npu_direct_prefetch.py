@@ -38,6 +38,9 @@ def test_prefetched_direct_fft(tmp_path, n, batch, mode, direction):
         ns[name](Pointer(x), Pointer(out,64), Pointer(wr), Pointer(wi), batch)
     got = out[64:-64].reshape(shape)
     if mode != 'c2r': got = torch.view_as_complex(got)
+    if mode == 'r2c':
+        assert (got[:,0].imag == 0).all()
+        if n%2 == 0: assert (got[:,-1].imag == 0).all()
     assert torch.isfinite(got).all()
     assert torch.linalg.vector_norm(got-expected)/torch.linalg.vector_norm(expected) < 5e-7
     assert torch.equal(saved, x)

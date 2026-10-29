@@ -41,6 +41,9 @@ def build_prefetched_direct_dft(n, mode, direction, batch_tile):
             if mode == 'c2r' and j >= half: imag = '-' + imag
             lines += [f'    xi={imag}', '    ar=ar+(xr[:,None]*wr[None,:]-xi[:,None]*wi[None,:])']
             if mode != 'c2r': lines.append('    ai=ai+(xr[:,None]*wi[None,:]+xi[:,None]*wr[None,:])')
+    if mode == 'r2c':
+        endpoint = f'(k==0)|(k=={n//2})' if n%2==0 else '(k==0)'
+        lines.append(f'    ai=tl.where(({endpoint})[None,:],0.,ai)')
     if mode == 'c2r':
         lines.append(f'    tl.store(out_ptr+b[:,None]*{n}+k[None,:],ar,(b[:,None]<nbatch)&(k[None,:]<{n}))')
     else:
