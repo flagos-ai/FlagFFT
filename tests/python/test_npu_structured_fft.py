@@ -61,7 +61,8 @@ def execute_module(path):
         zeros_like=torch.zeros_like,range=range,load=load,store=store,
         sin=torch.sin,cos=torch.cos,
         gather=lambda v,index,axis:torch.gather(v,axis,index.long()),
-        minimum=lambda a,b:torch.minimum(torch.as_tensor(a),torch.as_tensor(b)),where=torch.where)
+        minimum=lambda a,b:torch.minimum(torch.as_tensor(a),torch.as_tensor(b)),
+        maximum=lambda a,b:torch.maximum(torch.as_tensor(a),torch.as_tensor(b)),where=torch.where)
     tree = ast.parse(Path(path).read_text())
     tree.body = [node for node in tree.body if isinstance(node,ast.FunctionDef)]
     for node in tree.body:
