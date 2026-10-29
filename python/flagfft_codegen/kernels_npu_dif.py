@@ -7,6 +7,7 @@ frequency prefixes contiguous, so late passes avoid short strided copies.
 The codelets and unnormalized inverse convention are shared with other targets.
 """
 import json
+import os
 from pathlib import Path
 from .artifacts import write_text_atomic
 """DIF autosort vector FFT with contiguous global vectors in every pass."""
@@ -78,6 +79,8 @@ from .kernels_leaf import _emit_natural_order_codelet_call,_emit_radix16_codelet
 
 def build_vector_dif(factors,direction='forward'):
  source,old=_flat_source(factors,direction);n=math.prod(factors)
+ tile=int(os.environ.get('FLAGFFT_NPU_DIF_TRANSPOSE_TILE','32'))
+ if tile not in (32,64):raise ValueError('DIF transpose tile must be 32 or 64')
  switch=next(i for i,s in enumerate(old) if s['prefix']>=64)
  first=re.search(r'@triton.jit\ndef vector_stage_0',source).start();header=source[:first];chunks=[];specs=[]
  for i in range(switch):
@@ -91,8 +94,8 @@ def switch_axes(X,TW,Y):
     batch=tl.program_id(2).to(tl.int64)
     X=X+batch*{2*n}
     Y=Y+batch*{2*n}
-    row=tl.program_id(0)*32+tl.arange(0,32)
-    col=tl.program_id(1)*32+tl.arange(0,32)
+    row=tl.program_id(0)*{tile}+tl.arange(0,{tile})
+    col=tl.program_id(1)*{tile}+tl.arange(0,{tile})
     off=row[:,None]*{rest}+col[None,:]
     valid=(row[:,None]<{p})&(col[None,:]<{rest})
     r=tl.load(X+off,valid,0.);i=tl.load(X+{n}+off,valid,0.)
@@ -100,7 +103,7 @@ def switch_axes(X,TW,Y):
     mask=(col[:,None]<{rest})&(row[None,:]<{p})
     tl.store(Y+dst,tl.trans(r),mask);tl.store(Y+{n}+dst,tl.trans(i),mask)
 ''')
- specs.append(dict(name='switch_axes',phase='transpose',grid=((p+31)//32,(rest+31)//32)))
+ specs.append(dict(name='switch_axes',phase='transpose',grid=((p+tile-1)//tile,(rest+tile-1)//tile)))
  for i in range(switch,len(factors)):
   s=old[i];r=s['r'];m=s['m'];prefix=s['prefix'];c=min(2048 if r==2 else 1024 if r<=8 else 512,pad(prefix));tiles=(prefix+c-1)//c
   lines=['@triton.jit',f'def switched_stage_{i}(X,TW,Y):',f'    batch=tl.program_id(1).to(tl.int64)',f'    X=X+batch*{2*n}',f'    Y=Y+batch*{2*n}',f'    j=tl.program_id(0)//{tiles}',f'    pf=tl.program_id(0)%{tiles}*{c}+tl.arange(0,{c})',f'    valid=pf<{prefix}']

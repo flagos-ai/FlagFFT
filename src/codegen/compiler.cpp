@@ -160,7 +160,10 @@ namespace {
     for (std::size_t stage=0;stage<factors.size();++stage) {
       const int64_t radix=factors[stage], m=n/(prefix*radix);
       if (!switched && prefix>=64) {
-        append(DeviceAllocation(sizeof(float)),ceiling(prefix,32),ceiling(n/prefix,32),true);
+        const char *tile_setting=std::getenv("FLAGFFT_NPU_DIF_TRANSPOSE_TILE");
+        const int64_t tile=tile_setting ? std::stoll(tile_setting) : 32;
+        if (tile!=32 && tile!=64) throw std::runtime_error("DIF transpose tile must be 32 or 64");
+        append(DeviceAllocation(sizeof(float)),ceiling(prefix,tile),ceiling(n/prefix,tile),true);
         switched=true;
       }
       std::vector<float> weights;

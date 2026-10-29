@@ -10,8 +10,10 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('factors,batch',[
     ((5,5,3,8),2),((19,17,13,11),3),
     ((17,13,7,15,8),2),((17,13,15,10,10,2),1)])
+@pytest.mark.parametrize('tile',[32,64])
 @pytest.mark.parametrize('direction',['forward','inverse'])
-def test_vector_dif_passes(tmp_path,factors,batch,direction):
+def test_vector_dif_passes(tmp_path,monkeypatch,factors,batch,direction,tile):
+    monkeypatch.setenv("FLAGFFT_NPU_DIF_TRANSPOSE_TILE",str(tile))
     n=math.prod(factors);sign=-1 if direction=='forward' else 1
     source,specs=build_vector_dif(factors,direction)
     path=tmp_path/'dif.py';path.write_text(source);ns,pid=execute_module(path);pid.append(0)
