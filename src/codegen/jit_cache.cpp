@@ -42,6 +42,19 @@ namespace {
         const std::string setting(value);
         if (setting!="0" && setting!="1")
           throw std::runtime_error(std::string(policy) + " must be 0 or 1");
+        if (setting == "1" && structured_fourstep) {
+          const auto pack_pos = key.perm_form.find("_pack_");
+          const bool row = key.kind == KernelKind::FourStepRow;
+          const int64_t axis = row ? key.four_step_n1 : key.four_step_n2;
+          const int64_t width = row ? key.four_step_n2 : key.four_step_n1;
+          const int64_t budget = axis >= 512 ? 4096 : 2048;
+          const int64_t pack = pack_pos != std::string::npos
+              ? std::stoll(key.perm_form.substr(pack_pos + 6))
+              : std::min({int64_t{8}, width, std::max<int64_t>(1, budget / axis)});
+          // Narrow structured slices currently fail under CANN loop scheduling.
+          // Keep their full logical grid; wider groups have native replay coverage.
+          if (pack < 8) return false;
+        }
         return setting=="1";
       }
     }
