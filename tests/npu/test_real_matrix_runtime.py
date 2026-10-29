@@ -54,7 +54,7 @@ def test_real_matrix_replay_and_in_place(inverse,n):
 def test_matrix_fourstep_real_partial_overlap():
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
-    lib=ctypes.CDLL(path);n=46189;batch=3;half=n//2+1;distance=half+7;shift=64
+    lib=ctypes.CDLL(path);n=46189;batch=3;half=n//2+1;distance=half;shift=64
     lib.flagfftPlanMany.argtypes=[ctypes.POINTER(ctypes.c_void_p),ctypes.c_int,ctypes.POINTER(ctypes.c_int),ctypes.POINTER(ctypes.c_int),ctypes.c_int,ctypes.c_int,ctypes.POINTER(ctypes.c_int),ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int]
     lib.flagfftExecR2C.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p]
     lib.flagfftDestroy.argtypes=[ctypes.c_void_p]
