@@ -170,8 +170,12 @@ namespace {
         flag_or_default("FLAGFFT_NPU_DIF_PAD_PREFIX",false);
     const bool fused_finish=aligned && flag_or_default("FLAGFFT_NPU_DIF_FUSED_FINISH",false);
     const bool cube_prefix=aligned && batch>=16 && factors.size()>=4 &&
-        factors[0]>=13 && factors[0]<=19 && factors[1]>=11 && factors[1]<=15 &&
+        factors[0]>=2 && factors[0]<=19 && factors[1]>=11 && factors[1]<=15 &&
+        factors[0]*factors[1]>=64 &&
         flag_or_default("FLAGFFT_NPU_DIF_CUBE_PREFIX",false);
+    // Small first radices already have inexpensive vector codelets. Keep
+    // their interleaved input load, and feed its planar result to stage one.
+    const bool matrix_first=cube_prefix && factors[0]>=13;
     const bool late_auto=batch>=16 &&
         flag_or_default("FLAGFFT_NPU_DIF_LATE_AUTO_BLOCK",false);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
@@ -184,7 +188,9 @@ namespace {
           request.direction,request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form=std::string(cube_prefix ? "npu_vector_dif_aligned_cube_" :
           aligned ? "npu_vector_dif_aligned_" : "npu_vector_dif_")+std::to_string(passes.size());
-      if ((cube_prefix && passes.size()<3) || (late_auto && switched && !transpose))
+      if ((matrix_first && passes.size()<3) ||
+          (cube_prefix && !matrix_first && passes.size()==1) ||
+          (late_auto && switched && !transpose))
         key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),std::move(weights),x,y,transpose});
     };
@@ -206,7 +212,7 @@ namespace {
         }
       return result;
     };
-    if (cube_prefix)
+    if (matrix_first)
       append(DeviceAllocation(sizeof(float)),ceiling(n,4096),1,false);
     for (std::size_t stage=0;stage<factors.size();++stage) {
       const int64_t radix=factors[stage], m=n/(prefix*radix);
@@ -218,7 +224,7 @@ namespace {
         switched=true;
       }
       std::vector<float> weights;
-      if (cube_prefix && stage<2) {
+      if (cube_prefix && (stage==1 || (matrix_first && stage==0))) {
         weights=cube_weights(radix,stage?factors[0]:0,stage==1);
       } else if (stage) {
         const int64_t previous_radix=factors[stage-1], current=radix*m;

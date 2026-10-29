@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """IEEE Cube prefix for aligned DIF, with deferred column twiddles.
 
-The first conversion is an explicit pipeline pass. The second transform folds
+Large first radices use an explicit planar conversion and a matrix DFT.
+Small first radices retain the shared vector codelet. The second transform folds
 its radix-dependent twiddle into the coefficients; stage two applies the
 remaining column phase together with its normal twiddle.
 """
@@ -32,12 +33,14 @@ def _coalesced_late_stage(spec,direction):
  return '\n'.join(lines)+'\n'
 
 def build_cube_prefix_dif(factors,direction='forward'):
- if len(factors)<4 or not (13<=factors[0]<=19 and 11<=factors[1]<=15):
-  raise ValueError('Cube DIF prefix needs two large leading radices and at least four stages')
+ if len(factors)<4 or not (2<=factors[0]<=19 and 11<=factors[1]<=15 and factors[0]*factors[1]>=64):
+  raise ValueError('Chirped DIF prefix needs two early stages and a large second radix')
  source,specs=build_aligned_vector_dif(factors,direction)
  source+='\nimport triton.language.extra.cann.extension as al\n'
  n=math.prod(factors);r=factors[0];m=n//r;pr=max(16,1<<(r-1).bit_length());c=512;pn=specs[0]['physical_n'];tiles=(m+c-1)//c
  s0=specs[0];assert s0['stage']==0
+ matrix_first=factors[0]>=13
+ original_first=re.search(r'@triton.jit\ndef '+s0['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',source).group(0)
  source=re.sub(r'@triton.jit\ndef '+s0['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)','',source)
  source+=f'''
 @triton.jit
@@ -100,6 +103,11 @@ def chirped_second(X,TW,Y):
 '''
  chirp=dict(second,name='chirped_second',grid=(prev*tt,),auto=True,chirped_cube=True,pr=pp)
  result=[prep,cube,chirp]+specs[2:]
+ if not matrix_first:
+  for name in ('planar_prepare','cube_first'):
+   source=re.sub(r'@triton.jit\ndef '+name+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)','',source)
+  source+='\n'+original_first
+  result=[dict(s0,auto=False)]+result[2:]
  for z in result:
   if z.get('stage')==2:z['deferred_twiddle']=True
   if z['phase']=='late' and z.get('r')==15 and z['physical_prefix']<=256 and z['name']!='fused_finish':
