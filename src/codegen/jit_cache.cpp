@@ -205,6 +205,19 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  if (musa_1d_batch_policy_) {
+    const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
+    const char *batch_warps = std::getenv("FLAGFFT_MUSA_1D_BATCH_WARPS");
+    const char *fourstep_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_PACK");
+    const char *fourstep_row_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_ROW_PACK");
+    const char *fourstep_col_pack = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_COL_PACK");
+    cache_key += ";musa-1d-batch=1;pack=" +
+        std::string(batch_pack != nullptr ? batch_pack : "auto") + ";warps=" +
+        std::string(batch_warps != nullptr ? batch_warps : "auto") + ";fourstep-pack=" +
+        std::string(fourstep_pack != nullptr ? fourstep_pack : "auto") + ";row-pack=" +
+        std::string(fourstep_row_pack != nullptr ? fourstep_row_pack : "auto") + ";col-pack=" +
+        std::string(fourstep_col_pack != nullptr ? fourstep_col_pack : "auto");
+  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
@@ -261,6 +274,49 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";ix-3d-transpose-tile=" + std::string(tile != nullptr ? tile : "16");
     cache_key += ";ix-3d-packed-transpose=" + std::string(packed != nullptr &&
                                                          std::string(packed) == "1" ? "1" : "0");
+  }
+  if (adaptor::backend_name() == "cuda") {
+    const char *fused_packed = std::getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL");
+    cache_key += ";cuda-fused-packed-real=" + std::string(fused_packed ? fused_packed : "0");
+    const char *wide_stage = std::getenv("FLAGFFT_CUDA_WIDE_STAGE");
+    cache_key += ";cuda-wide-stage=" + std::string(wide_stage ? wide_stage : "0");
+    const char *power_register = std::getenv("FLAGFFT_CUDA_POWER2_REGISTER");
+    cache_key += ";cuda-power2-register=" + std::string(power_register ? power_register : "0");
+    const char *blue_register = std::getenv("FLAGFFT_CUDA_BLUESTEIN_REGISTER");
+    cache_key += ";cuda-bluestein-register=" + std::string(blue_register ? blue_register : "0");
+    const char *fourstep_pack = std::getenv("FLAGFFT_CUDA_FOURSTEP_PACK4");
+    cache_key += ";cuda-fourstep-pack4=" + std::string(fourstep_pack ? fourstep_pack : "0");
+    const char *single_buffer = std::getenv("FLAGFFT_CUDA_LEAF_SINGLE_BUFFER");
+    cache_key += ";cuda-single-buffer=" + std::string(single_buffer ? single_buffer : "0");
+    const char *swizzle = std::getenv("FLAGFFT_CUDA_SMEM_SWIZZLE");
+    cache_key += ";cuda-smem-swizzle=" + std::string(swizzle ? swizzle : "0");
+    const char *short_cooperative = std::getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE");
+    cache_key += ";cuda-short-cooperative=" + std::string(short_cooperative ? short_cooperative : "0");
+    const char *tree = std::getenv("FLAGFFT_CUDA_DIRECT_DFT_TREE");
+    const char *dft_warps = std::getenv("FLAGFFT_CUDA_DIRECT_DFT_WARPS");
+    cache_key += ";cuda-dft-tree=" + std::string(tree ? tree : "0");
+    cache_key += ";cuda-dft-warps=" + std::string(dft_warps ? dft_warps : "auto");
+    const char *portable = std::getenv("FLAGFFT_CUDA_PORTABLE_LEAF");
+    cache_key += ";cuda-portable-leaf=" + std::string(portable ? portable : "0");
+  }
+  if (key.kind == KernelKind::Transpose3D && adaptor::backend_name() == "cuda") {
+    const char *fp64_transpose = std::getenv("FLAGFFT_CUDA_3D_FP64_TRANSPOSE");
+    cache_key += ";cuda-3d-fp64-transpose=" + std::string(fp64_transpose ? fp64_transpose : "v1");
+  }
+  if (key.kind == KernelKind::TiledTranspose && adaptor::backend_name() == "cuda") {
+    const char *transpose = std::getenv("FLAGFFT_CUDA_2D_TRANSPOSE");
+    cache_key += ";cuda-2d-transpose=" + std::string(transpose ? transpose : "auto");
+  }
+  if (adaptor::backend_name() == "cuda" &&
+      (key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafStridedPermutedStore ||
+       key.kind == KernelKind::LeafR2CPermutedStore ||
+       (key.kind == KernelKind::LeafR2C && key.perm_form == "permuted"))) {
+    const char *pack = std::getenv("FLAGFFT_CUDA_PERMSTORE_PACK");
+    const char *padding = std::getenv("FLAGFFT_CUDA_PERMSTORE_PAD");
+    cache_key += ";cuda-permstore-pack=" + std::string(pack ? pack : "auto");
+    cache_key += ";cuda-permstore-pad=" + std::string(padding ? padding : "1");
+    const char *vector_store = std::getenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE");
+    cache_key += ";cuda-permstore-vec=" + std::string(vector_store ? vector_store : "0");
   }
   KernelCacheState &state = kernel_cache_state();
   {
@@ -408,6 +464,18 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::TwiddleReshapePack:
       kernel_kind = "twiddle_reshape_pack";
       break;
+    case KernelKind::RealPairR2CPack:
+      kernel_kind = "r2c_pair_pack";
+      break;
+    case KernelKind::RealPairR2CUnpack:
+      kernel_kind = "r2c_pair_unpack";
+      break;
+    case KernelKind::RealPairC2RPack:
+      kernel_kind = "c2r_pair_pack";
+      break;
+    case KernelKind::RealPairC2RUnpack:
+      kernel_kind = "c2r_pair_unpack";
+      break;
     case KernelKind::RealToComplex:
       kernel_kind = "real_to_complex";
       break;
@@ -477,6 +545,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  // These literals belong to this kernel key, not the process-wide policy.
+  // They remove runtime layout division without changing the launch ABI.
+  if (key.cuda_permute_span > 0 && key.cuda_permute_batch > 0) {
+    jit_command << "FLAGFFT_CUDA_PERMUTE_SPAN=" << key.cuda_permute_span << " "
+                << "FLAGFFT_CUDA_PERMUTE_BATCH=" << key.cuda_permute_batch << " ";
+  }
   if (key.target.rfind("hcu:", 0) == 0) {
     jit_command << "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK="
                 << (key.hcu_3d_middle_batch_pack > 0
@@ -492,6 +566,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_ct_batch_policy_) jit_command << " --ix-ct-batch";
   if (ix_real_single_pack_) jit_command << " --ix-real-single-pack";
   if (ix_ct_single_tle_policy_) jit_command << " --ix-ct-single-tle " << ix_ct_single_tle_policy_;
+  if (musa_1d_batch_policy_) jit_command << " --musa-1d-batch";
 #if defined(BACKEND_MACA)
   jit_command << " --compile-script "
               << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());
@@ -610,7 +685,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       jit_command << " --fused-2d-transpose";
     }
   }
-  if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
+  if (key.kind == KernelKind::RealPairR2CPack || key.kind == KernelKind::RealPairR2CUnpack ||
+      key.kind == KernelKind::RealPairC2RPack || key.kind == KernelKind::RealPairC2RUnpack ||
+      key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     jit_command << " --length " << key.length;
@@ -639,7 +716,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::Transpose3D) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
   }
-  if (key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
+  if (key.kind == KernelKind::RealPairR2CPack || key.kind == KernelKind::RealPairR2CUnpack ||
+      key.kind == KernelKind::RealPairC2RPack || key.kind == KernelKind::RealPairC2RUnpack ||
+      key.kind == KernelKind::RealToComplex || key.kind == KernelKind::R2CHalfPack ||
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     kernel->rows_per_block = json_int_field(artifact_json, "rows_per_block");

@@ -100,6 +100,8 @@ struct KernelKey {
   bool npu_portable_leaf = false;
   bool hcu_full_smem = false;
   int64_t hcu_3d_middle_batch_pack = 0;
+  int64_t cuda_permute_span = 0;
+  int64_t cuda_permute_batch = 0;
 
   static KernelKey fused_16_plane(std::string target, std::string direction, std::string dtype);
   static KernelKey fused_32_real_plane(std::string target, std::string direction, std::string dtype);

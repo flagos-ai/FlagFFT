@@ -182,32 +182,113 @@ def test_leaf_kernel_source_generation_uses_plan_fields(kernels) -> None:
     assert "nbatch" in source
 
 
-def test_permuted_store_launch_grid_matches_generated_batch_pack(kernels, jit_source, tmp_path) -> None:
-    plan = kernels.LeafPlan(
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("io_mode,kernel_type", [
+    ("permuted_store", "leaf_permuted_store"),
+    ("strided_permuted_store", "leaf_strided_permuted_store"),
+    ("permuted_store_r2c", "leaf_r2c_permuted_store"),
+    ("permuted_r2c", "leaf_r2c"),
+])
+@pytest.mark.parametrize("factors,lanes,warps", [((16, 16), 16, 1), ((4, 4, 4, 4), 64, 2)])
+def test_permuted_store_launch_grid_matches_generated_batch_pack(
+    tmp_path, dtype, io_mode, kernel_type, factors, lanes, warps
+) -> None:
+    # Source generation and launch metadata are CPU-only contracts. These
+    # checks must also run on a controller without Triton installed.
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+
+    plan = LeafPlan(
         length=256,
-        factors=(4, 4, 4, 4),
+        factors=factors,
         remainder=1,
-        lanes=64,
-        num_warps=2,
+        lanes=lanes,
+        num_warps=warps,
         generic_radices=(),
         smem_size=256,
+        dtype=dtype,
     )
-    kernel_name, source = kernels._build_leaf_kernel_source_for_io(
-        plan, io_mode="permuted_store", perm_form="outer"
+    kernel_name, source = _build_leaf_kernel_source_for_io(
+        plan, io_mode=io_mode, perm_form="outer"
     )
-    metadata = jit_source._metadata(
+    metadata = _metadata(
         module_path=tmp_path / "unused.py",
         kernel_name=kernel_name,
         arg_names=["in_ptr", "out_ptr", "nbatch", "perm_span"],
         plan=plan,
-        kernel_type="leaf_permuted_store",
+        kernel_type=kernel_type,
         n1=0,
         n2=0,
         dtype=plan.dtype,
     )
 
     assert metadata["batch_per_block"] == 4
+    assert metadata["num_warps"] == max(warps, lanes * 4 // 32)
     assert "batch_id = pid * 4" in source
+
+
+@pytest.mark.parametrize("order", ["021", "210", "201", "120"])
+@pytest.mark.parametrize("mode", ["v1", "tile16", "tile32", "tile64", "tile16vec", "tile32vec"])
+def test_cuda_fp64_transpose_tile_selection(tmp_path, monkeypatch, order, mode) -> None:
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+
+    monkeypatch.setenv("FLAGFFT_CUDA_3D_FP64_TRANSPOSE", mode)
+    metadata = _emit_tiled_transpose3d_jit_kernel(
+        n0=16, n1=997, n2=64, order=order, dtype="complex128", out_dir=tmp_path
+    )
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, metadata["module_path"], "exec")
+    if mode == "v1":
+        assert metadata["grid_x_override"] == 0
+    else:
+        assert metadata["grid_x_override"] > 0
+        assert "tl.trans(src_r)" in source
+        assert ("tl.join(dst_r, dst_i)" in source) == mode.endswith("vec")
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("mode", ["auto", "register", "scalar", "packed"])
+def test_cuda_2d_transpose_layout_selection(tmp_path, monkeypatch, dtype, mode) -> None:
+    from flagfft_codegen.emit import _emit_tiled_transpose_jit_kernel
+
+    monkeypatch.setenv("FLAGFFT_CUDA_2D_TRANSPOSE", mode)
+    if mode == "packed" and dtype == "complex128":
+        with pytest.raises(ValueError, match="requires complex64"):
+            _emit_tiled_transpose_jit_kernel(n0=2048, n1=2048, dtype=dtype, out_dir=tmp_path)
+        return
+    metadata = _emit_tiled_transpose_jit_kernel(n0=2048, n1=2048, dtype=dtype, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, metadata["module_path"], "exec")
+    assert metadata["tile_size"] == 32
+    assert ("tl.trans(" in source) == (mode in {"register", "packed"})
+    assert ("tl.pointer_type(tl.uint64)" in source) == (mode == "packed")
+
+
+@pytest.mark.parametrize("pack", [4, 8, 16])
+@pytest.mark.parametrize("pad", [0, 1])
+def test_cuda_permuted_store_resource_and_grid_agree(tmp_path, monkeypatch, pack, pad) -> None:
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+
+    monkeypatch.setenv("FLAGFFT_CUDA_PERMSTORE_PACK", str(pack))
+    monkeypatch.setenv("FLAGFFT_CUDA_PERMSTORE_PAD", str(pad))
+    plan = LeafPlan(length=256, factors=(16, 16), remainder=1, lanes=16, num_warps=1,
+                    generic_radices=(), smem_size=256, dtype="complex128")
+    name, source = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store", perm_form="outer")
+    meta = _metadata(module_path=tmp_path / 'unused.py', kernel_name=name,
+                     arg_names=['in_ptr', 'out_ptr', 'nbatch', 'perm_span'], plan=plan,
+                     kernel_type='leaf_permuted_store', n1=0, n2=0, dtype=plan.dtype)
+    # A requested pack can be capped by the shared-memory budget. Source and
+    # launch metadata must use that same capped value.
+    selected = meta['batch_per_block']
+    assert selected == (pack if not pad else min(pack, 8))
+    assert f'batch_id = pid * {selected}' in source
+    slots = (256 + pad) * selected
+    allocation = 1 << (slots - 1).bit_length()
+    assert f'tle.gpu.alloc([{allocation}]' in source
+    assert meta['num_warps'] == max(1, 16 * selected // 32)
 
 
 @pytest.mark.parametrize("pack", [1, 4])
@@ -2137,3 +2218,301 @@ def test_maca_portable_exchange_indexes_the_register_layout(
     source_index = namespace["exchange_src"]
     assert np.array_equal(source_index[valid] // lane_pack, namespace["exchange_codelet"][valid])
     assert np.array_equal(source_index[valid] % lane_pack, namespace["exchange_slot"][valid])
+
+
+@pytest.mark.parametrize("pack", [1, 4])
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_cuda_permuted_store_vector_preserves_mask_and_pair_address(monkeypatch, pack, dtype):
+    from flagfft_codegen.kernels_leaf import _emit_permuted_store
+
+    monkeypatch.setenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE", "1")
+    lines = _emit_permuted_store("    ", 1, (16, 16), pack, 16, dtype, compact_length=129)
+    source = "\n".join(lines)
+    compile("def generated():\n" + source, "<permuted-store>", "exec")
+    assert ("st.global.v2.f64" if dtype == "complex128" else "st.global.v2.f32") in source
+    assert "out_ptr + perm_addr1 * 2" in source
+    assert "< 129" in source
+    assert "is_pure=False" in source
+    assert ("tl.trans" in source) == (pack > 1)
+    monkeypatch.delenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE")
+    assert "st.global.v2" not in "\n".join(
+        _emit_permuted_store("    ", 1, (16, 16), pack, 16, dtype, compact_length=129))
+
+
+@pytest.mark.parametrize('dtype', ['complex64', 'complex128'])
+def test_cuda_single_buffer_rejects_multigroup_and_fused_convolution(monkeypatch, dtype):
+    from flagfft_codegen.kernels_common import LeafPlan, _use_single_smem_buffer
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+
+    monkeypatch.setenv('FLAGFFT_CUDA_LEAF_SINGLE_BUFFER', '1')
+    safe = LeafPlan(length=2048, factors=(16, 16, 8), remainder=1, lanes=128, num_warps=4,
+                    generic_radices=(), smem_size=2048, dtype=dtype)
+    assert _use_single_smem_buffer(safe)
+    _, source = _build_leaf_kernel_source_for_io(safe, io_mode="contiguous")
+    assert 'smem_a_r = tle.gpu.alloc' not in source
+    assert 'smem_b_r = tle.gpu.alloc' in source
+    assert 'tl.debug_barrier()' in source
+    unsafe = LeafPlan(length=2048, factors=(8, 8, 32), remainder=1, lanes=64, num_warps=2,
+                      generic_radices=(), smem_size=2048, dtype=dtype)
+    assert not _use_single_smem_buffer(unsafe)
+    assert not _use_single_smem_buffer(safe, io_mode='bluestein_full_leaf')
+
+
+@pytest.mark.parametrize('shift', [3, 4, 5])
+def test_cuda_shared_swizzle_is_bijective_and_applied_to_both_sides(monkeypatch, shift):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_CUDA_SMEM_SWIZZLE', str(shift))
+    plan = LeafPlan(length=256, factors=(16, 16), remainder=1, lanes=16, num_warps=1,
+                    generic_radices=(), smem_size=256, dtype='complex128')
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode='permuted_store', perm_form='outer')
+    assert f'dst0 ^ (dst0 >> {shift})' in source
+    assert f'logical_phys0 ^ (logical_phys0 >> {shift})' in source
+    assert len({i ^ (i >> shift) for i in range(256)}) == 256
+
+
+def test_cuda_short_cooperative_parallelizes_all_radix_groups(monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan, cooperative_stage_lanes_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    plan = LeafPlan(length=76, factors=(19, 2, 2), remainder=1, lanes=2, num_warps=1,
+                    generic_radices=(19,), smem_size=128)
+    monkeypatch.delenv('FLAGFFT_CUDA_SHORT_COOPERATIVE', raising=False)
+    assert cooperative_stage_lanes_for(plan) == (2, 2, 2)
+    monkeypatch.setenv('FLAGFFT_CUDA_SHORT_COOPERATIVE', '1')
+    assert cooperative_stage_lanes_for(plan) == (4, 38, 38)
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode='contiguous_r2c')
+    compile(source, '<short-cooperative>', 'exec')
+    assert 'tl.range(0, 19)' not in source
+    assert 'lane < 38' in source
+
+
+@pytest.mark.parametrize('mode', ['contiguous', 'bluestein_full_leaf'])
+def test_cuda_tensor_exchange_emits_no_explicit_shared_allocations(monkeypatch, mode):
+    from flagfft_codegen.kernels_common import LeafPlan, cooperative_stage_lanes_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_CUDA_PORTABLE_LEAF', '1')
+    plan = LeafPlan(length=2048, factors=(16, 16, 8), remainder=1, lanes=128, num_warps=4,
+                    generic_radices=(), smem_size=2048, dtype='complex128')
+    assert cooperative_stage_lanes_for(plan) == (128, 128, 256)
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode=mode, prime_n=997)
+    compile(source, '<cuda-tensor-exchange>', 'exec')
+    assert 'tle.gpu.alloc' not in source
+    assert 'tl.gather' in source
+
+
+def test_cuda_permutation_constants_preserve_runtime_argument_order(monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    plan = LeafPlan(length=256, factors=(16, 16), remainder=1, lanes=16, num_warps=2,
+                    generic_radices=(), smem_size=256, dtype='complex128')
+    monkeypatch.setenv('FLAGFFT_CUDA_PERMUTE_SPAN', '65536')
+    monkeypatch.setenv('FLAGFFT_CUDA_PERMUTE_BATCH', '262144')
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode='permuted_store', perm_form='outer')
+    compile(source, '<specialized-permutation>', 'exec')
+    assert '    perm_span,\n    nbatch\n):' in source
+    assert source.index('    perm_span = 65536') < source.index('    pid = tl.program_id')
+    assert '    nbatch = 262144' in source
+    monkeypatch.setenv('FLAGFFT_CUDA_PERMUTE_BATCH', '0')
+    with pytest.raises(ValueError, match='positive span and batch'):
+        _build_leaf_kernel_source_for_io(plan, io_mode='permuted_store', perm_form='outer')
+
+
+def test_cuda_double_direct_tree_is_explicit_and_preserves_f64(monkeypatch):
+    from flagfft_codegen.kernels_special import _build_direct_dft_kernel_source
+    from flagfft_codegen.kernels_real import _build_real_direct_dft_kernel_source
+    monkeypatch.delenv('FLAGFFT_CUDA_DIRECT_DFT_TREE', raising=False)
+    _, original, _ = _build_direct_dft_kernel_source(23, 'forward', 'complex128')
+    assert 'comp_r' in original
+    monkeypatch.setenv('FLAGFFT_CUDA_DIRECT_DFT_TREE', '1')
+    _, source, _ = _build_direct_dft_kernel_source(23, 'forward', 'complex128')
+    assert 'tl.float64' in source and 'comp_r' not in source
+    assert 'tl.sum' in source
+    for inverse in [False, True]:
+        _, real, _ = _build_real_direct_dft_kernel_source(23, 'complex128', inverse=inverse)
+        compile(real, '<real-dft-tree>', 'exec')
+        assert 'tree_r_' in real and 'comp_r' not in real
+
+
+@pytest.mark.parametrize('n,factors', [(4096,(16,16,16)), (8192,(16,16,32))])
+def test_cuda_wide_leaf_preserves_complete_fft_groups(n, factors, tmp_path):
+    from flagfft_codegen.kernels_common import LeafPlan, cooperative_stage_lanes_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    plan = LeafPlan(length=n,factors=factors,remainder=1,lanes=256,num_warps=8,
+                    generic_radices=(),smem_size=n,dtype='complex64')
+    assert cooperative_stage_lanes_for(plan) == (256,256,256)
+    name,source = _build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
+    compile(source,'<cuda-wide-leaf>','exec')
+    assert all(n % (256*radix) == 0 for radix in factors)
+    meta=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,
+        arg_names=['in_ptr','out_ptr','nbatch'],plan=plan,kernel_type='leaf',n1=0,n2=0,dtype=plan.dtype)
+    assert meta['num_warps'] == 8
+    assert meta['batch_per_block'] == 1
+    assert f'tle.gpu.alloc([{n}]' in source
+
+
+@pytest.mark.parametrize('mode', ['four_step_row','four_step_col'])
+def test_cuda_fourstep_pack4_matches_launch_and_source(monkeypatch,tmp_path,mode):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    monkeypatch.setenv('FLAGFFT_CUDA_FOURSTEP_PACK4','1')
+    try:
+        plan=LeafPlan(128,(8,4,4),1,16,1,(),128)
+        n1,n2=(128,64) if mode=='four_step_row' else (64,128)
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=n1,four_step_n2=n2)
+        metadata=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,arg_names=['in_ptr','out_ptr','nbatch'],
+            plan=plan,kernel_type=mode,n1=n1,n2=n2,dtype=plan.dtype)
+        assert 'four_step_inner_base = tl.program_id(0) * 4' in source
+        assert metadata['inner_pack'] == 4
+        assert metadata['num_warps'] == 4
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize('mode', [
+    'bluestein_four_step_prepare_row', 'bluestein_four_step_pointwise_row',
+    'bluestein_four_step_finish_col', 'bluestein_four_step_prepare_row_r2c',
+    'bluestein_four_step_prepare_row_c2r', 'bluestein_four_step_finish_col_r2c',
+    'bluestein_four_step_finish_col_c2r'])
+@pytest.mark.parametrize('dtype', ['complex64','complex128'])
+def test_cuda_register_bluestein_keeps_boundary_abi(monkeypatch,tmp_path,mode,dtype):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    plan=LeafPlan(1024,(32,32),1,32,1,(),1024,dtype=dtype)
+    kwargs=dict(io_mode=mode,prime_n=524287,four_step_n1=1024,four_step_n2=1024)
+    try:
+        monkeypatch.delenv('FLAGFFT_CUDA_BLUESTEIN_REGISTER',raising=False)
+        default_name,default_source=_build_leaf_kernel_source_for_io(plan,**kwargs)
+        monkeypatch.setenv('FLAGFFT_CUDA_BLUESTEIN_REGISTER','1')
+        name,source=_build_leaf_kernel_source_for_io(plan,**kwargs)
+        assert 'thread_local' not in default_name and 'thread_local' in name
+        compile(source,'<cuda-register-bluestein>','exec')
+        # The executor's pointer and twiddle order must remain unchanged.
+        signature=lambda text: text.split('@triton.jit',1)[1].split('):',1)[0].split('(',1)[1]
+        assert signature(default_source)==signature(source)
+        meta=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,
+            arg_names=['in_ptr','out_ptr','nbatch'],plan=plan,kernel_type=mode,n1=1024,n2=1024,dtype=dtype)
+        assert meta['inner_pack']==4 and meta['num_warps']==4
+        if 'prepare' in mode:
+            assert 'prime_mask0' in source and 'chirp_r0' in source
+        elif 'pointwise' in mode:
+            assert 'i0 = -point_i0' in source
+        else:
+            assert 'scaled_i0 = -i0 / 1048576' in source
+            assert 'mask=prime_mask0' in source
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize('factors', [(16,16),(16,32),(32,16)])
+@pytest.mark.parametrize('direction', ['forward','inverse'])
+def test_cuda_power2_register_routes_match_numpy(factors,direction):
+    import numpy as np
+    from pathlib import Path
+    from flagfft_codegen import kernels_leaf as leaf
+    # Execute the emitted register arithmetic on CPU arrays, including its
+    # radix-32 input permutation and the exchange between the two codelets.
+    env={}
+    code=(Path(leaf.__file__).parent/'codelet/radix16.py').read_text().replace('@triton.jit','')
+    exec(code,env)
+    def codelet(values):
+        radix=len(values)
+        order=[2*(i%16)+i//16 for i in range(radix)] if radix==32 else list(range(radix))
+        scope=dict(env,_cmul=lambda ar,ai,br,bi:(ar*br-ai*bi,ar*bi+ai*br))
+        for i,j in enumerate(order):scope['r'+str(i)],scope['i'+str(i)]=values[j].real.copy(),values[j].imag.copy()
+        lines=leaf._emit_radix16_codelet_call('',direction) if radix==16 else leaf._emit_local_radix32_codelet_call('',direction)
+        exec('\n'.join(lines),scope)
+        return np.stack([scope['r'+str(i)]+1j*scope['i'+str(i)] for i in range(radix)])
+    register,cross=factors
+    rng=np.random.default_rng(25)
+    values=rng.normal(size=register*cross)+1j*rng.normal(size=register*cross)
+    first=codelet(values.reshape(register,cross))
+    sign=-1 if direction=='forward' else 1
+    first *= np.exp(sign*2j*np.pi*np.arange(register)[:,None]*np.arange(cross)[None,:]/len(values))
+    result=codelet(first.T).reshape(-1)
+    expected=np.fft.fft(values) if direction=='forward' else np.fft.ifft(values)*len(values)
+    np.testing.assert_allclose(result,expected,rtol=1e-12,atol=1e-12)
+
+
+@pytest.mark.parametrize('factors', [(16,16),(16,32),(32,16)])
+@pytest.mark.parametrize('mode', ['four_step_row','four_step_col','four_step_real_row','four_step_hermitian_row','four_step_r2c_col','four_step_c2r_col'])
+def test_cuda_power2_register_source_masks_short_physical_lanes(monkeypatch,tmp_path,factors,mode):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    monkeypatch.setenv('FLAGFFT_CUDA_POWER2_REGISTER','1')
+    n=__import__('math').prod(factors)
+    plan=LeafPlan(n,factors,1,32,2,(),n,dtype='complex128')
+    try:
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=n,four_step_n2=n)
+        compile(source,'<cuda-power2-register>','exec')
+        assert 'thread_local' in name
+        assert f'input_lane_mask = lane_mask & (fft_thread < {factors[1]})' in source
+        metadata=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,arg_names=['in_ptr','out_ptr','nbatch'],
+            plan=plan,kernel_type=mode,n1=n,n2=n,dtype=plan.dtype)
+        assert metadata['inner_pack']==4 and metadata['num_warps']==4
+        assert metadata['tle_fused_twiddle']
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize('dtype', ['complex64','complex128'])
+@pytest.mark.parametrize('mode', ['contiguous','permuted_store'])
+def test_cuda_wide_stages_preserve_single_group_overwrite(monkeypatch,tmp_path,dtype,mode):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan,cooperative_stage_lanes_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    plan=LeafPlan(2048,(16,16,8),1,128,4,(),2048,dtype=dtype)
+    monkeypatch.setenv('FLAGFFT_CUDA_WIDE_STAGE','1')
+    monkeypatch.setenv('FLAGFFT_CUDA_LEAF_SINGLE_BUFFER','1')
+    try:
+        assert cooperative_stage_lanes_for(plan)==(128,128,256)
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+        compile(source,'<cuda-wide-stage>','exec')
+        assert 'smem_a_r = tle.gpu.alloc' not in source
+        meta=_metadata(module_path=tmp_path/'unused.py',kernel_name=name,
+            arg_names=['in_ptr','out_ptr','nbatch'],plan=plan,
+            kernel_type='leaf' if mode=='contiguous' else 'leaf_permuted_store',n1=0,n2=0,dtype=dtype)
+        assert meta['num_warps']>=8
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize('dtype', ['complex64','complex128'])
+@pytest.mark.parametrize('n,factors,lanes', [(128,(8,4,4),16),(4096,(16,16,16),256)])
+def test_cuda_fused_real_leaf_uses_barrier_before_shared_reconstruction(monkeypatch,dtype,n,factors,lanes):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    token=set_profile(BackendProfile.from_device({'backend':'cuda','device_arch':'sm_80','warp_size':32,
+        'max_threads_per_block':1024,'max_dynamic_shared_memory':163840},'legacy'))
+    monkeypatch.setenv('FLAGFFT_CUDA_FUSED_PACKED_REAL','1')
+    plan=LeafPlan(n,factors,1,lanes,8 if lanes==256 else 1,(),n,dtype=dtype)
+    try:
+        for mode in ['packed_r2c','packed_c2r']:
+            _,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+            compile(source,'<cuda-fused-packed>', 'exec')
+            if mode=='packed_r2c':
+                assert source.rfind('tl.debug_barrier()') < source.index('packed_ar = tl.load')
+                assert 'packed_r = tle.gpu.alloc' in source
+                assert 'tl.gather(packed_r' not in source
+                assert 'packed_nyquist' in source
+            else:
+                assert 'packed_sum_r' in source and 'packed_prod_i' in source
+                assert 'input_distance' in source
+    finally:
+        reset_profile(token)

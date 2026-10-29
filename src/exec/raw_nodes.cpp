@@ -64,12 +64,15 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
         result = inner->execute(input, output, context);
         captured->end_capture(context.stream);
         if (result != FLAGFFT_SUCCESS) return result;
-        captured->launch(context.stream);
+        // The direct execution above already produced this call's output.
+        // Capture records the next execution without running it. Launching
+        // here would apply an in-place transform twice on the first call.
         graph = std::move(captured);
         graph_input = input;
         graph_output = output;
-      } catch (const std::exception &) {
+      } catch (const std::exception &e) {
         graph_failed = true;
+        std::fprintf(stderr, "[flagfft] graph capture failed: %s\n", e.what());
       }
     }
     return FLAGFFT_SUCCESS;
@@ -1030,11 +1033,13 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
 CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
                                                    std::shared_ptr<JitKernel> kernel,
                                                    std::vector<DeviceAllocation> tables,
-                                                   DeviceAllocation input_copy)
+                                                   DeviceAllocation input_copy, std::string real_kind,
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       kernel(std::move(kernel)),
       tables(std::move(tables)),
-      input_copy(std::move(input_copy)) {
+      input_copy(std::move(input_copy)), real_kind(std::move(real_kind)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawDirectDftNode::describe() const {
@@ -1048,6 +1053,21 @@ flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
+    if (!real_kind.empty()) {
+      const int64_t half = length / 2 + 1;
+      const int64_t input_distance = real_kind == "r2c" ? length : half;
+      const int64_t output_distance = real_kind == "r2c" ? half : length;
+      if ((context.input_distance > 0 && context.input_distance != input_distance) ||
+          (context.output_distance > 0 && context.output_distance != output_distance)) {
+        std::shared_ptr<CompiledRawNode> fallback;
+        {
+          std::lock_guard<std::mutex> lock(layout_mutex);
+          if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
+          fallback = layout_fallback;
+        }
+        return fallback ? fallback->execute(input, output, context) : FLAGFFT_INVALID_VALUE;
+      }
+    }
     adaptor::DevicePtr effective_input = input;
     if (input == output) {
       adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);
@@ -1343,9 +1363,11 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
     DeviceAllocation work_buf,
     DeviceAllocation b_fft_buf,
     std::string real_kind,
-    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback,
+    int64_t batch_chunk)
     : length(length),
       conv_length(conv_length),
+      batch_chunk(batch_chunk),
       n1(n1),
       n2(n2),
       fft(std::move(fft)),
@@ -1367,7 +1389,7 @@ CompiledRawBluesteinFourStepNode::CompiledRawBluesteinFourStepNode(
 
 std::string CompiledRawBluesteinFourStepNode::describe() const {
   std::ostringstream oss;
-  oss << "CompiledRawBluesteinFourStep(n=" << length << ", conv_length=" << conv_length << ", n1=" << n1
+  oss << "CompiledRawBluesteinFourStep(n=" << length << ", conv_length=" << conv_length << ", chunk=" << batch_chunk << ", n1=" << n1
       << ", n2=" << n2
       << ", prepare_row=" << (prepare_row_kernel ? prepare_row_kernel->execution_description() : "null")
       << ", first_col=" << (first_col_kernel ? first_col_kernel->execution_description() : "null")
@@ -1410,53 +1432,63 @@ flagfftResult CompiledRawBluesteinFourStepNode::execute(adaptor::DevicePtr input
       }
     }
     ensure_b_fft(context);
-    const bool fused_twiddle = prepare_row_kernel->tle_fused_twiddle;
+    const int64_t chunk_limit = batch_chunk > 0 ? batch_chunk : context.batch;
+    const int64_t bytes = complex_element_bytes(context.request.input_dtype);
+    const int64_t half = length / 2 + 1;
+    const int64_t input_stride = (real_kind == "c2r" ? half : length) * (real_kind == "r2c" ? bytes / 2 : bytes);
+    const int64_t output_stride = (real_kind == "r2c" ? half : length) * (real_kind == "c2r" ? bytes / 2 : bytes);
+    for (int64_t offset = 0; offset < context.batch; offset += chunk_limit) {
+      const int64_t chunk = std::min(chunk_limit, context.batch - offset);
+      const auto chunk_input = input + offset * input_stride;
+      const auto chunk_output = output + offset * output_stride;
+      const bool fused_twiddle = prepare_row_kernel->tle_fused_twiddle;
 
-    stage = "prepare-row";
-    std::vector<JitKernelArg> prepare_args =
-        fused_twiddle
-            ? raw_kernel_args({input, chirp.get(), twiddle.get(), stage1.get()}, row_tables, context.batch)
-            : raw_kernel_args({input, chirp.get(), stage1.get()}, row_tables, context.batch);
-    prepare_row_kernel->launch(context.stream,
-                               prepare_args,
-                               ceil_div(n2, prepare_row_kernel->inner_pack),
-                               context.batch,
-                               1);
-
-    stage = "first-col";
-    std::vector<JitKernelArg> first_col_args =
-        fused_twiddle
-            ? raw_kernel_args({stage1.get(), work_buf.get()}, col_tables, context.batch)
-            : raw_kernel_args({stage1.get(), twiddle.get(), work_buf.get()}, col_tables, context.batch);
-    first_col_kernel->launch(context.stream,
-                             first_col_args,
-                             ceil_div(n1, first_col_kernel->inner_pack),
-                             context.batch,
-                             1);
-
-    stage = "pointwise-row";
-    std::vector<JitKernelArg> pointwise_args =
-        fused_twiddle
-            ? raw_kernel_args({work_buf.get(), b_fft_buf.get(), twiddle.get(), stage1.get()},
-                              row_tables,
-                              context.batch)
-            : raw_kernel_args({work_buf.get(), b_fft_buf.get(), stage1.get()}, row_tables, context.batch);
-    pointwise_row_kernel->launch(context.stream,
-                                 pointwise_args,
-                                 ceil_div(n2, pointwise_row_kernel->inner_pack),
-                                 context.batch,
+      stage = "prepare-row";
+      std::vector<JitKernelArg> prepare_args =
+          fused_twiddle
+              ? raw_kernel_args({chunk_input, chirp.get(), twiddle.get(), stage1.get()}, row_tables, chunk)
+              : raw_kernel_args({chunk_input, chirp.get(), stage1.get()}, row_tables, chunk);
+      prepare_row_kernel->launch(context.stream,
+                                 prepare_args,
+                                 ceil_div(n2, prepare_row_kernel->inner_pack),
+                                 chunk,
                                  1);
 
-    stage = "finish-col";
-    std::vector<JitKernelArg> finish_args =
-        fused_twiddle
-            ? raw_kernel_args({stage1.get(), chirp.get(), output}, col_tables, context.batch)
-            : raw_kernel_args({stage1.get(), chirp.get(), twiddle.get(), output}, col_tables, context.batch);
-    finish_col_kernel->launch(context.stream,
-                              finish_args,
-                              ceil_div(n1, finish_col_kernel->inner_pack),
-                              context.batch,
-                              1);
+      stage = "first-col";
+      std::vector<JitKernelArg> first_col_args =
+          fused_twiddle
+              ? raw_kernel_args({stage1.get(), work_buf.get()}, col_tables, chunk)
+              : raw_kernel_args({stage1.get(), twiddle.get(), work_buf.get()}, col_tables, chunk);
+      first_col_kernel->launch(context.stream,
+                               first_col_args,
+                               ceil_div(n1, first_col_kernel->inner_pack),
+                               chunk,
+                               1);
+
+      stage = "pointwise-row";
+      std::vector<JitKernelArg> pointwise_args =
+          fused_twiddle
+              ? raw_kernel_args({work_buf.get(), b_fft_buf.get(), twiddle.get(), stage1.get()},
+                                row_tables,
+                                chunk)
+              : raw_kernel_args({work_buf.get(), b_fft_buf.get(), stage1.get()}, row_tables, chunk);
+      pointwise_row_kernel->launch(context.stream,
+                                   pointwise_args,
+                                   ceil_div(n2, pointwise_row_kernel->inner_pack),
+                                   chunk,
+                                   1);
+
+      stage = "finish-col";
+      std::vector<JitKernelArg> finish_args =
+          fused_twiddle
+              ? raw_kernel_args({stage1.get(), chirp.get(), chunk_output}, col_tables, chunk)
+              : raw_kernel_args({stage1.get(), chirp.get(), twiddle.get(), chunk_output}, col_tables, chunk);
+      finish_col_kernel->launch(context.stream,
+                                finish_args,
+                                ceil_div(n1, finish_col_kernel->inner_pack),
+                                chunk,
+                                1);
+    }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] BluesteinFourStep %s failed: %s\n", stage, e.what());
@@ -1833,6 +1865,47 @@ flagfftResult CompiledRawNpuPackedRealBoundaryNode::execute(
       static_cast<int32_t>(context.batch), r2c_postprocess, context.stream);
 }
 #endif
+
+CompiledRawRealPairNode::CompiledRawRealPairNode(int64_t n, int64_t batch, bool inverse,
+    FFTRequest complex_request, std::shared_ptr<CompiledRawNode> fft,
+    std::shared_ptr<JitKernel> pack, std::shared_ptr<JitKernel> unpack,
+    DeviceAllocation work_input, DeviceAllocation work_output)
+    : n(n), batch(batch), inverse(inverse), complex_request(std::move(complex_request)),
+      fft(std::move(fft)), pack(std::move(pack)), unpack(std::move(unpack)),
+      work_input(std::move(work_input)), work_output(std::move(work_output)) {}
+
+std::string CompiledRawRealPairNode::describe() const {
+  std::ostringstream out;
+  out << "CompiledRawRealPair(n=" << n << ", batch=" << batch << ", inverse=" << inverse
+      << ", complex_batch=" << (batch + 1) / 2 << ", fft=" << fft->describe() << ")";
+  return out.str();
+}
+
+flagfftResult CompiledRawRealPairNode::execute(adaptor::DevicePtr input,
+    adaptor::DevicePtr output, const RawExecutionContext &context) const {
+  try {
+    if (context.batch != batch) return FLAGFFT_INVALID_VALUE;
+    const int64_t pairs = (batch + 1) / 2;
+    const int64_t half = n / 2 + 1;
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : (inverse ? half : n);
+    const int64_t output_distance = context.output_distance > 0 ? context.output_distance : (inverse ? n : half);
+    const auto args = [&](adaptor::DevicePtr src, adaptor::DevicePtr dst) {
+      return std::vector<JitKernelArg>{JitKernelArg::device(src), JitKernelArg::device(dst),
+          JitKernelArg::i64(input_distance), JitKernelArg::i64(output_distance),
+          JitKernelArg::i32(static_cast<int32_t>(batch))};
+    };
+    pack->launch(context.stream, args(input, work_input.get()), ceil_div(n, int64_t{256}), pairs, 1);
+    RawExecutionContext child {complex_request, context.stream, pairs};
+    const auto status = fft->execute(work_input.get(), work_output.get(), child);
+    if (status != FLAGFFT_SUCCESS) return status;
+    unpack->launch(context.stream, args(work_output.get(), output),
+                   ceil_div(inverse ? n : half, int64_t{256}), pairs, 1);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] real-pair execute failed: %s\n", e.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
 
 CompiledRawPackedR2CNode::CompiledRawPackedR2CNode(
     int64_t length,
@@ -2701,7 +2774,8 @@ CompiledRaw2DR2CRowNode::CompiledRaw2DR2CRowNode(int64_t n0,
                                                  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
                                                  std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                                  DeviceAllocation temp1,
-                                                 DeviceAllocation temp2)
+                                                 DeviceAllocation temp2,
+                                                 bool col_permuted_store)
     : n0(n0),
       n1(n1),
       row_r2c(std::move(row_r2c)),
@@ -2709,7 +2783,8 @@ CompiledRaw2DR2CRowNode::CompiledRaw2DR2CRowNode(int64_t n0,
       transpose_fwd(std::move(transpose_fwd)),
       transpose_inv(std::move(transpose_inv)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      col_permuted_store(col_permuted_store) {
 }
 
 std::string CompiledRaw2DR2CRowNode::describe() const {
@@ -2717,6 +2792,7 @@ std::string CompiledRaw2DR2CRowNode::describe() const {
   oss << "CompiledRaw2DR2CRow(n0=" << n0 << ", n1=" << n1
       << ", row_r2c=" << (row_r2c ? row_r2c->describe() : "null")
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
+      << ", col_permuted_store=" << col_permuted_store
       << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
       << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null") << ")";
   return oss.str();
@@ -2730,9 +2806,8 @@ flagfftResult CompiledRaw2DR2CRowNode::execute(adaptor::DevicePtr input,
     const int64_t batch = context.batch;
     const int64_t half_n1 = n1 / 2 + 1;
 
-    // The row child writes to scratch rather than directly to the user output.
-    // This preserves exact in-place safety: all real input is consumed before
-    // the final transpose writes the compact output back to `output`.
+    // The row child writes to scratch, so the full real input is consumed
+    // before either the final transpose or the fused column store writes output.
     RawExecutionContext row_context {context.request, context.stream, batch * n0, n1, half_n1};
     flagfftResult result = row_r2c->execute(input, temp1.get(), row_context);
     if (result != FLAGFFT_SUCCESS) {
@@ -2751,9 +2826,13 @@ flagfftResult CompiledRaw2DR2CRowNode::execute(adaptor::DevicePtr input,
                           batch);
 
     RawExecutionContext col_context {context.request, context.stream, batch * half_n1, n0, n0};
-    result = col_fft->execute(temp2.get(), temp1.get(), col_context);
+    result = col_fft->execute(temp2.get(), col_permuted_store ? output : temp1.get(), col_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+
+    if (col_permuted_store) {
+      return FLAGFFT_SUCCESS;
     }
 
     std::vector<JitKernelArg> transpose_inv_args = {
@@ -2781,7 +2860,8 @@ CompiledRaw2DC2RRowNode::CompiledRaw2DC2RRowNode(int64_t n0,
                                                  std::shared_ptr<CompiledRawTranspose2D> transpose_fwd,
                                                  std::shared_ptr<CompiledRawTranspose2D> transpose_inv,
                                                  DeviceAllocation temp1,
-                                                 DeviceAllocation temp2)
+                                                 DeviceAllocation temp2,
+                                                 bool col_permuted_store)
     : n0(n0),
       n1(n1),
       col_fft(std::move(col_fft)),
@@ -2789,7 +2869,8 @@ CompiledRaw2DC2RRowNode::CompiledRaw2DC2RRowNode(int64_t n0,
       transpose_fwd(std::move(transpose_fwd)),
       transpose_inv(std::move(transpose_inv)),
       temp1(std::move(temp1)),
-      temp2(std::move(temp2)) {
+      temp2(std::move(temp2)),
+      col_permuted_store(col_permuted_store) {
 }
 
 std::string CompiledRaw2DC2RRowNode::describe() const {
@@ -2797,6 +2878,7 @@ std::string CompiledRaw2DC2RRowNode::describe() const {
   oss << "CompiledRaw2DC2RRow(n0=" << n0 << ", n1=" << n1
       << ", col_fft=" << (col_fft ? col_fft->describe() : "null")
       << ", row_c2r=" << (row_c2r ? row_c2r->describe() : "null")
+      << ", col_permuted_store=" << col_permuted_store
       << ", transpose_fwd=" << (transpose_fwd ? transpose_fwd->execution_description() : "null")
       << ", transpose_inv=" << (transpose_inv ? transpose_inv->execution_description() : "null") << ")";
   return oss.str();
@@ -2827,21 +2909,23 @@ flagfftResult CompiledRaw2DC2RRowNode::execute(adaptor::DevicePtr input,
       return result;
     }
 
-    std::vector<JitKernelArg> transpose_inv_args = {
-        JitKernelArg::device(temp2.get()),
-        JitKernelArg::device(temp1.get()),
-        JitKernelArg::i32(static_cast<int32_t>(batch)),
-    };
-    transpose_inv->launch(context.stream,
-                          transpose_inv_args,
-                          ceil_div(n0, tile_size),
-                          ceil_div(half_n1, tile_size),
-                          batch);
+    if (!col_permuted_store) {
+      std::vector<JitKernelArg> transpose_inv_args = {
+          JitKernelArg::device(temp2.get()),
+          JitKernelArg::device(temp1.get()),
+          JitKernelArg::i32(static_cast<int32_t>(batch)),
+      };
+      transpose_inv->launch(context.stream,
+                            transpose_inv_args,
+                            ceil_div(n0, tile_size),
+                            ceil_div(half_n1, tile_size),
+                            batch);
+    }
 
     // The row child is the final stage and writes real output only after the
     // compact input has been consumed, so exact in-place C2R is safe here.
     RawExecutionContext row_context {context.request, context.stream, batch * n0, half_n1, n1};
-    return row_c2r->execute(temp1.get(), output, row_context);
+    return row_c2r->execute(col_permuted_store ? temp2.get() : temp1.get(), output, row_context);
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 2D C2R row-boundary execute failed: %s\n", e.what());
     std::fflush(stderr);

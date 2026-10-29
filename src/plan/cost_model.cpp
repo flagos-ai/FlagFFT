@@ -169,6 +169,10 @@ double PlanBuilder::four_step_cost(int64_t n1, int64_t n2) {
     preferred_n1 = measured_small_batch_four_step_n1(n, context.batch, context.device_arch);
   } else if (context.batch >= kLargeBatchFourStepMinBatch) {
     preferred_n1 = measured_large_batch_four_step_n1(n, context.input_dtype, context.device_arch);
+  } else if (n == 8192 && context.device_arch == kMeasuredFourStepDeviceArch) {
+    // The middle batch range previously missed both measured policies. A100
+    // no-save candidate measurements at batch 64 favor 128x64 in both precisions.
+    preferred_n1 = 128;
   }
   if (preferred_n1 > 0 && n1 != preferred_n1) {
     cost += static_cast<double>(n) * kMeasuredFourStepPenaltyScale;

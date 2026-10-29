@@ -15,6 +15,8 @@
 #include "flagfft/core.hpp"
 #include "flagfft_test.h"
 
+#include <cstdlib>
+#include <optional>
 #include <string>
 
 // The in-process kernel cache is keyed by KernelKey::repr().  A key entering
@@ -111,4 +113,74 @@ TEST(KernelKeyRepr, StockhamStageDistinguishesStages) {
             stockham_stage(target, "forward", 16384, 8, 64).repr());
   EXPECT_NE(stockham_stage(target, "forward", 1024, 8, 8, 16).repr(),
             stockham_stage(target, "forward", 1024, 8, 8, 128).repr());
+}
+
+TEST(KernelKeyRepr, CudaPermutationConstantsSeparateCacheEntries) {
+  auto dynamic = flagfft::KernelKey::direct_dft("cuda:80:32", "forward", "complex128", 256);
+  dynamic.kind = flagfft::KernelKind::LeafPermutedStore;
+  auto specialized = dynamic;
+  specialized.cuda_permute_span = 256;
+  specialized.cuda_permute_batch = 65536;
+  EXPECT_FALSE(dynamic == specialized);
+  EXPECT_NE(dynamic.repr(), specialized.repr());
+  auto changed = specialized;
+  changed.cuda_permute_span = 65536;
+  EXPECT_FALSE(changed == specialized);
+  EXPECT_NE(changed.repr(), specialized.repr());
+  changed = specialized;
+  changed.cuda_permute_batch *= 4;
+  EXPECT_FALSE(changed == specialized);
+  EXPECT_NE(changed.repr(), specialized.repr());
+}
+
+TEST(CudaWideLeafPlan, BoundedByHardwareAndPrecision) {
+  if (flagfft::adaptor::backend_name() != "cuda") GTEST_SKIP();
+  const char *previous = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
+  struct Restore {
+    std::optional<std::string> old;
+    ~Restore() { if (old) setenv("FLAGFFT_CUDA_WIDE_LEAF", old->c_str(), 1);
+                 else unsetenv("FLAGFFT_CUDA_WIDE_LEAF"); }
+  } restore{previous ? std::optional<std::string>(previous) : std::nullopt};
+  setenv("FLAGFFT_CUDA_WIDE_LEAF", "1", 1);
+  for (int64_t n : {4096,8192}) {
+    flagfft::FFTRequest request;
+    request.device_type = "cuda"; request.device_arch = "sm_80"; request.device_index = 0;
+    request.raw_dim = request.normalized_dim = 1; request.origin_rank = 1;
+    request.batch = 64; request.fft_length = request.requested_n = n;
+    request.input_shape = {64,n}; request.input_strides = {n,1};
+    request.input_dtype = request.output_dtype = "complex64";
+    request.direction = "forward"; request.input_layout = "contiguous";
+    flagfft::PlanBuilder builder;
+    auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(n,request));
+    if (n == 8192 && flagfft::adaptor::max_dynamic_smem_bytes(0) < 128*1024) {
+      EXPECT_EQ(leaf,nullptr); continue;
+    }
+    ASSERT_NE(leaf,nullptr);
+    EXPECT_EQ(leaf->lanes,256); EXPECT_EQ(leaf->num_warps,8);
+    request.input_dtype = request.output_dtype = "complex128";
+    flagfft::PlanBuilder double_builder;
+    auto double_leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(double_builder.build(n,request));
+    EXPECT_TRUE(!double_leaf || double_leaf->lanes != 256);
+  }
+}
+
+
+TEST(CudaMeasuredFourStep, MiddleBatchRangeHasNoPolicyGap) {
+  for (const std::string dtype : {"complex64", "complex128"}) {
+    for (int64_t batch : {9, 32, 64}) {
+      flagfft::FFTRequest request;
+      request.device_type = "unit-test";
+      request.device_arch = "sm_80";
+      request.raw_dim = request.normalized_dim = request.origin_rank = 1;
+      request.batch = batch;
+      request.fft_length = request.requested_n = 8192;
+      request.input_dtype = request.output_dtype = dtype;
+      request.direction = "forward";
+      flagfft::PlanBuilder builder;
+      auto split = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(8192,request));
+      ASSERT_NE(split,nullptr);
+      EXPECT_EQ(split->n1,128);
+      EXPECT_EQ(split->n2,64);
+    }
+  }
 }

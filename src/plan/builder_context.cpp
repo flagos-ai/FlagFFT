@@ -26,7 +26,8 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          real_transform_kind == other.real_transform_kind &&
          origin_real_transform_kind == other.origin_real_transform_kind &&
          device_type == other.device_type && device_index == other.device_index &&
-         device_arch == other.device_arch && origin_rank == other.origin_rank &&
+         device_arch == other.device_arch &&
+         musa_1d_fourstep_split == other.musa_1d_fourstep_split && origin_rank == other.origin_rank &&
          requested_n == other.requested_n &&
          batch == other.batch &&
          maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube &&
@@ -44,6 +45,10 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.device_type = request.device_type;
   context.device_index = request.device_index;
   context.device_arch = request.device_arch;
+  if (request.device_type == "musa" && request.device_arch == "31") {
+    const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+    if (split != nullptr) context.musa_1d_fourstep_split = split;
+  }
   context.origin_rank = request.origin_rank;
   context.requested_n = request.requested_n;
   context.batch = request.batch;
@@ -78,6 +83,122 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   set_request_context(request);
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
+  }
+  // Allow a root 1D batched transform on MUSA to screen alternative four-step
+  // decompositions without changing child plans.
+  const char *musa_fourstep_split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  const bool musa_1d_c2c_root = !request.real_transform &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype;
+  const bool musa_1d_real_root = request.real_transform &&
+      (request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z" ||
+       request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d");
+  const bool musa_default_131072_split = request.device_type == "musa" &&
+      request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.batch > 1 && request.requested_n == n && n == 131072 &&
+      (musa_1d_c2c_root || musa_1d_real_root);
+  const bool musa_default_1024_split = request.device_type == "musa" &&
+      request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.batch > 1 && request.requested_n == n && n == 1024 &&
+      (musa_1d_c2c_root || musa_1d_real_root);
+  const bool musa_default_8192_split = request.device_type == "musa" &&
+      request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.batch > 1 && request.requested_n == n && n == 8192 &&
+      (musa_1d_c2c_root || musa_1d_real_root);
+  const bool musa_default_300000_c2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n && n == 300000 &&
+      musa_1d_c2c_root;
+  const bool musa_packed_fp32_c2r_child_root =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.packed_real_child &&
+      request.requested_n == n && request.input_dtype == "complex64" &&
+      (request.origin_real_transform_kind == "c2r" || request.real_transform_kind == "c2r");
+  const bool musa_default_packed_300000_fp64_c2r_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch >= 64 && request.packed_real_child &&
+      request.requested_n == n && n == 300000 && request.input_dtype == "complex128" &&
+      (request.origin_real_transform_kind == "c2r" || request.real_transform_kind == "c2r");
+  const bool musa_default_packed_65536_fp32_r2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && (request.batch == 64 || request.batch == 256) &&
+      request.packed_real_child && request.requested_n == n && n == 65536 &&
+      request.input_dtype == "complex64" &&
+      (request.origin_real_transform_kind == "r2c" || request.real_transform_kind == "r2c");
+  const bool musa_default_packed_c2r_32768_split = musa_packed_fp32_c2r_child_root && n == 32768;
+  const bool musa_default_packed_c2r_65536_split = musa_packed_fp32_c2r_child_root && n == 65536;
+  const bool musa_default_350000_fp64_c2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n && n == 350000 &&
+      musa_1d_c2c_root && request.input_dtype == "complex128";
+  const bool musa_default_600000_c2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n && n == 600000 &&
+      musa_1d_c2c_root;
+  const bool musa_root_fourstep_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n &&
+      (musa_1d_c2c_root || musa_1d_real_root) &&
+      ((musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') || musa_default_131072_split ||
+       musa_default_1024_split || musa_default_8192_split || musa_default_300000_c2c_split ||
+       musa_default_350000_fp64_c2c_split || musa_default_600000_c2c_split ||
+       musa_default_packed_65536_fp32_r2c_split);
+  if (musa_root_fourstep_split || musa_packed_fp32_c2r_child_root ||
+      musa_default_packed_300000_fp64_c2r_split || musa_default_packed_65536_fp32_r2c_split) {
+    // MTT S5000 screens favor 128x8 over the CT leaf at N=1024, 128x64 over
+    // 64x128 at N=8192, 512x256 over 128x1024 at N=131072, and 256x128 / 256x256
+    // for the packed FP32 C2R children at N=32768 / 65536. Batched C2C N=300000
+    // favors 1000x300; the packed FP64 C2R child at N=300000 favors 750x400. The packed
+    // FP32 R2C child at N=65536 favors 256x256. FP64 C2C roots favor 700x500
+    // at N=350000; batched C2C N=600000 favors 1000x600.
+    std::string spec;
+    if (musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') {
+      spec = musa_fourstep_split;
+    } else if (musa_default_131072_split) {
+      spec = "131072:512";
+    } else if (musa_default_1024_split) {
+      spec = "1024:128";
+    } else if (musa_default_8192_split) {
+      spec = "8192:128";
+    } else if (musa_default_packed_c2r_32768_split) {
+      spec = "32768:256";
+    } else if (musa_default_packed_c2r_65536_split) {
+      spec = "65536:256";
+    } else if (musa_default_packed_65536_fp32_r2c_split) {
+      spec = "65536:256";
+    } else if (musa_default_300000_c2c_split) {
+      spec = "300000:1000";
+    } else if (musa_default_packed_300000_fp64_c2r_split) {
+      spec = "300000:750";
+    } else if (musa_default_350000_fp64_c2c_split) {
+      spec = "350000:700";
+    } else if (musa_default_600000_c2c_split) {
+      spec = "600000:1000";
+    } else {
+      spec = "600000:750";
+    }
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t target_length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (target_length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT n1 must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
+    }
   }
   // Opt in to an explicit HCU single C2R split while screening alternative
   // 1D four-step decompositions. Keep the override at the public root so it

@@ -21,6 +21,7 @@ from textwrap import dedent
 
 from .kernels_common import _dtype_suffix, _maca_backend_active, _next_power_of_two, _zero_other
 from .maca_tail_policy import real_tree_default
+from .backend_profile import current_profile
 
 
 def _build_real_direct_dft_kernel_source(
@@ -48,6 +49,8 @@ def _build_real_direct_dft_kernel_source(
         and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION", "tree" if real_tree_default(n) else "kahan") == "tree"
         and _maca_backend_active()
     )
+    tree = tree or (dtype == "complex128" and n <= 32 and current_profile().backend == "cuda"
+                    and os.getenv("FLAGFFT_CUDA_DIRECT_DFT_TREE") == "1")
     if tree:
         name += "_tree"
     # Scalar FP64 loads and vector FP32 loads share the same boundary rules.
@@ -467,3 +470,59 @@ __all__ = [
     "_build_real_to_complex_kernel_source",
     "_packed_layout",
 ]
+
+
+def _build_real_pair_kernel_source(n: int, dtype: str, mode: str):
+    """Pack two real transforms into one complex transform, with odd-batch masking."""
+    if n <= 0 or mode not in {'r2c_pair_pack', 'r2c_pair_unpack', 'c2r_pair_pack', 'c2r_pair_unpack'}:
+        raise ValueError('invalid real-pair kernel')
+    name = f'_{mode}_kernel_n{n}_{_dtype_suffix(dtype)}'
+    half = n // 2 + 1
+    extent = half if mode == 'r2c_pair_unpack' else n
+    body = [f'@triton.jit\ndef {name}(in_ptr, out_ptr, input_distance, output_distance, nbatch):',
+            '    pair = tl.program_id(1)',
+            '    k = tl.program_id(0) * 256 + tl.arange(0, 256)',
+            f'    valid = k < {extent}',
+            '    row = pair * 2',
+            '    mask_a = valid & (row < nbatch)',
+            '    mask_b = valid & (row + 1 < nbatch)']
+    if mode == 'r2c_pair_pack':
+        body += ['    ar = tl.load(in_ptr + row * input_distance + k, mask=mask_a, other=0.0)',
+                 '    br = tl.load(in_ptr + (row + 1) * input_distance + k, mask=mask_b, other=0.0)',
+                 f'    dst = out_ptr + (pair * {n} + k) * 2',
+                 '    tl.store(dst, ar, mask=valid)', '    tl.store(dst + 1, br, mask=valid)']
+    elif mode == 'r2c_pair_unpack':
+        body += [f'    partner = tl.where(k == 0, 0, {n} - k)',
+                 f'    src = in_ptr + (pair * {n} + k) * 2',
+                 f'    other_src = in_ptr + (pair * {n} + partner) * 2',
+                 '    ar = tl.load(src, mask=valid, other=0.0)',
+                 '    ai = tl.load(src + 1, mask=valid, other=0.0)',
+                 '    br = tl.load(other_src, mask=valid, other=0.0)',
+                 '    bi = tl.load(other_src + 1, mask=valid, other=0.0)',
+                 '    dst_a = out_ptr + (row * output_distance + k) * 2',
+                 '    dst_b = out_ptr + ((row + 1) * output_distance + k) * 2',
+                 '    tl.store(dst_a, (ar + br) * 0.5, mask=mask_a)',
+                 '    tl.store(dst_a + 1, (ai - bi) * 0.5, mask=mask_a)',
+                 '    tl.store(dst_b, (ai + bi) * 0.5, mask=mask_b)',
+                 '    tl.store(dst_b + 1, (br - ar) * 0.5, mask=mask_b)']
+    elif mode == 'c2r_pair_pack':
+        self_conjugate = f'(k == 0) | (k == {n // 2})' if n % 2 == 0 else '(k == 0)'
+        body += [f'    compact = tl.minimum(k, {n} - k)',
+                 f'    sign = tl.where(k <= {n // 2}, 1.0, -1.0)',
+                 '    src_a = in_ptr + (row * input_distance + compact) * 2',
+                 '    src_b = in_ptr + ((row + 1) * input_distance + compact) * 2',
+                 '    ar = tl.load(src_a, mask=mask_a, other=0.0)',
+                 '    ai = tl.load(src_a + 1, mask=mask_a, other=0.0)',
+                 '    br = tl.load(src_b, mask=mask_b, other=0.0)',
+                 '    bi = tl.load(src_b + 1, mask=mask_b, other=0.0)',
+                 f'    ai = tl.where({self_conjugate}, 0.0, ai * sign)',
+                 f'    bi = tl.where({self_conjugate}, 0.0, bi * sign)',
+                 f'    dst = out_ptr + (pair * {n} + k) * 2',
+                 '    tl.store(dst, ar - bi, mask=valid)', '    tl.store(dst + 1, ai + br, mask=valid)']
+    else:
+        body += [f'    src = in_ptr + (pair * {n} + k) * 2',
+                 '    ar = tl.load(src, mask=valid, other=0.0)',
+                 '    ai = tl.load(src + 1, mask=valid, other=0.0)',
+                 '    tl.store(out_ptr + row * output_distance + k, ar, mask=mask_a)',
+                 '    tl.store(out_ptr + (row + 1) * output_distance + k, ai, mask=mask_b)']
+    return name, '\n'.join(body), ['in_ptr', 'out_ptr', 'input_distance', 'output_distance', 'nbatch'], 1

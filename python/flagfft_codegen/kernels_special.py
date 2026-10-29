@@ -22,6 +22,7 @@ from typing import Literal
 
 from .kernels_common import _dtype_suffix, _maca_backend_active, lane_block_for
 from .maca_tail_policy import resource_default
+from .backend_profile import current_profile
 
 
 def _build_direct_dft_kernel_source(
@@ -57,6 +58,8 @@ def _build_direct_dft_kernel_source(
         and os.environ.get("FLAGFFT_MACA_REAL_DFT_REDUCTION",
                            resource_default("REAL_DFT_REDUCTION") or "kahan") == "tree"
     )
+    tree = tree or (dtype == "complex128" and n <= 32 and current_profile().backend == "cuda"
+                    and os.getenv("FLAGFFT_CUDA_DIRECT_DFT_TREE") == "1")
     if tree:
         kernel_name += "_tree"
     in_placeholder = "base + j * outer_stride" if strided else f"pid_batch * {n} + j"

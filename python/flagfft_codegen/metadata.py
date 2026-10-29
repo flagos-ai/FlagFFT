@@ -28,6 +28,7 @@ from .kernels_common import (
     _dtype_suffix,
     _hcu_backend_active,
     _maca_knob,
+    _mthreads_backend_active,
     _npu_backend_active,
     _portable_leaf_backend_active,
     _ix_backend_active,
@@ -47,6 +48,7 @@ from .registry import (
     STRIDED_FOUR_STEP_KERNELS,
     is_four_step_twiddle_eligible,
 )
+from .target import musa_1d_batch_default_enabled
 
 
 def _pointer_signature(dtype: str) -> str:
@@ -157,8 +159,12 @@ def _metadata(
         batch_per_block = permuted_store_batch_pack_for(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )
-    elif kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"} and (
-        _ix_backend_active()
+    elif (kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
+          or (current_profile().backend == "cuda" and kernel_type == "leaf_r2c"
+              and kernel_name.startswith("r2c_permuted_store"))) and (
+        current_profile().backend == "cuda"
+        or _ix_backend_active()
+        or _mthreads_backend_active()
         or (
             _npu_backend_active()
             and os.environ.get("FLAGFFT_NPU_2D_TRANSPOSE_STORE") == "1"
@@ -184,10 +190,17 @@ def _metadata(
     ):
         batch_per_block = permuted_store_batch_pack_for(plan)
     elif kernel_type in CONTIGUOUS_BATCH_PACK_KERNELS:
+        real_transform = (
+            "r2c"
+            if kernel_type in {"leaf_r2c", "leaf_packed_r2c", "leaf_bluestein_r2c"}
+            else "c2r"
+            if kernel_type in {"leaf_c2r", "leaf_packed_c2r", "leaf_bluestein_c2r"}
+            else None
+        )
         batch_per_block = contiguous_batch_pack_for(
             plan,
-            real_boundary=kernel_type
-            in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r", "leaf_packed_c2r"},
+            real_boundary=real_transform is not None,
+            real_transform=real_transform,
         )
     else:
         batch_per_block = 1
@@ -214,6 +227,14 @@ def _metadata(
         "direct_dft_c2r",
     } and dtype == "complex64":
         num_warps = 4
+    if profile.backend == "cuda" and kernel_type in {
+        "direct_dft", "direct_dft_strided", "direct_dft_r2c", "direct_dft_c2r"
+    }:
+        override = os.getenv("FLAGFFT_CUDA_DIRECT_DFT_WARPS", "auto")
+        if override != "auto":
+            if override not in {"1", "2", "4"}:
+                raise ValueError("FLAGFFT_CUDA_DIRECT_DFT_WARPS must be auto, 1, 2 or 4")
+            num_warps = int(override)
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)
@@ -265,6 +286,14 @@ def _metadata(
         # normal leaf. Four warps caused a large batch-64 regression on V150;
         # the measured two-warp launch retains the one-kernel benefit.
         num_warps = 2
+    if (profile.backend == "musa" and musa_1d_batch_default_enabled()
+            and 64 <= plan.length <= 1024):
+        warp_override = os.getenv("FLAGFFT_MUSA_1D_BATCH_WARPS", "auto")
+        if warp_override not in {"auto", "1", "2", "4", "8"}:
+            raise ValueError("FLAGFFT_MUSA_1D_BATCH_WARPS must be auto, 1, 2, 4 or 8")
+        if warp_override != "auto":
+            num_warps = int(warp_override)
+            profile.validate(num_warps)
     if profile.backend == "hcu" and kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store"}:
         is_final_axis = "permuted_store_outer_last_" in kernel_name
         is_middle_axis = "permuted_store_inner_" in kernel_name

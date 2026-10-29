@@ -93,7 +93,11 @@ int64_t PlanBuilder::choose_lanes(int64_t n, const std::vector<int64_t> &factors
       request_context_.has_value() && request_context_->device_type == "ix" &&
       request_context_->batch == 1 && request_context_->input_dtype == "complex64" &&
       request_context_->output_dtype == "complex64" && n == 4096;
-  int64_t upper = std::min(gcd_all, ix_wide_4096 ? int64_t{256} : kMaxLanes);
+  const char *cuda_wide = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
+  const bool cuda_wide_leaf = request_context_.has_value() && request_context_->device_type == "cuda" &&
+      request_context_->device_arch == "sm_80" && request_context_->input_dtype == "complex64" &&
+      (n == 4096 || n == 8192) && cuda_wide && std::string(cuda_wide) == "1";
+  int64_t upper = std::min(gcd_all, (ix_wide_4096 || cuda_wide_leaf) ? int64_t{256} : kMaxLanes);
   for (int64_t candidate = upper; candidate > 0; --candidate) {
     if (gcd_all % candidate == 0) {
       return candidate;
@@ -124,6 +128,12 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  const char *cuda_wide = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
+  if (context.device_type == "cuda" && context.device_arch == "sm_80" &&
+      context.input_dtype == "complex64" && cuda_wide && std::string(cuda_wide) == "1") {
+    if (n == 4096) return {16, 16, 16};
+    if (n == 8192) return {16, 16, 32};
+  }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
     const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
     if (override_value != nullptr) {
@@ -384,7 +394,11 @@ std::optional<int64_t> PlanBuilder::leaf_smem_bytes(int64_t n,
 bool PlanBuilder::should_use_leaf(int64_t n, const std::vector<int64_t> &factors) {
   const RequestContext &context = request_context();
   auto smem_bytes = leaf_smem_bytes(n, factors, context.input_dtype);
-  return n <= kLeafMaxN && smem_bytes.has_value() && *smem_bytes <= context.max_dynamic_smem_bytes;
+  const char *cuda_wide = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
+  const bool cuda_large_leaf = context.device_type == "cuda" && context.device_arch == "sm_80" &&
+      context.input_dtype == "complex64" && n == 8192 && cuda_wide && std::string(cuda_wide) == "1";
+  return (n <= kLeafMaxN || cuda_large_leaf) && smem_bytes.has_value() &&
+         *smem_bytes <= context.max_dynamic_smem_bytes;
 }
 
 PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &factors, int64_t rem) {

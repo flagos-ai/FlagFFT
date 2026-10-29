@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import os
+from .backend_profile import current_profile
 from typing import Literal
 
 from .kernels_common import (
@@ -545,6 +546,8 @@ def _emit_permuted_store(
     """
     offset = digit * math.prod(factors[: len(factors) - 1])
     base = "output_base_lane" if offset == 0 else f"(output_base_lane + {offset})"
+    vector_store = (current_profile().backend == "cuda" and
+                    os.getenv("FLAGFFT_CUDA_PERMSTORE_VEC_STORE") == "1")
     if pack == 1:
         # A one-slot tile has no real batch dimension.  Avoid materializing a
         # degenerate (lane, 1) transpose: MUSA's legacy lowering can associate
@@ -554,6 +557,10 @@ def _emit_permuted_store(
         mask = "lane_mask"
         if compact_length is not None:
             mask = f"lane_mask & ({base} < {compact_length})"
+        if vector_store:
+            return [f"{indent}perm_addr{digit} = {address}"] + _emit_vectorized_complex_store(
+                indent, f"out_ptr + perm_addr{digit} * 2", f"r{digit}", f"i{digit}", mask, dtype
+            )
         if _packed_maca_fp32_complex_io(dtype):
             return [
                 f"{indent}perm_addr{digit} = {address}",
@@ -591,6 +598,14 @@ def _emit_permuted_store(
         (_mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1")
         or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1") == "1")
     )
+    if vector_store:
+        return [
+            f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
+            f"{indent}zi{digit} = tl.trans(tl.reshape(i{digit}, ({pack}, {lane_block})))",
+            f"{indent}perm_addr{digit} = {address}",
+        ] + _emit_vectorized_complex_store(
+            indent, f"out_ptr + perm_addr{digit} * 2", f"zr{digit}", f"zi{digit}", mask, dtype
+        )
     if pair_store:
         return [
             f"{indent}zr{digit} = tl.trans(tl.reshape(r{digit}, ({pack}, {lane_block})))",
@@ -1227,7 +1242,12 @@ def _emit_stage_block(
         )
     )
     hcu_smem_swizzle = hcu_smem_swizzle or hcu_r2c_leaf_swizzle
-    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or (
+    cuda_swizzle = os.getenv("FLAGFFT_CUDA_SMEM_SWIZZLE", "0")
+    if current_profile().backend == "cuda" and cuda_swizzle not in {"0", "3", "4", "5"}:
+        raise ValueError("FLAGFFT_CUDA_SMEM_SWIZZLE must be 0, 3, 4 or 5")
+    cuda_smem_swizzle = (current_profile().backend == "cuda" and cuda_swizzle != "0" and
+                        not portable_exchange and n & (n - 1) == 0)
+    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or cuda_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
@@ -1237,6 +1257,8 @@ def _emit_stage_block(
         and _maca_knob("SMEM_INTERLEAVE", "0") == "1"
     )
     swizzle_shift = _TLE_SMEM_SWIZZLE_SHIFT
+    if cuda_smem_swizzle:
+        swizzle_shift = int(cuda_swizzle)
     if _ix_backend_active() and smem_swizzle:
         swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
         if not 1 <= swizzle_shift <= 8:
@@ -1987,8 +2009,12 @@ def _emit_stage_block(
                     f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
                 )
             elif io_mode == "packed_r2c":
+                packed_index = f"out_idx{j}"
+                if not portable_exchange and smem_pack > 1:
+                    lines.append(f"{indent}packed_index{j} = out_idx{j} + smem_offset")
+                    packed_index = f"packed_index{j}"
                 lines.extend(_emit_exchange_store(
-                    indent, "packed", f"out_idx{j}", j, f"r{j}", f"i{j}", portable_exchange
+                    indent, "packed", packed_index, j, f"r{j}", f"i{j}", portable_exchange
                 ))
             elif io_mode == "contiguous_c2r":
                 lines.append(
@@ -2504,13 +2530,23 @@ def _use_thread_local_mixed_leaf(
         return False
     if io_mode.endswith("_strided"):
         return False
-    if io_mode.startswith("bluestein_four_step_"):
+    if io_mode.startswith("bluestein_four_step_") and not (
+        os.getenv("FLAGFFT_CUDA_BLUESTEIN_REGISTER") == "1"
+        and current_profile().backend == "cuda"
+        and four_step_n1 == four_step_n2 == 1024
+        and tuple(plan.factors) == (32, 32)
+    ):
         return False
     if len(plan.factors) != 2:
         return False
     register_radix, cross_radix = plan.factors
+    power2_register = (current_profile().backend == "cuda"
+        and os.getenv("FLAGFFT_CUDA_POWER2_REGISTER") == "1"
+        and register_radix in {16,32} and cross_radix in {16,32})
     row_modes = {
         "four_step_row",
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_pointwise_row",
         "four_step_real_row",
         "four_step_hermitian_row",
     }
@@ -2518,13 +2554,14 @@ def _use_thread_local_mixed_leaf(
         "four_step_col",
         "four_step_r2c_col",
         "four_step_c2r_col",
+        "bluestein_four_step_finish_col",
     }
     expected_length = four_step_n1 if io_mode in row_modes else four_step_n2
     return (
         io_mode in row_modes | col_modes
         and plan.dtype in {"complex64", "complex128"}
-        and register_radix in _THREAD_LOCAL_MIXED_RADICES
-        and cross_radix == 32
+        and (register_radix in _THREAD_LOCAL_MIXED_RADICES or power2_register)
+        and (cross_radix == 32 or power2_register)
         and plan.length == register_radix * cross_radix
         and plan.length == expected_length
         and (
@@ -2592,10 +2629,12 @@ def _build_thread_local_mixed_four_step_kernel_source(
     io_mode: LeafIoMode,
     four_step_n1: int,
     four_step_n2: int,
+    prime_n: int = 0,
+    bluestein_real_kind: str = "",
 ) -> tuple[str, str]:
     # Each thread owns the first composite register FFT, followed by one
     # shared exchange and a full register-only radix-32 FFT.
-    register_radix = plan.factors[0]
+    register_radix, cross_radix = plan.factors
     inner_pack = 4
     physical_lanes = 32
     vector_block = physical_lanes * inner_pack
@@ -2611,6 +2650,8 @@ def _build_thread_local_mixed_four_step_kernel_source(
     asm_store_constraints = f'"=r,l,{vector_reg},{vector_reg}"'
     row_modes = {
         "four_step_row",
+        "bluestein_four_step_prepare_row",
+        "bluestein_four_step_pointwise_row",
         "four_step_real_row",
         "four_step_hermitian_row",
     }
@@ -2618,6 +2659,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
         "four_step_col",
         "four_step_r2c_col",
         "four_step_c2r_col",
+        "bluestein_four_step_finish_col",
     }
     if io_mode not in row_modes | col_modes:
         raise ValueError(f"unsupported thread-local four-step I/O mode {io_mode}")
@@ -2631,10 +2673,13 @@ def _build_thread_local_mixed_four_step_kernel_source(
     )
     kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
     kernel_name = (
-        f"{io_mode}_{kernel_prefix}_kernel_{register_radix}_32_thread_local"
+        f"{io_mode}_{kernel_prefix}_kernel_{register_radix}_{cross_radix}_thread_local"
         f"_n{four_step_n1}_{four_step_n2}_l{plan.lanes}_b32_t{smem_chunk}"
         "_v5g_itwsincos_otwrec_nw4"
     )
+
+    if io_mode.startswith("bluestein_four_step_"):
+        kernel_name += f"_p{prime_n}_{bluestein_real_kind or 'complex'}"
 
     body: list[str] = ["@triton.jit", f"def {kernel_name}("]
     for idx, param in enumerate(params):
@@ -2653,6 +2698,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
             "    four_step_inner = four_step_inner_base + inner_slot",
             f"    lane_mask = four_step_inner < {inner_count}",
             f"    output_lane_mask = lane_mask & (fft_thread < {register_radix})",
+            f"    input_lane_mask = lane_mask & (fft_thread < {cross_radix})",
             f"    smem_offset = inner_slot * {plan.smem_size}",
             (
                 f"    four_step_batch_base = "
@@ -2671,16 +2717,44 @@ def _build_thread_local_mixed_four_step_kernel_source(
 
     for idx in range(register_radix):
         input_digit = 2 * (idx % 16) + idx // 16 if register_radix == 32 else idx
-        body.append(f"    input_idx{idx} = fft_thread + {32 * input_digit}")
+        body.append(f"    input_idx{idx} = fft_thread + {cross_radix * input_digit}")
         body.append(
             f"    src_idx{idx} = input_idx{idx} * {source_stride} + " "four_step_inner"
         )
-        if io_mode == "four_step_real_row":
+        if io_mode == "bluestein_four_step_prepare_row":
+            body.append(f"    prime_mask{idx} = lane_mask & (src_idx{idx} < {prime_n})")
+            if bluestein_real_kind == "r2c":
+                offset = f"four_step_batch * {prime_n} + src_idx{idx}"
+                body.append(f"    r{idx} = tl.load(in_ptr + {offset}, mask=prime_mask{idx}, other=0.0)")
+                body.append(f"    i{idx} = r{idx} * 0.0")
+            else:
+                if bluestein_real_kind == "c2r":
+                    body.append(f"    compact_idx{idx} = tl.minimum(src_idx{idx}, {prime_n} - src_idx{idx})")
+                    offset = f"(four_step_batch * {prime_n // 2 + 1} + compact_idx{idx}) * 2"
+                else:
+                    offset = f"(four_step_batch * {prime_n} + src_idx{idx}) * 2"
+                body.append(f"    input_offset{idx} = {offset}")
+                body.append(f"    r{idx} = tl.load(in_ptr + input_offset{idx}, mask=prime_mask{idx}, other=0.0)")
+                body.append(f"    i{idx} = tl.load(in_ptr + input_offset{idx} + 1, mask=prime_mask{idx}, other=0.0)")
+                if bluestein_real_kind == "c2r":
+                    body.append(f"    i{idx} = tl.where(src_idx{idx} == 0, 0.0, tl.where(src_idx{idx} <= {prime_n // 2}, i{idx}, -i{idx}))")
+            body.append(f"    chirp_r{idx} = tl.load(chirp_ptr + src_idx{idx} * 2, mask=prime_mask{idx}, other=0.0)")
+            body.append(f"    chirp_i{idx} = tl.load(chirp_ptr + src_idx{idx} * 2 + 1, mask=prime_mask{idx}, other=0.0)")
+            body.append(f"    r{idx}, i{idx} = _cmul(r{idx}, i{idx}, chirp_r{idx}, chirp_i{idx})")
+        elif io_mode == "bluestein_four_step_pointwise_row":
+            body.append(f"    input_offset{idx} = (four_step_batch_base + src_idx{idx}) * 2")
+            body.append(f"    ar{idx} = tl.load(in_ptr + input_offset{idx})")
+            body.append(f"    ai{idx} = tl.load(in_ptr + input_offset{idx} + 1)")
+            body.append(f"    br{idx} = tl.load(b_fft_ptr + src_idx{idx} * 2)")
+            body.append(f"    bi{idx} = tl.load(b_fft_ptr + src_idx{idx} * 2 + 1)")
+            body.append(f"    r{idx}, point_i{idx} = _cmul(ar{idx}, ai{idx}, br{idx}, bi{idx})")
+            body.append(f"    i{idx} = -point_i{idx}")
+        elif io_mode == "four_step_real_row":
             body.append(
                 f"    input_offset{idx} = "
                 f"four_step_batch * input_distance + src_idx{idx}"
             )
-            body.append(f"    r{idx} = tl.load(in_ptr + input_offset{idx})")
+            body.append(f"    r{idx} = tl.load(in_ptr + input_offset{idx}, mask=input_lane_mask, other=0.0)")
             body.append(f"    i{idx} = r{idx} * 0.0")
         elif io_mode == "four_step_hermitian_row":
             full_n = four_step_n1 * four_step_n2
@@ -2696,13 +2770,17 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    input_offset{idx} = "
                 f"(four_step_batch * input_distance + compact_idx{idx}) * 2"
             )
-            body.append(
-                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
-                f"{asm_load_constraints}, "
-                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
-            )
+            if cross_radix < 32:
+                body.extend(_emit_vectorized_complex_load("    ", f"in_ptr + input_offset{idx}",
+                    "input_lane_mask", f"r{idx}, i{idx}", plan.dtype))
+            else:
+                body.append(
+                    f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+                    f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                    f"{asm_load_constraints}, "
+                    f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+                    f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                )
             body.append(
                 f"    i{idx} = tl.where(src_idx{idx} < {half_n}, i{idx}, -i{idx})"
             )
@@ -2714,20 +2792,25 @@ def _build_thread_local_mixed_four_step_kernel_source(
             body.append(
                 f"    input_offset{idx} = " f"(four_step_batch_base + src_idx{idx}) * 2"
             )
-            body.append(
-                # The selected leaves and pack=4 cover every input lane exactly.
-                f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
-                f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
-                f"{asm_load_constraints}, "
-                f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
-                f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
-            )
+            if cross_radix < 32:
+                body.extend(_emit_vectorized_complex_load("    ", f"in_ptr + input_offset{idx}",
+                    "input_lane_mask", f"r{idx}, i{idx}", plan.dtype))
+            else:
+                body.append(
+                    # The selected leaves and pack=4 cover every input lane exactly.
+                    f"    r{idx}, i{idx} = tl.inline_asm_elementwise("
+                    f'"ld.global.v2.{vector_suffix} {{$0, $1}}, [$2];", '
+                    f"{asm_load_constraints}, "
+                    f"[tl.cast(in_ptr + input_offset{idx}, tl.uint64)], "
+                    f"dtype=({vector_dtype}, {vector_dtype}), is_pure=False, pack=1)"
+                )
 
-    body.extend(_emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
+    body.extend(_emit_radix16_codelet_call("    ",plan.direction) if register_radix == 16
+                else _emit_local_mixed_codelet_call("    ", register_radix, plan.direction))
 
     body.append(
         f"    smem_store_mask = tl.broadcast_to("
-        f"tl.reshape(lane_mask, {vector_block}, {smem_reshape_dims}), "
+        f"tl.reshape(input_lane_mask, {vector_block}, {smem_reshape_dims}), "
         f"{vector_block}, {smem_block_dims})"
     )
     body.append(
@@ -2744,11 +2827,11 @@ def _build_thread_local_mixed_four_step_kernel_source(
                         f"    inner_tw_idx{idx} = {idx} + {register_radix} * fft_thread",
                         (
                             f"    inner_tw_r{idx} = "
-                            f"tl.load(tw1_r_ptr + inner_tw_idx{idx})"
+                            f"tl.load(tw1_r_ptr + inner_tw_idx{idx}, mask=input_lane_mask, other=0.0)"
                         ),
                         (
                             f"    inner_tw_i{idx} = "
-                            f"tl.load(tw1_i_ptr + inner_tw_idx{idx})"
+                            f"tl.load(tw1_i_ptr + inner_tw_idx{idx}, mask=input_lane_mask, other=0.0)"
                         ),
                         (
                             f"    r{idx}, i{idx} = "
@@ -2757,7 +2840,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
                         ),
                     ]
                 )
-            body.append(f"    smem_logical{idx} = {idx * 32} + fft_thread")
+            body.append(f"    smem_logical{idx} = {idx * cross_radix} + fft_thread")
             body.append(
                 f"    smem_phys{idx} = smem_logical{idx} ^ "
                 f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
@@ -2791,11 +2874,11 @@ def _build_thread_local_mixed_four_step_kernel_source(
         )
     body.append("    tl.debug_barrier()")
 
-    for chunk_base in range(0, 32, smem_chunk):
+    for chunk_base in range(0, cross_radix, smem_chunk):
         chunk_indices = range(chunk_base, chunk_base + smem_chunk)
         for idx in chunk_indices:
-            second_input = 2 * (idx % 16) + idx // 16
-            body.append(f"    smem_logical{idx} = fft_thread * 32 + " f"{second_input}")
+            second_input = 2 * (idx % 16) + idx // 16 if cross_radix == 32 else idx
+            body.append(f"    smem_logical{idx} = fft_thread * {cross_radix} + " f"{second_input}")
             body.append(
                 f"    smem_phys{idx} = smem_logical{idx} ^ "
                 f"(smem_logical{idx} >> {_TLE_SMEM_SWIZZLE_SHIFT})"
@@ -2838,7 +2921,8 @@ def _build_thread_local_mixed_four_step_kernel_source(
             )
         )
 
-    body.extend(_emit_local_radix32_codelet_call("    ", plan.direction))
+    body.extend(_emit_radix16_codelet_call("    ",plan.direction) if cross_radix == 16
+                else _emit_local_radix32_codelet_call("    ", plan.direction))
 
     if include_outer_twiddle:
         body.extend(
@@ -2871,7 +2955,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
             ]
         )
 
-    for idx in range(32):
+    for idx in range(cross_radix):
         body.append(f"    out_idx{idx} = fft_thread + {register_radix * idx}")
         if include_outer_twiddle:
             body.append(
@@ -2882,7 +2966,7 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    r{idx}, i{idx} = "
                 f"_cmul(r{idx}, i{idx}, outer_tw_r, outer_tw_i)"
             )
-            if idx < 31:
+            if idx < cross_radix-1:
                 body.extend(
                     [
                         (
@@ -2902,7 +2986,22 @@ def _build_thread_local_mixed_four_step_kernel_source(
                 f"    dst_idx{idx} = "
                 f"out_idx{idx} * {four_step_n1} + four_step_inner"
             )
-        if io_mode == "four_step_r2c_col":
+        if io_mode == "bluestein_four_step_finish_col":
+            output_length = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
+            body.append(f"    prime_mask{idx} = output_lane_mask & (dst_idx{idx} < {output_length})")
+            body.append(f"    scaled_r{idx} = r{idx} / {four_step_n1 * four_step_n2}")
+            body.append(f"    scaled_i{idx} = -i{idx} / {four_step_n1 * four_step_n2}")
+            body.append(f"    chirp_r{idx} = tl.load(chirp_ptr + dst_idx{idx} * 2, mask=prime_mask{idx}, other=0.0)")
+            body.append(f"    chirp_i{idx} = tl.load(chirp_ptr + dst_idx{idx} * 2 + 1, mask=prime_mask{idx}, other=0.0)")
+            body.append(f"    final_r{idx}, final_i{idx} = _cmul(scaled_r{idx}, scaled_i{idx}, chirp_r{idx}, chirp_i{idx})")
+            if bluestein_real_kind == "c2r":
+                body.append(f"    output_offset{idx} = four_step_batch * {prime_n} + dst_idx{idx}")
+                body.append(f"    tl.store(out_ptr + output_offset{idx}, final_r{idx}, mask=prime_mask{idx})")
+            else:
+                body.append(f"    output_offset{idx} = (four_step_batch * {output_length} + dst_idx{idx}) * 2")
+                body.append(f"    tl.store(out_ptr + output_offset{idx}, final_r{idx}, mask=prime_mask{idx})")
+                body.append(f"    tl.store(out_ptr + output_offset{idx} + 1, final_i{idx}, mask=prime_mask{idx})")
+        elif io_mode == "four_step_r2c_col":
             half_n = four_step_n1 * four_step_n2 // 2 + 1
             body.append(
                 f"    compact_mask{idx} = "
@@ -2990,10 +3089,14 @@ def _build_leaf_kernel_source_for_io(
             io_mode=io_mode,
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
+            prime_n=prime_n,
+            bluestein_real_kind=bluestein_real_kind,
         )
 
     portable_exchange = _portable_leaf_backend_active()
-    if io_mode == "packed_r2c" and not portable_exchange:
+    cuda_packed_r2c = (io_mode == "packed_r2c" and current_profile().backend == "cuda"
+        and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
+    if io_mode == "packed_r2c" and not portable_exchange and not cuda_packed_r2c:
         raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
@@ -3045,10 +3148,17 @@ def _build_leaf_kernel_source_for_io(
             plan, force_full_smem=hcu_full_smem, pack_override=final_pack
         )
     elif io_mode in contiguous_modes:
+        real_transform = (
+            "r2c"
+            if io_mode in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c", "packed_r2c"}
+            else "c2r"
+            if io_mode in {"packed_c2r", "contiguous_c2r"}
+            else None
+        )
         batch_pack = contiguous_batch_pack_for(
             plan,
-            real_boundary=io_mode
-            in {"contiguous_r2c", "permuted_r2c", "permuted_store_r2c", "packed_r2c", "packed_c2r", "contiguous_c2r"},
+            real_boundary=real_transform is not None,
+            real_transform=real_transform,
         )
     else:
         batch_pack = 1
@@ -3107,6 +3217,14 @@ def _build_leaf_kernel_source_for_io(
         lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    if current_profile().backend == "cuda" and io_mode in {
+        "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
+    }:
+        padding = os.getenv("FLAGFFT_CUDA_PERMSTORE_PAD", "1")
+        if padding not in {"0", "1"}:
+            raise ValueError("FLAGFFT_CUDA_PERMSTORE_PAD must be 0 or 1")
+        if padding == "0":
+            smem_slot_stride = plan.smem_size
     smem_n = lane_block_for(smem_slot_stride * smem_pack)
     params = _leaf_kernel_params_for_io(
         plan,
@@ -3195,6 +3313,13 @@ def _build_leaf_kernel_source_for_io(
         suffix = "," if idx < len(params) - 1 else ""
         body.append(f"    {param}{suffix}")
     body.append("):")
+    if current_profile().backend == "cuda" and io_mode in {"permuted_store", "strided_permuted_store"}:
+        span = int(os.getenv("FLAGFFT_CUDA_PERMUTE_SPAN", "0"))
+        batch = int(os.getenv("FLAGFFT_CUDA_PERMUTE_BATCH", "0"))
+        if span < 0 or batch < 0 or bool(span) != bool(batch):
+            raise ValueError("CUDA permutation specialization requires positive span and batch together")
+        if span:
+            body.extend([f"    perm_span = {span}", f"    nbatch = {batch}"])
     if _portable_complex_vector_io():
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     if io_mode in contiguous_modes:
@@ -3378,6 +3503,11 @@ def _build_leaf_kernel_source_for_io(
             f"nv_mma_shared_layout=False)"
         )
 
+    if cuda_packed_r2c and not portable_exchange:
+        tl_dtype = _tl_real_dtype(plan.dtype)
+        body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+        body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+
     if io_mode in {"bluestein_full_leaf", "rader_full_leaf"}:
         if len(factors) < 2:
             raise ValueError("fused convolution leaf requires at least two FFT stages")
@@ -3418,6 +3548,8 @@ def _build_leaf_kernel_source_for_io(
         # The final codelet outputs were gathered into natural frequency order
         # by the portable exchange. Reconstruct the real FFT's half spectrum
         # without a second kernel launch or a global intermediate buffer.
+        if not portable_exchange:
+            body.append("    tl.debug_barrier()")
         body.extend([
             f"    packed_pos = tl.arange(0, {smem_n})",
             f"    packed_slot = packed_pos // {smem_slot_stride}",
@@ -3425,10 +3557,13 @@ def _build_leaf_kernel_source_for_io(
             f"    packed_mask = (packed_slot < {batch_pack}) & (packed_k < {n}) & (batch_id + packed_slot < nbatch)",
             f"    packed_partner = packed_slot * {smem_slot_stride} + tl.where(packed_k == 0, 0, {n} - packed_k)",
             "    packed_partner = tl.where(packed_mask, packed_partner, 0)",
-            "    packed_ar = packed_r",
-            "    packed_ai = packed_i",
-            "    packed_br = tl.gather(packed_r, packed_partner, 0)",
-            "    packed_bi = tl.gather(packed_i, packed_partner, 0)",
+            *( ["    packed_ar = packed_r", "    packed_ai = packed_i",
+                "    packed_br = tl.gather(packed_r, packed_partner, 0)",
+                "    packed_bi = tl.gather(packed_i, packed_partner, 0)"] if portable_exchange else [
+                "    packed_ar = tl.load(tle.gpu.local_ptr(packed_r, (packed_pos,)), mask=packed_mask, other=0.0)",
+                "    packed_ai = tl.load(tle.gpu.local_ptr(packed_i, (packed_pos,)), mask=packed_mask, other=0.0)",
+                "    packed_br = tl.load(tle.gpu.local_ptr(packed_r, (packed_partner,)), mask=packed_mask, other=0.0)",
+                "    packed_bi = tl.load(tle.gpu.local_ptr(packed_i, (packed_partner,)), mask=packed_mask, other=0.0)"]),
             "    packed_twiddle_k = tl.where(packed_mask, packed_k, 0)",
             "    packed_wr = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2, mask=packed_mask, other=0.0)",
             "    packed_wi = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2 + 1, mask=packed_mask, other=0.0)",

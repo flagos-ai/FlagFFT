@@ -206,6 +206,14 @@ std::string kernel_kind_name(KernelKind kind) {
       return "reshape_pack";
     case KernelKind::TwiddleReshapePack:
       return "twiddle_reshape_pack";
+    case KernelKind::RealPairR2CPack:
+      return "r2c_pair_pack";
+    case KernelKind::RealPairR2CUnpack:
+      return "r2c_pair_unpack";
+    case KernelKind::RealPairC2RPack:
+      return "c2r_pair_pack";
+    case KernelKind::RealPairC2RUnpack:
+      return "c2r_pair_unpack";
     case KernelKind::RealToComplex:
       return "real_to_complex";
     case KernelKind::R2CHalfPack:
