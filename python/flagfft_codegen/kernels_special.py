@@ -23,6 +23,7 @@ from typing import Literal
 from .kernels_common import (
     _dtype_suffix,
     _maca_backend_active,
+    _npu_backend_active,
     direct_dft_batch_tile,
     lane_block_for,
 )
@@ -48,6 +49,10 @@ def _build_direct_dft_kernel_source(
         return _build_cube_dft_kernel_source(
             n, strided=strided, transpose_output=cube_transposed
         )
+    if (not strided and dtype == "complex64" and 2 <= n <= 32 and
+            _npu_backend_active() and os.environ.get("FLAGFFT_NPU_DIRECT_DFT_PREFETCH") == "1"):
+        from .kernels_npu_direct_prefetch import build_prefetched_direct_dft
+        return build_prefetched_direct_dft(n, "c2c", direction, direct_dft_batch_tile(n, dtype=dtype))
     block = lane_block_for(n)
     acc_dtype = "tl.float64" if dtype == "complex128" else "tl.float32"
     suffix = _dtype_suffix(dtype)
