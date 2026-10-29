@@ -96,6 +96,7 @@ def test_fused_fft_generated_body(tmp_path,n,direction):
     assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref) < 1e-6
     assert (got-ref).abs().max()/ref.abs().max() < 2e-6
     assert torch.equal(x,saved)
+    assert (guarded[:64]==31415.25).all() and (guarded[-64:]==31415.25).all()
 
 
 @pytest.mark.parametrize('a,b,tile', [
@@ -106,7 +107,6 @@ def test_fused_fft_generated_body(tmp_path,n,direction):
 def test_dense_second_fourstep(tmp_path, monkeypatch, a, b, tile, direction):
     monkeypatch.setenv('FLAGFFT_NPU_FOURSTEP_DENSE_SECOND','1')
     test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,True,direction)
-    assert (guarded[:64]==31415.25).all() and (guarded[-64:]==31415.25).all()
 
 
 def axis_roots(length, columns, recursive):
