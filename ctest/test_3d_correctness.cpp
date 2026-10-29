@@ -13,10 +13,14 @@
 // limitations under the License.
 
 #include "flagfft_test.h"
+#include "exec/c_api_internal.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <exception>
 #include <vector>
+#include <thread>
 
 namespace {
 
@@ -898,5 +902,98 @@ TEST_P(D2ZZ2DRoundtrip3D, ForwardInverse) {
 }
 
 INSTANTIATE_TEST_SUITE_P(All, D2ZZ2DRoundtrip3D, ::testing::ValuesIn(Filter3DParams(All3DParams())));
+
+void CheckCudaExecutionGraphReplay(bool rank_one, bool rank_two = false) {
+  if (flagfft::adaptor::backend_name() != "cuda" || !HasUsableDevice()) {
+    GTEST_SKIP() << "requires CUDA";
+  }
+  struct GraphSetting {
+    const char *name;
+    bool existed;
+    std::string previous;
+    explicit GraphSetting(const char *variable)
+        : name(variable), existed(std::getenv(name) != nullptr),
+          previous(existed ? std::getenv(name) : "") { setenv(name, "1", 1); }
+    ~GraphSetting() {
+      if (existed) setenv(name, previous.c_str(), 1);
+      else unsetenv(name);
+    }
+  } setting(rank_one ? "FLAGFFT_CUDA_1D_GRAPH" : "FLAGFFT_CUDA_MULTID_GRAPH");
+  constexpr int n = 16;
+  const int total = rank_two ? n * n : n * n * n;
+  constexpr int batch = 2;
+  const std::size_t bytes = total * batch * sizeof(flagfftComplex);
+  for (bool inplace : {false, true}) {
+    struct PlanGuard {
+      flagfftHandle handle = nullptr;
+      ~PlanGuard() { if (handle) flagfftDestroy(handle); }
+    } plan;
+    if (rank_one) {
+      ASSERT_EQ(flagfftPlan1d(&plan.handle, total, FLAGFFT_C2C, batch), FLAGFFT_SUCCESS);
+    } else if (rank_two) {
+      ASSERT_NO_FATAL_FAILURE(flagfft_test::PlanMany2d(&plan.handle,n,n,FLAGFFT_C2C,batch));
+    } else {
+      ASSERT_NO_FATAL_FAILURE(
+          flagfft_test::PlanMany3d(&plan.handle, n, n, n, FLAGFFT_C2C, batch));
+    }
+    ASSERT_NE(plan.handle, nullptr);
+    flagfft::adaptor::Stream stream;
+    ASSERT_EQ(flagfftSetStream(plan.handle, stream.get()), FLAGFFT_SUCCESS);
+    // The route is qualified for sm_80. Other CUDA architectures keep their
+    // existing dispatch and do not participate in this replay regression.
+    auto *implementation = static_cast<flagfft::FlagFFTPlan *>(plan.handle->impl);
+    auto graph = std::dynamic_pointer_cast<flagfft::CompiledRawGraphNode>(
+        implementation->executable.forward);
+    if (!graph) GTEST_SKIP() << "graph route not selected on this device";
+    flagfft::adaptor::Memory inputs[2] = {
+        flagfft::adaptor::Memory(bytes), flagfft::adaptor::Memory(bytes)};
+    flagfft::adaptor::Memory outputs[2] = {
+        flagfft::adaptor::Memory(bytes), flagfft::adaptor::Memory(bytes)};
+    std::vector<flagfftComplex> input(total * batch), output(total * batch);
+    for (int iteration = 0; iteration < 4; ++iteration) {
+      const int slot = iteration % 2;
+      std::fill(input.begin(), input.end(), flagfftComplex{0.0f, 0.0f});
+      for (int b = 0; b < batch; ++b) {
+        input[b * total].x = static_cast<float>(1 + iteration + b);
+      }
+      inputs[slot].copy_from_host(input.data(), bytes);
+      auto &destination = inplace ? inputs[slot] : outputs[slot];
+      flagfftResult status=FLAGFFT_INTERNAL_ERROR;
+      const auto execute=[&] {
+        status=flagfftExecC2C(plan.handle,
+            static_cast<flagfftComplex *>(inputs[slot].data()),
+            static_cast<flagfftComplex *>(destination.data()),FLAGFFT_FORWARD);
+      };
+      // Replay the captured slot on a fresh host thread, whose CUDA current
+      // context must be initialized without relying on the creator thread.
+      if (iteration==2) { std::thread worker(execute);worker.join(); }
+      else execute();
+      ASSERT_EQ(status,FLAGFFT_SUCCESS);
+      stream.sync();
+      EXPECT_NE(graph->graph, nullptr);
+      EXPECT_FALSE(graph->graph_failed);
+      destination.copy_to_host(output.data(), bytes);
+      for (int b = 0; b < batch; ++b) {
+        for (int i = 0; i < total; ++i) {
+          ASSERT_NEAR(output[b * total + i].x, 1 + iteration + b, 1e-5f)
+              << "inplace=" << inplace << " iteration=" << iteration << " index=" << i;
+          ASSERT_NEAR(output[b * total + i].y, 0.0f, 1e-5f);
+        }
+      }
+    }
+  }
+}
+
+TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
+  CheckCudaExecutionGraphReplay(false);
+}
+
+TEST(Cuda1DGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
+  CheckCudaExecutionGraphReplay(true);
+}
+
+TEST(Cuda2DGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
+  CheckCudaExecutionGraphReplay(false,true);
+}
 
 }  // namespace

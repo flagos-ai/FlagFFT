@@ -2137,3 +2137,16 @@ def test_maca_portable_exchange_indexes_the_register_layout(
     source_index = namespace["exchange_src"]
     assert np.array_equal(source_index[valid] // lane_pack, namespace["exchange_codelet"][valid])
     assert np.array_equal(source_index[valid] % lane_pack, namespace["exchange_slot"][valid])
+
+
+@pytest.mark.parametrize('mode',['bluestein_full_leaf','rader_full_leaf'])
+def test_fused_convolution_multigroup_second_fft_uses_distinct_buffers(mode):
+    from flagfft_codegen.kernels_leaf import _emit_stage_block
+    first='\n'.join(_emit_stage_block(0,(8,16,16),2048,128,128,
+        io_mode=mode,bluestein_pass=1,bluestein_intermediate_buffer='smem_b',prime_n=1009))
+    second='\n'.join(_emit_stage_block(1,(8,16,16),2048,128,128,
+        io_mode=mode,bluestein_pass=1,bluestein_intermediate_buffer='smem_b',prime_n=1009))
+    assert 'tl.load(tle.gpu.local_ptr(smem_b_r' in first
+    assert 'tl.store(tle.gpu.local_ptr(smem_a_r' in first
+    assert 'tl.load(tle.gpu.local_ptr(smem_a_r' in second
+    assert 'tl.store(tle.gpu.local_ptr(smem_b_r' in second

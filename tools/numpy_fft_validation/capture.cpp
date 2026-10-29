@@ -487,7 +487,9 @@ FlagPlan make_flag_plan(const Spec& spec, const Layout& layout) {
 
 RefPlanHandle make_reference_plan(const Spec& spec) {
   RefPlanHandle plan;
-  plan.configure_case(spec.direction, spec.batch);
+  const bool cuda_inplace_multid = flagfft::test_adaptor::backend_name() == "cuda" &&
+      spec.shape.size() > 1 && spec.placement == Placement::kInPlace;
+  plan.configure_case(spec.direction, cuda_inplace_multid ? 1 : spec.batch);
   if (spec.shape.size() == 1) {
     flagfft::test_adaptor::ref_plan_1d(plan, spec.shape[0], spec.type, spec.batch);
   } else if (spec.shape.size() == 2) {
@@ -585,10 +587,12 @@ void execute_reference_one(RefPlanHandle& plan, const Spec& spec, void* input, v
 
 void execute_reference(
     RefPlanHandle& plan, const Spec& spec, const Layout& layout, void* input, void* output) {
-  // The platform reference creates one rank-2/rank-3 transform at a time;
-  // execute each batch with compact input and output offsets.
+  // CUDA and SiP can execute a native dense multidimensional batch. Other
+  // platform adaptors retain the per-transform reference fallback.
+  const bool cuda_native_batch = flagfft::test_adaptor::backend_name() == "cuda" &&
+                                 spec.placement == Placement::kOutOfPlace;
   if (spec.shape.size() == 1 || spec.batch == 1 ||
-      flagfft::test_adaptor::backend_name() == "npu-sip") {
+      cuda_native_batch || flagfft::test_adaptor::backend_name() == "npu-sip") {
     execute_reference_one(plan, spec, input, output);
     return;
   }

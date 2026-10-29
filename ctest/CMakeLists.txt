@@ -86,6 +86,10 @@ set(TEST_TARGETS
     test_exec_d2z_z2d_bs_s   test_exec_d2z_z2d_bs_b
 )
 
+if(BACKEND STREQUAL "CUDA")
+    list(APPEND TEST_TARGETS test_cuda_multid_reference)
+endif()
+
 if(BACKEND STREQUAL "MACA")
     list(APPEND TEST_TARGETS test_maca_runtime)
 endif()
