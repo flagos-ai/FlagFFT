@@ -165,7 +165,8 @@ namespace {
       initial_prefix*=radix;
     }
     const int64_t padded_prefix=power(initial_prefix);
-    const bool aligned=batch>=16 && padded_prefix*4<=initial_prefix*5 &&
+    const bool aligned=(batch>=16 || flag_or_default("FLAGFFT_NPU_DIF_PAD_SMALL_BATCH",false)) &&
+        padded_prefix*4<=initial_prefix*5 &&
         flag_or_default("FLAGFFT_NPU_DIF_PAD_PREFIX",false);
     const bool fused_finish=aligned && flag_or_default("FLAGFFT_NPU_DIF_FUSED_FINISH",false);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
