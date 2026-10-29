@@ -510,6 +510,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     const bool graph_requested =
         ((is_3d || (is_2d && real_multid)) &&
          (cuda_graph == nullptr || std::string(cuda_graph) == "1")) ||
+        (is_2d && !real_multid && cuda_graph != nullptr && std::string(cuda_graph) == "1") ||
         (!is_2d && !is_3d && cuda_1d_graph != nullptr && std::string(cuda_1d_graph) == "1");
     if (multid_request.device_type == "cuda" && multid_request.device_arch == "sm_80" &&
         graph_requested && std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {

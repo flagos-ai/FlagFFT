@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <exception>
 #include <vector>
+#include <thread>
 
 namespace {
 
@@ -902,7 +903,7 @@ TEST_P(D2ZZ2DRoundtrip3D, ForwardInverse) {
 
 INSTANTIATE_TEST_SUITE_P(All, D2ZZ2DRoundtrip3D, ::testing::ValuesIn(Filter3DParams(All3DParams())));
 
-void CheckCudaExecutionGraphReplay(bool rank_one) {
+void CheckCudaExecutionGraphReplay(bool rank_one, bool rank_two = false) {
   if (flagfft::adaptor::backend_name() != "cuda" || !HasUsableDevice()) {
     GTEST_SKIP() << "requires CUDA";
   }
@@ -919,9 +920,9 @@ void CheckCudaExecutionGraphReplay(bool rank_one) {
     }
   } setting(rank_one ? "FLAGFFT_CUDA_1D_GRAPH" : "FLAGFFT_CUDA_MULTID_GRAPH");
   constexpr int n = 16;
-  constexpr int total = n * n * n;
+  const int total = rank_two ? n * n : n * n * n;
   constexpr int batch = 2;
-  constexpr std::size_t bytes = total * batch * sizeof(flagfftComplex);
+  const std::size_t bytes = total * batch * sizeof(flagfftComplex);
   for (bool inplace : {false, true}) {
     struct PlanGuard {
       flagfftHandle handle = nullptr;
@@ -929,6 +930,8 @@ void CheckCudaExecutionGraphReplay(bool rank_one) {
     } plan;
     if (rank_one) {
       ASSERT_EQ(flagfftPlan1d(&plan.handle, total, FLAGFFT_C2C, batch), FLAGFFT_SUCCESS);
+    } else if (rank_two) {
+      ASSERT_NO_FATAL_FAILURE(flagfft_test::PlanMany2d(&plan.handle,n,n,FLAGFFT_C2C,batch));
     } else {
       ASSERT_NO_FATAL_FAILURE(
           flagfft_test::PlanMany3d(&plan.handle, n, n, n, FLAGFFT_C2C, batch));
@@ -955,12 +958,20 @@ void CheckCudaExecutionGraphReplay(bool rank_one) {
       }
       inputs[slot].copy_from_host(input.data(), bytes);
       auto &destination = inplace ? inputs[slot] : outputs[slot];
-      ASSERT_EQ(flagfftExecC2C(plan.handle,
-                              static_cast<flagfftComplex *>(inputs[slot].data()),
-                              static_cast<flagfftComplex *>(destination.data()),
-                              FLAGFFT_FORWARD), FLAGFFT_SUCCESS);
+      flagfftResult status=FLAGFFT_INTERNAL_ERROR;
+      const auto execute=[&] {
+        status=flagfftExecC2C(plan.handle,
+            static_cast<flagfftComplex *>(inputs[slot].data()),
+            static_cast<flagfftComplex *>(destination.data()),FLAGFFT_FORWARD);
+      };
+      // Replay the captured slot on a fresh host thread, whose CUDA current
+      // context must be initialized without relying on the creator thread.
+      if (iteration==2) { std::thread worker(execute);worker.join(); }
+      else execute();
+      ASSERT_EQ(status,FLAGFFT_SUCCESS);
       stream.sync();
       EXPECT_NE(graph->graph, nullptr);
+      EXPECT_FALSE(graph->graph_failed);
       destination.copy_to_host(output.data(), bytes);
       for (int b = 0; b < batch; ++b) {
         for (int i = 0; i < total; ++i) {
@@ -979,6 +990,10 @@ TEST(CudaMultidGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
 
 TEST(Cuda1DGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
   CheckCudaExecutionGraphReplay(true);
+}
+
+TEST(Cuda2DGraph, FirstInPlaceExecutionReplayAndPointerChanges) {
+  CheckCudaExecutionGraphReplay(false,true);
 }
 
 }  // namespace

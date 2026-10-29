@@ -39,6 +39,23 @@
 
 namespace flagfft {
 
+namespace {
+// Library-owned captures flatten nested graph wrappers into their kernel
+// launches. Replaying a child executable during capture is unsupported on
+// some CUDA drivers and invalidates the entire parent capture.
+thread_local std::vector<adaptor::StreamHandle> raw_capture_streams;
+bool raw_capture_active(adaptor::StreamHandle stream) {
+  return std::find(raw_capture_streams.begin(), raw_capture_streams.end(), stream)
+      != raw_capture_streams.end();
+}
+struct RawCaptureScope {
+  explicit RawCaptureScope(adaptor::StreamHandle stream) { raw_capture_streams.push_back(stream); }
+  ~RawCaptureScope() { raw_capture_streams.pop_back(); }
+  RawCaptureScope(const RawCaptureScope &) = delete;
+  RawCaptureScope &operator=(const RawCaptureScope &) = delete;
+};
+}  // namespace
+
 CompiledRawGraphNode::CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inner)
     : inner(std::move(inner)) {}
 
@@ -50,6 +67,7 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
                                             adaptor::DevicePtr output,
                                             const RawExecutionContext &context) const {
   try {
+    if (raw_capture_active(context.stream)) return inner->execute(input, output, context);
     if (graph != nullptr && graph_input == input && graph_output == output) {
       graph->launch(context.stream);
       return FLAGFFT_SUCCESS;
@@ -60,6 +78,7 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
     if (graph == nullptr && !graph_failed) {
       try {
         auto captured = std::make_unique<adaptor::CudaGraph>();
+        RawCaptureScope capture_scope(context.stream);
         captured->begin_capture(context.stream);
         result = inner->execute(input, output, context);
         captured->end_capture(context.stream);
@@ -120,6 +139,7 @@ namespace {
                          adaptor::DevicePtr output,
                          int64_t input_distance,
                          int64_t output_distance) {
+    if (raw_capture_active(context.stream)) return false;
     if (!state.graph || state.input != input || state.output != output ||
         state.batch != context.batch || state.input_distance != input_distance ||
         state.output_distance != output_distance) return false;
@@ -135,9 +155,10 @@ namespace {
                           int64_t input_distance,
                           int64_t output_distance,
                           Launch launch) {
-    if (state.graph || state.failed) return;
+    if (raw_capture_active(context.stream) || state.graph || state.failed) return;
     try {
       auto graph = std::make_unique<adaptor::CudaGraph>();
+      RawCaptureScope capture_scope(context.stream);
       graph->begin_capture(context.stream);
       launch();
       graph->end_capture(context.stream);
@@ -2537,7 +2558,7 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
     // (default tile_size=32) and jit_source.py:_emit_tiled_transpose_jit_kernel (ditto).
     constexpr int64_t tile_size = 32;
 
-    if (graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
+    if (!raw_capture_active(context.stream) && graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
       graph_->launch(context.stream);
       return FLAGFFT_SUCCESS;
     }
@@ -2592,13 +2613,17 @@ flagfftResult CompiledRaw2DNode::execute(adaptor::DevicePtr input,
     // already compiled by the direct run above, so capture only records
     // launches.  Any capture/instantiation failure falls back to direct
     // launches for the lifetime of the plan.
-    if (graph_enabled_ && graph_ == nullptr && !graph_failed_) {
+    if (!raw_capture_active(context.stream) && graph_enabled_ && graph_ == nullptr && !graph_failed_) {
       try {
         auto graph = std::make_unique<adaptor::CudaGraph>();
+        RawCaptureScope capture_scope(context.stream);
         graph->begin_capture(context.stream);
-        run_sequence();
+        const auto capture_result = run_sequence();
         graph->end_capture(context.stream);
-        graph->launch(context.stream);
+        if (capture_result != FLAGFFT_SUCCESS) return capture_result;
+        // The direct sequence above already produced this call's result.
+        // Capture only records launches; replaying here would transform an
+        // in-place input a second time on the first execution.
         graph_ = std::move(graph);
         graph_in_ = input;
         graph_out_ = output;
@@ -2643,7 +2668,7 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
   try {
     const int64_t batch = context.batch;
 
-    if (graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
+    if (!raw_capture_active(context.stream) && graph_ != nullptr && graph_in_ == input && graph_out_ == output) {
       graph_->launch(context.stream);
       return FLAGFFT_SUCCESS;
     }
@@ -2671,13 +2696,16 @@ flagfftResult CompiledRaw2DRCNode::execute(adaptor::DevicePtr input,
       return result;
     }
 
-    if (graph_enabled_ && graph_ == nullptr && !graph_failed_) {
+    if (!raw_capture_active(context.stream) && graph_enabled_ && graph_ == nullptr && !graph_failed_) {
       try {
         auto graph = std::make_unique<adaptor::CudaGraph>();
+        RawCaptureScope capture_scope(context.stream);
         graph->begin_capture(context.stream);
-        run_sequence();
+        const auto capture_result = run_sequence();
         graph->end_capture(context.stream);
-        graph->launch(context.stream);
+        if (capture_result != FLAGFFT_SUCCESS) return capture_result;
+        // The direct sequence already produced the result, including when
+        // input and output alias. Replay starts on the next execution.
         graph_ = std::move(graph);
         graph_in_ = input;
         graph_out_ = output;

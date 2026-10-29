@@ -1278,6 +1278,14 @@ def _emit_stage_block(
         if is_last
         else ("smem_b" if single_smem_buffer or stage % 2 == 0 else "smem_a")
     )
+    if (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 1
+            and not single_smem_buffer and bluestein_intermediate_buffer == "smem_b"):
+        # The pointwise result is still live in B. Starting the next FFT's
+        # ping-pong in B corrupts unread inputs when stage zero has groups.
+        # Reverse this FFT's buffer parity so each stage reads a distinct
+        # buffer from the one it writes.
+        source_buffer = {None: None, "smem_a": "smem_b", "smem_b": "smem_a"}[source_buffer]
+        dest_buffer = {None: None, "smem_a": "smem_b", "smem_b": "smem_a"}[dest_buffer]
     zero = "0.0"
 
     # Swizzled/fixed-lane layouts do not have the canonical inverse route.
