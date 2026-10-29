@@ -1,5 +1,6 @@
 """Independent FFT oracle for every pass, direction, batch, and axis exchange."""
 import math
+import os
 import pytest
 
 torch=pytest.importorskip('torch')
@@ -50,8 +51,23 @@ def test_vector_dif_passes(tmp_path,monkeypatch,factors,batch,direction,tile,ali
     got=torch.view_as_complex(current.reshape(batch,n,2));z=torch.view_as_complex(x)
     reference=torch.fft.fft(z) if direction=='forward' else torch.fft.ifft(z)*n
     assert torch.isfinite(got).all()
-    assert torch.linalg.vector_norm(got-reference)/torch.linalg.vector_norm(reference)<1e-6
+    threshold=5e-7 if os.environ.get('FLAGFFT_NPU_DIF_FUSED_FINISH')=='1' else 1e-6
+    assert torch.linalg.vector_norm(got-reference)/torch.linalg.vector_norm(reference)<threshold
     assert torch.equal(x,saved)
     metadata=emit_vector_dif(factors,direction,len(specs)-1,tmp_path/'metadata',aligned=aligned)
     assert metadata['kernel_name']==specs[-1]['name']
     assert metadata['signature']=='*fp32:16,*fp32:16,*fp32:16'
+
+
+@pytest.mark.parametrize('factors,batch',[
+    ((17,13,7,15,8),2),((17,13,15,10,10,2),1),
+    ((17,13,15,10,10),2),((7,15,10,9,9,4),2)])
+@pytest.mark.parametrize('direction',['forward','inverse'])
+def test_fused_finish(tmp_path,monkeypatch,factors,batch,direction):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH','1')
+    # Reuse the independent full FFT oracle and per-pass guard checks.
+    test_vector_dif_passes(tmp_path,monkeypatch,factors,batch,direction,64,True)
+    from flagfft_codegen.kernels_npu_dif_aligned import build_aligned_vector_dif
+    _,specs=build_aligned_vector_dif(factors,direction)
+    assert specs[-1]['name']=='fused_finish'
+    assert len(specs)==len(factors)+1

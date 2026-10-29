@@ -167,6 +167,7 @@ namespace {
     const int64_t padded_prefix=power(initial_prefix);
     const bool aligned=batch>=16 && padded_prefix*4<=initial_prefix*5 &&
         flag_or_default("FLAGFFT_NPU_DIF_PAD_PREFIX",false);
+    const bool fused_finish=aligned && flag_or_default("FLAGFFT_NPU_DIF_FUSED_FINISH",false);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
@@ -209,6 +210,10 @@ namespace {
         const int64_t width=radix==2?2048:radix<=8?1024:512;
         const int64_t physical_prefix=aligned ? prefix/initial_prefix*padded_prefix : prefix;
         grid=m*ceiling(physical_prefix,std::min(width,power(physical_prefix)));
+        if (fused_finish && stage+1==factors.size()) {
+          const int64_t rows=radix==2 ? 4 : radix<=8 ? 2 : 1;
+          grid=ceiling(prefix/initial_prefix,rows);
+        }
       } else if (m>=128) {
         grid=prefix*ceiling(m,std::min<int64_t>(512,power(m)));
       } else {
@@ -220,7 +225,7 @@ namespace {
       append(DeviceAllocation::from_floats(weights),grid,1,false);
       previous_prefix=prefix;prefix*=radix;
     }
-    if (aligned) {
+    if (aligned && !fused_finish) {
       const int64_t rows=padded_prefix<=256 ? 4 : 2;
       append(DeviceAllocation(sizeof(float)),ceiling(n/initial_prefix,rows),1,false);
     }
