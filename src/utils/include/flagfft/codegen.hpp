@@ -1263,11 +1263,11 @@ struct CompiledRawVectorDIFNode final : CompiledRawNode {
     bool transpose;
   };
   CompiledRawVectorDIFNode(int64_t length, int64_t max_batch,
-      std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second);
+      std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second, int64_t workspace_length = 0);
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
       const RawExecutionContext &context) const override;
   std::string describe() const override;
-  int64_t length, max_batch;
+  int64_t length, max_batch, workspace_length;
   std::vector<Pass> passes;
   DeviceAllocation first, second;
 };

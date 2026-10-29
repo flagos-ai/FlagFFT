@@ -716,7 +716,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
 
   if (key.perm_form.rfind("npu_vector_dif_",0)==0)
-    jit_command << " --npu-vector-dif-phase " << shell_quote(key.perm_form.substr(15));
+    const bool aligned=key.perm_form.rfind("npu_vector_dif_aligned_",0)==0;
+    jit_command << " --npu-vector-dif-phase " << shell_quote(key.perm_form.substr(aligned?23:15));
+    if (aligned) jit_command << " --npu-vector-dif-aligned";
   if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0) {
     const std::string phase=key.perm_form.substr(20);
     const bool wide=phase.size()>5 && phase.substr(phase.size()-5)=="_wide";

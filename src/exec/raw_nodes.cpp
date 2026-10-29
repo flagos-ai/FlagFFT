@@ -3507,12 +3507,13 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
 }
 
 CompiledRawVectorDIFNode::CompiledRawVectorDIFNode(int64_t length, int64_t max_batch,
-    std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second)
-    : length(length), max_batch(max_batch), passes(std::move(passes)),
+    std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second, int64_t workspace_length)
+    : length(length), max_batch(max_batch), workspace_length(workspace_length>0?workspace_length:length), passes(std::move(passes)),
       first(std::move(first)), second(std::move(second)) {}
 
 std::string CompiledRawVectorDIFNode::describe() const {
-  return "CompiledRawVectorDIF(n="+std::to_string(length)+", triton_passes="+
+  return "CompiledRawVectorDIF(n="+std::to_string(length)+", workspace_n="+
+      std::to_string(workspace_length)+", triton_passes="+
       std::to_string(passes.size())+", vector_axis_switch=1)";
 }
 
@@ -3523,13 +3524,14 @@ flagfftResult CompiledRawVectorDIFNode::execute(adaptor::DevicePtr input,
   for (const auto &pass:passes) max_tiles=std::max(max_tiles,pass.grid_x*pass.grid_y);
   const int64_t limit=std::max<int64_t>(1,adaptor::max_launch_blocks()/max_tiles);
   const int64_t bytes=2*length*static_cast<int64_t>(sizeof(float));
+  const int64_t scratch_bytes=2*workspace_length*static_cast<int64_t>(sizeof(float));
   for (int64_t start=0;start<context.batch;start+=limit) {
     const int64_t count=std::min(limit,context.batch-start);
     auto current=input+start*bytes;
     for (std::size_t i=0;i<passes.size();++i) {
       const auto &pass=passes[i];
       auto next=i+1==passes.size()?output+start*bytes:
-          (i%2==0?first.get():second.get())+start*bytes;
+          (i%2==0?first.get():second.get())+start*scratch_bytes;
       pass.kernel->launch(context.stream,
           {JitKernelArg::device(current),JitKernelArg::device(pass.weights.get()),
            JitKernelArg::device(next)},pass.grid_x,

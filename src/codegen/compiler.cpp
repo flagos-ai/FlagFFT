@@ -147,6 +147,15 @@ namespace {
     if (remaining!=1 || factors.size()<3) return nullptr;
     auto power=[](int64_t value) { int64_t result=1;while(result<value) result*=2;return result; };
     auto ceiling=[](int64_t value,int64_t divisor) { return (value+divisor-1)/divisor; };
+    int64_t initial_prefix=1;
+    for (auto radix:factors) {
+      if (initial_prefix>=64) break;
+      initial_prefix*=radix;
+    }
+    const int64_t padded_prefix=power(initial_prefix);
+    const bool aligned=batch>=16 && padded_prefix*4<=initial_prefix*5 &&
+        flag_or_default("FLAGFFT_NPU_DIF_PAD_PREFIX",false);
+    const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
     bool switched=false;
@@ -154,7 +163,7 @@ namespace {
     auto append=[&](DeviceAllocation weights,int64_t x,int64_t y,bool transpose) {
       auto key=KernelKey::four_step_row(triton_target_for_request(request),
           request.direction,request.input_dtype,n,1,n,factors,32,4,{},n);
-      key.perm_form="npu_vector_dif_"+std::to_string(passes.size());
+      key.perm_form=std::string(aligned ? "npu_vector_dif_aligned_" : "npu_vector_dif_")+std::to_string(passes.size());
       passes.push_back({TritonCompiler{}.compile_kernel(key),std::move(weights),x,y,transpose});
     };
     for (std::size_t stage=0;stage<factors.size();++stage) {
@@ -163,17 +172,20 @@ namespace {
         const char *tile_setting=std::getenv("FLAGFFT_NPU_DIF_TRANSPOSE_TILE");
         const int64_t tile=tile_setting ? std::stoll(tile_setting) : 32;
         if (tile!=32 && tile!=64) throw std::runtime_error("DIF transpose tile must be 32 or 64");
-        append(DeviceAllocation(sizeof(float)),ceiling(prefix,tile),ceiling(n/prefix,tile),true);
+        append(DeviceAllocation(sizeof(float)),ceiling(aligned?padded_prefix:prefix,tile),ceiling(n/prefix,tile),true);
         switched=true;
       }
       std::vector<float> weights;
       if (stage) {
         const int64_t previous_radix=factors[stage-1], current=radix*m;
-        const int64_t count=switched?n:previous_radix*current;
+        const int64_t count=switched?workspace_length:previous_radix*current;
+        const int64_t physical_prefix=aligned && switched ? prefix/initial_prefix*padded_prefix : prefix;
         weights.resize(2*count);
         for (int64_t index=0;index<count;++index) {
-          const int64_t digit=switched?(index%prefix)/previous_prefix:index/current;
-          const int64_t sample=switched?index/prefix:index%current;
+          const int64_t pf=index%physical_prefix;
+          const int64_t logical_pf=aligned && switched ? pf/padded_prefix*initial_prefix+pf%padded_prefix : pf;
+          const int64_t digit=switched?logical_pf/previous_prefix:index/current;
+          const int64_t sample=switched?index/physical_prefix:index%current;
           const double angle=sign*2*kPi*static_cast<double>(digit)*sample/
               (previous_radix*current);
           weights[index]=static_cast<float>(std::cos(angle));
@@ -183,7 +195,8 @@ namespace {
       int64_t grid=0;
       if (switched) {
         const int64_t width=radix==2?2048:radix<=8?1024:512;
-        grid=m*ceiling(prefix,std::min(width,power(prefix)));
+        const int64_t physical_prefix=aligned ? prefix/initial_prefix*padded_prefix : prefix;
+        grid=m*ceiling(physical_prefix,std::min(width,power(physical_prefix)));
       } else if (m>=128) {
         grid=prefix*ceiling(m,std::min<int64_t>(512,power(m)));
       } else {
@@ -195,9 +208,13 @@ namespace {
       append(DeviceAllocation::from_floats(weights),grid,1,false);
       previous_prefix=prefix;prefix*=radix;
     }
-    const auto bytes=static_cast<std::size_t>(batch*n*2*sizeof(float));
+    if (aligned) {
+      const int64_t rows=padded_prefix<=256 ? 4 : 2;
+      append(DeviceAllocation(sizeof(float)),ceiling(n/initial_prefix,rows),1,false);
+    }
+    const auto bytes=static_cast<std::size_t>(batch*workspace_length*2*sizeof(float));
     return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
-        adaptor::Memory(bytes),adaptor::Memory(bytes));
+        adaptor::Memory(bytes),adaptor::Memory(bytes),workspace_length);
   }
 
   std::vector<int64_t> npu_mixed_axis_factors(int64_t length) {
