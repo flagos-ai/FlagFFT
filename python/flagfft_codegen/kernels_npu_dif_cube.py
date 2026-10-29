@@ -10,6 +10,7 @@ remaining column phase together with its normal twiddle.
 import math,re
 from flagfft_codegen.kernels_npu_dif_aligned import build_aligned_vector_dif
 from flagfft_codegen.kernels_leaf import _emit_natural_order_codelet_call
+from flagfft_codegen.kernels_common import _NATURAL_ORDER_CODELET_RADICES
 
 
 def _coalesced_late_stage(spec,direction):
@@ -110,7 +111,11 @@ def chirped_second(X,TW,Y):
   result=[dict(s0,auto=False)]+result[2:]
  for z in result:
   if z.get('stage')==2:z['deferred_twiddle']=True
-  if z['phase']=='late' and z.get('r')==15 and z['physical_prefix']<=256 and z['name']!='fused_finish':
+  radix=z.get('r',0);physical=z.get('physical_prefix',0)
+  # Keep the whole-radix matrices within the validated 4096-element UB budget.
+  coalesced=(radix>=10 and radix in _NATURAL_ORDER_CODELET_RADICES and 0<physical<=256
+             and (1<<(radix-1).bit_length())*(1<<(physical-1).bit_length())<=4096)
+  if z['phase']=='late' and coalesced and z['name']!='fused_finish':
    body=_coalesced_late_stage(z,direction)
    source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
  return source,result

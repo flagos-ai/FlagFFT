@@ -248,7 +248,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   if (adaptor::backend_name() == "npu") {
     if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0)
-      cache_key += ";npu-dif-cube-prefix-v3";
+      cache_key += ";npu-dif-cube-prefix-v4";
     const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
     cache_key += ";npu-join-mode=" + std::string(join != nullptr ? join : "auto");
     cache_key += ";npu-auto-blockify=" + std::string(npu_auto_blockify_for(key) ? "1" : "0");
