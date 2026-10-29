@@ -2810,7 +2810,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         n1>=16 && n1<=256 && n2>=16 && n2<=256 &&
         ((n1&(n1-1))!=0 || (n2&(n2-1))!=0) &&
         flag_or_default("FLAGFFT_NPU_MATRIX_FFT",false)) {
-      const bool wide=(batch>=16 || flag_or_default("FLAGFFT_NPU_MATRIX_WIDE_SINGLE",false)) &&
+      // Wider Cube tiles help short forward and complex transforms. The
+      // single-batch real inverse retains the narrower measured schedule.
+      const bool real_inverse=request.origin_real_transform_kind=="c2r" ||
+          request.origin_real_transform_kind=="z2d";
+      const bool wide_single=!real_inverse &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_WIDE_SINGLE",false);
+      const bool wide=(batch>=16 || wide_single) &&
           flag_or_default("FLAGFFT_NPU_MATRIX_WIDE",false);
       std::vector<std::shared_ptr<JitKernel>> kernels;
       auto key=KernelKey::four_step_row(triton_target_for_request(request),
