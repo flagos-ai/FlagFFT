@@ -8,6 +8,28 @@ remaining column phase together with its normal twiddle.
 """
 import math,re
 from flagfft_codegen.kernels_npu_dif_aligned import build_aligned_vector_dif
+from flagfft_codegen.kernels_leaf import _emit_natural_order_codelet_call
+
+
+def _coalesced_late_stage(spec,direction):
+ """Transfer all radix branches as matrices before the shared codelet."""
+ r,m,pp,pn=spec['r'],spec['m'],spec['physical_prefix'],spec['physical_n']
+ pr=1<<(r-1).bit_length();c=1<<(pp-1).bit_length();points=pr*c
+ name=spec['name']
+ lines=['@triton.jit',f'def {name}(X,TW,Y):',
+  '    b=tl.program_id(1).to(tl.int64)','    j=tl.program_id(0)',
+  f'    d=tl.arange(0,{pr})[:,None]',f'    pf=tl.arange(0,{c})[None,:]',
+  f'    good=(d<{r})&(pf<{pp})',f'    off=(d*{m}+j)*{pp}+pf',
+  f'    re=tl.load(X+b*{2*pn}+off,good,0.)',f'    im=tl.load(X+b*{2*pn}+{pn}+off,good,0.)',
+  '    wr=tl.load(TW+off,good,0.)',f'    wi=tl.load(TW+{pn}+off,good,0.)',
+  '    re,im=re*wr-im*wi,re*wi+im*wr',
+  f'    re=tl.reshape(re,({points},))',f'    im=tl.reshape(im,({points},))']
+ for d in range(r):lines += [f'    r{d}=al.extract_slice(re,[{d*c}],[{c}],[1])',f'    i{d}=al.extract_slice(im,[{d*c}],[{c}],[1])']
+ lines+=_emit_natural_order_codelet_call('    ',r,direction)
+ lines += [f'    re=tl.zeros(({points},),tl.float32)',f'    im=tl.zeros(({points},),tl.float32)']
+ for d in range(r):lines += [f'    re=al.insert_slice(re,r{d},[{d*c}],[{c}],[1])',f'    im=al.insert_slice(im,i{d},[{d*c}],[{c}],[1])']
+ lines += [f'    dst=j*{r*pp}+d*{pp}+pf',f'    tl.store(Y+b*{2*pn}+dst,tl.reshape(re,({pr},{c})),good)',f'    tl.store(Y+b*{2*pn}+{pn}+dst,tl.reshape(im,({pr},{c})),good)']
+ return '\n'.join(lines)+'\n'
 
 def build_cube_prefix_dif(factors,direction='forward'):
  if len(factors)<4 or not (13<=factors[0]<=19 and 11<=factors[1]<=15):
@@ -80,4 +102,7 @@ def chirped_second(X,TW,Y):
  result=[prep,cube,chirp]+specs[2:]
  for z in result:
   if z.get('stage')==2:z['deferred_twiddle']=True
+  if z['phase']=='late' and z.get('r')==15 and z['physical_prefix']<=256 and z['name']!='fused_finish':
+   body=_coalesced_late_stage(z,direction)
+   source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
  return source,result
