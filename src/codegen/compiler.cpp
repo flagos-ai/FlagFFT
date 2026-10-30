@@ -2457,6 +2457,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 #endif
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
 #if defined(FLAGFFT_BACKEND_NPU)
+    // Bound direct work and coefficient storage, and use frequency parallelism
+    // when a short mixed-radix batch would otherwise occupy only a few cores.
+    if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
+        request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
+        request.origin_rank<=1 && batch>0 && batch<=8 &&
+        leaf->length>=64 && leaf->length<=256 &&
+        (leaf->length&(leaf->length-1))!=0 &&
+        flag_or_default("FLAGFFT_NPU_FREQUENCY_DFT",false)) {
+      const int64_t n=leaf->length;
+      int64_t padded=1;while(padded<n) padded*=2;
+      const double sign=request.direction=="inverse"?1.0:-1.0;
+      std::vector<float> values(2*n*padded,0.0f);
+      for(int64_t k=0;k<n;++k) for(int64_t j=0;j<n;++j) {
+        const double angle=sign*2*kPi*static_cast<double>(k)*j/n;
+        values[k*padded+j]=static_cast<float>(std::cos(angle));
+        values[n*padded+k*padded+j]=static_cast<float>(std::sin(angle));
+      }
+      auto key=KernelKey::leaf(triton_target_for_request(request),request.direction,
+          request.input_dtype,n,leaf->factors,32,4,{},n);
+      key.perm_form="npu_frequency_dft";
+      return std::make_shared<CompiledRawFrequencyDFTNode>(n,compile_kernel(key),
+          DeviceAllocation::from_floats(values),compile_raw_leaf(*leaf,request));
+    }
     if (use_npu_2d_aiv1024 && leaf->length == 1024) {
       return make_npu_aiv1024_child();
     }

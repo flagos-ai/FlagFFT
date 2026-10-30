@@ -141,6 +141,7 @@ def main() -> None:
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--npu-structured-pack", type=int, choices=(1,2,4,8,16,32))
     parser.add_argument("--npu-structured-fft", action="store_true")
+    parser.add_argument("--npu-frequency-dft", action="store_true")
     parser.add_argument("--npu-packed-mixed-axis", action="store_true")
     parser.add_argument("--npu-structured-recursive", action="store_true")
     parser.add_argument("--npu-power2", action="store_true")
@@ -429,7 +430,12 @@ def main() -> None:
             + ", ".join(f"--{flag.replace('_', '-')}" for flag in missing)
         )
 
-    if args.npu_packed_mixed_axis:
+    if args.npu_frequency_dft:
+        if (not args.target.startswith('npu:') or args.dtype!='complex64' or args.kernel!='leaf'):
+            parser.error('Frequency DFT requires an NPU FP32 leaf')
+        from .kernels_npu_frequency_dft import emit_frequency_dft
+        metadata=emit_frequency_dft(args.length,args.direction,args.out_dir)
+    elif args.npu_packed_mixed_axis:
         if (not args.target.startswith('npu:') or args.dtype!='complex64'
                 or args.kernel not in ('four_step_row','four_step_col')):
             parser.error('Packed mixed axis requires an NPU FP32 four-step axis')

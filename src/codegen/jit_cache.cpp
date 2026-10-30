@@ -29,6 +29,7 @@ namespace flagfft {
 namespace {
 
   bool npu_auto_blockify_for(const KernelKey &key) {
+    if (key.perm_form=="npu_frequency_dft") return true;
     const bool matrix=key.perm_form.rfind("npu_matrix_fourstep_",0)==0 ||
         key.perm_form=="npu_matrix_pack" || key.perm_form=="npu_matrix_cube";
     const bool long_power2 = key.length >= 512 &&
@@ -730,6 +731,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     }
   }
 
+  if (key.perm_form=="npu_frequency_dft") jit_command << " --npu-frequency-dft";
   if (key.perm_form.rfind("npu_vector_dif_",0)==0) {
     const bool aligned=key.perm_form.rfind("npu_vector_dif_aligned_",0)==0;
     const bool flat=key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0;

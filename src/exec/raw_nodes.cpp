@@ -355,6 +355,38 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRawFrequencyDFTNode::CompiledRawFrequencyDFTNode(int64_t length,
+    std::shared_ptr<JitKernel> kernel, DeviceAllocation weights,
+    std::shared_ptr<CompiledRawNode> fallback)
+    : length(length), kernel(std::move(kernel)), weights(std::move(weights)),
+      fallback(std::move(fallback)) {}
+
+std::string CompiledRawFrequencyDFTNode::describe() const {
+  return "CompiledRawFrequencyDFT(n="+std::to_string(length)+", frequency_tile=8)";
+}
+
+flagfftResult CompiledRawFrequencyDFTNode::execute(adaptor::DevicePtr input,
+    adaptor::DevicePtr output, const RawExecutionContext &context) const {
+  if (input==output || context.input_distance!=length || context.output_distance!=length)
+    return fallback->execute(input,output,context);
+  if (context.batch<=0) return FLAGFFT_INVALID_SIZE;
+  try {
+    const int64_t tiles=ceil_div(length,8);
+    const int64_t limit=std::max<int64_t>(1,adaptor::max_launch_blocks()/tiles);
+    const int64_t bytes=2*length*static_cast<int64_t>(sizeof(float));
+    for (int64_t start=0;start<context.batch;start+=limit) {
+      kernel->launch(context.stream,
+          {JitKernelArg::device(input+start*bytes),JitKernelArg::device(weights.get()),
+           JitKernelArg::device(output+start*bytes)},
+          tiles,std::min(limit,context.batch-start),1);
+    }
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr,"[flagfft] Frequency DFT execute failed: %s\n",e.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(int64_t length,
                                                            int64_t n1,
                                                            int64_t n2,

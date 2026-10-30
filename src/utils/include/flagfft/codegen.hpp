@@ -213,6 +213,20 @@ struct CompiledRawLeafNode final : CompiledRawNode {
   mutable Raw1DGraphState graph_state;
 };
 
+// Frequency tiles share a read-only input; aliased calls retain the leaf FFT.
+struct CompiledRawFrequencyDFTNode final : CompiledRawNode {
+  CompiledRawFrequencyDFTNode(int64_t length, std::shared_ptr<JitKernel> kernel,
+      DeviceAllocation weights, std::shared_ptr<CompiledRawNode> fallback);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+      const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  int64_t length;
+  std::shared_ptr<JitKernel> kernel;
+  DeviceAllocation weights;
+  std::shared_ptr<CompiledRawNode> fallback;
+};
+
 struct CompiledRawStridedLeafNode final : CompiledRawNode {
   CompiledRawStridedLeafNode(int64_t length,
                              int64_t outer_stride,
