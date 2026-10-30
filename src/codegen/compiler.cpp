@@ -252,7 +252,8 @@ namespace {
         const int64_t physical_prefix=aligned ? prefix/initial_prefix*padded_prefix : prefix;
         grid=m*ceiling(physical_prefix,std::min(width,power(physical_prefix)));
         if (fused_finish && stage+1==factors.size()) {
-          const int64_t rows=radix==2 ? 4 : radix<=8 ? 2 : 1;
+          int64_t rows=1;
+          while (rows<8 && 2*rows*radix*padded_prefix<=4096) rows*=2;
           grid=ceiling(prefix/initial_prefix,rows);
         }
       } else if (m>=128) {

@@ -12,7 +12,11 @@ def _fused_finish(spec, direction):
  radix=spec['r'];prefix=spec['prefix'];physical_prefix=spec['physical_prefix']
  padded=spec['padded_prefix'];initial=spec['initial_prefix']
  physical_n=spec['physical_n'];n=prefix*radix
- rows=4 if radix==2 else 2 if radix<=8 else 1
+ # Bound butterfly state by the radix and padded row width. Larger
+ # row groups amortize the compact output transfer without growing UB
+ # past the same 4096-real-element budget used by the coalesced path.
+ rows=1
+ while rows<8 and 2*rows*radix*padded<=4096:rows*=2
  groups=physical_prefix//padded;points=rows*padded
  lines=['@triton.jit','def fused_finish(X,TW,Y):',
         '    batch=tl.program_id(1).to(tl.int64)',
@@ -33,10 +37,16 @@ def _fused_finish(spec, direction):
   lines += _emit_radix16_codelet_call('    ',direction)
  else:
   lines += _emit_local_mixed_codelet_call('    ',radix,direction)
- lines += [f'    word=tl.arange(0,{2*padded})[None,:]']
+ # Compact in UB, then issue a flat store. A masked 2D store would
+ # retain the unaligned logical row stride after removing prefix padding.
+ lines += [f'    word=tl.arange(0,{2*points})',
+           f'    valid_word=word<{rows*2*initial}',
+           f'    take=tl.where(valid_word,word//{2*initial}*{2*padded}+word%{2*initial},0)',
+           f'    out=tl.program_id(0)*{rows*2*initial}+word']
  for d in range(radix):
-  lines += [f'    value=tl.reshape(tl.join(tl.reshape(r{d},({points},)),tl.reshape(i{d},({points},))),({rows},{2*padded}))',
-            f'    tl.store(Y+batch*{2*n}+{2*d*prefix}+row*{2*initial}+word,value,(row<{groups})&(word<{2*initial}))']
+  lines += [f'    value=tl.reshape(tl.join(tl.reshape(r{d},({points},)),tl.reshape(i{d},({points},))),({2*points},))',
+            f'    packed=tl.gather(value,take,0)',
+            f'    tl.store(Y+batch*{2*n}+{2*d*prefix}+out,packed,valid_word&(out<{2*prefix}))']
  return '\n'.join(lines)+'\n',dict(spec,name='fused_finish',grid=((groups+rows-1)//rows,))
 
 
