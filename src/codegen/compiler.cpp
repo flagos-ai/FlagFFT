@@ -2461,6 +2461,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // when a short mixed-radix batch would otherwise occupy only a few cores.
     if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
         request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
+        !request.requires_contiguous_copy && !request.input_strides.empty() &&
+        request.input_strides.back()==1 &&
         request.origin_rank<=1 && batch>0 && batch<=8 &&
         leaf->length>=64 && leaf->length<=256 &&
         (leaf->length&(leaf->length-1))!=0 &&
