@@ -1312,7 +1312,6 @@ struct CompiledRawMatrixFFTNode final : CompiledRawNode {
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
       const RawExecutionContext &context) const override;
   std::string describe() const override;
-  bool is_single_kernel() const override;
   int64_t length, mode, max_batch;
   std::shared_ptr<JitKernel> pack, cube;
   DeviceAllocation weights, scratch;

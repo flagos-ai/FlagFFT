@@ -3655,17 +3655,6 @@ std::string CompiledRawMatrixFFTNode::describe() const {
   return oss.str();
 }
 
-bool CompiledRawMatrixFFTNode::is_single_kernel() const {
-  // Out-of-place calls feed Cube directly. The outer graph wrapper already
-  // bypasses aliased calls, which retain the separate input pack for safety.
-  const int64_t words=mode==2 ? length : mode==1 ? 2*(length/2+1) : 2*length;
-  int64_t columns=1;while(columns<words) columns*=2;
-  const int64_t tiles=ceil_div(columns,int64_t{64});
-  const int64_t limit=std::min<int64_t>(65535*pack->batch_per_block,
-      (65535/tiles)*cube->batch_per_block);
-  return max_batch>0 && max_batch<=limit;
-}
-
 flagfftResult CompiledRawMatrixFFTNode::execute(adaptor::DevicePtr input,
     adaptor::DevicePtr output, const RawExecutionContext &context) const {
   if (context.batch <= 0 || context.batch > max_batch) return FLAGFFT_INVALID_SIZE;
