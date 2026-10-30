@@ -406,8 +406,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         (std::string(npu_graph) == "1" || std::string(npu_graph) == "auto") &&
         std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
       const bool force = std::string(npu_graph) == "1";
-      const auto wrap = [force](std::shared_ptr<CompiledRawNode> &node) {
-        if (node && (force || !node->is_single_kernel())) {
+      // Small-batch single kernels are also limited by host submission.
+      // The graph node checks buffer addresses, strides, batch and stream,
+      // and retains direct execution for in-place calls and cache misses.
+      const bool capture_single = plan->desc.batch <= 8;
+      const auto wrap = [force,capture_single](std::shared_ptr<CompiledRawNode> &node) {
+        if (node && (force || capture_single || !node->is_single_kernel())) {
           node = std::make_shared<CompiledRawGraphNode>(node);
         }
       };
