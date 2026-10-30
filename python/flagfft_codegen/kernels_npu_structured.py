@@ -233,9 +233,8 @@ def {name}({','.join(args)}):
             chunk = min(512, points)
             for start in range(0, points, chunk):
                 rows = chunk // tile
-                body+=f"""    q=tl.arange(0,{chunk})+{start}
-    pr=tl.gather(r,q,0)
-    pi=tl.gather(i,q,0)
+                body+=f"""    pr=al.extract_slice(r,[{start}],[{chunk}],[1])
+    pi=al.extract_slice(i,[{start}],[{chunk}],[1])
     if {inverse}: pi=-pi
     row=tl.arange(0,{rows})[:,None]+{start//tile}
 """

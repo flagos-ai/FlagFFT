@@ -155,9 +155,30 @@ namespace {
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
         n<8192 || n>1048576 || (n&(n-1))==0 ||
         !flag_or_default("FLAGFFT_NPU_VECTOR_DIF",false)) return nullptr;
-    const auto factors=npu_vector_dif_factors(n);
+    auto factors=npu_vector_dif_factors(n);
     if (factors.empty()) return nullptr;
     auto power=[](int64_t value) { int64_t result=1;while(result<value) result*=2;return result; };
+    // Place the chirped Cube axis before vector axes when that also
+    // improves prefix density. Compare padding ratios exactly; retain
+    // the order of the remaining axes and avoid expanding workspace.
+    if (batch>=16 && factors.size()>=4 &&
+        flag_or_default("FLAGFFT_NPU_DIF_CUBE_PREFIX",false)) {
+      std::size_t best=1;
+      int64_t best_product=factors[0]*factors[1];
+      for (std::size_t i=2;i<factors.size();++i) {
+        const int64_t radix=factors[i], product=factors[0]*radix;
+        if (radix<11 || radix>15 || product<64 ||
+            power(product)*4>product*5 || power(product)>power(best_product)) continue;
+        if (power(product)*best_product<power(best_product)*product) {
+          best=i;best_product=product;
+        }
+      }
+      if (best!=1) {
+        const auto radix=factors[best];
+        factors.erase(factors.begin()+best);
+        factors.insert(factors.begin()+1,radix);
+      }
+    }
     auto ceiling=[](int64_t value,int64_t divisor) { return (value+divisor-1)/divisor; };
     int64_t initial_prefix=1;
     for (auto radix:factors) {
