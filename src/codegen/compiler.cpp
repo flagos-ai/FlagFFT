@@ -156,7 +156,7 @@ namespace {
     // and reuse a fixed 4096-element structured FFT working set per program.
     if (request.device_type!="npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
-        n<262144 || n>1048576 || (n&(n-1))!=0 ||
+        n<262144 || n>1048576 || (n&(n-1))!=0 || request.convolution_child ||
         !flag_or_default("FLAGFFT_NPU_FLAT_POWER_DIF",false)) return nullptr;
     int bits=0;for (auto size=n;size>1;size/=2) ++bits;
     const int stages=(bits+4)/5,base=bits/stages,extra=bits%stages;
@@ -3096,6 +3096,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                  : compiler.compile_raw_c2r_node(node, fallback_request, batch, false);
     };
     FFTRequest child_request = forward_child_request(request);
+    child_request.convolution_child = true;
     // The generic Bluestein pipeline uses per-batch convolution buffers
     // (a_buf/work_buf plus the child FFT workspace).  For large primes and
     // large batch these can exceed device memory, so the batch is compiled at
@@ -3354,6 +3355,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   }
   if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
     FFTRequest child_request = forward_child_request(request);
+    child_request.convolution_child = true;
     std::shared_ptr<CompiledRawNode> fft = compile_raw_node(
         rader->conv_plan, child_request, batch, allow_npu_aiv256_transposed_store);
     std::shared_ptr<JitKernel> fused_leaf_kernel;

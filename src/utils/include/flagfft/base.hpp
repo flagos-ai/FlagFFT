@@ -112,6 +112,9 @@ struct FFTRequest {
   std::string origin_real_transform_kind;
   // True only for the dense half-length complex child of a packed real FFT.
   bool packed_real_child = false;
+  // Bluestein/Rader internal FFTs participate in a convolution pipeline;
+  // keep their boundary-aware two-axis schedule separate from public DIF.
+  bool convolution_child = false;
   // Propagated from the public descriptor to rank-1 axis plans so narrow 3D
   // policies can distinguish a single 32^3 FP64 C2C cube from arbitrary
   // length-32 batched transforms.
