@@ -6,7 +6,7 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('n,batch',[(25935,1),(46189,1)])
+@pytest.mark.parametrize('n,batch',[(25935,1),(46189,1),(23,64),(210,64)])
 @pytest.mark.parametrize('inverse',[False,True])
 @pytest.mark.parametrize('in_place',[False,True])
 def test_wide_real_single_live(n,batch,inverse,in_place):
