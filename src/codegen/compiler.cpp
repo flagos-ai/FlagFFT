@@ -149,6 +149,48 @@ namespace {
     return DeviceAllocation::from_floats(values);
   }
 
+  std::shared_ptr<CompiledRawNode> make_npu_flat_power_dif_child(
+      const FFTRequest &request, int64_t n, int64_t batch) {
+    // Long two-axis plans otherwise require narrow DMA rows to keep their
+    // complete axis in UB. Split the exponent into balanced radix <=32 axes
+    // and reuse a fixed 4096-element structured FFT working set per program.
+    if (request.device_type!="npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
+        request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
+        n<262144 || n>1048576 || (n&(n-1))!=0 ||
+        !flag_or_default("FLAGFFT_NPU_FLAT_POWER_DIF",false)) return nullptr;
+    int bits=0;for (auto size=n;size>1;size/=2) ++bits;
+    const int stages=(bits+4)/5,base=bits/stages,extra=bits%stages;
+    std::vector<int64_t> factors;
+    for(int i=0;i<stages;++i) factors.push_back(int64_t{1}<<(base+(i<extra?1:0)));
+    std::vector<CompiledRawVectorDIFNode::Pass> passes;
+    int64_t prefix=1,previous_prefix=1;
+    const double sign=request.direction=="inverse"?1.0:-1.0;
+    for (std::size_t stage=0;stage<factors.size();++stage) {
+      const int64_t radix=factors[stage],m=n/(prefix*radix),columns=4096/radix;
+      std::vector<float> weights;
+      if (stage) {
+        weights.resize(2*n);
+        for (int64_t index=0;index<n;++index) {
+          const auto pf=index%prefix,sample=index/prefix,digit=pf/previous_prefix;
+          const double angle=sign*2*kPi*static_cast<double>(digit)*sample/(factors[stage-1]*radix*m);
+          weights[index]=static_cast<float>(std::cos(angle));
+          weights[n+index]=static_cast<float>(std::sin(angle));
+        }
+      }
+      auto roots=npu_structured_root_values(radix,columns);
+      weights.insert(weights.end(),roots.begin(),roots.end());
+      auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
+          request.input_dtype,n,1,n,factors,32,4,{},n);
+      key.perm_form="npu_vector_dif_flat_power2_"+std::to_string(stage)+"_auto";
+      const int64_t extent=stage?m*prefix:m,grid=(extent+columns-1)/columns;
+      passes.push_back({TritonCompiler{}.compile_kernel(key),DeviceAllocation::from_floats(weights),grid,1,false});
+      previous_prefix=prefix;prefix*=radix;
+    }
+    const auto bytes=static_cast<std::size_t>(batch*n*2*sizeof(float));
+    return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
+        adaptor::Memory(bytes),adaptor::Memory(bytes),n);
+  }
+
   std::shared_ptr<CompiledRawNode> make_npu_vector_dif_child(
       const FFTRequest &request, int64_t n, int64_t batch) {
     if (request.device_type!="npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
@@ -2939,6 +2981,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
           std::move(kernels),std::move(tables),std::move(scratch),wide,std::move(real_kernels));
     }
+    if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
     const bool structured_pair = request.device_type == "npu" &&
         request.device_arch.rfind("Ascend910B", 0) == 0 &&

@@ -121,12 +121,16 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False):
     if not factors or any(r not in _NATURAL_ORDER_CODELET_RADICES and r not in (16,18,20,24,25,27,28,30,32) for r in factors):
         raise ValueError('Unsupported DIF factors')
     if direction not in ('forward','inverse'):
         raise ValueError('Unsupported DIF direction')
-    if cube_prefix:
+    if flat_power2:
+        if aligned or cube_prefix:raise ValueError("Flat power DIF uses a compact layout")
+        from .kernels_npu_power_dif import build
+        source,specs=build(tuple(factors),direction)
+    elif cube_prefix:
         if not aligned:raise ValueError('Cube DIF prefix requires an aligned layout')
         from .kernels_npu_dif_cube import build_cube_prefix_dif
         source,specs=build_cube_prefix_dif(tuple(factors),direction)
@@ -137,7 +141,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         source,specs=build_vector_dif(tuple(factors),direction)
     if phase<0 or phase>=len(specs):raise ValueError('Invalid DIF phase')
     n=math.prod(factors);spec=specs[phase]
-    path=Path(out_dir)/(('npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+'.py')
+    path=Path(out_dir)/(('npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+'.py')
     path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,source)
     meta=dict(module_path=str(path),kernel_name=spec['name'],arg_names=['X','TW','Y'],
         signature='*fp32:16,*fp32:16,*fp32:16',num_warps=4,num_stages=1,

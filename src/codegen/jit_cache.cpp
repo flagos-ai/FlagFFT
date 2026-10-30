@@ -251,6 +251,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";npu-dif-cube-prefix-v6";
     if (key.perm_form.rfind("npu_structured_recursive_axis_planar",0)==0)
       cache_key += ";npu-structured-contiguous-slices-v1";
+    if (key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0)
+      cache_key += ";npu-flat-power-dif-v1";
     const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
     cache_key += ";npu-join-mode=" + std::string(join != nullptr ? join : "auto");
     cache_key += ";npu-auto-blockify=" + std::string(npu_auto_blockify_for(key) ? "1" : "0");
@@ -730,13 +732,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 
   if (key.perm_form.rfind("npu_vector_dif_",0)==0) {
     const bool aligned=key.perm_form.rfind("npu_vector_dif_aligned_",0)==0;
+    const bool flat=key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0;
     const bool cube=key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0;
-    std::string phase=key.perm_form.substr(cube?28:aligned?23:15);
+    std::string phase=key.perm_form.substr(flat?27:cube?28:aligned?23:15);
     if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
       phase.resize(phase.size()-5);
     jit_command << " --npu-vector-dif-phase " << shell_quote(phase);
     if (aligned) jit_command << " --npu-vector-dif-aligned";
     if (cube) jit_command << " --npu-vector-dif-cube-prefix";
+    if (flat) jit_command << " --npu-vector-dif-flat-power2";
   }
   if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0) {
     const std::string phase=key.perm_form.substr(20);
