@@ -964,11 +964,12 @@ flagfftResult CompiledRawStockhamNode::execute(adaptor::DevicePtr input,
 CompiledRawDirectDftNode::CompiledRawDirectDftNode(int64_t length,
                                                    std::shared_ptr<JitKernel> kernel,
                                                    std::vector<DeviceAllocation> tables,
-                                                   DeviceAllocation input_copy)
+                                                   DeviceAllocation input_copy,
+                                                   int real_mode, int64_t scalar_bytes)
     : length(length),
       kernel(std::move(kernel)),
       tables(std::move(tables)),
-      input_copy(std::move(input_copy)) {
+      input_copy(std::move(input_copy)), real_mode(real_mode), scalar_bytes(scalar_bytes) {
 }
 
 std::string CompiledRawDirectDftNode::describe() const {
@@ -982,6 +983,36 @@ flagfftResult CompiledRawDirectDftNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
+    if (real_mode!=0) {
+      const bool alias=input==output;
+      const int64_t half=length/2+1;
+      const int64_t input_width=real_mode==1 ? length : half;
+      const int64_t output_width=real_mode==1 ? half : length;
+      int64_t input_pitch=context.input_distance>0 ? context.input_distance : input_width;
+      int64_t output_pitch=context.output_distance>0 ? context.output_distance : output_width;
+      if (alias && real_mode==1) input_pitch=std::max(input_pitch,2*half);
+      if (alias && real_mode==2) output_pitch=std::max(output_pitch,2*half);
+      // Direct real kernels have a compact batch ABI. Preserve public pitches
+      // in the fallback, and snapshot all aliased inputs before any output.
+      if (alias || input_pitch!=input_width || output_pitch!=output_width) {
+        const int64_t input_bytes=input_width*scalar_bytes*(real_mode==1?1:2);
+        const int64_t input_step=input_pitch*scalar_bytes*(real_mode==1?1:2);
+        const int64_t output_step=output_pitch*scalar_bytes*(real_mode==1?2:1);
+        if (alias) {
+          if (context.batch*input_bytes>static_cast<int64_t>(input_copy.size()))
+            return FLAGFFT_INVALID_SIZE;
+          for (int64_t b=0;b<context.batch;++b)
+            adaptor::copy_device_to_device(input_copy.get()+b*input_bytes,
+                input+b*input_step,input_bytes,context.stream);
+        }
+        for (int64_t b=0;b<context.batch;++b) {
+          const auto src=alias ? input_copy.get()+b*input_bytes : input+b*input_step;
+          auto args=raw_kernel_args({src,output+b*output_step},tables,1);
+          kernel->launch(context.stream,args,1,std::max<int64_t>(1,kernel->grid_y_override),1);
+        }
+        return FLAGFFT_SUCCESS;
+      }
+    }
     adaptor::DevicePtr effective_input = input;
     if (input == output) {
       adaptor::copy_device_to_device(input_copy.get(), input, input_copy.size(), context.stream);

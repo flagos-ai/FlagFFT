@@ -3919,7 +3919,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_direct_dft(
   const int64_t input_bytes = inverse ? (n / 2 + 1) * complex_bytes : n * (complex_bytes / 2);
   return std::make_shared<CompiledRawDirectDftNode>(
       n, compile_kernel(key), build_raw_direct_dft_tables(n, real_request),
-      adaptor::Memory(static_cast<std::size_t>(request.batch * input_bytes)));
+      adaptor::Memory(static_cast<std::size_t>(request.batch * input_bytes)),
+      inverse ? 2 : 1, complex_bytes/2);
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPlanNode &leaf,

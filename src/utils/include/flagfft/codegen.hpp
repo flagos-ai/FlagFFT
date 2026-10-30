@@ -409,7 +409,8 @@ struct CompiledRawDirectDftNode final : CompiledRawNode {
   CompiledRawDirectDftNode(int64_t length,
                            std::shared_ptr<JitKernel> kernel,
                            std::vector<DeviceAllocation> tables,
-                           DeviceAllocation input_copy);
+                           DeviceAllocation input_copy,
+                           int real_mode = 0, int64_t scalar_bytes = 0);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -420,6 +421,8 @@ struct CompiledRawDirectDftNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
   DeviceAllocation input_copy;
+  int real_mode;
+  int64_t scalar_bytes;
 };
 
 struct CompiledRawFourStepFusedNode final : CompiledRawNode {
