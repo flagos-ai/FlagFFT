@@ -33,6 +33,23 @@ def _coalesced_late_stage(spec,direction):
  lines += [f'    dst=j*{r*pp}+d*{pp}+pf',f'    tl.store(Y+b*{2*pn}+dst,tl.reshape(re,({pr},{c})),good)',f'    tl.store(Y+b*{2*pn}+{pn}+dst,tl.reshape(im,({pr},{c})),good)']
  return '\n'.join(lines)+'\n'
 
+def _grouped_late_stage(s,direction,c):
+ r,pp,m,pn=s['r'],s['physical_prefix'],s['m'],s['physical_n'];tiles=(pp+c-1)//c
+ lines=['@triton.jit',f'def {s["name"]}(X,TW,Y):','    batch=tl.program_id(1).to(tl.int64)',f'    j=tl.program_id(0)//{tiles}',f'    pf=(tl.program_id(0)%{tiles}*{c}+tl.arange(0,{c}))[None,:]',f'    good=pf<{pp}']
+ groups=[];start=0
+ while start<r:
+  g=1<<((r-start).bit_length()-1);groups.append((start,g));points=g*c
+  lines += [f'    d=tl.arange(0,{g})[:,None]+{start}',f'    off=(d*{m}+j)*{pp}+pf',f'    xr=tl.load(X+batch*{2*pn}+off,good,0.)',f'    xi=tl.load(X+batch*{2*pn}+{pn}+off,good,0.)','    wr=tl.load(TW+off,good,0.)',f'    wi=tl.load(TW+{pn}+off,good,0.)','    re,im=xr*wr-xi*wi,xr*wi+xi*wr',f'    re=tl.reshape(re,({points},))',f'    im=tl.reshape(im,({points},))']
+  for d in range(g):lines += [f'    r{start+d}=al.extract_slice(re,[{d*c}],[{c}],[1])',f'    i{start+d}=al.extract_slice(im,[{d*c}],[{c}],[1])']
+  start+=g
+ lines += _emit_natural_order_codelet_call('    ',r,direction)
+ for start,g in groups:
+  points=g*c;lines += [f'    re=tl.zeros(({points},),tl.float32)',f'    im=tl.zeros(({points},),tl.float32)']
+  for d in range(g):lines += [f'    re=al.insert_slice(re,r{start+d},[{d*c}],[{c}],[1])',f'    im=al.insert_slice(im,i{start+d},[{d*c}],[{c}],[1])']
+  lines += [f'    d=tl.arange(0,{g})[:,None]+{start}',f'    out=j*{r*pp}+d*{pp}+pf',f'    tl.store(Y+batch*{2*pn}+out,tl.reshape(re,({g},{c})),good)',f'    tl.store(Y+batch*{2*pn}+{pn}+out,tl.reshape(im,({g},{c})),good)']
+ return '\n'.join(lines)+'\n'
+
+
 def build_cube_prefix_dif(factors,direction='forward'):
  if len(factors)<4 or not (2<=factors[0]<=19 and 11<=factors[1]<=15 and factors[0]*factors[1]>=64):
   raise ValueError('Chirped DIF prefix needs two early stages and a large second radix')
@@ -115,7 +132,13 @@ def chirped_second(X,TW,Y):
   # Keep the whole-radix matrices within the validated 4096-element UB budget.
   coalesced=(radix>=10 and radix in _NATURAL_ORDER_CODELET_RADICES and 0<physical<=256
              and (1<<(radix-1).bit_length())*(1<<(physical-1).bit_length())<=4096)
-  if z['phase']=='late' and coalesced and z['name']!='fused_finish':
-   body=_coalesced_late_stage(z,direction)
+  # Large prefixes retain the existing 512-column grid. Group only
+  # radices with substantial power-of-two padding, so each DMA group is
+  # dense and does not allocate dummy branch rows.
+  grouped=(9<=radix<=16 and radix in _NATURAL_ORDER_CODELET_RADICES
+           and physical>256 and 2*(1<<(radix-1).bit_length())>=3*radix
+           and radix*512<=8192)
+  if z['phase']=='late' and z['name']!='fused_finish' and (coalesced or grouped):
+   body=_grouped_late_stage(z,direction,512) if grouped else _coalesced_late_stage(z,direction)
    source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
  return source,result

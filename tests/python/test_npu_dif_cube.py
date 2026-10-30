@@ -44,7 +44,7 @@ def _tables(factors, specs, sign):
     return tables
 
 
-@pytest.mark.parametrize('factors', [(17,13,3,4), (19,13,3,4), (17,15,7,2), (17,13,15,2), (7,15,3,4), (8,15,3,4), (7,15,10,4), (7,15,4,3), (17,13,4,5), (17,13,2,15)])
+@pytest.mark.parametrize('factors', [(17,13,3,4), (19,13,3,4), (17,15,7,2), (17,13,15,2), (7,15,3,4), (8,15,3,4), (7,15,10,4), (7,15,4,3), (17,13,4,5), (17,13,2,15), (7,15,3,9,4), (17,13,3,10,2)])
 @pytest.mark.parametrize('direction', ['forward', 'inverse'])
 def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction):
     monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH', '1')

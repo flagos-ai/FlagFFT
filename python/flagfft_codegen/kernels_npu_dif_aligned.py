@@ -41,7 +41,7 @@ def _fused_finish(spec, direction):
  # retain the unaligned logical row stride after removing prefix padding.
  lines += [f'    word=tl.arange(0,{2*points})',
            f'    valid_word=word<{rows*2*initial}',
-           f'    take=tl.where(valid_word,word//{2*initial}*{2*padded}+word%{2*initial},0)',
+           f'    take=tl.where(valid_word,word+(word//{2*initial})*{2*(padded-initial)},0)',
            f'    out=tl.program_id(0)*{rows*2*initial}+word']
  for d in range(radix):
   lines += [f'    value=tl.reshape(tl.join(tl.reshape(r{d},({points},)),tl.reshape(i{d},({points},))),({2*points},))',
