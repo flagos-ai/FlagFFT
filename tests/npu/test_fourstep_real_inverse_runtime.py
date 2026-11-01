@@ -30,8 +30,14 @@ def test_fourstep_real_inverse_live(n, batch, extra, in_place):
     odist = (2 * half if in_place else n) + extra
     dims = (ctypes.c_int * 1)(n)
     handle = ctypes.c_void_p()
-    assert lib.flagfftPlanMany(ctypes.byref(handle), 1, dims, None, 1, idist,
-                              None, 1, odist, 0x2c, batch) == 0
+    status = lib.flagfftPlanMany(ctypes.byref(handle), 1, dims, None, 1, idist,
+                                None, 1, odist, 0x2c, batch)
+    if extra:
+        # The public 1D API accepts tight and standard in-place pitches only.
+        # An arbitrary gap must be rejected before compiling or executing.
+        assert status == 14 and handle.value is None
+        return
+    assert status == 0
     streams = [torch.npu.current_stream(), torch.npu.Stream()]
     try:
         for step, scale in enumerate((1., 1e-6, 1e6, -.25)):
