@@ -77,6 +77,18 @@ def transpose(X,Y):
     rr=tl.program_id(1)*{tile}+tl.arange(0,{tile})[:,None]
     ww=tl.program_id(0)*{2*tile}+tl.arange(0,{2*tile})[None,:]
     tl.store(Y+rr*{2 * a}+ww,v,(rr<{b})&(ww<{2 * a}))
+
+@triton.jit
+def transpose_real(X,Y,D):
+    batch=tl.program_id(2).to(tl.int64)
+    r=tl.program_id(0)*{tile}+tl.arange(0,{tile})[:,None]
+    w=tl.program_id(1)*{2*tile}+tl.arange(0,{2*tile})[None,:]
+    raw=tl.load(X+batch*{2*a*b}+r*{2*b}+w,(r<{a})&(w<{2*b}),0.)
+    real,imag=tl.split(tl.reshape(raw,({tile*tile},2)))
+    real=tl.trans(tl.reshape(real,({tile},{tile})))
+    rr=tl.program_id(1)*{tile}+tl.arange(0,{tile})[:,None]
+    cc=tl.program_id(0)*{tile}+tl.arange(0,{tile})[None,:]
+    tl.store(Y+batch*D+rr*{a}+cc,real,(rr<{b})&(cc<{a}))
 '''
     # Real input needs only the real half of the first matrix's K dimension.
     p = 1 << (a - 1).bit_length()
@@ -156,15 +168,15 @@ def transpose_half(X,Y,D):
 
 
 def emit_matrix_fourstep(a,b,phase,direction,out_dir,wide=False):
-    names=('pack0','cube0','pack1','cube1','transpose','pack0_real','cube0_real','cube1_half','transpose_half')
+    names=('pack0','cube0','pack1','cube1','transpose','pack0_real','cube0_real','cube1_half','transpose_half','transpose_real')
     if phase not in names or direction not in ('forward','inverse'):
         raise ValueError('Invalid matrix four-step phase or direction')
     path=Path(out_dir)/(f'npu_matrix_fourstep_{a}_{b}_{phase}_{direction}'+('_wide' if wide else '')+'.py')
     path.parent.mkdir(parents=True,exist_ok=True)
     write_text_atomic(path,build_matrix_fourstep(a,b,wide=wide))
-    args=['X','Y','D'] if phase=='transpose_half' else ['X','Y'] if phase=='transpose' else ['X','P','T'] if phase.startswith('pack') else ['P','W','Y']
+    args=['X','Y','D'] if phase in ('transpose_half','transpose_real') else ['X','Y'] if phase=='transpose' else ['X','P','T'] if phase.startswith('pack') else ['P','W','Y']
     signature=','.join(['*fp32:16']*len(args))
-    if phase=='transpose_half': signature='*fp32:16,*fp32:16,i64'
+    if phase in ('transpose_half','transpose_real'): signature='*fp32:16,*fp32:16,i64'
     if wide and phase.startswith('cube'):
         args.append('NB');signature+=',i32'
     meta=dict(module_path=str(path),kernel_name=phase,arg_names=args,

@@ -152,7 +152,7 @@ def main() -> None:
     parser.add_argument("--npu-vector-dif-flat-power2", action="store_true")
     parser.add_argument("--npu-vector-dif-cube-prefix", action="store_true")
     parser.add_argument("--npu-matrix-fourstep-wide", action="store_true")
-    parser.add_argument("--npu-matrix-fourstep-phase", choices=("pack0","cube0","pack1","cube1","transpose","pack0_real","cube0_real","cube1_half","transpose_half"))
+    parser.add_argument("--npu-matrix-fourstep-phase", choices=("pack0","cube0","pack1","cube1","transpose","pack0_real","cube0_real","cube1_half","transpose_half","transpose_real"))
     parser.add_argument("--npu-matrix-phase", choices=('pack','cube'))
     parser.add_argument("--npu-packed-real", action="store_true")
     parser.add_argument("--npu-fft-output-stride", type=int, default=1)

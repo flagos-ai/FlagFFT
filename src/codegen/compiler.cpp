@@ -2986,6 +2986,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           real_kernels.push_back(compile_kernel(key));
         }
       }
+      std::shared_ptr<JitKernel> real_inverse_kernel;
+      if (request.direction=="inverse" && flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FOURSTEP",false) &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_REAL_INVERSE_FUSED",true)) {
+        key.perm_form=std::string("npu_matrix_fourstep_transpose_real")+(wide?"_wide":"");
+        real_inverse_kernel=compile_kernel(key);
+      }
       std::vector<DeviceAllocation> tables,scratch;
       for(int stage=0;stage<2;++stage) {
         const int64_t length=stage==0?n1:n2, width=stage==0?n2:n1;
@@ -3006,7 +3012,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       for(int i=0;i<2;++i)
         scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*n1*n2*2*sizeof(float))));
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
-          std::move(kernels),std::move(tables),std::move(scratch),wide,std::move(real_kernels));
+          std::move(kernels),std::move(tables),std::move(scratch),wide,
+          std::move(real_kernels),std::move(real_inverse_kernel));
     }
     if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
@@ -3740,11 +3747,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                                     build_raw_leaf_tables(*leaf, request));
   }
   DeviceAllocation full_input = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
-  DeviceAllocation full_output = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
+  auto fft=compile_raw_node(node, request, batch);
+  auto matrix=std::dynamic_pointer_cast<CompiledRawMatrixFourStepNode>(fft);
+  const bool fused_real_output=matrix && matrix->supports_real_inverse();
+  DeviceAllocation full_output = fused_real_output ? DeviceAllocation{} :
+      adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
   return std::make_shared<CompiledRawC2RNode>(n,
                                               compile_compact_to_hermitian_full_kernel(request, n),
-                                              compile_raw_node(node, request, batch),
-                                              compile_complex_to_real_kernel(request, n),
+                                              std::move(fft),
+                                              fused_real_output ? nullptr : compile_complex_to_real_kernel(request, n),
                                               std::move(full_input),
                                               std::move(full_output));
 }
