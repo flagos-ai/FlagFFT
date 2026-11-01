@@ -46,7 +46,9 @@ def _tables(factors, specs, sign):
 
 @pytest.mark.parametrize('factors', [(17,13,3,4), (19,13,3,4), (17,15,7,2), (17,13,15,2), (7,15,3,4), (8,15,3,4), (7,15,10,4), (7,15,4,3), (17,13,4,5), (17,13,2,15), (7,15,3,9,4), (17,13,3,10,2), (17,15,13,2), (17,15,13,7,2)])
 @pytest.mark.parametrize('direction', ['forward', 'inverse'])
-def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction):
+@pytest.mark.parametrize('dense_transpose', ['0', '1'])
+def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose):
+    monkeypatch.setenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE", dense_transpose)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH', '1')
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_TILE', '64')
     source, specs = build_cube_prefix_dif(factors, direction)

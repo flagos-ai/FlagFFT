@@ -283,7 +283,12 @@ namespace {
         const char *tile_setting=std::getenv("FLAGFFT_NPU_DIF_TRANSPOSE_TILE");
         const int64_t tile=tile_setting ? std::stoll(tile_setting) : 32;
         if (tile!=32 && tile!=64) throw std::runtime_error("DIF transpose tile must be 32 or 64");
-        append(DeviceAllocation(sizeof(float)),ceiling(aligned?padded_prefix:prefix,tile),ceiling(n/prefix,tile),true);
+        const bool dense_transpose=aligned && padded_prefix<=256 &&
+            flag_or_default("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE",true);
+        const int64_t tile_rows=dense_transpose?padded_prefix:tile;
+        const int64_t tile_columns=dense_transpose?4096/tile_rows:tile;
+        append(DeviceAllocation(sizeof(float)),ceiling(aligned?padded_prefix:prefix,tile_rows),
+               ceiling(n/prefix,tile_columns),true);
         switched=true;
       }
       std::vector<float> weights;

@@ -254,6 +254,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";npu-structured-contiguous-slices-v1";
     if (key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0)
       cache_key += ";npu-flat-power-dif-v1";
+    if (key.perm_form.rfind("npu_vector_dif_aligned_",0)==0) {
+      const char *dense_transpose=std::getenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE");
+      cache_key += ";npu-dif-dense-transpose-v1=" +
+                   std::string(dense_transpose!=nullptr?dense_transpose:"1");
+    }
     const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
     cache_key += ";npu-join-mode=" + std::string(join != nullptr ? join : "auto");
     cache_key += ";npu-auto-blockify=" + std::string(npu_auto_blockify_for(key) ? "1" : "0");
@@ -772,6 +777,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "npu") {
     if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0)
       cache_key += ";npu-dif-cube-prefix-v2";
+    if (key.perm_form.rfind("npu_vector_dif_aligned_",0)==0) {
+      const char *dense_transpose=std::getenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE");
+      cache_key += ";npu-dif-dense-transpose-v1=" +
+                   std::string(dense_transpose!=nullptr?dense_transpose:"1");
+    }
     const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
     kernel->npu_join_lowering = join != nullptr ? join : "auto";
     if (kernel->npu_join_lowering != "auto" && kernel->npu_join_lowering != "native" &&

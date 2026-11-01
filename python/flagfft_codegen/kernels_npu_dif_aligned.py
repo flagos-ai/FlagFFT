@@ -60,11 +60,16 @@ def build_aligned_vector_dif(factors,direction='forward'):
   match=re.search(r'@triton.jit\ndef '+s['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',source);chunks.append(match.group(0));specs.append(dict(s,physical_n=physical_n))
  tile=int(os.environ.get("FLAGFFT_NPU_DIF_TRANSPOSE_TILE","32"))
  if tile not in (32,64):raise ValueError("DIF transpose tile must be 32 or 64")
+ # A complete padded output row is a contiguous GM transfer. Keep the
+ # same 4096-element tile budget while avoiding short, strided stores.
+ dense=os.environ.get("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE","1")!="0" and padded<=256
+ tile_rows=padded if dense else tile
+ tile_cols=4096//tile_rows if dense else tile
  chunks.append(f'''@triton.jit
 def switch_axes(X,TW,Y):
     batch=tl.program_id(2).to(tl.int64)
-    row=tl.program_id(0)*{tile}+tl.arange(0,{tile})
-    col=tl.program_id(1)*{tile}+tl.arange(0,{tile})
+    row=tl.program_id(0)*{tile_rows}+tl.arange(0,{tile_rows})
+    col=tl.program_id(1)*{tile_cols}+tl.arange(0,{tile_cols})
     off=row[:,None]*{rest}+col[None,:]
     valid=(row[:,None]<{p0})&(col[None,:]<{rest})
     r=tl.load(X+batch*{2*n}+off,valid,0.)
@@ -74,7 +79,7 @@ def switch_axes(X,TW,Y):
     tl.store(Y+batch*{2*physical_n}+dst,tl.trans(r),valid)
     tl.store(Y+batch*{2*physical_n}+{physical_n}+dst,tl.trans(i),valid)
 ''')
- specs.append(dict(name='switch_axes',phase='transpose',grid=((padded+tile-1)//tile,(rest+tile-1)//tile),physical_n=physical_n))
+ specs.append(dict(name='switch_axes',phase='transpose',grid=((padded+tile_rows-1)//tile_rows,(rest+tile_cols-1)//tile_cols),physical_n=physical_n))
  for s in old:
   if s['phase']!='late':continue
   i=s['stage'];r=s['r'];m=s['m'];prefix=s['prefix'];pp=prefix//p0*padded;c=min(2048 if r==2 else 1024 if r<=8 else 512,pad(pp));tiles=(pp+c-1)//c
