@@ -7,10 +7,39 @@ Small first radices retain the shared vector codelet. The second transform folds
 its radix-dependent twiddle into the coefficients; stage two applies the
 remaining column phase together with its normal twiddle.
 """
-import math,re
+import math,re,os
 from flagfft_codegen.kernels_npu_dif_aligned import build_aligned_vector_dif
 from flagfft_codegen.kernels_leaf import _emit_natural_order_codelet_call
 from flagfft_codegen.kernels_common import _NATURAL_ORDER_CODELET_RADICES
+
+
+def _grouped_first_stage(spec,n,direction):
+ """Bound each interleaved DMA group to 2048 complex lane elements."""
+ r,m=spec['r'],spec['m'];c=512;groups=[];start=0
+ lines=['@triton.jit',f'def {spec["name"]}(X,TW,Y):',
+  '    b=tl.program_id(1).to(tl.int64)',
+  f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',
+  f'    word=tl.program_id(0)*{2*c}+tl.arange(0,{2*c})[None,:]']
+ while start<r:
+  g=min(4,1<<((r-start).bit_length()-1));groups.append((start,g));points=g*c
+  lines += [f'    d=tl.arange(0,{g})[:,None]+{start}',
+   f'    raw=tl.load(X+b*{2*n}+d*{2*m}+word,word<{2*m},0.)',
+   f'    real,imag=tl.split(tl.reshape(raw,({points},2)))']
+  for j in range(g):
+   lines += [f'    r{start+j}=al.extract_slice(real,[{j*c}],[{c}],[1])',
+             f'    i{start+j}=al.extract_slice(imag,[{j*c}],[{c}],[1])']
+  start+=g
+ lines += _emit_natural_order_codelet_call('    ',r,direction)
+ for start,g in groups:
+  points=g*c
+  lines += [f'    real=tl.zeros(({points},),tl.float32)',f'    imag=tl.zeros(({points},),tl.float32)']
+  for j in range(g):
+   lines += [f'    real=al.insert_slice(real,r{start+j},[{j*c}],[{c}],[1])',
+             f'    imag=al.insert_slice(imag,i{start+j},[{j*c}],[{c}],[1])']
+  lines += [f'    d=tl.arange(0,{g})[:,None]+{start}',f'    off=d*{m}+q',
+   f'    tl.store(Y+b*{2*n}+off,tl.reshape(real,({g},{c})),q<{m})',
+   f'    tl.store(Y+b*{2*n}+{n}+off,tl.reshape(imag,({g},{c})),q<{m})']
+ return '\n'.join(lines)+'\n'
 
 
 def _coalesced_late_stage(spec,direction):
@@ -58,6 +87,7 @@ def build_cube_prefix_dif(factors,direction='forward'):
  n=math.prod(factors);r=factors[0];m=n//r;pr=max(16,1<<(r-1).bit_length());c=512;pn=specs[0]['physical_n'];tiles=(m+c-1)//c
  s0=specs[0];assert s0['stage']==0
  matrix_first=factors[0]>=13
+ group_branches=os.environ.get('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')!='0'
  original_first=re.search(r'@triton.jit\ndef '+s0['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',source).group(0)
  source=re.sub(r'@triton.jit\ndef '+s0['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)','',source)
  source+=f'''
@@ -126,19 +156,26 @@ def chirped_second(X,TW,Y):
    source=re.sub(r'@triton.jit\ndef '+name+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)','',source)
   source+='\n'+original_first
   result=[dict(s0,auto=False)]+result[2:]
+  if group_branches and factors[0] in _NATURAL_ORDER_CODELET_RADICES:
+   first=result[0]
+   body=_grouped_first_stage(first,n,direction)
+   source=re.sub(r'@triton.jit\ndef '+first['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
+   first['grid']=((m+511)//512,)
  for z in result:
   if z.get('stage')==2:z['deferred_twiddle']=True
   radix=z.get('r',0);physical=z.get('physical_prefix',0)
   # Keep the whole-radix matrices within the validated 4096-element UB budget.
   coalesced=(radix>=10 and radix in _NATURAL_ORDER_CODELET_RADICES and 0<physical<=256
              and (1<<(radix-1).bit_length())*(1<<(physical-1).bit_length())<=4096)
-  # Large prefixes retain the existing 512-column grid. Group only
-  # radices with substantial power-of-two padding, so each DMA group is
-  # dense and does not allocate dummy branch rows.
+  # Group radices with substantial power-of-two padding so DMA groups
+  # contain actual branches. Retain at most 512 contiguous columns;
+  # small prefixes use their full padded row width.
   grouped=(9<=radix<=16 and radix in _NATURAL_ORDER_CODELET_RADICES
-           and physical>256 and 2*(1<<(radix-1).bit_length())>=3*radix
+           and physical>0 and (physical>256 or group_branches)
+           and 2*(1<<(radix-1).bit_length())>=3*radix
            and radix*512<=8192)
   if z['phase']=='late' and z['name']!='fused_finish' and (coalesced or grouped):
-   body=_grouped_late_stage(z,direction,512) if grouped else _coalesced_late_stage(z,direction)
+   columns=min(512,1<<(physical-1).bit_length())
+   body=_grouped_late_stage(z,direction,columns) if grouped else _coalesced_late_stage(z,direction)
    source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
  return source,result

@@ -18,6 +18,7 @@ def _fused_finish(spec, direction):
  rows=1
  while rows<8 and 2*rows*radix*padded<=4096:rows*=2
  groups=physical_prefix//padded;points=rows*padded
+ single_gather=os.environ.get('FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH','1')!='0'
  lines=['@triton.jit','def fused_finish(X,TW,Y):',
         '    batch=tl.program_id(1).to(tl.int64)',
         f'    row=tl.program_id(0)*{rows}+tl.arange(0,{rows})[:,None]',
@@ -41,11 +42,17 @@ def _fused_finish(spec, direction):
  # retain the unaligned logical row stride after removing prefix padding.
  lines += [f'    word=tl.arange(0,{2*points})',
            f'    valid_word=word<{rows*2*initial}',
-           f'    take=tl.where(valid_word,word+(word//{2*initial})*{2*(padded-initial)},0)',
+           (f'    take=tl.where(valid_word,(word&1)*{points}+word//2+(word//{2*initial})*{padded-initial},0)' if single_gather else
+            f'    take=tl.where(valid_word,word+(word//{2*initial})*{2*(padded-initial)},0)'),
            f'    out=tl.program_id(0)*{rows*2*initial}+word']
  for d in range(radix):
-  lines += [f'    value=tl.reshape(tl.join(tl.reshape(r{d},({points},)),tl.reshape(i{d},({points},))),({2*points},))',
-            f'    packed=tl.gather(value,take,0)',
+  if single_gather:
+   lines += [f'    value=tl.zeros(({2*points},),tl.float32)',
+             f'    value=al.insert_slice(value,tl.reshape(r{d},({points},)),[0],[{points}],[1])',
+             f'    value=al.insert_slice(value,tl.reshape(i{d},({points},)),[{points}],[{points}],[1])']
+  else:
+   lines += [f'    value=tl.reshape(tl.join(tl.reshape(r{d},({points},)),tl.reshape(i{d},({points},))),({2*points},))']
+  lines += [f'    packed=tl.gather(value,take,0)',
             f'    tl.store(Y+batch*{2*n}+{2*d*prefix}+out,packed,valid_word&(out<{2*prefix}))']
  return '\n'.join(lines)+'\n',dict(spec,name='fused_finish',grid=((groups+rows-1)//rows,))
 
@@ -55,6 +62,8 @@ def build_aligned_vector_dif(factors,direction='forward'):
  switch=next(s for s in old if s['phase']=='transpose');p0=next(s['prefix'] for s in old if s['phase']=='late');padded=pad(p0);rest=n//p0;physical_n=rest*padded
  first=source.index('@triton.jit\ndef vector_stage_0');chunks=[source[:first]];specs=[]
  fused_finish=os.environ.get('FLAGFFT_NPU_DIF_FUSED_FINISH')=='1'
+ if fused_finish and os.environ.get('FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH','1')!='0':
+  chunks.append('import triton.language.extra.cann.extension as al\n')
  for s in old:
   if s['phase']!='early':continue
   match=re.search(r'@triton.jit\ndef '+s['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',source);chunks.append(match.group(0));specs.append(dict(s,physical_n=physical_n))

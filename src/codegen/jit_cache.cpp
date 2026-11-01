@@ -248,8 +248,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   if (adaptor::backend_name() == "npu") {
-    if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0)
+    if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0) {
       cache_key += ";npu-dif-cube-prefix-v6";
+      const char *group_branches=std::getenv("FLAGFFT_NPU_DIF_GROUP_BRANCHES");
+      cache_key += ";npu-dif-group-branches-v1=" +
+                   std::string(group_branches!=nullptr?group_branches:"1");
+    }
     if (key.perm_form.rfind("npu_structured_recursive_axis_planar",0)==0)
       cache_key += ";npu-structured-contiguous-slices-v1";
     if (key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0)
@@ -258,6 +262,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       const char *dense_transpose=std::getenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE");
       cache_key += ";npu-dif-dense-transpose-v1=" +
                    std::string(dense_transpose!=nullptr?dense_transpose:"1");
+      const char *single_gather=std::getenv("FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH");
+      cache_key += ";npu-dif-single-gather-finish-v1=" +
+                   std::string(single_gather!=nullptr?single_gather:"1");
     }
     const char *symmetric_codelets=std::getenv("FLAGFFT_NPU_SYMMETRIC_CODELETS");
     cache_key += ";npu-symmetric-codelets-v1=" +

@@ -82,3 +82,12 @@ def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, den
     assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref)<5e-7
     assert torch.equal(x,saved)
     assert (guard[:64]==31415.25).all() and (guard[-64:]==31415.25).all()
+
+
+@pytest.mark.parametrize('factors', [(8,15,3,4), (9,13,3,4), (7,15,10,4), (7,15,9,4)])
+@pytest.mark.parametrize('direction', ['forward', 'inverse'])
+@pytest.mark.parametrize('optimized', ['0', '1'])
+def test_branch_dma_and_finish_options(tmp_path, monkeypatch, factors, direction, optimized):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES', optimized)
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH', optimized)
+    test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, '1')
