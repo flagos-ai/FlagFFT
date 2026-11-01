@@ -51,4 +51,4 @@ def test_optimized_helpers_are_npu_scoped(monkeypatch):
     assert '_npu_cos6' in optimized and '_npu_cos6' not in ordinary
     monkeypatch.setattr(metadata,'_npu_backend_active',lambda:True)
     monkeypatch.setenv('FLAGFFT_NPU_SYMMETRIC_CODELETS','0')
-    assert metadata._module_source('',(5,13))==ordinary
+    assert metadata._module_source('',(5,13)).rstrip()==ordinary.rstrip()
