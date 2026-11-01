@@ -200,10 +200,24 @@ namespace {
     auto factors=npu_vector_dif_factors(n);
     if (factors.empty()) return nullptr;
     auto power=[](int64_t value) { int64_t result=1;while(result<value) result*=2;return result; };
+    auto ceiling=[](int64_t value,int64_t divisor) { return (value+divisor-1)/divisor; };
+    auto cube_has_work=[&](const std::vector<int64_t> &axes) {
+      if (axes.size()<4 || axes[0]<2 || axes[0]>19 || axes[1]<11 ||
+          axes[1]>15 || axes[0]*axes[1]<64) return false;
+      if (batch>=16) return true;
+      if (!flag_or_default("FLAGFFT_NPU_DIF_SMALL_CUBE",true)) return false;
+      const int64_t remaining=n/(axes[0]*axes[1]);
+      const int64_t columns=std::min<int64_t>(1024,std::max<int64_t>(32,power(remaining)));
+      const int64_t first_tiles=ceiling(n/axes[0],512);
+      const int64_t second_tiles=axes[0]*ceiling(remaining,columns);
+      // Independent sample tiles can fill Cube cores even for a small API
+      // batch. Keep short transforms on their existing vector schedule.
+      return batch*std::min(first_tiles,second_tiles)>=16;
+    };
     // Place the chirped Cube axis before vector axes when that also
     // improves prefix density. Compare padding ratios exactly; retain
     // the order of the remaining axes and avoid expanding workspace.
-    if (batch>=16 && factors.size()>=4 &&
+    if (cube_has_work(factors) &&
         flag_or_default("FLAGFFT_NPU_DIF_CUBE_PREFIX",false)) {
       std::size_t best=1;
       int64_t best_product=factors[0]*factors[1];
@@ -221,7 +235,6 @@ namespace {
         factors.insert(factors.begin()+1,radix);
       }
     }
-    auto ceiling=[](int64_t value,int64_t divisor) { return (value+divisor-1)/divisor; };
     int64_t initial_prefix=1;
     for (auto radix:factors) {
       if (initial_prefix>=64) break;
@@ -232,9 +245,7 @@ namespace {
         padded_prefix*4<=initial_prefix*5 &&
         flag_or_default("FLAGFFT_NPU_DIF_PAD_PREFIX",false);
     const bool fused_finish=aligned && flag_or_default("FLAGFFT_NPU_DIF_FUSED_FINISH",false);
-    const bool cube_prefix=aligned && batch>=16 && factors.size()>=4 &&
-        factors[0]>=2 && factors[0]<=19 && factors[1]>=11 && factors[1]<=15 &&
-        factors[0]*factors[1]>=64 &&
+    const bool cube_prefix=aligned && cube_has_work(factors) &&
         flag_or_default("FLAGFFT_NPU_DIF_CUBE_PREFIX",false);
     // Small first radices already have inexpensive vector codelets. Keep
     // their interleaved input load, and feed its planar result to stage one.

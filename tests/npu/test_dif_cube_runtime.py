@@ -6,7 +6,8 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('n,batch',[(185640,17),(663000,16),(340200,16),(63000,17),(46410,17)])
+@pytest.mark.parametrize('n,batch',[(185640,17),(663000,16),(340200,16),(63000,17),(46410,17),
+    (185640,1),(340200,1),(663000,1),(63000,3),(9880,8)])
 @pytest.mark.parametrize('direction',[-1,1])
 @pytest.mark.parametrize('in_place',[False,True])
 def test_cube_prefix_live(n,batch,direction,in_place):
