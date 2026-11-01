@@ -259,6 +259,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";npu-dif-dense-transpose-v1=" +
                    std::string(dense_transpose!=nullptr?dense_transpose:"1");
     }
+    const char *symmetric_codelets=std::getenv("FLAGFFT_NPU_SYMMETRIC_CODELETS");
+    cache_key += ";npu-symmetric-codelets-v1=" +
+                 std::string(symmetric_codelets!=nullptr?symmetric_codelets:"1");
     const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
     cache_key += ";npu-join-mode=" + std::string(join != nullptr ? join : "auto");
     cache_key += ";npu-auto-blockify=" + std::string(npu_auto_blockify_for(key) ? "1" : "0");

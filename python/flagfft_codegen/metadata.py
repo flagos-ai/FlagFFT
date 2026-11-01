@@ -95,6 +95,13 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
         helpers += utils_path.read_text() + "\n\n"
 
     for radix in radices:
+        if (_npu_backend_active()
+                and os.environ.get("FLAGFFT_NPU_SYMMETRIC_CODELETS", "1") != "0"):
+            from .npu_codelets import codelet_source
+            optimized = codelet_source(radix)
+            if optimized is not None:
+                helpers += optimized + "\n\n"
+                continue
         codelet_path = _CODELET_DIR / f"radix{radix}.py"
         if codelet_path.exists():
             helpers += codelet_path.read_text() + "\n\n"
