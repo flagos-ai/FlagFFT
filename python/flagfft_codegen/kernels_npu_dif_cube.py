@@ -240,7 +240,7 @@ def chirped_second(X,TW,Y):
  if (os.environ.get('FLAGFFT_NPU_DIF_COPRIME','1')!='0'
      and os.environ.get('FLAGFFT_NPU_SYMMETRIC_CODELETS','1')!='0'):
   from .npu_coprime import coprime_source
-  if batch_pack and 10 in factors:source+='\n'+coprime_source(2,5)
+  if 10 in factors:source+='\n'+coprime_source(2,5)
   if vector_second15:source+='\n'+coprime_source(3,5)
  if vector_first17:
   from .npu_radix17 import radix17_source
