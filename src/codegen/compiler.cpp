@@ -250,6 +250,10 @@ namespace {
     // Small first radices already have inexpensive vector codelets. Keep
     // their interleaved input load, and feed its planar result to stage one.
     const bool matrix_first=cube_prefix && factors[0]>=13;
+    // The interleaved vector prefix benefits from automatic blockification
+    // when many independent batches amortize the extra scheduling work.
+    const bool first_auto=cube_prefix && !matrix_first && batch>=16 &&
+        flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true);
     const bool late_auto=batch>=16 &&
         flag_or_default("FLAGFFT_NPU_DIF_LATE_AUTO_BLOCK",false);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
@@ -263,6 +267,7 @@ namespace {
       key.perm_form=std::string(cube_prefix ? "npu_vector_dif_aligned_cube_" :
           aligned ? "npu_vector_dif_aligned_" : "npu_vector_dif_")+std::to_string(passes.size());
       if ((matrix_first && passes.size()<3) ||
+          (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
           (late_auto && switched && !transpose))
         key.perm_form+="_auto";
