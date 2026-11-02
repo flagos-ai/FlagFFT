@@ -251,7 +251,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0) {
       cache_key += ";npu-dif-cube-prefix-v6";
       const char *group_branches=std::getenv("FLAGFFT_NPU_DIF_GROUP_BRANCHES");
-      cache_key += ";npu-dif-group-branches-v1=" +
+      cache_key += ";npu-dif-group-branches-v2=" +
                    std::string(group_branches!=nullptr?group_branches:"1");
     }
     if (key.perm_form.rfind("npu_structured_recursive_axis_planar",0)==0)

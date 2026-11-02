@@ -168,11 +168,13 @@ def chirped_second(X,TW,Y):
   coalesced=(radix>=10 and radix in _NATURAL_ORDER_CODELET_RADICES and 0<physical<=256
              and (1<<(radix-1).bit_length())*(1<<(physical-1).bit_length())<=4096)
   # Group radices with substantial power-of-two padding so DMA groups
-  # contain actual branches. Retain at most 512 contiguous columns;
-  # small prefixes use their full padded row width.
+  # contain actual branches. For whole-prefix tiles, also avoid materializing
+  # three or more empty rows before the codelet's slices and inserts.
+  # Retain at most 512 contiguous columns.
   grouped=(9<=radix<=16 and radix in _NATURAL_ORDER_CODELET_RADICES
            and physical>0 and (physical>256 or group_branches)
-           and 2*(1<<(radix-1).bit_length())>=3*radix
+           and (2*(1<<(radix-1).bit_length())>=3*radix or
+                (physical<=256 and (1<<(radix-1).bit_length())-radix>=3))
            and radix*512<=8192)
   if z['phase']=='late' and z['name']!='fused_finish' and (coalesced or grouped):
    columns=min(512,1<<(physical-1).bit_length())
