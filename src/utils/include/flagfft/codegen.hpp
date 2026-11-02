@@ -1281,12 +1281,14 @@ struct CompiledRawVectorDIFNode final : CompiledRawNode {
     int64_t batch_pack=1;
   };
   CompiledRawVectorDIFNode(int64_t length, int64_t max_batch,
-      std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second, int64_t workspace_length = 0);
+      std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second,
+      int64_t workspace_length = 0, std::vector<int64_t> factors = {});
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
       const RawExecutionContext &context) const override;
   std::string describe() const override;
   int64_t length, max_batch, workspace_length;
   std::vector<Pass> passes;
+  std::vector<int64_t> factors;
   DeviceAllocation first, second;
 };
 

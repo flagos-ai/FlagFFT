@@ -3578,14 +3578,21 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
 }
 
 CompiledRawVectorDIFNode::CompiledRawVectorDIFNode(int64_t length, int64_t max_batch,
-    std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second, int64_t workspace_length)
+    std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second,
+    int64_t workspace_length, std::vector<int64_t> factors)
     : length(length), max_batch(max_batch), workspace_length(workspace_length>0?workspace_length:length), passes(std::move(passes)),
-      first(std::move(first)), second(std::move(second)) {}
+      factors(std::move(factors)), first(std::move(first)), second(std::move(second)) {}
 
 std::string CompiledRawVectorDIFNode::describe() const {
-  return "CompiledRawVectorDIF(n="+std::to_string(length)+", workspace_n="+
-      std::to_string(workspace_length)+", triton_passes="+
-      std::to_string(passes.size())+", vector_axis_switch=1)";
+  std::ostringstream out;
+  out << "CompiledRawVectorDIF(n=" << length << ", workspace_n=" << workspace_length
+      << ", triton_passes=" << passes.size() << ", factors=[";
+  for (std::size_t i=0;i<factors.size();++i) {
+    if (i) out << ',';
+    out << factors[i];
+  }
+  out << "], vector_axis_switch=1)";
+  return out.str();
 }
 
 flagfftResult CompiledRawVectorDIFNode::execute(adaptor::DevicePtr input,

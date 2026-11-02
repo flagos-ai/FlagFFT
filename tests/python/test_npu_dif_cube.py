@@ -110,3 +110,10 @@ def test_batch_grouped_masked_fft(tmp_path, monkeypatch, factors, direction):
     # The three-batch oracle exercises a masked final group of four.
     test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction,
                                   '1', '8192', factors[0]==17, True)
+
+
+@pytest.mark.parametrize('factors', [(7,15,15,10,4),(7,15,10,9,9,2)])
+@pytest.mark.parametrize('direction', ['forward','inverse'])
+def test_costed_suffix_complete_fft(tmp_path, monkeypatch, factors, direction):
+    test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction,
+                                  '1', '8192', False, True)

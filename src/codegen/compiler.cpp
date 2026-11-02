@@ -22,6 +22,8 @@
 #include <optional>
 #include <utility>
 #include <limits>
+#include <map>
+#include <functional>
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/npu_fft_contract.hpp"
@@ -41,6 +43,54 @@ namespace {
       while (n%radix==0) { factors.push_back(radix); n/=radix; }
     }
     return n==1 && factors.size()>=3 ? factors : std::vector<int64_t>{};
+  }
+
+  std::vector<int64_t> npu_vector_dif_costed_suffix(const std::vector<int64_t> &original) {
+    // Keep the dense chirped prefix. First minimise complete memory passes,
+    // then expanded FP32 codelet arithmetic per point. Counts include helper
+    // calls and unary signs in the current symmetric NPU codelets. The measured
+    // batch-grouped 9/10 kernels receive a conservative 20% scheduling discount;
+    // the arithmetic of every transform is unchanged.
+    const std::array<std::pair<int64_t,int>,11> costs={{{15,328},{13,288},
+        {11,288},{10,136},{9,146},{8,70},{7,96},{5,44},{4,17},{3,28},{2,4}}};
+    struct Choice {
+      int passes=std::numeric_limits<int>::max();
+      double cost=std::numeric_limits<double>::infinity();
+      std::vector<int64_t> axes;
+    };
+    std::map<int64_t,Choice> memo;
+    memo[1]={0,0.0,{}};
+    std::function<Choice(int64_t)> choose=[&](int64_t remaining) {
+      if (const auto found=memo.find(remaining);found!=memo.end()) return found->second;
+      Choice best;
+      for (const auto &[radix,operations]:costs) {
+        if (remaining%radix) continue;
+        const auto tail=choose(remaining/radix);
+        if (tail.passes==std::numeric_limits<int>::max()) continue;
+        const double cost=tail.cost+static_cast<double>(operations)/radix*
+            ((radix==9 || radix==10)?0.8:1.0);
+        if (tail.passes+1<best.passes ||
+            (tail.passes+1==best.passes && cost<best.cost-1e-8)) {
+          best={tail.passes+1,cost,{radix}};
+          best.axes.insert(best.axes.end(),tail.axes.begin(),tail.axes.end());
+        }
+      }
+      return memo[remaining]=best;
+    };
+    int64_t remaining=1;
+    for (std::size_t i=2;i<original.size();++i) remaining*=original[i];
+    auto suffix=choose(remaining).axes;
+    if (suffix.empty()) return original;
+    std::sort(suffix.begin(),suffix.end(),std::greater<int64_t>());
+    // A power-of-two finish has cheap arithmetic and contiguous output groups.
+    const auto finish=std::find_if(suffix.begin(),suffix.end(),
+        [](int64_t radix) { return (radix&(radix-1))==0; });
+    if (finish!=suffix.end()) {
+      const auto radix=*finish;suffix.erase(finish);suffix.push_back(radix);
+    }
+    std::vector<int64_t> result(original.begin(),original.begin()+2);
+    result.insert(result.end(),suffix.begin(),suffix.end());
+    return result;
   }
 
   bool use_npu_packed_mixed_real(const FFTRequest &request, int64_t n, int64_t batch) {
@@ -188,7 +238,7 @@ namespace {
     }
     const auto bytes=static_cast<std::size_t>(batch*n*2*sizeof(float));
     return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
-        adaptor::Memory(bytes),adaptor::Memory(bytes),n);
+        adaptor::Memory(bytes),adaptor::Memory(bytes),n,factors);
   }
 
   std::shared_ptr<CompiledRawNode> make_npu_vector_dif_child(
@@ -266,6 +316,8 @@ namespace {
         flag_or_default("FLAGFFT_NPU_DIF_BATCH_PACK",true) &&
         flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) &&
         flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true);
+    if (batch_pack && flag_or_default("FLAGFFT_NPU_DIF_FACTOR_COST",true))
+      factors=npu_vector_dif_costed_suffix(factors);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
@@ -380,7 +432,7 @@ namespace {
     }
     const auto bytes=static_cast<std::size_t>(batch*workspace_length*2*sizeof(float));
     return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
-        adaptor::Memory(bytes),adaptor::Memory(bytes),workspace_length);
+        adaptor::Memory(bytes),adaptor::Memory(bytes),workspace_length,factors);
   }
 
   std::vector<int64_t> npu_mixed_axis_factors(int64_t length) {
