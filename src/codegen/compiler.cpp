@@ -297,18 +297,19 @@ namespace {
     const bool fused_finish=aligned && flag_or_default("FLAGFFT_NPU_DIF_FUSED_FINISH",false);
     const bool cube_prefix=aligned && cube_has_work(factors) &&
         flag_or_default("FLAGFFT_NPU_DIF_CUBE_PREFIX",false);
-    // A bounded radix-17 vector butterfly can also deinterleave the input.
-    // Keep small batches on Cube; the vector schedule needs enough work to
-    // amortize its larger live state and automatic blockification.
-    const bool vector_first17=cube_prefix && factors[0]==17 && batch>=16 &&
+    // A bounded radix-17 vector butterfly also deinterleaves the input.
+    // cube_has_work already requires enough independent sample tiles;
+    // the same schedule can remove the planar preparation at small batch.
+    const bool vector_first17=cube_prefix && factors[0]==17 &&
+        (batch>=16 || flag_or_default("FLAGFFT_NPU_DIF_SMALL_VECTOR17",true)) &&
         flag_or_default("FLAGFFT_NPU_DIF_VECTOR_FIRST17",true) &&
         flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) &&
         flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true) &&
         flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true);
     const bool matrix_first=cube_prefix && factors[0]>=13 && !vector_first17;
-    // The interleaved vector prefix benefits from automatic blockification
-    // when many independent batches amortize the extra scheduling work.
-    const bool first_auto=cube_prefix && !matrix_first && batch>=16 &&
+    // The bounded vector-17 state uses automatic blockification at every
+    // admitted batch size. Other vector prefixes retain their batch gate.
+    const bool first_auto=cube_prefix && !matrix_first && (batch>=16 || vector_first17) &&
         flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true);
     const bool late_auto=batch>=16 &&
         flag_or_default("FLAGFFT_NPU_DIF_LATE_AUTO_BLOCK",false);
