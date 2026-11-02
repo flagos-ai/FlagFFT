@@ -84,7 +84,8 @@ def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, den
     assert (guard[:64]==31415.25).all() and (guard[-64:]==31415.25).all()
 
 
-@pytest.mark.parametrize('factors', [(8,15,3,4), (9,13,3,4), (7,15,10,4), (7,15,9,4), (17,15,13,2), (9,13,13,2)])
+@pytest.mark.parametrize('factors', [(8,15,3,4), (9,13,3,4), (7,15,10,4), (7,15,9,4),
+    (17,15,13,2), (9,13,13,2), (9,13,11,2), (9,13,12,2)])
 @pytest.mark.parametrize('direction', ['forward', 'inverse'])
 @pytest.mark.parametrize('optimized', ['0', '1'])
 def test_branch_dma_and_finish_options(tmp_path, monkeypatch, factors, direction, optimized):
