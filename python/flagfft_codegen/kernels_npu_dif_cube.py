@@ -226,6 +226,10 @@ def chirped_second(X,TW,Y):
    if z['phase']=='late' and z['name']!='fused_finish' and z['r'] in (9,10):
     body=_batch_grouped_late_stage(z,direction,4)
     source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
+ if (9 in factors and os.environ.get('FLAGFFT_NPU_DIF_FAST9','1')!='0'
+     and os.environ.get('FLAGFFT_NPU_SYMMETRIC_CODELETS','1')!='0'):
+  from .npu_radix9 import radix9_source
+  source+='\n'+radix9_source()
  if vector_first17:
   from .npu_radix17 import radix17_source
   source+='\n'+radix17_source()
