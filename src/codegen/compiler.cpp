@@ -311,9 +311,10 @@ namespace {
     // admitted batch size. Other vector prefixes retain their batch gate.
     const bool first_auto=cube_prefix && !matrix_first && (batch>=16 || vector_first17) &&
         flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true);
-    const bool late_auto=batch>=16 &&
+    const bool late_auto=(batch>=16 || (vector_first17 &&
+        flag_or_default("FLAGFFT_NPU_DIF_SMALL_LATE_AUTO",true))) &&
         flag_or_default("FLAGFFT_NPU_DIF_LATE_AUTO_BLOCK",false);
-    const bool batch_pack=cube_prefix && late_auto &&
+    const bool batch_pack=cube_prefix && batch>=16 && late_auto &&
         flag_or_default("FLAGFFT_NPU_DIF_BATCH_PACK",true) &&
         flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) &&
         flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true);
@@ -418,13 +419,14 @@ namespace {
         int64_t floor=1;while(floor*2<=group) floor*=2;
         grid=ceiling(prefix,floor);
       }
-      const bool packed_pass=batch_pack && switched && (radix==9 || radix==10) &&
+      const int64_t physical_prefix=prefix/initial_prefix*padded_prefix;
+      const bool packed13=batch_pack && switched && radix==13 && physical_prefix==256 &&
+          flag_or_default("FLAGFFT_NPU_DIF_BATCH_PACK13",true);
+      const bool packed_pass=batch_pack && switched && (radix==9 || radix==10 || packed13) &&
           !(fused_finish && stage+1==factors.size());
-      if (packed_pass) {
-        const int64_t physical_prefix=prefix/initial_prefix*padded_prefix;
-        grid=m*ceiling(physical_prefix,std::min<int64_t>(128,power(physical_prefix)));
-      }
-      append(DeviceAllocation::from_floats(weights),grid,1,false,packed_pass?4:1);
+      if (packed_pass)
+        grid=m*ceiling(physical_prefix,std::min<int64_t>(packed13?256:128,power(physical_prefix)));
+      append(DeviceAllocation::from_floats(weights),grid,1,false,packed_pass?(packed13?2:4):1);
       previous_prefix=prefix;prefix*=radix;
     }
     if (aligned && !fused_finish) {

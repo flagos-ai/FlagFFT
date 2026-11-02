@@ -79,10 +79,10 @@ def _grouped_late_stage(s,direction,c):
  return '\n'.join(lines)+'\n'
 
 
-def _batch_grouped_late_stage(s,direction,bp):
+def _batch_grouped_late_stage(s,direction,bp,columns=128):
  """Reuse twiddles across batches with a bounded 512-lane butterfly state."""
  r,m,pp,pn=s['r'],s['m'],s['physical_prefix'],s['physical_n']
- c=min(1<<(pp-1).bit_length(),128);tiles=math.ceil(pp/c)
+ c=min(1<<(pp-1).bit_length(),columns);tiles=math.ceil(pp/c)
  s['grid']=(m*tiles,);s['batch_pack']=bp
  lines=['@triton.jit',f'def {s["name"]}(X,TW,Y,NB):',
         f'    batch=(tl.program_id(1)*{bp}+tl.arange(0,{bp}))[None,:,None]',
@@ -223,8 +223,10 @@ def chirped_second(X,TW,Y):
    source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
  if batch_pack:
   for z in result:
-   if z['phase']=='late' and z['name']!='fused_finish' and z['r'] in (9,10):
-    body=_batch_grouped_late_stage(z,direction,4)
+   packed13=(z.get('r')==13 and z.get('physical_prefix')==256
+             and os.environ.get('FLAGFFT_NPU_DIF_BATCH_PACK13','1')!='0')
+   if z['phase']=='late' and z['name']!='fused_finish' and (z['r'] in (9,10) or packed13):
+    body=_batch_grouped_late_stage(z,direction,2 if packed13 else 4,256 if packed13 else 128)
     source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
  if (9 in factors and os.environ.get('FLAGFFT_NPU_DIF_FAST9','1')!='0'
      and os.environ.get('FLAGFFT_NPU_SYMMETRIC_CODELETS','1')!='0'):
