@@ -79,7 +79,46 @@ def _grouped_late_stage(s,direction,c):
  return '\n'.join(lines)+'\n'
 
 
-def build_cube_prefix_dif(factors,direction='forward',vector_first17=False):
+def _batch_grouped_late_stage(s,direction,bp):
+ """Reuse twiddles across batches with a bounded 512-lane butterfly state."""
+ r,m,pp,pn=s['r'],s['m'],s['physical_prefix'],s['physical_n']
+ c=min(1<<(pp-1).bit_length(),128);tiles=math.ceil(pp/c)
+ s['grid']=(m*tiles,);s['batch_pack']=bp
+ lines=['@triton.jit',f'def {s["name"]}(X,TW,Y,NB):',
+        f'    batch=(tl.program_id(1)*{bp}+tl.arange(0,{bp}))[None,:,None]',
+        f'    j=tl.program_id(0)//{tiles}',
+        f'    pf=(tl.program_id(0)%{tiles}*{c}+tl.arange(0,{c}))[None,None,:]',
+        f'    good=(pf<{pp})&(batch<NB)']
+ groups=[];start=0
+ while start<r:
+  g=1<<((r-start).bit_length()-1);groups.append((start,g));points=g*bp*c
+  lines += [f'    d=(tl.arange(0,{g})+{start})[:,None,None]',
+            f'    off=(d*{m}+j)*{pp}+pf',
+            f'    xr=tl.load(X+batch*{2*pn}+off,good,0.)',
+            f'    xi=tl.load(X+batch*{2*pn}+{pn}+off,good,0.)',
+            f'    wr=tl.load(TW+off,pf<{pp},0.)',
+            f'    wi=tl.load(TW+{pn}+off,pf<{pp},0.)',
+            '    re,im=xr*wr-xi*wi,xr*wi+xi*wr',
+            f'    re=tl.reshape(re,({points},))',f'    im=tl.reshape(im,({points},))']
+  for d in range(g):
+   lines += [f'    r{start+d}=al.extract_slice(re,[{d*bp*c}],[{bp*c}],[1])',
+             f'    i{start+d}=al.extract_slice(im,[{d*bp*c}],[{bp*c}],[1])']
+  start+=g
+ lines += _emit_natural_order_codelet_call('    ',r,direction)
+ for start,g in groups:
+  points=g*bp*c
+  lines += [f'    re=tl.zeros(({points},),tl.float32)',f'    im=tl.zeros(({points},),tl.float32)']
+  for d in range(g):
+   lines += [f'    re=al.insert_slice(re,r{start+d},[{d*bp*c}],[{bp*c}],[1])',
+             f'    im=al.insert_slice(im,i{start+d},[{d*bp*c}],[{bp*c}],[1])']
+  lines += [f'    d=(tl.arange(0,{g})+{start})[:,None,None]',
+            f'    out=j*{r*pp}+d*{pp}+pf',
+            f'    tl.store(Y+batch*{2*pn}+out,tl.reshape(re,({g},{bp},{c})),good)',
+            f'    tl.store(Y+batch*{2*pn}+{pn}+out,tl.reshape(im,({g},{bp},{c})),good)']
+ return '\n'.join(lines)+'\n'
+
+
+def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False):
  if len(factors)<4 or not (2<=factors[0]<=19 and 11<=factors[1]<=15 and factors[0]*factors[1]>=64):
   raise ValueError('Chirped DIF prefix needs two early stages and a large second radix')
  source,specs=build_aligned_vector_dif(factors,direction)
@@ -182,6 +221,11 @@ def chirped_second(X,TW,Y):
    columns=min(512,1<<(physical-1).bit_length())
    body=_grouped_late_stage(z,direction,columns) if grouped else _coalesced_late_stage(z,direction)
    source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
+ if batch_pack:
+  for z in result:
+   if z['phase']=='late' and z['name']!='fused_finish' and z['r'] in (9,10):
+    body=_batch_grouped_late_stage(z,direction,4)
+    source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
  if vector_first17:
   from .npu_radix17 import radix17_source
   source+='\n'+radix17_source()

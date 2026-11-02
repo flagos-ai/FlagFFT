@@ -1278,6 +1278,7 @@ struct CompiledRawVectorDIFNode final : CompiledRawNode {
     DeviceAllocation weights;
     int64_t grid_x, grid_y;
     bool transpose;
+    int64_t batch_pack=1;
   };
   CompiledRawVectorDIFNode(int64_t length, int64_t max_batch,
       std::vector<Pass> passes, DeviceAllocation first, DeviceAllocation second, int64_t workspace_length = 0);
@@ -1294,7 +1295,8 @@ struct CompiledRawMatrixFourStepNode final : CompiledRawNode {
       std::vector<std::shared_ptr<JitKernel>> kernels,
       std::vector<DeviceAllocation> tables, std::vector<DeviceAllocation> scratch, bool wide=false,
       std::vector<std::shared_ptr<JitKernel>> real_kernels={},
-      std::shared_ptr<JitKernel> real_inverse_kernel=nullptr);
+      std::shared_ptr<JitKernel> real_inverse_kernel=nullptr,
+      std::shared_ptr<JitKernel> fused_pack_kernel=nullptr);
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
       const RawExecutionContext &context) const override;
   flagfftResult execute_real_forward(adaptor::DevicePtr input, adaptor::DevicePtr output,
@@ -1309,7 +1311,7 @@ struct CompiledRawMatrixFourStepNode final : CompiledRawNode {
   int64_t n1, n2, max_batch;
   bool wide;
   std::vector<std::shared_ptr<JitKernel>> kernels, real_kernels;
-  std::shared_ptr<JitKernel> real_inverse_kernel;
+  std::shared_ptr<JitKernel> real_inverse_kernel, fused_pack_kernel;
   std::vector<DeviceAllocation> tables, scratch;
 };
 

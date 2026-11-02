@@ -3603,10 +3603,11 @@ flagfftResult CompiledRawVectorDIFNode::execute(adaptor::DevicePtr input,
       const auto &pass=passes[i];
       auto next=i+1==passes.size()?output+start*bytes:
           (i%2==0?first.get():second.get())+start*scratch_bytes;
-      pass.kernel->launch(context.stream,
-          {JitKernelArg::device(current),JitKernelArg::device(pass.weights.get()),
-           JitKernelArg::device(next)},pass.grid_x,
-          pass.transpose?pass.grid_y:count,pass.transpose?count:1);
+      std::vector<JitKernelArg> args={JitKernelArg::device(current),
+          JitKernelArg::device(pass.weights.get()),JitKernelArg::device(next)};
+      if (pass.batch_pack>1) args.push_back(JitKernelArg::i32(static_cast<int32_t>(count)));
+      pass.kernel->launch(context.stream,args,pass.grid_x,
+          pass.transpose?pass.grid_y:ceil_div(count,pass.batch_pack),pass.transpose?count:1);
       current=next;
     }
   }
@@ -3617,15 +3618,18 @@ CompiledRawMatrixFourStepNode::CompiledRawMatrixFourStepNode(int64_t n1, int64_t
     int64_t max_batch, std::vector<std::shared_ptr<JitKernel>> kernels,
     std::vector<DeviceAllocation> tables, std::vector<DeviceAllocation> scratch, bool wide,
     std::vector<std::shared_ptr<JitKernel>> real_kernels,
-    std::shared_ptr<JitKernel> real_inverse_kernel)
+    std::shared_ptr<JitKernel> real_inverse_kernel,
+    std::shared_ptr<JitKernel> fused_pack_kernel)
     : n1(n1), n2(n2), max_batch(max_batch), wide(wide), kernels(std::move(kernels)),
       real_kernels(std::move(real_kernels)), real_inverse_kernel(std::move(real_inverse_kernel)),
+      fused_pack_kernel(std::move(fused_pack_kernel)),
       tables(std::move(tables)), scratch(std::move(scratch)) {}
 
 std::string CompiledRawMatrixFourStepNode::describe() const {
   return "CompiledRawMatrixFourStep(n1="+std::to_string(n1)+", n2="+std::to_string(n2)+
       ", triton_fp32_ieee=1, wide="+std::to_string(wide)+
       ", real_forward_capable="+std::to_string(supports_real_forward())+
+      ", fused_axis_pack="+std::to_string(fused_pack_kernel!=nullptr)+
       ", real_inverse_capable="+std::to_string(supports_real_inverse())+")";
 }
 
@@ -3671,11 +3675,21 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
     for(int stage=0;stage<2;++stage) {
       const int64_t length=stage==0?n1:n2, width=stage==0?n2:n1;
       auto packed=scratch[stage].get()+start*packed_bytes[stage];
-      const auto &pack_kernel=real_forward && stage==0?real_kernels[0]:kernels[2*stage];
-      pack_kernel->launch(context.stream,
-          {JitKernelArg::device(stage==0?input+start*input_bytes:mid),
-           JitKernelArg::device(packed),JitKernelArg::device(tables[2].get())},
-          ceil_div(pads[stage],tile),ceil_div(width,tile),count);
+      if (!(fused_pack_kernel && !real_forward && stage==1)) {
+        const auto &pack_kernel=real_forward && stage==0?real_kernels[0]:kernels[2*stage];
+        pack_kernel->launch(context.stream,
+            {JitKernelArg::device(stage==0?input+start*input_bytes:mid),
+             JitKernelArg::device(packed),JitKernelArg::device(tables[2].get())},
+            ceil_div(pads[stage],tile),ceil_div(width,tile),count);
+      }
+      if (fused_pack_kernel && !real_forward && stage==0) {
+        fused_pack_kernel->launch(context.stream,
+            {JitKernelArg::device(packed),JitKernelArg::device(tables[0].get()),
+             JitKernelArg::device(tables[2].get()),
+             JitKernelArg::device(scratch[1].get()+start*packed_bytes[1])},
+            ceil_div(pads[1],128),ceil_div(2*n1,128),count);
+        continue;
+      }
       std::vector<JitKernelArg> cube_args={JitKernelArg::device(packed),
           JitKernelArg::device(tables[stage].get()),JitKernelArg::device(stage==0?mid:last)};
       if (wide) cube_args.push_back(JitKernelArg::i32(static_cast<int32_t>(count)));

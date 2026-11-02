@@ -262,23 +262,28 @@ namespace {
         flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true);
     const bool late_auto=batch>=16 &&
         flag_or_default("FLAGFFT_NPU_DIF_LATE_AUTO_BLOCK",false);
+    const bool batch_pack=cube_prefix && late_auto &&
+        flag_or_default("FLAGFFT_NPU_DIF_BATCH_PACK",true) &&
+        flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) &&
+        flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
     bool switched=false;
     const double sign=request.direction=="inverse"?1.0:-1.0;
-    auto append=[&](DeviceAllocation weights,int64_t x,int64_t y,bool transpose) {
+    auto append=[&](DeviceAllocation weights,int64_t x,int64_t y,bool transpose,int64_t packed=1) {
       auto key=KernelKey::four_step_row(triton_target_for_request(request),
           request.direction,request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form=std::string(cube_prefix ? "npu_vector_dif_aligned_cube_" :
           aligned ? "npu_vector_dif_aligned_" : "npu_vector_dif_")+std::to_string(passes.size());
       if (vector_first17) key.perm_form+="_vector17";
+      if (batch_pack) key.perm_form+="_batchpack";
       if ((matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
           (late_auto && switched && !transpose))
         key.perm_form+="_auto";
-      passes.push_back({TritonCompiler{}.compile_kernel(key),std::move(weights),x,y,transpose});
+      passes.push_back({TritonCompiler{}.compile_kernel(key),std::move(weights),x,y,transpose,packed});
     };
     auto cube_weights=[&](int64_t radix,int64_t previous,bool compact) {
       const int64_t pr=std::max<int64_t>(16,power(radix));
@@ -360,7 +365,13 @@ namespace {
         int64_t floor=1;while(floor*2<=group) floor*=2;
         grid=ceiling(prefix,floor);
       }
-      append(DeviceAllocation::from_floats(weights),grid,1,false);
+      const bool packed_pass=batch_pack && switched && (radix==9 || radix==10) &&
+          !(fused_finish && stage+1==factors.size());
+      if (packed_pass) {
+        const int64_t physical_prefix=prefix/initial_prefix*padded_prefix;
+        grid=m*ceiling(physical_prefix,std::min<int64_t>(128,power(physical_prefix)));
+      }
+      append(DeviceAllocation::from_floats(weights),grid,1,false,packed_pass?4:1);
       previous_prefix=prefix;prefix*=radix;
     }
     if (aligned && !fused_finish) {
@@ -3007,6 +3018,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         key.perm_form=std::string("npu_matrix_fourstep_")+phase+(wide?"_wide":"");
         kernels.push_back(compile_kernel(key));
       }
+      std::shared_ptr<JitKernel> fused_pack_kernel;
+      if (wide && n1>=128 && n2>=128 &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_FUSED_PACK",true)) {
+        key.perm_form="npu_matrix_fourstep_cube0_pack1_wide";
+        fused_pack_kernel=compile_kernel(key);
+      }
       std::vector<std::shared_ptr<JitKernel>> real_kernels;
       if (request.direction=="forward" && flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FOURSTEP",false)) {
         for (const char *phase:{"pack0_real","cube0_real","cube1_half","transpose_half"}) {
@@ -3041,7 +3059,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*n1*n2*2*sizeof(float))));
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
           std::move(kernels),std::move(tables),std::move(scratch),wide,
-          std::move(real_kernels),std::move(real_inverse_kernel));
+          std::move(real_kernels),std::move(real_inverse_kernel),std::move(fused_pack_kernel));
     }
     if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;

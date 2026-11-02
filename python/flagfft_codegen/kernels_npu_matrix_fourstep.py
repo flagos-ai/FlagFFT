@@ -163,21 +163,50 @@ def transpose_half(X,Y,D):
     offset=rr*{2*a}+ww
     tl.store(Y+batch*D*2+offset,value,(rr<{b})&(ww<{2*a})&(offset<{2*half}))
 '''
+    if wide and a>=128 and b>=128:
+        p=1<<(a-1).bit_length();bp=1<<(b-1).bit_length();bm,bn=128,128
+        body+=f'''
+@triton.jit
+def cube0_pack1(P,W,T,Y):
+    batch=tl.program_id(2).to(tl.int64)
+    row=tl.program_id(0)*{bm}+tl.arange(0,{bm})
+    k=tl.arange(0,{2*p})
+    word=tl.program_id(1)*{bn}+tl.arange(0,{bn})
+    x=tl.load(P+batch*{b*2*p}+row[:,None]*{2*p}+k[None,:],row[:,None]<{b},0.)
+    w=tl.load(W+k[:,None]*{2*p}+word[None,:],word[None,:]<{2*p},0.)
+    y=tl.dot(x,w,input_precision="ieee")
+    vr,vi=tl.split(tl.reshape(y,({bm*bn//2},2)))
+    vr=tl.reshape(vr,({bm},{bn//2}))
+    vi=tl.reshape(vi,({bm},{bn//2}))
+    freq=tl.program_id(1)*{bn//2}+tl.arange(0,{bn//2})
+    off=row[:,None]*{a}+freq[None,:]
+    good=(row[:,None]<{b})&(freq[None,:]<{a})
+    tr=tl.load(T+off,good,0.)
+    ti=tl.load(T+{a*b}+off,good,0.)
+    re,im=vr*tr-vi*ti,vr*ti+vi*tr
+    dst=batch*{a*2*bp}+freq[:,None]*{2*bp}+row[None,:]
+    valid=(freq[:,None]<{a})&(row[None,:]<{bp})
+    tl.store(Y+dst,tl.trans(re),valid)
+    tl.store(Y+{bp}+dst,tl.trans(im),valid)
+'''
     return _module_source(body)
 
 
 
 def emit_matrix_fourstep(a,b,phase,direction,out_dir,wide=False):
-    names=('pack0','cube0','pack1','cube1','transpose','pack0_real','cube0_real','cube1_half','transpose_half','transpose_real')
+    names=('pack0','cube0','pack1','cube1','transpose','pack0_real','cube0_real','cube1_half','transpose_half','transpose_real','cube0_pack1')
     if phase not in names or direction not in ('forward','inverse'):
         raise ValueError('Invalid matrix four-step phase or direction')
+    if phase=='cube0_pack1' and not (wide and a>=128 and b>=128):
+        raise ValueError('Fused matrix packing requires wide axes of at least 128')
     path=Path(out_dir)/(f'npu_matrix_fourstep_{a}_{b}_{phase}_{direction}'+('_wide' if wide else '')+'.py')
     path.parent.mkdir(parents=True,exist_ok=True)
     write_text_atomic(path,build_matrix_fourstep(a,b,wide=wide))
     args=['X','Y','D'] if phase in ('transpose_half','transpose_real') else ['X','Y'] if phase=='transpose' else ['X','P','T'] if phase.startswith('pack') else ['P','W','Y']
+    if phase=='cube0_pack1': args=['P','W','T','Y']
     signature=','.join(['*fp32:16']*len(args))
     if phase in ('transpose_half','transpose_real'): signature='*fp32:16,*fp32:16,i64'
-    if wide and phase.startswith('cube'):
+    if wide and phase.startswith('cube') and phase!='cube0_pack1':
         args.append('NB');signature+=',i32'
     meta=dict(module_path=str(path),kernel_name=phase,arg_names=args,
         signature=signature,num_warps=4,num_stages=1,

@@ -7,7 +7,7 @@ torch = pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
 
-@pytest.mark.parametrize('n,batch', [(323, 1), (2352, 3), (46189, 1), (46189, 3)])
+@pytest.mark.parametrize('n,batch', [(323, 1), (2352, 3), (46189, 1), (46189, 3), (46189, 17)])
 @pytest.mark.parametrize('extra', [0, 8])
 @pytest.mark.parametrize('in_place', [False, True])
 def test_fourstep_real_inverse_live(n, batch, extra, in_place):

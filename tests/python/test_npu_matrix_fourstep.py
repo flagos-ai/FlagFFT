@@ -11,7 +11,7 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('batch',[1,3])
 @pytest.mark.parametrize('wide',[False,True])
 @pytest.mark.parametrize('mode',['forward','inverse','r2c','c2r'])
-def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide):
+def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide,fused=False):
     real_forward=mode=="r2c"
     real_inverse=mode=="c2r"
     direction="forward" if real_forward else "inverse" if real_inverse else mode
@@ -39,13 +39,24 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide):
     bm,bn=(64,128) if wide else (32,64)
     for stage,(length,width) in enumerate(((a,b),(b,a))):
         p=1<<(length-1).bit_length()
-        for bz in range(batch):
-            pid[2]=bz
-            for r in range((p+tile-1)//tile):
-                pid[0]=r
-                for col in range((width+tile-1)//tile):
-                    pid[1]=col
-                    ns['pack0_real' if real_forward and stage==0 else f'pack{stage}'](Pointer(x if stage==0 else mid),Pointer(packed[stage]),Pointer(tw))
+        if not (fused and not real_forward and stage==1):
+            for bz in range(batch):
+                pid[2]=bz
+                for r in range((p+tile-1)//tile):
+                    pid[0]=r
+                    for col in range((width+tile-1)//tile):
+                        pid[1]=col
+                        ns['pack0_real' if real_forward and stage==0 else f'pack{stage}'](Pointer(x if stage==0 else mid),Pointer(packed[stage]),Pointer(tw))
+        if fused and not real_forward and stage==0:
+            bp=1<<(b-1).bit_length()
+            for bz in range(batch):
+                pid[2]=bz
+                for r in range((bp+127)//128):
+                    pid[0]=r
+                    for col in range((2*a+127)//128):
+                        pid[1]=col
+                        ns['cube0_pack1'](Pointer(packed[0]),Pointer(weights[0]),Pointer(tw),Pointer(packed[1]))
+            continue
         for bz in range(1 if wide else batch):
             pid[2]=bz
             for r in range(((batch if wide else 1)*width+bm-1)//bm):
@@ -93,3 +104,16 @@ def test_emitted_fourstep_launcher_metadata(tmp_path,wide):
             assert meta['signature']=='*fp32:16,*fp32:16,i64'
         if phase.startswith('cube') and wide:
             assert meta['arg_names'][-1]=='NB' and meta['signature'].endswith(',i32')
+
+
+@pytest.mark.parametrize('a,b', [(129,170),(209,221),(221,209)])
+@pytest.mark.parametrize('mode', ['forward','inverse','c2r'])
+def test_fused_matrix_axis_pack(tmp_path,a,b,mode):
+    test_full_matrix_fourstep(tmp_path,a,b,3,mode,True,True)
+
+
+def test_fused_matrix_axis_metadata(tmp_path):
+    from flagfft_codegen.kernels_npu_matrix_fourstep import emit_matrix_fourstep
+    meta=emit_matrix_fourstep(209,221,'cube0_pack1','forward',tmp_path,wide=True)
+    assert meta['arg_names']==['P','W','T','Y']
+    assert meta['signature']=='*fp32:16,*fp32:16,*fp32:16,*fp32:16'

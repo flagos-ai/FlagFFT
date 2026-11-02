@@ -759,6 +759,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     std::string phase=key.perm_form.substr(flat?27:cube?28:aligned?23:15);
     if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
       phase.resize(phase.size()-5);
+    if (phase.size()>=10 && phase.compare(phase.size()-10,10,"_batchpack")==0) {
+      phase.resize(phase.size()-10);
+      jit_command << " --npu-vector-dif-batch-pack";
+    }
     if (phase.size()>=9 && phase.compare(phase.size()-9,9,"_vector17")==0) {
       phase.resize(phase.size()-9);
       jit_command << " --npu-vector-dif-vector-first17";
