@@ -306,6 +306,10 @@ namespace {
         flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) &&
         flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true) &&
         flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true);
+    const bool vector_second15=cube_prefix && batch>=16 && factors[1]==15 &&
+        n/(factors[0]*factors[1])>=512 &&
+        flag_or_default("FLAGFFT_NPU_DIF_VECTOR_SECOND15",true) &&
+        flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true);
     const bool matrix_first=cube_prefix && factors[0]>=13 && !vector_first17;
     // The bounded vector-17 state uses automatic blockification at every
     // admitted batch size. Other vector prefixes retain their batch gate.
@@ -330,6 +334,7 @@ namespace {
           request.direction,request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form=std::string(cube_prefix ? "npu_vector_dif_aligned_cube_" :
           aligned ? "npu_vector_dif_aligned_" : "npu_vector_dif_")+std::to_string(passes.size());
+      if (vector_second15) key.perm_form+="_vector15";
       if (vector_first17) key.perm_form+="_vector17";
       if (batch_pack) key.perm_form+="_batchpack";
       if ((matrix_first && passes.size()<3) ||
@@ -401,7 +406,7 @@ namespace {
       } else weights.push_back(0.0f);
       int64_t grid=0;
       if (cube_prefix && stage<2) {
-        grid=prefix*ceiling(m,stage?std::min<int64_t>(1024,std::max<int64_t>(32,power(m))):512);
+        grid=prefix*ceiling(m,stage?std::min<int64_t>(vector_second15?512:1024,std::max<int64_t>(32,power(m))):512);
       } else if (switched) {
         const int64_t width=radix==2?2048:radix<=8?1024:512;
         const int64_t physical_prefix=aligned ? prefix/initial_prefix*padded_prefix : prefix;

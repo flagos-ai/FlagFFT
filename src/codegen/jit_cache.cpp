@@ -254,6 +254,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";npu-dif-radix9-v1=" + std::string(fast9!=nullptr?fast9:"1");
       const char *pack13=std::getenv("FLAGFFT_NPU_DIF_BATCH_PACK13");
       cache_key += ";npu-dif-batch13-v1=" + std::string(pack13!=nullptr?pack13:"1");
+      const char *coprime=std::getenv("FLAGFFT_NPU_DIF_COPRIME");
+      cache_key += ";npu-dif-coprime-v1=" + std::string(coprime!=nullptr?coprime:"1");
       if (key.perm_form.find("_vector17")!=std::string::npos)
         cache_key += ";npu-dif-vector17-codelet-v1";
       const char *group_branches=std::getenv("FLAGFFT_NPU_DIF_GROUP_BRANCHES");
@@ -770,6 +772,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (phase.size()>=9 && phase.compare(phase.size()-9,9,"_vector17")==0) {
       phase.resize(phase.size()-9);
       jit_command << " --npu-vector-dif-vector-first17";
+    }
+    if (phase.size()>=9 && phase.compare(phase.size()-9,9,"_vector15")==0) {
+      phase.resize(phase.size()-9);
+      jit_command << " --npu-vector-dif-vector-second15";
     }
     jit_command << " --npu-vector-dif-phase " << shell_quote(phase);
     if (aligned) jit_command << " --npu-vector-dif-aligned";

@@ -118,7 +118,7 @@ def _batch_grouped_late_stage(s,direction,bp,columns=128):
  return '\n'.join(lines)+'\n'
 
 
-def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False):
+def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False):
  if len(factors)<4 or not (2<=factors[0]<=19 and 11<=factors[1]<=15 and factors[0]*factors[1]>=64):
   raise ValueError('Chirped DIF prefix needs two early stages and a large second radix')
  source,specs=build_aligned_vector_dif(factors,direction)
@@ -191,6 +191,11 @@ def chirped_second(X,TW,Y):
     tl.store(Y+b*{2*n}+dst,y,(outrow<{2*rr})&(q<{mm}))
 '''
  chirp=dict(second,name='chirped_second',grid=(prev*tt,),auto=True,chirped_cube=True,pr=pp)
+ if vector_second15:
+  if rr!=15:raise ValueError('The vector second axis requires radix 15')
+  from .npu_vector_second import vector_second_source
+  body=vector_second_source(chirp,prev,n,direction,min(512,1<<(mm-1).bit_length()))
+  source=re.sub(r'@triton.jit\ndef chirped_second\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
  result=[prep,cube,chirp]+specs[2:]
  if not matrix_first:
   for name in ('planar_prepare','cube_first'):
@@ -232,6 +237,11 @@ def chirped_second(X,TW,Y):
      and os.environ.get('FLAGFFT_NPU_SYMMETRIC_CODELETS','1')!='0'):
   from .npu_radix9 import radix9_source
   source+='\n'+radix9_source()
+ if (os.environ.get('FLAGFFT_NPU_DIF_COPRIME','1')!='0'
+     and os.environ.get('FLAGFFT_NPU_SYMMETRIC_CODELETS','1')!='0'):
+  from .npu_coprime import coprime_source
+  if batch_pack and 10 in factors:source+='\n'+coprime_source(2,5)
+  if vector_second15:source+='\n'+coprime_source(3,5)
  if vector_first17:
   from .npu_radix17 import radix17_source
   source+='\n'+radix17_source()
