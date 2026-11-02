@@ -301,8 +301,13 @@ namespace {
         if (tile!=32 && tile!=64) throw std::runtime_error("DIF transpose tile must be 32 or 64");
         const bool dense_transpose=aligned && padded_prefix<=256 &&
             flag_or_default("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE",true);
+        const char *points_setting=std::getenv("FLAGFFT_NPU_DIF_TRANSPOSE_POINTS");
+        const int64_t transpose_points=points_setting ? std::stoll(points_setting) :
+            (workspace_length>=262144 ? 8192 : 4096);
+        if (transpose_points!=4096 && transpose_points!=8192)
+          throw std::runtime_error("DIF transpose points must be 4096 or 8192");
         const int64_t tile_rows=dense_transpose?padded_prefix:tile;
-        const int64_t tile_columns=dense_transpose?4096/tile_rows:tile;
+        const int64_t tile_columns=dense_transpose?transpose_points/tile_rows:tile;
         append(DeviceAllocation(sizeof(float)),ceiling(aligned?padded_prefix:prefix,tile_rows),
                ceiling(n/prefix,tile_columns),true);
         switched=true;

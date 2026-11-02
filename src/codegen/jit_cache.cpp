@@ -260,8 +260,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";npu-flat-power-dif-v1";
     if (key.perm_form.rfind("npu_vector_dif_aligned_",0)==0) {
       const char *dense_transpose=std::getenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE");
-      cache_key += ";npu-dif-dense-transpose-v1=" +
+      cache_key += ";npu-dif-dense-transpose-v2=" +
                    std::string(dense_transpose!=nullptr?dense_transpose:"1");
+      const char *transpose_points=std::getenv("FLAGFFT_NPU_DIF_TRANSPOSE_POINTS");
+      cache_key += ";npu-dif-transpose-points=" +
+                   std::string(transpose_points!=nullptr?transpose_points:"auto");
       const char *single_gather=std::getenv("FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH");
       cache_key += ";npu-dif-single-gather-finish-v1=" +
                    std::string(single_gather!=nullptr?single_gather:"1");

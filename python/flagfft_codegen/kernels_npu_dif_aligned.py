@@ -69,11 +69,15 @@ def build_aligned_vector_dif(factors,direction='forward'):
   match=re.search(r'@triton.jit\ndef '+s['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',source);chunks.append(match.group(0));specs.append(dict(s,physical_n=physical_n))
  tile=int(os.environ.get("FLAGFFT_NPU_DIF_TRANSPOSE_TILE","32"))
  if tile not in (32,64):raise ValueError("DIF transpose tile must be 32 or 64")
- # A complete padded output row is a contiguous GM transfer. Keep the
- # same 4096-element tile budget while avoiding short, strided stores.
+ # A complete padded output row is a contiguous GM transfer. Large
+ # workspaces retain enough independent tiles to widen the input DMA.
  dense=os.environ.get("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE","1")!="0" and padded<=256
+ transpose_points=int(os.environ.get('FLAGFFT_NPU_DIF_TRANSPOSE_POINTS',
+     '8192' if physical_n>=262144 else '4096'))
+ if transpose_points not in (4096,8192):
+  raise ValueError('DIF transpose points must be 4096 or 8192')
  tile_rows=padded if dense else tile
- tile_cols=4096//tile_rows if dense else tile
+ tile_cols=transpose_points//tile_rows if dense else tile
  chunks.append(f'''@triton.jit
 def switch_axes(X,TW,Y):
     batch=tl.program_id(2).to(tl.int64)
