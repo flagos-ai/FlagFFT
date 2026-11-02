@@ -247,9 +247,15 @@ namespace {
     const bool fused_finish=aligned && flag_or_default("FLAGFFT_NPU_DIF_FUSED_FINISH",false);
     const bool cube_prefix=aligned && cube_has_work(factors) &&
         flag_or_default("FLAGFFT_NPU_DIF_CUBE_PREFIX",false);
-    // Small first radices already have inexpensive vector codelets. Keep
-    // their interleaved input load, and feed its planar result to stage one.
-    const bool matrix_first=cube_prefix && factors[0]>=13;
+    // A bounded radix-17 vector butterfly can also deinterleave the input.
+    // Keep small batches on Cube; the vector schedule needs enough work to
+    // amortize its larger live state and automatic blockification.
+    const bool vector_first17=cube_prefix && factors[0]==17 && batch>=16 &&
+        flag_or_default("FLAGFFT_NPU_DIF_VECTOR_FIRST17",true) &&
+        flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) &&
+        flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true) &&
+        flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true);
+    const bool matrix_first=cube_prefix && factors[0]>=13 && !vector_first17;
     // The interleaved vector prefix benefits from automatic blockification
     // when many independent batches amortize the extra scheduling work.
     const bool first_auto=cube_prefix && !matrix_first && batch>=16 &&
@@ -266,6 +272,7 @@ namespace {
           request.direction,request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form=std::string(cube_prefix ? "npu_vector_dif_aligned_cube_" :
           aligned ? "npu_vector_dif_aligned_" : "npu_vector_dif_")+std::to_string(passes.size());
+      if (vector_first17) key.perm_form+="_vector17";
       if ((matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||

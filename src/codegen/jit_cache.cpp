@@ -250,6 +250,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "npu") {
     if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0) {
       cache_key += ";npu-dif-cube-prefix-v6";
+      if (key.perm_form.find("_vector17")!=std::string::npos)
+        cache_key += ";npu-dif-vector17-codelet-v1";
       const char *group_branches=std::getenv("FLAGFFT_NPU_DIF_GROUP_BRANCHES");
       cache_key += ";npu-dif-group-branches-v2=" +
                    std::string(group_branches!=nullptr?group_branches:"1");
@@ -757,6 +759,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     std::string phase=key.perm_form.substr(flat?27:cube?28:aligned?23:15);
     if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
       phase.resize(phase.size()-5);
+    if (phase.size()>=9 && phase.compare(phase.size()-9,9,"_vector17")==0) {
+      phase.resize(phase.size()-9);
+      jit_command << " --npu-vector-dif-vector-first17";
+    }
     jit_command << " --npu-vector-dif-phase " << shell_quote(phase);
     if (aligned) jit_command << " --npu-vector-dif-aligned";
     if (cube) jit_command << " --npu-vector-dif-cube-prefix";

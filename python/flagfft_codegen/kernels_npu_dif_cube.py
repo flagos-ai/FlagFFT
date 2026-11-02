@@ -79,14 +79,16 @@ def _grouped_late_stage(s,direction,c):
  return '\n'.join(lines)+'\n'
 
 
-def build_cube_prefix_dif(factors,direction='forward'):
+def build_cube_prefix_dif(factors,direction='forward',vector_first17=False):
  if len(factors)<4 or not (2<=factors[0]<=19 and 11<=factors[1]<=15 and factors[0]*factors[1]>=64):
   raise ValueError('Chirped DIF prefix needs two early stages and a large second radix')
  source,specs=build_aligned_vector_dif(factors,direction)
  source+='\nimport triton.language.extra.cann.extension as al\n'
  n=math.prod(factors);r=factors[0];m=n//r;pr=max(16,1<<(r-1).bit_length());c=512;pn=specs[0]['physical_n'];tiles=(m+c-1)//c
  s0=specs[0];assert s0['stage']==0
- matrix_first=factors[0]>=13
+ if vector_first17 and factors[0]!=17:
+  raise ValueError('The vector-17 prefix requires first radix 17')
+ matrix_first=factors[0]>=13 and not vector_first17
  group_branches=os.environ.get('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')!='0'
  original_first=re.search(r'@triton.jit\ndef '+s0['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',source).group(0)
  source=re.sub(r'@triton.jit\ndef '+s0['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)','',source)
@@ -155,7 +157,7 @@ def chirped_second(X,TW,Y):
   for name in ('planar_prepare','cube_first'):
    source=re.sub(r'@triton.jit\ndef '+name+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)','',source)
   source+='\n'+original_first
-  result=[dict(s0,auto=False)]+result[2:]
+  result=[dict(s0,auto=vector_first17)]+result[2:]
   if group_branches and factors[0] in _NATURAL_ORDER_CODELET_RADICES:
    first=result[0]
    body=_grouped_first_stage(first,n,direction)
@@ -180,4 +182,7 @@ def chirped_second(X,TW,Y):
    columns=min(512,1<<(physical-1).bit_length())
    body=_grouped_late_stage(z,direction,columns) if grouped else _coalesced_late_stage(z,direction)
    source=re.sub(r'@triton.jit\ndef '+z['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
+ if vector_first17:
+  from .npu_radix17 import radix17_source
+  source+='\n'+radix17_source()
  return source,result

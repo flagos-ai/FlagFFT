@@ -47,12 +47,12 @@ def _tables(factors, specs, sign):
 @pytest.mark.parametrize('factors', [(17,13,3,4), (19,13,3,4), (17,15,7,2), (17,13,15,2), (7,15,3,4), (8,15,3,4), (7,15,10,4), (7,15,4,3), (17,13,4,5), (17,13,2,15), (7,15,3,9,4), (17,13,3,10,2), (17,15,13,2), (17,15,13,7,2), (19,15,3,2)])
 @pytest.mark.parametrize('direction', ['forward', 'inverse'])
 @pytest.mark.parametrize('dense_transpose,transpose_points', [('0','4096'), ('1','4096'), ('1','8192')])
-def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose, transpose_points):
+def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose, transpose_points, vector_first17=False):
     monkeypatch.setenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE", dense_transpose)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_POINTS', transpose_points)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH', '1')
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_TILE', '64')
-    source, specs = build_cube_prefix_dif(factors, direction)
+    source, specs = build_cube_prefix_dif(factors, direction, vector_first17=vector_first17)
     path = tmp_path/'cube.py'
     path.write_text(source)
     ns, pid = execute_module(path)
@@ -93,3 +93,10 @@ def test_branch_dma_and_finish_options(tmp_path, monkeypatch, factors, direction
     monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES', optimized)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH', optimized)
     test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, '1', '8192')
+
+
+@pytest.mark.parametrize('factors', [(17,15,13,2), (17,13,3,4), (17,15,7,2)])
+@pytest.mark.parametrize('direction', ['forward', 'inverse'])
+def test_vector17_prefix_complete_fft(tmp_path, monkeypatch, factors, direction):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES', '1')
+    test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, '1', '8192', True)
