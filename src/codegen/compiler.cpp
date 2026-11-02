@@ -3071,7 +3071,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         kernels.push_back(compile_kernel(key));
       }
       std::shared_ptr<JitKernel> fused_pack_kernel;
-      if (wide && n1>=128 && n2>=128 &&
+      // The fused 128-row tiles need a large batch to amortise padding and
+      // fill the Cube cores. A separately enabled wide single plan retains
+      // its existing schedule.
+      if (wide && batch>=16 && n1>=128 && n2>=128 &&
           flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
           flag_or_default("FLAGFFT_NPU_MATRIX_FUSED_PACK",true)) {
         key.perm_form="npu_matrix_fourstep_cube0_pack1_wide";
