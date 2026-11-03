@@ -5,7 +5,16 @@ torch=pytest.importorskip('torch')
 from flagfft_codegen.kernels_npu_power_dif import build
 from test_npu_structured_fft import Pointer,execute_module,roots
 
-@pytest.mark.parametrize('factors',[(16,8,8),(16,16,16),(32,16,16),(16,32,16),(32,32,16,16),(32,32,32,16)])
+
+def test_three_axis_emitter(tmp_path):
+ from flagfft_codegen.kernels_npu_dif import emit_vector_dif
+ for phase in range(3):
+  metadata=emit_vector_dif((64,64,128),'forward',phase,tmp_path,flat_power2=True)
+  assert metadata['kernel_name']==f'axis_{phase}'
+ with pytest.raises(ValueError,match='Unsupported DIF factors'):
+  emit_vector_dif((64,64,128),'forward',0,tmp_path)
+
+@pytest.mark.parametrize('factors',[(16,8,8),(16,16,16),(32,16,16),(16,32,16),(32,32,16,16),(32,32,32,16),(64,64,64),(64,64,128)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
 def test_power_dif_complete(tmp_path,factors,direction):
  source,specs=build(factors,direction);path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)

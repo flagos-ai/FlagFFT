@@ -202,16 +202,24 @@ namespace {
   std::shared_ptr<CompiledRawNode> make_npu_flat_power_dif_child(
       const FFTRequest &request, int64_t n, int64_t batch) {
     // Long two-axis plans otherwise require narrow DMA rows to keep their
-    // complete axis in UB. Split the exponent into balanced radix <=32 axes
-    // and reuse a fixed 4096-element structured FFT working set per program.
+    // complete axis in UB. Reuse a fixed 4096-element structured FFT working
+    // set per program and select bounded axes for latency or DMA throughput.
     if (request.device_type!="npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
         n<262144 || n>1048576 || (n&(n-1))!=0 || request.convolution_child ||
         !flag_or_default("FLAGFFT_NPU_FLAT_POWER_DIF",false)) return nullptr;
     int bits=0;for (auto size=n;size>1;size/=2) ++bits;
-    const int stages=(bits+4)/5,base=bits/stages,extra=bits%stages;
     std::vector<int64_t> factors;
-    for(int i=0;i<stages;++i) factors.push_back(int64_t{1}<<(base+(i<extra?1:0)));
+    // A single transform benefits from one fewer intermediate pass. Keep
+    // the first two axes at 64 and the final axis within the 128-point
+    // structured helper limit; large batches retain their wider DMA rows.
+    if (batch==1 && bits<=19 &&
+        flag_or_default("FLAGFFT_NPU_FLAT_POWER_THREE_AXIS",true)) {
+      factors={64,64,int64_t{1}<<(bits-12)};
+    } else {
+      const int stages=(bits+4)/5,base=bits/stages,extra=bits%stages;
+      for(int i=0;i<stages;++i) factors.push_back(int64_t{1}<<(base+(i<extra?1:0)));
+    }
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1,previous_prefix=1;
     const double sign=request.direction=="inverse"?1.0:-1.0;

@@ -122,7 +122,11 @@ def switch_axes(X,TW,Y):
 
 
 def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False):
-    if not factors or any(r not in _NATURAL_ORDER_CODELET_RADICES and r not in (16,18,20,24,25,27,28,30,32) for r in factors):
+    valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
+                     if flat_power2 else
+                     all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
+                         for r in factors))
+    if not factors or not valid_factors:
         raise ValueError('Unsupported DIF factors')
     if direction not in ('forward','inverse'):
         raise ValueError('Unsupported DIF direction')
