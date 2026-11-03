@@ -206,14 +206,20 @@ namespace {
     // set per program and select bounded axes for latency or DMA throughput.
     if (request.device_type!="npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
-        n<262144 || n>1048576 || (n&(n-1))!=0 || request.convolution_child ||
+        n<8192 || n>1048576 || (n&(n-1))!=0 || request.convolution_child ||
         !flag_or_default("FLAGFFT_NPU_FLAT_POWER_DIF",false)) return nullptr;
+    const bool small=batch==1 && n<=16384 &&
+                     flag_or_default("FLAGFFT_NPU_FLAT_POWER_SMALL",true);
+    if (n<262144 && !small) return nullptr;
+    const int64_t working_points=small?1024:4096;
     int bits=0;for (auto size=n;size>1;size/=2) ++bits;
     std::vector<int64_t> factors;
     // A single transform benefits from one fewer intermediate pass. Keep
     // the first two axes at 64 and the final axis within the 128-point
     // structured helper limit; large batches retain their wider DMA rows.
-    if (batch==1 && bits<=19 &&
+    if (small) {
+      factors={128,n/128};
+    } else if (batch==1 && bits<=19 &&
         flag_or_default("FLAGFFT_NPU_FLAT_POWER_THREE_AXIS",true)) {
       factors={64,64,int64_t{1}<<(bits-12)};
     } else {
@@ -224,7 +230,7 @@ namespace {
     int64_t prefix=1,previous_prefix=1;
     const double sign=request.direction=="inverse"?1.0:-1.0;
     for (std::size_t stage=0;stage<factors.size();++stage) {
-      const int64_t radix=factors[stage],m=n/(prefix*radix),columns=4096/radix;
+      const int64_t radix=factors[stage],m=n/(prefix*radix),columns=working_points/radix;
       std::vector<float> weights;
       if (stage) {
         weights.resize(2*n);

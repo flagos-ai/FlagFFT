@@ -14,7 +14,7 @@ def test_three_axis_emitter(tmp_path):
  with pytest.raises(ValueError,match='Unsupported DIF factors'):
   emit_vector_dif((64,64,128),'forward',0,tmp_path)
 
-@pytest.mark.parametrize('factors',[(16,8,8),(16,16,16),(32,16,16),(16,32,16),(32,32,16,16),(32,32,32,16),(64,64,64),(64,64,128)])
+@pytest.mark.parametrize('factors',[(16,8,8),(16,16,16),(32,16,16),(16,32,16),(128,64),(128,128),(32,32,16,16),(32,32,32,16),(64,64,64),(64,64,128)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
 def test_power_dif_complete(tmp_path,factors,direction):
  source,specs=build(factors,direction);path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
