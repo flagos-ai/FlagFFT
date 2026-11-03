@@ -507,10 +507,12 @@ def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
     if groups > 1:
         lines = source.splitlines()
         start = next(i for i, line in enumerate(lines) if line.startswith("    start="))
-        lines = (lines[:start] + [f"    for window in tl.static_range({groups}):"] +
-                 ["    " + line.replace("(batch<nbatch)&", f"(start<={packed//2})&(batch<nbatch)&")
-                    .replace("start=tl.program_id(0)*",
-                    f"start=(tl.program_id(0)*{groups}+window)*") for line in lines[start:]])
+        # Skip an inactive window before issuing DMA. A scalar false term
+        # on every memory mask can lower to an invalid empty vector transfer.
+        lines = (lines[:start] + [f"    for window in tl.static_range({groups}):",
+                 f"        start=(tl.program_id(0)*{groups}+window)*{count}",
+                 f"        if start<={packed//2}:"] +
+                 ["        " + line for line in lines[start + 1:]])
         source = "\n".join(lines) + "\n"
     return name,source,['in_ptr','twiddle_ptr','out_ptr',distance,'nbatch'],1
 

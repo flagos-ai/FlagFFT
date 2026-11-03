@@ -250,7 +250,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "npu") {
     if (key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess) {
       const char *group=std::getenv("FLAGFFT_NPU_REAL_BOUNDARY_GROUP");
-      cache_key += ";npu-real-boundary-group-v2=" + std::string(group!=nullptr?group:"auto");
+      cache_key += ";npu-real-boundary-group-v3=" + std::string(group!=nullptr?group:"auto");
     }
     if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0) {
       cache_key += ";npu-dif-cube-prefix-v6";
