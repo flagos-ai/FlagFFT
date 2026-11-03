@@ -508,7 +508,8 @@ def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
         lines = source.splitlines()
         start = next(i for i, line in enumerate(lines) if line.startswith("    start="))
         lines = (lines[:start] + [f"    for window in tl.static_range({groups}):"] +
-                 ["    " + line.replace("start=tl.program_id(0)*",
+                 ["    " + line.replace("(batch<nbatch)&", f"(start<={packed//2})&(batch<nbatch)&")
+                    .replace("start=tl.program_id(0)*",
                     f"start=(tl.program_id(0)*{groups}+window)*") for line in lines[start:]])
         source = "\n".join(lines) + "\n"
     return name,source,['in_ptr','twiddle_ptr','out_ptr',distance,'nbatch'],1
