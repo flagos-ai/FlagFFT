@@ -126,6 +126,19 @@ def test_factored_second_axis_complete_fft(tmp_path,monkeypatch,factors,directio
                                   '1','8192',factors[0]==17,True,True)
 
 
+@pytest.mark.parametrize('factors',[(7,15,9,4),(7,15,9,9)])
+@pytest.mark.parametrize('direction',['forward','inverse'])
+@pytest.mark.parametrize('wide',['0','1'])
+def test_wide7_complete_fft(tmp_path,monkeypatch,factors,direction,wide):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_FIRST7_WIDE',wide)
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK','1')
+    _,specs=build_cube_prefix_dif(factors,direction,batch_pack=True,vector_second15=True)
+    width=1024 if wide=='1' else 512
+    assert specs[0]['grid']==(math.ceil((math.prod(factors)//7)/width),)
+    test_cube_prefix_complete_fft(tmp_path,monkeypatch,factors,direction,
+                                  '1','8192',False,True,True)
+
+
 @pytest.mark.parametrize('direction',['forward','inverse'])
 @pytest.mark.parametrize('pattern',['basis','random','cancellation','tone'])
 def test_component17_first_axis(tmp_path,monkeypatch,direction,pattern):

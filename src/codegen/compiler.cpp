@@ -335,6 +335,11 @@ namespace {
         flag_or_default("FLAGFFT_NPU_DIF_BATCH_PACK",true) &&
         flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) &&
         flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true);
+    // A wider radix-7 input tile amortizes DMA and scalar setup while its
+    // butterfly state still fits UB. Retain the prior width at small batch
+    // and when automatic first-stage scheduling is disabled.
+    const bool wide_first7=batch_pack && first_auto && factors[0]==7 &&
+        flag_or_default("FLAGFFT_NPU_DIF_FIRST7_WIDE",true);
     if (batch_pack && flag_or_default("FLAGFFT_NPU_DIF_FACTOR_COST",true))
       factors=npu_vector_dif_costed_suffix(factors);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
@@ -419,7 +424,7 @@ namespace {
       } else weights.push_back(0.0f);
       int64_t grid=0;
       if (cube_prefix && stage<2) {
-        grid=prefix*ceiling(m,stage?std::min<int64_t>(vector_second15?512:1024,std::max<int64_t>(32,power(m))):512);
+        grid=prefix*ceiling(m,stage?std::min<int64_t>(vector_second15?512:1024,std::max<int64_t>(32,power(m))):(wide_first7?1024:512));
       } else if (switched) {
         const int64_t width=radix==2?2048:radix<=8?1024:512;
         const int64_t physical_prefix=aligned ? prefix/initial_prefix*padded_prefix : prefix;

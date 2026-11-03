@@ -13,9 +13,9 @@ from flagfft_codegen.kernels_leaf import _emit_natural_order_codelet_call
 from flagfft_codegen.kernels_common import _NATURAL_ORDER_CODELET_RADICES
 
 
-def _grouped_first_stage(spec,n,direction):
+def _grouped_first_stage(spec,n,direction,columns=512):
  """Bound each interleaved DMA group to 2048 complex lane elements."""
- r,m=spec['r'],spec['m'];c=512;groups=[];start=0
+ r,m=spec['r'],spec['m'];c=columns;groups=[];start=0
  lines=['@triton.jit',f'def {spec["name"]}(X,TW,Y):',
   '    b=tl.program_id(1).to(tl.int64)',
   f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',
@@ -204,13 +204,17 @@ def chirped_second(X,TW,Y):
   result=[dict(s0,auto=vector_first17)]+result[2:]
   if group_branches and factors[0] in _NATURAL_ORDER_CODELET_RADICES:
    first=result[0]
-   body=_grouped_first_stage(first,n,direction)
+   wide7=(batch_pack and factors[0]==7 and
+          os.environ.get('FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK','1')!='0' and
+          os.environ.get('FLAGFFT_NPU_DIF_FIRST7_WIDE','1')!='0')
+   columns=1024 if wide7 else 512
+   body=_grouped_first_stage(first,n,direction,columns)
    if (vector_first17 and batch_pack and
        os.environ.get('FLAGFFT_NPU_DIF_COMPONENT17','1')!='0'):
     from .npu_radix17 import component_first_source
     body=component_first_source(first,n,direction)
    source=re.sub(r'@triton.jit\ndef '+first['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
-   first['grid']=((m+511)//512,)
+   first['grid']=((m+columns-1)//columns,)
  for z in result:
   if z.get('stage')==2:z['deferred_twiddle']=True
   radix=z.get('r',0);physical=z.get('physical_prefix',0)

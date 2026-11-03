@@ -263,6 +263,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       if (key.perm_form.find("_vector17")!=std::string::npos)
         cache_key += ";npu-dif-vector17-codelet-v1";
       const char *component17=std::getenv("FLAGFFT_NPU_DIF_COMPONENT17");
+      const char *wide7=std::getenv("FLAGFFT_NPU_DIF_FIRST7_WIDE");
+      if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
+          key.perm_form.find("_batchpack")!=std::string::npos &&
+          key.perm_form.size()>=5 &&
+          key.perm_form.compare(key.perm_form.size()-5,5,"_auto")==0 &&
+          !key.factors.empty() && key.factors.front()==7 &&
+          (wide7==nullptr || std::string(wide7)!="0"))
+        cache_key += ";npu-dif-first7-wide-v1";
       if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
           key.perm_form.find("_vector17")!=std::string::npos &&
           key.perm_form.find("_batchpack")!=std::string::npos &&
