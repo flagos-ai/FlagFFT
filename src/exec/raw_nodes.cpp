@@ -3626,10 +3626,12 @@ CompiledRawMatrixFourStepNode::CompiledRawMatrixFourStepNode(int64_t n1, int64_t
     std::vector<DeviceAllocation> tables, std::vector<DeviceAllocation> scratch, bool wide,
     std::vector<std::shared_ptr<JitKernel>> real_kernels,
     std::shared_ptr<JitKernel> real_inverse_kernel,
-    std::shared_ptr<JitKernel> fused_pack_kernel)
+    std::shared_ptr<JitKernel> fused_pack_kernel,
+    std::shared_ptr<JitKernel> real_finish_kernel)
     : n1(n1), n2(n2), max_batch(max_batch), wide(wide), kernels(std::move(kernels)),
       real_kernels(std::move(real_kernels)), real_inverse_kernel(std::move(real_inverse_kernel)),
       fused_pack_kernel(std::move(fused_pack_kernel)),
+      real_finish_kernel(std::move(real_finish_kernel)),
       tables(std::move(tables)), scratch(std::move(scratch)) {}
 
 std::string CompiledRawMatrixFourStepNode::describe() const {
@@ -3637,6 +3639,7 @@ std::string CompiledRawMatrixFourStepNode::describe() const {
       ", triton_fp32_ieee=1, wide="+std::to_string(wide)+
       ", real_forward_capable="+std::to_string(supports_real_forward())+
       ", fused_axis_pack="+std::to_string(fused_pack_kernel!=nullptr)+
+      ", fused_real_finish="+std::to_string(real_finish_kernel!=nullptr)+
       ", real_inverse_capable="+std::to_string(supports_real_inverse())+")";
 }
 
@@ -3697,6 +3700,13 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
             ceil_div(pads[1],128),ceil_div(2*n1,128),count);
         continue;
       }
+      if (real_inverse && real_finish_kernel && stage==1) {
+        real_finish_kernel->launch(context.stream,
+            {JitKernelArg::device(packed),JitKernelArg::device(tables[3].get()),
+             JitKernelArg::device(output+start*output_bytes),JitKernelArg::i64(output_distance)},
+            ceil_div(n1,64),ceil_div(n2,64),count);
+        continue;
+      }
       std::vector<JitKernelArg> cube_args={JitKernelArg::device(packed),
           JitKernelArg::device(tables[stage].get()),JitKernelArg::device(stage==0?mid:last)};
       if (wide) cube_args.push_back(JitKernelArg::i32(static_cast<int32_t>(count)));
@@ -3705,6 +3715,7 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
           wide?ceil_div(count*width,64):ceil_div(width,32),
           ceil_div(real_forward && stage==1?2*(length/2+1):2*length,wide?128:64),wide?1:count);
     }
+    if (real_inverse && real_finish_kernel) continue;
     std::vector<JitKernelArg> final_args={JitKernelArg::device(last),JitKernelArg::device(output+start*output_bytes)};
     if (real_forward || real_inverse) final_args.push_back(JitKernelArg::i64(output_distance));
     const auto &final_kernel=real_forward?real_kernels[3]:real_inverse?real_inverse_kernel:kernels[4];

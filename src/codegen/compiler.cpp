@@ -3119,6 +3119,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         key.perm_form=std::string("npu_matrix_fourstep_transpose_real")+(wide?"_wide":"");
         real_inverse_kernel=compile_kernel(key);
       }
+      std::shared_ptr<JitKernel> real_finish_kernel;
+      if (real_inverse_kernel && fused_pack_kernel && wide && batch>=16 &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FINISH",true)) {
+        key.perm_form="npu_matrix_fourstep_cube1_finish_real_wide";
+        real_finish_kernel=compile_kernel(key);
+      }
       std::vector<DeviceAllocation> tables,scratch;
       for(int stage=0;stage<2;++stage) {
         const int64_t length=stage==0?n1:n2, width=stage==0?n2:n1;
@@ -3136,11 +3142,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*width*cols*sizeof(float))));
       }
       tables.push_back(npu_structured_cross(n1*n2,n2,request.direction=="inverse"));
+      if (real_finish_kernel) {
+        int64_t pad=1;while(pad<n2)pad*=2;
+        std::vector<float> values(2*pad*pad,0.0f);
+        for(int64_t j=0;j<n2;++j)for(int64_t k=0;k<n2;++k) {
+          const double angle=2*kPi*j*k/n2;
+          values[j*pad+k]=static_cast<float>(std::cos(angle));
+          values[(pad+j)*pad+k]=static_cast<float>(-std::sin(angle));
+        }
+        tables.push_back(DeviceAllocation::from_floats(values));
+      }
+
       for(int i=0;i<2;++i)
         scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*n1*n2*2*sizeof(float))));
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
           std::move(kernels),std::move(tables),std::move(scratch),wide,
-          std::move(real_kernels),std::move(real_inverse_kernel),std::move(fused_pack_kernel));
+          std::move(real_kernels),std::move(real_inverse_kernel),std::move(fused_pack_kernel),
+          std::move(real_finish_kernel));
     }
     if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
