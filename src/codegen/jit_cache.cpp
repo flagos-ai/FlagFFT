@@ -262,6 +262,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";npu-dif-coprime-v2=" + std::string(coprime!=nullptr?coprime:"1");
       if (key.perm_form.find("_vector17")!=std::string::npos)
         cache_key += ";npu-dif-vector17-codelet-v1";
+      const char *component17=std::getenv("FLAGFFT_NPU_DIF_COMPONENT17");
+      if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
+          key.perm_form.find("_vector17")!=std::string::npos &&
+          key.perm_form.find("_batchpack")!=std::string::npos &&
+          (component17==nullptr || std::string(component17)!="0"))
+        cache_key += ";npu-dif-component17-v1";
       const char *group_branches=std::getenv("FLAGFFT_NPU_DIF_GROUP_BRANCHES");
       cache_key += ";npu-dif-group-branches-v2=" +
                    std::string(group_branches!=nullptr?group_branches:"1");

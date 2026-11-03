@@ -43,3 +43,28 @@ def radix17_source():
  for j,k in enumerate(order):lines += [f'    ar,ai=r0+c{j}r,i0+c{j}i',f'    y{k}r,y{k}i=ar+s{j}i,ai-s{j}r',f'    y{17-k}r,y{17-k}i=ar-s{j}i,ai+s{j}r']
  lines += ['    return '+','.join([f'y{k}r' for k in range(17)]+[f'y{k}i' for k in range(17)])]
  return source+'\n'+'\n'.join(lines)+'\n'
+
+
+def component_first_source(spec,n,direction,columns=512):
+ """Share each real convolution between interleaved real and imaginary lanes."""
+ # The cosine/sine convolutions have real coefficients, so they can process
+ # both components as adjacent lanes. Split only at the planar output boundary.
+ m=n//17;c=columns;points=2*c
+ lines=['@triton.jit',f'def {spec["name"]}(X,TW,Y):','    batch=tl.program_id(1).to(tl.int64)',f'    lane=tl.arange(0,{c})',f'    word=tl.arange(0,{points})',f'    base=tl.program_id(0)*{c}']
+ start=0;groups=[]
+ while start<17:
+  g=min(4,1<<((17-start).bit_length()-1));groups.append((start,g));size=g*points
+  lines += [f'    d=(tl.arange(0,{g})+{start})[:,None]',f'    raw=tl.load(X+batch*{2*n}+d*{2*m}+base*2+word[None,:],base*2+word[None,:]<{2*m},0.)',f'    raw=tl.reshape(raw,({size},))']
+  for j in range(g):lines += [f'    x{start+j}=al.extract_slice(raw,[{j*points}],[{points}],[1])']
+  start+=g
+ order=[pow(3,j,17) for j in range(8)]
+ for j,d in enumerate(order):lines += [f'    p{j}=x{d}+x{17-d}',f'    m{j}=x{d}-x{17-d}']
+ lines += ['    '+','.join(f'c{j}' for j in range(8))+'=_npu_cos8('+','.join(f'p{(-j)%8}' for j in range(8))+')', '    '+','.join(f's{j}' for j in range(8))+'=_npu_sin8('+','.join(['m0']+[f'-m{8-j}' for j in range(1,8)])+')','    y0=x0+'+'+'.join(f'p{j}' for j in range(8)),f'    sign=tl.where(word%2==0,{1. if direction=="forward" else -1.},{-1. if direction=="forward" else 1.})']
+ # Swapping adjacent components implements the final +/- i rotation.
+ for j,d in enumerate(order):lines += [f'    mix=tl.gather(s{j},word^1,0)*sign',f'    y{d}=x0+c{j}+mix',f'    y{17-d}=x0+c{j}-mix']
+ for start,g in groups:
+  size=g*points;lanes=g*c
+  lines += [f'    raw=tl.zeros(({size},),tl.float32)']
+  for j in range(g):lines += [f'    raw=al.insert_slice(raw,y{start+j},[{j*points}],[{points}],[1])']
+  lines += [f'    real,imag=tl.split(tl.reshape(raw,({lanes},2)))',f'    d=(tl.arange(0,{g})+{start})[:,None]',f'    q=base+lane[None,:]',f'    off=d*{m}+q',f'    tl.store(Y+batch*{2*n}+off,tl.reshape(real,({g},{c})),q<{m})',f'    tl.store(Y+batch*{2*n}+{n}+off,tl.reshape(imag,({g},{c})),q<{m})']
+ return '\n'.join(lines)+'\n'

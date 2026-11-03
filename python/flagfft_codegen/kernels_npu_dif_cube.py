@@ -205,6 +205,10 @@ def chirped_second(X,TW,Y):
   if group_branches and factors[0] in _NATURAL_ORDER_CODELET_RADICES:
    first=result[0]
    body=_grouped_first_stage(first,n,direction)
+   if (vector_first17 and batch_pack and
+       os.environ.get('FLAGFFT_NPU_DIF_COMPONENT17','1')!='0'):
+    from .npu_radix17 import component_first_source
+    body=component_first_source(first,n,direction)
    source=re.sub(r'@triton.jit\ndef '+first['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
    first['grid']=((m+511)//512,)
  for z in result:

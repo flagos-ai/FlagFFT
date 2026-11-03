@@ -124,3 +124,40 @@ def test_costed_suffix_complete_fft(tmp_path, monkeypatch, factors, direction):
 def test_factored_second_axis_complete_fft(tmp_path,monkeypatch,factors,direction):
     test_cube_prefix_complete_fft(tmp_path,monkeypatch,factors,direction,
                                   '1','8192',factors[0]==17,True,True)
+
+
+@pytest.mark.parametrize('direction',['forward','inverse'])
+@pytest.mark.parametrize('pattern',['basis','random','cancellation','tone'])
+def test_component17_first_axis(tmp_path,monkeypatch,direction,pattern):
+    # A partial DMA tile exercises every masked branch. The mathematical
+    # reference transforms the original input directly along its radix axis.
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_COMPONENT17','1')
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')
+    factors=(17,15,13,2);n=math.prod(factors);m=n//17
+    source,specs=build_cube_prefix_dif(factors,direction,vector_first17=True,batch_pack=True)
+    path=tmp_path/'component17.py';path.write_text(source);ns,pid=execute_module(path)
+    batch=17 if pattern=='basis' else 3
+    torch.manual_seed(20261103);x=torch.randn(batch,17,m,2)
+    if pattern=='basis':
+        x.zero_()
+        for b in range(batch):x[b,b,(31*b)%m,b%2]=1.
+    elif pattern=='cancellation':
+        x[:,9:]=-x[:,1:9].flip(1)
+        x[:,0]*=1e-6
+    elif pattern=='tone':
+        angle=2*torch.pi*torch.arange(17,dtype=torch.float64)/17
+        x=torch.view_as_real(torch.polar(torch.ones_like(angle),angle)).float()[None,:,None,:].expand(batch,17,m,2).clone()
+    if batch==3:x*=torch.tensor([1e-6,1.,1e6])[:,None,None,None]
+    saved=x.clone();guard=torch.full((2*batch*n+128,),31415.25)
+    first=specs[0]
+    for gx in range(first['grid'][0]):
+        for b in range(batch):
+            pid[:]=[gx,b];ns[first['name']](Pointer(x),Pointer(torch.zeros(1)),Pointer(guard,64))
+    planes=guard[64:-64].reshape(batch,2,17,m)
+    got=torch.complex(planes[:,0],planes[:,1]).to(torch.complex128)
+    z=torch.view_as_complex(x).to(torch.complex128)
+    ref=torch.fft.fft(z,dim=1) if direction=='forward' else torch.fft.ifft(z,dim=1)*17
+    assert torch.isfinite(got).all()
+    assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref)<5e-7
+    assert torch.equal(x,saved)
+    assert (guard[:64]==31415.25).all() and (guard[-64:]==31415.25).all()
