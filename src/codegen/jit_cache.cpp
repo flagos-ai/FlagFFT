@@ -269,7 +269,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (key.perm_form.rfind("npu_structured_recursive_axis_planar",0)==0)
       cache_key += ";npu-structured-contiguous-slices-v1";
     if (key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0)
-      cache_key += key.length<=16384?";npu-flat-power-small-v1":";npu-flat-power-dif-v1";
+      cache_key += ";npu-flat-power-dif-v1";
     if (key.perm_form.rfind("npu_vector_dif_aligned_",0)==0) {
       const char *dense_transpose=std::getenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE");
       cache_key += ";npu-dif-dense-transpose-v2=" +

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bounded power-of-two DIF axes with contiguous logical vector tiles.
 
-Each program transforms at most 4096 real lane elements. A tile can include multiple
+Each program transforms 4096 real lane elements. A tile can include multiple
 remaining-coordinate groups while the prefix is narrow; its output permutation
 then becomes a dense store. Larger prefixes retain wide contiguous row slices.
 Twiddles and structured FFT roots share each pass's read-only table argument.
@@ -10,16 +10,12 @@ Twiddles and structured FFT roots share each pass's read-only table argument.
 import math
 from flagfft_codegen.kernels_npu_structured import FFT_HELPERS
 
-def working_points(n):
- # Small bounded axes need enough independent tiles to fill the cores.
- return 1024 if n<=16384 else 4096
-
 def build(factors,direction='forward'):
  n=math.prod(factors);prefix=1;previous=1;specs=[]
  source='import triton\nimport triton.language as tl\nimport triton.language.extra.cann.extension as al\n'+FFT_HELPERS
  for stage,r in enumerate(factors):
   if r<4 or r>128 or r&(r-1):raise ValueError('Power DIF axes require radix 4..128')
-  m=n//(prefix*r);c=working_points(n)//r;points=r*c;tiles=(m+c-1)//c if stage==0 else (m*prefix+c-1)//c
+  m=n//(prefix*r);c=4096//r;points=r*c;tiles=(m+c-1)//c if stage==0 else (m*prefix+c-1)//c
   name=f'axis_{stage}';last=stage==len(factors)-1
   ls=['@triton.jit',f'def {name}(X,TW,Y):',f'    W=TW+{0 if stage==0 else 2*n}','    batch=tl.program_id(1).to(tl.int64)',f'    d=tl.arange(0,{r})[:,None]']
   if stage==0:
