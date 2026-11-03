@@ -422,6 +422,14 @@ def _build_r2c_half_pack_kernel_source(
     )
 
 
+def _npu_packed_boundary_groups(n, paired):
+    """Amortize adjacent windows without increasing a window's UB state."""
+    groups = int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_GROUP", "2" if n >= 65536 else "1"))
+    if groups not in (1, 2):
+        raise ValueError("NPU real boundary group must be 1 or 2")
+    return groups if paired else 1
+
+
 def _build_npu_packed_boundary(n, inverse, count=256, paired=False):
     """Use contiguous complex windows and local reversal for the real boundary."""
     packed=n//2;half=packed+1
@@ -429,6 +437,8 @@ def _build_npu_packed_boundary(n, inverse, count=256, paired=False):
         raise ValueError("NPU packed boundary tile must be 256, 512, 1024 or 2048")
     name=f"_{'c2r_packed_preprocess' if inverse else 'r2c_packed_postprocess'}_kernel_n{n}_f32"
     if paired: name += "_paired"
+    groups = _npu_packed_boundary_groups(n, paired)
+    if groups > 1: name += f"_g{groups}"
     distance='input_distance' if inverse else 'output_distance'
     source=f'''@triton.jit
 def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
@@ -494,6 +504,13 @@ def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
         source+=f'''    value=tl.reshape(tl.join(real,imag),({2*count},))
     tl.store(out_ptr+{destination},value,(batch<nbatch)&(start*2+word<{2*packed if inverse else 2*half}))
 '''
+    if groups > 1:
+        lines = source.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("    start="))
+        lines = (lines[:start] + [f"    for window in tl.static_range({groups}):"] +
+                 ["    " + line.replace("start=tl.program_id(0)*",
+                    f"start=(tl.program_id(0)*{groups}+window)*") for line in lines[start:]])
+        source = "\n".join(lines) + "\n"
     return name,source,['in_ptr','twiddle_ptr','out_ptr',distance,'nbatch'],1
 
 

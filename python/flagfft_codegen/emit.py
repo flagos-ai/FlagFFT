@@ -60,6 +60,7 @@ from .kernels_layout import (
 )
 from .kernels_leaf import _build_leaf_kernel_source_for_io
 from .kernels_real import (
+    _npu_packed_boundary_groups,
     _build_c2r_packed_preprocess_kernel_source,
     _build_compact_to_hermitian_full_kernel_source,
     _build_complex_to_real_kernel_source,
@@ -633,6 +634,7 @@ def _emit_r2c_pointwise_jit_kernel(
             and kernel in {"r2c_packed_postprocess", "c2r_packed_preprocess"}
             and os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "0") == "1"):
         grid_columns = n // 4 + 1
+        elements_per_program *= _npu_packed_boundary_groups(n, True)
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

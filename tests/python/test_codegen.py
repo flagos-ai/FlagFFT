@@ -2150,3 +2150,20 @@ def test_npu_real_boundary_launch_extent(jit_source, tmp_path, monkeypatch, tile
     columns = 23095 if kernel == "r2c_half_pack" else 46189
     assert metadata["grid_x_override"] == (columns + tile - 1) // tile
     assert metadata["rows_per_block"] == 1
+
+
+@pytest.mark.parametrize("kernel", ["r2c_packed_postprocess", "c2r_packed_preprocess"])
+@pytest.mark.parametrize("n,setting,groups", [(65534, None, 1), (65536, None, 2),
+                                           (65536, "1", 1), (65536, "2", 2)])
+def test_npu_paired_boundary_group_grid(jit_source, tmp_path, monkeypatch, kernel, n, setting, groups):
+    monkeypatch.setenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE", "2048")
+    monkeypatch.setenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "1")
+    if setting is None:
+        monkeypatch.delenv("FLAGFFT_NPU_REAL_BOUNDARY_GROUP", raising=False)
+    else:
+        monkeypatch.setenv("FLAGFFT_NPU_REAL_BOUNDARY_GROUP", setting)
+    metadata = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel=kernel, n=n, dtype="complex64", out_dir=tmp_path,
+        target="npu:Ascend910B4:1")
+    columns = n // 4 + 1
+    assert metadata["grid_x_override"] == (columns + 2048 * groups - 1) // (2048 * groups)

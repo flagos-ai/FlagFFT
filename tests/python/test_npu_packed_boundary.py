@@ -11,7 +11,9 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('inverse',[False,True])
 @pytest.mark.parametrize('width',[256,1024,2048])
 @pytest.mark.parametrize('paired',[False,True])
-def test_packed_real_windows(tmp_path,n,inverse,width,paired):
+@pytest.mark.parametrize('groups',[1,2])
+def test_packed_real_windows(tmp_path,monkeypatch,n,inverse,width,paired,groups):
+    monkeypatch.setenv('FLAGFFT_NPU_REAL_BOUNDARY_GROUP',str(groups))
     torch.manual_seed(20261029);batch=3;packed=n//2;half=packed+1;distance=half+5
     name,body,args,rows=_build_npu_packed_boundary(n,inverse,width,paired)
     path=tmp_path/'boundary.py';path.write_text(body);ns,pid=execute_module(path)
@@ -30,7 +32,8 @@ def test_packed_real_windows(tmp_path,n,inverse,width,paired):
     saved=src.clone();out=torch.full((out_words+128,),31415.25)
     for b in range(batch):
         pid[1]=b
-        for tile in range(((packed//2+1 if paired else packed if inverse else half)+width-1)//width):
+        extent = width * (groups if paired else 1)
+        for tile in range(((packed//2+1 if paired else packed if inverse else half)+extent-1)//extent):
             pid[0]=tile;ns[name](Pointer(src),Pointer(roots),Pointer(out,64),distance,batch)
     got=out[64:-64].reshape(batch,packed if inverse else distance,2)
     if not inverse:
