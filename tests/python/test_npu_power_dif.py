@@ -14,10 +14,22 @@ def test_three_axis_emitter(tmp_path):
  with pytest.raises(ValueError,match='Unsupported DIF factors'):
   emit_vector_dif((64,64,128),'forward',0,tmp_path)
 
+def test_terminal_emitter(tmp_path):
+ from flagfft_codegen.kernels_npu_dif import emit_vector_dif
+ metadata=emit_vector_dif((32,32,32,16),'forward',0,tmp_path,
+                          flat_power2=True,terminal8=True)
+ from pathlib import Path
+ text=Path(metadata['module_path']).read_text()
+ assert 'power_fft_axis(r,i,W,4096,32,128,5)' in text
+ assert metadata['signature']=='*fp32:16,*fp32:16,*fp32:16'
+ with pytest.raises(ValueError,match='require flat power DIF'):
+  emit_vector_dif((16,16,16),'forward',0,tmp_path,terminal8=True)
+
 @pytest.mark.parametrize('factors',[(16,8,8),(16,16,16),(32,16,16),(16,32,16),(32,32,16,16),(32,32,32,16),(64,64,64),(64,64,128)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
-def test_power_dif_complete(tmp_path,factors,direction):
- source,specs=build(factors,direction);path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
+@pytest.mark.parametrize('terminal8',[False,True])
+def test_power_dif_complete(tmp_path,factors,direction,terminal8):
+ source,specs=build(factors,direction,terminal8=terminal8);path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
  n,batch=math.prod(factors),2;sign=-1 if direction=='forward' else 1
  torch.manual_seed(20261030);x=torch.randn(batch,n,2);saved=x.clone();current=x
  guard=torch.full((x.numel()+128,),31415.25);scratch=[torch.empty_like(x),torch.empty_like(x)]

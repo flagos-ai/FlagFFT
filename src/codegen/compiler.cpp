@@ -239,7 +239,12 @@ namespace {
       weights.insert(weights.end(),roots.begin(),roots.end());
       auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
           request.input_dtype,n,1,n,factors,32,4,{},n);
-      key.perm_form="npu_vector_dif_flat_power2_"+std::to_string(stage)+"_auto";
+      key.perm_form="npu_vector_dif_flat_power2_"+std::to_string(stage);
+      int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
+      if (batch>=16 && axis_bits>=3 && axis_bits%2 &&
+          flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true))
+        key.perm_form+="_terminal8";
+      key.perm_form+="_auto";
       const int64_t extent=stage?m*prefix:m,grid=(extent+columns-1)/columns;
       passes.push_back({TritonCompiler{}.compile_kernel(key),DeviceAllocation::from_floats(weights),grid,1,false});
       previous_prefix=prefix;prefix*=radix;

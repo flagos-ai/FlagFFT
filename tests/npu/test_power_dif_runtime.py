@@ -6,7 +6,7 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('n,batch',[(262144,3),(524288,1),(1048576,2)])
+@pytest.mark.parametrize('n,batch',[(262144,3),(524288,1),(1048576,2),(262144,16),(524288,16)])
 @pytest.mark.parametrize('direction',[-1,1])
 @pytest.mark.parametrize('in_place',[False,True])
 def test_flat_power_dif_live(n,batch,direction,in_place):

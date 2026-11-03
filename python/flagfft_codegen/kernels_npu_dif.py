@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -132,6 +132,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Unsupported DIF direction')
     if batch_pack and not cube_prefix:
         raise ValueError('Batch-grouped DIF requires the Cube DIF plan')
+    if terminal8 and not flat_power2:
+        raise ValueError('Terminal eight-point sections require flat power DIF')
     if vector_first17 and not cube_prefix:
         raise ValueError('The vector-17 prefix requires the Cube DIF plan')
     if vector_second15 and not cube_prefix:
@@ -139,7 +141,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     if flat_power2:
         if aligned or cube_prefix:raise ValueError("Flat power DIF uses a compact layout")
         from .kernels_npu_power_dif import build
-        source,specs=build(tuple(factors),direction)
+        source,specs=build(tuple(factors),direction,terminal8=terminal8)
     elif cube_prefix:
         if not aligned:raise ValueError('Cube DIF prefix requires an aligned layout')
         from .kernels_npu_dif_cube import build_cube_prefix_dif
