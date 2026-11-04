@@ -417,6 +417,9 @@ namespace {
     // and when automatic first-stage scheduling is disabled.
     const bool wide_first7=batch_pack && first_auto && factors[0]==7 &&
         flag_or_default("FLAGFFT_NPU_DIF_FIRST7_WIDE",true);
+    const bool matrix_first17=batch_pack && vector_first17 &&
+        flag_or_default("FLAGFFT_NPU_DIF_COMPONENT17",true) &&
+        flag_or_default("FLAGFFT_NPU_DIF_MATRIX_FIRST17",true);
     const bool global_inverse=request.direction=="inverse" && batch_pack && vector_first17 &&
         fused_finish && flag_or_default("FLAGFFT_NPU_DIF_COMPONENT17",true) &&
         flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
@@ -436,6 +439,7 @@ namespace {
       if (vector_first17) key.perm_form+="_vector17";
       if (batch_pack) key.perm_form+="_batchpack";
       if (global_inverse) key.perm_form+="_globalconj";
+      if (matrix_first17) key.perm_form+="_half17";
       if ((matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
@@ -501,6 +505,14 @@ namespace {
               sign*2*kPi*static_cast<double>(digit)*sample/(previous_radix*current);
           weights[index]=static_cast<float>(std::cos(angle));
           weights[count+index]=static_cast<float>(std::sin(angle));
+        }
+      } else if (matrix_first17) {
+        weights.assign(256,0.0f);
+        const double first_sign=request.direction=="inverse"?1.0:-1.0;
+        for (int64_t k=0;k<8;++k) for (int64_t d=0;d<16;++d) {
+          const double angle=first_sign*2*kPi*(k+1)*(d+1)/17.0;
+          weights[k*16+d]=static_cast<float>(std::cos(angle));
+          weights[(k+8)*16+d]=static_cast<float>(std::sin(angle));
         }
       } else weights.push_back(0.0f);
       int64_t grid=0;

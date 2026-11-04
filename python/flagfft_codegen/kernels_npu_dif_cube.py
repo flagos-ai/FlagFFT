@@ -118,16 +118,22 @@ def _batch_grouped_late_stage(s,direction,bp,columns=128):
  return '\n'.join(lines)+'\n'
 
 
-def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False):
+def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False,matrix_first17=False):
+ if matrix_first17 and (not vector_first17 or not batch_pack):
+  raise ValueError('Half-matrix radix17 requires batch-grouped vector-17 DIF')
  if global_inverse:
   if direction!='inverse' or not vector_first17 or not batch_pack:
    raise ValueError('Global inverse requires a batch-grouped vector-17 plan')
   source,specs=build_cube_prefix_dif(factors,'forward',vector_first17=True,
-      batch_pack=True,vector_second15=vector_second15)
+      batch_pack=True,vector_second15=vector_second15,matrix_first17=matrix_first17)
   from .npu_radix17 import component_first_source
   from .kernels_npu_dif_aligned import _fused_finish
   first=specs[0]
-  body=component_first_source(first,math.prod(factors),'inverse',conjugate_output=True)
+  if matrix_first17:
+   from .npu_radix17_matrix import half_matrix_first_source
+   body=half_matrix_first_source(first,math.prod(factors),conjugate_output=True)
+  else:
+   body=component_first_source(first,math.prod(factors),'inverse',conjugate_output=True)
   source=re.sub(r'@triton.jit\ndef '+first['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
   last=specs[-1]
   if last['name']!='fused_finish':raise ValueError('Global inverse requires a fused finish')
@@ -228,7 +234,11 @@ def chirped_second(X,TW,Y):
    if (vector_first17 and batch_pack and
        os.environ.get('FLAGFFT_NPU_DIF_COMPONENT17','1')!='0'):
     from .npu_radix17 import component_first_source
-    body=component_first_source(first,n,direction)
+    if matrix_first17:
+     from .npu_radix17_matrix import half_matrix_first_source
+     body=half_matrix_first_source(first,n)
+    else:
+     body=component_first_source(first,n,direction)
    source=re.sub(r'@triton.jit\ndef '+first['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
    first['grid']=((m+columns-1)//columns,)
  for z in result:
