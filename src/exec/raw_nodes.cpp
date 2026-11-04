@@ -3631,8 +3631,8 @@ CompiledRawMatrixFourStepNode::CompiledRawMatrixFourStepNode(int64_t n1, int64_t
     std::shared_ptr<JitKernel> real_fused_pack_kernel,
     std::shared_ptr<JitKernel> complex_finish_kernel,
     std::vector<std::shared_ptr<JitKernel>> complex_half_kernels,
-    std::vector<DeviceAllocation> complex_half_tables, bool complex_direct_input)
-    : n1(n1), n2(n2), max_batch(max_batch), wide(wide), complex_direct_input(complex_direct_input), kernels(std::move(kernels)),
+    std::vector<DeviceAllocation> complex_half_tables, bool complex_direct_input, bool complex_direct_combined)
+    : n1(n1), n2(n2), max_batch(max_batch), wide(wide), complex_direct_input(complex_direct_input), complex_direct_combined(complex_direct_combined), kernels(std::move(kernels)),
       real_kernels(std::move(real_kernels)), real_inverse_kernel(std::move(real_inverse_kernel)),
       fused_pack_kernel(std::move(fused_pack_kernel)),
       real_finish_kernel(std::move(real_finish_kernel)),
@@ -3650,6 +3650,7 @@ std::string CompiledRawMatrixFourStepNode::describe() const {
       ", fused_real_pack="+std::to_string(real_fused_pack_kernel!=nullptr)+
       ", fused_complex_finish="+std::to_string(complex_finish_kernel!=nullptr)+
       ", complex_direct_input="+std::to_string(complex_direct_input)+
+      ", complex_direct_combined="+std::to_string(complex_direct_combined)+
       ", complex_half_spectra="+std::to_string(!complex_half_kernels.empty())+
       ", complex_half_last_only="+std::to_string(complex_half_kernels.size()==1)+
       ", fused_real_finish="+std::to_string(real_finish_kernel!=nullptr)+

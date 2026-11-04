@@ -38,6 +38,8 @@ def test_complex_half_matrix_live(n,batch,pattern,default_policy,direction,in_pl
     if batch>=16:
         expected=os.environ.get('FLAGFFT_NPU_MATRIX_DIRECT_INPUT','1')!='0'
         assert ('complex_direct_input=1' in description)==expected
+        combined=expected and os.environ.get('FLAGFFT_NPU_MATRIX_DIRECT_COMBINED','1')!='0'
+        assert ('complex_direct_combined=1' in description)==combined
     streams=[torch.npu.current_stream(),torch.npu.Stream()]
     try:
         for step,scale in enumerate((1.,1e-6,1e6,-.25)):

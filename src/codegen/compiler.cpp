@@ -3302,6 +3302,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           flag_or_default("FLAGFFT_NPU_MATRIX_COMPLEX_HALF",true);
       const bool complex_direct_input=complex_half &&
           flag_or_default("FLAGFFT_NPU_MATRIX_DIRECT_INPUT",true);
+      const bool complex_direct_combined=complex_direct_input &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_DIRECT_COMBINED",true);
       // A single transform retains the narrow first axis, which has enough
       // independent tiles. Keep the half-spectrum final DFT opt-in while
       // end-to-end measurements vary across otherwise identical plans.
@@ -3312,7 +3314,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         if (complex_half) {
           for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {
             const std::string selected=complex_direct_input && std::string(phase)=="cube0_complex_half_pack"
-                ? "cube0_complex_direct_pack" : phase;
+                ? (complex_direct_combined?"cube0_complex_direct_combined":"cube0_complex_direct_pack") : phase;
             key.perm_form="npu_matrix_fourstep_"+selected+"_wide";
             complex_half_kernels.push_back(compile_kernel(key));
           }
@@ -3330,8 +3332,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           for(int64_t j=0;j<length;++j)for(int64_t k=0;k<half;++k) {
             const double angle=sign*2*kPi*j*k/length;
             if (complex_direct_input && stage==0) {
-              values[k*pad+j]=static_cast<float>(std::cos(angle));
-              values[(half_pad+k)*pad+j]=static_cast<float>(std::sin(angle));
+              const int64_t cosine_row=complex_direct_combined?(k/32)*64+k%32:k;
+              const int64_t sine_row=complex_direct_combined?(k/32)*64+32+k%32:half_pad+k;
+              values[cosine_row*pad+j]=static_cast<float>(std::cos(angle));
+              values[sine_row*pad+j]=static_cast<float>(std::sin(angle));
             } else {
               values[j*2*half_pad+2*k]=static_cast<float>(std::cos(angle));
               values[j*2*half_pad+2*k+1]=static_cast<float>(std::sin(angle));
@@ -3388,7 +3392,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           std::move(real_kernels),std::move(real_inverse_kernel),std::move(fused_pack_kernel),
           std::move(real_finish_kernel),std::move(real_fused_pack_kernel),
           std::move(complex_finish_kernel),std::move(complex_half_kernels),
-          std::move(complex_half_tables),complex_direct_input);
+          std::move(complex_half_tables),complex_direct_input,complex_direct_combined);
     }
     if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
