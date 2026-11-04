@@ -3300,6 +3300,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           !request.convolution_child && request.origin_rank<=1 && request.raw_dim==1;
       const bool complex_half=fused_pack_kernel && complex_finish_kernel && complex_api &&
           flag_or_default("FLAGFFT_NPU_MATRIX_COMPLEX_HALF",true);
+      const bool complex_direct_input=complex_half &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_DIRECT_INPUT",true);
       // A single transform retains the narrow first axis, which has enough
       // independent tiles. Keep the half-spectrum final DFT opt-in while
       // end-to-end measurements vary across otherwise identical plans.
@@ -3309,7 +3311,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       if (complex_half || single_half_last) {
         if (complex_half) {
           for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {
-            key.perm_form=std::string("npu_matrix_fourstep_")+phase+"_wide";
+            const std::string selected=complex_direct_input && std::string(phase)=="cube0_complex_half_pack"
+                ? "cube0_complex_direct_pack" : phase;
+            key.perm_form="npu_matrix_fourstep_"+selected+"_wide";
             complex_half_kernels.push_back(compile_kernel(key));
           }
         } else {
@@ -3325,11 +3329,30 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           const double sign=request.direction=="inverse"?1.0:-1.0;
           for(int64_t j=0;j<length;++j)for(int64_t k=0;k<half;++k) {
             const double angle=sign*2*kPi*j*k/length;
-            values[j*2*half_pad+2*k]=static_cast<float>(std::cos(angle));
-            values[j*2*half_pad+2*k+1]=static_cast<float>(std::sin(angle));
+            if (complex_direct_input && stage==0) {
+              values[k*pad+j]=static_cast<float>(std::cos(angle));
+              values[(half_pad+k)*pad+j]=static_cast<float>(std::sin(angle));
+            } else {
+              values[j*2*half_pad+2*k]=static_cast<float>(std::cos(angle));
+              values[j*2*half_pad+2*k+1]=static_cast<float>(std::sin(angle));
+            }
           }
           complex_half_tables.push_back(DeviceAllocation::from_floats(values));
         }
+      }
+      if (complex_direct_input) {
+        int64_t pa=1,pb=1;while(pa<n1)pa*=2;while(pb<n2)pb*=2;
+        // Include the masked reflected frequency n1, also when n1 is a power
+        // of two. Every phase load is then a bounded aligned 2D transfer.
+        const int64_t plane=(pa+1)*pb;
+        std::vector<float> values(2*plane,0.0f);
+        const double sign=request.direction=="inverse"?1.0:-1.0;
+        for(int64_t j=0;j<n2;++j)for(int64_t k=0;k<n1;++k) {
+          const double angle=sign*2*kPi*j*k/(n1*n2);
+          values[k*pb+j]=static_cast<float>(std::cos(angle));
+          values[plane+k*pb+j]=static_cast<float>(std::sin(angle));
+        }
+        complex_half_tables.push_back(DeviceAllocation::from_floats(values));
       }
       for(int stage=0;stage<2;++stage) {
         const int64_t length=stage==0?n1:n2, width=stage==0?n2:n1;
@@ -3365,7 +3388,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           std::move(real_kernels),std::move(real_inverse_kernel),std::move(fused_pack_kernel),
           std::move(real_finish_kernel),std::move(real_fused_pack_kernel),
           std::move(complex_finish_kernel),std::move(complex_half_kernels),
-          std::move(complex_half_tables));
+          std::move(complex_half_tables),complex_direct_input);
     }
     if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;

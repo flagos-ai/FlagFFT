@@ -3631,8 +3631,8 @@ CompiledRawMatrixFourStepNode::CompiledRawMatrixFourStepNode(int64_t n1, int64_t
     std::shared_ptr<JitKernel> real_fused_pack_kernel,
     std::shared_ptr<JitKernel> complex_finish_kernel,
     std::vector<std::shared_ptr<JitKernel>> complex_half_kernels,
-    std::vector<DeviceAllocation> complex_half_tables)
-    : n1(n1), n2(n2), max_batch(max_batch), wide(wide), kernels(std::move(kernels)),
+    std::vector<DeviceAllocation> complex_half_tables, bool complex_direct_input)
+    : n1(n1), n2(n2), max_batch(max_batch), wide(wide), complex_direct_input(complex_direct_input), kernels(std::move(kernels)),
       real_kernels(std::move(real_kernels)), real_inverse_kernel(std::move(real_inverse_kernel)),
       fused_pack_kernel(std::move(fused_pack_kernel)),
       real_finish_kernel(std::move(real_finish_kernel)),
@@ -3649,6 +3649,7 @@ std::string CompiledRawMatrixFourStepNode::describe() const {
       ", fused_axis_pack="+std::to_string(fused_pack_kernel!=nullptr)+
       ", fused_real_pack="+std::to_string(real_fused_pack_kernel!=nullptr)+
       ", fused_complex_finish="+std::to_string(complex_finish_kernel!=nullptr)+
+      ", complex_direct_input="+std::to_string(complex_direct_input)+
       ", complex_half_spectra="+std::to_string(!complex_half_kernels.empty())+
       ", complex_half_last_only="+std::to_string(complex_half_kernels.size()==1)+
       ", fused_real_finish="+std::to_string(real_finish_kernel!=nullptr)+
@@ -3696,14 +3697,22 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
     if (!real_forward && !real_inverse && complex_half_kernels.size()==2) {
       auto packed0=scratch[0].get()+start*packed_bytes[0];
       auto packed1=scratch[1].get()+start*packed_bytes[1];
-      kernels[0]->launch(context.stream,
-          {JitKernelArg::device(input+start*input_bytes),JitKernelArg::device(packed0),
-           JitKernelArg::device(tables[2].get())},
-          ceil_div(pads[0],tile),ceil_div(n2,tile),count);
-      complex_half_kernels[0]->launch(context.stream,
-          {JitKernelArg::device(packed0),JitKernelArg::device(complex_half_tables[0].get()),
-           JitKernelArg::device(tables[2].get()),JitKernelArg::device(packed1)},
-          ceil_div(pads[1],128),ceil_div(n1/2+1,32),count);
+      if (complex_direct_input) {
+        complex_half_kernels[0]->launch(context.stream,
+            {JitKernelArg::device(input+start*input_bytes),
+             JitKernelArg::device(complex_half_tables[0].get()),
+             JitKernelArg::device(complex_half_tables[2].get()),JitKernelArg::device(packed1)},
+            ceil_div(n1/2+1,32),ceil_div(pads[1],32),count);
+      } else {
+        kernels[0]->launch(context.stream,
+            {JitKernelArg::device(input+start*input_bytes),JitKernelArg::device(packed0),
+             JitKernelArg::device(tables[2].get())},
+            ceil_div(pads[0],tile),ceil_div(n2,tile),count);
+        complex_half_kernels[0]->launch(context.stream,
+            {JitKernelArg::device(packed0),JitKernelArg::device(complex_half_tables[0].get()),
+             JitKernelArg::device(tables[2].get()),JitKernelArg::device(packed1)},
+            ceil_div(pads[1],128),ceil_div(n1/2+1,32),count);
+      }
       complex_half_kernels[1]->launch(context.stream,
           {JitKernelArg::device(packed1),JitKernelArg::device(complex_half_tables[1].get()),
            JitKernelArg::device(output+start*output_bytes)},

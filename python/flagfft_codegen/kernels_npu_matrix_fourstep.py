@@ -258,6 +258,9 @@ def cube1_finish(P,W,Y):
 
 
 def emit_matrix_fourstep(a,b,phase,direction,out_dir,wide=False):
+    if phase=='cube0_complex_direct_pack':
+        from .kernels_npu_matrix_direct_input import emit_direct_first
+        return emit_direct_first(a,b,phase,direction,out_dir)
     if phase in ('cube0_complex_half_pack','cube1_complex_half_finish','cube1_complex_half_finish_narrow'):
         from .kernels_npu_matrix_complex_half import emit_complex_half
         return emit_complex_half(a,b,phase,direction,out_dir)
