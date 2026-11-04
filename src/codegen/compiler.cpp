@@ -3394,14 +3394,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const bool small_single=batch==1 && n1>=128 && n2>=128 && n1<=256 && n2<=256 &&
           !request.packed_real_child && request.origin_rank<=1 &&
           request.real_transform_kind.empty() && request.origin_real_transform_kind.empty();
-      if (small_single && flag_or_default("FLAGFFT_NPU_STRUCTURED_SINGLE_TILES",true)) {
+      if (small_single && flag_or_default("FLAGFFT_NPU_STRUCTURED_SINGLE_TILES",false)) {
         // Keep at least sixteen independent programs without dropping below
         // the validated eight-column automatic scheduling path.
         row_tile=std::min(row_tile,std::max<int64_t>(8,n2/16));
         col_tile=std::min(col_tile,std::max<int64_t>(8,n1/16));
       }
       const bool global_inverse=small_single && request.direction=="inverse" &&
-          flag_or_default("FLAGFFT_NPU_STRUCTURED_SINGLE_GLOBAL",true);
+          flag_or_default("FLAGFFT_NPU_STRUCTURED_SINGLE_GLOBAL",false);
       auto row_key = KernelKey::four_step_row(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n1, {n1}, 32, 4, {}, n1);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
