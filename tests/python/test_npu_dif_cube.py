@@ -47,12 +47,12 @@ def _tables(factors, specs, sign):
 @pytest.mark.parametrize('factors', [(17,13,3,4), (19,13,3,4), (17,15,7,2), (17,13,15,2), (7,15,3,4), (8,15,3,4), (7,15,10,4), (7,15,4,3), (17,13,4,5), (17,13,2,15), (7,15,3,9,4), (17,13,3,10,2), (17,15,13,2), (17,15,13,7,2), (19,15,3,2)])
 @pytest.mark.parametrize('direction', ['forward', 'inverse'])
 @pytest.mark.parametrize('dense_transpose,transpose_points', [('0','4096'), ('1','4096'), ('1','8192')])
-def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose, transpose_points, vector_first17=False, batch_pack=False, vector_second15=False,global_inverse=False,matrix_first17=False):
+def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose, transpose_points, vector_first17=False, batch_pack=False, vector_second15=False,global_inverse=False,matrix_first17=False,prefix_pitch=1):
     monkeypatch.setenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE", dense_transpose)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_POINTS', transpose_points)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH', '1')
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_TILE', '64')
-    source, specs = build_cube_prefix_dif(factors, direction, vector_first17=vector_first17, batch_pack=batch_pack, vector_second15=vector_second15,global_inverse=global_inverse,matrix_first17=matrix_first17)
+    source, specs = build_cube_prefix_dif(factors, direction, vector_first17=vector_first17, batch_pack=batch_pack, vector_second15=vector_second15,global_inverse=global_inverse,matrix_first17=matrix_first17,prefix_pitch=prefix_pitch)
     path = tmp_path/'cube.py'
     path.write_text(source)
     ns, pid = execute_module(path)
@@ -209,3 +209,23 @@ def test_single_global_inverse_complete(tmp_path,monkeypatch,factors):
     monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')
     test_cube_prefix_complete_fft(tmp_path,monkeypatch,factors,'inverse','1','8192',
         vector_first17=factors[0]==17,global_inverse=True)
+
+
+@pytest.mark.parametrize('factors',[(17,15,13,2),(17,15,13,7,8),(17,15,13,10,10,2)])
+@pytest.mark.parametrize('direction,global_inverse',[('forward',False),('inverse',False),('inverse',True)])
+@pytest.mark.parametrize('matrix_first17',[False,True])
+def test_prefix_pitch_whole(tmp_path,monkeypatch,factors,direction,global_inverse,matrix_first17):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_COMPONENT17','1')
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')
+    test_cube_prefix_complete_fft(tmp_path,monkeypatch,factors,direction,'1','8192',
+        vector_first17=True,batch_pack=True,vector_second15=True,
+        global_inverse=global_inverse,matrix_first17=matrix_first17,prefix_pitch=32)
+
+
+def test_prefix_pitch_metadata(tmp_path,monkeypatch):
+    from flagfft_codegen.kernels_npu_dif import emit_vector_dif
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH','1')
+    meta=emit_vector_dif((17,15,13,2),'forward',1,tmp_path,aligned=True,
+        cube_prefix=True,vector_first17=True,batch_pack=True,vector_second15=True,prefix_pitch=32)
+    assert meta['arg_names']==['X','TW','Y']
+    assert meta['kernel_name']=='chirped_second'

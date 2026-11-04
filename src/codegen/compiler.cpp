@@ -435,6 +435,13 @@ namespace {
     if (batch_pack && flag_or_default("FLAGFFT_NPU_DIF_FACTOR_COST",true))
       factors=npu_vector_dif_costed_suffix(factors);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
+    // Keep the vector-15 producer's GM rows aligned to 128-byte boundaries.
+    // Its padded intermediate is consumed by the existing axis switch; later
+    // passes retain their original layout and coefficient tables.
+    const bool prefix_pitch=batch_pack && vector_first17 && vector_second15 &&
+        n/initial_prefix%32!=0 && flag_or_default("FLAGFFT_NPU_DIF_PREFIX_PITCH",true);
+    const int64_t prefix_storage=prefix_pitch?initial_prefix*ceiling(n/initial_prefix,32)*32:0;
+    const int64_t allocation_length=std::max(workspace_length,prefix_storage);
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
     bool switched=false;
@@ -449,6 +456,7 @@ namespace {
       if (batch_pack) key.perm_form+="_batchpack";
       if (global_inverse) key.perm_form+="_globalconj";
       if (matrix_first17) key.perm_form+="_half17";
+      if (prefix_pitch && (passes.size()==1 || passes.size()==2)) key.perm_form+="_pitch32";
       if ((matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
@@ -558,9 +566,9 @@ namespace {
       const int64_t rows=padded_prefix<=256 ? 4 : 2;
       append(DeviceAllocation(sizeof(float)),ceiling(n/initial_prefix,rows),1,false);
     }
-    const auto bytes=static_cast<std::size_t>(batch*workspace_length*2*sizeof(float));
+    const auto bytes=static_cast<std::size_t>(batch*allocation_length*2*sizeof(float));
     return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
-        adaptor::Memory(bytes),adaptor::Memory(bytes),workspace_length,factors);
+        adaptor::Memory(bytes),adaptor::Memory(bytes),allocation_length,factors);
   }
 
   std::vector<int64_t> npu_mixed_axis_factors(int64_t length) {
@@ -3254,7 +3262,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       // independent tiles. Only halve its final DFT and fuse the final store.
       const bool single_half_last=complex_api && batch==1 && !wide &&
           n1>=128 && n2>=128 && flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
-          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",true);
+          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",false);
       if (complex_half || single_half_last) {
         if (complex_half) {
           for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {

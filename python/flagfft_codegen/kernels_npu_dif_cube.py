@@ -118,7 +118,29 @@ def _batch_grouped_late_stage(s,direction,bp,columns=128):
  return '\n'.join(lines)+'\n'
 
 
-def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False,matrix_first17=False):
+def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False,matrix_first17=False,prefix_pitch=1):
+ if prefix_pitch!=1:
+  if prefix_pitch!=32 or not (vector_first17 and vector_second15 and batch_pack):
+   raise ValueError('Aligned prefix pitch requires a batch-grouped vector 17/15 prefix')
+  source,specs=build_cube_prefix_dif(factors,direction,vector_first17=vector_first17,
+      batch_pack=batch_pack,vector_second15=vector_second15,global_inverse=global_inverse,
+      matrix_first17=matrix_first17)
+  n=math.prod(factors);previous=factors[0];m=n//(previous*factors[1])
+  pitch=math.ceil(m/prefix_pitch)*prefix_pitch;storage=previous*factors[1]*pitch
+  if pitch==m:return source,specs
+  def second(body):
+   old=f'dst=d*{previous*m}+pf*{m}+q'
+   if old not in body:raise ValueError('Prefix pitch requires a vector second stage')
+   body=body.replace(old,f'dst=d*{previous*pitch}+pf*{pitch}+q')
+   return body.replace(f'Y+b*{2*n}+{n}+dst',f'Y+b*{2*storage}+{storage}+dst').replace(f'Y+b*{2*n}+dst',f'Y+b*{2*storage}+dst')
+  def switch(body):
+   body=body.replace(f'off=row[:,None]*{m}+col[None,:]',f'off=row[:,None]*{pitch}+col[None,:]')
+   return body.replace(f'X+batch*{2*n}+{n}+off',f'X+batch*{2*storage}+{storage}+off').replace(f'X+batch*{2*n}+off',f'X+batch*{2*storage}+off')
+  for name,transform in [(specs[1]['name'],second),('switch_axes',switch)]:
+   source,count=re.subn(r'@triton.jit\ndef '+name+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda match:transform(match.group(0)),source)
+   if count!=1:raise ValueError('Missing prefix layout stage')
+  for stage in (0,1):specs[stage]=dict(specs[stage],physical_n=max(specs[stage]['physical_n'],storage))
+  return source,specs
  if matrix_first17 and (not vector_first17 or not batch_pack):
   raise ValueError('Half-matrix radix17 requires batch-grouped vector-17 DIF')
  if global_inverse:

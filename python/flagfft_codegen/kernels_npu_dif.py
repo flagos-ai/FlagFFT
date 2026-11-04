@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -130,6 +130,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Unsupported DIF factors')
     if direction not in ('forward','inverse'):
         raise ValueError('Unsupported DIF direction')
+    if prefix_pitch!=1 and not cube_prefix:
+        raise ValueError('Aligned prefix pitch requires Cube DIF')
     if batch_pack and not cube_prefix:
         raise ValueError('Batch-grouped DIF requires the Cube DIF plan')
     if terminal8 and not flat_power2:
@@ -150,7 +152,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     elif cube_prefix:
         if not aligned:raise ValueError('Cube DIF prefix requires an aligned layout')
         from .kernels_npu_dif_cube import build_cube_prefix_dif
-        source,specs=build_cube_prefix_dif(tuple(factors),direction,vector_first17=vector_first17,batch_pack=batch_pack,vector_second15=vector_second15,global_inverse=global_inverse,matrix_first17=matrix_first17)
+        source,specs=build_cube_prefix_dif(tuple(factors),direction,vector_first17=vector_first17,batch_pack=batch_pack,vector_second15=vector_second15,global_inverse=global_inverse,matrix_first17=matrix_first17,prefix_pitch=prefix_pitch)
     elif aligned:
         from .kernels_npu_dif_aligned import build_aligned_vector_dif
         source,specs=build_aligned_vector_dif(tuple(factors),direction)

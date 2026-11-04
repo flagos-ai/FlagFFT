@@ -9,7 +9,8 @@ pytest.importorskip('torch_npu')
 @pytest.mark.parametrize('n,batch,pattern',[(46189,1,'random'),(46189,1,'tone'),(46189,1,'basis'),(46189,1,'cancellation'),(46189,17,'random'),(46189,33,'random')])
 @pytest.mark.parametrize('direction',[-1,1])
 @pytest.mark.parametrize('in_place',[False,True])
-def test_complex_half_matrix_live(n,batch,pattern,direction,in_place):
+def test_complex_half_matrix_live(n,batch,pattern,direction,in_place,monkeypatch):
+    if batch==1:monkeypatch.setenv("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST","1")
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
     lib=ctypes.CDLL(path)
