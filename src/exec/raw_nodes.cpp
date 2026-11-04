@@ -3740,6 +3740,50 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
   return FLAGFFT_SUCCESS;
 }
 
+CompiledRawPairedMatrixC2RNode::CompiledRawPairedMatrixC2RNode(
+    int64_t n1,int64_t n2,int64_t max_batch,
+    std::vector<std::shared_ptr<JitKernel>> kernels,
+    std::vector<DeviceAllocation> tables,std::vector<DeviceAllocation> scratch)
+    : n1(n1),n2(n2),max_batch(max_batch),kernels(std::move(kernels)),
+      tables(std::move(tables)),scratch(std::move(scratch)) {}
+
+std::string CompiledRawPairedMatrixC2RNode::describe() const {
+  return "CompiledRawPairedMatrixC2R(n1="+std::to_string(n1)+", n2="+
+      std::to_string(n2)+", triton_fp32_ieee=1, hermitian_half_rows=1)";
+}
+
+flagfftResult CompiledRawPairedMatrixC2RNode::execute(adaptor::DevicePtr input,
+    adaptor::DevicePtr output,const RawExecutionContext &context) const {
+  if (context.batch<=0 || context.batch>max_batch) return FLAGFFT_INVALID_SIZE;
+  int64_t pa=1,ph=1;
+  while(pa<n1)pa*=2;
+  const int64_t h=n2/2+1,n=n1*n2;
+  while(ph<h)ph*=2;
+  const int64_t id=context.input_distance>0?context.input_distance:n/2+1;
+  int64_t od=context.output_distance>0?context.output_distance:n;
+  if (input==output) od=std::max<int64_t>(od,2*(n/2+1));
+  const int64_t pbytes=h*2*pa*sizeof(float),qbytes=n1*2*ph*sizeof(float);
+  const int64_t max_tiles=std::max(ceil_div(pa,64)*ceil_div(h,64),
+      std::max(ceil_div(h,128)*ceil_div(2*n1,128),ceil_div(n1,64)*ceil_div(n2,64)));
+  const int64_t limit=std::max<int64_t>(1,65535/max_tiles);
+  for (int64_t start=0;start<context.batch;start+=limit) {
+    const int64_t count=std::min(limit,context.batch-start);
+    auto p=scratch[0].get()+start*pbytes,q=scratch[1].get()+start*qbytes;
+    kernels[0]->launch(context.stream,
+        {JitKernelArg::device(input+start*id*2*sizeof(float)),JitKernelArg::device(p),
+         JitKernelArg::i64(id)},ceil_div(pa,64),ceil_div(h,64),count);
+    kernels[1]->launch(context.stream,
+        {JitKernelArg::device(p),JitKernelArg::device(tables[0].get()),
+         JitKernelArg::device(tables[2].get()),JitKernelArg::device(q)},
+        ceil_div(h,128),ceil_div(2*n1,128),count);
+    kernels[2]->launch(context.stream,
+        {JitKernelArg::device(q),JitKernelArg::device(tables[1].get()),
+         JitKernelArg::device(output+start*od*sizeof(float)),JitKernelArg::i64(od)},
+        ceil_div(n1,64),ceil_div(n2,64),count);
+  }
+  return FLAGFFT_SUCCESS;
+}
+
 CompiledRawMatrixFFTNode::CompiledRawMatrixFFTNode(int64_t length, int64_t mode, int64_t max_batch,
     std::shared_ptr<JitKernel> pack, std::shared_ptr<JitKernel> cube,
     DeviceAllocation weights, DeviceAllocation scratch)

@@ -258,6 +258,9 @@ def cube1_finish(P,W,Y):
 
 
 def emit_matrix_fourstep(a,b,phase,direction,out_dir,wide=False):
+    if phase in ('pack_inverse','cube0_inverse_half_pack','cube1_inverse_half_real'):
+        from .kernels_npu_matrix_paired_inverse import emit_paired_inverse
+        return emit_paired_inverse(a,b,phase,direction,out_dir)
     names=('pack0','cube0','pack1','cube1','transpose','pack0_real','cube0_real','cube1_half','transpose_half','transpose_real','cube0_pack1','cube1_finish_real','cube0_real_pack1','cube1_finish')
     if phase not in names or direction not in ('forward','inverse'):
         raise ValueError('Invalid matrix four-step phase or direction')

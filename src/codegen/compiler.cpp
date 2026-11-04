@@ -3861,6 +3861,57 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       flag_or_default("FLAGFFT_NPU_MATRIX_REAL_POWER2",false))
     if (auto matrix=make_npu_matrix_child(request,node->length,batch,2)) return matrix;
 #endif
+#if defined(FLAGFFT_BACKEND_NPU)
+  if (const auto four_step=std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+    const int64_t a=four_step->n1,b=four_step->n2;
+    if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
+        request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
+        request.origin_rank<=1 && request.raw_dim==1 && batch>=16 &&
+        a>=128 && a<=256 && b>=128 && b<=256 && a%2 && b%2 &&
+        flag_or_default("FLAGFFT_NPU_MATRIX_FFT",false) &&
+        flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FOURSTEP",false) &&
+        flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
+        flag_or_default("FLAGFFT_NPU_MATRIX_HERMITIAN_INVERSE",true)) {
+      int64_t pa=1,ph=1,pb=1;
+      const int64_t h=b/2+1;
+      while(pa<a)pa*=2;
+      while(ph<h)ph*=2;
+      while(pb<b)pb*=2;
+      std::vector<std::shared_ptr<JitKernel>> kernels;
+      auto key=KernelKey::four_step_row(triton_target_for_request(request),
+          "inverse",request.input_dtype,a,b,a,{a},32,4,{},a);
+      for(const char *phase:{"pack_inverse","cube0_inverse_half_pack","cube1_inverse_half_real"}) {
+        key.perm_form=std::string("npu_matrix_fourstep_")+phase+"_wide";
+        kernels.push_back(compile_kernel(key));
+      }
+      std::vector<float> first(4*pa*pa,0.f),last(2*ph*pb,0.f),twiddle(2*h*a);
+      for(int64_t j=0;j<a;++j)for(int64_t k=0;k<a;++k) {
+        const double angle=2*kPi*j*k/a;
+        const float c=static_cast<float>(std::cos(angle)),v=static_cast<float>(std::sin(angle));
+        first[j*2*pa+2*k]=c;first[j*2*pa+2*k+1]=v;
+        first[(pa+j)*2*pa+2*k]=-v;first[(pa+j)*2*pa+2*k+1]=c;
+      }
+      for(int64_t j=0;j<h;++j)for(int64_t k=0;k<b;++k) {
+        const double angle=2*kPi*j*k/b,weight=j==0?1.:2.;
+        last[j*pb+k]=static_cast<float>(weight*std::cos(angle));
+        last[(ph+j)*pb+k]=j==0?0.f:static_cast<float>(-weight*std::sin(angle));
+      }
+      for(int64_t j=0;j<h;++j)for(int64_t k=0;k<a;++k) {
+        const double angle=2*kPi*j*k/(a*b);
+        twiddle[j*a+k]=static_cast<float>(std::cos(angle));
+        twiddle[h*a+j*a+k]=static_cast<float>(std::sin(angle));
+      }
+      std::vector<DeviceAllocation> tables,scratch;
+      tables.push_back(DeviceAllocation::from_floats(first));
+      tables.push_back(DeviceAllocation::from_floats(last));
+      tables.push_back(DeviceAllocation::from_floats(twiddle));
+      scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*h*2*pa*sizeof(float))));
+      scratch.push_back(adaptor::Memory(static_cast<std::size_t>(batch*a*2*ph*sizeof(float))));
+      return std::make_shared<CompiledRawPairedMatrixC2RNode>(a,b,batch,
+          std::move(kernels),std::move(tables),std::move(scratch));
+    }
+  }
+#endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
   // Reuse the bounded complex-axis schedule for mixed real four-step
