@@ -8,7 +8,9 @@ pytest.importorskip('torch_npu')
 
 @pytest.mark.parametrize('n,batch,pattern,default_policy',
     [(46189,1,pattern,policy) for pattern in ('random','tone','basis','cancellation')
-     for policy in (False,True)]+[(46189,17,'random',False),(46189,33,'random',False)])
+     for policy in (False,True)]+
+    [(46189,17,pattern,False) for pattern in ('tone','basis','cancellation')]+
+    [(46189,17,'random',False),(46189,33,'random',False)])
 @pytest.mark.parametrize('direction',[-1,1])
 @pytest.mark.parametrize('in_place',[False,True])
 def test_complex_half_matrix_live(n,batch,pattern,default_policy,direction,in_place,monkeypatch):
