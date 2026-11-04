@@ -35,6 +35,7 @@ X-Build-Environment: This package is designed to be built in a CUDA container
 Package: libflagfft-nvidia
 Architecture: amd64
 Depends: ${shlibs:Depends}, ${misc:Depends}, python3.12
+Recommends: python3-flagtree-nvidia
 Description: FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
  FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation,
  targeting FlagOS multi-vendor accelerators. The NVIDIA backend uses
