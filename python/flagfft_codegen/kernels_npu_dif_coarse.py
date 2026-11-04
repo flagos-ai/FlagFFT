@@ -5,13 +5,13 @@ import math
 from .metadata import _module_source
 from .kernels_common import codelet_radices_for
 from .kernels_leaf import _emit_natural_order_codelet_call
-from .kernels_npu_dif_cube import _batch_grouped_late_stage
+from .kernels_npu_dif_cube import _batch_grouped_late_stage,_grouped_late_stage
 from .kernels_npu_dif_aligned import _fused_finish
 from .npu_coprime import coprime_source
 from .npu_radix9 import radix9_source
 
 
-def build_coarse_dif(factors,direction='forward',global_inverse=False):
+def build_coarse_dif(factors,direction='forward',global_inverse=False,single_batch=False):
     if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
     mode='forward' if global_inverse else direction
     factors=tuple(factors)
@@ -66,6 +66,10 @@ def build_coarse_dif(factors,direction='forward',global_inverse=False):
             previous_prefix=previous_prefix,physical_prefix=pp,initial_prefix=p0,
             padded_prefix=pad,physical_n=pn,deferred_twiddle=i==2,auto=True)
         if i+1==len(factors):body,spec=_fused_finish(spec,mode,conjugate_output=global_inverse)
+        elif single_batch:
+            columns=min(512,1<<(pp-1).bit_length())
+            spec['grid']=(m*math.ceil(pp/columns),)
+            body=_grouped_late_stage(spec,mode,columns)
         else:body=_batch_grouped_late_stage(spec,mode,4,128)
         chunks.append(body);specs.append(spec);previous_prefix=prefix;prefix*=r
     source=_module_source('\n'.join(chunks),tuple(sorted(codelet_radices_for(factors))))

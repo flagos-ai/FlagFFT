@@ -267,7 +267,10 @@ namespace {
 
   std::shared_ptr<CompiledRawNode> make_npu_coarse_dif_child(
       const FFTRequest &request, int64_t n, int64_t batch) {
-    if (batch<16 || !flag_or_default("FLAGFFT_NPU_DIF_COARSE_PREFIX",true) ||
+    const bool single_batch=batch==1 && !request.packed_real_child &&
+        request.real_transform_kind.empty() && request.origin_real_transform_kind.empty() &&
+        flag_or_default("FLAGFFT_NPU_DIF_SMALL_COARSE",true);
+    if ((!single_batch && batch<16) || !flag_or_default("FLAGFFT_NPU_DIF_COARSE_PREFIX",true) ||
         !flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true) ||
         !flag_or_default("FLAGFFT_NPU_DIF_LATE_AUTO_BLOCK",false) ||
         !flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) ||
@@ -276,6 +279,10 @@ namespace {
     if (!first) return nullptr;
     const int64_t initial=first*15,padded=first*16,remaining=n/initial;
     if (remaining<1024) return nullptr;
+    const int64_t prefix_columns=first==4?128:64;
+    // Forty independent vector tiles fill the 910B4 AIV cores even when the
+    // API batch contains one transform. Shorter plans retain their schedule.
+    if (single_batch && (remaining+prefix_columns-1)/prefix_columns<40) return nullptr;
     // Only small suffix codelets are admitted. Large prime suffixes have
     // different register and transpose costs and retain the existing plan.
     std::vector<int64_t> factors={first,15};
@@ -292,6 +299,7 @@ namespace {
       auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
           request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form="npu_vector_dif_coarse_"+std::to_string(passes.size());
+      if (single_batch) key.perm_form+="_single";
       if (global_inverse) key.perm_form+="_globalconj";
       key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),
@@ -329,7 +337,11 @@ namespace {
         while(rows<8 && 2*rows*radix*padded<=4096)rows*=2;
         grid=(prefix/initial+rows-1)/rows;
       }
-      append(std::move(values),grid,final?1:4);
+      if (single_batch && !final) {
+        int64_t width=1;while(width<physical_prefix && width<512)width*=2;
+        grid=m*((physical_prefix+width-1)/width);
+      }
+      append(std::move(values),grid,final||single_batch?1:4);
       previous_prefix=prefix;prefix*=radix;
     }
     const auto bytes=static_cast<std::size_t>(batch*physical_n*2*sizeof(float));
@@ -441,7 +453,7 @@ namespace {
         padded_prefix==initial_prefix+1 && padded_prefix<=256 &&
         n/initial_prefix<=4096 && !request.packed_real_child &&
         request.real_transform_kind.empty() && request.origin_real_transform_kind.empty() &&
-        flag_or_default("FLAGFFT_NPU_DIF_DENSE_SHORT_PREFIX",true);
+        flag_or_default("FLAGFFT_NPU_DIF_DENSE_SHORT_PREFIX",false);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
     // Keep the vector-15 producer's GM rows aligned to 128-byte boundaries.
     // Its padded intermediate is consumed by the existing axis switch; later
@@ -3375,17 +3387,31 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       }
       const int64_t row_budget=recursive && n1>=512?4096:2048;
       const int64_t col_budget=recursive && n2>=512?4096:2048;
-      const int64_t row_tile=std::min({preferred,n2,std::max<int64_t>(1,
+      int64_t row_tile=std::min({preferred,n2,std::max<int64_t>(1,
           row_budget/(recursive?n1:std::max(n1,n2)))});
-      const int64_t col_tile=std::min({preferred,n1,std::max<int64_t>(1,
+      int64_t col_tile=std::min({preferred,n1,std::max<int64_t>(1,
           col_budget/(recursive?n2:std::max(n1,n2)))});
+      const bool small_single=batch==1 && n1>=128 && n2>=128 && n1<=256 && n2<=256 &&
+          !request.packed_real_child && request.origin_rank<=1 &&
+          request.real_transform_kind.empty() && request.origin_real_transform_kind.empty();
+      if (small_single && flag_or_default("FLAGFFT_NPU_STRUCTURED_SINGLE_TILES",true)) {
+        // Keep at least sixteen independent programs without dropping below
+        // the validated eight-column automatic scheduling path.
+        row_tile=std::min(row_tile,std::max<int64_t>(8,n2/16));
+        col_tile=std::min(col_tile,std::max<int64_t>(8,n1/16));
+      }
+      const bool global_inverse=small_single && request.direction=="inverse" &&
+          flag_or_default("FLAGFFT_NPU_STRUCTURED_SINGLE_GLOBAL",true);
       auto row_key = KernelKey::four_step_row(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n1, {n1}, 32, 4, {}, n1);
       auto col_key = KernelKey::four_step_col(triton_target_for_request(request),
           request.direction, request.input_dtype, n1, n2, n2, {n2}, 32, 4, {}, n2);
       row_key.perm_form = col_key.perm_form = recursive
           ? "npu_structured_recursive_axis_planar" : "npu_structured_planar";
-      if (explicit_pack) {
+      if (global_inverse) {
+        row_key.perm_form+="_globalconj";col_key.perm_form+="_globalconj";
+      }
+      if (explicit_pack || small_single) {
         row_key.perm_form+="_pack_"+std::to_string(row_tile);
         col_key.perm_form+="_pack_"+std::to_string(col_tile);
       }
@@ -3395,7 +3421,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return std::make_shared<CompiledRawFourStepFusedNode>(four_step->length, n1, n2,
           compile_kernel(row_key), std::move(row_tables),
           compile_kernel(col_key), std::move(col_tables),
-          npu_structured_cross(four_step->length, n1, request.direction == "inverse"),
+          npu_structured_cross(four_step->length, n1, request.direction == "inverse" && !global_inverse),
           adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * sizeof(float) * 2)));
     }
     if (request.device_type == "npu" && request.device_arch.rfind("Ascend910B",0)==0 &&

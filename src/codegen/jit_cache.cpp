@@ -807,6 +807,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-global-inverse";
     }
+    if (coarse && phase.size()>=7 && phase.compare(phase.size()-7,7,"_single")==0) {
+      phase.resize(phase.size()-7);
+      jit_command << " --npu-vector-dif-coarse-single";
+    }
     if (phase.size()>=10 && phase.compare(phase.size()-10,10,"_batchpack")==0) {
       phase.resize(phase.size()-10);
       jit_command << " --npu-vector-dif-batch-pack";
@@ -833,10 +837,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.perm_form == "npu_packed_mixed_planar") jit_command << " --npu-packed-mixed-axis";
   const auto structured_pack=key.perm_form.find("_pack_");
-  const std::string structured_form=key.perm_form.substr(0,structured_pack);
+  std::string structured_form=key.perm_form.substr(0,structured_pack);
+  const bool structured_global=structured_form.size()>=11 &&
+      structured_form.compare(structured_form.size()-11,11,"_globalconj")==0;
+  if (structured_global) structured_form.resize(structured_form.size()-11);
   if (structured_form=="npu_structured" || structured_form=="npu_structured_planar" ||
       structured_form=="npu_structured_recursive_axis_planar") {
     jit_command << " --npu-structured-fft";
+    if (structured_global) jit_command << " --npu-structured-global-inverse";
     if (structured_form=="npu_structured_recursive_axis_planar")
       jit_command << " --npu-structured-recursive";
     if (structured_pack!=std::string::npos)

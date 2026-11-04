@@ -140,6 +140,7 @@ def main() -> None:
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--npu-structured-pack", type=int, choices=(1,2,4,8,16,32))
+    parser.add_argument("--npu-structured-global-inverse", action="store_true")
     parser.add_argument("--npu-structured-fft", action="store_true")
     parser.add_argument("--npu-frequency-dft", action="store_true")
     parser.add_argument("--npu-packed-mixed-axis", action="store_true")
@@ -147,6 +148,7 @@ def main() -> None:
     parser.add_argument("--npu-power2", action="store_true")
     parser.add_argument("--npu-recursive-power2", action="store_true")
     parser.add_argument("--npu-tensor-shape", type=_csv_ints, default=())
+    parser.add_argument("--npu-vector-dif-coarse-single", action="store_true")
     parser.add_argument("--npu-vector-dif-coarse", action="store_true")
     parser.add_argument("--npu-vector-dif-phase", type=int)
     parser.add_argument("--npu-vector-dif-aligned", action="store_true")
@@ -463,7 +465,7 @@ def main() -> None:
             tile=args.npu_structured_pack or min(8,max(1,(4096 if args.npu_structured_recursive else 2048)//
                 (max(1,axis_length) if args.npu_structured_recursive else
                  max(args.four_step_n1 or 1,args.four_step_n2 or 1)))),
-            recursive=args.npu_structured_recursive)
+            recursive=args.npu_structured_recursive,global_inverse=args.npu_structured_global_inverse)
     elif spec.family == BLUESTEIN:
         metadata = _emit_bluestein_jit_kernel(
             kernel=args.kernel,
@@ -496,7 +498,7 @@ def main() -> None:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Vector DIF requires NPU FP32')
         from .kernels_npu_dif import emit_vector_dif
-        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8,coarse=args.npu_vector_dif_coarse,global_inverse=args.npu_vector_dif_global_inverse,matrix_first17=args.npu_vector_dif_matrix_first17,prefix_pitch=args.npu_vector_dif_prefix_pitch,dense_prefix=args.npu_vector_dif_dense_prefix)
+        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8,coarse=args.npu_vector_dif_coarse,global_inverse=args.npu_vector_dif_global_inverse,matrix_first17=args.npu_vector_dif_matrix_first17,prefix_pitch=args.npu_vector_dif_prefix_pitch,dense_prefix=args.npu_vector_dif_dense_prefix,coarse_single=args.npu_vector_dif_coarse_single)
     elif args.npu_matrix_fourstep_phase:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Matrix four-step requires NPU FP32')

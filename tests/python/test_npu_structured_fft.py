@@ -125,7 +125,7 @@ def axis_roots(length, columns, recursive):
     (64,128,8,False),(128,256,8,False),(512,1024,2,False),
     (512,1024,4,True),(1024,512,4,True),(512,2048,2,True),(512,1024,(8,4),True)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
-def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,recursive,direction):
+def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,recursive,direction,global_inverse=False):
     torch.manual_seed(20261028)
     n,batch = a*b,1
     x = torch.randn(batch,n,2)
@@ -133,11 +133,11 @@ def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,recursive,directio
     temp,y = torch.empty_like(x),torch.full_like(x,float('nan'))
     # The private fused axis uses contiguous planar coefficients in k1,j2 order.
     k1,j2 = torch.arange(a)[:,None],torch.arange(b)[None,:]
-    angle = (-1 if direction=='forward' else 1)*2*math.pi*j2.double()*k1.double()/n
+    angle = (-1 if direction=='forward' or global_inverse else 1)*2*math.pi*j2.double()*k1.double()/n
     twiddle = torch.cat((angle.cos().flatten(),angle.sin().flatten())).float()
     for first in (True,False):
         inner = tile[0 if first else 1] if isinstance(tile, tuple) else tile
-        meta = emit_structured(length=a,direction=direction,out_dir=tmp_path,first=first,n1=a,n2=b,tile=inner,recursive=recursive)
+        meta = emit_structured(length=a,direction=direction,out_dir=tmp_path,first=first,n1=a,n2=b,tile=inner,recursive=recursive,global_inverse=global_inverse)
         ns,pid = execute_module(meta['module_path'])
         for transform in range(batch):
             pid[1] = transform
@@ -151,3 +151,9 @@ def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,recursive,directio
     assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref) < 1e-6
     assert (got-ref).abs().max()/ref.abs().max() < 2e-6
     assert torch.equal(x,saved)
+
+
+@pytest.mark.parametrize('a,b',[(128,128),(128,256),(256,128),(256,256)])
+@pytest.mark.parametrize('recursive',[False,True])
+def test_global_inverse_two_pass(tmp_path,a,b,recursive):
+    test_two_pass_tables_and_store_contract(tmp_path,a,b,8,recursive,'inverse',global_inverse=True)

@@ -137,10 +137,12 @@ def recursive_axis_body(length, columns, root="roots_ptr"):
 """
 
 
-def emit_structured(*, length, direction, out_dir, first=None, n1=0, n2=0, tile=8, recursive=False):
+def emit_structured(*, length, direction, out_dir, first=None, n1=0, n2=0, tile=8, recursive=False,global_inverse=False):
     if direction not in ('forward','inverse'):
         raise ValueError('Invalid FFT direction')
     inverse=direction=='inverse'
+    if global_inverse and (not inverse or first is None or max(n1,n2)>=512):
+        raise ValueError('Global structured inverse requires bounded inverse two-pass axes')
     dense_second=(first is not None and recursive and min(n1,n2)>=512
                   and os.environ.get('FLAGFFT_NPU_FOURSTEP_DENSE_SECOND')=='1')
     if first is None:
@@ -262,6 +264,11 @@ def {name}({','.join(args)}):
 """
                 body+='    tl.store(out_ptr+dest,raw)\n'
         kind='four_step_row' if first else 'four_step_col'
+    if global_inverse:
+        parts=body.split('    if True: i=-i\n')
+        if len(parts)!=3:raise ValueError('Unexpected structured conjugation layout')
+        body=parts[0]+('    if True: i=-i\n' if first else '')+parts[1]+('' if first else '    if True: i=-i\n')+parts[2]
+        old_name=name;name+='_globalconj';body=body.replace('def '+old_name+'(','def '+name+'(')
     if dense_second:
         previous_name=name
         name+='_dense_second'

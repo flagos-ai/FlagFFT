@@ -9,10 +9,11 @@ from test_npu_structured_fft import Pointer,execute_module
 
 @pytest.mark.parametrize('factors',[(8,15,7,9,9,5),(4,15,7,9,9,5),(8,15,7,9,5),(4,15,8,4,3,2)])
 @pytest.mark.parametrize('direction',['forward','inverse','global_inverse'])
-def test_coarse_full_fft(tmp_path,factors,direction):
+@pytest.mark.parametrize('single_batch',[False,True])
+def test_coarse_full_fft(tmp_path,factors,direction,single_batch):
     global_inverse=direction=='global_inverse'
     if global_inverse:direction='inverse'
-    source,specs=build_coarse_dif(factors,direction,global_inverse=global_inverse)
+    source,specs=build_coarse_dif(factors,direction,global_inverse=global_inverse,single_batch=single_batch)
     path=tmp_path/'coarse.py';path.write_text(source);ns,pid=execute_module(path);pid.append(0)
     n=math.prod(factors);batch=3;a,b=factors[:2];initial=a*b;padded=a*16
     sign=-1 if direction=='forward' or global_inverse else 1
@@ -44,3 +45,11 @@ def test_coarse_full_fft(tmp_path,factors,direction):
     assert torch.linalg.vector_norm(got-reference)/torch.linalg.vector_norm(reference)<5e-7
     assert torch.equal(x,saved)
     assert (guard[:64]==31415.25).all() and (guard[-64:]==31415.25).all()
+
+
+def test_coarse_single_metadata(tmp_path):
+    from flagfft_codegen.kernels_npu_dif import emit_vector_dif
+    meta=emit_vector_dif((8,15,7,9,9,5),'inverse',1,tmp_path,
+        coarse=True,coarse_single=True,global_inverse=True)
+    assert meta['arg_names']==['X','TW','Y']
+    assert meta['batch_per_block']==1
