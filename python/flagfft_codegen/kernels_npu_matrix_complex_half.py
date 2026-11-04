@@ -32,10 +32,11 @@ def build_complex_half(a,b,first_rows=128,first_cols=32,last_rows=64,last_cols=3
 
 
 def emit_complex_half(a,b,phase,direction,out_dir):
- if phase not in ('cube0_complex_half_pack','cube1_complex_half_finish') or direction not in ('forward','inverse'):
+ narrow=phase=='cube1_complex_half_finish_narrow'
+ if phase not in ('cube0_complex_half_pack','cube1_complex_half_finish','cube1_complex_half_finish_narrow') or direction not in ('forward','inverse'):
   raise ValueError('Invalid complex half-spectrum matrix phase or direction')
  path=Path(out_dir)/f'npu_matrix_fourstep_{a}_{b}_{phase}_{direction}.py'
- path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,build_complex_half(a,b))
+ path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,build_complex_half(a,b,last_rows=32 if narrow else 64))
  args=['P','W','T','Y'] if phase=='cube0_complex_half_pack' else ['P','W','Y']
- meta=dict(module_path=str(path),kernel_name=phase,arg_names=args,signature=','.join(['*fp32:16']*len(args)),num_warps=4,num_stages=1,batch_per_block=1,inner_pack=1,tle_fused_twiddle=True,kernel_type='four_step_row',dtype='complex64',direction=direction,length=a*b)
+ meta=dict(module_path=str(path),kernel_name=phase.removesuffix("_narrow"),arg_names=args,signature=','.join(['*fp32:16']*len(args)),num_warps=4,num_stages=1,batch_per_block=1,inner_pack=1,tle_fused_twiddle=True,kernel_type='four_step_row',dtype='complex64',direction=direction,length=a*b)
  write_text_atomic(path.with_suffix('.json'),json.dumps(meta,sort_keys=True));return meta

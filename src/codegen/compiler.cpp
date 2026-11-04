@@ -3236,14 +3236,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       // Keep the real API children and their existing weight tables separate.
       std::vector<std::shared_ptr<JitKernel>> complex_half_kernels;
       std::vector<DeviceAllocation> complex_half_tables;
-      const bool complex_half=fused_pack_kernel && complex_finish_kernel &&
-          !request.real_transform && request.real_transform_kind.empty() &&
+      const bool complex_api=!request.real_transform && request.real_transform_kind.empty() &&
           request.origin_real_transform_kind.empty() && !request.packed_real_child &&
-          !request.convolution_child && request.origin_rank<=1 && request.raw_dim==1 &&
+          !request.convolution_child && request.origin_rank<=1 && request.raw_dim==1;
+      const bool complex_half=fused_pack_kernel && complex_finish_kernel && complex_api &&
           flag_or_default("FLAGFFT_NPU_MATRIX_COMPLEX_HALF",true);
-      if (complex_half) {
-        for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {
-          key.perm_form=std::string("npu_matrix_fourstep_")+phase+"_wide";
+      // A single transform retains the narrow first axis, which has enough
+      // independent tiles. Only halve its final DFT and fuse the final store.
+      const bool single_half_last=complex_api && batch==1 && !wide &&
+          n1>=128 && n2>=128 && flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",true);
+      if (complex_half || single_half_last) {
+        if (complex_half) {
+          for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {
+            key.perm_form=std::string("npu_matrix_fourstep_")+phase+"_wide";
+            complex_half_kernels.push_back(compile_kernel(key));
+          }
+        } else {
+          key.perm_form="npu_matrix_fourstep_cube1_complex_half_finish_narrow";
           complex_half_kernels.push_back(compile_kernel(key));
         }
         for (int stage=0;stage<2;++stage) {

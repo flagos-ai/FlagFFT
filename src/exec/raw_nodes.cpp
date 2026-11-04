@@ -3650,6 +3650,7 @@ std::string CompiledRawMatrixFourStepNode::describe() const {
       ", fused_real_pack="+std::to_string(real_fused_pack_kernel!=nullptr)+
       ", fused_complex_finish="+std::to_string(complex_finish_kernel!=nullptr)+
       ", complex_half_spectra="+std::to_string(!complex_half_kernels.empty())+
+      ", complex_half_last_only="+std::to_string(complex_half_kernels.size()==1)+
       ", fused_real_finish="+std::to_string(real_finish_kernel!=nullptr)+
       ", real_inverse_capable="+std::to_string(supports_real_inverse())+")";
 }
@@ -3729,6 +3730,13 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
             ceil_div(pads[1],128),ceil_div(2*n1,128),count);
         continue;
       }
+      if (!real_forward && !real_inverse && complex_half_kernels.size()==1 && stage==1) {
+        complex_half_kernels[0]->launch(context.stream,
+            {JitKernelArg::device(packed),JitKernelArg::device(complex_half_tables[1].get()),
+             JitKernelArg::device(output+start*output_bytes)},
+            ceil_div(n1,32),ceil_div(n2/2+1,32),count);
+        continue;
+      }
       if (!real_forward && !real_inverse && complex_finish_kernel && stage==1) {
         complex_finish_kernel->launch(context.stream,
             {JitKernelArg::device(packed),JitKernelArg::device(tables[1].get()),
@@ -3752,7 +3760,7 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
           ceil_div(real_forward && stage==1?2*(length/2+1):2*length,wide?128:64),wide?1:count);
     }
     if ((real_inverse && real_finish_kernel) ||
-        (!real_forward && !real_inverse && complex_finish_kernel)) continue;
+        (!real_forward && !real_inverse && (complex_finish_kernel || complex_half_kernels.size()==1))) continue;
     std::vector<JitKernelArg> final_args={JitKernelArg::device(last),JitKernelArg::device(output+start*output_bytes)};
     if (real_forward || real_inverse) final_args.push_back(JitKernelArg::i64(output_distance));
     const auto &final_kernel=real_forward?real_kernels[3]:real_inverse?real_inverse_kernel:kernels[4];
