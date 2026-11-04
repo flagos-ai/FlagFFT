@@ -25,7 +25,7 @@ def test_terminal_emitter(tmp_path):
  with pytest.raises(ValueError,match='require flat power DIF'):
   emit_vector_dif((16,16,16),'forward',0,tmp_path,terminal8=True)
 
-@pytest.mark.parametrize('factors',[(16,8,8),(16,16,16),(32,16,16),(16,32,16),(32,32,16,16),(32,32,32,16),(64,64,64),(64,64,128)])
+@pytest.mark.parametrize('factors',[(64,64),(128,64),(128,128),(16,8,8),(16,16,16),(32,16,16),(16,32,16),(32,32,16,16),(32,32,32,16),(64,64,64),(64,64,128)])
 @pytest.mark.parametrize('direction',['forward','inverse'])
 @pytest.mark.parametrize('terminal8',[False,True])
 def test_power_dif_complete(tmp_path,factors,direction,terminal8):

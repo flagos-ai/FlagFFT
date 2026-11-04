@@ -204,16 +204,24 @@ namespace {
     // Long two-axis plans otherwise require narrow DMA rows to keep their
     // complete axis in UB. Reuse a fixed 4096-element structured FFT working
     // set per program and select bounded axes for latency or DMA throughput.
+    const bool small_real=batch>=16 && request.packed_real_child &&
+        request.origin_rank<=1 && request.raw_dim==1 && n>=4096 && n<=16384 &&
+        flag_or_default("FLAGFFT_NPU_FLAT_SMALL_REAL",true);
     if (request.device_type!="npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
-        n<262144 || n>1048576 || (n&(n-1))!=0 || request.convolution_child ||
+        (!small_real && n<262144) || n>1048576 || (n&(n-1))!=0 || request.convolution_child ||
         !flag_or_default("FLAGFFT_NPU_FLAT_POWER_DIF",false)) return nullptr;
     int bits=0;for (auto size=n;size>1;size/=2) ++bits;
     std::vector<int64_t> factors;
     // A single transform benefits from one fewer intermediate pass. Keep
     // the first two axes at 64 and the final axis within the 128-point
     // structured helper limit; large batches retain their wider DMA rows.
-    if (batch==1 && bits<=19 &&
+    if (small_real) {
+      // The whole two-axis state fits the existing 4096-element budget.
+      // A wider sample pack amortises the short real child's tile setup.
+      int64_t first=1;while(first*first<n)first*=2;
+      factors={first,n/first};
+    } else if (batch==1 && bits<=19 &&
         flag_or_default("FLAGFFT_NPU_FLAT_POWER_THREE_AXIS",true)) {
       factors={64,64,int64_t{1}<<(bits-12)};
     } else {

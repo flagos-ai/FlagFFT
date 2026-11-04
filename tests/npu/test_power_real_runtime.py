@@ -6,7 +6,7 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('n,batch',[(524288,17),(1048576,3)])
+@pytest.mark.parametrize('n,batch',[(8192,17),(16384,17),(32768,17),(524288,17),(1048576,3)])
 @pytest.mark.parametrize('inverse',[False,True])
 @pytest.mark.parametrize('in_place',[False,True])
 def test_flat_power_real_live(n,batch,inverse,in_place):
