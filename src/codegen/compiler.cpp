@@ -3183,6 +3183,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         key.perm_form="npu_matrix_fourstep_cube0_pack1_wide";
         fused_pack_kernel=compile_kernel(key);
       }
+      std::shared_ptr<JitKernel> complex_finish_kernel;
+      if (fused_pack_kernel && flag_or_default("FLAGFFT_NPU_MATRIX_COMPLEX_FINISH",true)) {
+        key.perm_form="npu_matrix_fourstep_cube1_finish_wide";
+        complex_finish_kernel=compile_kernel(key);
+      }
       std::vector<std::shared_ptr<JitKernel>> real_kernels;
       if (request.direction=="forward" && flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FOURSTEP",false)) {
         for (const char *phase:{"pack0_real","cube0_real","cube1_half","transpose_half"}) {
@@ -3241,7 +3246,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
           std::move(kernels),std::move(tables),std::move(scratch),wide,
           std::move(real_kernels),std::move(real_inverse_kernel),std::move(fused_pack_kernel),
-          std::move(real_finish_kernel),std::move(real_fused_pack_kernel));
+          std::move(real_finish_kernel),std::move(real_fused_pack_kernel),
+          std::move(complex_finish_kernel));
     }
     if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;

@@ -11,7 +11,7 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('batch',[1,3])
 @pytest.mark.parametrize('wide',[False,True])
 @pytest.mark.parametrize('mode',['forward','inverse','r2c','c2r'])
-def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide,fused=False,finish=False):
+def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide,fused=False,finish=False,complex_finish=False):
     real_forward=mode=="r2c"
     real_inverse=mode=="c2r"
     direction="forward" if real_forward else "inverse" if real_inverse else mode
@@ -57,7 +57,7 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide,fused=False,finish=Fa
                         pid[1]=col
                         ns['cube0_real_pack1' if real_forward else 'cube0_pack1'](Pointer(packed[0]),Pointer(weights[0]),Pointer(tw),Pointer(packed[1]))
             continue
-        if finish and real_inverse and stage==1:
+        if ((finish and real_inverse) or complex_finish) and stage==1:
             continue
         for bz in range(1 if wide else batch):
             pid[2]=bz
@@ -76,9 +76,17 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide,fused=False,finish=Fa
                 for col in range((b+63)//64):
                     pid[1]=col
                     ns['cube1_finish_real'](Pointer(packed[1]),Pointer(weights[1][:,::2].contiguous()),Pointer(guarded,64),distance)
+    if complex_finish:
+        for bz in range(batch):
+            pid[2]=bz
+            for r in range((a+63)//64):
+                pid[0]=r
+                for col in range((b+31)//32):
+                    pid[1]=col
+                    ns['cube1_finish'](Pointer(packed[1]),Pointer(weights[1]),Pointer(guarded,64))
     for bz in range(batch):
         pid[2]=bz
-        for r in range(0 if finish and real_inverse else (a+tile-1)//tile):
+        for r in range(0 if ((finish and real_inverse) or complex_finish) else (a+tile-1)//tile):
             pid[0]=r
             for col in range(((b//2+1 if real_forward else b)+tile-1)//tile):
                 pid[1]=col
@@ -151,3 +159,18 @@ def test_real_fused_pack_metadata(tmp_path):
     meta=emit_matrix_fourstep(209,221,'cube0_real_pack1','forward',tmp_path,wide=True)
     assert meta['arg_names']==['P','W','T','Y']
     assert meta['signature']=='*fp32:16,*fp32:16,*fp32:16,*fp32:16'
+
+
+@pytest.mark.parametrize('a,b',[(129,170),(209,221),(221,209)])
+@pytest.mark.parametrize('direction',['forward','inverse'])
+@pytest.mark.parametrize('wide',[False,True])
+def test_complex_matrix_finish(tmp_path,a,b,direction,wide):
+    test_full_matrix_fourstep(tmp_path,a,b,3,direction,wide,fused=wide,complex_finish=True)
+
+
+def test_complex_matrix_finish_metadata(tmp_path):
+    from flagfft_codegen.kernels_npu_matrix_fourstep import emit_matrix_fourstep
+    for wide in (False,True):
+        meta=emit_matrix_fourstep(209,221,'cube1_finish','inverse',tmp_path,wide=wide)
+        assert meta['arg_names']==['P','W','Y']
+        assert meta['signature']=='*fp32:16,*fp32:16,*fp32:16'
