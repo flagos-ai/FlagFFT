@@ -789,6 +789,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-10);
       jit_command << " --npu-vector-dif-terminal8";
     }
+    if (phase.size()>=11 && phase.compare(phase.size()-11,11,"_globalconj")==0) {
+      phase.resize(phase.size()-11);
+      jit_command << " --npu-vector-dif-global-inverse";
+    }
     if (phase.size()>=10 && phase.compare(phase.size()-10,10,"_batchpack")==0) {
       phase.resize(phase.size()-10);
       jit_command << " --npu-vector-dif-batch-pack";

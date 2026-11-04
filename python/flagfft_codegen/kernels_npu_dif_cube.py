@@ -118,7 +118,23 @@ def _batch_grouped_late_stage(s,direction,bp,columns=128):
  return '\n'.join(lines)+'\n'
 
 
-def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False):
+def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False):
+ if global_inverse:
+  if direction!='inverse' or not vector_first17 or not batch_pack:
+   raise ValueError('Global inverse requires a batch-grouped vector-17 plan')
+  source,specs=build_cube_prefix_dif(factors,'forward',vector_first17=True,
+      batch_pack=True,vector_second15=vector_second15)
+  from .npu_radix17 import component_first_source
+  from .kernels_npu_dif_aligned import _fused_finish
+  first=specs[0]
+  body=component_first_source(first,math.prod(factors),'inverse',conjugate_output=True)
+  source=re.sub(r'@triton.jit\ndef '+first['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
+  last=specs[-1]
+  if last['name']!='fused_finish':raise ValueError('Global inverse requires a fused finish')
+  body,last=_fused_finish(last,'forward',conjugate_output=True)
+  source=re.sub(r'@triton.jit\ndef fused_finish\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
+  specs[-1]=last
+  return source,specs
  if len(factors)<4 or not (2<=factors[0]<=19 and 11<=factors[1]<=15 and factors[0]*factors[1]>=64):
   raise ValueError('Chirped DIF prefix needs two early stages and a large second radix')
  source,specs=build_aligned_vector_dif(factors,direction)

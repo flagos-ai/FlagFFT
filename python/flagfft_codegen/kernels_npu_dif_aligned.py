@@ -7,7 +7,7 @@ from flagfft_codegen.kernels_common import _NATURAL_ORDER_CODELET_RADICES
 from flagfft_codegen.kernels_leaf import _emit_natural_order_codelet_call,_emit_radix16_codelet_call,_emit_local_mixed_codelet_call
 
 
-def _fused_finish(spec, direction):
+def _fused_finish(spec, direction, conjugate_output=False):
  """Keep the last butterfly in UB and write compact complex rows directly."""
  radix=spec['r'];prefix=spec['prefix'];physical_prefix=spec['physical_prefix']
  padded=spec['padded_prefix'];initial=spec['initial_prefix']
@@ -38,6 +38,7 @@ def _fused_finish(spec, direction):
   lines += _emit_radix16_codelet_call('    ',direction)
  else:
   lines += _emit_local_mixed_codelet_call('    ',radix,direction)
+ if conjugate_output:lines += [f'    i{d}=-i{d}' for d in range(radix)]
  # Compact in UB, then issue a flat store. A masked 2D store would
  # retain the unaligned logical row stride after removing prefix padding.
  lines += [f'    word=tl.arange(0,{2*points})',

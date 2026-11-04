@@ -45,7 +45,7 @@ def radix17_source():
  return source+'\n'+'\n'.join(lines)+'\n'
 
 
-def component_first_source(spec,n,direction,columns=512):
+def component_first_source(spec,n,direction,columns=512,conjugate_output=False):
  """Share each real convolution between interleaved real and imaginary lanes."""
  # The cosine/sine convolutions have real coefficients, so they can process
  # both components as adjacent lanes. Split only at the planar output boundary.
@@ -66,5 +66,7 @@ def component_first_source(spec,n,direction,columns=512):
   size=g*points;lanes=g*c
   lines += [f'    raw=tl.zeros(({size},),tl.float32)']
   for j in range(g):lines += [f'    raw=al.insert_slice(raw,y{start+j},[{j*points}],[{points}],[1])']
-  lines += [f'    real,imag=tl.split(tl.reshape(raw,({lanes},2)))',f'    d=(tl.arange(0,{g})+{start})[:,None]',f'    q=base+lane[None,:]',f'    off=d*{m}+q',f'    tl.store(Y+batch*{2*n}+off,tl.reshape(real,({g},{c})),q<{m})',f'    tl.store(Y+batch*{2*n}+{n}+off,tl.reshape(imag,({g},{c})),q<{m})']
+  lines += [f'    real,imag=tl.split(tl.reshape(raw,({lanes},2)))']
+  if conjugate_output:lines += ['    imag=-imag']
+  lines += [f'    d=(tl.arange(0,{g})+{start})[:,None]',f'    q=base+lane[None,:]',f'    off=d*{m}+q',f'    tl.store(Y+batch*{2*n}+off,tl.reshape(real,({g},{c})),q<{m})',f'    tl.store(Y+batch*{2*n}+{n}+off,tl.reshape(imag,({g},{c})),q<{m})']
  return '\n'.join(lines)+'\n'

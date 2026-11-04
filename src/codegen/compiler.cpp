@@ -417,13 +417,16 @@ namespace {
     // and when automatic first-stage scheduling is disabled.
     const bool wide_first7=batch_pack && first_auto && factors[0]==7 &&
         flag_or_default("FLAGFFT_NPU_DIF_FIRST7_WIDE",true);
+    const bool global_inverse=request.direction=="inverse" && batch_pack && vector_first17 &&
+        fused_finish && flag_or_default("FLAGFFT_NPU_DIF_COMPONENT17",true) &&
+        flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
     if (batch_pack && flag_or_default("FLAGFFT_NPU_DIF_FACTOR_COST",true))
       factors=npu_vector_dif_costed_suffix(factors);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
     bool switched=false;
-    const double sign=request.direction=="inverse"?1.0:-1.0;
+    const double sign=request.direction=="inverse" && !global_inverse?1.0:-1.0;
     auto append=[&](DeviceAllocation weights,int64_t x,int64_t y,bool transpose,int64_t packed=1) {
       auto key=KernelKey::four_step_row(triton_target_for_request(request),
           request.direction,request.input_dtype,n,1,n,factors,32,4,{},n);
@@ -432,6 +435,7 @@ namespace {
       if (vector_second15) key.perm_form+="_vector15";
       if (vector_first17) key.perm_form+="_vector17";
       if (batch_pack) key.perm_form+="_batchpack";
+      if (global_inverse) key.perm_form+="_globalconj";
       if ((matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||

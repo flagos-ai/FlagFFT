@@ -47,18 +47,18 @@ def _tables(factors, specs, sign):
 @pytest.mark.parametrize('factors', [(17,13,3,4), (19,13,3,4), (17,15,7,2), (17,13,15,2), (7,15,3,4), (8,15,3,4), (7,15,10,4), (7,15,4,3), (17,13,4,5), (17,13,2,15), (7,15,3,9,4), (17,13,3,10,2), (17,15,13,2), (17,15,13,7,2), (19,15,3,2)])
 @pytest.mark.parametrize('direction', ['forward', 'inverse'])
 @pytest.mark.parametrize('dense_transpose,transpose_points', [('0','4096'), ('1','4096'), ('1','8192')])
-def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose, transpose_points, vector_first17=False, batch_pack=False, vector_second15=False):
+def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose, transpose_points, vector_first17=False, batch_pack=False, vector_second15=False,global_inverse=False):
     monkeypatch.setenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE", dense_transpose)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_POINTS', transpose_points)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH', '1')
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_TILE', '64')
-    source, specs = build_cube_prefix_dif(factors, direction, vector_first17=vector_first17, batch_pack=batch_pack, vector_second15=vector_second15)
+    source, specs = build_cube_prefix_dif(factors, direction, vector_first17=vector_first17, batch_pack=batch_pack, vector_second15=vector_second15,global_inverse=global_inverse)
     path = tmp_path/'cube.py'
     path.write_text(source)
     ns, pid = execute_module(path)
     pid.append(0)
     ns['tl'].dot = lambda a,b,acc=None,input_precision=None: a@b if acc is None else a@b+acc
-    sign = -1 if direction == 'forward' else 1
+    sign = -1 if direction == 'forward' or global_inverse else 1
     tables = _tables(factors, specs, sign)
     n, batch = math.prod(factors), 3
     torch.manual_seed(20261029)
@@ -80,7 +80,7 @@ def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, den
         current = output
     got = torch.view_as_complex(guard[64:-64].reshape(batch,n,2))
     z = torch.view_as_complex(x)
-    ref = torch.fft.fft(z) if sign<0 else torch.fft.ifft(z)*n
+    ref = torch.fft.fft(z) if direction=='forward' else torch.fft.ifft(z)*n
     assert torch.isfinite(got).all()
     assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref)<5e-7
     assert torch.equal(x,saved)
@@ -174,3 +174,19 @@ def test_component17_first_axis(tmp_path,monkeypatch,direction,pattern):
     assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref)<5e-7
     assert torch.equal(x,saved)
     assert (guard[:64]==31415.25).all() and (guard[-64:]==31415.25).all()
+
+
+@pytest.mark.parametrize('factors',[(17,15,13,7,8),(17,15,13,10,10,2),(17,15,13,10,10),(17,13,15,2)])
+def test_global_inverse_complete(tmp_path,monkeypatch,factors):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_COMPONENT17','1')
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')
+    test_cube_prefix_complete_fft(tmp_path,monkeypatch,factors,'inverse','1','8192',
+        True,True,factors[1]==15,True)
+
+
+def test_global_inverse_metadata(tmp_path,monkeypatch):
+    from flagfft_codegen.kernels_npu_dif import emit_vector_dif
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH','1')
+    meta=emit_vector_dif((17,15,13,2),'inverse',0,tmp_path,aligned=True,
+        cube_prefix=True,vector_first17=True,batch_pack=True,global_inverse=True)
+    assert meta['arg_names']==['X','TW','Y']
