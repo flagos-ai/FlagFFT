@@ -230,7 +230,9 @@ namespace {
     }
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1,previous_prefix=1;
-    const double sign=request.direction=="inverse"?1.0:-1.0;
+    const bool global_inverse=request.direction=="inverse" && batch>=16 &&
+        flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
+    const double sign=request.direction=="inverse" && !global_inverse?1.0:-1.0;
     for (std::size_t stage=0;stage<factors.size();++stage) {
       const int64_t radix=factors[stage],m=n/(prefix*radix),columns=4096/radix;
       std::vector<float> weights;
@@ -248,6 +250,7 @@ namespace {
       auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
           request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form="npu_vector_dif_flat_power2_"+std::to_string(stage);
+      if (global_inverse) key.perm_form+="_globalconj";
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
       if (batch>=16 && axis_bits>=3 && axis_bits%2 &&
           flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true))
@@ -281,12 +284,16 @@ namespace {
       while (rest%radix==0) { factors.push_back(radix);rest/=radix; }
     if (rest!=1 || factors.size()<3) return nullptr;
     const int64_t physical_n=remaining*padded,columns=first==4?128:64;
-    const double sign=request.direction=="inverse"?1.0:-1.0;
+    const bool global_inverse=request.direction=="inverse" &&
+        flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
+    const double sign=request.direction=="inverse" && !global_inverse?1.0:-1.0;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     auto append=[&](std::vector<float> weights,int64_t grid,int64_t packed) {
       auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
           request.input_dtype,n,1,n,factors,32,4,{},n);
-      key.perm_form="npu_vector_dif_coarse_"+std::to_string(passes.size())+"_auto";
+      key.perm_form="npu_vector_dif_coarse_"+std::to_string(passes.size());
+      if (global_inverse) key.perm_form+="_globalconj";
+      key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),
           DeviceAllocation::from_floats(weights),grid,1,false,packed});
     };
@@ -420,8 +427,10 @@ namespace {
     const bool matrix_first17=batch_pack && vector_first17 &&
         flag_or_default("FLAGFFT_NPU_DIF_COMPONENT17",true) &&
         flag_or_default("FLAGFFT_NPU_DIF_MATRIX_FIRST17",true);
-    const bool global_inverse=request.direction=="inverse" && batch_pack && vector_first17 &&
-        fused_finish && flag_or_default("FLAGFFT_NPU_DIF_COMPONENT17",true) &&
+    const bool global_inverse=request.direction=="inverse" && fused_finish &&
+        ((batch_pack && vector_first17 && flag_or_default("FLAGFFT_NPU_DIF_COMPONENT17",true)) ||
+         (batch==1 && cube_prefix && !matrix_first &&
+          flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true))) &&
         flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
     if (batch_pack && flag_or_default("FLAGFFT_NPU_DIF_FACTOR_COST",true))
       factors=npu_vector_dif_costed_suffix(factors);

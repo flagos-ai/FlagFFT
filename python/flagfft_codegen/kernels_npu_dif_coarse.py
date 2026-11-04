@@ -11,7 +11,9 @@ from .npu_coprime import coprime_source
 from .npu_radix9 import radix9_source
 
 
-def build_coarse_dif(factors,direction='forward'):
+def build_coarse_dif(factors,direction='forward',global_inverse=False):
+    if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
+    mode='forward' if global_inverse else direction
     factors=tuple(factors)
     if factors[:2] not in ((4,15),(8,15)) or any(r not in (2,3,4,5,7,8,9) for r in factors[2:]):
         raise ValueError('Coarse DIF requires a 4/8 x 15 prefix and small suffix codelets')
@@ -47,7 +49,7 @@ def build_coarse_dif(factors,direction='forward'):
     for d in range(b):
         ls += [f'    re=al.insert_slice(re,r{d},[{d*ac}],[{ac}],[1])',
                f'    im=al.insert_slice(im,i{d},[{d*ac}],[{ac}],[1])']
-    if direction=='inverse':ls += ['    im=-im']
+    if direction=='inverse' and not global_inverse:ls += ['    im=-im']
     ls += [f'    re=tl.trans(tl.reshape(re,({pad},{c})))',
            f'    im=tl.trans(tl.reshape(im,({pad},{c})))',
            f'    sample=base+tl.arange(0,{c})[:,None]',
@@ -63,8 +65,8 @@ def build_coarse_dif(factors,direction='forward'):
         spec=dict(name=f'coarse_stage_{i}',phase='late',stage=i,r=r,m=m,prefix=prefix,
             previous_prefix=previous_prefix,physical_prefix=pp,initial_prefix=p0,
             padded_prefix=pad,physical_n=pn,deferred_twiddle=i==2,auto=True)
-        if i+1==len(factors):body,spec=_fused_finish(spec,direction)
-        else:body=_batch_grouped_late_stage(spec,direction,4,128)
+        if i+1==len(factors):body,spec=_fused_finish(spec,mode,conjugate_output=global_inverse)
+        else:body=_batch_grouped_late_stage(spec,mode,4,128)
         chunks.append(body);specs.append(spec);previous_prefix=prefix;prefix*=r
     source=_module_source('\n'.join(chunks),tuple(sorted(codelet_radices_for(factors))))
     source+='\nimport triton.language.extra.cann.extension as al\n'+coprime_source(3,5)+'\n'+radix9_source()

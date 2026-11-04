@@ -138,15 +138,15 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('The vector-17 prefix requires the Cube DIF plan')
     if vector_second15 and not cube_prefix:
         raise ValueError('The vector second axis requires the Cube DIF plan')
-    if global_inverse and (not cube_prefix or direction!='inverse'):
-        raise ValueError('Global inverse requires inverse Cube DIF')
+    if global_inverse and (not (cube_prefix or coarse or flat_power2) or direction!='inverse'):
+        raise ValueError('Global inverse requires inverse grouped DIF')
     if coarse:
         from .kernels_npu_dif_coarse import build_coarse_dif
-        source,specs=build_coarse_dif(tuple(factors),direction)
+        source,specs=build_coarse_dif(tuple(factors),direction,global_inverse=global_inverse)
     elif flat_power2:
         if aligned or cube_prefix:raise ValueError("Flat power DIF uses a compact layout")
         from .kernels_npu_power_dif import build
-        source,specs=build(tuple(factors),direction,terminal8=terminal8)
+        source,specs=build(tuple(factors),direction,terminal8=terminal8,global_inverse=global_inverse)
     elif cube_prefix:
         if not aligned:raise ValueError('Cube DIF prefix requires an aligned layout')
         from .kernels_npu_dif_cube import build_cube_prefix_dif

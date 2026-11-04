@@ -122,18 +122,26 @@ def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch
  if matrix_first17 and (not vector_first17 or not batch_pack):
   raise ValueError('Half-matrix radix17 requires batch-grouped vector-17 DIF')
  if global_inverse:
-  if direction!='inverse' or not vector_first17 or not batch_pack:
-   raise ValueError('Global inverse requires a batch-grouped vector-17 plan')
-  source,specs=build_cube_prefix_dif(factors,'forward',vector_first17=True,
-      batch_pack=True,vector_second15=vector_second15,matrix_first17=matrix_first17)
+  if direction!='inverse' or (batch_pack and not vector_first17):
+   raise ValueError('Global inverse requires inverse grouped vector DIF')
+  source,specs=build_cube_prefix_dif(factors,'forward',vector_first17=vector_first17,
+      batch_pack=batch_pack,vector_second15=vector_second15,matrix_first17=matrix_first17)
   from .npu_radix17 import component_first_source
   from .kernels_npu_dif_aligned import _fused_finish
   first=specs[0]
   if matrix_first17:
    from .npu_radix17_matrix import half_matrix_first_source
    body=half_matrix_first_source(first,math.prod(factors),conjugate_output=True)
-  else:
+  elif batch_pack:
    body=component_first_source(first,math.prod(factors),'inverse',conjugate_output=True)
+  else:
+   if (factors[0] not in _NATURAL_ORDER_CODELET_RADICES or
+       (factors[0]>=13 and not vector_first17) or
+       os.environ.get('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')=='0'):
+    raise ValueError('Global inverse needs a grouped vector first stage')
+   body=_grouped_first_stage(first,math.prod(factors),'forward',512)
+   # Negate each interleaved load group once before slicing its codelet lanes.
+   body=re.sub(r'(    real,imag=tl.split[^\n]+\n)',r'\1    imag=-imag\n',body)
   source=re.sub(r'@triton.jit\ndef '+first['name']+r'\([^\n]*\):\n[\s\S]*?(?=\n@triton.jit|\Z)',lambda _:body,source)
   last=specs[-1]
   if last['name']!='fused_finish':raise ValueError('Global inverse requires a fused finish')

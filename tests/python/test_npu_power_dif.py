@@ -26,11 +26,13 @@ def test_terminal_emitter(tmp_path):
   emit_vector_dif((16,16,16),'forward',0,tmp_path,terminal8=True)
 
 @pytest.mark.parametrize('factors',[(64,64),(128,64),(128,128),(16,8,8),(16,16,16),(32,16,16),(16,32,16),(32,32,16,16),(32,32,32,16),(64,64,64),(64,64,128)])
-@pytest.mark.parametrize('direction',['forward','inverse'])
+@pytest.mark.parametrize('direction',['forward','inverse','global_inverse'])
 @pytest.mark.parametrize('terminal8',[False,True])
 def test_power_dif_complete(tmp_path,factors,direction,terminal8):
- source,specs=build(factors,direction,terminal8=terminal8);path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
- n,batch=math.prod(factors),2;sign=-1 if direction=='forward' else 1
+ global_inverse=direction=='global_inverse'
+ if global_inverse:direction='inverse'
+ source,specs=build(factors,direction,terminal8=terminal8,global_inverse=global_inverse);path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
+ n,batch=math.prod(factors),2;sign=-1 if direction=='forward' or global_inverse else 1
  torch.manual_seed(20261030);x=torch.randn(batch,n,2);saved=x.clone();current=x
  guard=torch.full((x.numel()+128,),31415.25);scratch=[torch.empty_like(x),torch.empty_like(x)]
  for k,s in enumerate(specs):
@@ -44,7 +46,7 @@ def test_power_dif_complete(tmp_path,factors,direction,terminal8):
    for b in range(batch):
     pid[:]=[gx,b];ns[s['name']](Pointer(current),Pointer(w),out)
   current=guard[64:-64].reshape_as(x) if final else scratch[k%2]
- got=torch.view_as_complex(current);z=torch.view_as_complex(x);ref=torch.fft.fft(z) if sign<0 else torch.fft.ifft(z)*n
+ got=torch.view_as_complex(current);z=torch.view_as_complex(x);ref=torch.fft.fft(z) if direction=='forward' else torch.fft.ifft(z)*n
  assert torch.isfinite(got).all()
  assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref)<5e-7
  assert torch.equal(x,saved)

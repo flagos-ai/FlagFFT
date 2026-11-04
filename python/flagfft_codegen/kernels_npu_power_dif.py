@@ -10,7 +10,8 @@ Twiddles and structured FFT roots share each pass's read-only table argument.
 import math
 from flagfft_codegen.kernels_npu_structured import FFT_HELPERS
 
-def build(factors,direction='forward',terminal8=False):
+def build(factors,direction='forward',terminal8=False,global_inverse=False):
+ if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
  n=math.prod(factors);prefix=1;previous=1;specs=[]
  source='import triton\nimport triton.language as tl\nimport triton.language.extra.cann.extension as al\n'+FFT_HELPERS
  if terminal8:
@@ -27,9 +28,9 @@ def build(factors,direction='forward',terminal8=False):
   else:
    ls += [f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',f'    j=tl.program_id(0)//{max(1,prefix//c)}',f'    pf=(tl.program_id(0)%{max(1,prefix//c)}*{c}+tl.arange(0,{c}))[None,:]',f'    off=d*{m*prefix}+q',f'    rr=tl.load(X+batch*{2*n}+off,q<{m*prefix},0.)',f'    ii=tl.load(X+batch*{2*n}+{n}+off,q<{m*prefix},0.)',f'    wr=tl.load(TW+off,q<{m*prefix},0.)',f'    wi=tl.load(TW+{n}+off,q<{m*prefix},0.)',f'    re=tl.reshape(rr*wr-ii*wi,({points},))',f'    im=tl.reshape(rr*wi+ii*wr,({points},))']
   ls += ['    r,i=re,im']
-  if direction=='inverse':ls += ['    i=-i']
+  if direction=='inverse' and (not global_inverse or stage==0):ls += ['    i=-i']
   ls += [f'    r,i={axis}(r,i,W,{points},{r},{c},{r.bit_length()-1})']
-  if direction=='inverse':ls += ['    i=-i']
+  if direction=='inverse' and (not global_inverse or last):ls += ['    i=-i']
   if stage==0:
    ls += [f'    row=tl.program_id(0)*{c}+tl.arange(0,{c})[:,None]',f'    freq=tl.arange(0,{r})[None,:]',f'    dst=row*{r}+freq',f'    tl.store(Y+batch*{2*n}+dst,tl.trans(tl.reshape(r,({r},{c}))),row<{m})',f'    tl.store(Y+batch*{2*n}+{n}+dst,tl.trans(tl.reshape(i,({r},{c}))),row<{m})']
   elif not last:

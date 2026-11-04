@@ -8,12 +8,14 @@ from test_npu_structured_fft import Pointer,execute_module
 
 
 @pytest.mark.parametrize('factors',[(8,15,7,9,9,5),(4,15,7,9,9,5),(8,15,7,9,5),(4,15,8,4,3,2)])
-@pytest.mark.parametrize('direction',['forward','inverse'])
+@pytest.mark.parametrize('direction',['forward','inverse','global_inverse'])
 def test_coarse_full_fft(tmp_path,factors,direction):
-    source,specs=build_coarse_dif(factors,direction)
+    global_inverse=direction=='global_inverse'
+    if global_inverse:direction='inverse'
+    source,specs=build_coarse_dif(factors,direction,global_inverse=global_inverse)
     path=tmp_path/'coarse.py';path.write_text(source);ns,pid=execute_module(path);pid.append(0)
     n=math.prod(factors);batch=3;a,b=factors[:2];initial=a*b;padded=a*16
-    sign=-1 if direction=='forward' else 1
+    sign=-1 if direction=='forward' or global_inverse else 1
     phase=-2*math.pi*torch.arange(a,dtype=torch.float64)[:,None]*torch.arange(16)[None,:]/initial
     tables=[torch.cat((phase.cos().float().flatten(),phase.sin().float().flatten()))]
     for spec in specs[1:]:

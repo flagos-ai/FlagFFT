@@ -202,3 +202,10 @@ def test_half_matrix17_complete(tmp_path,monkeypatch,factors,direction,global_in
     monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')
     test_cube_prefix_complete_fft(tmp_path,monkeypatch,factors,direction,'1','8192',
         True,True,factors[1]==15,global_inverse,True)
+
+
+@pytest.mark.parametrize('factors',[(17,15,13,2),(7,15,10,4),(17,13,3,4)])
+def test_single_global_inverse_complete(tmp_path,monkeypatch,factors):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')
+    test_cube_prefix_complete_fft(tmp_path,monkeypatch,factors,'inverse','1','8192',
+        vector_first17=factors[0]==17,global_inverse=True)
