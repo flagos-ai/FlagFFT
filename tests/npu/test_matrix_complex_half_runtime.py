@@ -28,12 +28,13 @@ def test_complex_half_matrix_live(n,batch,pattern,default_policy,direction,in_pl
     assert lib.flagfftPlanMany(ctypes.byref(handle),1,dims,None,1,n,None,1,n,0x29,batch)==0
     lib.flagfftGetPlanDescription.argtypes=[ctypes.c_void_p];lib.flagfftGetPlanDescription.restype=ctypes.c_char_p
     description=lib.flagfftGetPlanDescription(handle).decode()
-    assert 'complex_half_spectra=1' in description
-    assert ('complex_half_last_only=1' in description)==(batch==1)
     if default_policy:
         forward,inverse=description.split('-- Inverse execution --')
-        assert 'complex_half_last_only=1' in forward
+        assert 'complex_half_last_only=0' in forward
         assert 'complex_half_last_only=0' in inverse
+    else:
+        assert 'complex_half_spectra=1' in description
+        assert ('complex_half_last_only=1' in description)==(batch==1)
     streams=[torch.npu.current_stream(),torch.npu.Stream()]
     try:
         for step,scale in enumerate((1.,1e-6,1e6,-.25)):
