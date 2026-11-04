@@ -143,7 +143,7 @@ def test_two_pass_tables_and_store_contract(tmp_path,a,b,tile,recursive,directio
             pid[1] = transform
             for col in range((b if first else a)//inner):
                 pid[0] = col
-                args = (Pointer(x),Pointer(twiddle),Pointer(temp),Pointer(axis_roots(a,inner,recursive)),batch) if first else (Pointer(temp),Pointer(y),Pointer(axis_roots(b,inner,recursive)),batch)
+                args = (Pointer(x),Pointer(twiddle),Pointer(temp),Pointer(axis_roots(a,inner,recursive and a>=512)),batch) if first else (Pointer(temp),Pointer(y),Pointer(axis_roots(b,inner,recursive and b>=512)),batch)
                 ns[meta['kernel_name']](*args)
     got = torch.view_as_complex(y)
     ref = torch.fft.fft(torch.view_as_complex(x)) if direction=='forward' else torch.fft.ifft(torch.view_as_complex(x))*n
