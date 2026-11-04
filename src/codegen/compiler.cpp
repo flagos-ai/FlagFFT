@@ -3938,7 +3938,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     DeviceAllocation boundary_twiddle;
 
     {
-      preprocess_kernel = compile_c2r_packed_preprocess_kernel(request, n);
+      preprocess_kernel = compile_c2r_packed_preprocess_kernel(request, n, batch);
       boundary_twiddle = build_raw_packed_real_twiddle(request, n);
     }
     return std::make_shared<CompiledRawPackedC2RNode>(
@@ -4553,9 +4553,16 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_packed_postprocess_kernel
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_c2r_packed_preprocess_kernel(const FFTRequest &request,
-                                                                                int64_t n) {
+                                                                                int64_t n, int64_t batch) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::c2r_packed_preprocess(target, complex_dtype_for(request.input_dtype), n);
+  // Record this batch-only schedule in the key so short and single-row
+  // boundaries keep their existing launch and cannot share its cached binary.
+  if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
+      complex_dtype_for(request.input_dtype)=="complex64" && batch>=16 && n>=65536 &&
+      flag_or_default("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY",false) &&
+      flag_or_default("FLAGFFT_NPU_REAL_BOUNDARY_AUTO_BLOCK",true))
+    key.perm_form="npu_paired_real_boundary_auto";
   return compile_kernel(key);
 }
 

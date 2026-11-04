@@ -29,6 +29,7 @@ namespace flagfft {
 namespace {
 
   bool npu_auto_blockify_for(const KernelKey &key) {
+    if (key.perm_form=="npu_paired_real_boundary_auto") return true;
     if (key.perm_form=="npu_frequency_dft") return true;
     const bool matrix=key.perm_form.rfind("npu_matrix_fourstep_",0)==0 ||
         key.perm_form=="npu_matrix_pack" || key.perm_form=="npu_matrix_cube";
