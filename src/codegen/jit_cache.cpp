@@ -777,10 +777,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 
   if (key.perm_form=="npu_frequency_dft") jit_command << " --npu-frequency-dft";
   if (key.perm_form.rfind("npu_vector_dif_",0)==0) {
+    const bool coarse=key.perm_form.rfind("npu_vector_dif_coarse_",0)==0;
     const bool aligned=key.perm_form.rfind("npu_vector_dif_aligned_",0)==0;
     const bool flat=key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0;
     const bool cube=key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0;
-    std::string phase=key.perm_form.substr(flat?27:cube?28:aligned?23:15);
+    std::string phase=key.perm_form.substr(coarse?22:flat?27:cube?28:aligned?23:15);
     if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
       phase.resize(phase.size()-5);
     if (flat && phase.size()>=10 && phase.compare(phase.size()-10,10,"_terminal8")==0) {
@@ -803,6 +804,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (aligned) jit_command << " --npu-vector-dif-aligned";
     if (cube) jit_command << " --npu-vector-dif-cube-prefix";
     if (flat) jit_command << " --npu-vector-dif-flat-power2";
+    if (coarse) jit_command << " --npu-vector-dif-coarse";
   }
   if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0) {
     const std::string phase=key.perm_form.substr(20);

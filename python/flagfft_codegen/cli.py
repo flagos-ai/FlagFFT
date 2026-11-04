@@ -147,6 +147,7 @@ def main() -> None:
     parser.add_argument("--npu-power2", action="store_true")
     parser.add_argument("--npu-recursive-power2", action="store_true")
     parser.add_argument("--npu-tensor-shape", type=_csv_ints, default=())
+    parser.add_argument("--npu-vector-dif-coarse", action="store_true")
     parser.add_argument("--npu-vector-dif-phase", type=int)
     parser.add_argument("--npu-vector-dif-aligned", action="store_true")
     parser.add_argument("--npu-vector-dif-flat-power2", action="store_true")
@@ -491,7 +492,7 @@ def main() -> None:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Vector DIF requires NPU FP32')
         from .kernels_npu_dif import emit_vector_dif
-        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8)
+        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8,coarse=args.npu_vector_dif_coarse)
     elif args.npu_matrix_fourstep_phase:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Matrix four-step requires NPU FP32')

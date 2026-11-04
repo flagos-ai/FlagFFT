@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -138,7 +138,10 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('The vector-17 prefix requires the Cube DIF plan')
     if vector_second15 and not cube_prefix:
         raise ValueError('The vector second axis requires the Cube DIF plan')
-    if flat_power2:
+    if coarse:
+        from .kernels_npu_dif_coarse import build_coarse_dif
+        source,specs=build_coarse_dif(tuple(factors),direction)
+    elif flat_power2:
         if aligned or cube_prefix:raise ValueError("Flat power DIF uses a compact layout")
         from .kernels_npu_power_dif import build
         source,specs=build(tuple(factors),direction,terminal8=terminal8)
@@ -153,7 +156,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         source,specs=build_vector_dif(tuple(factors),direction)
     if phase<0 or phase>=len(specs):raise ValueError('Invalid DIF phase')
     n=math.prod(factors);spec=specs[phase]
-    path=Path(out_dir)/(('npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+'.py')
+    path=Path(out_dir)/(('npu_vector_dif_coarse_' if coarse else 'npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+'.py')
     path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,source)
     meta=dict(module_path=str(path),kernel_name=spec['name'],arg_names=['X','TW','Y'],
         signature='*fp32:16,*fp32:16,*fp32:16',num_warps=4,num_stages=1,

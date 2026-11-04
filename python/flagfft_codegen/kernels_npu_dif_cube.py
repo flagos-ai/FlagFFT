@@ -14,7 +14,7 @@ from flagfft_codegen.kernels_common import _NATURAL_ORDER_CODELET_RADICES
 
 
 def _grouped_first_stage(spec,n,direction,columns=512):
- """Bound each interleaved DMA group to 2048 complex lane elements."""
+ """Group adjacent branches into bounded interleaved DMA tiles."""
  r,m=spec['r'],spec['m'];c=columns;groups=[];start=0
  lines=['@triton.jit',f'def {spec["name"]}(X,TW,Y):',
   '    b=tl.program_id(1).to(tl.int64)',

@@ -254,12 +254,81 @@ namespace {
         adaptor::Memory(bytes),adaptor::Memory(bytes),n,factors);
   }
 
+  std::shared_ptr<CompiledRawNode> make_npu_coarse_dif_child(
+      const FFTRequest &request, int64_t n, int64_t batch) {
+    if (batch<16 || !flag_or_default("FLAGFFT_NPU_DIF_COARSE_PREFIX",true) ||
+        !flag_or_default("FLAGFFT_NPU_DIF_FIRST_AUTO_BLOCK",true) ||
+        !flag_or_default("FLAGFFT_NPU_DIF_LATE_AUTO_BLOCK",false) ||
+        !flag_or_default("FLAGFFT_NPU_DIF_GROUP_BRANCHES",true) ||
+        !flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true)) return nullptr;
+    const int64_t first=n%120==0?8:n%60==0?4:0;
+    if (!first) return nullptr;
+    const int64_t initial=first*15,padded=first*16,remaining=n/initial;
+    if (remaining<1024) return nullptr;
+    // Only small suffix codelets are admitted. Large prime suffixes have
+    // different register and transpose costs and retain the existing plan.
+    std::vector<int64_t> factors={first,15};
+    int64_t rest=remaining;
+    for (int64_t radix:{7,9,5,8,4,3,2})
+      while (rest%radix==0) { factors.push_back(radix);rest/=radix; }
+    if (rest!=1 || factors.size()<3) return nullptr;
+    const int64_t physical_n=remaining*padded,columns=first==4?128:64;
+    const double sign=request.direction=="inverse"?1.0:-1.0;
+    std::vector<CompiledRawVectorDIFNode::Pass> passes;
+    auto append=[&](std::vector<float> weights,int64_t grid,int64_t packed) {
+      auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
+          request.input_dtype,n,1,n,factors,32,4,{},n);
+      key.perm_form="npu_vector_dif_coarse_"+std::to_string(passes.size())+"_auto";
+      passes.push_back({TritonCompiler{}.compile_kernel(key),
+          DeviceAllocation::from_floats(weights),grid,1,false,packed});
+    };
+    // The local prefix conjugates the inverse input and output, so both
+    // directions use the same forward roots between its two codelets.
+    std::vector<float> roots(2*first*16);
+    for (int64_t d=0;d<first;++d)for(int64_t j=0;j<16;++j) {
+      const double angle=-2*kPi*d*j/initial;
+      roots[d*16+j]=static_cast<float>(std::cos(angle));
+      roots[first*16+d*16+j]=static_cast<float>(std::sin(angle));
+    }
+    append(std::move(roots),(remaining+columns-1)/columns,1);
+    int64_t prefix=initial,previous_prefix=first;
+    for (std::size_t stage=2;stage<factors.size();++stage) {
+      const int64_t radix=factors[stage],m=n/(prefix*radix);
+      const int64_t physical_prefix=prefix/initial*padded;
+      std::vector<float> values(2*physical_n);
+      for (int64_t index=0;index<physical_n;++index) {
+        const int64_t pf=index%physical_prefix;
+        const int64_t logical=pf/padded*initial+pf%padded;
+        const int64_t sample=index/physical_prefix;
+        const double angle=stage==2?sign*2*kPi*static_cast<double>(logical)*sample/n:
+            sign*2*kPi*static_cast<double>(logical/previous_prefix)*sample/(factors[stage-1]*radix*m);
+        values[index]=static_cast<float>(std::cos(angle));
+        values[physical_n+index]=static_cast<float>(std::sin(angle));
+      }
+      const bool final=stage+1==factors.size();
+      int64_t grid=m*((physical_prefix+127)/128);
+      // A short prefix has a single, naturally padded vector tile.
+      if (physical_prefix<128) grid=m;
+      if (final) {
+        int64_t rows=1;
+        while(rows<8 && 2*rows*radix*padded<=4096)rows*=2;
+        grid=(prefix/initial+rows-1)/rows;
+      }
+      append(std::move(values),grid,final?1:4);
+      previous_prefix=prefix;prefix*=radix;
+    }
+    const auto bytes=static_cast<std::size_t>(batch*physical_n*2*sizeof(float));
+    return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
+        adaptor::Memory(bytes),adaptor::Memory(bytes),physical_n,factors);
+  }
+
   std::shared_ptr<CompiledRawNode> make_npu_vector_dif_child(
       const FFTRequest &request, int64_t n, int64_t batch) {
     if (request.device_type!="npu" || request.device_arch.rfind("Ascend910B",0)!=0 ||
         request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
         n<8192 || n>1048576 || (n&(n-1))==0 ||
         !flag_or_default("FLAGFFT_NPU_VECTOR_DIF",false)) return nullptr;
+    if (auto coarse=make_npu_coarse_dif_child(request,n,batch)) return coarse;
     auto factors=npu_vector_dif_factors(n);
     if (factors.empty()) return nullptr;
     auto power=[](int64_t value) { int64_t result=1;while(result<value) result*=2;return result; };
