@@ -1301,7 +1301,9 @@ struct CompiledRawMatrixFourStepNode final : CompiledRawNode {
       std::shared_ptr<JitKernel> fused_pack_kernel=nullptr,
       std::shared_ptr<JitKernel> real_finish_kernel=nullptr,
       std::shared_ptr<JitKernel> real_fused_pack_kernel=nullptr,
-      std::shared_ptr<JitKernel> complex_finish_kernel=nullptr);
+      std::shared_ptr<JitKernel> complex_finish_kernel=nullptr,
+      std::vector<std::shared_ptr<JitKernel>> complex_half_kernels={},
+      std::vector<DeviceAllocation> complex_half_tables={});
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
       const RawExecutionContext &context) const override;
   flagfftResult execute_real_forward(adaptor::DevicePtr input, adaptor::DevicePtr output,
@@ -1317,6 +1319,8 @@ struct CompiledRawMatrixFourStepNode final : CompiledRawNode {
   bool wide;
   std::vector<std::shared_ptr<JitKernel>> kernels, real_kernels;
   std::shared_ptr<JitKernel> real_inverse_kernel, fused_pack_kernel, real_finish_kernel, real_fused_pack_kernel, complex_finish_kernel;
+  std::vector<std::shared_ptr<JitKernel>> complex_half_kernels;
+  std::vector<DeviceAllocation> complex_half_tables;
   std::vector<DeviceAllocation> tables, scratch;
 };
 

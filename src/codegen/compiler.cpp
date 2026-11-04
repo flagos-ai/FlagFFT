@@ -3218,6 +3218,37 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         real_finish_kernel=compile_kernel(key);
       }
       std::vector<DeviceAllocation> tables,scratch;
+      // Each real component has a Hermitian spectrum, even when their
+      // combination is an arbitrary complex input. Compute both half spectra
+      // with real coefficient matrices, then reconstruct their complex sum.
+      // Keep the real API children and their existing weight tables separate.
+      std::vector<std::shared_ptr<JitKernel>> complex_half_kernels;
+      std::vector<DeviceAllocation> complex_half_tables;
+      const bool complex_half=fused_pack_kernel && complex_finish_kernel &&
+          !request.real_transform && request.real_transform_kind.empty() &&
+          request.origin_real_transform_kind.empty() && !request.packed_real_child &&
+          !request.convolution_child && request.origin_rank<=1 && request.raw_dim==1 &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_COMPLEX_HALF",true);
+      if (complex_half) {
+        for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {
+          key.perm_form=std::string("npu_matrix_fourstep_")+phase+"_wide";
+          complex_half_kernels.push_back(compile_kernel(key));
+        }
+        for (int stage=0;stage<2;++stage) {
+          const int64_t length=stage==0?n1:n2,half=length/2+1;
+          int64_t pad=1,half_pad=1;
+          while(pad<length)pad*=2;
+          while(half_pad<half)half_pad*=2;
+          std::vector<float> values(pad*2*half_pad,0.0f);
+          const double sign=request.direction=="inverse"?1.0:-1.0;
+          for(int64_t j=0;j<length;++j)for(int64_t k=0;k<half;++k) {
+            const double angle=sign*2*kPi*j*k/length;
+            values[j*2*half_pad+2*k]=static_cast<float>(std::cos(angle));
+            values[j*2*half_pad+2*k+1]=static_cast<float>(std::sin(angle));
+          }
+          complex_half_tables.push_back(DeviceAllocation::from_floats(values));
+        }
+      }
       for(int stage=0;stage<2;++stage) {
         const int64_t length=stage==0?n1:n2, width=stage==0?n2:n1;
         int64_t pad=1;while(pad<length)pad*=2;
@@ -3251,7 +3282,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           std::move(kernels),std::move(tables),std::move(scratch),wide,
           std::move(real_kernels),std::move(real_inverse_kernel),std::move(fused_pack_kernel),
           std::move(real_finish_kernel),std::move(real_fused_pack_kernel),
-          std::move(complex_finish_kernel));
+          std::move(complex_finish_kernel),std::move(complex_half_kernels),
+          std::move(complex_half_tables));
     }
     if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;
