@@ -13,7 +13,7 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('pattern',['random','basis','cancellation','tone'])
 def test_single_last_half_whole(tmp_path,a,b,direction,pattern):
     n=a*b;batch=3;pa=1<<(a-1).bit_length();pb=1<<(b-1).bit_length();hp=1<<(b//2).bit_length();sign=-1 if direction=='forward' else 1
-    path=tmp_path/'last_half.py';path.write_text(build_matrix_fourstep(a,b)+build_complex_half(a,b,first_rows=32,last_rows=32))
+    path=tmp_path/'last_half.py';path.write_text(build_matrix_fourstep(a,b)+build_complex_half(a,b,first_rows=32,last_rows=32,chunk_k=64))
     ns,pid=execute_module(path);pid.append(0);ns['tl'].dot=lambda x,w,input_precision:x@w
     angle=sign*2*math.pi*torch.arange(a,dtype=torch.float64)[:,None]*torch.arange(a)[None,:]/a
     w0=torch.zeros(2*pa,2*pa);w0[:a,:2*a:2]=angle.cos().float();w0[:a,1:2*a:2]=angle.sin().float();w0[pa:pa+a,:2*a:2]=-angle.sin().float();w0[pa:pa+a,1:2*a:2]=angle.cos().float()

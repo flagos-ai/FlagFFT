@@ -6,7 +6,7 @@ from pathlib import Path
 from .metadata import _module_source
 from .artifacts import write_text_atomic
 
-def build_complex_half(a,b,first_rows=128,first_cols=32,last_rows=64,last_cols=32):
+def build_complex_half(a,b,first_rows=128,first_cols=32,last_rows=64,last_cols=32,chunk_k=0):
  if not (16<=a<=256 and 16<=b<=256):raise ValueError('Complex matrix axes require lengths 16..256')
  source=''
  # U=DFT(real input), V=DFT(imag input): F(k)=U(k)+i*V(k),
@@ -16,6 +16,20 @@ def build_complex_half(a,b,first_rows=128,first_cols=32,last_rows=64,last_cols=3
   kpad=1<<(length-1).bit_length();rowpad=1<<(rows-1).bit_length();h=length//2+1;hp=1<<(h-1).bit_length();n=a*b;points=m*c
   args='P,W,T,Y' if first else 'P,W,Y'
   ls=['@triton.jit',f'def {op}({args}):','    batch=tl.program_id(2).to(tl.int64)',f'    row=tl.program_id(0)*{m}+tl.arange(0,{m})',f'    k=tl.arange(0,{kpad})',f'    freq=tl.program_id(1)*{c}+tl.arange(0,{c})',f'    word=tl.program_id(1)*{2*c}+tl.arange(0,{2*c})',f'    off=batch*{rows*2*kpad}+row[:,None]*{2*kpad}+k[None,:]',f'    xr=tl.load(P+off,row[:,None]<{rows},0.)',f'    xi=tl.load(P+{kpad}+off,row[:,None]<{rows},0.)',f'    w=tl.load(W+k[:,None]*{2*hp}+word[None,:],word[None,:]<{2*h},0.)','    u=tl.dot(xr,w,input_precision="ieee")','    v=tl.dot(xi,w,input_precision="ieee")',f'    ur,ui=tl.split(tl.reshape(u,({points},2)))',f'    vr,vi=tl.split(tl.reshape(v,({points},2)))',f'    posr=tl.reshape(ur-vi,({m},{c}))',f'    posi=tl.reshape(ui+vr,({m},{c}))',f'    reverse=tl.arange(0,{points})^{c-1}',f'    negr=tl.reshape(tl.gather(ur+vi,reverse,0),({m},{c}))',f'    negi=tl.reshape(tl.gather(vr-ui,reverse,0),({m},{c}))',f'    negfreq={length}-(tl.program_id(1)*{c}+{c-1})+tl.arange(0,{c})']
+  if chunk_k and kpad>chunk_k:
+   if chunk_k<16 or chunk_k&(chunk_k-1) or kpad%chunk_k:raise ValueError('Invalid DFT reduction block')
+   begin=next(i for i,line in enumerate(ls) if line.startswith('    off='))
+   end=next(i for i,line in enumerate(ls) if line.startswith('    ur,ui='))
+   ls[:begin]=[f'    k=tl.arange(0,{chunk_k})' if line.startswith('    k=') else line for line in ls[:begin]]
+   pieces=[];parts=kpad//chunk_k
+   for part in range(parts):
+    pieces += [f'    off=batch*{rows*2*kpad}+row[:,None]*{2*kpad}+k[None,:]+{part*chunk_k}',f'    xr=tl.load(P+off,row[:,None]<{rows},0.)',f'    xi=tl.load(P+{kpad}+off,row[:,None]<{rows},0.)',f'    w=tl.load(W+(k[:,None]+{part*chunk_k})*{2*hp}+word[None,:],word[None,:]<{2*h},0.)',f'    u{part}=tl.dot(xr,w,input_precision="ieee")',f'    v{part}=tl.dot(xi,w,input_precision="ieee")']
+   # A normal FP32 pairwise reduction; no compensated arithmetic or wider dtype.
+   for label in ('u','v'):
+    terms=[f'{label}{j}' for j in range(parts)]
+    while len(terms)>1:terms=['('+terms[j]+'+'+terms[j+1]+')' for j in range(0,len(terms),2)]
+    pieces += [f'    {label}={terms[0]}']
+   ls=ls[:begin]+pieces+ls[end:]
   producer=list(ls)
   if first:
    for label,freq in [('pos','freq'),('neg','negfreq')]:
@@ -45,7 +59,7 @@ def emit_complex_half(a,b,phase,direction,out_dir):
  if phase not in ('cube0_complex_half_pack','cube1_complex_half_finish','cube1_complex_half_finish_narrow','cube0_complex_half_store_narrow') or direction not in ('forward','inverse'):
   raise ValueError('Invalid complex half-spectrum matrix phase or direction')
  path=Path(out_dir)/f'npu_matrix_fourstep_{a}_{b}_{phase}_{direction}.py'
- path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,build_complex_half(a,b,first_rows=32 if narrow else 128,last_rows=32 if narrow else 64))
+ path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,build_complex_half(a,b,first_rows=32 if narrow else 128,last_rows=32 if narrow else 64,chunk_k=64 if narrow else 0))
  args=['P','W','T','Y'] if phase=='cube0_complex_half_pack' else ['P','W','Y']
  meta=dict(module_path=str(path),kernel_name=phase.removesuffix("_narrow"),arg_names=args,signature=','.join(['*fp32:16']*len(args)),num_warps=4,num_stages=1,batch_per_block=1,inner_pack=1,tle_fused_twiddle=True,kernel_type='four_step_row',dtype='complex64',direction=direction,length=a*b)
  write_text_atomic(path.with_suffix('.json'),json.dumps(meta,sort_keys=True));return meta
