@@ -249,7 +249,11 @@ namespace {
           request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form="npu_vector_dif_flat_power2_"+std::to_string(stage);
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
-      if (batch>=16 && axis_bits>=3 && axis_bits%2 &&
+      // A latency plan's terminal 128-point axis also saves one UB
+      // shuffle with radix eight. Other small-batch axes retain their plan.
+      const bool single_terminal=batch==1 && factors.size()==3 &&
+          stage+1==factors.size();
+      if ((batch>=16 || single_terminal) && axis_bits>=3 && axis_bits%2 &&
           flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true))
         key.perm_form+="_terminal8";
       key.perm_form+="_auto";
