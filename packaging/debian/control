@@ -50,6 +50,10 @@ Description: FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
  python3.12 (e.g. from the deadsnakes PPA) and set FLAGFFT_PYTHON=python3.12;
  on Ubuntu 24.04 the default python3 already is 3.12. It does not require the separately packaged
  libtriton-jit runtime.
+ .
+ The generated kernels use the TLE extension (triton.experimental.tle),
+ which stock Triton does not provide; install python3-flagtree-nvidia
+ (FlagTree's Triton) for the code generator to work.
 
 Package: libflagfft-nvidia-dev
 Section: libdevel
