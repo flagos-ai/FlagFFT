@@ -47,12 +47,12 @@ def _tables(factors, specs, sign):
 @pytest.mark.parametrize('factors', [(17,13,3,4), (19,13,3,4), (17,15,7,2), (17,13,15,2), (7,15,3,4), (8,15,3,4), (7,15,10,4), (7,15,4,3), (17,13,4,5), (17,13,2,15), (7,15,3,9,4), (17,13,3,10,2), (17,15,13,2), (17,15,13,7,2), (19,15,3,2)])
 @pytest.mark.parametrize('direction', ['forward', 'inverse'])
 @pytest.mark.parametrize('dense_transpose,transpose_points', [('0','4096'), ('1','4096'), ('1','8192')])
-def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose, transpose_points, vector_first17=False, batch_pack=False, vector_second15=False,global_inverse=False,matrix_first17=False,prefix_pitch=1):
+def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, dense_transpose, transpose_points, vector_first17=False, batch_pack=False, vector_second15=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False):
     monkeypatch.setenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE", dense_transpose)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_POINTS', transpose_points)
     monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH', '1')
     monkeypatch.setenv('FLAGFFT_NPU_DIF_TRANSPOSE_TILE', '64')
-    source, specs = build_cube_prefix_dif(factors, direction, vector_first17=vector_first17, batch_pack=batch_pack, vector_second15=vector_second15,global_inverse=global_inverse,matrix_first17=matrix_first17,prefix_pitch=prefix_pitch)
+    source, specs = build_cube_prefix_dif(factors, direction, vector_first17=vector_first17, batch_pack=batch_pack, vector_second15=vector_second15,global_inverse=global_inverse,matrix_first17=matrix_first17,prefix_pitch=prefix_pitch,dense_prefix=dense_prefix)
     path = tmp_path/'cube.py'
     path.write_text(source)
     ns, pid = execute_module(path)
@@ -63,6 +63,19 @@ def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, den
     if matrix_first17:
         angle=(-1 if direction=='forward' else 1)*2*math.pi*torch.arange(1,9,dtype=torch.float64)[:,None]*torch.arange(1,17)[None,:]/17
         tables[0]=torch.cat((angle.cos().float(),angle.sin().float()),dim=0)
+    if dense_prefix:
+        # Correctly rounded dot is a layout oracle; device execution remains
+        # IEEE FP32 and must pass the original numerical threshold separately.
+        ns['tl'].dot=lambda a,b,acc=None,input_precision=None:(a.double()@b.double()+(0 if acc is None else acc.double())).float()
+        length,pad,columns,freqs,tiles=specs[0]['dense_prefix']
+        weights=[]
+        for tile in range(tiles):
+            freq=tile*freqs+torch.arange(freqs,dtype=torch.float64)[:,None]
+            digit=torch.arange(pad)[None,:]
+            angle=(-1 if direction=='forward' else 1)*2*math.pi*freq*digit/length
+            valid=(freq<length//2+1)&(digit<length)
+            weights.append(torch.cat((torch.where(valid,angle.cos(),0).float(),torch.where(valid,angle.sin(),0).float()),dim=0).flatten())
+        tables[0]=torch.cat(weights)
     n, batch = math.prod(factors), 3
     torch.manual_seed(20261029)
     x = torch.randn(batch,n,2)
@@ -82,7 +95,7 @@ def test_cube_prefix_complete_fft(tmp_path, monkeypatch, factors, direction, den
                     ns[spec['name']](*args)
         current = output
     got = torch.view_as_complex(guard[64:-64].reshape(batch,n,2))
-    z = torch.view_as_complex(x)
+    z = torch.view_as_complex(x).to(torch.complex128) if dense_prefix else torch.view_as_complex(x)
     ref = torch.fft.fft(z) if direction=='forward' else torch.fft.ifft(z)*n
     assert torch.isfinite(got).all()
     assert torch.linalg.vector_norm(got-ref)/torch.linalg.vector_norm(ref)<5e-7
@@ -229,3 +242,21 @@ def test_prefix_pitch_metadata(tmp_path,monkeypatch):
         cube_prefix=True,vector_first17=True,batch_pack=True,vector_second15=True,prefix_pitch=32)
     assert meta['arg_names']==['X','TW','Y']
     assert meta['kernel_name']=='chirped_second'
+
+
+@pytest.mark.parametrize('factors',[(17,15,13,2),(17,15,13,7,8),(17,15,13,10,10,2)])
+@pytest.mark.parametrize('direction,global_inverse',[('forward',False),('inverse',False),('inverse',True)])
+def test_dense_short_prefix_whole(tmp_path,monkeypatch,factors,direction,global_inverse):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_GROUP_BRANCHES','1')
+    test_cube_prefix_complete_fft(tmp_path,monkeypatch,factors,direction,'1','8192',
+        vector_first17=True,global_inverse=global_inverse,dense_prefix=True)
+
+
+@pytest.mark.parametrize('direction',['forward','inverse'])
+def test_dense_short_prefix_metadata(tmp_path,monkeypatch,direction):
+    from flagfft_codegen.kernels_npu_dif import emit_vector_dif
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH','1')
+    meta=emit_vector_dif((17,15,13,2),direction,0,tmp_path,aligned=True,
+        cube_prefix=True,vector_first17=True,dense_prefix=True,global_inverse=direction=='inverse')
+    assert meta['arg_names']==['X','TW','Y']
+    assert meta['kernel_name']=='dense_prefix_half'

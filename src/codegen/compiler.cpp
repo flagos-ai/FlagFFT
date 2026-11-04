@@ -434,6 +434,14 @@ namespace {
         flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
     if (batch_pack && flag_or_default("FLAGFFT_NPU_DIF_FACTOR_COST",true))
       factors=npu_vector_dif_costed_suffix(factors);
+    // At small batch the bounded dense DFT replaces the first two axes and
+    // their transpose. Keep the near-power-of-two layout with one unused lane
+    // and enough independent tiles, and retain other API paths' schedules.
+    const bool dense_prefix=batch==1 && cube_prefix && vector_first17 &&
+        padded_prefix==initial_prefix+1 && padded_prefix<=256 &&
+        n/initial_prefix<=4096 && !request.packed_real_child &&
+        request.real_transform_kind.empty() && request.origin_real_transform_kind.empty() &&
+        flag_or_default("FLAGFFT_NPU_DIF_DENSE_SHORT_PREFIX",true);
     const int64_t workspace_length=aligned ? n/initial_prefix*padded_prefix : n;
     // Keep the vector-15 producer's GM rows aligned to 128-byte boundaries.
     // Its padded intermediate is consumed by the existing axis switch; later
@@ -457,7 +465,8 @@ namespace {
       if (global_inverse) key.perm_form+="_globalconj";
       if (matrix_first17) key.perm_form+="_half17";
       if (prefix_pitch && (passes.size()==1 || passes.size()==2)) key.perm_form+="_pitch32";
-      if ((matrix_first && passes.size()<3) ||
+      if (dense_prefix) key.perm_form+="_dense_short";
+      if ((dense_prefix && passes.empty()) || (matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
           (late_auto && switched && !transpose))
@@ -486,6 +495,27 @@ namespace {
       append(DeviceAllocation(sizeof(float)),ceiling(n,4096),1,false);
     for (std::size_t stage=0;stage<factors.size();++stage) {
       const int64_t radix=factors[stage], m=n/(prefix*radix);
+      if (dense_prefix && stage<2) {
+        if (stage==0) {
+          constexpr int64_t columns=32, frequencies=32;
+          const int64_t tiles=ceiling(initial_prefix/2+1,frequencies);
+          std::vector<float> basis(tiles*2*frequencies*padded_prefix,0.0f);
+          const double first_sign=request.direction=="inverse"?1.0:-1.0;
+          for (int64_t t=0;t<tiles;++t) for (int64_t f=0;f<frequencies;++f) {
+            const int64_t frequency=t*frequencies+f;
+            if (frequency>=initial_prefix/2+1) continue;
+            for (int64_t d=0;d<initial_prefix;++d) {
+              const double angle=first_sign*2*kPi*frequency*d/initial_prefix;
+              basis[t*2*frequencies*padded_prefix+f*padded_prefix+d]=static_cast<float>(std::cos(angle));
+              basis[t*2*frequencies*padded_prefix+(frequencies+f)*padded_prefix+d]=static_cast<float>(std::sin(angle));
+            }
+          }
+          append(DeviceAllocation::from_floats(basis),ceiling(n/initial_prefix,columns)*tiles,1,false);
+        }
+        previous_prefix=prefix;prefix*=radix;
+        if (stage==1) switched=true;
+        continue;
+      }
       if (!switched && prefix>=64) {
         const char *tile_setting=std::getenv("FLAGFFT_NPU_DIF_TRANSPOSE_TILE");
         const int64_t tile=tile_setting ? std::stoll(tile_setting) : 32;

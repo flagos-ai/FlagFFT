@@ -791,6 +791,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-10);
       jit_command << " --npu-vector-dif-terminal8";
     }
+    if (phase.size()>=12 && phase.compare(phase.size()-12,12,"_dense_short")==0) {
+      phase.resize(phase.size()-12);
+      jit_command << " --npu-vector-dif-dense-prefix";
+    }
     if (phase.size()>=8 && phase.compare(phase.size()-8,8,"_pitch32")==0) {
       phase.resize(phase.size()-8);
       jit_command << " --npu-vector-dif-prefix-pitch 32";

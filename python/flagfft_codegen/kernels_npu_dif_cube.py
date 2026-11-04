@@ -118,7 +118,14 @@ def _batch_grouped_late_stage(s,direction,bp,columns=128):
  return '\n'.join(lines)+'\n'
 
 
-def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False,matrix_first17=False,prefix_pitch=1):
+def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False):
+ if dense_prefix:
+  if batch_pack or vector_second15 or matrix_first17 or prefix_pitch!=1:
+   raise ValueError('Dense short prefix uses a single-batch Cube DIF layout')
+  source,specs=build_cube_prefix_dif(factors,direction,vector_first17=vector_first17,
+      global_inverse=global_inverse)
+  from .npu_dense_prefix import replace_prefix
+  return replace_prefix(source,specs,factors,conjugate_output=global_inverse)
  if prefix_pitch!=1:
   if prefix_pitch!=32 or not (vector_first17 and vector_second15 and batch_pack):
    raise ValueError('Aligned prefix pitch requires a batch-grouped vector 17/15 prefix')
