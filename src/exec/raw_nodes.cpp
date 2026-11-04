@@ -3627,11 +3627,13 @@ CompiledRawMatrixFourStepNode::CompiledRawMatrixFourStepNode(int64_t n1, int64_t
     std::vector<std::shared_ptr<JitKernel>> real_kernels,
     std::shared_ptr<JitKernel> real_inverse_kernel,
     std::shared_ptr<JitKernel> fused_pack_kernel,
-    std::shared_ptr<JitKernel> real_finish_kernel)
+    std::shared_ptr<JitKernel> real_finish_kernel,
+    std::shared_ptr<JitKernel> real_fused_pack_kernel)
     : n1(n1), n2(n2), max_batch(max_batch), wide(wide), kernels(std::move(kernels)),
       real_kernels(std::move(real_kernels)), real_inverse_kernel(std::move(real_inverse_kernel)),
       fused_pack_kernel(std::move(fused_pack_kernel)),
       real_finish_kernel(std::move(real_finish_kernel)),
+      real_fused_pack_kernel(std::move(real_fused_pack_kernel)),
       tables(std::move(tables)), scratch(std::move(scratch)) {}
 
 std::string CompiledRawMatrixFourStepNode::describe() const {
@@ -3639,6 +3641,7 @@ std::string CompiledRawMatrixFourStepNode::describe() const {
       ", triton_fp32_ieee=1, wide="+std::to_string(wide)+
       ", real_forward_capable="+std::to_string(supports_real_forward())+
       ", fused_axis_pack="+std::to_string(fused_pack_kernel!=nullptr)+
+      ", fused_real_pack="+std::to_string(real_fused_pack_kernel!=nullptr)+
       ", fused_real_finish="+std::to_string(real_finish_kernel!=nullptr)+
       ", real_inverse_capable="+std::to_string(supports_real_inverse())+")";
 }
@@ -3674,6 +3677,7 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
   const int64_t output_bytes=real_forward?2*output_distance*static_cast<int64_t>(sizeof(float)):
       real_inverse?output_distance*static_cast<int64_t>(sizeof(float)):matrix_bytes;
   const int64_t packed_bytes[2]={(real_forward?1:2)*pads[0]*n2*static_cast<int64_t>(sizeof(float)),2*pads[1]*n1*static_cast<int64_t>(sizeof(float))};
+  const auto &axis_pack=real_forward?real_fused_pack_kernel:fused_pack_kernel;
   const int64_t tile=wide?32:16;
   const int64_t max_tiles=std::max(ceil_div(pads[0],tile)*ceil_div(n2,tile),
       ceil_div(pads[1],tile)*ceil_div(n1,tile));
@@ -3685,15 +3689,15 @@ flagfftResult CompiledRawMatrixFourStepNode::execute_impl(adaptor::DevicePtr inp
     for(int stage=0;stage<2;++stage) {
       const int64_t length=stage==0?n1:n2, width=stage==0?n2:n1;
       auto packed=scratch[stage].get()+start*packed_bytes[stage];
-      if (!(fused_pack_kernel && !real_forward && stage==1)) {
+      if (!(axis_pack && stage==1)) {
         const auto &pack_kernel=real_forward && stage==0?real_kernels[0]:kernels[2*stage];
         pack_kernel->launch(context.stream,
             {JitKernelArg::device(stage==0?input+start*input_bytes:mid),
              JitKernelArg::device(packed),JitKernelArg::device(tables[2].get())},
             ceil_div(pads[stage],tile),ceil_div(width,tile),count);
       }
-      if (fused_pack_kernel && !real_forward && stage==0) {
-        fused_pack_kernel->launch(context.stream,
+      if (axis_pack && stage==0) {
+        axis_pack->launch(context.stream,
             {JitKernelArg::device(packed),JitKernelArg::device(tables[0].get()),
              JitKernelArg::device(tables[2].get()),
              JitKernelArg::device(scratch[1].get()+start*packed_bytes[1])},

@@ -3182,6 +3182,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           real_kernels.push_back(compile_kernel(key));
         }
       }
+      std::shared_ptr<JitKernel> real_fused_pack_kernel;
+      if (!real_kernels.empty() && fused_pack_kernel &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FUSED_PACK",true)) {
+        key.perm_form="npu_matrix_fourstep_cube0_real_pack1_wide";
+        real_fused_pack_kernel=compile_kernel(key);
+      }
       std::shared_ptr<JitKernel> real_inverse_kernel;
       if (request.direction=="inverse" && flag_or_default("FLAGFFT_NPU_MATRIX_REAL_FOURSTEP",false) &&
           flag_or_default("FLAGFFT_NPU_MATRIX_REAL_INVERSE_FUSED",true)) {
@@ -3227,7 +3233,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return std::make_shared<CompiledRawMatrixFourStepNode>(n1,n2,batch,
           std::move(kernels),std::move(tables),std::move(scratch),wide,
           std::move(real_kernels),std::move(real_inverse_kernel),std::move(fused_pack_kernel),
-          std::move(real_finish_kernel));
+          std::move(real_finish_kernel),std::move(real_fused_pack_kernel));
     }
     if (auto dif=make_npu_flat_power_dif_child(request,four_step->length,batch)) return dif;
     if (auto dif=make_npu_vector_dif_child(request,four_step->length,batch)) return dif;

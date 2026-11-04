@@ -39,7 +39,7 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide,fused=False,finish=Fa
     bm,bn=(64,128) if wide else (32,64)
     for stage,(length,width) in enumerate(((a,b),(b,a))):
         p=1<<(length-1).bit_length()
-        if not (fused and not real_forward and stage==1):
+        if not (fused and stage==1):
             for bz in range(batch):
                 pid[2]=bz
                 for r in range((p+tile-1)//tile):
@@ -47,7 +47,7 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide,fused=False,finish=Fa
                     for col in range((width+tile-1)//tile):
                         pid[1]=col
                         ns['pack0_real' if real_forward and stage==0 else f'pack{stage}'](Pointer(x if stage==0 else mid),Pointer(packed[stage]),Pointer(tw))
-        if fused and not real_forward and stage==0:
+        if fused and stage==0:
             bp=1<<(b-1).bit_length()
             for bz in range(batch):
                 pid[2]=bz
@@ -55,7 +55,7 @@ def test_full_matrix_fourstep(tmp_path,a,b,batch,mode,wide,fused=False,finish=Fa
                     pid[0]=r
                     for col in range((2*a+127)//128):
                         pid[1]=col
-                        ns['cube0_pack1'](Pointer(packed[0]),Pointer(weights[0]),Pointer(tw),Pointer(packed[1]))
+                        ns['cube0_real_pack1' if real_forward else 'cube0_pack1'](Pointer(packed[0]),Pointer(weights[0]),Pointer(tw),Pointer(packed[1]))
             continue
         if finish and real_inverse and stage==1:
             continue
@@ -139,3 +139,15 @@ def test_real_matrix_finish_metadata(tmp_path):
     meta=emit_matrix_fourstep(209,221,'cube1_finish_real','inverse',tmp_path,wide=True)
     assert meta['arg_names']==['P','W','Y','D']
     assert meta['signature']=='*fp32:16,*fp32:16,*fp32:16,i64'
+
+
+@pytest.mark.parametrize('a,b', [(129,170),(209,221),(221,209)])
+def test_real_fused_matrix_axis_pack(tmp_path,a,b):
+    test_full_matrix_fourstep(tmp_path,a,b,3,'r2c',True,True)
+
+
+def test_real_fused_pack_metadata(tmp_path):
+    from flagfft_codegen.kernels_npu_matrix_fourstep import emit_matrix_fourstep
+    meta=emit_matrix_fourstep(209,221,'cube0_real_pack1','forward',tmp_path,wide=True)
+    assert meta['arg_names']==['P','W','T','Y']
+    assert meta['signature']=='*fp32:16,*fp32:16,*fp32:16,*fp32:16'
