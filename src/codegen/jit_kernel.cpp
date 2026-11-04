@@ -56,6 +56,26 @@ std::string JitKernel::execution_description() const {
   return out.str();
 }
 
+namespace {
+// Pre-compile at plan creation when libtriton_jit offers the hook; releases
+// without it compile the kernel on the first launch instead.
+template <typename Function>
+concept HasPrecompile = requires(Function &function, const std::string &signature) {
+  function.compile(signature, 0u, 0u, 0);
+};
+
+template <typename Function>
+void precompile(Function &function,
+                const std::string &signature,
+                unsigned int num_warps,
+                unsigned int num_stages,
+                int device_index) {
+  if constexpr (HasPrecompile<Function>) {
+    function.compile(signature, num_warps, num_stages, device_index);
+  }
+}
+}  // namespace
+
 void JitKernel::compile() {
   std::lock_guard<std::mutex> lock(mutex);
   if (jit_function != nullptr) {
@@ -76,10 +96,11 @@ void JitKernel::compile() {
 #else
   jit_function = &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
-  function->compile(signature,
-                    static_cast<unsigned int>(num_warps),
-                    static_cast<unsigned int>(num_stages),
-                    triton_jit::DefaultBackend::get_device_index());
+  precompile(*function,
+             signature,
+             static_cast<unsigned int>(num_warps),
+             static_cast<unsigned int>(num_stages),
+             triton_jit::DefaultBackend::get_device_index());
 #endif
 }
 
