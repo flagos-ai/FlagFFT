@@ -1,4 +1,4 @@
-"""Narrow first DFT followed by a real-component half-spectrum final DFT."""
+"""Two half-spectrum DFTs with a separate narrow first-axis exchange."""
 import math
 import pytest
 
@@ -13,10 +13,11 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('pattern',['random','basis','cancellation','tone'])
 def test_single_last_half_whole(tmp_path,a,b,direction,pattern):
     n=a*b;batch=3;pa=1<<(a-1).bit_length();pb=1<<(b-1).bit_length();hp=1<<(b//2).bit_length();sign=-1 if direction=='forward' else 1
-    path=tmp_path/'last_half.py';path.write_text(build_matrix_fourstep(a,b)+build_complex_half(a,b,last_rows=32))
+    path=tmp_path/'last_half.py';path.write_text(build_matrix_fourstep(a,b)+build_complex_half(a,b,first_rows=32,last_rows=32))
     ns,pid=execute_module(path);pid.append(0);ns['tl'].dot=lambda x,w,input_precision:x@w
     angle=sign*2*math.pi*torch.arange(a,dtype=torch.float64)[:,None]*torch.arange(a)[None,:]/a
     w0=torch.zeros(2*pa,2*pa);w0[:a,:2*a:2]=angle.cos().float();w0[:a,1:2*a:2]=angle.sin().float();w0[pa:pa+a,:2*a:2]=-angle.sin().float();w0[pa:pa+a,1:2*a:2]=angle.cos().float()
+    hw0=w0[:pa,:2*(1<<(a//2).bit_length())].contiguous()
     angle=sign*2*math.pi*torch.arange(b,dtype=torch.float64)[:,None]*torch.arange(b//2+1)[None,:]/b
     hw=torch.zeros(pb,2*hp);hw[:b,:b//2*2+2:2]=angle.cos().float();hw[:b,1:b//2*2+2:2]=angle.sin().float()
     angle=sign*2*math.pi*torch.arange(b,dtype=torch.float64)[:,None]*torch.arange(a)[None,:]/n
@@ -34,7 +35,7 @@ def test_single_last_half_whole(tmp_path,a,b,direction,pattern):
     x*=torch.tensor([1e-6,1.,1e6])[:,None,None];saved=x.clone()
     p=torch.empty(batch,b,2*pa);mid=torch.empty(batch,n,2);q=torch.empty(batch,a,2*pb);guard=torch.full((2*batch*n+128,),31415.25)
     steps=[('pack0',(math.ceil(pa/16),math.ceil(b/16),batch),(Pointer(x),Pointer(p),Pointer(tw))),
-           ('cube0',(math.ceil(b/32),math.ceil(2*a/64),batch),(Pointer(p),Pointer(w0),Pointer(mid))),
+           ('cube0_complex_half_store',(math.ceil(b/32),math.ceil((a//2+1)/32),batch),(Pointer(p),Pointer(hw0),Pointer(mid))),
            ('pack1',(math.ceil(pb/16),math.ceil(a/16),batch),(Pointer(mid),Pointer(q),Pointer(tw))),
            ('cube1_complex_half_finish',(math.ceil(a/32),math.ceil((b//2+1)/32),batch),(Pointer(q),Pointer(hw),Pointer(guard,64)))]
     for name,grid,args in steps:
@@ -53,3 +54,6 @@ def test_single_half_metadata(tmp_path):
     meta=emit_complex_half(209,221,'cube1_complex_half_finish_narrow','forward',tmp_path)
     assert meta['signature']=='*fp32:16,*fp32:16,*fp32:16'
     assert meta['kernel_name']=='cube1_complex_half_finish'
+    first=emit_complex_half(209,221,'cube0_complex_half_store_narrow','forward',tmp_path)
+    assert first['signature']=='*fp32:16,*fp32:16,*fp32:16'
+    assert first['kernel_name']=='cube0_complex_half_store'

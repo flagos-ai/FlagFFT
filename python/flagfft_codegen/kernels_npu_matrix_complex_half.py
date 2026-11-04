@@ -16,6 +16,7 @@ def build_complex_half(a,b,first_rows=128,first_cols=32,last_rows=64,last_cols=3
   kpad=1<<(length-1).bit_length();rowpad=1<<(rows-1).bit_length();h=length//2+1;hp=1<<(h-1).bit_length();n=a*b;points=m*c
   args='P,W,T,Y' if first else 'P,W,Y'
   ls=['@triton.jit',f'def {op}({args}):','    batch=tl.program_id(2).to(tl.int64)',f'    row=tl.program_id(0)*{m}+tl.arange(0,{m})',f'    k=tl.arange(0,{kpad})',f'    freq=tl.program_id(1)*{c}+tl.arange(0,{c})',f'    word=tl.program_id(1)*{2*c}+tl.arange(0,{2*c})',f'    off=batch*{rows*2*kpad}+row[:,None]*{2*kpad}+k[None,:]',f'    xr=tl.load(P+off,row[:,None]<{rows},0.)',f'    xi=tl.load(P+{kpad}+off,row[:,None]<{rows},0.)',f'    w=tl.load(W+k[:,None]*{2*hp}+word[None,:],word[None,:]<{2*h},0.)','    u=tl.dot(xr,w,input_precision="ieee")','    v=tl.dot(xi,w,input_precision="ieee")',f'    ur,ui=tl.split(tl.reshape(u,({points},2)))',f'    vr,vi=tl.split(tl.reshape(v,({points},2)))',f'    posr=tl.reshape(ur-vi,({m},{c}))',f'    posi=tl.reshape(ui+vr,({m},{c}))',f'    reverse=tl.arange(0,{points})^{c-1}',f'    negr=tl.reshape(tl.gather(ur+vi,reverse,0),({m},{c}))',f'    negi=tl.reshape(tl.gather(vr-ui,reverse,0),({m},{c}))',f'    negfreq={length}-(tl.program_id(1)*{c}+{c-1})+tl.arange(0,{c})']
+  producer=list(ls)
   if first:
    for label,freq in [('pos','freq'),('neg','negfreq')]:
     valid=f'(row[:,None]<{rows})&({freq}[None,:]>=0)&({freq}[None,:]<{length})'
@@ -28,15 +29,23 @@ def build_complex_half(a,b,first_rows=128,first_cols=32,last_rows=64,last_cols=3
     good=f'(outword<{2*rows})&({freq}[:,None]>=0)&({freq}[:,None]<{h})' if label=='pos' else f'(outword<{2*rows})&({freq}[:,None]>={h})&({freq}[:,None]<{length})'
     ls += [f'    tl.store(Y+dst,packed,{good})']
   source+='\n'+'\n'.join(ls)+'\n'
+  if first:
+   store=producer
+   store[1]='def cube0_complex_half_store(P,W,Y):'
+   for label,freq in [('pos','freq'),('neg','negfreq')]:
+    store += [f'    packed=tl.reshape(tl.join(tl.reshape({label}r,({points},)),tl.reshape({label}i,({points},))),({m},{2*c}))',f'    outword=tl.program_id(1)*{2*c}+tl.arange(0,{2*c})[None,:]' if label=='pos' else f'    outword=({length}-(tl.program_id(1)*{c}+{c-1}))*2+tl.arange(0,{2*c})[None,:]',f'    off=batch*{2*n}+row[:,None]*{2*length}+outword']
+    good=f'(row[:,None]<{rows})&(outword>=0)&(outword<{2*h})' if label=='pos' else f'(row[:,None]<{rows})&(outword>={2*h})&(outword<{2*length})'
+    store += [f'    tl.store(Y+off,packed,{good})']
+   source+='\n'+'\n'.join(store)+'\n'
  return _module_source(source)
 
 
 def emit_complex_half(a,b,phase,direction,out_dir):
- narrow=phase=='cube1_complex_half_finish_narrow'
- if phase not in ('cube0_complex_half_pack','cube1_complex_half_finish','cube1_complex_half_finish_narrow') or direction not in ('forward','inverse'):
+ narrow=phase.endswith('_narrow')
+ if phase not in ('cube0_complex_half_pack','cube1_complex_half_finish','cube1_complex_half_finish_narrow','cube0_complex_half_store_narrow') or direction not in ('forward','inverse'):
   raise ValueError('Invalid complex half-spectrum matrix phase or direction')
  path=Path(out_dir)/f'npu_matrix_fourstep_{a}_{b}_{phase}_{direction}.py'
- path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,build_complex_half(a,b,last_rows=32 if narrow else 64))
+ path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,build_complex_half(a,b,first_rows=32 if narrow else 128,last_rows=32 if narrow else 64))
  args=['P','W','T','Y'] if phase=='cube0_complex_half_pack' else ['P','W','Y']
  meta=dict(module_path=str(path),kernel_name=phase.removesuffix("_narrow"),arg_names=args,signature=','.join(['*fp32:16']*len(args)),num_warps=4,num_stages=1,batch_per_block=1,inner_pack=1,tle_fused_twiddle=True,kernel_type='four_step_row',dtype='complex64',direction=direction,length=a*b)
  write_text_atomic(path.with_suffix('.json'),json.dumps(meta,sort_keys=True));return meta

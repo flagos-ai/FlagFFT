@@ -25,7 +25,7 @@ def test_complex_half_matrix_live(n,batch,direction,in_place):
     lib.flagfftGetPlanDescription.argtypes=[ctypes.c_void_p];lib.flagfftGetPlanDescription.restype=ctypes.c_char_p
     description=lib.flagfftGetPlanDescription(handle).decode()
     assert 'complex_half_spectra=1' in description
-    assert ('complex_half_last_only=1' in description)==(batch==1)
+    assert ('complex_half_separate_pack=1' in description)==(batch==1)
     streams=[torch.npu.current_stream(),torch.npu.Stream()]
     try:
         for step,scale in enumerate((1.,1e-6,1e6,-.25)):
