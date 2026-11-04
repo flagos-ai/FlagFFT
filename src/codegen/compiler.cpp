@@ -3301,10 +3301,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const bool complex_half=fused_pack_kernel && complex_finish_kernel && complex_api &&
           flag_or_default("FLAGFFT_NPU_MATRIX_COMPLEX_HALF",true);
       // A single transform retains the narrow first axis, which has enough
-      // independent tiles. Only halve its final DFT and fuse the final store.
+      // independent tiles. Halve the final forward DFT and fuse its store;
+      // the inverse retains its existing schedule unless explicitly enabled.
       const bool single_half_last=complex_api && batch==1 && !wide &&
           n1>=128 && n2>=128 && flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
-          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",false);
+          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",request.direction=="forward");
       if (complex_half || single_half_last) {
         if (complex_half) {
           for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {

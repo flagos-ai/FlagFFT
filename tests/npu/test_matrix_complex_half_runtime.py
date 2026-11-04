@@ -6,11 +6,14 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('n,batch,pattern',[(46189,1,'random'),(46189,1,'tone'),(46189,1,'basis'),(46189,1,'cancellation'),(46189,17,'random'),(46189,33,'random')])
+@pytest.mark.parametrize('n,batch,pattern,default_policy',
+    [(46189,1,pattern,policy) for pattern in ('random','tone','basis','cancellation')
+     for policy in (False,True)]+[(46189,17,'random',False),(46189,33,'random',False)])
 @pytest.mark.parametrize('direction',[-1,1])
 @pytest.mark.parametrize('in_place',[False,True])
-def test_complex_half_matrix_live(n,batch,pattern,direction,in_place,monkeypatch):
-    if batch==1:monkeypatch.setenv("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST","1")
+def test_complex_half_matrix_live(n,batch,pattern,default_policy,direction,in_place,monkeypatch):
+    if default_policy:monkeypatch.delenv("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",raising=False)
+    elif batch==1:monkeypatch.setenv("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST","1")
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
     lib=ctypes.CDLL(path)
@@ -27,6 +30,10 @@ def test_complex_half_matrix_live(n,batch,pattern,direction,in_place,monkeypatch
     description=lib.flagfftGetPlanDescription(handle).decode()
     assert 'complex_half_spectra=1' in description
     assert ('complex_half_last_only=1' in description)==(batch==1)
+    if default_policy:
+        forward,inverse=description.split('-- Inverse execution --')
+        assert 'complex_half_last_only=1' in forward
+        assert 'complex_half_last_only=0' in inverse
     streams=[torch.npu.current_stream(),torch.npu.Stream()]
     try:
         for step,scale in enumerate((1.,1e-6,1e6,-.25)):
@@ -39,7 +46,7 @@ def test_complex_half_matrix_live(n,batch,pattern,direction,in_place,monkeypatch
             elif pattern=='cancellation':
                 value[:,n//2:2*(n//2)]=-value[:,:n//2].flip(1)
                 value[:,-1]*=1e-6
-            value*=scale;z=torch.view_as_complex(value)
+            value*=scale;z=torch.view_as_complex(value).to(torch.complex128)
             ref=torch.view_as_real(torch.fft.fft(z) if direction==-1 else torch.fft.ifft(z)*n)
             stream=streams[step%2]
             with torch.npu.stream(stream):
