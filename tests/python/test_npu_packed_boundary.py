@@ -3,7 +3,7 @@ import math
 import pytest
 
 torch=pytest.importorskip('torch')
-from flagfft_codegen.kernels_real import _build_npu_packed_boundary
+from flagfft_codegen.kernels_real import _build_npu_packed_boundary, _npu_packed_boundary_direct_midpoint
 from test_npu_structured_fft import Pointer,execute_module
 
 
@@ -33,7 +33,7 @@ def test_packed_real_windows(tmp_path,monkeypatch,n,inverse,width,paired,groups)
     for b in range(batch):
         pid[1]=b
         extent = width * (groups if paired else 1)
-        for tile in range(((packed//2+1 if paired else packed if inverse else half)+extent-1)//extent):
+        for tile in range(((packed//2+1-int(_npu_packed_boundary_direct_midpoint(n,paired,width)) if paired else packed if inverse else half)+extent-1)//extent):
             pid[0]=tile;ns[name](Pointer(src),Pointer(roots),Pointer(out,64),distance,batch)
     got=out[64:-64].reshape(batch,packed if inverse else distance,2)
     if not inverse:
@@ -43,3 +43,13 @@ def test_packed_real_windows(tmp_path,monkeypatch,n,inverse,width,paired,groups)
     assert torch.equal(src,saved)
     assert (out[:64]==31415.25).all() and (out[-64:]==31415.25).all()
     assert rows==1 and args[-2] == ('input_distance' if inverse else 'output_distance')
+
+
+@pytest.mark.parametrize('n,groups,expected',[(16384,1,True),(524288,2,True),(663000,2,False),(1010,1,False)])
+def test_midpoint_admission_and_opt_out(monkeypatch,n,groups,expected):
+    monkeypatch.setenv('FLAGFFT_NPU_REAL_BOUNDARY_GROUP',str(groups))
+    monkeypatch.delenv('FLAGFFT_NPU_REAL_MIDPOINT_DIRECT',raising=False)
+    assert _npu_packed_boundary_direct_midpoint(n,True,2048)==expected
+    assert not _npu_packed_boundary_direct_midpoint(n,False,2048)
+    monkeypatch.setenv('FLAGFFT_NPU_REAL_MIDPOINT_DIRECT','0')
+    assert not _npu_packed_boundary_direct_midpoint(n,True,2048)

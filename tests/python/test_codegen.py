@@ -2165,5 +2165,5 @@ def test_npu_paired_boundary_group_grid(jit_source, tmp_path, monkeypatch, kerne
     metadata = jit_source._emit_r2c_pointwise_jit_kernel(
         kernel=kernel, n=n, dtype="complex64", out_dir=tmp_path,
         target="npu:Ascend910B4:1")
-    columns = n // 4 + 1
+    columns = n // 4 + 1 - int(n % 4 == 0 and (n // 4) % (2048 * groups) == 0)
     assert metadata["grid_x_override"] == (columns + 2048 * groups - 1) // (2048 * groups)

@@ -6,10 +6,10 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('n,batch',[(46189,1),(46189,17),(46189,33)])
+@pytest.mark.parametrize('n,batch,pattern',[(46189,1,'random'),(46189,1,'tone'),(46189,1,'basis'),(46189,1,'cancellation'),(46189,17,'random'),(46189,33,'random')])
 @pytest.mark.parametrize('direction',[-1,1])
 @pytest.mark.parametrize('in_place',[False,True])
-def test_complex_half_matrix_live(n,batch,direction,in_place):
+def test_complex_half_matrix_live(n,batch,pattern,direction,in_place):
     path=os.environ.get('FLAGFFT_LIBRARY')
     if not path:pytest.skip('Set FLAGFFT_LIBRARY to a built NPU library')
     lib=ctypes.CDLL(path)
@@ -25,11 +25,20 @@ def test_complex_half_matrix_live(n,batch,direction,in_place):
     lib.flagfftGetPlanDescription.argtypes=[ctypes.c_void_p];lib.flagfftGetPlanDescription.restype=ctypes.c_char_p
     description=lib.flagfftGetPlanDescription(handle).decode()
     assert 'complex_half_spectra=1' in description
-    assert ('complex_half_separate_pack=1' in description)==(batch==1)
+    assert ('complex_half_last_only=1' in description)==(batch==1)
     streams=[torch.npu.current_stream(),torch.npu.Stream()]
     try:
         for step,scale in enumerate((1.,1e-6,1e6,-.25)):
-            value=torch.randn(batch,n,2)*scale;z=torch.view_as_complex(value)
+            value=torch.randn(batch,n,2)
+            if pattern=='tone':
+                phase=2*torch.pi*7*torch.arange(n,dtype=torch.float64)/n
+                value=torch.view_as_real(torch.polar(torch.ones_like(phase),phase)).float()[None].expand(batch,n,2).clone()
+            elif pattern=='basis':
+                value.zero_();value[:,1009,1]=1.
+            elif pattern=='cancellation':
+                value[:,n//2:2*(n//2)]=-value[:,:n//2].flip(1)
+                value[:,-1]*=1e-6
+            value*=scale;z=torch.view_as_complex(value)
             ref=torch.view_as_real(torch.fft.fft(z) if direction==-1 else torch.fft.ifft(z)*n)
             stream=streams[step%2]
             with torch.npu.stream(stream):

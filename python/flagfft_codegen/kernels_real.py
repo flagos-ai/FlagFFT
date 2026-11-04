@@ -430,6 +430,15 @@ def _npu_packed_boundary_groups(n, paired):
     return groups if paired else 1
 
 
+def _npu_packed_boundary_direct_midpoint(n, paired, count):
+    # Only split off the exact self-conjugate value when it removes a whole
+    # program. Otherwise retain the existing vector window and launch shape.
+    groups = _npu_packed_boundary_groups(n, paired)
+    return (paired and n % 4 == 0 and n // 4 > 0
+            and (n // 4) % (count * groups) == 0
+            and os.getenv("FLAGFFT_NPU_REAL_MIDPOINT_DIRECT", "1") != "0")
+
+
 def _build_npu_packed_boundary(n, inverse, count=256, paired=False):
     """Use contiguous complex windows and local reversal for the real boundary."""
     packed=n//2;half=packed+1
@@ -438,6 +447,8 @@ def _build_npu_packed_boundary(n, inverse, count=256, paired=False):
     name=f"_{'c2r_packed_preprocess' if inverse else 'r2c_packed_postprocess'}_kernel_n{n}_f32"
     if paired: name += "_paired"
     groups = _npu_packed_boundary_groups(n, paired)
+    direct_midpoint = _npu_packed_boundary_direct_midpoint(n, paired, count)
+    if direct_midpoint: name += "_midpoint"
     if groups > 1: name += f"_g{groups}"
     distance='input_distance' if inverse else 'output_distance'
     source=f'''@triton.jit
@@ -490,7 +501,7 @@ def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
             source+='    mr=0.5*(sr-di*wr-dr*wi)\n    mi=-0.5*(si+dr*wr-di*wi)\n'
             base='batch*output_distance*2'
         source+=f'''    value=tl.reshape(tl.join(real,imag),({2*count},))
-    tl.store(out_ptr+{base}+start*2+word,value,(batch<nbatch)&(start*2+word<{2*(center+1)}))
+    tl.store(out_ptr+{base}+start*2+word,value,(batch<nbatch)&(start*2+word<{2*(center if direct_midpoint else center+1)}))
     mirror_start=tl.maximum({packed}-start-{count}+1,0)
     mirror_k=mirror_start+lane
     source_k={packed}-mirror_k
@@ -511,9 +522,21 @@ def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
         # Both stores then write identical values within the same program.
         # This keeps every DMA window active without a branch or a wider UB tile.
         lines = (lines[:start] + [f"    for window in tl.static_range({groups}):",
-                 f"        start=tl.minimum((tl.program_id(0)*{groups}+window)*{count},{packed//2//count*count})"] +
+                 f"        start=tl.minimum((tl.program_id(0)*{groups}+window)*{count},{((packed//2-int(direct_midpoint))//count)*count})"] +
                  ["    " + line for line in lines[start + 1:]])
         source = "\n".join(lines) + "\n"
+    if direct_midpoint:
+        # At k=N/4 the quarter-turn reduces exactly to a conjugation.
+        # The inverse boundary is unnormalized and contributes a factor of 2.
+        src_stride = 'input_distance*2' if inverse else str(2*packed)
+        dst_stride = str(2*packed) if inverse else 'output_distance*2'
+        factor = 2. if inverse else 1.
+        source += f'''    if tl.program_id(0)==0:
+        midpoint_real=tl.load(in_ptr+batch*{src_stride}+{packed},batch<nbatch,0.)
+        midpoint_imag=tl.load(in_ptr+batch*{src_stride}+{packed+1},batch<nbatch,0.)
+        tl.store(out_ptr+batch*{dst_stride}+{packed},{factor}*midpoint_real,batch<nbatch)
+        tl.store(out_ptr+batch*{dst_stride}+{packed+1},{-factor}*midpoint_imag,batch<nbatch)
+'''
     return name,source,['in_ptr','twiddle_ptr','out_ptr',distance,'nbatch'],1
 
 

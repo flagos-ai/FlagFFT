@@ -3241,22 +3241,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           !request.convolution_child && request.origin_rank<=1 && request.raw_dim==1;
       const bool complex_half=fused_pack_kernel && complex_finish_kernel && complex_api &&
           flag_or_default("FLAGFFT_NPU_MATRIX_COMPLEX_HALF",true);
-      // A single transform retains a separate first-axis exchange, which
-      // avoids the latency of a fused phase/transpose at this small batch.
-      const bool single_half=complex_api && batch==1 && !wide &&
+      // A single transform retains the narrow first axis, which has enough
+      // independent tiles. Only halve its final DFT and fuse the final store.
+      const bool single_half_last=complex_api && batch==1 && !wide &&
           n1>=128 && n2>=128 && flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
-          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF",true);
-      if (complex_half || single_half) {
+          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",true);
+      if (complex_half || single_half_last) {
         if (complex_half) {
           for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {
             key.perm_form=std::string("npu_matrix_fourstep_")+phase+"_wide";
             complex_half_kernels.push_back(compile_kernel(key));
           }
         } else {
-          for (const char *phase:{"cube0_complex_half_store_narrow","cube1_complex_half_finish_narrow"}) {
-            key.perm_form=std::string("npu_matrix_fourstep_")+phase;
-            complex_half_kernels.push_back(compile_kernel(key));
-          }
+          key.perm_form="npu_matrix_fourstep_cube1_complex_half_finish_narrow";
+          complex_half_kernels.push_back(compile_kernel(key));
         }
         for (int stage=0;stage<2;++stage) {
           const int64_t length=stage==0?n1:n2,half=length/2+1;
@@ -3859,7 +3857,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     DeviceAllocation boundary_twiddle;
 
     {
-      postprocess_kernel = compile_r2c_packed_postprocess_kernel(request, n);
+      postprocess_kernel = compile_r2c_packed_postprocess_kernel(request, n, batch);
       boundary_twiddle = build_raw_packed_real_twiddle(request, n);
     }
     return std::make_shared<CompiledRawPackedR2CNode>(
@@ -4659,9 +4657,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_half_pack_kernel(const FF
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_packed_postprocess_kernel(const FFTRequest &request,
-                                                                                 int64_t n) {
+                                                                                 int64_t n, int64_t batch) {
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::r2c_packed_postprocess(target, complex_dtype_for(request.input_dtype), n);
+  if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
+      complex_dtype_for(request.input_dtype)=="complex64" && batch>=16 && n>=65536 &&
+      flag_or_default("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY",false) &&
+      flag_or_default("FLAGFFT_NPU_REAL_BOUNDARY_AUTO_BLOCK",true))
+    key.perm_form="npu_paired_real_boundary_auto";
   return compile_kernel(key);
 }
 

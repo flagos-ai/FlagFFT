@@ -1926,7 +1926,7 @@ class TritonCompiler {
                                                                  int64_t n2);
   std::shared_ptr<JitKernel> compile_real_to_complex_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_r2c_half_pack_kernel(const FFTRequest &request, int64_t n);
-  std::shared_ptr<JitKernel> compile_r2c_packed_postprocess_kernel(const FFTRequest &request, int64_t n);
+  std::shared_ptr<JitKernel> compile_r2c_packed_postprocess_kernel(const FFTRequest &request, int64_t n, int64_t batch = 1);
   std::shared_ptr<JitKernel> compile_c2r_packed_preprocess_kernel(const FFTRequest &request, int64_t n, int64_t batch = 1);
   std::shared_ptr<JitKernel> compile_compact_to_hermitian_full_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<JitKernel> compile_complex_to_real_kernel(const FFTRequest &request, int64_t n);
