@@ -118,7 +118,7 @@ def _batch_grouped_late_stage(s,direction,bp,columns=128):
  return '\n'.join(lines)+'\n'
 
 
-def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False):
+def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch_pack=False,vector_second15=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,codelet_reuse=False):
  if dense_prefix:
   if batch_pack or vector_second15 or matrix_first17 or prefix_pitch!=1:
    raise ValueError('Dense short prefix uses a single-batch Cube DIF layout')
@@ -131,7 +131,7 @@ def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch
    raise ValueError('Aligned prefix pitch requires a batch-grouped vector 17/15 prefix')
   source,specs=build_cube_prefix_dif(factors,direction,vector_first17=vector_first17,
       batch_pack=batch_pack,vector_second15=vector_second15,global_inverse=global_inverse,
-      matrix_first17=matrix_first17)
+      matrix_first17=matrix_first17,codelet_reuse=codelet_reuse)
   n=math.prod(factors);previous=factors[0];m=n//(previous*factors[1])
   pitch=math.ceil(m/prefix_pitch)*prefix_pitch;storage=previous*factors[1]*pitch
   if pitch==m:return source,specs
@@ -154,7 +154,7 @@ def build_cube_prefix_dif(factors,direction='forward',vector_first17=False,batch
   if direction!='inverse' or (batch_pack and not vector_first17):
    raise ValueError('Global inverse requires inverse grouped vector DIF')
   source,specs=build_cube_prefix_dif(factors,'forward',vector_first17=vector_first17,
-      batch_pack=batch_pack,vector_second15=vector_second15,matrix_first17=matrix_first17)
+      batch_pack=batch_pack,vector_second15=vector_second15,matrix_first17=matrix_first17,codelet_reuse=codelet_reuse)
   from .npu_radix17 import component_first_source
   from .kernels_npu_dif_aligned import _fused_finish
   first=specs[0]
@@ -313,6 +313,10 @@ def chirped_second(X,TW,Y):
   from .npu_coprime import coprime_source
   if 10 in factors:source+='\n'+coprime_source(2,5)
   if vector_second15:source+='\n'+coprime_source(3,5)
+ if codelet_reuse:
+  if not batch_pack:raise ValueError('DIF codelet reuse requires batch grouping')
+  from .npu_dif_codelets import dif_codelet_source
+  source+='\n'+dif_codelet_source(factors)
  if vector_first17:
   from .npu_radix17 import radix17_source
   source+='\n'+radix17_source()

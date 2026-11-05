@@ -458,6 +458,9 @@ namespace {
     // Keep the vector-15 producer's GM rows aligned to 128-byte boundaries.
     // Its padded intermediate is consumed by the existing axis switch; later
     // passes retain their original layout and coefficient tables.
+    const bool codelet_reuse=batch_pack &&
+        std::any_of(factors.begin(),factors.end(),[](int64_t r) { return r==13 || r==15; }) &&
+        flag_or_default("FLAGFFT_NPU_DIF_CODELET_REUSE",true);
     const bool prefix_pitch=batch_pack && vector_first17 && vector_second15 &&
         n/initial_prefix%32!=0 && flag_or_default("FLAGFFT_NPU_DIF_PREFIX_PITCH",true);
     const int64_t prefix_storage=prefix_pitch?initial_prefix*ceiling(n/initial_prefix,32)*32:0;
@@ -478,6 +481,7 @@ namespace {
       if (matrix_first17) key.perm_form+="_half17";
       if (prefix_pitch && (passes.size()==1 || passes.size()==2)) key.perm_form+="_pitch32";
       if (dense_prefix) key.perm_form+="_dense_short";
+      if (codelet_reuse) key.perm_form+="_codeletreuse";
       if ((dense_prefix && passes.empty()) || (matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
