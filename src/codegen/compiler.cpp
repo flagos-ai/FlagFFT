@@ -228,6 +228,13 @@ namespace {
       const int stages=(bits+4)/5,base=bits/stages,extra=bits%stages;
       for(int i=0;i<stages;++i) factors.push_back(int64_t{1}<<(base+(i<extra?1:0)));
     }
+    // Separate the large power-of-two real/imaginary planes by a short aligned
+    // gap. API buffers and coefficient tables keep their original compact ABI.
+    const bool padded_workspace=batch>=16 && request.origin_rank<=1 &&
+        request.raw_dim==1 && !request.packed_real_child &&
+        request.real_transform_kind.empty() && request.origin_real_transform_kind.empty() &&
+        flag_or_default("FLAGFFT_NPU_FLAT_POWER_WORKSPACE_PAD",true);
+    const int64_t workspace_n=n+(padded_workspace?512:0);
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1,previous_prefix=1;
     const bool global_inverse=request.direction=="inverse" && batch>=16 &&
@@ -250,6 +257,7 @@ namespace {
       auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
           request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form="npu_vector_dif_flat_power2_"+std::to_string(stage);
+      if (padded_workspace) key.perm_form+="_workspacepad512";
       if (global_inverse) key.perm_form+="_globalconj";
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
       if (batch>=16 && axis_bits>=3 && axis_bits%2 &&
@@ -260,9 +268,9 @@ namespace {
       passes.push_back({TritonCompiler{}.compile_kernel(key),DeviceAllocation::from_floats(weights),grid,1,false});
       previous_prefix=prefix;prefix*=radix;
     }
-    const auto bytes=static_cast<std::size_t>(batch*n*2*sizeof(float));
+    const auto bytes=static_cast<std::size_t>(batch*workspace_n*2*sizeof(float));
     return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
-        adaptor::Memory(bytes),adaptor::Memory(bytes),n,factors);
+        adaptor::Memory(bytes),adaptor::Memory(bytes),workspace_n,factors);
   }
 
   std::shared_ptr<CompiledRawNode> make_npu_coarse_dif_child(

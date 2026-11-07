@@ -10,9 +10,11 @@ Twiddles and structured FFT roots share each pass's read-only table argument.
 import math
 from flagfft_codegen.kernels_npu_structured import FFT_HELPERS
 
-def build(factors,direction='forward',terminal8=False,global_inverse=False):
+def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0):
+ if type(workspace_padding) is not int or workspace_padding not in (0,512):
+  raise ValueError('Power DIF workspace padding must be 0 or 512 floats')
  if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
- n=math.prod(factors);prefix=1;previous=1;specs=[]
+ n=math.prod(factors);workspace_n=n+workspace_padding;prefix=1;previous=1;specs=[]
  source='import triton\nimport triton.language as tl\nimport triton.language.extra.cann.extension as al\n'+FFT_HELPERS
  if terminal8:
   from .npu_power_terminal import terminal8_source
@@ -26,23 +28,23 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False):
   if stage==0:
    ls += [f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',f'    word=tl.program_id(0)*{2*c}+tl.arange(0,{2*c})[None,:]',f'    raw=tl.load(X+batch*{2*n}+d*{2*m}+word,word<{2*m},0.)',f'    re,im=tl.split(tl.reshape(raw,({points},2)))']
   else:
-   ls += [f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',f'    j=tl.program_id(0)//{max(1,prefix//c)}',f'    pf=(tl.program_id(0)%{max(1,prefix//c)}*{c}+tl.arange(0,{c}))[None,:]',f'    off=d*{m*prefix}+q',f'    rr=tl.load(X+batch*{2*n}+off,q<{m*prefix},0.)',f'    ii=tl.load(X+batch*{2*n}+{n}+off,q<{m*prefix},0.)',f'    wr=tl.load(TW+off,q<{m*prefix},0.)',f'    wi=tl.load(TW+{n}+off,q<{m*prefix},0.)',f'    re=tl.reshape(rr*wr-ii*wi,({points},))',f'    im=tl.reshape(rr*wi+ii*wr,({points},))']
+   ls += [f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',f'    j=tl.program_id(0)//{max(1,prefix//c)}',f'    pf=(tl.program_id(0)%{max(1,prefix//c)}*{c}+tl.arange(0,{c}))[None,:]',f'    off=d*{m*prefix}+q',f'    rr=tl.load(X+batch*{2*workspace_n}+off,q<{m*prefix},0.)',f'    ii=tl.load(X+batch*{2*workspace_n}+{workspace_n}+off,q<{m*prefix},0.)',f'    wr=tl.load(TW+off,q<{m*prefix},0.)',f'    wi=tl.load(TW+{n}+off,q<{m*prefix},0.)',f'    re=tl.reshape(rr*wr-ii*wi,({points},))',f'    im=tl.reshape(rr*wi+ii*wr,({points},))']
   ls += ['    r,i=re,im']
   if direction=='inverse' and (not global_inverse or stage==0):ls += ['    i=-i']
   ls += [f'    r,i={axis}(r,i,W,{points},{r},{c},{r.bit_length()-1})']
   if direction=='inverse' and (not global_inverse or last):ls += ['    i=-i']
   if stage==0:
-   ls += [f'    row=tl.program_id(0)*{c}+tl.arange(0,{c})[:,None]',f'    freq=tl.arange(0,{r})[None,:]',f'    dst=row*{r}+freq',f'    tl.store(Y+batch*{2*n}+dst,tl.trans(tl.reshape(r,({r},{c}))),row<{m})',f'    tl.store(Y+batch*{2*n}+{n}+dst,tl.trans(tl.reshape(i,({r},{c}))),row<{m})']
+   ls += [f'    row=tl.program_id(0)*{c}+tl.arange(0,{c})[:,None]',f'    freq=tl.arange(0,{r})[None,:]',f'    dst=row*{r}+freq',f'    tl.store(Y+batch*{2*workspace_n}+dst,tl.trans(tl.reshape(r,({r},{c}))),row<{m})',f'    tl.store(Y+batch*{2*workspace_n}+{workspace_n}+dst,tl.trans(tl.reshape(i,({r},{c}))),row<{m})']
   elif not last:
    if prefix<c:
-    ls += [f'    re=tl.reshape(tl.permute(tl.reshape(r,({r},{c//prefix},{prefix})),1,0,2),({points},))',f'    im=tl.reshape(tl.permute(tl.reshape(i,({r},{c//prefix},{prefix})),1,0,2),({points},))',f'    dst=tl.program_id(0)*{points}+tl.arange(0,{points})',f'    tl.store(Y+batch*{2*n}+dst,re,dst<{n})',f'    tl.store(Y+batch*{2*n}+{n}+dst,im,dst<{n})']
+    ls += [f'    re=tl.reshape(tl.permute(tl.reshape(r,({r},{c//prefix},{prefix})),1,0,2),({points},))',f'    im=tl.reshape(tl.permute(tl.reshape(i,({r},{c//prefix},{prefix})),1,0,2),({points},))',f'    dst=tl.program_id(0)*{points}+tl.arange(0,{points})',f'    tl.store(Y+batch*{2*workspace_n}+dst,re,dst<{n})',f'    tl.store(Y+batch*{2*workspace_n}+{workspace_n}+dst,im,dst<{n})']
    else:
-    ls += [f'    dst=(j*{r}+d)*{prefix}+pf',f'    tl.store(Y+batch*{2*n}+dst,tl.reshape(r,({r},{c})),pf<{prefix})',f'    tl.store(Y+batch*{2*n}+{n}+dst,tl.reshape(i,({r},{c})),pf<{prefix})']
+    ls += [f'    dst=(j*{r}+d)*{prefix}+pf',f'    tl.store(Y+batch*{2*workspace_n}+dst,tl.reshape(r,({r},{c})),pf<{prefix})',f'    tl.store(Y+batch*{2*workspace_n}+{workspace_n}+dst,tl.reshape(i,({r},{c})),pf<{prefix})']
   else:
    chunk=min(1024,points);rows=chunk//c
    for start in range(0,points,chunk):
     ls += [f'    pr=al.extract_slice(r,[{start}],[{chunk}],[1])',f'    pi=al.extract_slice(i,[{start}],[{chunk}],[1])',f'    out=tl.reshape(tl.join(pr,pi),({rows},{2*c}))',f'    freq=(tl.arange(0,{rows})+{start//c})[:,None]',f'    word=(tl.program_id(0)%{tiles}*{2*c}+tl.arange(0,{2*c}))[None,:]',f'    tl.store(Y+batch*{2*n}+freq*{2*prefix}+word,out,word<{2*prefix})']
   source+='\n'+'\n'.join(ls)+'\n'
-  specs.append(dict(name=name,phase='early' if stage==0 else 'late',stage=stage,r=r,m=m,prefix=prefix,previous_prefix=previous,c=c,grid=(tiles,)))
+  specs.append(dict(name=name,phase='early' if stage==0 else 'late',stage=stage,r=r,m=m,prefix=prefix,previous_prefix=previous,c=c,grid=(tiles,),physical_n=workspace_n))
   previous=prefix;prefix*=r
  return source,specs

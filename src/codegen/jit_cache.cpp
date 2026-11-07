@@ -811,6 +811,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-global-inverse";
     }
+    if (flat && phase.size()>=16 && phase.compare(phase.size()-16,16,"_workspacepad512")==0) {
+      phase.resize(phase.size()-16);
+      jit_command << " --npu-vector-dif-workspace-padding 512";
+    }
     if (coarse && phase.size()>=3 && phase.compare(phase.size()-3,3,"_gt")==0) {
       phase.resize(phase.size()-3);
       jit_command << " --npu-vector-dif-coarse-gt";
