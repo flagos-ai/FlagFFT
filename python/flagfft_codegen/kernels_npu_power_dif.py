@@ -10,13 +10,14 @@ Twiddles and structured FFT roots share each pass's read-only table argument.
 import math
 from flagfft_codegen.kernels_npu_structured import FFT_HELPERS
 
-def build(factors,direction='forward',terminal8=False,global_inverse=False):
+def build(factors,direction='forward',terminal8=False,global_inverse=False,terminal8_factored=False):
+ if terminal8_factored and not terminal8:raise ValueError('Factored terminal codelet requires terminal eight')
  if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
  n=math.prod(factors);prefix=1;previous=1;specs=[]
  source='import triton\nimport triton.language as tl\nimport triton.language.extra.cann.extension as al\n'+FFT_HELPERS
  if terminal8:
   from .npu_power_terminal import terminal8_source
-  source+='\n'+terminal8_source()
+  source+='\n'+terminal8_source(factored=terminal8_factored)
  axis='power_fft_axis' if terminal8 else 'fft_axis_sliced'
  for stage,r in enumerate(factors):
   if r<4 or r>128 or r&(r-1):raise ValueError('Power DIF axes require radix 4..128')

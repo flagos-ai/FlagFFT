@@ -154,6 +154,7 @@ def main() -> None:
     parser.add_argument("--npu-vector-dif-phase", type=int)
     parser.add_argument("--npu-vector-dif-aligned", action="store_true")
     parser.add_argument("--npu-vector-dif-flat-power2", action="store_true")
+    parser.add_argument("--npu-vector-dif-terminal8-factored", action="store_true")
     parser.add_argument("--npu-vector-dif-terminal8", action="store_true")
     parser.add_argument("--npu-vector-dif-cube-prefix", action="store_true")
     parser.add_argument("--npu-vector-dif-vector-first17", action="store_true")
@@ -500,7 +501,7 @@ def main() -> None:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Vector DIF requires NPU FP32')
         from .kernels_npu_dif import emit_vector_dif
-        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8,coarse=args.npu_vector_dif_coarse,global_inverse=args.npu_vector_dif_global_inverse,matrix_first17=args.npu_vector_dif_matrix_first17,prefix_pitch=args.npu_vector_dif_prefix_pitch,dense_prefix=args.npu_vector_dif_dense_prefix,coarse_single=args.npu_vector_dif_coarse_single,codelet_reuse=args.npu_vector_dif_codelet_reuse,coarse_gt=args.npu_vector_dif_coarse_gt)
+        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8,coarse=args.npu_vector_dif_coarse,global_inverse=args.npu_vector_dif_global_inverse,matrix_first17=args.npu_vector_dif_matrix_first17,prefix_pitch=args.npu_vector_dif_prefix_pitch,dense_prefix=args.npu_vector_dif_dense_prefix,coarse_single=args.npu_vector_dif_coarse_single,codelet_reuse=args.npu_vector_dif_codelet_reuse,coarse_gt=args.npu_vector_dif_coarse_gt,terminal8_factored=args.npu_vector_dif_terminal8_factored)
     elif args.npu_matrix_fourstep_phase:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Matrix four-step requires NPU FP32')

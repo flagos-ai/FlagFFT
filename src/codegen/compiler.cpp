@@ -253,8 +253,11 @@ namespace {
       if (global_inverse) key.perm_form+="_globalconj";
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
       if (batch>=16 && axis_bits>=3 && axis_bits%2 &&
-          flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true))
+          flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true)) {
         key.perm_form+="_terminal8";
+        if (flag_or_default("FLAGFFT_NPU_FLAT_POWER_FACTORED8",true))
+          key.perm_form+="_r8factored";
+      }
       key.perm_form+="_auto";
       const int64_t extent=stage?m*prefix:m,grid=(extent+columns-1)/columns;
       passes.push_back({TritonCompiler{}.compile_kernel(key),DeviceAllocation::from_floats(weights),grid,1,false});
