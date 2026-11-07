@@ -11,7 +11,7 @@ from .npu_coprime import coprime_source
 from .npu_radix9 import radix9_source
 
 
-def build_coarse_dif(factors,direction='forward',global_inverse=False,single_batch=False):
+def build_coarse_dif(factors,direction='forward',global_inverse=False,single_batch=False,good_thomas=False):
     if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
     mode='forward' if global_inverse else direction
     factors=tuple(factors)
@@ -57,7 +57,11 @@ def build_coarse_dif(factors,direction='forward',global_inverse=False,single_bat
            f'    out=sample*{pad}+freq',
            f'    tl.store(Y+batch*{2*pn}+out,re,sample<{rest})',
            f'    tl.store(Y+batch*{2*pn}+{pn}+out,im,sample<{rest})']
-    chunks=['\n'.join(ls)+'\n'];specs=[dict(name='coarse_prefix',phase='early',stage=0,
+    prefix_source='\n'.join(ls)+'\n'
+    if good_thomas:
+        from .npu_coarse_gt import prefix_source as emit_gt_prefix
+        prefix_source=emit_gt_prefix(factors,direction,global_inverse)
+    chunks=[prefix_source];specs=[dict(name='coarse_prefix',phase='early',stage=0,
         r=p0,m=rest,prefix=1,physical_n=pn,grid=(math.ceil(rest/c),),auto=True,local_prefix=factors[:2])]
     prefix=p0;previous_prefix=a
     for i,r in enumerate(factors[2:],2):
@@ -65,6 +69,7 @@ def build_coarse_dif(factors,direction='forward',global_inverse=False,single_bat
         spec=dict(name=f'coarse_stage_{i}',phase='late',stage=i,r=r,m=m,prefix=prefix,
             previous_prefix=previous_prefix,physical_prefix=pp,initial_prefix=p0,
             padded_prefix=pad,physical_n=pn,deferred_twiddle=i==2,auto=True)
+        if good_thomas:spec['coprime_prefix']=True
         if i+1==len(factors):body,spec=_fused_finish(spec,mode,conjugate_output=global_inverse)
         elif single_batch:
             columns=min(512,1<<(pp-1).bit_length())
@@ -74,4 +79,8 @@ def build_coarse_dif(factors,direction='forward',global_inverse=False,single_bat
         chunks.append(body);specs.append(spec);previous_prefix=prefix;prefix*=r
     source=_module_source('\n'.join(chunks),tuple(sorted(codelet_radices_for(factors))))
     source+='\nimport triton.language.extra.cann.extension as al\n'+coprime_source(3,5)+'\n'+radix9_source()
+    if good_thomas:
+        from .npu_coarse_gt import radix8_source
+        from .npu_dif_codelets import dif_codelet_source
+        source+='\n'+radix8_source()+'\n'+dif_codelet_source(factors)
     return source,specs

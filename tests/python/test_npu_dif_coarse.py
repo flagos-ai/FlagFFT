@@ -10,10 +10,11 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('factors',[(8,15,7,9,9,5),(4,15,7,9,9,5),(8,15,7,9,5),(4,15,8,4,3,2)])
 @pytest.mark.parametrize('direction',['forward','inverse','global_inverse'])
 @pytest.mark.parametrize('single_batch',[False,True])
-def test_coarse_full_fft(tmp_path,factors,direction,single_batch):
+@pytest.mark.parametrize('good_thomas',[False,True])
+def test_coarse_full_fft(tmp_path,factors,direction,single_batch,good_thomas):
     global_inverse=direction=='global_inverse'
     if global_inverse:direction='inverse'
-    source,specs=build_coarse_dif(factors,direction,global_inverse=global_inverse,single_batch=single_batch)
+    source,specs=build_coarse_dif(factors,direction,global_inverse=global_inverse,single_batch=single_batch,good_thomas=good_thomas)
     path=tmp_path/'coarse.py';path.write_text(source);ns,pid=execute_module(path);pid.append(0)
     n=math.prod(factors);batch=3;a,b=factors[:2];initial=a*b;padded=a*16
     sign=-1 if direction=='forward' or global_inverse else 1
@@ -21,7 +22,9 @@ def test_coarse_full_fft(tmp_path,factors,direction,single_batch):
     tables=[torch.cat((phase.cos().float().flatten(),phase.sin().float().flatten()))]
     for spec in specs[1:]:
         pp=spec['physical_prefix'];prefix=spec['prefix'];r=spec['r'];m=spec['m']
-        pf=torch.arange(pp);logical=pf//padded*initial+pf%padded
+        pf=torch.arange(pp);local=pf%padded
+        if good_thomas:local=((local%a)*b+(local//a)*a)%initial
+        logical=pf//padded*initial+local
         sample=torch.arange(r*m,dtype=torch.float64)[:,None]
         phase=(sign*2*math.pi*sample*logical[None,:]/n if spec['stage']==2 else
             sign*2*math.pi*sample*(logical[None,:]//spec['previous_prefix'])/(factors[spec['stage']-1]*r*m))

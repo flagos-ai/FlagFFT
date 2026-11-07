@@ -46,6 +46,9 @@ def _fused_finish(spec, direction, conjugate_output=False):
            (f'    take=tl.where(valid_word,(word&1)*{points}+word//2+(word//{2*initial})*{padded-initial},0)' if single_gather else
             f'    take=tl.where(valid_word,word+(word//{2*initial})*{2*(padded-initial)},0)'),
            f'    out=tl.program_id(0)*{rows*2*initial}+word']
+ if spec.get('coprime_prefix'):
+  from .npu_coarse_gt import finish_take
+  lines[-2]='    take=tl.where(valid_word,'+finish_take(initial,padded,points,single_gather)+',0)'
  for d in range(radix):
   if single_gather:
    lines += [f'    value=tl.zeros(({2*points},),tl.float32)',

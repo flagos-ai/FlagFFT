@@ -811,6 +811,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-global-inverse";
     }
+    if (coarse && phase.size()>=3 && phase.compare(phase.size()-3,3,"_gt")==0) {
+      phase.resize(phase.size()-3);
+      jit_command << " --npu-vector-dif-coarse-gt";
+    }
     if (coarse && phase.size()>=7 && phase.compare(phase.size()-7,7,"_single")==0) {
       phase.resize(phase.size()-7);
       jit_command << " --npu-vector-dif-coarse-single";

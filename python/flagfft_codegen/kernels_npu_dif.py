@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -146,11 +146,13 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('The vector second axis requires the Cube DIF plan')
     if global_inverse and (not (cube_prefix or coarse or flat_power2) or direction!='inverse'):
         raise ValueError('Global inverse requires inverse grouped DIF')
+    if coarse_gt and not coarse:
+        raise ValueError("Coprime coarse prefix requires coarse DIF")
     if coarse_single and not coarse:
         raise ValueError('Single-batch coarse schedule requires coarse DIF')
     if coarse:
         from .kernels_npu_dif_coarse import build_coarse_dif
-        source,specs=build_coarse_dif(tuple(factors),direction,global_inverse=global_inverse,single_batch=coarse_single)
+        source,specs=build_coarse_dif(tuple(factors),direction,global_inverse=global_inverse,single_batch=coarse_single,good_thomas=coarse_gt)
     elif flat_power2:
         if aligned or cube_prefix:raise ValueError("Flat power DIF uses a compact layout")
         from .kernels_npu_power_dif import build
