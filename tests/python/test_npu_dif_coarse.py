@@ -11,10 +11,10 @@ from test_npu_structured_fft import Pointer,execute_module
 @pytest.mark.parametrize('direction',['forward','inverse','global_inverse'])
 @pytest.mark.parametrize('single_batch',[False,True])
 @pytest.mark.parametrize('good_thomas',[False,True])
-def test_coarse_full_fft(tmp_path,factors,direction,single_batch,good_thomas):
+def test_coarse_full_fft(tmp_path,factors,direction,single_batch,good_thomas,single_pack=False):
     global_inverse=direction=='global_inverse'
     if global_inverse:direction='inverse'
-    source,specs=build_coarse_dif(factors,direction,global_inverse=global_inverse,single_batch=single_batch,good_thomas=good_thomas)
+    source,specs=build_coarse_dif(factors,direction,global_inverse=global_inverse,single_batch=single_batch,good_thomas=good_thomas,single_pack=single_pack)
     path=tmp_path/'coarse.py';path.write_text(source);ns,pid=execute_module(path);pid.append(0)
     n=math.prod(factors);batch=3;a,b=factors[:2];initial=a*b;padded=a*16
     sign=-1 if direction=='forward' or global_inverse else 1
