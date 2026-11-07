@@ -52,4 +52,30 @@ def finish_take(initial,padded,points,single_gather):
             f'2*({offset})+(word&1)')
 
 
-from .npu_radix8 import radix8_source
+def radix8_source():
+    """Factor the two 45-degree rotations before their constant products."""
+    return '''
+@triton.jit
+def _fwd_rad8_b1(r0,r1,r2,r3,r4,r5,r6,r7,i0,i1,i2,i3,i4,i5,i6,i7):
+    er0,ei0=r0+r4,i0+i4
+    er1,ei1=r2+r6,i2+i6
+    er2,ei2=r0-r4,i0-i4
+    er3,ei3=r2-r6,i2-i6
+    E0r,E0i=er0+er1,ei0+ei1
+    E2r,E2i=er0-er1,ei0-ei1
+    E1r,E1i=er2+ei3,ei2-er3
+    E3r,E3i=er2-ei3,ei2+er3
+    or0,oi0=r1+r5,i1+i5
+    or1,oi1=r3+r7,i3+i7
+    or2,oi2=r1-r5,i1-i5
+    or3,oi3=r3-r7,i3-i7
+    O0r,O0i=or0+or1,oi0+oi1
+    O2r,O2i=or0-or1,oi0-oi1
+    O1r,O1i=or2+oi3,oi2-or3
+    O3r,O3i=or2-oi3,oi2+or3
+    T1r=(O1r+O1i)*0.7071067811865475
+    T1i=(O1i-O1r)*0.7071067811865475
+    T3r=(O3i-O3r)*0.7071067811865475
+    T3i=-(O3r+O3i)*0.7071067811865475
+    return E0r+O0r,E1r+T1r,E2r+O2i,E3r+T3r,E0r-O0r,E1r-T1r,E2r-O2i,E3r-T3r,E0i+O0i,E1i+T1i,E2i-O2r,E3i+T3i,E0i-O0i,E1i-T1i,E2i+O2r,E3i-T3i
+'''

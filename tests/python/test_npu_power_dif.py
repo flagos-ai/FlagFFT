@@ -28,10 +28,10 @@ def test_terminal_emitter(tmp_path):
 @pytest.mark.parametrize('factors',[(64,64),(128,64),(128,128),(16,8,8),(16,16,16),(32,16,16),(16,32,16),(32,32,16,16),(32,32,32,16),(64,64,64),(64,64,128)])
 @pytest.mark.parametrize('direction',['forward','inverse','global_inverse'])
 @pytest.mark.parametrize('terminal8',[False,True])
-def test_power_dif_complete(tmp_path,factors,direction,terminal8,terminal8_factored=False):
+def test_power_dif_complete(tmp_path,factors,direction,terminal8):
  global_inverse=direction=='global_inverse'
  if global_inverse:direction='inverse'
- source,specs=build(factors,direction,terminal8=terminal8,global_inverse=global_inverse,terminal8_factored=terminal8_factored);path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
+ source,specs=build(factors,direction,terminal8=terminal8,global_inverse=global_inverse);path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
  n,batch=math.prod(factors),2;sign=-1 if direction=='forward' or global_inverse else 1
  torch.manual_seed(20261030);x=torch.randn(batch,n,2);saved=x.clone();current=x
  guard=torch.full((x.numel()+128,),31415.25);scratch=[torch.empty_like(x),torch.empty_like(x)]

@@ -582,12 +582,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     default:
       throw std::runtime_error("JIT backend does not support kernel kind: " + kernel_kind_name(key.kind));
   }
-  if (key.perm_form.rfind("npu_vector_dif_",0)==0 &&
-      (key.perm_form.find("_gt")!=std::string::npos ||
-       key.perm_form.find("_r8factored")!=std::string::npos)) {
-    const char *order=std::getenv("FLAGFFT_NPU_RADIX8_ORDER");
-    cache_key+=";npu-radix8-order-v1="+std::string(order!=nullptr?order:"1");
-  }
   const std::string id = request_id(cache_key);
   const auto request_dir = out_dir() / "requests" / id;
   // Keep the lock outside the output directory so it can survive a failed
@@ -796,10 +790,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (phase.size()>=13 && phase.compare(phase.size()-13,13,"_codeletreuse")==0) {
       phase.resize(phase.size()-13);
       jit_command << " --npu-vector-dif-codelet-reuse";
-    }
-    if (flat && phase.size()>=11 && phase.compare(phase.size()-11,11,"_r8factored")==0) {
-      phase.resize(phase.size()-11);
-      jit_command << " --npu-vector-dif-terminal8-factored";
     }
     if (flat && phase.size()>=10 && phase.compare(phase.size()-10,10,"_terminal8")==0) {
       phase.resize(phase.size()-10);
