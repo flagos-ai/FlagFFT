@@ -291,8 +291,6 @@ namespace {
       while (rest%radix==0) { factors.push_back(radix);rest/=radix; }
     if (rest!=1 || factors.size()<3) return nullptr;
     const int64_t physical_n=remaining*padded,columns=first==4?128:64;
-    const bool single_pack=single_batch &&
-        flag_or_default("FLAGFFT_NPU_DIF_COARSE_SINGLE_PACK",true);
     const bool good_thomas=flag_or_default("FLAGFFT_NPU_DIF_COARSE_GT",true);
     const bool global_inverse=request.direction=="inverse" &&
         flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
@@ -304,7 +302,6 @@ namespace {
       key.perm_form="npu_vector_dif_coarse_"+std::to_string(passes.size());
       if (single_batch) key.perm_form+="_single";
       if (good_thomas) key.perm_form+="_gt";
-      if (single_pack) key.perm_form+="_jpack";
       if (global_inverse) key.perm_form+="_globalconj";
       key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),
@@ -346,8 +343,7 @@ namespace {
       }
       if (single_batch && !final) {
         int64_t width=1;while(width<physical_prefix && width<512)width*=2;
-        const int64_t samples=single_pack && stage==2?512/width:1;
-        grid=((m+samples-1)/samples)*((physical_prefix+width-1)/width);
+        grid=m*((physical_prefix+width-1)/width);
       }
       append(std::move(values),grid,final||single_batch?1:4);
       previous_prefix=prefix;prefix*=radix;

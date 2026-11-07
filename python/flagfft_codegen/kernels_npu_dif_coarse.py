@@ -11,8 +11,7 @@ from .npu_coprime import coprime_source
 from .npu_radix9 import radix9_source
 
 
-def build_coarse_dif(factors,direction='forward',global_inverse=False,single_batch=False,good_thomas=False,single_pack=False):
-    if single_pack and not single_batch:raise ValueError('Sample packing requires a single transform')
+def build_coarse_dif(factors,direction='forward',global_inverse=False,single_batch=False,good_thomas=False):
     if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
     mode='forward' if global_inverse else direction
     factors=tuple(factors)
@@ -72,9 +71,6 @@ def build_coarse_dif(factors,direction='forward',global_inverse=False,single_bat
             padded_prefix=pad,physical_n=pn,deferred_twiddle=i==2,auto=True)
         if good_thomas:spec['coprime_prefix']=True
         if i+1==len(factors):body,spec=_fused_finish(spec,mode,conjugate_output=global_inverse)
-        elif single_pack and i==2:
-            from .npu_single_dif import packed_late_source
-            body=packed_late_source(spec,mode)
         elif single_batch:
             columns=min(512,1<<(pp-1).bit_length())
             spec['grid']=(m*math.ceil(pp/columns),)
