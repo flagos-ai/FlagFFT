@@ -6,10 +6,12 @@ from flagfft_codegen.npu_coarse_gt import radix8_source
 from test_npu_structured_fft import execute_module
 
 
+@pytest.mark.parametrize('order',['0','1'])
 @pytest.mark.parametrize('scale',[1e-6,1.,1e6])
 @pytest.mark.parametrize('kind',['random','impulse','dc','alternating','tone'])
 @pytest.mark.parametrize('depth',[1,4])
-def test_factored_radix8(tmp_path,scale,kind,depth):
+def test_factored_radix8(tmp_path,scale,kind,depth,order,monkeypatch):
+    monkeypatch.setenv("FLAGFFT_NPU_RADIX8_ORDER",order)
     path=tmp_path/'radix8.py';path.write_text(radix8_source())
     ns,_=execute_module(path)
     torch.manual_seed(20261107)

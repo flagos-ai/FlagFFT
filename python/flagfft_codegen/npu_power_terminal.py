@@ -42,6 +42,6 @@ def terminal8_source(factored=False):
     codelet = codelet.replace('_fwd_rad8_b1', '_npu_power_rad8')
     codelet = codelet.replace('_cmul', '_npu_power_cmul')
     if factored:
-        from .npu_coarse_gt import radix8_source
+        from .npu_radix8 import radix8_source
         codelet=radix8_source().replace('_fwd_rad8_b1','_npu_power_rad8')
     return codelet + '\n' + '\n'.join(lines) + '\n'
