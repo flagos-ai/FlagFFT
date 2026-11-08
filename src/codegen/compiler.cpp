@@ -299,6 +299,11 @@ namespace {
       while (rest%radix==0) { factors.push_back(radix);rest/=radix; }
     if (rest!=1 || factors.size()<3) return nullptr;
     const int64_t physical_n=remaining*padded,columns=first==4?128:64;
+    const bool vector_basis=batch>=16 && padded==128 && factors.size()>3 && factors[2]==7 &&
+        request.origin_rank<=1 && request.raw_dim==1 && !request.convolution_child &&
+        !request.packed_real_child && request.real_transform_kind.empty() &&
+        request.origin_real_transform_kind.empty() &&
+        flag_or_default("FLAGFFT_NPU_DIF_VECTOR_BASIS",true);
     const bool good_thomas=flag_or_default("FLAGFFT_NPU_DIF_COARSE_GT",true);
     const bool global_inverse=request.direction=="inverse" &&
         flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
@@ -311,6 +316,7 @@ namespace {
       if (single_batch) key.perm_form+="_single";
       if (good_thomas) key.perm_form+="_gt";
       if (global_inverse) key.perm_form+="_globalconj";
+      if (vector_basis) key.perm_form+="_vectorbasis";
       key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),
           DeviceAllocation::from_floats(weights),grid,1,false,packed});
@@ -353,7 +359,9 @@ namespace {
         int64_t width=1;while(width<physical_prefix && width<512)width*=2;
         grid=m*((physical_prefix+width-1)/width);
       }
-      append(std::move(values),grid,final||single_batch?1:4);
+      const bool spatial7=vector_basis && stage==2;
+      if (spatial7) grid=(m+3)/4;
+      append(std::move(values),grid,final||single_batch||spatial7?1:4);
       previous_prefix=prefix;prefix*=radix;
     }
     const auto bytes=static_cast<std::size_t>(batch*physical_n*2*sizeof(float));
@@ -473,6 +481,12 @@ namespace {
     const bool codelet_reuse=batch_pack &&
         std::any_of(factors.begin(),factors.end(),[](int64_t r) { return r==13 || r==15; }) &&
         flag_or_default("FLAGFFT_NPU_DIF_CODELET_REUSE",true);
+    const bool vector_basis=batch>=16 && codelet_reuse && !dense_prefix &&
+        request.origin_rank<=1 && request.raw_dim==1 && !request.convolution_child &&
+        !request.packed_real_child && request.real_transform_kind.empty() &&
+        request.origin_real_transform_kind.empty() &&
+        std::any_of(factors.begin()+2,factors.end(),[](int64_t r) { return r==7 || r==13; }) &&
+        flag_or_default("FLAGFFT_NPU_DIF_VECTOR_BASIS",true);
     const bool prefix_pitch=batch_pack && vector_first17 && vector_second15 &&
         n/initial_prefix%32!=0 && flag_or_default("FLAGFFT_NPU_DIF_PREFIX_PITCH",true);
     const int64_t prefix_storage=prefix_pitch?initial_prefix*ceiling(n/initial_prefix,32)*32:0;
@@ -506,6 +520,7 @@ namespace {
       if (dense_prefix) key.perm_form+="_dense_short";
       if (codelet_reuse) key.perm_form+="_codeletreuse";
       if (finish_batch4) key.perm_form+="_finishbatch4";
+      if (vector_basis) key.perm_form+="_vectorbasis";
       if ((dense_prefix && passes.empty()) || (matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||

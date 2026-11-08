@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -152,6 +152,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError("Coprime coarse prefix requires coarse DIF")
     if coarse_single and not coarse:
         raise ValueError('Single-batch coarse schedule requires coarse DIF')
+    if vector_basis and not ((cube_prefix and aligned and batch_pack and not dense_prefix) or (coarse and not coarse_single)):
+        raise ValueError('Vector basis requires a public batch DIF schedule')
     if finish_batch4 and not (cube_prefix and aligned and batch_pack and not dense_prefix):
         raise ValueError('Batch finish requires batch-grouped aligned Cube DIF')
     if coarse:
@@ -174,9 +176,12 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         from .npu_batch_finish import replace_finish
         source,specs=replace_finish(source,specs,'forward' if global_inverse else direction,
                                     conjugate_output=global_inverse)
+    if vector_basis:
+        from .npu_vector_basis import optimize_vector_basis
+        source,specs=optimize_vector_basis(source,specs)
     if phase<0 or phase>=len(specs):raise ValueError('Invalid DIF phase')
     n=math.prod(factors);spec=specs[phase]
-    path=Path(out_dir)/(('npu_vector_dif_coarse_' if coarse else 'npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+('_workspacepad512' if workspace_padding else '')+('_finishbatch4' if finish_batch4 else '')+'.py')
+    path=Path(out_dir)/(('npu_vector_dif_coarse_' if coarse else 'npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+('_workspacepad512' if workspace_padding else '')+('_finishbatch4' if finish_batch4 else '')+('_vectorbasis' if vector_basis else '')+'.py')
     path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,source)
     meta=dict(module_path=str(path),kernel_name=spec['name'],arg_names=['X','TW','Y'],
         signature='*fp32:16,*fp32:16,*fp32:16',num_warps=4,num_stages=1,

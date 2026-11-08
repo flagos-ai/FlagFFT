@@ -787,6 +787,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     std::string phase=key.perm_form.substr(coarse?22:flat?27:cube?28:aligned?23:15);
     if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
       phase.resize(phase.size()-5);
+    const std::string basis_tag="_vectorbasis";
+    if (phase.size()>=basis_tag.size() &&
+        phase.compare(phase.size()-basis_tag.size(),basis_tag.size(),basis_tag)==0) {
+      phase.resize(phase.size()-basis_tag.size());
+      jit_command << " --npu-vector-dif-vector-basis";
+    }
     const std::string finish_tag="_finishbatch4";
     if (phase.size()>=finish_tag.size() &&
         phase.compare(phase.size()-finish_tag.size(),finish_tag.size(),finish_tag)==0) {
