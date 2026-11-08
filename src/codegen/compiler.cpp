@@ -477,6 +477,17 @@ namespace {
         n/initial_prefix%32!=0 && flag_or_default("FLAGFFT_NPU_DIF_PREFIX_PITCH",true);
     const int64_t prefix_storage=prefix_pitch?initial_prefix*ceiling(n/initial_prefix,32)*32:0;
     const int64_t allocation_length=std::max(workspace_length,prefix_storage);
+    const int64_t finish_radix=factors.back();
+    // Reuse final-stage coefficients only when there are enough independent
+    // batches and the compact prefix wastes at most one percent of its lanes.
+    // Keep the live butterfly state bounded and retain real/nested schedules.
+    const bool finish_batch4=batch>=64 && batch_pack && fused_finish && !dense_prefix &&
+        request.origin_rank<=1 && request.raw_dim==1 && !request.convolution_child &&
+        !request.packed_real_child && request.real_transform_kind.empty() &&
+        request.origin_real_transform_kind.empty() && padded_prefix>=128 &&
+        initial_prefix*100>=padded_prefix*99 && finish_radix>=8 &&
+        (finish_radix&(finish_radix-1))==0 && 8*finish_radix*padded_prefix<=16384 &&
+        flag_or_default("FLAGFFT_NPU_DIF_BATCH_FINISH",true);
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
     bool switched=false;
@@ -494,6 +505,7 @@ namespace {
       if (prefix_pitch && (passes.size()==1 || passes.size()==2)) key.perm_form+="_pitch32";
       if (dense_prefix) key.perm_form+="_dense_short";
       if (codelet_reuse) key.perm_form+="_codeletreuse";
+      if (finish_batch4) key.perm_form+="_finishbatch4";
       if ((dense_prefix && passes.empty()) || (matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
@@ -590,6 +602,19 @@ namespace {
           weights[(k+8)*16+d]=static_cast<float>(std::sin(angle));
         }
       } else weights.push_back(0.0f);
+      if (finish_batch4 && stage+1==factors.size()) {
+        int64_t rows=1;
+        while(rows<8 && 2*rows*radix*padded_prefix<=4096)rows*=2;
+        rows=std::max<int64_t>(1,rows/4);
+        const int64_t points=4*rows*padded_prefix;
+        if (weights.size()!=static_cast<std::size_t>(2*workspace_length))
+          throw std::runtime_error("Batch finish requires a complete input twiddle table");
+        for (int64_t word=0;word<2*rows*padded_prefix;++word) {
+          const int64_t take=word<2*rows*initial_prefix ? (word&1)*points+
+              word/(2*initial_prefix)*padded_prefix+(word/2)%initial_prefix : 0;
+          weights.push_back(static_cast<float>(take));
+        }
+      }
       int64_t grid=0;
       if (cube_prefix && stage<2) {
         grid=prefix*ceiling(m,stage?std::min<int64_t>(vector_second15?512:1024,std::max<int64_t>(32,power(m))):(wide_first7?1024:512));
@@ -600,6 +625,7 @@ namespace {
         if (fused_finish && stage+1==factors.size()) {
           int64_t rows=1;
           while (rows<8 && 2*rows*radix*padded_prefix<=4096) rows*=2;
+          if (finish_batch4) rows=std::max<int64_t>(1,rows/4);
           grid=ceiling(prefix/initial_prefix,rows);
         }
       } else if (m>=128) {
@@ -617,7 +643,8 @@ namespace {
           !(fused_finish && stage+1==factors.size());
       if (packed_pass)
         grid=m*ceiling(physical_prefix,std::min<int64_t>(packed13?256:128,power(physical_prefix)));
-      append(DeviceAllocation::from_floats(weights),grid,1,false,packed_pass?(packed13?2:4):1);
+      append(DeviceAllocation::from_floats(weights),grid,1,false,
+          packed_pass?(packed13?2:4):(finish_batch4 && stage+1==factors.size()?4:1));
       previous_prefix=prefix;prefix*=radix;
     }
     if (aligned && !fused_finish) {
