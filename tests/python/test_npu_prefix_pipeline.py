@@ -41,3 +41,10 @@ def test_optout_preserves_source(tmp_path,monkeypatch):
     after=emit(tmp_path/'on',(17,15,13,10,10,2))
     assert before['num_stages']==1 and after['num_stages']==2
     assert Path(before['module_path']).read_text()==Path(after['module_path']).read_text()
+
+
+def test_vector_component_optout(tmp_path,monkeypatch):
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH','1')
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_PREFIX_PIPELINE','1')
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_COMPONENT17','0')
+    assert emit(tmp_path,(17,15,13,10,10,2))['num_stages']==1

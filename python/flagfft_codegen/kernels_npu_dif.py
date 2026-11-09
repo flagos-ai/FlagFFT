@@ -192,7 +192,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     # tiles to amortize double-buffering the direct 2D matrix input in CBUF.
     if (phase == 0 and cube_prefix and matrix_first17 and vector_first17
             and batch_pack and codelet_reuse and vector_basis
-            and direction == 'forward' and spec.get('nodc_first')
+            and direction == 'forward'
+            and os.environ.get('FLAGFFT_NPU_DIF_COMPONENT17', '1') != '0'
             and spec['grid'][0] >= 64):
         pipeline = os.environ.get('FLAGFFT_NPU_DIF_PREFIX_PIPELINE', '1')
         if pipeline not in ('0', '1'):
