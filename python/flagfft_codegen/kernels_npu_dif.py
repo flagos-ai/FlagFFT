@@ -187,6 +187,18 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         signature='*fp32:16,*fp32:16,*fp32:16',num_warps=4,num_stages=1,
         batch_per_block=spec.get('batch_pack',1),inner_pack=1,tle_fused_twiddle=True,
         kernel_type='four_step_row',dtype='complex64',direction=direction,length=n)
+    # Keep the real/single/nested schedules and the inverse prefix on their
+    # established settings. Wider public complex prefixes have enough sample
+    # tiles to amortize double-buffering the direct 2D matrix input in CBUF.
+    if (phase == 0 and cube_prefix and matrix_first17 and vector_first17
+            and batch_pack and codelet_reuse and vector_basis
+            and direction == 'forward' and spec.get('nodc_first')
+            and spec['grid'][0] >= 64):
+        pipeline = os.environ.get('FLAGFFT_NPU_DIF_PREFIX_PIPELINE', '1')
+        if pipeline not in ('0', '1'):
+            raise ValueError('FLAGFFT_NPU_DIF_PREFIX_PIPELINE must be 0 or 1')
+        if pipeline == '1':
+            meta['num_stages'] = 2
     if workspace_padding:meta['workspace_length']=spec['physical_n']
     if spec.get('batch_pack',1)>1:
         meta['arg_names'].append('NB');meta['signature']+=',i32'
