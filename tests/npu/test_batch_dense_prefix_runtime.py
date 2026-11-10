@@ -94,8 +94,10 @@ def test_batch_dense_plan_selection(library, monkeypatch, n, batch, admitted):
     monkeypatch.setenv('FLAGFFT_NPU_DIF_BATCH_DENSE_PREFIX', '1')
     on = _description(library, (n,), batch)
     if admitted:
-        assert len(_passes(off)) == len(_passes(on)) == 1
-        assert _passes(off)[0] - _passes(on)[0] == 2
+        # A C API plan describes both its forward and inverse executions.
+        before, after = _passes(off), _passes(on)
+        assert len(before) == len(after) == 2
+        assert all(old - new == 2 for old, new in zip(before, after))
     else:
         assert on == off
 
@@ -106,7 +108,9 @@ def test_batch_dense_cache_optout_round_trip(library, monkeypatch):
         monkeypatch.setenv('FLAGFFT_NPU_DIF_BATCH_DENSE_PREFIX', enabled)
         descriptions.append(_description(library, (185640,), 64))
     assert descriptions[0] == descriptions[2]
-    assert _passes(descriptions[1])[0] - _passes(descriptions[0])[0] == 2
+    enabled, disabled = _passes(descriptions[0]), _passes(descriptions[1])
+    assert len(enabled) == len(disabled) == 2
+    assert all(old - new == 2 for old, new in zip(disabled, enabled))
 
 
 @pytest.mark.parametrize('shape,kind', [((663000,), 0x2a), ((663000,), 0x2c), ((2, 185640), 0x29)])
