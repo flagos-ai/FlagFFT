@@ -28,6 +28,8 @@ triton_jit::CompileOptions npu_compile_options(const JitKernel &kernel) {
   options.num_stages = static_cast<int>(kernel.num_stages);
   options.extra["structured_join_lowering"] = kernel.npu_join_lowering;
   options.extra["enable_auto_blockify"] = kernel.npu_auto_blockify ? "true" : "false";
+  if (kernel.npu_single_buffer)
+    options.extra["multibuffer"] = "false";
   return options;
 }
 }

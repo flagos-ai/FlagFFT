@@ -469,7 +469,7 @@ namespace {
     // At small batch the bounded dense DFT replaces the first two axes and
     // their transpose. Keep the near-power-of-two layout with one unused lane
     // and enough independent tiles, and retain other API paths' schedules.
-    const bool dense_prefix=batch==1 && cube_prefix && vector_first17 &&
+    const bool dense_single=batch==1 && cube_prefix && vector_first17 &&
         padded_prefix==initial_prefix+1 && padded_prefix<=256 &&
         n/initial_prefix<=4096 && !request.packed_real_child &&
         request.real_transform_kind.empty() && request.origin_real_transform_kind.empty() &&
@@ -481,7 +481,7 @@ namespace {
     const bool codelet_reuse=batch_pack &&
         std::any_of(factors.begin(),factors.end(),[](int64_t r) { return r==13 || r==15; }) &&
         flag_or_default("FLAGFFT_NPU_DIF_CODELET_REUSE",true);
-    const bool vector_basis=batch>=16 && codelet_reuse && !dense_prefix &&
+    const bool vector_basis=batch>=16 && codelet_reuse && !dense_single &&
         request.origin_rank<=1 && request.raw_dim==1 && !request.convolution_child &&
         !request.packed_real_child && request.real_transform_kind.empty() &&
         request.origin_real_transform_kind.empty() &&
@@ -495,13 +495,26 @@ namespace {
     // Reuse final-stage coefficients only when there are enough independent
     // batches and the compact prefix wastes at most one percent of its lanes.
     // Keep the live butterfly state bounded and retain real/nested schedules.
-    const bool finish_batch4=batch>=64 && batch_pack && fused_finish && !dense_prefix &&
+    const bool finish_batch4=batch>=64 && batch_pack && fused_finish && !dense_single &&
         request.origin_rank<=1 && request.raw_dim==1 && !request.convolution_child &&
         !request.packed_real_child && request.real_transform_kind.empty() &&
         request.origin_real_transform_kind.empty() && padded_prefix>=128 &&
         initial_prefix*100>=padded_prefix*99 && finish_radix>=8 &&
         (finish_radix&(finish_radix-1))==0 && 8*finish_radix*padded_prefix<=16384 &&
         flag_or_default("FLAGFFT_NPU_DIF_BATCH_FINISH",true);
+    // Share each input tile across more dense-prefix frequencies while
+    // retaining the public batch plan's late arithmetic and packed finish.
+    // The existing vector-15 lower bound and short-prefix upper bound keep
+    // this choice within the bounded 255-point decomposition family.
+    const bool dense_batch=batch>=16 && cube_prefix && batch_pack &&
+        vector_first17 && vector_second15 && codelet_reuse && vector_basis &&
+        initial_prefix==255 && padded_prefix==256 &&
+        n/initial_prefix>=512 && n/initial_prefix<=4096 &&
+        flag_or_default("FLAGFFT_NPU_DIF_BATCH_DENSE_PREFIX",true);
+    const bool dense_prefix=dense_single || dense_batch;
+    constexpr int64_t batch_dense_columns=64, batch_dense_frequencies=64;
+    const int64_t dense_columns=dense_batch?batch_dense_columns:32;
+    const int64_t dense_frequencies=dense_batch?batch_dense_frequencies:32;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
     bool switched=false;
@@ -517,7 +530,9 @@ namespace {
       if (global_inverse) key.perm_form+="_globalconj";
       if (matrix_first17) key.perm_form+="_half17";
       if (prefix_pitch && (passes.size()==1 || passes.size()==2)) key.perm_form+="_pitch32";
-      if (dense_prefix) key.perm_form+="_dense_short";
+      if (dense_batch) key.perm_form+="_dense_batch_f"+std::to_string(dense_frequencies)+
+          "_c"+std::to_string(dense_columns);
+      else if (dense_single) key.perm_form+="_dense_short";
       if (codelet_reuse) key.perm_form+="_codeletreuse";
       if (finish_batch4) key.perm_form+="_finishbatch4";
       if (vector_basis) key.perm_form+="_vectorbasis";
@@ -552,7 +567,7 @@ namespace {
       const int64_t radix=factors[stage], m=n/(prefix*radix);
       if (dense_prefix && stage<2) {
         if (stage==0) {
-          constexpr int64_t columns=32, frequencies=32;
+          const int64_t columns=dense_columns, frequencies=dense_frequencies;
           const int64_t tiles=ceiling(initial_prefix/2+1,frequencies);
           std::vector<float> basis(tiles*2*frequencies*padded_prefix,0.0f);
           const double first_sign=request.direction=="inverse"?1.0:-1.0;

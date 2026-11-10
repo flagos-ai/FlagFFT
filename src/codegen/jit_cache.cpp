@@ -817,7 +817,22 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-10);
       jit_command << " --npu-vector-dif-terminal8";
     }
-    if (phase.size()>=12 && phase.compare(phase.size()-12,12,"_dense_short")==0) {
+    const std::string dense_batch_tag="_dense_batch_f";
+    const auto dense_batch_pos=phase.rfind(dense_batch_tag);
+    if (dense_batch_pos!=std::string::npos) {
+      const auto tile=phase.substr(dense_batch_pos+dense_batch_tag.size());
+      const auto separator=tile.find("_c");
+      if (separator==std::string::npos)
+        throw std::runtime_error("Malformed batch dense-prefix tile key");
+      const auto frequencies=tile.substr(0,separator), columns=tile.substr(separator+2);
+      if ((frequencies!="32" && frequencies!="64" && frequencies!="128") ||
+          (columns!="16" && columns!="32" && columns!="64"))
+        throw std::runtime_error("Unsupported batch dense-prefix tile key");
+      phase.resize(dense_batch_pos);
+      jit_command << " --npu-vector-dif-dense-prefix"
+                  << " --npu-vector-dif-dense-prefix-columns " << columns
+                  << " --npu-vector-dif-dense-prefix-frequencies " << frequencies;
+    } else if (phase.size()>=12 && phase.compare(phase.size()-12,12,"_dense_short")==0) {
       phase.resize(phase.size()-12);
       jit_command << " --npu-vector-dif-dense-prefix";
     }
@@ -901,6 +916,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
         kernel->npu_join_lowering != "packed")
       throw std::runtime_error("FLAGFFT_NPU_JOIN_MODE must be auto, native or packed");
     kernel->npu_auto_blockify = npu_auto_blockify_for(key);
+    kernel->npu_single_buffer = kernel->kernel_name == "dense_prefix_half" &&
+        key.perm_form.find("_dense_batch_f") != std::string::npos;
   }
   kernel->signature = json_string_field(artifact_json, "signature");
   kernel->num_warps = json_int_field(artifact_json, "num_warps");

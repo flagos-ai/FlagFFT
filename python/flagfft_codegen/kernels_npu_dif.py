@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -152,9 +152,9 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError("Coprime coarse prefix requires coarse DIF")
     if coarse_single and not coarse:
         raise ValueError('Single-batch coarse schedule requires coarse DIF')
-    if vector_basis and not ((cube_prefix and aligned and batch_pack and not dense_prefix) or (coarse and not coarse_single)):
+    if vector_basis and not ((cube_prefix and aligned and batch_pack) or (coarse and not coarse_single)):
         raise ValueError('Vector basis requires a public batch DIF schedule')
-    if finish_batch4 and not (cube_prefix and aligned and batch_pack and not dense_prefix):
+    if finish_batch4 and not (cube_prefix and aligned and batch_pack):
         raise ValueError('Batch finish requires batch-grouped aligned Cube DIF')
     if coarse:
         from .kernels_npu_dif_coarse import build_coarse_dif
@@ -166,7 +166,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     elif cube_prefix:
         if not aligned:raise ValueError('Cube DIF prefix requires an aligned layout')
         from .kernels_npu_dif_cube import build_cube_prefix_dif
-        source,specs=build_cube_prefix_dif(tuple(factors),direction,vector_first17=vector_first17,batch_pack=batch_pack,vector_second15=vector_second15,global_inverse=global_inverse,matrix_first17=matrix_first17,prefix_pitch=prefix_pitch,dense_prefix=dense_prefix,codelet_reuse=codelet_reuse)
+        source,specs=build_cube_prefix_dif(tuple(factors),direction,vector_first17=vector_first17,batch_pack=batch_pack,vector_second15=vector_second15,global_inverse=global_inverse,matrix_first17=matrix_first17,prefix_pitch=prefix_pitch,dense_prefix=dense_prefix,codelet_reuse=codelet_reuse,dense_prefix_columns=dense_prefix_columns,dense_prefix_frequencies=dense_prefix_frequencies)
     elif aligned:
         from .kernels_npu_dif_aligned import build_aligned_vector_dif
         source,specs=build_aligned_vector_dif(tuple(factors),direction)
@@ -181,7 +181,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         source,specs=optimize_vector_basis(source,specs)
     if phase<0 or phase>=len(specs):raise ValueError('Invalid DIF phase')
     n=math.prod(factors);spec=specs[phase]
-    path=Path(out_dir)/(('npu_vector_dif_coarse_' if coarse else 'npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+('_workspacepad512' if workspace_padding else '')+('_finishbatch4' if finish_batch4 else '')+('_vectorbasis' if vector_basis else '')+'.py')
+    dense_tag=f'_dense_f{dense_prefix_frequencies}_c{dense_prefix_columns}' if dense_prefix else ''
+    path=Path(out_dir)/(('npu_vector_dif_coarse_' if coarse else 'npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+('_workspacepad512' if workspace_padding else '')+('_finishbatch4' if finish_batch4 else '')+('_vectorbasis' if vector_basis else '')+dense_tag+'.py')
     path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,source)
     meta=dict(module_path=str(path),kernel_name=spec['name'],arg_names=['X','TW','Y'],
         signature='*fp32:16,*fp32:16,*fp32:16',num_warps=4,num_stages=1,
@@ -190,7 +191,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     # Keep the real/single/nested schedules and the inverse prefix on their
     # established settings. Wider public complex prefixes have enough sample
     # tiles to amortize double-buffering the direct 2D matrix input in CBUF.
-    if (phase == 0 and cube_prefix and matrix_first17 and vector_first17
+    if (phase == 0 and spec.get('r') == 17 and cube_prefix and matrix_first17 and vector_first17
             and batch_pack and codelet_reuse and vector_basis
             and direction == 'forward'
             and os.environ.get('FLAGFFT_NPU_DIF_COMPONENT17', '1') != '0'
@@ -201,6 +202,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         if pipeline == '1':
             meta['num_stages'] = 2
     if workspace_padding:meta['workspace_length']=spec['physical_n']
+    if dense_prefix:
+        meta.update(dense_prefix_columns=dense_prefix_columns,dense_prefix_frequencies=dense_prefix_frequencies)
     if spec.get('batch_pack',1)>1:
         meta['arg_names'].append('NB');meta['signature']+=',i32'
     write_text_atomic(path.with_suffix('.json'),json.dumps(meta,sort_keys=True))

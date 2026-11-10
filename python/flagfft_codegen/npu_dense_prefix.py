@@ -8,10 +8,13 @@ padding lane permits contiguous output rows without a separate padding kernel.
 import math,re
 
 
-def replace_prefix(source,specs,factors,conjugate_output=False):
+def replace_prefix(source,specs,factors,conjugate_output=False,columns=32,frequencies=32):
     n=math.prod(factors);r=factors[0]*factors[1];assert r%2==1 and r<=255
     m=n//r;pad=1<<(r-1).bit_length();h=r//2+1
-    c=f=32;ftiles=math.ceil(h/f)
+    c,f=columns,frequencies
+    if c not in (16,32,64) or f not in (32,64,128) or c*f>4096:
+        raise ValueError('Unsupported dense-prefix tile')
+    ftiles=math.ceil(h/f)
     if pad-r!=1:raise ValueError('Dense prefix requires one padding lane')
     ix=next(i for i,s in enumerate(specs) if s['phase']=='transpose');pn=specs[ix]['physical_n']
     for old in specs[:ix+1]:

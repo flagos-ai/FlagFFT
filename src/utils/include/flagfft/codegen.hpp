@@ -129,6 +129,7 @@ struct JitKernel {
   bool npu_permutation_table = false;
   std::string npu_join_lowering = "auto";
   bool npu_auto_blockify = false;
+  bool npu_single_buffer = false;
   void *jit_function = nullptr;
   std::shared_ptr<void> direct_launch;
   std::mutex mutex;

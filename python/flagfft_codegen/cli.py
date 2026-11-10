@@ -162,6 +162,8 @@ def main() -> None:
     parser.add_argument("--npu-vector-dif-batch-pack", action="store_true")
     parser.add_argument("--npu-vector-dif-prefix-pitch", type=int, choices=(1,32), default=1)
     parser.add_argument("--npu-vector-dif-dense-prefix", action="store_true")
+    parser.add_argument("--npu-vector-dif-dense-prefix-columns", type=int, choices=(16,32,64), default=32)
+    parser.add_argument("--npu-vector-dif-dense-prefix-frequencies", type=int, choices=(32,64,128), default=32)
     parser.add_argument("--npu-vector-dif-global-inverse", action="store_true")
     parser.add_argument("--npu-vector-dif-matrix-first17",action="store_true")
     parser.add_argument("--npu-vector-dif-codelet-reuse",action="store_true")
@@ -503,7 +505,7 @@ def main() -> None:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Vector DIF requires NPU FP32')
         from .kernels_npu_dif import emit_vector_dif
-        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8,coarse=args.npu_vector_dif_coarse,global_inverse=args.npu_vector_dif_global_inverse,matrix_first17=args.npu_vector_dif_matrix_first17,prefix_pitch=args.npu_vector_dif_prefix_pitch,dense_prefix=args.npu_vector_dif_dense_prefix,coarse_single=args.npu_vector_dif_coarse_single,codelet_reuse=args.npu_vector_dif_codelet_reuse,coarse_gt=args.npu_vector_dif_coarse_gt,workspace_padding=args.npu_vector_dif_workspace_padding,finish_batch4=args.npu_vector_dif_finish_batch4,vector_basis=args.npu_vector_dif_vector_basis)
+        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8,coarse=args.npu_vector_dif_coarse,global_inverse=args.npu_vector_dif_global_inverse,matrix_first17=args.npu_vector_dif_matrix_first17,prefix_pitch=args.npu_vector_dif_prefix_pitch,dense_prefix=args.npu_vector_dif_dense_prefix,coarse_single=args.npu_vector_dif_coarse_single,codelet_reuse=args.npu_vector_dif_codelet_reuse,coarse_gt=args.npu_vector_dif_coarse_gt,workspace_padding=args.npu_vector_dif_workspace_padding,finish_batch4=args.npu_vector_dif_finish_batch4,vector_basis=args.npu_vector_dif_vector_basis,dense_prefix_columns=args.npu_vector_dif_dense_prefix_columns,dense_prefix_frequencies=args.npu_vector_dif_dense_prefix_frequencies)
     elif args.npu_matrix_fourstep_phase:
         if not args.target.startswith('npu:') or args.dtype!='complex64':
             parser.error('Matrix four-step requires NPU FP32')
