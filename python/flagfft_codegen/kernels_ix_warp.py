@@ -20,7 +20,7 @@ def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = 
 
 
 def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bool = False,
-                         *, recurrence: bool = False) -> tuple[str, str]:
+                         *, recurrence: bool = False, fast_math: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {128,256,512,1024,2048}:
         raise ValueError("IX warp FFT length must be 128, 256, 512, 1024 or 2048")
@@ -34,6 +34,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
     if recurrence: name+='_rec'
+    if fast_math: name+='_fast'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -137,7 +138,12 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
              '    mask=(row[None,:]<nbatch)']
         if mode=='r2c': a+=[f'    mask=mask&(freq[:,None]<{n//2+1})']
         a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
-    return name,'\n'.join(a)+'\n'
+    source='\n'.join(a)+'\n'
+    if fast_math:
+        source=source.replace('import triton.language as tl',
+                              'import triton.language as tl\nfrom triton.language.extra import libdevice as ld')
+        source=source.replace('tl.cos(', 'ld.fast_cosf(').replace('tl.sin(', 'ld.fast_sinf(')
+    return name,source
 
 
 def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: list[str],
