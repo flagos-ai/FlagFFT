@@ -1941,13 +1941,13 @@ namespace {
     }
     // Keep the experiment explicit. The launch width and batch tile differ
     // from ordinary CT batch defaults and must travel together.
-    for (const auto &[name, expected] : {
-             std::pair{"FLAGFFT_IX_WARPS", "8"},
-             std::pair{"FLAGFFT_IX_BATCH_PACK", "1"}}) {
-      const char *value = std::getenv(name);
-      if (!value || std::string(value) != expected) {
-        throw std::runtime_error(std::string("FLAGFFT_IX_FOURSTEP_CTA requires ") + name + "=" + expected);
-      }
+    const char *warps = std::getenv("FLAGFFT_IX_WARPS");
+    if (!warps || (std::string(warps)!="8" && std::string(warps)!="16" && std::string(warps)!="32")) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_WARPS=8, 16 or 32");
+    }
+    const char *batch_pack = std::getenv("FLAGFFT_IX_BATCH_PACK");
+    if (!batch_pack || std::string(batch_pack)!="1") {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_BATCH_PACK=1");
     }
     const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
     if (!portable_setting || (std::string(portable_setting) != "0" &&
