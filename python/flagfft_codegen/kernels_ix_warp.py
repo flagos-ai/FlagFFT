@@ -16,8 +16,8 @@
 import math
 
 def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = False) -> tuple[str, str]:
-    if pack not in {4,8,16}:
-        raise ValueError("IX warp FFT pack must be 4, 8 or 16")
+    if pack not in {4,8,16,32,64}:
+        raise ValueError("IX warp FFT pack must be 4, 8, 16, 32 or 64")
     if mode not in {"contiguous","outer","inner","r2c","c2r"}:
         raise ValueError("unsupported IX warp FFT I/O mode")
     if (mode == "r2c" and inverse) or (mode == "c2r" and not inverse):

@@ -3,7 +3,7 @@ import ast
 import pytest
 from flagfft_codegen.kernels_ix_warp import build_ix_warp256_source
 
-@pytest.mark.parametrize('pack',[4,8,16])
+@pytest.mark.parametrize('pack',[4,8,16,32,64])
 @pytest.mark.parametrize('mode,inverse',[
     ('contiguous',False),('contiguous',True),('outer',False),('inner',True),
     ('r2c',False),('c2r',True),
