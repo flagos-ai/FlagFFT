@@ -19,3 +19,35 @@ def test_warp_fft_source_preserves_generic_pointer_distance_abi(pack,mode,invers
 @pytest.mark.parametrize('args',[(3,'outer',False),(8,'missing',False),(8,'r2c',True),(8,'c2r',False)])
 def test_warp_fft_rejects_invalid_configuration(args):
     with pytest.raises(ValueError): build_ix_warp256_source(*args)
+
+@pytest.mark.parametrize('mode,direction,kind',[
+    ('contiguous','forward','leaf'),('permuted_store','inverse','leaf_permuted_store'),
+    ('permuted_store_r2c','forward','leaf_r2c_permuted_store'),
+    ('contiguous_c2r','inverse','leaf_c2r'),
+])
+def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind,tmp_path):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.target import set_ix_warp_fft_pack,reset_ix_warp_fft_pack
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    ptoken=set_profile(BackendProfile.from_device({'backend':'ix','device_arch':'71','warp_size':64,
+                   'max_threads_per_block':4096,'max_dynamic_shared_memory':131072},'balanced'))
+    token=set_ix_warp_fft_pack(0)
+    try:
+        plan=LeafPlan(256,(16,16),1,16,2,(),256,direction,'complex64')
+        _,base=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+        base_args=next(v.args for v in ast.parse(base).body if isinstance(v,ast.FunctionDef))
+        set_ix_warp_fft_pack(16)
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,
+                        permutation_span=256 if 'permuted' in mode else 0)
+        args=next(v.args for v in ast.parse(source).body if isinstance(v,ast.FunctionDef))
+        assert name.startswith('ix_warp256_')
+        assert ast.dump(args)==ast.dump(base_args)
+        meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,
+                       arg_names=[a.arg for a in args.args],plan=plan,kernel_type=kind,n1=0,n2=0,dtype='complex64')
+        assert meta['num_warps']==meta['batch_per_block']==meta['ix_warp_fft_pack']==16
+        assert meta['inner_pack']==1
+        compile(source,'<ix-warp-leaf>','exec')
+    finally:
+        reset_ix_warp_fft_pack(token);reset_profile(ptoken)

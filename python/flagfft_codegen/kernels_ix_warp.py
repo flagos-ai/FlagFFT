@@ -97,3 +97,26 @@ def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = 
         if mode=='r2c': a+=['    mask=mask&(freq[:,None]<129)']
         a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
     return name,'\n'.join(a)+'\n'
+
+
+def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: list[str],
+                                 pack: int, permutation_span: int = 0) -> tuple[str,str]:
+    """Retain the raw-leaf argument list, including unused twiddle pointers."""
+    mode = {
+        "contiguous":"contiguous", "contiguous_c2r":"c2r",
+        "permuted_r2c":"r2c", "permuted_store_r2c":"r2c",
+    }.get(io_mode, perm_form)
+    name,source=build_ix_warp256_source(pack,mode,plan.direction=='inverse')
+    leaf_name='ix_'+name+'_leaf'
+    aliases=['    inp=in_ptr','    out=out_ptr']
+    if permutation_span:
+        aliases.append(f'    span=tl.full((),{permutation_span},tl.int64)')
+    else:
+        aliases.append('    span=perm_span' if 'perm_span' in params else '    span=tl.full((),1,tl.int64)')
+    if 'input_distance' not in params: aliases.append('    input_distance=tl.full((),256,tl.int64)')
+    if 'output_distance' not in params:
+        aliases.append('    output_distance=tl.full((),'+('129' if mode=='r2c' else '256')+',tl.int64)')
+    header=f'def {name}(inp,out,span,nbatch,input_distance,output_distance):'
+    assert header in source
+    source=source.replace(header,f'def {leaf_name}('+','.join(params)+'):\n'+'\n'.join(aliases),1)
+    return leaf_name,source

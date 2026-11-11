@@ -298,6 +298,13 @@ def _metadata(
                     "FLAGFFT_HCU_3D_FUSED_WARPS, FINAL_WARPS and MIDDLE_WARPS must be 1, 2, 4 or 8"
                 ) from exc
             profile.validate(num_warps)
+    warp_pack = 0
+    if kernel_name.startswith("ix_warp256_"):
+        from .target import ix_warp_fft_pack
+        warp_pack = ix_warp_fft_pack()
+        profile.validate(warp_pack)
+        num_warps = batch_per_block = warp_pack
+        inner_pack = 1
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -315,6 +322,7 @@ def _metadata(
         "n2": int(n2),
         "inner_pack": inner_pack,
         "tle_fused_twiddle": tle_fused_twiddle,
+        "ix_warp_fft_pack": warp_pack,
     }
 
 

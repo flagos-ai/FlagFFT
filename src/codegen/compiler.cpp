@@ -43,6 +43,32 @@ namespace {
     }
   }
 
+  void mark_ix_warp_fft(KernelKey &key, const FFTRequest &request, int64_t span = 0) {
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        key.dtype != "complex64" || key.length != 256 ||
+        !flag_or_default("FLAGFFT_IX_WARP256", false)) return;
+    const bool permuted = key.kind == KernelKind::LeafPermutedStore ||
+                          key.kind == KernelKind::LeafR2CPermutedStore;
+    if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R) return;
+    int64_t pack = 16;
+    if (const char *value = std::getenv("FLAGFFT_IX_WARP256_PACK")) {
+      const std::string text(value);
+      if (text != "4" && text != "8" && text != "16") {
+        throw std::runtime_error("FLAGFFT_IX_WARP256_PACK must be 4, 8 or 16");
+      }
+      pack = std::stoll(text);
+    }
+    if (permuted) {
+      if (span <= 0) return;
+      const bool inner = key.perm_form == "inner";
+      // These conditions justify a contiguous, aligned output FFT-slot tile.
+      if (inner ? request.batch % span != 0 || (request.batch / span) % pack != 0
+                : span % pack != 0) return;
+      key.permutation_span = span;
+    }
+    key.ix_warp_fft_pack = pack;
+  }
+
   // Match the Python dense FourStep policy when constructing stage tables.
   // Other leaf families, including strided FourStep, retain their own layout.
   bool ix_large_fourstep_portable_default(const FFTRequest &request, int64_t n1, int64_t n2) {
@@ -3076,6 +3102,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                   num_warps,
                                   leaf.generic_radices,
                                   leaf.smem_size);
+  mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
@@ -3127,6 +3154,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  perm_form);
   if (strided_input) key.kind = KernelKind::LeafStridedPermutedStore;
   mark_ix_static_permutation_span(key, request, perm_span);
+  mark_ix_warp_fft(key, request, perm_span);
   mark_npu_portable_leaf(key, request);
   const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
   // Forcing FP64 256-point stores to use the full 64 KiB shared-memory pack
@@ -3286,6 +3314,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
+  mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
@@ -4823,6 +4852,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
         ? hcu_3d_axis_perm_form(request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer")
         : "outer";
     mark_ix_static_permutation_span(key, request, n1);
+    mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
         DeviceAllocation{}, n1);
@@ -5116,6 +5146,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     key.kind = KernelKind::LeafR2CPermutedStore;
     key.perm_form = "outer";
     mark_ix_static_permutation_span(key, request, n1);
+    mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
         DeviceAllocation{}, n1);

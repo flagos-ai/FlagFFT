@@ -674,6 +674,9 @@ def emit_jit_kernel(
     if spec.family == STOCKHAM:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
+    if kernel_name.startswith("ix_warp256_"):
+        from .target import ix_warp_fft_pack
+        module_name += f"_warp{ix_warp_fft_pack()}"
     if permutation_span:
         module_name += f"_s{permutation_span}"
     module_name += variant_suffix()

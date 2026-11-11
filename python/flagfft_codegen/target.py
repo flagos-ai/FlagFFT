@@ -22,11 +22,26 @@ _MACA_1D_BATCH_DEFAULT = ContextVar("flagfft_maca_1d_batch_default", default=Fal
 _IX_CT_SINGLE_DEFAULT = ContextVar("flagfft_ix_ct_single_default", default=False)
 _IX_CT_BATCH_DEFAULT = ContextVar("flagfft_ix_ct_batch_default", default=False)
 _IX_LARGE_FOURSTEP_DEFAULT = ContextVar("flagfft_ix_large_fourstep_default", default=False)
+_IX_WARP_FFT_PACK = ContextVar("flagfft_ix_warp_fft_pack", default=0)
 _IX_REAL_SINGLE_PACK = ContextVar("flagfft_ix_real_single_pack", default=False)
 _IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
 _MACA_2D_SINGLE_DEFAULT = ContextVar("flagfft_maca_2d_single_default", default=False)
 _MACA_3D_DEFAULT = ContextVar("flagfft_maca_3d_default", default=False)
 _MACA_3D_C2C32_SINGLE_CUBE = ContextVar("flagfft_maca_3d_c2c32_single_cube", default=False)
+
+
+def set_ix_warp_fft_pack(pack: int):
+    if pack not in {0,4,8,16}:
+        raise ValueError("IX warp FFT pack must be 0, 4, 8 or 16")
+    return _IX_WARP_FFT_PACK.set(pack)
+
+
+def reset_ix_warp_fft_pack(token):
+    _IX_WARP_FFT_PACK.reset(token)
+
+
+def ix_warp_fft_pack() -> int:
+    return _IX_WARP_FFT_PACK.get()
 
 
 def set_ix_ct_single_tle_default(policy: int):

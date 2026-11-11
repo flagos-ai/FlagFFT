@@ -131,6 +131,7 @@ def main() -> None:
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--permutation-span", type=int, default=0)
+    parser.add_argument("--ix-warp-fft-pack", type=int, choices=(0,4,8,16), default=0)
     parser.add_argument(
         "--perm-form",
         choices=(
@@ -218,6 +219,8 @@ def main() -> None:
     from .target import (set_ix_ct_single_default, set_ix_ct_batch_default,
                          set_ix_ct_single_tle_default, set_ix_real_single_pack)
     set_ix_ct_single_default(args.ix_ct_single)
+    from .target import set_ix_warp_fft_pack
+    set_ix_warp_fft_pack(args.ix_warp_fft_pack)
     set_ix_ct_batch_default(args.ix_ct_batch)
     set_ix_real_single_pack(args.ix_real_single_pack)
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
@@ -262,6 +265,8 @@ def main() -> None:
             profile_dir += f"-tle{args.ix_ct_single_tle}"
         if ix_large_fourstep:
             profile_dir += "-large-fourstep"
+        if args.ix_warp_fft_pack:
+            profile_dir += f"-warpfft{args.ix_warp_fft_pack}"
     if profile.backend == "maca":
         # Keep default-on and explicit opt-out artifacts separate.  The native
         # compiler also includes this bit in its in-process cache key, but the

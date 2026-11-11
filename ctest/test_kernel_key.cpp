@@ -126,3 +126,14 @@ TEST(KernelKeyRepr, StaticPermutationSpanSeparatesCompiledLayouts) {
   EXPECT_NE(first.repr(), last.repr());
   EXPECT_EQ(dynamic.repr().find(";permutation_span="), std::string::npos);
 }
+
+TEST(KernelKeyRepr, WarpFFTLaunchAndLegacyLeavesCannotCollide) {
+  auto leaf = flagfft::KernelKey::leaf("ix:71:64","forward","complex64",256,{16,16},16,2,{},256);
+  auto four = leaf; four.ix_warp_fft_pack=4;
+  auto sixteen = leaf; sixteen.ix_warp_fft_pack=16;
+  EXPECT_FALSE(leaf==four);
+  EXPECT_FALSE(four==sixteen);
+  EXPECT_NE(leaf.repr(),four.repr());
+  EXPECT_NE(four.repr(),sixteen.repr());
+  EXPECT_EQ(leaf.repr().find(";ix_warp_fft_pack="),std::string::npos);
+}

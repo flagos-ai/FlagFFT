@@ -3027,6 +3027,17 @@ def _build_leaf_kernel_source_for_io(
     if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
         bluestein_real_kind = io_mode.rsplit("_", 1)[1]
         io_mode = io_mode.rsplit("_", 1)[0]
+    from .target import ix_warp_fft_pack
+    warp_pack = ix_warp_fft_pack()
+    from .backend_profile import current_profile
+    if (warp_pack and _ix_backend_active() and current_profile().device_arch == "71"
+            and current_profile().warp_size == 64 and plan.dtype == "complex64" and plan.length == 256
+            and io_mode in {"contiguous", "contiguous_c2r", "permuted_store", "permuted_r2c", "permuted_store_r2c"}
+            and perm_form in {"outer", "inner"}):
+        from .kernels_ix_warp import build_ix_warp256_leaf_source
+        return build_ix_warp256_leaf_source(
+            plan,io_mode,perm_form,_leaf_kernel_params_for_io(plan,io_mode=io_mode),
+            warp_pack,permutation_span)
     if _use_thread_local_mixed_leaf(
         plan,
         io_mode=io_mode,
