@@ -339,6 +339,14 @@ TEST(IXLeafPlan, ExplicitFactorsAreLengthScopedAndValidated) {
   request.batch=1; request.raw_dim=request.origin_rank=1;
   request.fft_length=request.requested_n=210;
   request.input_shape={1,210}; request.input_strides={210,1};
+  std::vector<int64_t> baseline;
+  {
+    ScopedEnv absent("FLAGFFT_IX_LEAF_FACTORS",nullptr);
+    flagfft::PlanBuilder baseline_builder;
+    auto leaf=std::dynamic_pointer_cast<flagfft::LeafPlanNode>(baseline_builder.build(210,request));
+    ASSERT_NE(leaf,nullptr);
+    baseline=leaf->factors;
+  }
   ScopedEnv override("FLAGFFT_IX_LEAF_FACTORS","210:15x14");
   flagfft::PlanBuilder builder;
   auto leaf=std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(210,request));
@@ -353,5 +361,5 @@ TEST(IXLeafPlan, ExplicitFactorsAreLengthScopedAndValidated) {
   flagfft::PlanBuilder other_length;
   auto original=std::dynamic_pointer_cast<flagfft::LeafPlanNode>(other_length.build(210,request));
   ASSERT_NE(original,nullptr);
-  EXPECT_NE(original->factors,leaf->factors);
+  EXPECT_EQ(original->factors,baseline);
 }
