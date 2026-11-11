@@ -430,6 +430,9 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
 ):
     # A CPU-only capture fixture exercises the real CLI/worker/signal path.
     capture = fake_capture(tmp_path)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=CUDA\n")
     size = min(matrix[operators[0]["sizes"]])
     cases = RUN_TESTS.expand_test_cases(
         [operators[0]], matrix, shapes={(size,)}, scales="1"
@@ -450,6 +453,8 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
             "1",
             "--capture-bin",
             str(capture),
+            "--build-dir",
+            str(build_dir),
             "--output-dir",
             str(output),
         ],
