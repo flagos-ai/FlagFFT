@@ -92,6 +92,25 @@ def test_ix_four_step_interleave_is_symmetric(ix_profile, monkeypatch):
     compile(source, "<ix-interleave>", "exec")
 
 
+def test_ix_permuted_pack_matches_source_and_launch(ix_profile, monkeypatch):
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+
+    monkeypatch.setenv("FLAGFFT_IX_3D_PACK", "8")
+    plan = LeafPlan(256, (16, 16), 1, 16, 2, (), 256, "forward", "complex64")
+    name, source = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
+    meta = _metadata(module_path=Path("unused.py"), kernel_name=name,
+                     arg_names=[], plan=plan, kernel_type="leaf_permuted_store",
+                     n1=0, n2=0, dtype="complex64")
+    assert meta["batch_per_block"] == 8
+    assert "batch_id = pid * 8" in source
+    monkeypatch.setenv("FLAGFFT_IX_3D_PACK", "3")
+    with pytest.raises(ValueError, match="FLAGFFT_IX_3D_PACK"):
+        _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
+
+
 def test_ix_tle_presets_are_scoped_and_overridable(ix_profile, monkeypatch):
     from flagfft_codegen.kernels_common import _maca_knob
     from flagfft_codegen.target import set_ix_ct_single_tle_default, reset_ix_ct_single_tle_default

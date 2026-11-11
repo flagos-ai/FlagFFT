@@ -581,6 +581,12 @@ def permuted_store_batch_pack_for(
             if override not in {"1", "2", "4", "8"}:
                 raise ValueError("FLAGFFT_MUSA_3D_PACK must be 1, 2, 4 or 8")
             target_pack = int(override)
+    if _ix_backend_active():
+        override = os.getenv("FLAGFFT_IX_3D_PACK", "auto")
+        if override != "auto":
+            if override not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError("FLAGFFT_IX_3D_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+            target_pack = int(override)
     if _hcu_backend_active():
         if force_full_smem:
             target_pack = 8
