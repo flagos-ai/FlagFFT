@@ -242,7 +242,9 @@ def _metadata(
         # One warp triggers unsupported shuffle lowering in multi-stage leaves.
         num_warps = max(2, num_warps)
         warp_override = _maca_knob("WARPS")
-        if warp_override:
+        # IX validates its override against the IX hardware profile below;
+        # the portable path must not impose MetaX's two-warp minimum there.
+        if warp_override and not _ix_backend_active():
             try:
                 requested_warps = int(warp_override)
             except ValueError:
