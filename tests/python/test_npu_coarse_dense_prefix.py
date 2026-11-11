@@ -20,7 +20,7 @@ def test_complete_fft(tmp_path, factors, mode):
     direction = 'inverse' if global_inverse else mode
     source, specs = build_coarse_dif(factors, direction,
         global_inverse=global_inverse, good_thomas=True, dense_prefix=True)
-    source, specs = optimize_vector_basis(source, specs)
+    source, specs = optimize_vector_basis(source, specs, 'forward' if global_inverse else direction)
     path = tmp_path / 'dense.py'
     path.write_text(source)
     ns, pid = execute_module(path)

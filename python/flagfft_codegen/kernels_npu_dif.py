@@ -180,7 +180,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
                                     conjugate_output=global_inverse)
     if vector_basis:
         from .npu_vector_basis import optimize_vector_basis
-        source,specs=optimize_vector_basis(source,specs)
+        source,specs=optimize_vector_basis(source,specs,'forward' if global_inverse else direction)
     if phase<0 or phase>=len(specs):raise ValueError('Invalid DIF phase')
     n=math.prod(factors);spec=specs[phase]
     dense_tag=f'_dense_f{dense_prefix_frequencies}_c{dense_prefix_columns}' if dense_prefix else ''

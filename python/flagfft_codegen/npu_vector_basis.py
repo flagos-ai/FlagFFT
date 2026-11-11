@@ -33,7 +33,7 @@ def _quadratic_products(fn):
     fn.body = out
     return fn
 
-def _spatial_radix7(s):
+def _spatial_radix7(s, direction):
     jpack = 4
     pp, pn, m = (s['physical_prefix'], s['physical_n'], s['m'])
     points = jpack * pp
@@ -48,7 +48,7 @@ def _spatial_radix7(s):
         for d in range(g):
             lines += [f'    r{start + d}=al.extract_slice(re,[{d * points}],[{points}],[1])', f'    i{start + d}=al.extract_slice(im,[{d * points}],[{points}],[1])']
         start += g
-    lines += _emit_natural_order_codelet_call('    ', 7, 'forward')
+    lines += _emit_natural_order_codelet_call('    ', 7, direction)
     for start, g in groups:
         count = g * points
         lines += [f'    re=tl.zeros(({count},),tl.float32)', f'    im=tl.zeros(({count},),tl.float32)']
@@ -58,7 +58,7 @@ def _spatial_radix7(s):
     s.update(grid=(math.ceil(m / jpack),), batch_pack=1)
     return ast.parse('\n'.join(lines)).body[0]
 
-def optimize_vector_basis(source, specs):
+def optimize_vector_basis(source, specs, direction='forward'):
     """Return a complete module and matching grids; keep other layouts intact."""
     specs = [dict(s) for s in specs]
     stages = {s['name']: s for s in specs}
@@ -84,7 +84,7 @@ def optimize_vector_basis(source, specs):
         if field and fn.name in ('_npu_cos6', '_npu_sin6'):
             _quadratic_products(fn)
         if fn.name in spatial:
-            fn = _spatial_radix7(stages[fn.name])
+            fn = _spatial_radix7(stages[fn.name], direction)
             tree.body[i] = fn
         if fn.name in spatial or fn.name in wide:
             CallSite().visit(fn)
