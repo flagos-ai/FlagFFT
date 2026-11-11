@@ -79,3 +79,32 @@ def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind
         compile(source,'<ix-warp-leaf>','exec')
     finally:
         reset_ix_warp_fft_pack(token);reset_profile(ptoken)
+
+@pytest.mark.parametrize('n1,n2',[(64,128),(128,128),(256,64)])
+@pytest.mark.parametrize('mode',['four_step_row','four_step_col'])
+@pytest.mark.parametrize('direction',['forward','inverse'])
+def test_four_step_warp_launch_matches_raw_two_dimensional_grid(n1,n2,mode,direction,tmp_path):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.target import set_ix_warp_fft_pack,reset_ix_warp_fft_pack
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    profile=set_profile(BackendProfile.from_device({'backend':'ix','device_arch':'71','warp_size':64,
+        'max_threads_per_block':4096,'max_dynamic_shared_memory':131072},'balanced'))
+    token=set_ix_warp_fft_pack(16)
+    try:
+        n=n1 if mode=='four_step_row' else n2
+        factors={64:(4,4,4),128:(16,8),256:(16,16)}[n]
+        plan=LeafPlan(n,factors,1,16,2,(),n,direction,'complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=n1,four_step_n2=n2)
+        args=[a.arg for v in ast.parse(source).body if isinstance(v,ast.FunctionDef) for a in v.args.args]
+        assert ('twiddle_ptr' in args)==(mode=='four_step_row')
+        assert args[-1]=='nbatch' and 'tl.program_id(1)' in source
+        assert f'matrix_base=tl.program_id(1)*{n1*n2}' in source
+        meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,arg_names=args,
+            plan=plan,kernel_type=mode,n1=n1,n2=n2,dtype='complex64')
+        assert meta['num_warps']==meta['inner_pack']==16
+        assert meta['batch_per_block']==1 and meta['tle_fused_twiddle']
+        compile(source,'<ix-four-step-warp>','exec')
+    finally:
+        reset_ix_warp_fft_pack(token);reset_profile(profile)

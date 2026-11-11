@@ -84,6 +84,20 @@ namespace {
     key.ix_warp_fft_pack = pack;
   }
 
+  void mark_ix_warp_fourstep(KernelKey &key, const FFTRequest &request) {
+    if (request.device_type!="ix" || request.device_arch!="71" || key.dtype!="complex64" ||
+        !flag_or_default("FLAGFFT_IX_WARP_FOURSTEP",false) ||
+        (key.length!=64 && key.length!=128 && key.length!=256)) return;
+    int64_t pack=16;
+    if (const char *value=std::getenv("FLAGFFT_IX_WARP_FFT_PACK")) {
+      const std::string text(value);
+      if (text!="4" && text!="8" && text!="16")
+        throw std::runtime_error("IX FourStep warp pack must be 4, 8 or 16");
+      pack=std::stoll(text);
+    }
+    key.ix_warp_fft_pack=pack;
+  }
+
   // Match the Python dense FourStep policy when constructing stage tables.
   // Other leaf families, including strided FourStep, retain their own layout.
   bool ix_large_fourstep_portable_default(const FFTRequest &request, int64_t n1, int64_t n2) {
@@ -3358,6 +3372,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const Le
                                            leaf.num_warps,
                                            leaf.generic_radices,
                                            leaf.smem_size);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -3434,6 +3449,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const Le
                                            leaf.num_warps,
                                            leaf.generic_radices,
                                            leaf.smem_size);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 

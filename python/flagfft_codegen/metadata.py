@@ -311,6 +311,10 @@ def _metadata(
             raise ValueError("IX warp FFT output tile exceeds shared-memory capacity")
         num_warps = batch_per_block = warp_pack
         inner_pack = 1
+        if kernel_type in {'four_step_row','four_step_col'}:
+            batch_per_block=1
+            inner_pack=warp_pack
+            tle_fused_twiddle=True
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,

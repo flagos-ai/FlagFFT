@@ -23,10 +23,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          *, recurrence: bool = False, fast_math: bool = False,
                          local_codelet: bool = False, manual_store: bool = False,
                          output_radix_chunk: int = 0, lane_width: int = 64,
-                         packed_gather: bool = False) -> tuple[str, str]:
+                         packed_gather: bool = False,
+                         four_step_other: int = 0) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
-    if n not in {128,256,512,1024,2048}:
-        raise ValueError("IX warp FFT length must be 128, 256, 512, 1024 or 2048")
+    if n not in {64,128,256,512,1024,2048}:
+        raise ValueError("IX warp FFT length must be 64, 128, 256, 512, 1024 or 2048")
     if lane_width<32 or lane_width>n or lane_width&(lane_width-1) or n%lane_width:
         raise ValueError("invalid IX FFT lane width")
     if manual_store and lane_width!=64:
@@ -37,12 +38,16 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("invalid IX warp output chunk")
     if pack not in {1,2,4,8,16,32,64}:
         raise ValueError("IX warp FFT pack must be 1, 2, 4, 8, 16, 32 or 64")
-    if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r"}:
+    if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","four_step_row","four_step_col"}:
         raise ValueError("unsupported IX warp FFT I/O mode")
+    four_step=mode in {'four_step_row','four_step_col'}
+    if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
+        raise ValueError("invalid IX warp FourStep geometry")
     if (mode in {"r2c","contiguous_r2c"} and inverse) or (mode == "c2r" and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
+    if four_step: name+=f'_other{four_step_other}'
     if recurrence: name+='_rec'
     if fast_math: name+='_fast'
     if local_codelet: name+='_codelet'
@@ -69,10 +74,21 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             outn=n//2+1 if mode=='r2c' else n
             a+=[f'    gbase=(row_base//span)*({outn}*span)+(row_base%span)+slot']
     a+= ['    valid=row[:,None]<nbatch']
+    if four_step:
+        a += [f'    valid=row[:,None]<{four_step_other}',
+              f'    matrix_base=tl.program_id(1)*{n*four_step_other}']
     if mode=='outer': a += [f'    valid=valid&(((pid%groups)*{pack}+slot[:,None])<span)']
     for j in range(radix):
         a+=[f'    pos=lane+{j*lane_width}']
-        if mode=='c2r':
+        if four_step:
+            # Read adjacent columns together before routing each FFT to a warp.
+            a += [f'    offset=matrix_base+(tl.arange(0,64)[:,None]+{j*64})*{four_step_other}+row[None,:]',
+                  '    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
+                  f'    pair=tl.load(ip+offset,row[None,:]<{four_step_other},0)',
+                  '    pair=tl.trans(pair)',
+                  f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                  f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
+        elif mode=='c2r':
             a+= [f'    hpos=tl.where(pos<={n//2},pos,{n}-pos)',
                  '    offset=row[:,None]*input_distance+hpos',
                  f'    x{j}r=tl.load(inp+offset*2,valid,0.0)',
@@ -156,6 +172,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   '    tr=br*wr-bi*wi','    ti=br*wi+bi*wr',
                   f'    ar=tl.where(high,pr,r{j})',f'    ai=tl.where(high,pi,i{j})',
                   f'    r{j}=tl.where(high,ar-tr,ar+tr)',f'    i{j}=tl.where(high,ai-ti,ai+ti)']
+    if mode=='four_step_row':
+        for j in range(radix):
+            a += [f'    angle=row[:,None]*(lane*{radix}+{j})*{sign*2*math.pi/(n*four_step_other):.17g}',
+                  '    wr=tl.cos(angle)','    wi=tl.sin(angle)',
+                  f'    tr=r{j}*wr-i{j}*wi',f'    i{j}=r{j}*wi+i{j}*wr',f'    r{j}=tr']
     if mode=='c2r':
         for j in range(radix): a += [f'    z{j}=r{j}']
     else:
@@ -195,7 +216,15 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         values=join(list(range(start,start+chunk)))
         a += [f'    z=tl.reshape({values},({pack},{lane_width*chunk}))',f'    freq=tl.arange(0,{lane_width*chunk})']
         if chunk!=radix: a += [f'    freq=(freq//{chunk})*{radix}+freq%{chunk}+{start}']
-        if mode in {'contiguous','c2r','contiguous_r2c'}:
+        if four_step:
+            a += ['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))']
+            if mode=='four_step_row':
+                a += [f'    address=matrix_base+row[:,None]*{n}+freq[None,:]',
+                      f'    tl.store(ptr+address,z,row[:,None]<{four_step_other})']
+            else:
+                a += [f'    address=matrix_base+freq[:,None]*{four_step_other}+row[None,:]',
+                      f'    tl.store(ptr+address,tl.trans(z),row[None,:]<{four_step_other})']
+        elif mode in {'contiguous','c2r','contiguous_r2c'}:
             a+=['    address=row[:,None]*output_distance+freq[None,:]',
                  '    mask=row[:,None]<nbatch']
             if mode=='contiguous_r2c': a += [f'    mask=mask&(freq[None,:]<{n//2+1})']
@@ -251,4 +280,15 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     header=f'def {name}(inp,out,span,nbatch,input_distance,output_distance):'
     assert header in source
     source=source.replace(header,f'def {leaf_name}('+','.join(params)+'):\n'+'\n'.join(aliases),1)
+    return leaf_name,source
+
+
+def build_ix_warp_four_step_source(plan, io_mode, n1, n2, params, pack):
+    other=n2 if io_mode=='four_step_row' else n1
+    name,source=build_ix_warp_source(plan.length,pack,io_mode,
+        plan.direction=='inverse',fast_math=True,four_step_other=other)
+    leaf_name='ix_'+name+'_leaf'
+    header=f'def {name}(inp,out,span,nbatch,input_distance,output_distance):'
+    aliases='    inp=in_ptr\n    out=out_ptr'
+    source=source.replace(header,f'def {leaf_name}('+','.join(params)+'):\n'+aliases,1)
     return leaf_name,source

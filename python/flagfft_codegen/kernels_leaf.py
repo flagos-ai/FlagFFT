@@ -3032,6 +3032,13 @@ def _build_leaf_kernel_source_for_io(
     from .target import ix_warp_fft_pack
     warp_pack = ix_warp_fft_pack()
     from .backend_profile import current_profile
+    if (warp_pack and _ix_backend_active() and current_profile().device_arch=='71'
+            and current_profile().warp_size==64 and plan.dtype=='complex64'
+            and io_mode in {'four_step_row','four_step_col'}):
+        from .kernels_ix_warp import build_ix_warp_four_step_source
+        return build_ix_warp_four_step_source(plan,io_mode,four_step_n1,four_step_n2,
+            _leaf_kernel_params_for_io(plan,io_mode=io_mode,
+                include_four_step_twiddle=io_mode=='four_step_row'),warp_pack)
     if (warp_pack and _ix_backend_active() and current_profile().device_arch == "71"
             and current_profile().warp_size == 64 and plan.dtype == "complex64" and plan.length in {128,256,512,1024,2048}
             and io_mode in {"contiguous", "contiguous_c2r", "contiguous_r2c", "permuted_store", "permuted_r2c", "permuted_store_r2c"}
