@@ -26,7 +26,7 @@ from test_npu_structured_fft import Pointer, execute_module
 @pytest.fixture(autouse=True)
 def selected_options(monkeypatch):
     for name in ('FUSED_FINISH', 'GROUP_BRANCHES', 'COMPONENT17', 'CODELET_REUSE',
-                 'VECTOR_BASIS', 'PREFIX_PIPELINE'):
+                 'VECTOR_BASIS', 'PREFIX_PIPELINE', 'BATCH_DENSE_PIPELINE'):
         monkeypatch.setenv('FLAGFFT_NPU_DIF_' + name, '1')
 
 
@@ -188,7 +188,7 @@ def test_replacement_preserves_suffix_and_deferred_tables(factors, finish4, dire
 
 
 @pytest.mark.parametrize('direction', ['forward', 'inverse'])
-def test_dense_tiles_have_distinct_identity_and_no_prefix_pipeline(tmp_path, direction):
+def test_dense_tiles_have_distinct_identity_and_scoped_pipeline(tmp_path, direction):
     factors = (17, 15, 13, 10, 10, 2)
     common = dict(aligned=True, cube_prefix=True, vector_first17=True, batch_pack=True,
                   vector_second15=True, matrix_first17=True, prefix_pitch=32,
@@ -198,7 +198,8 @@ def test_dense_tiles_have_distinct_identity_and_no_prefix_pipeline(tmp_path, dir
         meta = emit_vector_dif(factors, direction, 0, tmp_path, dense_prefix=True,
             dense_prefix_columns=columns, dense_prefix_frequencies=frequencies, **common)
         assert meta['kernel_name'] == 'dense_prefix_half'
-        assert meta['num_stages'] == 1 and meta['batch_per_block'] == 1
+        assert meta['num_stages'] == (2 if (columns, frequencies) == (64, 64) else 1)
+        assert meta['batch_per_block'] == 1
         assert meta['signature'] == '*fp32:16,*fp32:16,*fp32:16'
         assert (meta['dense_prefix_columns'], meta['dense_prefix_frequencies']) == (columns, frequencies)
         assert json.loads(Path(meta['module_path']).with_suffix('.json').read_text()) == meta
@@ -207,6 +208,26 @@ def test_dense_tiles_have_distinct_identity_and_no_prefix_pipeline(tmp_path, dir
     original = emit_vector_dif(factors, direction, 0, tmp_path, **common)
     assert original['kernel_name'] == 'vector_stage_0'
     assert original['num_stages'] == (2 if direction == 'forward' else 1)
+
+
+@pytest.mark.parametrize('direction', ['forward', 'inverse'])
+def test_batch_dense_pipeline_optout_preserves_source(tmp_path, monkeypatch, direction):
+    kwargs = dict(aligned=True, cube_prefix=True, vector_first17=True, batch_pack=True,
+        vector_second15=True, matrix_first17=True, prefix_pitch=32, codelet_reuse=True,
+        vector_basis=True, global_inverse=direction == 'inverse', dense_prefix=True,
+        dense_prefix_columns=64, dense_prefix_frequencies=64)
+    factors = (17, 15, 13, 7, 8)
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE', '0')
+    off = emit_vector_dif(factors, direction, 0, tmp_path / 'off', **kwargs)
+    monkeypatch.delenv('FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE')
+    on = emit_vector_dif(factors, direction, 0, tmp_path / 'on', **kwargs)
+    assert (off['num_stages'], on['num_stages']) == (1, 2)
+    assert Path(off['module_path']).read_text() == Path(on['module_path']).read_text()
+    suffix = emit_vector_dif(factors, direction, 1, tmp_path / 'suffix', **kwargs)
+    assert suffix['num_stages'] == 1
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE', 'invalid')
+    with pytest.raises(ValueError, match='BATCH_DENSE_PIPELINE must be 0 or 1'):
+        emit_vector_dif(factors, direction, 0, tmp_path / 'invalid', **kwargs)
 
 
 def test_dense_finish_metadata_keeps_batch_abi(tmp_path):

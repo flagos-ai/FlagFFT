@@ -201,6 +201,18 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
             raise ValueError('FLAGFFT_NPU_DIF_PREFIX_PIPELINE must be 0 or 1')
         if pipeline == '1':
             meta['num_stages'] = 2
+    # The public batched 255-point prefix uses a bounded 64x64 matrix tile.
+    # Pipeline only this qualified Cube producer; its AIV suffix keeps the
+    # original scheduling and all arithmetic remains IEEE FP32.
+    if (phase == 0 and dense_prefix and cube_prefix and batch_pack
+            and matrix_first17 and vector_first17 and vector_second15
+            and codelet_reuse and vector_basis
+            and spec.get('dense_prefix') == (255, 256, 64, 64, 2)
+            and 512 <= spec['m'] <= 4096):
+        pipeline = os.environ.get('FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE', '1')
+        if pipeline not in ('0', '1'):
+            raise ValueError('FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE must be 0 or 1')
+        meta['num_stages'] = 2 if pipeline == '1' else 1
     if workspace_padding:meta['workspace_length']=spec['physical_n']
     if dense_prefix:
         meta.update(dense_prefix_columns=dense_prefix_columns,dense_prefix_frequencies=dense_prefix_frequencies)

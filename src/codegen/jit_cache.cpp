@@ -257,6 +257,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     }
     if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0) {
       cache_key += ";npu-dif-cube-prefix-v6";
+      if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
+          key.perm_form.find("_dense_batch_f64_c64")!=std::string::npos) {
+        const char *pipeline=std::getenv("FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE");
+        cache_key += ";npu-dif-batch-dense-pipeline-v1=" +
+                     std::string(pipeline!=nullptr?pipeline:"1");
+      }
       const char *fast9=std::getenv("FLAGFFT_NPU_DIF_FAST9");
       cache_key += ";npu-dif-radix9-v1=" + std::string(fast9!=nullptr?fast9:"1");
       const char *pack13=std::getenv("FLAGFFT_NPU_DIF_BATCH_PACK13");
@@ -916,14 +922,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
         kernel->npu_join_lowering != "packed")
       throw std::runtime_error("FLAGFFT_NPU_JOIN_MODE must be auto, native or packed");
     kernel->npu_auto_blockify = npu_auto_blockify_for(key);
-    kernel->npu_single_buffer = kernel->kernel_name == "dense_prefix_half" &&
-        key.perm_form.find("_dense_batch_f") != std::string::npos;
   }
   kernel->signature = json_string_field(artifact_json, "signature");
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
   kernel->warp_size = json_int_field(artifact_json, "warp_size");
   kernel->profile_id = json_string_field(artifact_json, "profile_id");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
+  kernel->npu_single_buffer = adaptor::backend_name() == "npu" &&
+      kernel->kernel_name == "dense_prefix_half" && kernel->num_stages == 1 &&
+      key.perm_form.find("_dense_batch_f") != std::string::npos;
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
   if (key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {
