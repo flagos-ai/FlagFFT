@@ -50,6 +50,10 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
                                             adaptor::DevicePtr output,
                                             const RawExecutionContext &context) const {
   try {
+    // Capturing after the first execution and replaying it would apply an
+    // in-place FFT twice to the same input. Keep exact aliases on the direct
+    // execution path; captured out-of-place pointers remain reusable.
+    if (input == output) return inner->execute(input, output, context);
     if (graph != nullptr && graph_input == input && graph_output == output) {
       graph->launch(context.stream);
       return FLAGFFT_SUCCESS;

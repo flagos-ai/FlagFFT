@@ -501,6 +501,26 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
                                                              plan->executable.inverse_request,
                                                              plan->desc.batch);
       }
+      const auto &request = plan->executable.forward_request;
+      const auto kind = plan->executable.root->kind;
+      if (request.device_type == "ix" && request.device_arch == "71" &&
+          request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+          (kind == PlanNodeKind::FourStep || kind == PlanNodeKind::Bluestein ||
+           kind == PlanNodeKind::Rader)) {
+        const char *setting = std::getenv("FLAGFFT_IX_PLAN_GRAPH");
+        if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+          throw std::runtime_error("FLAGFFT_IX_PLAN_GRAPH must be 0 or 1");
+        }
+        if (setting && std::string(setting) == "1" &&
+            std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+          if (plan->executable.forward) {
+            plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+          }
+          if (plan->executable.inverse) {
+            plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+          }
+        }
+      }
     }
 #if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
     const flagfftResult sip_result = configure_npu_sip_execution(*plan);
