@@ -19,7 +19,8 @@ def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = 
     return build_ix_warp_source(256, pack, mode, inverse)
 
 
-def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bool = False) -> tuple[str, str]:
+def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bool = False,
+                         *, recurrence: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {128,256,512,1024,2048}:
         raise ValueError("IX warp FFT length must be 128, 256, 512, 1024 or 2048")
@@ -32,6 +33,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("real transform direction disagrees with the I/O mode")
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
+    if recurrence: name+='_rec'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -90,9 +92,13 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                     a += [f'    ar=r{lo}',f'    ai=i{lo}',f'    r{lo}=ar+tr',f'    i{lo}=ai+ti',
                           f'    r{hi}=ar-tr',f'    i{hi}=ai-ti']
     for j in range(1,radix):
-        a+=[f'    angle=lane*{sign*2*math.pi*j/n:.17g}',
-             '    wr=tl.cos(angle)','    wi=tl.sin(angle)',
-             f'    tr=r{j}*wr-i{j}*wi',f'    ti=r{j}*wi+i{j}*wr',f'    r{j}=tr',f'    i{j}=ti']
+        if recurrence and j>1:
+            a+=['    next_wr=wr*base_wr-wi*base_wi','    wi=wr*base_wi+wi*base_wr','    wr=next_wr']
+        else:
+            a+=[f'    angle=lane*{sign*2*math.pi*j/n:.17g}',
+                '    wr=tl.cos(angle)','    wi=tl.sin(angle)']
+            if recurrence: a+=['    base_wr=wr','    base_wi=wi']
+        a+=[f'    tr=r{j}*wr-i{j}*wi',f'    ti=r{j}*wi+i{j}*wr',f'    r{j}=tr',f'    i{j}=ti']
     a+=['    rev=((lane&1)<<5)|((lane&2)<<3)|((lane&4)<<1)|((lane&8)>>1)|((lane&16)>>3)|((lane&32)>>5)',
          f'    idx=tl.broadcast_to(rev,({pack},64))']
     for j in range(radix): a += [f'    r{j}=tl.gather(r{j},idx,axis=1)',f'    i{j}=tl.gather(i{j},idx,axis=1)']
