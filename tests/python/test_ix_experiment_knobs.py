@@ -381,7 +381,7 @@ def test_ix_shared_tail_rejects_multiple_unread_groups(ix_balanced_profile, monk
     monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','1')
     monkeypatch.setenv('FLAGFFT_IX_3D_SMEM_STORE','1')
     monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
-    # Four final groups: overwriting the source buffer would destroy future input.
+    # Multiple final groups: overwriting the source buffer would destroy future input.
     plan=LeafPlan(256,(64,1,4),1,4,2,(),256,'forward','complex64')
     name,source=_build_leaf_kernel_source_for_io(plan,io_mode='permuted_store')
     assert not name.endswith('_smstore') and 'tail_flat' not in source

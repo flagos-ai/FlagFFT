@@ -79,6 +79,41 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }
+  // Explicit split screening at a public 1D root or its packed real child.
+  // A convolution child is built with build_auto_node and cannot consume it.
+  const char *ix_split = std::getenv("FLAGFFT_IX_FOURSTEP_SPLIT");
+  if (request.device_type == "ix" && request.device_arch == "71" &&
+      request.origin_rank <= 1 && request.raw_dim == 1 && request.requested_n == n &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      ix_split && *ix_split) {
+    const std::string spec(ix_split);
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      const auto row = select_leaf_factors(n1), col = select_leaf_factors(n2);
+      if (!should_use_leaf(n1, row) || !should_use_leaf(n2, col)) {
+        throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT requires two supported leaf lengths");
+      }
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                               make_leaf_plan(n1, row), make_leaf_plan(n2, col));
+    }
+  }
   // Opt in to an explicit HCU single C2R split while screening alternative
   // 1D four-step decompositions. Keep the override at the public root so it
   // cannot change child FFTs used by another algorithm.

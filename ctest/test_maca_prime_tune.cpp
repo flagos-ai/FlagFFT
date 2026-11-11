@@ -276,3 +276,33 @@ TEST(IXLeafPlan, BalancedRadicesLeaveOtherTargetsAndMixedLengthsUnchanged) {
     EXPECT_EQ(candidate.build(n, request)->describe(), original);
   }
 }
+
+TEST(IXLeafPlan, ExplicitFourStepSplitScopesRootAndPackedChild) {
+  ScopedEnv gate("FLAGFFT_IX_FOURSTEP_SPLIT", "16384:256");
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.input_dtype = request.output_dtype = "complex64";
+  request.batch = 64;
+  request.raw_dim = request.origin_rank = 1;
+  request.fft_length = request.requested_n = 16384;
+  request.input_shape = {64, 16384};
+  request.input_strides = {16384, 1};
+  for (bool packed : {false, true}) {
+    request.packed_real_child = packed;
+    flagfft::PlanBuilder builder;
+    auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(16384, request));
+    ASSERT_NE(pair, nullptr);
+    EXPECT_EQ(pair->n1, 256);
+    EXPECT_EQ(pair->n2, 64);
+    EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(pair->row_plan), nullptr);
+    EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(pair->col_plan), nullptr);
+  }
+  setenv("FLAGFFT_IX_FOURSTEP_SPLIT", "16384:127", 1);
+  flagfft::PlanBuilder invalid;
+  EXPECT_THROW(invalid.build(16384, request), std::runtime_error);
+  // A rank-3 axis must ignore the 1D override, even an invalid split.
+  request.origin_rank = 3;
+  flagfft::PlanBuilder axis;
+  EXPECT_NO_THROW(axis.build(16384, request));
+}
