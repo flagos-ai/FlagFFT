@@ -1882,11 +1882,9 @@ namespace {
     if (std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA must be 0 or 1");
     }
-    // Keep the initial experiment explicit: these launch/codegen settings
-    // match the native-ABI resource checks (64/128 KiB, no spills). They are
-    // not the ordinary CT batch defaults and must travel together.
+    // Keep the experiment explicit. The launch width and batch tile differ
+    // from ordinary CT batch defaults and must travel together.
     for (const auto &[name, expected] : {
-             std::pair{"FLAGFFT_IX_PORTABLE_LEAF", "1"},
              std::pair{"FLAGFFT_IX_WARPS", "8"},
              std::pair{"FLAGFFT_IX_BATCH_PACK", "1"}}) {
       const char *value = std::getenv(name);
@@ -1894,16 +1892,28 @@ namespace {
         throw std::runtime_error(std::string("FLAGFFT_IX_FOURSTEP_CTA requires ") + name + "=" + expected);
       }
     }
+    const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
+    if (!portable_setting || (std::string(portable_setting) != "0" &&
+                              std::string(portable_setting) != "1")) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires explicit FLAGFFT_IX_PORTABLE_LEAF=0 or 1");
+    }
+    const bool portable = std::string(portable_setting) == "1";
     int exponent = 0;
     for (int64_t value = n; value > 1; value >>= 1) ++exponent;
     std::vector<int64_t> factors;
     for (int i = 0; i < 3; ++i) {
       factors.push_back(int64_t{1} << (exponent / 3 + (i < exponent % 3 ? 1 : 0)));
     }
-    const int64_t joined_bytes =
-        (n / factors.back()) * factors.front() * static_cast<int64_t>(sizeof(float));
+    // Fixed lanes cover every intermediate butterfly in the 16K TLE case,
+    // admitting the existing barrier-protected single shared-buffer path.
+    // The 8K TLE case retains ping-pong buffers because its middle stage has
+    // two register groups. The portable path uses register-tensor exchange.
+    const int64_t joined_bytes = portable
+        ? (n / factors.back()) * factors.front() * static_cast<int64_t>(sizeof(float))
+        : n * (n == 8192 ? 4 : 2) * static_cast<int64_t>(sizeof(float));
     if (joined_bytes > adaptor::max_dynamic_smem_bytes(request.device_index)) return nullptr;
-    return std::make_shared<LeafPlanNode>(n, std::move(factors), 1, 128, 16,
+    const int64_t lanes = portable ? 128 : n / factors.front();
+    return std::make_shared<LeafPlanNode>(n, std::move(factors), 1, lanes, 16,
                                            std::vector<int64_t>{}, n);
   }
 
