@@ -517,7 +517,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->desc.n[1] >= 16 && plan->desc.n[1] <= 256;
     if (request.device_type == "ix" && request.device_arch == "71" &&
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-        (multi_launch_1d || real_1d || real_2d)) {
+        (multi_launch_1d || real_1d || real_2d || is_3d)) {
       const char *setting = std::getenv("FLAGFFT_IX_PLAN_GRAPH");
       if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
         throw std::runtime_error("FLAGFFT_IX_PLAN_GRAPH must be 0 or 1");
