@@ -1596,6 +1596,25 @@ namespace {
     return row && col && row->length < 512 && col->length < 512;
   }
 
+  bool ix_fused_c2r_leaf_enabled(const FFTRequest &request, int64_t batch) {
+    const int64_t n = request.requested_n;
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        request.raw_dim != 1 || request.origin_rank > 1 || batch <= 0 ||
+        request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+        request.real_transform_kind != "c2r" || request.fft_length != n ||
+        n < 32 || n > 4096 || (n & (n - 1)) != 0 ||
+        request.input_strides.empty() || request.input_strides.back() != 1) {
+      return false;
+    }
+    const char *setting = std::getenv("FLAGFFT_IX_FUSED_C2R");
+    if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_FUSED_C2R must be 0 or 1");
+    }
+    // Screen the existing half-length inverse leaf without changing the
+    // qualified default until IX correctness and paired timings are available.
+    return setting && std::string(setting) == "1";
+  }
+
   struct PackedRealChild {
     FFTRequest request;
     PlanNodePtr plan;
@@ -1608,6 +1627,7 @@ namespace {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
     const int64_t n = request.requested_n;
     const bool force = (setting != nullptr && std::string(setting) == "1") ||
+                       (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
     const bool disable = setting != nullptr && std::string(setting) == "0";
     if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") || n <= 0 ||
@@ -2861,9 +2881,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const bool packed_fuse_enabled = packed_fuse_setting == nullptr
                                          ? packed_fuse_default
                                          : std::string(packed_fuse_setting) == "1";
-    const bool use_packed_fused_leaf = request.device_type == "hcu" &&
+    const bool use_packed_fused_leaf = (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
-                                       batch == 256 * 256 && packed_fuse_enabled;
+                                       batch == 256 * 256 && packed_fuse_enabled) ||
+                                      ix_fused_c2r_leaf_enabled(request, batch);
     if (use_packed_fused_leaf) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
         KernelKey key = KernelKey::leaf_c2r(
