@@ -590,6 +590,8 @@ def _emit_permuted_store(
     pair_store = (
         (_mthreads_backend_active() and os.getenv("FLAGFFT_MUSA_3D_PAIR_STORE", "1") == "1")
         or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1") == "1")
+        or (_ix_backend_active() and dtype == "complex64"
+            and os.getenv("FLAGFFT_IX_3D_PAIR_STORE", "0") == "1")
     )
     if pair_store:
         return [

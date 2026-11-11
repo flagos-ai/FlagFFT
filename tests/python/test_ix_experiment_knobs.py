@@ -111,6 +111,19 @@ def test_ix_permuted_pack_matches_source_and_launch(ix_profile, monkeypatch):
         _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
 
 
+def test_ix_permuted_pair_store_is_explicit(ix_profile, monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+
+    monkeypatch.delenv("FLAGFFT_IX_3D_PAIR_STORE", raising=False)
+    plan = LeafPlan(256, (16, 16), 1, 16, 2, (), 256, "forward", "complex64")
+    _, scalar = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
+    assert "pair0 = tl.join(zr0, zi0)" not in scalar
+    monkeypatch.setenv("FLAGFFT_IX_3D_PAIR_STORE", "1")
+    _, paired = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
+    assert "pair0 = tl.join(zr0, zi0)" in paired
+
+
 @pytest.mark.parametrize("length, factors, lanes, kind, expected", [
     (512, (32, 16), 16, "four_step_row", 2),
     (1024, (32, 32), 32, "four_step_col", 4),
