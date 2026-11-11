@@ -21,11 +21,15 @@ def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = 
 
 def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bool = False,
                          *, recurrence: bool = False, fast_math: bool = False,
-                         local_codelet: bool = False, manual_store: bool = False) -> tuple[str, str]:
+                         local_codelet: bool = False, manual_store: bool = False,
+                         output_radix_chunk: int = 0) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {128,256,512,1024,2048}:
         raise ValueError("IX warp FFT length must be 128, 256, 512, 1024 or 2048")
     radix=n//64
+    chunk=output_radix_chunk or radix
+    if chunk<1 or chunk>radix or chunk&(chunk-1) or (manual_store and output_radix_chunk):
+        raise ValueError("invalid IX warp output chunk")
     if pack not in {4,8,16,32,64}:
         raise ValueError("IX warp FFT pack must be 4, 8, 16, 32 or 64")
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r"}:
@@ -38,6 +42,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if fast_math: name+='_fast'
     if local_codelet: name+='_codelet'
     if manual_store: name+='_manual'
+    if output_radix_chunk: name+=f'_chunk{chunk}'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -163,22 +168,24 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         lhs,rhs=join(indices[::2]),join(indices[1::2])
         a.append(f'    {name}=tl.join({lhs},{rhs})')
         return name
-    values=join(list(range(radix)))
-    a += [f'    z=tl.reshape({values},({pack},{n}))',f'    freq=tl.arange(0,{n})']
-    if mode in {'contiguous','c2r','contiguous_r2c'}:
-        a+=['    address=row[:,None]*output_distance+freq[None,:]',
-             '    mask=row[:,None]<nbatch']
-        if mode=='contiguous_r2c': a += [f'    mask=mask&(freq[None,:]<{n//2+1})']
-        if mode=='c2r': a+=['    tl.store(out+address,z,mask)']
-        else: a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,z,mask)']
-    else:
-        a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')',
-             '    stride=nbatch' if mode=='inner' else '    stride=span',
-             '    address=freq[:,None]*stride+gbase[None,:]',
-             '    mask=(row[None,:]<nbatch)']
-        if mode=='outer': a += [f'    mask=mask&(((pid%groups)*{pack}+slot[None,:])<span)']
-        if mode=='r2c': a+=[f'    mask=mask&(freq[:,None]<{n//2+1})']
-        a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
+    for start in range(0,radix,chunk):
+        values=join(list(range(start,start+chunk)))
+        a += [f'    z=tl.reshape({values},({pack},{64*chunk}))',f'    freq=tl.arange(0,{64*chunk})']
+        if chunk!=radix: a += [f'    freq=(freq//{chunk})*{radix}+freq%{chunk}+{start}']
+        if mode in {'contiguous','c2r','contiguous_r2c'}:
+            a+=['    address=row[:,None]*output_distance+freq[None,:]',
+                 '    mask=row[:,None]<nbatch']
+            if mode=='contiguous_r2c': a += [f'    mask=mask&(freq[None,:]<{n//2+1})']
+            if mode=='c2r': a+=['    tl.store(out+address,z,mask)']
+            else: a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,z,mask)']
+        else:
+            a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')',
+                 '    stride=nbatch' if mode=='inner' else '    stride=span',
+                 '    address=freq[:,None]*stride+gbase[None,:]',
+                 '    mask=(row[None,:]<nbatch)']
+            if mode=='outer': a += [f'    mask=mask&(((pid%groups)*{pack}+slot[None,:])<span)']
+            if mode=='r2c': a+=[f'    mask=mask&(freq[:,None]<{n//2+1})']
+            a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
     return _finish_warp_source(name,a,fast_math,radix if local_codelet else 0,False)
 
 
