@@ -130,6 +130,7 @@ def main() -> None:
     )
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
+    parser.add_argument("--permutation-span", type=int, default=0)
     parser.add_argument(
         "--perm-form",
         choices=(
@@ -556,6 +557,7 @@ def main() -> None:
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,
+            permutation_span=args.permutation_span,
             hcu_full_smem=args.hcu_3d_full_smem,
             out_dir=args.out_dir,
         )

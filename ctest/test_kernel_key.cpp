@@ -112,3 +112,17 @@ TEST(KernelKeyRepr, StockhamStageDistinguishesStages) {
   EXPECT_NE(stockham_stage(target, "forward", 1024, 8, 8, 16).repr(),
             stockham_stage(target, "forward", 1024, 8, 8, 128).repr());
 }
+
+TEST(KernelKeyRepr, StaticPermutationSpanSeparatesCompiledLayouts) {
+  auto first = flagfft::KernelKey::leaf_permuted_store("ix:71:64", "forward", "complex64",
+                                                      256, {16,16}, 16, 2, {}, 256, "outer");
+  const auto dynamic = first;
+  first.permutation_span = 256;
+  auto last = first;
+  last.permutation_span = 65536;
+  EXPECT_FALSE(first == dynamic);
+  EXPECT_FALSE(first == last);
+  EXPECT_NE(first.repr(), dynamic.repr());
+  EXPECT_NE(first.repr(), last.repr());
+  EXPECT_EQ(dynamic.repr().find(";permutation_span="), std::string::npos);
+}

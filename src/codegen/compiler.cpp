@@ -36,6 +36,13 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  void mark_ix_static_permutation_span(KernelKey &key, const FFTRequest &request, int64_t span) {
+    if (request.device_type == "ix" && request.device_arch == "71" && span > 0 &&
+        flag_or_default("FLAGFFT_IX_STATIC_PERM_SPAN", false)) {
+      key.permutation_span = span;
+    }
+  }
+
   // Match the Python dense FourStep policy when constructing stage tables.
   // Other leaf families, including strided FourStep, retain their own layout.
   bool ix_large_fourstep_portable_default(const FFTRequest &request, int64_t n1, int64_t n2) {
@@ -3119,6 +3126,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                  leaf.smem_size,
                                                  perm_form);
   if (strided_input) key.kind = KernelKind::LeafStridedPermutedStore;
+  mark_ix_static_permutation_span(key, request, perm_span);
   mark_npu_portable_leaf(key, request);
   const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
   // Forcing FP64 256-point stores to use the full 64 KiB shared-memory pack
@@ -4814,6 +4822,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     key.perm_form = request.device_type == "hcu"
         ? hcu_3d_axis_perm_form(request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer")
         : "outer";
+    mark_ix_static_permutation_span(key, request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
         DeviceAllocation{}, n1);
@@ -5106,6 +5115,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     // write its compact rows directly in that transposed layout.
     key.kind = KernelKind::LeafR2CPermutedStore;
     key.perm_form = "outer";
+    mark_ix_static_permutation_span(key, request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
         DeviceAllocation{}, n1);

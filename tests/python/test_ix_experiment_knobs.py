@@ -429,3 +429,20 @@ def test_ix_wide_permuted_single_buffer_pack_matches_queried_memory(ix_balanced_
     assert 2*length*expected*4==131072
     monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','0')
     assert not _use_single_smem_buffer(plan,io_mode='permuted_store')
+
+
+@pytest.mark.parametrize('mode',['permuted_store','strided_permuted_store','permuted_store_r2c'])
+def test_ix_static_permutation_span_keeps_runtime_abi_and_distinct_sources(ix_balanced_profile,tmp_path,mode):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    import ast
+    plan=LeafPlan(256,(16,16),1,16,2,(),256,'forward','complex64')
+    dynamic_name,dynamic_source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+    dynamic_args=ast.parse(dynamic_source).body[0].args
+    for span in (33,256,65536):
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,permutation_span=span)
+        assert name!=dynamic_name and name.endswith(f'_s{span}')
+        assert f'perm_span = tl.full((), {span}, tl.int64)' in source
+        assert ast.dump(ast.parse(source).body[0].args)==ast.dump(dynamic_args)
+    with pytest.raises(ValueError,match='static permutation span'):
+        _build_leaf_kernel_source_for_io(plan,io_mode='contiguous',permutation_span=256)

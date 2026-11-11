@@ -97,6 +97,7 @@ struct KernelKey {
   int64_t fused_plane_middle = 0;
   std::string transpose3d_order;
   std::string perm_form = "outer";
+  int64_t permutation_span = 0;
   bool npu_portable_leaf = false;
   bool hcu_full_smem = false;
   int64_t hcu_3d_middle_batch_pack = 0;

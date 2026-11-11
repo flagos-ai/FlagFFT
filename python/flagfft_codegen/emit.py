@@ -570,6 +570,7 @@ def emit_jit_kernel(
     four_step_n1: int,
     four_step_n2: int,
     perm_form: str = "outer",
+    permutation_span: int = 0,
     hcu_full_smem: bool = False,
     out_dir: Path,
 ) -> dict[str, Any]:
@@ -613,6 +614,7 @@ def emit_jit_kernel(
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
             perm_form=perm_form,
+            permutation_span=permutation_span,
             hcu_full_smem=hcu_full_smem,
         )
         n1 = four_step_n1 if spec.is_four_step else 0
@@ -672,6 +674,8 @@ def emit_jit_kernel(
     if spec.family == STOCKHAM:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
+    if permutation_span:
+        module_name += f"_s{permutation_span}"
     module_name += variant_suffix()
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -708,6 +712,8 @@ def emit_jit_kernel(
         dtype=dtype,
         hcu_full_smem=hcu_full_smem,
     )
+    if permutation_span:
+        metadata["permutation_span"] = permutation_span
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
     if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:

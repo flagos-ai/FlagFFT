@@ -3015,9 +3015,14 @@ def _build_leaf_kernel_source_for_io(
     four_step_n1: int = 0,
     four_step_n2: int = 0,
     perm_form: str = "outer",
+    permutation_span: int = 0,
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
     kernel_io_mode = io_mode
+    if permutation_span < 0 or (permutation_span and io_mode not in {
+        "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
+    }):
+        raise ValueError("a static permutation span requires a permuted-store leaf")
     bluestein_real_kind = ""
     if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
         bluestein_real_kind = io_mode.rsplit("_", 1)[1]
@@ -3244,6 +3249,8 @@ def _build_leaf_kernel_source_for_io(
         )
     if permuted_smem_store:
         kernel_name += "_smstore"
+    if permutation_span:
+        kernel_name += f"_s{permutation_span}"
     body: list[str] = [
         "@triton.jit",
         f"def {kernel_name}(",
@@ -3252,6 +3259,8 @@ def _build_leaf_kernel_source_for_io(
         suffix = "," if idx < len(params) - 1 else ""
         body.append(f"    {param}{suffix}")
     body.append("):")
+    if permutation_span:
+        body.append(f"    perm_span = tl.full((), {permutation_span}, tl.int64)")
     if _portable_complex_vector_io():
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     if io_mode in contiguous_modes:
