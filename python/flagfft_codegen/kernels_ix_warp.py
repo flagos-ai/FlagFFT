@@ -27,9 +27,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     radix=n//64
     if pack not in {4,8,16,32,64}:
         raise ValueError("IX warp FFT pack must be 4, 8, 16, 32 or 64")
-    if mode not in {"contiguous","outer","inner","r2c","c2r"}:
+    if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r"}:
         raise ValueError("unsupported IX warp FFT I/O mode")
-    if (mode == "r2c" and inverse) or (mode == "c2r" and not inverse):
+    if (mode in {"r2c","contiguous_r2c"} and inverse) or (mode == "c2r" and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
@@ -43,12 +43,18 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a+= [f'    row_base=(pid//span)*{pack}*span+pid%span',
              '    row=row_base+slot*span',
              f'    gbase=(pid%span)*(nbatch//span)+(pid//span)*{pack}+slot']
+    elif mode=='outer':
+        a += [f'    groups=(span+{pack-1})//{pack}',
+              f'    row_base=(pid//groups)*span+(pid%groups)*{pack}',
+              '    row=row_base+slot',
+              f'    gbase=(pid//groups)*({n}*span)+(pid%groups)*{pack}+slot']
     else:
         a+= [f'    row_base=pid*{pack}','    row=row_base+slot']
         if mode in {'outer','r2c'}:
             outn=n//2+1 if mode=='r2c' else n
             a+=[f'    gbase=(row_base//span)*({outn}*span)+(row_base%span)+slot']
     a+= ['    valid=row[:,None]<nbatch']
+    if mode=='outer': a += [f'    valid=valid&(((pid%groups)*{pack}+slot[:,None])<span)']
     for j in range(radix):
         a+=[f'    pos=lane+{j*64}']
         if mode=='c2r':
@@ -57,7 +63,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                  f'    x{j}r=tl.load(inp+offset*2,valid,0.0)',
                  f'    x{j}i=tl.load(inp+offset*2+1,valid,0.0)',
                  f'    x{j}i=tl.where(pos<={n//2},x{j}i,-x{j}i)']
-        elif mode=='r2c':
+        elif mode in {'r2c','contiguous_r2c'}:
             a+=[f'    x{j}r=tl.load(inp+row[:,None]*input_distance+pos,valid,0.0)',f'    x{j}i=tl.full(({pack},64),0.0,tl.float32)']
         else:
             a+=['    offset=row[:,None]*input_distance+pos',
@@ -126,9 +132,10 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         return name
     values=join(list(range(radix)))
     a += [f'    z=tl.reshape({values},({pack},{n}))',f'    freq=tl.arange(0,{n})']
-    if mode in {'contiguous','c2r'}:
+    if mode in {'contiguous','c2r','contiguous_r2c'}:
         a+=['    address=row[:,None]*output_distance+freq[None,:]',
              '    mask=row[:,None]<nbatch']
+        if mode=='contiguous_r2c': a += [f'    mask=mask&(freq[None,:]<{n//2+1})']
         if mode=='c2r': a+=['    tl.store(out+address,z,mask)']
         else: a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,z,mask)']
     else:
@@ -136,6 +143,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
              '    stride=nbatch' if mode=='inner' else '    stride=span',
              '    address=freq[:,None]*stride+gbase[None,:]',
              '    mask=(row[None,:]<nbatch)']
+        if mode=='outer': a += [f'    mask=mask&(((pid%groups)*{pack}+slot[None,:])<span)']
         if mode=='r2c': a+=[f'    mask=mask&(freq[:,None]<{n//2+1})']
         a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
     source='\n'.join(a)+'\n'
@@ -151,18 +159,20 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     """Retain the raw-leaf argument list, including unused twiddle pointers."""
     mode = {
         "contiguous":"contiguous", "contiguous_c2r":"c2r",
+        "contiguous_r2c":"contiguous_r2c",
         "permuted_r2c":"r2c", "permuted_store_r2c":"r2c",
     }.get(io_mode, perm_form)
-    name,source=build_ix_warp256_source(pack,mode,plan.direction=='inverse')
+    n=plan.length
+    name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']
     if permutation_span:
         aliases.append(f'    span=tl.full((),{permutation_span},tl.int64)')
     else:
         aliases.append('    span=perm_span' if 'perm_span' in params else '    span=tl.full((),1,tl.int64)')
-    if 'input_distance' not in params: aliases.append('    input_distance=tl.full((),256,tl.int64)')
+    if 'input_distance' not in params: aliases.append(f'    input_distance=tl.full((),{n},tl.int64)')
     if 'output_distance' not in params:
-        aliases.append('    output_distance=tl.full((),'+('129' if mode=='r2c' else '256')+',tl.int64)')
+        aliases.append(f'    output_distance=tl.full((),{n//2+1 if mode in {"r2c","contiguous_r2c"} else n},tl.int64)')
     header=f'def {name}(inp,out,span,nbatch,input_distance,output_distance):'
     assert header in source
     source=source.replace(header,f'def {leaf_name}('+','.join(params)+'):\n'+'\n'.join(aliases),1)

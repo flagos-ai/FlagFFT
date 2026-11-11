@@ -45,16 +45,22 @@ namespace {
 
   void mark_ix_warp_fft(KernelKey &key, const FFTRequest &request, int64_t span = 0) {
     if (request.device_type != "ix" || request.device_arch != "71" ||
-        key.dtype != "complex64" || key.length != 256 ||
-        !flag_or_default("FLAGFFT_IX_WARP256", false)) return;
+        key.dtype != "complex64") return;
+    const bool narrow = key.length == 256 && flag_or_default("FLAGFFT_IX_WARP256", false);
+    const bool wide = (key.length == 128 || key.length == 256 || key.length == 512 ||
+                       key.length == 1024 || key.length == 2048) &&
+                      flag_or_default("FLAGFFT_IX_WARP_FFT", false);
+    if (!narrow && !wide) return;
     const bool permuted = key.kind == KernelKind::LeafPermutedStore ||
                           key.kind == KernelKind::LeafR2CPermutedStore;
-    if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R) return;
-    int64_t pack = 16;
-    if (const char *value = std::getenv("FLAGFFT_IX_WARP256_PACK")) {
+    if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R &&
+        key.kind != KernelKind::LeafR2C) return;
+    int64_t pack = key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4);
+    if (const char *value = std::getenv(key.length == 256
+                                         ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
       const std::string text(value);
       if (text != "4" && text != "8" && text != "16" && text != "32") {
-        throw std::runtime_error("FLAGFFT_IX_WARP256_PACK must be 4, 8, 16 or 32");
+        throw std::runtime_error("IX warp FFT pack must be 4, 8, 16 or 32");
       }
       pack = std::stoll(text);
     }
@@ -63,7 +69,7 @@ namespace {
       const bool inner = key.perm_form == "inner";
       // These conditions justify a contiguous, aligned output FFT-slot tile.
       if (inner ? request.batch % span != 0 || (request.batch / span) % pack != 0
-                : span % pack != 0) return;
+                : key.kind == KernelKind::LeafR2CPermutedStore && span % pack != 0) return;
       key.permutation_span = span;
     }
     key.ix_warp_fft_pack = pack;
@@ -3282,6 +3288,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
+  mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }

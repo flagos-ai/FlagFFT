@@ -299,10 +299,12 @@ def _metadata(
                 ) from exc
             profile.validate(num_warps)
     warp_pack = 0
-    if kernel_name.startswith("ix_warp256_"):
+    if kernel_name.startswith("ix_warp"):
         from .target import ix_warp_fft_pack
         warp_pack = ix_warp_fft_pack()
         profile.validate(warp_pack)
+        if warp_pack * plan.length * 8 > profile.max_dynamic_shared_memory:
+            raise ValueError("IX warp FFT output tile exceeds shared-memory capacity")
         num_warps = batch_per_block = warp_pack
         inner_pack = 1
     return {

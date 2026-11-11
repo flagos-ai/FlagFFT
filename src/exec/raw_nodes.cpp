@@ -543,7 +543,12 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i64(outer_stride));
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    int64_t blocks = ceil_div(context.batch, kernel->batch_per_block);
+    if (kernel->kernel_name.rfind("ix_warp", 0) == 0 &&
+        kernel->kernel_name.find("_outer_") != std::string::npos) {
+      blocks = ceil_div(context.batch, outer_stride) * ceil_div(outer_stride, kernel->batch_per_block);
+    }
+    kernel->launch(context.stream, args, blocks, 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] StridedLeaf execute failed: %s\n", e.what());
