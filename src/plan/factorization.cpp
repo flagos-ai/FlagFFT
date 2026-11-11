@@ -124,6 +124,23 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      n >= 64 && n <= 4096 && (n & (n - 1)) == 0) {
+    const char *small_radix = std::getenv("FLAGFFT_IX_RADIX8");
+    if (small_radix && std::string(small_radix) != "0" && std::string(small_radix) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_RADIX8 must be 0 or 1");
+    }
+    if (small_radix && std::string(small_radix) == "1") {
+      // Smaller register butterflies give each FFT more cooperating lanes.
+      // Keep a radix-2/4 tail rather than putting a large codelet in one lane.
+      std::vector<int64_t> factors;
+      int64_t remaining = n;
+      while (remaining >= 8) { factors.push_back(8); remaining /= 8; }
+      if (remaining > 1) factors.push_back(remaining);
+      return factors;
+    }
+  }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
     const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
     if (override_value != nullptr) {
@@ -304,19 +321,6 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   if (context.device_type == "ix" && context.device_arch == "71" &&
       context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
       n >= 64 && n <= 4096 && (n & (n - 1)) == 0) {
-    const char *small_radix = std::getenv("FLAGFFT_IX_RADIX8");
-    if (small_radix && std::string(small_radix) != "0" && std::string(small_radix) != "1") {
-      throw std::runtime_error("FLAGFFT_IX_RADIX8 must be 0 or 1");
-    }
-    if (small_radix && std::string(small_radix) == "1") {
-      // Smaller register butterflies give each FFT more cooperating lanes.
-      // Keep a radix-2/4 tail rather than putting a large codelet in one lane.
-      std::vector<int64_t> factors;
-      int64_t remaining = n;
-      while (remaining >= 8) { factors.push_back(8); remaining /= 8; }
-      if (remaining > 1) factors.push_back(remaining);
-      return factors;
-    }
     const char *setting = std::getenv("FLAGFFT_IX_BALANCED_RADICES");
     if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_IX_BALANCED_RADICES must be 0 or 1");

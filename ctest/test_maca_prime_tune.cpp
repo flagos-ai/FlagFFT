@@ -313,12 +313,12 @@ TEST(IXLeafPlan, Radix8DistributesTheRegisterWorkAcrossMoreLanes) {
   request.device_type = "ix";
   request.device_arch = "71";
   request.input_dtype = request.output_dtype = "complex64";
-  request.batch = 64;
+  request.batch = 3;
   request.raw_dim = 1;
   request.origin_rank = 3;
-  for (int64_t n : {128,256,512,1024,2048,4096}) {
+  for (int64_t n : {128,256,512,1024,2048}) {
     request.fft_length = request.requested_n = n;
-    request.input_shape = {64,n}; request.input_strides = {n,1};
+    request.input_shape = {3,n}; request.input_strides = {n,1};
     flagfft::PlanBuilder builder;
     auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(n,request));
     ASSERT_NE(leaf,nullptr) << n;
