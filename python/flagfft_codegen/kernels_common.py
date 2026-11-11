@@ -557,7 +557,7 @@ def _ix_permuted_single_smem(plan: LeafPlan) -> bool:
     if (not _ix_backend_active() or _portable_leaf_backend_active()
             or os.getenv("FLAGFFT_IX_PERMUTED_SINGLE_SMEM", "0") != "1"
             or os.getenv("FLAGFFT_IX_BATCH_INTERLEAVE", "0") != "1"
-            or plan.dtype != "complex64" or not 512 <= plan.length <= 4096
+            or plan.dtype != "complex64" or not 64 <= plan.length <= 4096
             or plan.length & (plan.length - 1) or len(plan.factors) < 2):
         return False
     lanes = cooperative_stage_lanes_for(plan)

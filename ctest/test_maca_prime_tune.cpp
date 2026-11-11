@@ -306,3 +306,28 @@ TEST(IXLeafPlan, ExplicitFourStepSplitScopesRootAndPackedChild) {
   flagfft::PlanBuilder axis;
   EXPECT_NO_THROW(axis.build(16384, request));
 }
+
+TEST(IXLeafPlan, Radix8DistributesTheRegisterWorkAcrossMoreLanes) {
+  ScopedEnv gate("FLAGFFT_IX_RADIX8", "1");
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.input_dtype = request.output_dtype = "complex64";
+  request.batch = 64;
+  request.raw_dim = 1;
+  request.origin_rank = 3;
+  for (int64_t n : {128,256,512,1024,2048,4096}) {
+    request.fft_length = request.requested_n = n;
+    request.input_shape = {64,n}; request.input_strides = {n,1};
+    flagfft::PlanBuilder builder;
+    auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(n,request));
+    ASSERT_NE(leaf,nullptr) << n;
+    int64_t product=1;
+    for (int64_t radix : leaf->factors) {
+      EXPECT_TRUE(radix==2 || radix==4 || radix==8);
+      product *= radix;
+    }
+    EXPECT_EQ(product,n);
+    EXPECT_EQ(leaf->lanes,n/8);
+  }
+}

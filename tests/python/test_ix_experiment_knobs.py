@@ -446,3 +446,21 @@ def test_ix_static_permutation_span_keeps_runtime_abi_and_distinct_sources(ix_ba
         assert ast.dump(ast.parse(source).body[0].args)==ast.dump(dynamic_args)
     with pytest.raises(ValueError,match='static permutation span'):
         _build_leaf_kernel_source_for_io(plan,io_mode='contiguous',permutation_span=256)
+
+
+def test_ix_radix8_permuted_trial_reduces_shared_bytes_per_thread(ix_balanced_profile,monkeypatch):
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    monkeypatch.setenv('FLAGFFT_IX_PERMUTED_SINGLE_SMEM','1')
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','1')
+    plan=LeafPlan(256,(8,8,4),1,32,1,(),256,'forward','complex64')
+    name,source=_build_leaf_kernel_source_for_io(plan,io_mode='permuted_store')
+    meta=_metadata(module_path=Path('unused.py'),kernel_name=name,arg_names=[],plan=plan,
+                   kernel_type='leaf_permuted_store',n1=0,n2=0,dtype='complex64')
+    assert meta['batch_per_block']==4 and meta['num_warps']==4
+    assert 'smem_a_r = tle.gpu.alloc' not in source
+    assert 'smem_b_r = tle.gpu.alloc([1024]' in source
+    assert 'tail_flat' not in source
+    compile(source,'<ix-radix8-permuted>','exec')
