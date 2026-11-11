@@ -45,7 +45,7 @@ def test_warp_fft_rejects_invalid_configuration(args):
     ('contiguous_c2r','inverse','leaf_c2r'),
     ('contiguous_r2c','forward','leaf_r2c'),
 ])
-@pytest.mark.parametrize('length,pack',[(256,16),(256,32),(512,8),(1024,8),(2048,4),(2048,16)])
+@pytest.mark.parametrize('length,pack',[(256,1),(256,2),(256,16),(256,32),(512,8),(1024,8),(2048,4),(2048,16)])
 def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind,length,pack,tmp_path):
     from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
     from flagfft_codegen.target import set_ix_warp_fft_pack,reset_ix_warp_fft_pack

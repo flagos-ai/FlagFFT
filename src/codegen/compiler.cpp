@@ -69,8 +69,8 @@ namespace {
     if (const char *value = std::getenv(key.length == 256
                                          ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
       const std::string text(value);
-      if (text != "4" && text != "8" && text != "16" && text != "32") {
-        throw std::runtime_error("IX warp FFT pack must be 4, 8, 16 or 32");
+      if (text != "1" && text != "2" && text != "4" && text != "8" && text != "16" && text != "32") {
+        throw std::runtime_error("IX warp FFT pack must be 1, 2, 4, 8, 16 or 32");
       }
       pack = std::stoll(text);
     }

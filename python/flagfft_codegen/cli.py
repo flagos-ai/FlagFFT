@@ -131,7 +131,7 @@ def main() -> None:
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
     parser.add_argument("--permutation-span", type=int, default=0)
-    parser.add_argument("--ix-warp-fft-pack", type=int, choices=(0,4,8,16,32), default=0)
+    parser.add_argument("--ix-warp-fft-pack", type=int, choices=(0,1,2,4,8,16,32), default=0)
     parser.add_argument(
         "--perm-form",
         choices=(

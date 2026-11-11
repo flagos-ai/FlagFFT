@@ -31,8 +31,8 @@ _MACA_3D_C2C32_SINGLE_CUBE = ContextVar("flagfft_maca_3d_c2c32_single_cube", def
 
 
 def set_ix_warp_fft_pack(pack: int):
-    if pack not in {0,4,8,16,32}:
-        raise ValueError("IX warp FFT pack must be 0, 4, 8, 16 or 32")
+    if pack not in {0,1,2,4,8,16,32}:
+        raise ValueError("IX warp FFT pack must be 0, 1, 2, 4, 8, 16 or 32")
     return _IX_WARP_FFT_PACK.set(pack)
 
 
