@@ -2723,7 +2723,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      n == 2048 &&
+      (n == 2048 || (fused_setting != nullptr && std::string(fused_setting) == "1" &&
+                     n > 0 && n <= 2048 && n % 2 == 0)) &&
       (batch == 1 || batch == 64) &&
       (batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) &&
       !request.input_strides.empty() && request.input_strides.back() == 1 &&
@@ -2740,7 +2741,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     child_request.input_strides = {n / 2, 1};
     PlanBuilder child_builder;
     child_builder.build(n / 2, child_request);
-    const std::vector<int64_t> factors {16, 8, 8};
+    // Keep the measured 1024-point child for the default route. Explicit
+    // shorter requests need factors for their own half-length transform.
+    const std::vector<int64_t> factors = n == 2048
+        ? std::vector<int64_t>{16, 8, 8}
+        : child_builder.select_leaf_factors(n / 2);
     const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
     LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
                              child_builder.choose_num_warps(lanes), {}, n / 2);
