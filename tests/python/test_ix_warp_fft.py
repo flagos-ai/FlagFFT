@@ -45,7 +45,7 @@ def test_warp_fft_rejects_invalid_configuration(args):
     ('contiguous_c2r','inverse','leaf_c2r'),
     ('contiguous_r2c','forward','leaf_r2c'),
 ])
-@pytest.mark.parametrize('length,pack',[(256,16),(256,32),(512,8),(1024,8),(2048,4)])
+@pytest.mark.parametrize('length,pack',[(256,16),(256,32),(512,8),(1024,8),(2048,4),(2048,16)])
 def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind,length,pack,tmp_path):
     from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
     from flagfft_codegen.target import set_ix_warp_fft_pack,reset_ix_warp_fft_pack
@@ -66,6 +66,12 @@ def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind
         args=next(v.args for v in ast.parse(source).body if isinstance(v,ast.FunctionDef))
         assert name.startswith(f'ix_warp{length}_')
         assert ast.dump(args)==ast.dump(base_args)
+        if length==2048 and pack==16 and mode in {'contiguous','contiguous_r2c'}:
+            with pytest.raises(ValueError,match='shared-memory capacity'):
+                _metadata(module_path=tmp_path/'kernel.py',kernel_name=name,
+                          arg_names=[a.arg for a in args.args],plan=plan,kernel_type=kind,
+                          n1=0,n2=0,dtype='complex64')
+            return
         meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,
                        arg_names=[a.arg for a in args.args],plan=plan,kernel_type=kind,n1=0,n2=0,dtype='complex64')
         assert meta['num_warps']==meta['batch_per_block']==meta['ix_warp_fft_pack']==pack

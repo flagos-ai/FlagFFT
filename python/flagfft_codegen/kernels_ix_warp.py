@@ -213,7 +213,9 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
         "permuted_r2c":"r2c", "permuted_store_r2c":"r2c",
     }.get(io_mode, perm_form)
     n=plan.length
-    name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True)
+    chunk=(2 if n==256 else 8 if n>=1024 else 0) if mode in {'outer','inner','r2c'} else 0
+    name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
+                                    output_radix_chunk=chunk)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']
     if permutation_span:
