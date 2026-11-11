@@ -507,6 +507,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     const bool multi_launch_1d = !is_2d && !is_3d &&
         (kind == PlanNodeKind::FourStep || kind == PlanNodeKind::Bluestein || kind == PlanNodeKind::Rader);
     const bool real_2d = is_2d && (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_C2R);
+    const bool real_1d = !is_2d && !is_3d &&
+        (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_C2R);
     // Qualified with compact real rows at three input scales and a separate
     // mixed-radix/batch-tail case. Large and degenerate axes keep direct
     // execution unless graph replay is explicitly requested.
@@ -515,7 +517,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->desc.n[1] >= 16 && plan->desc.n[1] <= 256;
     if (request.device_type == "ix" && request.device_arch == "71" &&
         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-        (multi_launch_1d || real_2d)) {
+        (multi_launch_1d || real_1d || real_2d)) {
       const char *setting = std::getenv("FLAGFFT_IX_PLAN_GRAPH");
       if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
         throw std::runtime_error("FLAGFFT_IX_PLAN_GRAPH must be 0 or 1");
