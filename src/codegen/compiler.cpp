@@ -305,6 +305,11 @@ namespace {
         request.origin_real_transform_kind.empty() &&
         flag_or_default("FLAGFFT_NPU_DIF_VECTOR_BASIS",true);
     const bool good_thomas=flag_or_default("FLAGFFT_NPU_DIF_COARSE_GT",true);
+    // The 120-point Cube prefix preserves the existing padded workspace but
+    // writes natural frequencies. Qualify by prefix/suffix geometry, not N.
+    const bool dense_prefix=vector_basis && good_thomas &&
+        flag_or_default("FLAGFFT_NPU_DIF_COARSE_DENSE_PREFIX",true);
+    const bool coprime_layout=good_thomas && !dense_prefix;
     const bool global_inverse=request.direction=="inverse" &&
         flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
     const double sign=request.direction=="inverse" && !global_inverse?1.0:-1.0;
@@ -314,17 +319,24 @@ namespace {
           request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form="npu_vector_dif_coarse_"+std::to_string(passes.size());
       if (single_batch) key.perm_form+="_single";
-      if (good_thomas) key.perm_form+="_gt";
+      if (coprime_layout) key.perm_form+="_gt";
+      if (dense_prefix) key.perm_form+="_dense";
       if (global_inverse) key.perm_form+="_globalconj";
       if (vector_basis) key.perm_form+="_vectorbasis";
       key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),
           DeviceAllocation::from_floats(weights),grid,1,false,packed});
     };
-    // The local prefix conjugates the inverse input and output, so both
-    // directions use the same forward roots between its two codelets.
-    std::vector<float> roots(good_thomas?1:2*first*16);
-    if (!good_thomas) for (int64_t d=0;d<first;++d)for(int64_t j=0;j<16;++j) {
+    // Dense rows use the requested direction before optional global output
+    // conjugation. Local codelets instead conjugate their inverse input and
+    // output and share forward inter-codelet roots in both directions.
+    std::vector<float> roots(dense_prefix?2*64*128:coprime_layout?1:2*first*16);
+    if (dense_prefix) for (int64_t f=0;f<64;++f)for(int64_t d=0;d<initial;++d) {
+      const double angle=(request.direction=="inverse"?1.0:-1.0)*2*kPi*f*d/initial;
+      roots[f*128+d]=static_cast<float>(std::cos(angle));
+      roots[64*128+f*128+d]=static_cast<float>(std::sin(angle));
+    }
+    else if (!coprime_layout) for (int64_t d=0;d<first;++d)for(int64_t j=0;j<16;++j) {
       const double angle=-2*kPi*d*j/initial;
       roots[d*16+j]=static_cast<float>(std::cos(angle));
       roots[first*16+d*16+j]=static_cast<float>(std::sin(angle));
@@ -338,7 +350,7 @@ namespace {
       for (int64_t index=0;index<physical_n;++index) {
         const int64_t pf=index%physical_prefix;
         const int64_t local=pf%padded;
-        const int64_t logical=pf/padded*initial+(good_thomas?
+        const int64_t logical=pf/padded*initial+(coprime_layout?
             ((local%first)*15+(local/first)*first)%initial:local);
         const int64_t sample=index/physical_prefix;
         const double angle=stage==2?sign*2*kPi*static_cast<double>(logical)*sample/n:

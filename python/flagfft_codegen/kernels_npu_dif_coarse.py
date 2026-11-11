@@ -11,7 +11,7 @@ from .npu_coprime import coprime_source
 from .npu_radix9 import radix9_source
 
 
-def build_coarse_dif(factors,direction='forward',global_inverse=False,single_batch=False,good_thomas=False):
+def build_coarse_dif(factors,direction='forward',global_inverse=False,single_batch=False,good_thomas=False,dense_prefix=False):
     if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
     mode='forward' if global_inverse else direction
     factors=tuple(factors)
@@ -19,6 +19,12 @@ def build_coarse_dif(factors,direction='forward',global_inverse=False,single_bat
         raise ValueError('Coarse DIF requires a 4/8 x 15 prefix and small suffix codelets')
     if direction not in ('forward','inverse') or len(factors)<3:
         raise ValueError('Invalid coarse DIF plan')
+    if dense_prefix:
+        if factors[:2]!=(8,15) or single_batch:
+            raise ValueError('Dense coarse prefix requires a batched 8 x 15 prefix')
+        # Every suffix twiddle and the final permutation use natural prefix
+        # frequencies; retaining the coprime layout here would corrupt output.
+        good_thomas=False
     a,b=factors[:2];p0=a*b;pad=a*16;c=128 if a==4 else 64
     n=math.prod(factors);rest=n//p0;pn=rest*pad;ac=a*c;bc=16*c;state=pad*c
     ls=['@triton.jit','def coarse_prefix(X,TW,Y):',
@@ -63,6 +69,11 @@ def build_coarse_dif(factors,direction='forward',global_inverse=False,single_bat
         prefix_source=emit_gt_prefix(factors,direction,global_inverse)
     chunks=[prefix_source];specs=[dict(name='coarse_prefix',phase='early',stage=0,
         r=p0,m=rest,prefix=1,physical_n=pn,grid=(math.ceil(rest/c),),auto=True,local_prefix=factors[:2])]
+    if dense_prefix:
+        from .npu_coarse_dense import prefix_source as emit_dense_prefix
+        chunks[0]=emit_dense_prefix(factors,global_inverse)
+        specs[0].pop('local_prefix')
+        specs[0].update(name='coarse_dense_prefix',natural_dense=(120,128,64,64))
     prefix=p0;previous_prefix=a
     for i,r in enumerate(factors[2:],2):
         m=n//(prefix*r);pp=prefix//p0*pad

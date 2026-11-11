@@ -858,6 +858,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-16);
       jit_command << " --npu-vector-dif-workspace-padding 512";
     }
+    if (coarse && phase.size()>=6 && phase.compare(phase.size()-6,6,"_dense")==0) {
+      phase.resize(phase.size()-6);
+      jit_command << " --npu-vector-dif-coarse-dense";
+    }
     if (coarse && phase.size()>=3 && phase.compare(phase.size()-3,3,"_gt")==0) {
       phase.resize(phase.size()-3);
       jit_command << " --npu-vector-dif-coarse-gt";
@@ -928,9 +932,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->warp_size = json_int_field(artifact_json, "warp_size");
   kernel->profile_id = json_string_field(artifact_json, "profile_id");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
-  kernel->npu_single_buffer = adaptor::backend_name() == "npu" &&
-      kernel->kernel_name == "dense_prefix_half" && kernel->num_stages == 1 &&
-      key.perm_form.find("_dense_batch_f") != std::string::npos;
+  kernel->npu_single_buffer = adaptor::backend_name() == "npu" && kernel->num_stages == 1 &&
+      ((kernel->kernel_name == "dense_prefix_half" &&
+        key.perm_form.find("_dense_batch_f") != std::string::npos) ||
+       kernel->kernel_name == "coarse_dense_prefix");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
   if (key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {

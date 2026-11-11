@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32,coarse_dense=False):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -150,6 +150,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Workspace padding requires flat power DIF')
     if coarse_gt and not coarse:
         raise ValueError("Coprime coarse prefix requires coarse DIF")
+    if coarse_dense and not coarse:
+        raise ValueError('Dense coarse prefix requires coarse DIF')
     if coarse_single and not coarse:
         raise ValueError('Single-batch coarse schedule requires coarse DIF')
     if vector_basis and not ((cube_prefix and aligned and batch_pack) or (coarse and not coarse_single)):
@@ -158,7 +160,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Batch finish requires batch-grouped aligned Cube DIF')
     if coarse:
         from .kernels_npu_dif_coarse import build_coarse_dif
-        source,specs=build_coarse_dif(tuple(factors),direction,global_inverse=global_inverse,single_batch=coarse_single,good_thomas=coarse_gt)
+        source,specs=build_coarse_dif(tuple(factors),direction,global_inverse=global_inverse,single_batch=coarse_single,good_thomas=coarse_gt,dense_prefix=coarse_dense)
     elif flat_power2:
         if aligned or cube_prefix:raise ValueError("Flat power DIF uses a compact layout")
         from .kernels_npu_power_dif import build
@@ -182,6 +184,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     if phase<0 or phase>=len(specs):raise ValueError('Invalid DIF phase')
     n=math.prod(factors);spec=specs[phase]
     dense_tag=f'_dense_f{dense_prefix_frequencies}_c{dense_prefix_columns}' if dense_prefix else ''
+    if coarse_dense:dense_tag+='_coarsedense'
     path=Path(out_dir)/(('npu_vector_dif_coarse_' if coarse else 'npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+('_workspacepad512' if workspace_padding else '')+('_finishbatch4' if finish_batch4 else '')+('_vectorbasis' if vector_basis else '')+dense_tag+'.py')
     path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,source)
     meta=dict(module_path=str(path),kernel_name=spec['name'],arg_names=['X','TW','Y'],
