@@ -138,11 +138,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         for j in range(radix):
             a += [f'    index=(lane*{radix}+{j})*{pack}+slot[:,None]',
                   f'    index=index^((index>>{shift})&15)',
-                  '    index=ld.brev(ld.brev(index.to(tl.uint32)))',
+                  '    index=ld.brev(ld.brev(index.to(tl.int32)))',
                   f'    tl.store(tle.gpu.local_ptr(shared,(index,)),z{j})']
         a += ['    tl.debug_barrier()',f'    flat=tl.arange(0,{n*pack})',
               f'    index=flat^((flat>>{shift})&15)',
-              '    index=ld.brev(ld.brev(index.to(tl.uint32)))',
+              '    index=ld.brev(ld.brev(index.to(tl.int32)))',
               '    value=tl.load(tle.gpu.local_ptr(shared,(index,)))',
               f'    output_slot=flat%{pack}',f'    freq=flat//{pack}']
         if mode=='inner':
