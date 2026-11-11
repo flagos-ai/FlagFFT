@@ -478,3 +478,23 @@ def test_ix_radix8_contiguous_reuses_buffer_with_complete_intermediate_stages(ix
     _,source=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
     assert 'smem_a_r = tle.gpu.alloc' not in source
     assert 'smem_b_r = tle.gpu.alloc([1024]' in source
+
+@pytest.mark.parametrize('n,factors,lanes,pack',[
+    (16,(4,4),4,16),(64,(16,4),4,16),(64,(8,8),8,8),
+    (128,(16,8),8,4),(256,(16,16),16,4),
+])
+def test_ix_short_permuted_fill_uses_every_lane_of_one_warp(ix_balanced_profile,monkeypatch,n,factors,lanes,pack):
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan,permuted_store_batch_pack_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    monkeypatch.setenv('FLAGFFT_IX_WARP_FILL_PACK','1')
+    plan=LeafPlan(n,factors,1,lanes,1,(),n,'forward','complex64')
+    assert permuted_store_batch_pack_for(plan)==pack
+    name,source=_build_leaf_kernel_source_for_io(plan,io_mode='permuted_store')
+    meta=_metadata(module_path=Path('unused.py'),kernel_name=name,arg_names=[],plan=plan,
+                   kernel_type='leaf_permuted_store',n1=0,n2=0,dtype='complex64')
+    assert meta['batch_per_block']==pack and meta['num_warps']==1
+    assert f'batch_id = pid * {pack}' in source
+    monkeypatch.setenv('FLAGFFT_IX_3D_PACK','2')
+    assert permuted_store_batch_pack_for(plan)==2

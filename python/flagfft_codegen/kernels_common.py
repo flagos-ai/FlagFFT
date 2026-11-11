@@ -625,6 +625,12 @@ def permuted_store_batch_pack_for(
                 raise ValueError("FLAGFFT_MUSA_3D_PACK must be 1, 2, 4 or 8")
             target_pack = int(override)
     if _ix_backend_active():
+        fill_pack = _maca_knob("WARP_FILL_PACK", "0")
+        if fill_pack not in {"0", "1"}:
+            raise ValueError("FLAGFFT_IX_WARP_FILL_PACK must be 0 or 1")
+        if fill_pack == "1" and plan.dtype == "complex64" and plan.length <= 256:
+            lanes = lane_block_for(max(cooperative_stage_lanes_for(plan)))
+            target_pack = max(target_pack, profile.warp_size // lanes)
         override = os.getenv("FLAGFFT_IX_3D_PACK", "auto")
         if override != "auto":
             if override not in {"1", "2", "4", "8", "16", "32"}:
