@@ -62,7 +62,8 @@ namespace {
     const bool permuted = key.kind == KernelKind::LeafPermutedStore ||
                           key.kind == KernelKind::LeafR2CPermutedStore;
     if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R &&
-        key.kind != KernelKind::LeafR2C) return;
+        key.kind != KernelKind::LeafR2C && key.kind != KernelKind::LeafPackedR2C &&
+        key.kind != KernelKind::LeafPackedC2R) return;
     int64_t pack = family_default ? request.ix_warp_fft_pack_default :
                      (key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
     if (const char *value = std::getenv(key.length == 256
@@ -2904,6 +2905,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                            packed_leaf.lanes, packed_leaf.num_warps,
                                            packed_leaf.generic_radices, packed_leaf.smem_size);
       key.kind = KernelKind::LeafPackedR2C;
+      mark_ix_warp_fft(key,request);
       return std::make_shared<CompiledRawR2CLeafNode>(
           n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
           build_raw_packed_real_twiddle(request, n));
@@ -2938,6 +2940,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                          packed_leaf.lanes, packed_leaf.num_warps,
                                          packed_leaf.generic_radices, packed_leaf.smem_size);
     key.kind = KernelKind::LeafPackedR2C;
+    mark_ix_warp_fft(key,request);
     return std::make_shared<CompiledRawR2CLeafNode>(
         n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
         build_raw_packed_real_twiddle(request, n));
@@ -3055,6 +3058,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             leaf->generic_radices,
             leaf->smem_size);
         key.kind = KernelKind::LeafPackedC2R;
+        mark_ix_warp_fft(key,request);
         return std::make_shared<CompiledRawPackedC2RFusedLeafNode>(
             n,
             compile_kernel(key),

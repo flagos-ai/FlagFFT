@@ -108,3 +108,21 @@ def test_four_step_warp_launch_matches_raw_two_dimensional_grid(n1,n2,mode,direc
         compile(source,'<ix-four-step-warp>','exec')
     finally:
         reset_ix_warp_fft_pack(token);reset_profile(profile)
+
+@pytest.mark.parametrize('mode,inverse',[('packed_r2c',False),('packed_c2r',True)])
+def test_warp_packed_real_boundary_has_valid_raw_abi(mode,inverse):
+    from flagfft_codegen.kernels_ix_warp import build_ix_warp256_leaf_source
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _leaf_kernel_params_for_io
+    plan=LeafPlan(1024,(16,8,8),1,128,2,(),1024,'inverse' if inverse else 'forward','complex64')
+    params=_leaf_kernel_params_for_io(plan,io_mode=mode)
+    name,source=build_ix_warp256_leaf_source(plan,mode,'outer',params,4)
+    args=next(v.args for v in ast.parse(source).body if isinstance(v,ast.FunctionDef) and v.name==name)
+    assert [a.arg for a in args.args]==params
+    assert 'packed_twiddle_ptr' in params
+    assert 'inline_asm_elementwise' not in source
+    if mode=='packed_r2c':
+        assert 'input_distance%2==0' in source and 'nyquist_r' in source
+    else:
+        assert 'output_distance=tl.full((),1024,tl.int64)' in source
+    compile(source,'<packed-real-warp>','exec')

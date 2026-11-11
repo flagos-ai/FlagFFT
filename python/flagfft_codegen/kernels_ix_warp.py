@@ -38,12 +38,12 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("invalid IX warp output chunk")
     if pack not in {1,2,4,8,16,32,64}:
         raise ValueError("IX warp FFT pack must be 1, 2, 4, 8, 16, 32 or 64")
-    if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","four_step_row","four_step_col"}:
+    if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r","four_step_row","four_step_col"}:
         raise ValueError("unsupported IX warp FFT I/O mode")
     four_step=mode in {'four_step_row','four_step_col'}
     if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
         raise ValueError("invalid IX warp FourStep geometry")
-    if (mode in {"r2c","contiguous_r2c"} and inverse) or (mode == "c2r" and not inverse):
+    if (mode in {"r2c","contiguous_r2c","packed_r2c"} and inverse) or (mode in {"c2r","packed_c2r"} and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
@@ -88,6 +88,30 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   '    pair=tl.trans(pair)',
                   f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
                   f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
+        elif mode=='packed_c2r':
+            a += ['    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
+                  '    pair=tl.load(ip+row[:,None]*input_distance+pos,valid,0)',
+                  f'    xr=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                  f'    xi=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)',
+                  f'    pair=tl.load(ip+row[:,None]*input_distance+{n}-pos,valid,0)',
+                  '    qr=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                  '    qi=-tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)',
+                  '    xi=tl.where(pos==0,0.0,xi)','    qi=tl.where(pos==0,0.0,qi)',
+                  f'    angle=pos*{-math.pi/n:.17g}',
+                  '    wr=tl.cos(angle)','    wi=tl.sin(angle)',
+                  '    dr=xr-qr','    di=xi-qi',
+                  f'    x{j}r=xr+qr-(di*wr-dr*wi)',
+                  f'    x{j}i=xi+qi+(dr*wr+di*wi)']
+        elif mode=='packed_r2c':
+            # Real distances may be odd for a custom batched descriptor.
+            a += ['    if input_distance%2==0:',
+                  '        ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
+                  '        pair=tl.load(ip+row[:,None]*(input_distance//2)+pos,valid,0)',
+                  f'        x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                  f'        x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)',
+                  '    else:',
+                  f'        x{j}r=tl.load(inp+row[:,None]*input_distance+pos*2,valid,0.0)',
+                  f'        x{j}i=tl.load(inp+row[:,None]*input_distance+pos*2+1,valid,0.0)']
         elif mode=='c2r':
             a+= [f'    hpos=tl.where(pos<={n//2},pos,{n}-pos)',
                  '    offset=row[:,None]*input_distance+hpos',
@@ -172,6 +196,18 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   '    tr=br*wr-bi*wi','    ti=br*wi+bi*wr',
                   f'    ar=tl.where(high,pr,r{j})',f'    ai=tl.where(high,pi,i{j})',
                   f'    r{j}=tl.where(high,ar-tr,ar+tr)',f'    i{j}=tl.where(high,ai-ti,ai+ti)']
+    if mode=='packed_r2c':
+        a += ['    nyquist_r=r0-i0']
+        for j in range(radix):
+            partner=(-j)%radix
+            a += [f'    idx=tl.broadcast_to((-lane-{int(j>0)})&63,({pack},64))',
+                  f'    br=tl.gather(r{partner},idx,1)',f'    bi=tl.gather(i{partner},idx,1)',
+                  f'    angle=(lane*{radix}+{j})*{-math.pi/n:.17g}',
+                  '    wr=tl.cos(angle)','    wi=tl.sin(angle)',
+                  f'    dr=r{j}-br',f'    di=i{j}+bi',
+                  f'    post_r{j}=0.5*(r{j}+br+wi*dr+wr*di)',
+                  f'    post_i{j}=0.5*(i{j}-bi-wr*dr+wi*di)']
+        for j in range(radix):a += [f'    r{j}=post_r{j}',f'    i{j}=post_i{j}']
     if mode=='four_step_row':
         for j in range(radix):
             a += [f'    angle=row[:,None]*(lane*{radix}+{j})*{sign*2*math.pi/(n*four_step_other):.17g}',
@@ -224,12 +260,17 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             else:
                 a += [f'    address=matrix_base+freq[:,None]*{four_step_other}+row[None,:]',
                       f'    tl.store(ptr+address,tl.trans(z),row[None,:]<{four_step_other})']
-        elif mode in {'contiguous','c2r','contiguous_r2c'}:
+        elif mode in {'contiguous','c2r','contiguous_r2c','packed_r2c','packed_c2r'}:
             a+=['    address=row[:,None]*output_distance+freq[None,:]',
                  '    mask=row[:,None]<nbatch']
             if mode=='contiguous_r2c': a += [f'    mask=mask&(freq[None,:]<{n//2+1})']
             if mode=='c2r': a+=['    tl.store(out+address,z,mask)']
             else: a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,z,mask)']
+            if mode=='packed_r2c':
+                a += [f'    pos=lane*{radix}',
+                      f'    address=row[:,None]*output_distance+{n}',
+                      '    nyquist=tl.cast(tl.cast(nyquist_r,tl.uint32,bitcast=True),tl.uint64)',
+                      '    tl.store(ptr+address,nyquist,valid&(pos==0))']
         else:
             a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')',
                  '    stride=nbatch' if mode=='inner' else '    stride=span',
@@ -262,6 +303,7 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     mode = {
         "contiguous":"contiguous", "contiguous_c2r":"c2r",
         "contiguous_r2c":"contiguous_r2c",
+        "packed_r2c":"packed_r2c", "packed_c2r":"packed_c2r",
         "permuted_r2c":"r2c", "permuted_store_r2c":"r2c",
     }.get(io_mode, perm_form)
     n=plan.length
@@ -276,7 +318,7 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
         aliases.append('    span=perm_span' if 'perm_span' in params else '    span=tl.full((),1,tl.int64)')
     if 'input_distance' not in params: aliases.append(f'    input_distance=tl.full((),{n},tl.int64)')
     if 'output_distance' not in params:
-        aliases.append(f'    output_distance=tl.full((),{n//2+1 if mode in {"r2c","contiguous_r2c"} else n},tl.int64)')
+        aliases.append(f'    output_distance=tl.full((),{n//2+1 if mode in {"r2c","contiguous_r2c"} else n+1 if mode=="packed_r2c" else n},tl.int64)')
     header=f'def {name}(inp,out,span,nbatch,input_distance,output_distance):'
     assert header in source
     source=source.replace(header,f'def {leaf_name}('+','.join(params)+'):\n'+'\n'.join(aliases),1)
