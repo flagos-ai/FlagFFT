@@ -40,6 +40,31 @@ def test_ix_tle_pack_rejects_zero(ix_profile, monkeypatch):
         four_step_row_inner_pack_for(1024, 1024)
 
 
+@pytest.mark.parametrize("shared_limit, expected_pack", [(16384, 4), (32768, 8), (131072, 8)])
+def test_ix_portable_power_two_pack_respects_exchange_budget(monkeypatch, shared_limit, expected_pack):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_four_step_col_kernel_source
+    from flagfft_codegen.metadata import _metadata
+    from pathlib import Path
+
+    token = set_profile(BackendProfile.from_device({
+        "backend": "ix", "device_arch": "71", "warp_size": 64,
+        "max_threads_per_block": 4096, "max_dynamic_shared_memory": shared_limit,
+    }))
+    monkeypatch.setenv("FLAGFFT_IX_PORTABLE_LEAF", "1")
+    monkeypatch.setenv("FLAGFFT_IX_INNER_PACK", "8")
+    try:
+        plan = LeafPlan(1024, (32, 32), 1, 32, 1, (), 1024, "forward", "complex64")
+        name, source = _build_four_step_col_kernel_source(plan, 512, 1024)
+        meta = _metadata(module_path=Path("unused.py"), kernel_name=name,
+                         arg_names=[], plan=plan, kernel_type="four_step_col",
+                         n1=512, n2=1024, dtype="complex64")
+        assert meta["inner_pack"] == expected_pack
+        assert f"four_step_inner_base = tl.program_id(0) * {expected_pack}" in source
+    finally:
+        reset_profile(token)
+
+
 def test_ix_swizzle_changes_both_exchange_sides(ix_profile, monkeypatch):
     from flagfft_codegen.kernels_common import LeafPlan
     from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source

@@ -915,6 +915,13 @@ def _bounded_inner_pack(
         or profile.max_dynamic_shared_memory is None
     ):
         return pack
+    if (_ix_backend_active() and _portable_leaf_backend_active()
+            and _maca_p8_register_leaf_supported(plan)):
+        # The direct power-of-two tensor exchange already has a resource
+        # bound that accounts for its joined layout. Applying the generic
+        # four-buffer TLE estimate again rejects packs that pass that bound:
+        # 1024 x 8 is otherwise estimated as 131200 bytes with the padding.
+        return min(pack, _maca_four_step_smem_pack_limit(plan))
     # A two-stage TLE leaf writes only smem_b; smem_a is unused. Keep this
     # tighter bound opt-in until the wider packs have been measured on IX.
     buffers = 4
