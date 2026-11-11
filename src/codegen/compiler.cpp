@@ -5706,10 +5706,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
-    const bool use_npu_real_row = request.device_type == "npu" &&
-                                  has_real_boundary_row_plan(node->row_plan) &&
-                                  flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true);
-    if (use_npu_real_row) {
+    const bool use_real_row = has_real_boundary_row_plan(node->row_plan) &&
+        ((request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
+         (request.device_type == "ix" && request.device_arch == "71" &&
+          request.origin_rank == 2 && request.input_dtype == "complex64" &&
+          request.output_dtype == "complex64" && flag_or_default("FLAGFFT_IX_2D_REAL_ROW", false)));
+    if (use_real_row) {
       // The strided column path already accepts the compact row-major half
       // spectrum. Let the existing 1D real boundary write that layout
       // directly, avoiding real-to-complex expansion and half-spectrum pack.
@@ -5923,10 +5925,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
-    const bool use_npu_real_row = request.device_type == "npu" &&
-                                  has_real_boundary_row_plan(node->row_plan) &&
-                                  flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true);
-    if (use_npu_real_row) {
+    const bool use_real_row = has_real_boundary_row_plan(node->row_plan) &&
+        ((request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
+         (request.device_type == "ix" && request.device_arch == "71" &&
+          request.origin_rank == 2 && request.input_dtype == "complex64" &&
+          request.output_dtype == "complex64" && flag_or_default("FLAGFFT_IX_2D_REAL_ROW", false)));
+    if (use_real_row) {
       // After the inverse column transform, each compact row is already a
       // valid 1D C2R input. Consume it directly and avoid Hermitian expansion
       // followed by a full C2C inverse and real pack.
