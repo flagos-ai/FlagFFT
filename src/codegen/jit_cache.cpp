@@ -854,6 +854,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-global-inverse";
     }
+    if (flat && phase.size()>=11 && phase.compare(phase.size()-11,11,"_cubefinish")==0) {
+      phase.resize(phase.size()-11);
+      jit_command << " --npu-vector-dif-power-cube-finish";
+    }
     if (flat && phase.size()>=16 && phase.compare(phase.size()-16,16,"_workspacepad512")==0) {
       phase.resize(phase.size()-16);
       jit_command << " --npu-vector-dif-workspace-padding 512";
@@ -935,7 +939,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->npu_single_buffer = adaptor::backend_name() == "npu" && kernel->num_stages == 1 &&
       ((kernel->kernel_name == "dense_prefix_half" &&
         key.perm_form.find("_dense_batch_f") != std::string::npos) ||
-       kernel->kernel_name == "coarse_dense_prefix");
+       kernel->kernel_name == "coarse_dense_prefix" ||
+       kernel->kernel_name == "power_cube_finish");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
   if (key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {

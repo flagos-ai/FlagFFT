@@ -10,10 +10,12 @@ Twiddles and structured FFT roots share each pass's read-only table argument.
 import math
 from flagfft_codegen.kernels_npu_structured import FFT_HELPERS
 
-def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0):
+def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0,cube_finish=False):
  if type(workspace_padding) is not int or workspace_padding not in (0,512):
   raise ValueError('Power DIF workspace padding must be 0 or 512 floats')
  if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
+ if cube_finish and (len(factors)!=3 or factors[0]!=64 or not 32<=factors[1]<=64 or factors[2]!=128 or workspace_padding!=512):
+  raise ValueError('Power Cube finish requires bounded vector axes and padded workspace')
  n=math.prod(factors);workspace_n=n+workspace_padding;prefix=1;previous=1;specs=[]
  source='import triton\nimport triton.language as tl\nimport triton.language.extra.cann.extension as al\n'+FFT_HELPERS
  if terminal8:
@@ -24,6 +26,13 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False,works
   if r<4 or r>128 or r&(r-1):raise ValueError('Power DIF axes require radix 4..128')
   m=n//(prefix*r);c=4096//r;points=r*c;tiles=(m+c-1)//c if stage==0 else (m*prefix+c-1)//c
   name=f'axis_{stage}';last=stage==len(factors)-1
+  if last and cube_finish:
+   from .npu_power_cube_finish import finish_source
+   spec=dict(name='power_cube_finish',phase='late',stage=stage,r=r,m=m,
+       prefix=prefix,previous_prefix=previous,c=64,grid=(prefix//64,),physical_n=workspace_n)
+   source+='\n'+finish_source(spec,conjugate_output=global_inverse)
+   specs.append(spec)
+   continue
   ls=['@triton.jit',f'def {name}(X,TW,Y):',f'    W=TW+{0 if stage==0 else 2*n}','    batch=tl.program_id(1).to(tl.int64)',f'    d=tl.arange(0,{r})[:,None]']
   if stage==0:
    ls += [f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',f'    word=tl.program_id(0)*{2*c}+tl.arange(0,{2*c})[None,:]',f'    raw=tl.load(X+batch*{2*n}+d*{2*m}+word,word<{2*m},0.)',f'    re,im=tl.split(tl.reshape(raw,({points},2)))']

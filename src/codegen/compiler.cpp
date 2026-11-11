@@ -235,6 +235,14 @@ namespace {
         request.real_transform_kind.empty() && request.origin_real_transform_kind.empty() &&
         flag_or_default("FLAGFFT_NPU_FLAT_POWER_WORKSPACE_PAD",true);
     const int64_t workspace_n=n+(padded_workspace?512:0);
+    // Keep at least 64 contiguous columns in each vector prefix tile. With
+    // a 128-point matrix finish this admits a bounded three-axis schedule;
+    // a larger middle vector axis retains the established four-axis plan.
+    const int64_t middle=n/(64*128);
+    const bool cube_finish=padded_workspace && middle>=32 && middle<=64 &&
+        flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true) &&
+        flag_or_default("FLAGFFT_NPU_FLAT_POWER_CUBE_FINISH",true);
+    if (cube_finish) factors={64,middle,128};
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1,previous_prefix=1;
     const bool global_inverse=request.direction=="inverse" && batch>=16 &&
@@ -242,8 +250,22 @@ namespace {
     const double sign=request.direction=="inverse" && !global_inverse?1.0:-1.0;
     for (std::size_t stage=0;stage<factors.size();++stage) {
       const int64_t radix=factors[stage],m=n/(prefix*radix),columns=4096/radix;
+      const bool matrix_finish=cube_finish && stage+1==factors.size();
       std::vector<float> weights;
-      if (stage) {
+      if (matrix_finish) {
+        const int64_t previous=factors[stage-1],width=2*radix;
+        weights.resize(previous*width*width);
+        for (int64_t digit=0;digit<previous;++digit)
+          for (int64_t f=0;f<radix;++f)for(int64_t d=0;d<radix;++d) {
+            const double angle=sign*2*kPi*(f+static_cast<double>(digit)/previous)*d/radix;
+            const float co=static_cast<float>(std::cos(angle)),si=static_cast<float>(std::sin(angle));
+            const int64_t base=digit*width*width+f*width+d;
+            weights[base]=co;
+            weights[base+radix]=-si;
+            weights[base+radix*width]=si;
+            weights[base+radix*width+radix]=co;
+          }
+      } else if (stage) {
         weights.resize(2*n);
         for (int64_t index=0;index<n;++index) {
           const auto pf=index%prefix,sample=index/prefix,digit=pf/previous_prefix;
@@ -252,19 +274,23 @@ namespace {
           weights[n+index]=static_cast<float>(std::sin(angle));
         }
       }
-      auto roots=npu_structured_root_values(radix,columns);
-      weights.insert(weights.end(),roots.begin(),roots.end());
+      if (!matrix_finish) {
+        auto roots=npu_structured_root_values(radix,columns);
+        weights.insert(weights.end(),roots.begin(),roots.end());
+      }
       auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
           request.input_dtype,n,1,n,factors,32,4,{},n);
       key.perm_form="npu_vector_dif_flat_power2_"+std::to_string(stage);
       if (padded_workspace) key.perm_form+="_workspacepad512";
+      if (cube_finish) key.perm_form+="_cubefinish";
       if (global_inverse) key.perm_form+="_globalconj";
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
       if (batch>=16 && axis_bits>=3 && axis_bits%2 &&
           flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true))
         key.perm_form+="_terminal8";
       key.perm_form+="_auto";
-      const int64_t extent=stage?m*prefix:m,grid=(extent+columns-1)/columns;
+      const int64_t extent=stage?m*prefix:m;
+      const int64_t grid=matrix_finish?prefix/64:(extent+columns-1)/columns;
       passes.push_back({TritonCompiler{}.compile_kernel(key),DeviceAllocation::from_floats(weights),grid,1,false});
       previous_prefix=prefix;prefix*=radix;
     }
