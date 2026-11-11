@@ -24,6 +24,35 @@
 
 namespace flagfft {
 
+int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
+                                int64_t n0, int64_t n1, int64_t n2) {
+  const bool matrix=request.origin_rank==2 && request.raw_dim==2 &&
+                    n0==2048 && n1==2048 && n2==0;
+  const bool cube=request.origin_rank==3 && request.raw_dim==3 &&
+                  n0==256 && n1==256 && n2==256;
+  if (request.device_type!="ix" || request.device_arch!="71" ||
+      request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
+      request.input_layout!="contiguous" || request.requires_contiguous_copy ||
+      (batch!=1 && batch!=4) || (!matrix && !cube)) return 0;
+  const char *policy=std::getenv("FLAGFFT_EXECUTION_POLICY");
+  if (policy && std::string(policy)!="balanced") return 0;
+  const auto enabled=[](const char *name,bool fallback) {
+    const char *value=std::getenv(name);
+    if (!value) return fallback;
+    if (std::string(value)=="0") return false;
+    if (std::string(value)=="1") return true;
+    throw std::runtime_error(std::string(name)+" must be 0 or 1");
+  };
+  if (!enabled("FLAGFFT_IX_ND_WARP",true) || !enabled("FLAGFFT_IX_WARP_FFT",true)) return 0;
+  if (matrix) return enabled("FLAGFFT_IX_2D_TRANSPOSE_STORE",true) ? 16 : 0;
+  if (!enabled("FLAGFFT_IX_WARP256",true) || !enabled("FLAGFFT_3D_FUSED_STORE",true) ||
+      enabled("FLAGFFT_IX_3D_HYBRID",false)) return 0;
+  if (!request.real_transform_kind.empty() &&
+      (!enabled("FLAGFFT_IX_3D_REAL_HYBRID",true) || enabled("FLAGFFT_IX_3D_REAL_RTRT",false))) return 0;
+  if (request.real_transform_kind=="r2c" && !enabled("FLAGFFT_IX_3D_R2C_FUSED_MIDDLE",true)) return 0;
+  return 16;
+}
+
 bool ix_ct_single_policy_enabled(const FFTRequest &request) {
   if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
       request.batch != 1 || request.fft_length != request.requested_n ||

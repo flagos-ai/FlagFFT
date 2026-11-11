@@ -1825,6 +1825,8 @@ bool ix_ct_single_policy_enabled(const FFTRequest &request);
 bool ix_ct_batch_policy_enabled(const FFTRequest &request);
 bool ix_packed_real_policy_enabled(const FFTRequest &request);
 int ix_ct_single_tle_policy(const FFTRequest &request);
+int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
+                                int64_t n0, int64_t n1, int64_t n2 = 0);
 std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request);
 std::vector<DeviceAllocation> build_raw_cube_dft_tables(int64_t n, const FFTRequest &request);
 

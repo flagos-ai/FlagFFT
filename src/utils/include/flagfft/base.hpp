@@ -130,6 +130,9 @@ struct FFTRequest {
   // Explicit experimental packing for the HCU 3D middle-axis 2048 leaf.
   // Zero keeps the default policy.
   int64_t hcu_3d_middle_batch_pack = 0;
+  // Parent-qualified IX layouts pass their measured tile to axis compilers.
+  // Zero preserves the ordinary leaf policy.
+  int64_t ix_warp_fft_pack_default = 0;
 };
 
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim, ThreeDim };
