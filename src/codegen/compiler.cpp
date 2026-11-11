@@ -5752,7 +5752,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
         ((request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
          (request.device_type == "ix" && request.device_arch == "71" &&
           request.origin_rank == 2 && request.input_dtype == "complex64" &&
-          request.output_dtype == "complex64" && flag_or_default("FLAGFFT_IX_2D_REAL_ROW", false)));
+          request.output_dtype == "complex64" &&
+          flag_or_default("FLAGFFT_IX_2D_REAL_ROW",
+                          n0 >= 16 && n0 <= 256 && n1 >= 16 && n1 <= 256)));
     if (use_real_row) {
       // The strided column path already accepts the compact row-major half
       // spectrum. Let the existing 1D real boundary write that layout
@@ -5971,7 +5973,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
         ((request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
          (request.device_type == "ix" && request.device_arch == "71" &&
           request.origin_rank == 2 && request.input_dtype == "complex64" &&
-          request.output_dtype == "complex64" && flag_or_default("FLAGFFT_IX_2D_REAL_ROW", false)));
+          request.output_dtype == "complex64" &&
+          flag_or_default("FLAGFFT_IX_2D_REAL_ROW",
+                          n0 >= 16 && n0 <= 256 && n1 >= 16 && n1 <= 256)));
     if (use_real_row) {
       // After the inverse column transform, each compact row is already a
       // valid 1D C2R input. Consume it directly and avoid Hermitian expansion
