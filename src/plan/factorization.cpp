@@ -301,6 +301,33 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // Two radix-32 stages underuse BW1000's 64-lane wavefront for batch=64.
     return {16, 8, 8};
   }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      n >= 64 && n <= 4096 && (n & (n - 1)) == 0) {
+    const char *setting = std::getenv("FLAGFFT_IX_BALANCED_RADICES");
+    if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_BALANCED_RADICES must be 0 or 1");
+    }
+    if (setting && std::string(setting) == "1") {
+      // Screen smaller codelets without a radix-2 tail that greatly widens
+      // cooperative stages. Existing explicitly qualified policies above
+      // retain precedence; the ordinary cost model orders the remaining
+      // radix-8/16 factorizations across leaf lengths and axis roles.
+      std::vector<int64_t> best;
+      std::vector<int64_t> best_score;
+      for (const auto &candidate : enumerate_supported_factorizations(n)) {
+        if (!std::all_of(candidate.begin(), candidate.end(), [](int64_t radix) {
+              return radix == 8 || radix == 16;
+            })) continue;
+        auto score = score_leaf_factorization(n, candidate);
+        if (best.empty() || score > best_score) {
+          best = candidate;
+          best_score = std::move(score);
+        }
+      }
+      if (!best.empty()) return best;
+    }
+  }
   auto it = best_leaf_factors_cache_.find(n);
   if (it != best_leaf_factors_cache_.end()) {
     return it->second;

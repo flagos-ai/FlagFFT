@@ -214,3 +214,64 @@ TEST(Plan1D, MacaSinglePrimeTuneDeduplicatesAndBoundsLengths) {
   EXPECT_THROW(builder.build_decomposition_tune_candidates((int64_t {1} << 61) + 1, request, 8),
                std::runtime_error);
 }
+
+TEST(IXLeafPlan, BalancedRadicesPreserveLengthsAcrossPowerOfTwoLeaves) {
+  ScopedEnv enabled("FLAGFFT_IX_BALANCED_RADICES", "1");
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.input_dtype = request.output_dtype = "complex64";
+  request.batch = 3;
+  request.raw_dim = request.origin_rank = 1;
+  request.input_layout = "contiguous";
+  for (int64_t n : {64, 128, 256, 512, 1024, 2048, 4096}) {
+    request.fft_length = request.requested_n = n;
+    request.input_shape = {3, n};
+    request.input_strides = {n, 1};
+    flagfft::PlanBuilder builder;
+    auto root = builder.build(n, request);
+    int checked = 0;
+    const auto verify = [&](const auto &self, const flagfft::PlanNodePtr &node) -> void {
+      if (auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(node)) {
+        int64_t product = 1;
+        for (int64_t radix : leaf->factors) {
+          product *= radix;
+          if (leaf->length >= 64) EXPECT_TRUE(radix == 8 || radix == 16);
+        }
+        EXPECT_EQ(product, leaf->length);
+        if (leaf->length >= 64) ++checked;
+      } else if (auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(node)) {
+        self(self, pair->row_plan);
+        self(self, pair->col_plan);
+      } else {
+        FAIL() << node->describe();
+      }
+    };
+    verify(verify, root);
+    EXPECT_GT(checked, 0) << n;
+  }
+}
+
+TEST(IXLeafPlan, BalancedRadicesLeaveOtherTargetsAndMixedLengthsUnchanged) {
+  ScopedEnv enabled("FLAGFFT_IX_BALANCED_RADICES", "0");
+  flagfft::FFTRequest request;
+  request.device_type = "ix";
+  request.device_arch = "71";
+  request.input_dtype = request.output_dtype = "complex64";
+  request.batch = 3;
+  request.raw_dim = request.origin_rank = 1;
+  for (int target = 0; target < 3; ++target) {
+    const int64_t n = target == 0 ? 210 : 1024;
+    request.device_type = target == 1 ? "musa" : "ix";
+    request.input_dtype = request.output_dtype = target == 2 ? "complex128" : "complex64";
+    request.fft_length = request.requested_n = n;
+    request.input_shape = {3, n};
+    request.input_strides = {n, 1};
+    setenv("FLAGFFT_IX_BALANCED_RADICES", "0", 1);
+    flagfft::PlanBuilder baseline;
+    auto original = baseline.build(n, request)->describe();
+    setenv("FLAGFFT_IX_BALANCED_RADICES", "1", 1);
+    flagfft::PlanBuilder candidate;
+    EXPECT_EQ(candidate.build(n, request)->describe(), original);
+  }
+}
