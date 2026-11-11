@@ -20,7 +20,8 @@ def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = 
 
 
 def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bool = False,
-                         *, recurrence: bool = False, fast_math: bool = False) -> tuple[str, str]:
+                         *, recurrence: bool = False, fast_math: bool = False,
+                         local_codelet: bool = False, manual_store: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {128,256,512,1024,2048}:
         raise ValueError("IX warp FFT length must be 128, 256, 512, 1024 or 2048")
@@ -35,6 +36,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
     if recurrence: name+='_rec'
     if fast_math: name+='_fast'
+    if local_codelet: name+='_codelet'
+    if manual_store: name+='_manual'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -77,6 +80,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a+= ['    r0=ar+br','    i0=ai+bi','    r2=ar-br','    i2=ai-bi',
              f'    r1=cr-({sign})*di',f'    i1=ci+({sign})*dr',
              f'    r3=cr+({sign})*di',f'    i3=ci-({sign})*dr']
+    elif local_codelet and radix in {16,32}:
+        from .kernels_leaf import _emit_radix16_codelet_call, _emit_natural_order_radix32_codelet_call
+        for j in range(radix): a += [f'    r{j}=x{j}r',f'    i{j}=x{j}i']
+        emit = _emit_radix16_codelet_call if radix==16 else _emit_natural_order_radix32_codelet_call
+        a += emit('    ','inverse' if inverse else 'forward')
     else:
         bits=radix.bit_length()-1
         for j in range(radix):
@@ -124,6 +132,29 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         for j in range(radix): a += [f'    z{j}=r{j}']
     else:
         for j in range(radix): a += [f'    z{j}=tl.cast(tl.cast(r{j},tl.uint32,bitcast=True),tl.uint64)|(tl.cast(tl.cast(i{j},tl.uint32,bitcast=True),tl.uint64)<<32)']
+    if manual_store and mode in {'outer','inner','r2c'}:
+        shift=(radix*pack).bit_length()-1
+        a += [f'    shared=tle.gpu.alloc([{n*pack}],dtype=tl.uint64,layout=None,scope=tle.gpu.smem,nv_mma_shared_layout=False)']
+        for j in range(radix):
+            a += [f'    index=(lane*{radix}+{j})*{pack}+slot[:,None]',
+                  f'    index=index^((index>>{shift})&15)',
+                  f'    tl.store(tle.gpu.local_ptr(shared,(index,)),z{j})']
+        a += ['    tl.debug_barrier()',f'    flat=tl.arange(0,{n*pack})',
+              f'    index=flat^((flat>>{shift})&15)',
+              '    value=tl.load(tle.gpu.local_ptr(shared,(index,)))',
+              f'    output_slot=flat%{pack}',f'    freq=flat//{pack}']
+        if mode=='inner':
+            a += [f'    gbase=(pid%span)*(nbatch//span)+(pid//span)*{pack}+output_slot',
+                  '    mask=(row_base+output_slot*span)<nbatch','    stride=nbatch']
+        elif mode=='outer':
+            a += [f'    gbase=(pid//groups)*({n}*span)+(pid%groups)*{pack}+output_slot',
+                  f'    mask=((row_base+output_slot)<nbatch)&((pid%groups)*{pack}+output_slot<span)',
+                  '    stride=span']
+        else:
+            a += [f'    gbase=(row_base//span)*({n//2+1}*span)+(row_base%span)+output_slot',
+                  f'    mask=((row_base+output_slot)<nbatch)&(freq<{n//2+1})','    stride=span']
+        a += ['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+freq*stride+gbase,value,mask)']
+        return _finish_warp_source(name,a,fast_math,radix if local_codelet else 0,True)
     def join(indices):
         if len(indices)==1: return f'z{indices[0]}'
         name='j_'+'_'.join(map(str,indices))
@@ -146,11 +177,20 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         if mode=='outer': a += [f'    mask=mask&(((pid%groups)*{pack}+slot[None,:])<span)']
         if mode=='r2c': a+=[f'    mask=mask&(freq[:,None]<{n//2+1})']
         a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
-    source='\n'.join(a)+'\n'
+    return _finish_warp_source(name,a,fast_math,radix if local_codelet else 0,False)
+
+
+def _finish_warp_source(name, lines, fast_math, codelet_radix, manual_store):
+    source='\n'.join(lines)+'\n'
     if fast_math:
         source=source.replace('import triton.language as tl',
                               'import triton.language as tl\nfrom triton.language.extra import libdevice as ld')
         source=source.replace('tl.cos(', 'ld.fast_cosf(').replace('tl.sin(', 'ld.fast_sinf(')
+    if codelet_radix in {16,32}:
+        from .metadata import _module_source
+        source=_module_source(source,(16,))
+    if manual_store:
+        source='import triton.experimental.tle.language as tle\n'+source
     return name,source
 
 

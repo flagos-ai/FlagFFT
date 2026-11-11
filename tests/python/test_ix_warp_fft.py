@@ -12,6 +12,16 @@ def test_wide_warp_fft_source_is_valid_and_names_length(length,mode,inverse):
     assert f'freq=tl.arange(0,{length})' in source
     compile(source,'<ix-wide-warp-fft>','exec')
 
+@pytest.mark.parametrize('length,pack',[(256,16),(1024,8),(2048,4)])
+@pytest.mark.parametrize('inverse',[False,True])
+def test_manual_warp_store_and_register_codelet_source(length,pack,inverse):
+    from flagfft_codegen.kernels_ix_warp import build_ix_warp_source
+    name,source=build_ix_warp_source(length,pack,'outer',inverse,fast_math=True,
+                                    local_codelet=True,manual_store=True)
+    assert name.endswith('_fast_codelet_manual')
+    assert 'tle.gpu.alloc' in source and 'tl.debug_barrier()' in source
+    compile(source,'<ix-manual-warp-store>','exec')
+
 @pytest.mark.parametrize('pack',[4,8,16,32,64])
 @pytest.mark.parametrize('mode,inverse',[
     ('contiguous',False),('contiguous',True),('outer',False),('inner',True),
