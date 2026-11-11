@@ -21,6 +21,7 @@ _MACA_1D_SINGLE_DEFAULT = ContextVar("flagfft_maca_1d_single_default", default=F
 _MACA_1D_BATCH_DEFAULT = ContextVar("flagfft_maca_1d_batch_default", default=False)
 _IX_CT_SINGLE_DEFAULT = ContextVar("flagfft_ix_ct_single_default", default=False)
 _IX_CT_BATCH_DEFAULT = ContextVar("flagfft_ix_ct_batch_default", default=False)
+_IX_LARGE_FOURSTEP_DEFAULT = ContextVar("flagfft_ix_large_fourstep_default", default=False)
 _IX_REAL_SINGLE_PACK = ContextVar("flagfft_ix_real_single_pack", default=False)
 _IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
 _MACA_2D_SINGLE_DEFAULT = ContextVar("flagfft_maca_2d_single_default", default=False)
@@ -64,6 +65,18 @@ def reset_ix_ct_batch_default(token):
 
 def ix_ct_batch_default_enabled() -> bool:
     return _IX_CT_BATCH_DEFAULT.get()
+
+
+def set_ix_large_fourstep_default(enabled: bool):
+    return _IX_LARGE_FOURSTEP_DEFAULT.set(bool(enabled))
+
+
+def reset_ix_large_fourstep_default(token):
+    _IX_LARGE_FOURSTEP_DEFAULT.reset(token)
+
+
+def ix_large_fourstep_default_enabled() -> bool:
+    return _IX_LARGE_FOURSTEP_DEFAULT.get()
 
 
 def set_ix_real_single_pack(enabled: bool):

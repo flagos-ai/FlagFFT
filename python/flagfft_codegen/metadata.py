@@ -261,7 +261,7 @@ def _metadata(
         num_warps = int(_maca_knob("WARPS"))
         profile.validate(num_warps)
     if _ix_backend_active():
-        resource_warps = os.environ.get("FLAGFFT_IX_RESOURCE_WARPS", "0")
+        resource_warps = _maca_knob("RESOURCE_WARPS", "0")
         if resource_warps not in {"0", "1"}:
             raise ValueError("FLAGFFT_IX_RESOURCE_WARPS must be 0 or 1")
         if (resource_warps == "1" and maca_backend

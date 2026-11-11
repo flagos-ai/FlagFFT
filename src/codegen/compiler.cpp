@@ -36,6 +36,24 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  // Match the Python dense FourStep policy when constructing stage tables.
+  // Other leaf families, including strided FourStep, retain their own layout.
+  bool ix_large_fourstep_portable_default(const FFTRequest &request, int64_t n1, int64_t n2) {
+    const auto eligible_axis = [](int64_t n) {
+      return n >= 512 && n <= 1024 && (n & (n - 1)) == 0;
+    };
+    const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        request.input_dtype != "complex64" || !eligible_axis(n1) || !eligible_axis(n2) ||
+        (policy && std::string(policy) != "balanced") ||
+        adaptor::max_dynamic_smem_bytes(request.device_index) < 131072) return false;
+    const char *setting = std::getenv("FLAGFFT_IX_LARGE_FOURSTEP");
+    if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_LARGE_FOURSTEP must be 0 or 1");
+    }
+    return !setting || std::string(setting) == "1";
+  }
+
   bool npu_2d_native_transpose_enabled(const FFTRequest &request,
                                       int64_t rows,
                                       int64_t cols,
@@ -2414,9 +2432,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           four_step->n1,
           four_step->n2,
           compile_four_step_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*row_leaf, request),
+          build_raw_leaf_tables(*row_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           compile_four_step_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*col_leaf, request),
+          build_raw_leaf_tables(*col_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
           std::move(stage1));
     }
@@ -2649,8 +2669,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           compile_four_step_col_kernel(boundary_col, child_request, four_step->n1, four_step->n2),
           compile_boundary_kernel(boundary_row, KernelKind::BluesteinFourStepPointwiseRow, true),
           compile_boundary_kernel(boundary_col, KernelKind::BluesteinFourStepFinishCol, false),
-          build_raw_leaf_tables(boundary_row, child_request),
-          build_raw_leaf_tables(boundary_col, child_request),
+          build_raw_leaf_tables(boundary_row, child_request,
+              ix_large_fourstep_portable_default(child_request, four_step->n1, four_step->n2)),
+          build_raw_leaf_tables(boundary_col, child_request,
+              ix_large_fourstep_portable_default(child_request, four_step->n1, four_step->n2)),
           std::move(twiddle),
           std::move(chirp),
           std::move(b_time),
@@ -2888,9 +2910,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
           four_step->n1,
           four_step->n2,
           compile_four_step_real_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*row_leaf, request),
+          build_raw_leaf_tables(*row_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           compile_four_step_r2c_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*col_leaf, request),
+          build_raw_leaf_tables(*col_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
           std::move(stage1));
     }
@@ -3008,9 +3032,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
           four_step->n1,
           four_step->n2,
           compile_four_step_hermitian_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*row_leaf, request),
+          build_raw_leaf_tables(*row_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           compile_four_step_c2r_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*col_leaf, request),
+          build_raw_leaf_tables(*col_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
           std::move(stage1));
     }

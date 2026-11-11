@@ -243,6 +243,11 @@ def main() -> None:
         source_fingerprint=source_hash.hexdigest(),
     )
     set_profile(profile)
+    from .kernels_common import _ix_large_fourstep_default_for
+    from .target import set_ix_large_fourstep_default
+    ix_large_fourstep = _ix_large_fourstep_default_for(
+        args.kernel,args.four_step_n1,args.four_step_n2,args.dtype)
+    set_ix_large_fourstep_default(ix_large_fourstep)
     profile_dir = profile.fingerprint
     if profile.backend == "ix":
         overrides = {k: v for k, v in os.environ.items() if k.startswith("FLAGFFT_IX_")}
@@ -254,6 +259,8 @@ def main() -> None:
             profile_dir += "-real-single-pack"
         if args.ix_ct_single_tle:
             profile_dir += f"-tle{args.ix_ct_single_tle}"
+        if ix_large_fourstep:
+            profile_dir += "-large-fourstep"
     if profile.backend == "maca":
         # Keep default-on and explicit opt-out artifacts separate.  The native
         # compiler also includes this bit in its in-process cache key, but the
@@ -598,6 +605,7 @@ def main() -> None:
             "maca_1d_single_default": args.maca_1d_single,
             "ix_ct_single_default": args.ix_ct_single,
             "ix_ct_batch_default": args.ix_ct_batch,
+            "ix_large_fourstep_default": ix_large_fourstep,
             "ix_real_single_pack": args.ix_real_single_pack,
             "ix_ct_single_tle_default": args.ix_ct_single_tle,
             "maca_tail_mode": args.maca_tail_mode,

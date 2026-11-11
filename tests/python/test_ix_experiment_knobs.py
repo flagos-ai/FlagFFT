@@ -193,6 +193,54 @@ def test_ix_packed_transpose_preserves_native_pointer_abi(ix_profile, monkeypatc
         assert "inline_asm_elementwise" not in source
 
 
+@pytest.mark.parametrize("kernel,n1,n2,dtype,expected", [
+    ("four_step_row",512,1024,"complex64",True),
+    ("four_step_c2r_col",512,512,"complex64",True),
+    ("bluestein_four_step_finish_col_r2c",1024,1024,"complex64",True),
+    ("four_step_row_strided",512,1024,"complex64",False),
+    ("four_step_row",128,128,"complex64",False),
+    ("four_step_row",425,1560,"complex64",False),
+    ("four_step_row",512,1024,"complex128",False),
+])
+def test_ix_large_fourstep_policy_scope(ix_balanced_profile, monkeypatch, kernel,n1,n2,dtype,expected):
+    from flagfft_codegen.kernels_common import _ix_large_fourstep_default_for
+    assert _ix_large_fourstep_default_for(kernel,n1,n2,dtype) == expected
+    monkeypatch.setenv("FLAGFFT_IX_LARGE_FOURSTEP", "0")
+    assert not _ix_large_fourstep_default_for(kernel,n1,n2,dtype)
+
+
+@pytest.mark.parametrize("length,factors,lanes,kind,warps", [
+    (512,(32,16),16,"four_step_row",4),
+    (1024,(32,32),32,"four_step_col",8),
+])
+def test_ix_large_fourstep_default_matches_qualified_explicit_policy(ix_balanced_profile, monkeypatch,
+                                                                   length,factors,lanes,kind,warps):
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_four_step_row_kernel_source, _build_four_step_col_kernel_source
+    from flagfft_codegen.metadata import _metadata
+    from flagfft_codegen.target import set_ix_large_fourstep_default,reset_ix_large_fourstep_default
+    plan=LeafPlan(length,factors,1,lanes,1,(),length,"forward","complex64")
+    builder=_build_four_step_row_kernel_source if kind=="four_step_row" else _build_four_step_col_kernel_source
+    def emit():
+        name,source=builder(plan,512,1024)
+        meta=_metadata(module_path=Path("unused.py"),kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type=kind,n1=512,n2=1024,dtype="complex64")
+        return source,meta
+    settings={"PORTABLE_LEAF":"1","RECURRENCE":"1","INNER_PACK":"16","MAX_PACK":"16",
+              "RESOURCE_WARPS":"1","VEC_IO":"packed"}
+    for key,value in settings.items(): monkeypatch.setenv("FLAGFFT_IX_"+key,value)
+    reference=emit()
+    for key in settings: monkeypatch.delenv("FLAGFFT_IX_"+key)
+    token=set_ix_large_fourstep_default(True)
+    try:
+        actual=emit()
+        assert actual==reference
+        assert actual[1]["inner_pack"]==16 and actual[1]["num_warps"]==warps
+    finally:
+        reset_ix_large_fourstep_default(token)
+
+
 @pytest.mark.parametrize("length, factors, lanes, kind, expected", [
     (512, (32, 16), 16, "four_step_row", 2),
     (1024, (32, 32), 32, "four_step_col", 4),

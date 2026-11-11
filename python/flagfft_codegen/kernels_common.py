@@ -27,6 +27,7 @@ from .backend_profile import current_profile
 from .target import (
     ix_ct_single_default_enabled,
     ix_ct_batch_default_enabled,
+    ix_large_fourstep_default_enabled,
     ix_ct_single_tle_default,
     ix_real_single_pack_enabled,
     maca_1d_single_default_enabled,
@@ -306,6 +307,21 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
     return tuple(stage_lanes)
 
 
+def _ix_large_fourstep_default_for(kernel: str, n1: int, n2: int, dtype: str) -> bool:
+    """Qualified register tiles for the large, dense IX power-of-two pair."""
+    from .registry import INNER_PACK_ROW_KERNELS, INNER_PACK_COL_KERNELS, STRIDED_FOUR_STEP_KERNELS
+    profile = current_profile()
+    if (profile.backend != "ix" or profile.device_arch != "71" or profile.policy != "balanced"
+            or (profile.max_dynamic_shared_memory or 0) < 131072 or dtype != "complex64"
+            or kernel not in (INNER_PACK_ROW_KERNELS | INNER_PACK_COL_KERNELS) - STRIDED_FOUR_STEP_KERNELS
+            or not all(512 <= n <= 1024 and n & (n-1) == 0 for n in (n1,n2))):
+        return False
+    setting = os.getenv("FLAGFFT_IX_LARGE_FOURSTEP", "1")
+    if setting not in {"0","1"}:
+        raise ValueError("FLAGFFT_IX_LARGE_FOURSTEP must be 0 or 1")
+    return setting == "1"
+
+
 def _maca_knob(name: str, default: str = "") -> str:
     """Read a MACA code-generation override.
 
@@ -325,6 +341,9 @@ def _maca_knob(name: str, default: str = "") -> str:
             defaults.update(SMEM_INTERLEAVE="1", RECURRENCE="1")
         if ix_ct_single_tle_default() == 2:
             defaults.update(SMEM_SWIZZLE="1", SMEM_SWIZZLE_SHIFT="5", TLE_INNER_PACK="8", WARPS="4")
+        if ix_large_fourstep_default_enabled():
+            defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", INNER_PACK="16",
+                            MAX_PACK="16", RESOURCE_WARPS="1", VEC_IO="packed")
         return os.environ.get(f"FLAGFFT_IX_{name}", defaults.get(name, default)).strip().lower()
     if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
         npu_env_name = {
