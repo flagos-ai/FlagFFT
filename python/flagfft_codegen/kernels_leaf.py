@@ -1203,6 +1203,8 @@ def _emit_stage_block(
     exchange_size: int = 0,
     exchange_slot_stride: int = 0,
     bluestein_real_kind: str = "",
+    permuted_smem_store: bool = False,
+    perm_inner: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1888,7 +1890,10 @@ def _emit_stage_block(
                 )
                 lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
-    if single_smem_buffer and stage > 0 and not is_last:
+    smem_tail = permuted_smem_store and is_last
+    if (single_smem_buffer and stage > 0 and not is_last) or smem_tail:
+        # Every old shared-memory input must be read before the final stage
+        # reuses that buffer for a different, batch-contiguous layout.
         lines.append(f"{indent}tl.debug_barrier()")
 
     if radix == 16:
@@ -1901,6 +1906,33 @@ def _emit_stage_block(
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
+
+    if smem_tail:
+        assert not portable_exchange and stage > 0 and groups == 1
+        for j in range(radix):
+            offset = j * math.prod(factors[:-1])
+            lines.append(f"{indent}tail_dst{j} = (output_base + {offset}) * {smem_pack} + batch_slot")
+            lines.extend(_emit_exchange_store(indent, source_buffer, f"tail_dst{j}", j,
+                                              f"r{j}", f"i{j}", False))
+        out_length = n // 2 + 1 if io_mode in {"permuted_r2c", "permuted_store_r2c"} else n
+        lines.extend([
+            f"{indent}tl.debug_barrier()",
+            f"{indent}tail_flat = tl.arange(0, {n * smem_pack})",
+            f"{indent}tail_slot = tail_flat % {smem_pack}",
+            f"{indent}tail_freq = tail_flat // {smem_pack}",
+            f"{indent}tail_batch = " + ("perm_base + tail_slot * perm_span" if perm_inner else "batch_id + tail_slot"),
+            f"{indent}tail_i0 = tail_batch // perm_span",
+            f"{indent}tail_i1 = tail_batch - tail_i0 * perm_span",
+            f"{indent}tail_gbase = " + ("tail_i1 * (nbatch // perm_span) + tail_i0" if perm_inner
+                                       else f"tail_i0 * ({out_length} * perm_span) + tail_i1"),
+            f"{indent}tail_mask = (tail_batch < nbatch) & (tail_freq < {out_length})",
+            f"{indent}tail_r = tl.load(tle.gpu.local_ptr({source_buffer}_r, (tail_flat,)), mask=tail_mask, other=0.0)",
+            f"{indent}tail_i = tl.load(tle.gpu.local_ptr({source_buffer}_i, (tail_flat,)), mask=tail_mask, other=0.0)",
+            f"{indent}tail_addr = tail_freq * perm_k_stride + tail_gbase",
+            f"{indent}tl.store(out_ptr + tail_addr * 2, tail_r, mask=tail_mask)",
+            f"{indent}tl.store(out_ptr + tail_addr * 2 + 1, tail_i, mask=tail_mask)",
+        ])
+        return lines
 
     grouped_maca_cube_store = (
         is_last
@@ -3122,6 +3154,14 @@ def _build_leaf_kernel_source_for_io(
         # FFT would double the rounded allocation without separating slots.
         smem_slot_stride = plan.smem_size
     smem_n = lane_block_for(smem_slot_stride * smem_pack)
+    permuted_smem_store = (
+        _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_SMEM_STORE", "0") == "1"
+        and _ix_batch_smem_interleave(io_mode, portable_exchange, batch_pack)
+        and plan.dtype == "complex64" and 64 <= n <= 256 and n & (n - 1) == 0
+        and len(factors) >= 2 and batch_pack > 1
+        and n == stage_lanes[-1] * factors[-1]
+        and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}
+    )
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
@@ -3200,6 +3240,8 @@ def _build_leaf_kernel_source_for_io(
             f"{io_mode}_{kernel_prefix}_kernel_{suffix}_n{four_step_n1}_{four_step_n2}"
             f"_l{plan.lanes}_b{lane_block}"
         )
+    if permuted_smem_store:
+        kernel_name += "_smstore"
     body: list[str] = [
         "@triton.jit",
         f"def {kernel_name}(",
@@ -3413,6 +3455,8 @@ def _build_leaf_kernel_source_for_io(
                 exchange_size=smem_n,
                 exchange_slot_stride=smem_slot_stride,
                 bluestein_real_kind=bluestein_real_kind,
+                permuted_smem_store=permuted_smem_store,
+                perm_inner=inner_perm_form,
             )
         )
 

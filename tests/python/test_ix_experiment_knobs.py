@@ -341,3 +341,47 @@ def test_ix_ct_batch_portable_defaults_and_override(ix_profile, monkeypatch):
     finally:
         reset_ix_ct_batch_default(token)
     assert _maca_knob("PORTABLE_LEAF") != "1"
+
+
+@pytest.mark.parametrize('mode,perm_form', [
+    ('permuted_store','outer'), ('permuted_store','inner'),
+    ('strided_permuted_store','inner'), ('permuted_store_r2c','outer'),
+    ('permuted_r2c','outer'),
+])
+def test_ix_shared_tail_reuses_buffer_after_all_reads(ix_balanced_profile, monkeypatch, mode, perm_form):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','1')
+    monkeypatch.setenv('FLAGFFT_IX_3D_SMEM_STORE','1')
+    monkeypatch.setenv('FLAGFFT_IX_3D_PACK','16')
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
+    plan=LeafPlan(256,(16,16),1,16,2,(),256,'forward','complex64')
+    name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,perm_form=perm_form)
+    assert name.endswith('_smstore')
+    last_read=source.rfind('local_ptr(smem_b_i, (phys15,))')
+    first_write=source.index('tail_dst0 =')
+    assert last_read >= 0
+    assert 'tl.debug_barrier()' in source[last_read:first_write]
+    assert 'tl.debug_barrier()' in source[source.index('tail_dst15 ='):source.index('tail_r =')]
+    assert 'tail_flat = tl.arange(0, 4096)' in source
+    assert ('tail_freq < 129' in source) == ('r2c' in mode)
+    assert ('tail_batch = perm_base' in source) == (perm_form=='inner')
+    compile(source,'<ix-shared-tail>','exec')
+    # The scratch permutation is a bijection of every (frequency, FFT slot),
+    # including the compact real boundary. No two radix outputs alias.
+    scratch=[(lane+j*16)*16+slot for lane in range(16) for j in range(16) for slot in range(16)]
+    assert sorted(scratch)==list(range(4096))
+    kept=[p for p in scratch if p//16 < (129 if 'r2c' in mode else 256)]
+    assert len(kept)==16*(129 if 'r2c' in mode else 256)
+
+
+def test_ix_shared_tail_rejects_multiple_unread_groups(ix_balanced_profile, monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','1')
+    monkeypatch.setenv('FLAGFFT_IX_3D_SMEM_STORE','1')
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
+    # Four final groups: overwriting the source buffer would destroy future input.
+    plan=LeafPlan(256,(64,1,4),1,4,2,(),256,'forward','complex64')
+    name,source=_build_leaf_kernel_source_for_io(plan,io_mode='permuted_store')
+    assert not name.endswith('_smstore') and 'tail_flat' not in source
