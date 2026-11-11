@@ -266,7 +266,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             if mode=='contiguous_r2c': a += [f'    mask=mask&(freq[None,:]<{n//2+1})']
             if mode=='c2r': a+=['    tl.store(out+address,z,mask)']
             else: a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,z,mask)']
-            if mode=='packed_r2c':
+            if mode=='packed_r2c' and start==0:
                 a += [f'    pos=lane*{radix}',
                       f'    address=row[:,None]*output_distance+{n}',
                       '    nyquist=tl.cast(tl.cast(nyquist_r,tl.uint32,bitcast=True),tl.uint64)',
@@ -309,6 +309,7 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     }.get(io_mode, perm_form)
     n=plan.length
     chunk=(2 if n==256 else 8 if n>=1024 else 0) if mode in {'outer','inner','r2c'} else 0
+    if mode in {'packed_r2c','packed_c2r'}:chunk=1
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
                                     output_radix_chunk=chunk)
     leaf_name='ix_'+name+'_leaf'
