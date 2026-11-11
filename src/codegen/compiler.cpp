@@ -53,8 +53,8 @@ namespace {
     int64_t pack = 16;
     if (const char *value = std::getenv("FLAGFFT_IX_WARP256_PACK")) {
       const std::string text(value);
-      if (text != "4" && text != "8" && text != "16") {
-        throw std::runtime_error("FLAGFFT_IX_WARP256_PACK must be 4, 8 or 16");
+      if (text != "4" && text != "8" && text != "16" && text != "32") {
+        throw std::runtime_error("FLAGFFT_IX_WARP256_PACK must be 4, 8, 16 or 32");
       }
       pack = std::stoll(text);
     }
