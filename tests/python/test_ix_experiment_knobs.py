@@ -25,6 +25,22 @@ def test_ix_vector_io_experiment_is_not_enabled(ix_profile, monkeypatch):
     assert not _portable_complex_vector_io()
 
 
+def test_ix_packed_complex_io_uses_portable_bitcasts(ix_profile, monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv("FLAGFFT_IX_VEC_IO", "packed")
+    for dtype in ("complex64", "complex128"):
+        plan = LeafPlan(256, (16, 16), 1, 16, 2, (), 256, "forward", dtype)
+        _, source = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
+        assert "inline_asm_elementwise" not in source
+        if dtype == "complex64":
+            assert "tl.pointer_type(tl.uint64)" in source
+            assert "bitcast=True" in source
+        else:
+            assert "tl.pointer_type(tl.uint64)" not in source
+        compile(source, "<ix-packed-io>", "exec")
+
+
 @pytest.mark.parametrize("pack", [1, 2, 4, 8])
 def test_ix_tle_pack_override(ix_profile, monkeypatch, pack):
     monkeypatch.setenv("FLAGFFT_IX_PORTABLE_LEAF", "0")

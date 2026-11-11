@@ -80,7 +80,7 @@ _COMPLEX_PAIR_OFFSETS = "_fft_pair_offsets"
 
 
 def _portable_complex_vector_io() -> bool:
-    """Whether to vectorize complex IO on MACA.
+    """Whether to vectorize complex IO without backend inline assembly.
 
     The scalar form issues two 4-byte accesses per complex element, which is
     limited by load/store throughput rather than DRAM.  A block whose
@@ -90,13 +90,14 @@ def _portable_complex_vector_io() -> bool:
     """
     return (
         (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
+        or (_ix_backend_active() and _maca_knob("VEC_IO", "0") == "packed")
     )
 
 
 def _packed_maca_fp32_complex_io(dtype: str) -> bool:
     return (
         dtype == "complex64"
-        and _maca_backend_active()
+        and (_maca_backend_active() or _ix_backend_active())
         and _maca_knob("VEC_IO", "0") == "packed"
     )
 
