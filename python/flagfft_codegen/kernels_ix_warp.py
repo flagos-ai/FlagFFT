@@ -138,9 +138,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         for j in range(radix):
             a += [f'    index=(lane*{radix}+{j})*{pack}+slot[:,None]',
                   f'    index=index^((index>>{shift})&15)',
+                  '    index=ld.brev(ld.brev(index.to(tl.uint32)))',
                   f'    tl.store(tle.gpu.local_ptr(shared,(index,)),z{j})']
         a += ['    tl.debug_barrier()',f'    flat=tl.arange(0,{n*pack})',
               f'    index=flat^((flat>>{shift})&15)',
+              '    index=ld.brev(ld.brev(index.to(tl.uint32)))',
               '    value=tl.load(tle.gpu.local_ptr(shared,(index,)))',
               f'    output_slot=flat%{pack}',f'    freq=flat//{pack}']
         if mode=='inner':
@@ -190,7 +192,8 @@ def _finish_warp_source(name, lines, fast_math, codelet_radix, manual_store):
         from .metadata import _module_source
         source=_module_source(source,(16,))
     if manual_store:
-        source='import triton.experimental.tle.language as tle\n'+source
+        source=('import triton.experimental.tle.language as tle\n'
+                'from triton.language.extra import libdevice as ld\n')+source
     return name,source
 
 
