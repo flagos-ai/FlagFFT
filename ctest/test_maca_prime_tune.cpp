@@ -331,3 +331,27 @@ TEST(IXLeafPlan, Radix8DistributesTheRegisterWorkAcrossMoreLanes) {
     EXPECT_EQ(leaf->lanes,n/8);
   }
 }
+
+TEST(IXLeafPlan, ExplicitFactorsAreLengthScopedAndValidated) {
+  flagfft::FFTRequest request;
+  request.device_type="ix"; request.device_arch="71";
+  request.input_dtype=request.output_dtype="complex64";
+  request.batch=1; request.raw_dim=request.origin_rank=1;
+  request.fft_length=request.requested_n=210;
+  request.input_shape={1,210}; request.input_strides={210,1};
+  ScopedEnv override("FLAGFFT_IX_LEAF_FACTORS","210:15x14");
+  flagfft::PlanBuilder builder;
+  auto leaf=std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(210,request));
+  ASSERT_NE(leaf,nullptr);
+  EXPECT_EQ(leaf->factors,(std::vector<int64_t>{15,14}));
+  for (const char *invalid : {"210:15x0","210:15x13","210:15x14x","210:15x14junk","210:15x14:2"}) {
+    setenv("FLAGFFT_IX_LEAF_FACTORS",invalid,1);
+    flagfft::PlanBuilder invalid_builder;
+    EXPECT_THROW(invalid_builder.build(210,request),std::runtime_error) << invalid;
+  }
+  setenv("FLAGFFT_IX_LEAF_FACTORS","1024:16x8x8",1);
+  flagfft::PlanBuilder other_length;
+  auto original=std::dynamic_pointer_cast<flagfft::LeafPlanNode>(other_length.build(210,request));
+  ASSERT_NE(original,nullptr);
+  EXPECT_NE(original->factors,leaf->factors);
+}

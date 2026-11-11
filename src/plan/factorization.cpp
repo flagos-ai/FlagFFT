@@ -15,6 +15,7 @@
 #include "flagfft/core.hpp"
 
 #include <cstdlib>
+#include <charconv>
 #include <sstream>
 
 namespace flagfft {
@@ -124,6 +125,39 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64") {
+    if (const char *value = std::getenv("FLAGFFT_IX_LEAF_FACTORS")) {
+      const std::string text(value);
+      const auto fail = []() -> void {
+        throw std::runtime_error("FLAGFFT_IX_LEAF_FACTORS requires <length>:<supported radices separated by x>");
+      };
+      const auto parse = [&](const std::string &token) {
+        int64_t parsed=0;
+        const auto result=std::from_chars(token.data(),token.data()+token.size(),parsed);
+        if (result.ec!=std::errc{} || result.ptr!=token.data()+token.size()) fail();
+        return parsed;
+      };
+      const auto colon=text.find(':');
+      if (colon==std::string::npos || text.find(':',colon+1)!=std::string::npos) fail();
+      const int64_t length=parse(text.substr(0,colon));
+      if (length<2 || length>4096) fail();
+      std::vector<int64_t> factors;
+      int64_t product=1;
+      std::size_t start=colon+1;
+      while (start<=text.size()) {
+        auto end=text.find('x',start);
+        if (end==std::string::npos) end=text.size();
+        const auto radix=parse(text.substr(start,end-start));
+        if (!contains(kSupportedRadices,radix) || product>length/radix) fail();
+        product*=radix; factors.push_back(radix);
+        if (end==text.size()) break;
+        start=end+1;
+      }
+      if (product!=length) fail();
+      if (length==n) return factors;
+    }
+  }
   if (context.device_type == "ix" && context.device_arch == "71" &&
       context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
       n >= 64 && n <= 4096 && (n & (n - 1)) == 0) {
