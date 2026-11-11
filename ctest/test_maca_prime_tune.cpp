@@ -230,6 +230,7 @@ TEST(IXLeafPlan, BalancedRadicesPreserveLengthsAcrossPowerOfTwoLeaves) {
     request.input_strides = {n, 1};
     flagfft::PlanBuilder builder;
     auto root = builder.build(n, request);
+    RecordProperty("ix_plan_" + std::to_string(n), root->describe());
     int checked = 0;
     const auto verify = [&](const auto &self, const flagfft::PlanNodePtr &node) -> void {
       if (auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(node)) {

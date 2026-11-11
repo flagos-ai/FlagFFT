@@ -260,6 +260,20 @@ def _metadata(
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
         profile.validate(num_warps)
+    if _ix_backend_active():
+        resource_warps = os.environ.get("FLAGFFT_IX_RESOURCE_WARPS", "0")
+        if resource_warps not in {"0", "1"}:
+            raise ValueError("FLAGFFT_IX_RESOURCE_WARPS must be 0 or 1")
+        if (resource_warps == "1" and maca_backend
+                and kernel_type in INNER_PACK_ROW_KERNELS | INNER_PACK_COL_KERNELS
+                and kernel_type not in STRIDED_FOUR_STEP_KERNELS
+                and os.environ.get("FLAGFFT_IX_WARPS") is None):
+            # Bound per-thread live data before codelet temporaries. For P8,
+            # the 512-point row can use two warps while the 1024-point column
+            # needs four to avoid the spills observed with narrower launches.
+            threads = (plan.length * inner_pack + 31) // 32
+            num_warps = max(2, profile.warps_for(threads))
+            profile.validate(num_warps)
     if (_ix_backend_active() and kernel_type == "leaf_packed_r2c"
             and os.environ.get("FLAGFFT_IX_WARPS") is None):
         # The half-length reconstruction has twice the register work of a

@@ -111,6 +111,28 @@ def test_ix_permuted_pack_matches_source_and_launch(ix_profile, monkeypatch):
         _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
 
 
+@pytest.mark.parametrize("length, factors, lanes, kind, expected", [
+    (512, (32, 16), 16, "four_step_row", 2),
+    (1024, (32, 32), 32, "four_step_col", 4),
+])
+def test_ix_resource_warps_and_explicit_override(ix_profile, monkeypatch, length, factors, lanes, kind, expected):
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.metadata import _metadata
+
+    monkeypatch.setenv("FLAGFFT_IX_PORTABLE_LEAF", "1")
+    monkeypatch.setenv("FLAGFFT_IX_INNER_PACK", "8")
+    monkeypatch.setenv("FLAGFFT_IX_RESOURCE_WARPS", "1")
+    monkeypatch.delenv("FLAGFFT_IX_WARPS", raising=False)
+    plan = LeafPlan(length, factors, 1, lanes, 1, (), length, "forward", "complex64")
+    params = dict(module_path=Path("unused.py"), kernel_name="resource_kernel",
+                  arg_names=[], plan=plan, kernel_type=kind, n1=512, n2=1024,
+                  dtype="complex64")
+    assert _metadata(**params)["num_warps"] == expected
+    monkeypatch.setenv("FLAGFFT_IX_WARPS", "8")
+    assert _metadata(**params)["num_warps"] == 8
+
+
 def test_ix_tle_presets_are_scoped_and_overridable(ix_profile, monkeypatch):
     from flagfft_codegen.kernels_common import _maca_knob
     from flagfft_codegen.target import set_ix_ct_single_tle_default, reset_ix_ct_single_tle_default
