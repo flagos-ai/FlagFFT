@@ -730,7 +730,7 @@ def _emit_tiled_transpose_jit_kernel(
     out_dir: Path,
 ) -> dict[str, Any]:
     if (
-        _maca_backend_active()
+        (_maca_backend_active() or _ix_backend_active())
         and dtype == "complex64"
         and _maca_knob("2D_TRANSPOSE") == "packed"
     ):

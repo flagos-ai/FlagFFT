@@ -18,6 +18,15 @@ def ix_profile():
     reset_profile(token)
 
 
+@pytest.fixture
+def ix_balanced_profile(ix_profile):
+    from dataclasses import replace
+    from flagfft_codegen.backend_profile import current_profile
+    token = set_profile(replace(current_profile(),policy="balanced"))
+    yield
+    reset_profile(token)
+
+
 def test_ix_vector_io_experiment_is_not_enabled(ix_profile, monkeypatch):
     monkeypatch.delenv("FLAGFFT_IX_VEC_IO", raising=False)
     assert not _portable_complex_vector_io()
@@ -153,6 +162,35 @@ def test_ix_permuted_pair_store_is_explicit(ix_profile, monkeypatch):
     monkeypatch.setenv("FLAGFFT_IX_3D_PAIR_STORE", "1")
     _, paired = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
     assert "pair0 = tl.join(zr0, zi0)" in paired
+
+
+@pytest.mark.parametrize("mode", ["contiguous", "strided", "permuted_store", "permuted_store_r2c"])
+def test_ix_batch_interleave_has_no_padding_or_cross_slot_aliases(ix_balanced_profile, monkeypatch, mode):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv("FLAGFFT_IX_BATCH_INTERLEAVE", "1")
+    monkeypatch.setenv("FLAGFFT_IX_PORTABLE_LEAF", "0")
+    plan = LeafPlan(256,(16,16),1,16,2,(),256,"forward","complex64")
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode=mode)
+    assert "phys0 = logical_phys0 * 4 + batch_slot" in source
+    assert "smem_dst0 = dst0 * 4 + batch_slot" in source
+    assert "tle.gpu.alloc([1024]" in source
+    assert "+ inner_slot" not in source
+    physical = [logical*4+slot for logical in range(256) for slot in range(4)]
+    assert sorted(physical) == list(range(1024))
+    compile(source,"<ix-batch-interleave>","exec")
+
+
+def test_ix_packed_transpose_preserves_native_pointer_abi(ix_profile, monkeypatch, tmp_path):
+    from pathlib import Path
+    from flagfft_codegen.emit import _emit_tiled_transpose_jit_kernel
+    monkeypatch.setenv("FLAGFFT_IX_2D_TRANSPOSE", "packed")
+    for dtype, packed in (("complex64",True),("complex128",False)):
+        meta = _emit_tiled_transpose_jit_kernel(n0=129,n1=256,dtype=dtype,out_dir=tmp_path/dtype)
+        source = Path(meta["module_path"]).read_text()
+        assert ("tl.pointer_type(tl.uint64)" in source) == packed
+        assert meta["signature"].endswith(",i32")
+        assert "inline_asm_elementwise" not in source
 
 
 @pytest.mark.parametrize("length, factors, lanes, kind, expected", [

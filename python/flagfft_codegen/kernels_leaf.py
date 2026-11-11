@@ -78,6 +78,20 @@ def _vector_asm_dtype(dtype: str) -> str:
 
 _COMPLEX_PAIR_OFFSETS = "_fft_pair_offsets"
 
+_IX_BATCH_INTERLEAVE_MODES = {
+    "contiguous", "strided", "permuted_store", "strided_permuted_store",
+    "contiguous_r2c", "contiguous_c2r", "permuted_r2c", "permuted_store_r2c",
+}
+
+
+def _ix_batch_smem_interleave(io_mode: str, portable: bool, pack: int) -> bool:
+    if not _ix_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_IX_BATCH_INTERLEAVE", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_IX_BATCH_INTERLEAVE must be 0 or 1")
+    return setting == "1" and not portable and pack > 1 and io_mode in _IX_BATCH_INTERLEAVE_MODES
+
 
 def _portable_complex_vector_io() -> bool:
     """Whether to vectorize complex IO without backend inline assembly.
@@ -1234,11 +1248,13 @@ def _emit_stage_block(
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
-    smem_interleave = (
+    batch_interleave = _ix_batch_smem_interleave(io_mode, portable_exchange, smem_pack)
+    smem_interleave = batch_interleave or (
         _ix_backend_active() and not portable_exchange and inner_pack > 1
         and io_mode.startswith("four_step_")
         and _maca_knob("SMEM_INTERLEAVE", "0") == "1"
     )
+    interleave_slot = "batch_slot" if batch_interleave else "inner_slot"
     swizzle_shift = _TLE_SMEM_SWIZZLE_SHIFT
     if _ix_backend_active() and smem_swizzle:
         swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
@@ -1318,7 +1334,7 @@ def _emit_stage_block(
             f"{current_lanes} * (group_{stage} * {radix} + {j}), 0)"
         )
         if smem_interleave:
-            lines.append(f"{indent}phys{j} = logical_phys{j} * {smem_pack} + inner_slot")
+            lines.append(f"{indent}phys{j} = logical_phys{j} * {smem_pack} + {interleave_slot}")
         elif smem_pack > 1:
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
@@ -1329,7 +1345,7 @@ def _emit_stage_block(
                 f"(logical_phys{j} >> {swizzle_shift})"
             )
             if smem_interleave:
-                lines.append(f"{indent}smem_phys{j} = smem_phys{j} * {smem_pack} + inner_slot")
+                lines.append(f"{indent}smem_phys{j} = smem_phys{j} * {smem_pack} + {interleave_slot}")
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
@@ -2360,12 +2376,12 @@ def _emit_stage_block(
                     f"(dst{j} >> {swizzle_shift})"
                 )
                 if smem_interleave:
-                    lines.append(f"{indent}smem_dst{j} = smem_dst{j} * {smem_pack} + inner_slot")
+                    lines.append(f"{indent}smem_dst{j} = smem_dst{j} * {smem_pack} + {interleave_slot}")
                 elif smem_pack > 1:
                     lines.append(f"{indent}smem_dst{j} += smem_offset")
                 store_index = f"smem_dst{j}"
             elif smem_interleave:
-                lines.append(f"{indent}smem_dst{j} = dst{j} * {smem_pack} + inner_slot")
+                lines.append(f"{indent}smem_dst{j} = dst{j} * {smem_pack} + {interleave_slot}")
                 store_index = f"smem_dst{j}"
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
@@ -3101,6 +3117,10 @@ def _build_leaf_kernel_source_for_io(
         lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    if _ix_batch_smem_interleave(io_mode, portable_exchange, batch_pack):
+        # Adjacent FFT slots occupy adjacent words. Padding each power-of-two
+        # FFT would double the rounded allocation without separating slots.
+        smem_slot_stride = plan.smem_size
     smem_n = lane_block_for(smem_slot_stride * smem_pack)
     params = _leaf_kernel_params_for_io(
         plan,
