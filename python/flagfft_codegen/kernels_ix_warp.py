@@ -270,6 +270,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                 a += [f'    pos=lane*{radix}',
                       f'    address=row[:,None]*output_distance+{n}',
                       '    nyquist=tl.cast(tl.cast(nyquist_r,tl.uint32,bitcast=True),tl.uint64)',
+                      f'    address=tl.broadcast_to(address,({pack},64))',
                       '    tl.store(ptr+address,nyquist,valid&(pos==0))']
         else:
             a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')',
