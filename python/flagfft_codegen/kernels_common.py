@@ -1074,13 +1074,18 @@ def _leaf_single_smem_buffer_eligible(
         return False
     if plan.dtype != "complex64" or len(plan.factors) < 2:
         return False
-    if io_mode not in {"contiguous", "strided"}:
+    ix_boundary = (
+        profile.backend == "ix" and profile.device_arch == "71"
+        and os.getenv("FLAGFFT_IX_BLUESTEIN_SINGLE_SMEM", "0") == "1"
+        and io_mode in {"bluestein_prepare_leaf", "bluestein_finish_leaf"}
+    )
+    if io_mode not in {"contiguous", "strided"} and not ix_boundary:
         return False
     stage_lanes = cooperative_stage_lanes_for(plan)
-    if any(lanes != plan.lanes for lanes in stage_lanes):
+    if not ix_boundary and any(lanes != plan.lanes for lanes in stage_lanes):
         return False
     for index in range(len(plan.factors) - 1):
-        if plan.length // (plan.lanes * plan.factors[index]) != 1:
+        if plan.length // (stage_lanes[index] * plan.factors[index]) != 1:
             return False
     batch_pack = contiguous_batch_pack_for(plan)
     smem_pack = max(batch_pack, 1)

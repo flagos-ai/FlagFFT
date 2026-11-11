@@ -385,3 +385,21 @@ def test_ix_shared_tail_rejects_multiple_unread_groups(ix_balanced_profile, monk
     plan=LeafPlan(256,(64,1,4),1,4,2,(),256,'forward','complex64')
     name,source=_build_leaf_kernel_source_for_io(plan,io_mode='permuted_store')
     assert not name.endswith('_smstore') and 'tail_flat' not in source
+
+
+@pytest.mark.parametrize('mode',['bluestein_prepare_leaf','bluestein_finish_leaf'])
+def test_ix_bluestein_boundary_single_buffer_allows_only_complete_stages(ix_balanced_profile, monkeypatch, mode):
+    from flagfft_codegen.kernels_common import LeafPlan, _use_single_smem_buffer
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    plan=LeafPlan(2048,(16,16,8),1,128,4,(),2048,'forward','complex64')
+    assert not _use_single_smem_buffer(plan,io_mode=mode)
+    monkeypatch.setenv('FLAGFFT_IX_BLUESTEIN_SINGLE_SMEM','1')
+    assert _use_single_smem_buffer(plan,io_mode=mode)
+    _,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,prime_n=997)
+    assert 'smem_a_r = tle.gpu.alloc' not in source
+    assert 'smem_b_r = tle.gpu.alloc' in source
+    assert not _use_single_smem_buffer(plan,io_mode='bluestein_full_leaf')
+    # Varying lanes is safe only when every overwriting stage reads its entire input.
+    incomplete=LeafPlan(4096,(64,1,64),1,64,4,(),4096,'forward','complex64')
+    assert not _use_single_smem_buffer(incomplete,io_mode=mode)
+    compile(source,'<ix-boundary-single-buffer>','exec')
