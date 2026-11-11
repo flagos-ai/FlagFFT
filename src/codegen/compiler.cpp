@@ -5590,7 +5590,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       std::string(npu_2d_transpose_store) == "1";
   auto npu_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   auto npu_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-  if (use_npu_2d_transpose_store && npu_row_leaf && npu_col_leaf) {
+  const bool use_ix_2d_transpose_store =
+      request.device_type == "ix" && request.device_arch == "71" && request.origin_rank == 2 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n0 >= 512 && n0 <= 4096 && n1 >= 512 && n1 <= 4096 &&
+      flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", false);
+  if ((use_npu_2d_transpose_store || use_ix_2d_transpose_store) && npu_row_leaf && npu_col_leaf) {
     std::shared_ptr<CompiledRawNode> row_fft =
         compile_raw_permuted_store_leaf(*npu_row_leaf, row_request, n0, "outer");
     std::shared_ptr<CompiledRawNode> col_fft =
