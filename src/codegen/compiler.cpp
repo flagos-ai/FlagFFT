@@ -2740,24 +2740,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     child_request.input_shape = {batch, n / 2};
     child_request.input_strides = {n / 2, 1};
     PlanBuilder child_builder;
-    child_builder.build(n / 2, child_request);
-    // Keep the measured 1024-point child for the default route. Explicit
-    // shorter requests need factors for their own half-length transform.
-    const std::vector<int64_t> factors = n == 2048
-        ? std::vector<int64_t>{16, 8, 8}
-        : child_builder.select_leaf_factors(n / 2);
-    const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
-    LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
-                             child_builder.choose_num_warps(lanes), {}, n / 2);
-    KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
-                                         request.direction, request.input_dtype,
-                                         packed_leaf.length, packed_leaf.factors,
-                                         packed_leaf.lanes, packed_leaf.num_warps,
-                                         packed_leaf.generic_radices, packed_leaf.smem_size);
-    key.kind = KernelKind::LeafPackedR2C;
-    return std::make_shared<CompiledRawR2CLeafNode>(
-        n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
-        build_raw_packed_real_twiddle(request, n));
+    auto child_plan = child_builder.build(n / 2, child_request);
+    auto child_leaf = std::dynamic_pointer_cast<LeafPlanNode>(child_plan);
+    if (n == 2048 || child_leaf) {
+      // Keep the measured 1024-point child for the default route. Explicit
+      // shorter requests need factors for their own half-length transform.
+      const std::vector<int64_t> factors = n == 2048
+          ? std::vector<int64_t>{16, 8, 8}
+          : child_leaf->factors;
+      const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
+      LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
+                               child_builder.choose_num_warps(lanes), {}, n / 2);
+      KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
+                                           request.direction, request.input_dtype,
+                                           packed_leaf.length, packed_leaf.factors,
+                                           packed_leaf.lanes, packed_leaf.num_warps,
+                                           packed_leaf.generic_radices, packed_leaf.smem_size);
+      key.kind = KernelKind::LeafPackedR2C;
+      return std::make_shared<CompiledRawR2CLeafNode>(
+          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
+          build_raw_packed_real_twiddle(request, n));
+    }
   }
   // The 3D real boundary has many contiguous rows.  Screen the existing
   // one-launch even/odd leaf there to halve its FFT length without adding a
