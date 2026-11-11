@@ -4342,15 +4342,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
     const std::string n1_perm_form = hcu_3d_axis_perm_form(
         request, "FLAGFFT_HCU_3D_MIDDLE_PACK", "inner_middle", "inner");
+    // Keep the inner permutation inside one cube, including when the
+    // public descriptor batches several independent cubes.
+    const bool ix_per_cube = request.device_type == "ix" && batch > 1;
+    auto n2_cube_request = n2_request, n1_cube_request = n1_request, n0_cube_request = n0_request;
+    if (ix_per_cube) {
+      n2_cube_request.batch = n0 * n1;
+      n1_cube_request.batch = n0 * n2;
+      n0_cube_request.batch = n1 * n2;
+    }
     std::shared_ptr<CompiledRawNode> n2_fft =
-        compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, n2_perm_form);
+        compile_raw_permuted_store_leaf(*n2_leaf, n2_cube_request, /*perm_span=*/n1, n2_perm_form);
     std::shared_ptr<CompiledRawNode> n1_fft =
-        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, n1_perm_form);
+        compile_raw_permuted_store_leaf(*n1_leaf, n1_cube_request, /*perm_span=*/n2, n1_perm_form);
     const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
     std::shared_ptr<CompiledRawNode> n0_fft =
         last_transpose ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
                        : compile_raw_permuted_store_leaf(*n0_leaf,
-                                                         n0_request,
+                                                         n0_cube_request,
                                                          /*perm_span=*/n1 * n2,
                                                          n0_perm_form);
 
@@ -4364,7 +4373,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
           std::shared_ptr<JitKernel>{}, std::move(temp1), std::move(temp2),
           std::shared_ptr<JitKernel>{}, std::move(perm_201));
     }
-    return std::make_shared<CompiledRaw3DStridedNode>(n0,
+    auto fused = std::make_shared<CompiledRaw3DStridedNode>(n0,
                                                       n1,
                                                       n2,
                                                       std::move(n2_fft),
@@ -4372,6 +4381,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                       std::move(n0_fft),
                                                       std::move(temp1),
                                                       std::move(temp2));
+    if (ix_per_cube) {
+      return std::make_shared<CompiledRawPerBatchNode>(fused,n0*n1*n2,n0*n1*n2,
+                                                       element_bytes,element_bytes);
+    }
+    return fused;
   }
 
   if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements) {
@@ -5155,10 +5169,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
         ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
         : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
   }
+  auto n1_cube_request = n1_request;
+  if (ix_real_screen && fused_middle && batch > 1) n1_cube_request.batch = n0 * half;
   auto n1_fft = npu_fused_outer_stores
       ? compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, true)
       : (fused_middle
-             ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner")
+             ? compile_raw_permuted_store_leaf(*n1_leaf, n1_cube_request, half, "inner")
              : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, false));
   std::shared_ptr<CompiledRawNode> n0_fft;
   if (npu_fused_outer_stores) {
@@ -5215,7 +5231,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
   DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
-  return std::make_shared<CompiledRaw3DRealRTRTNode>(n0,
+  auto fused = std::make_shared<CompiledRaw3DRealRTRTNode>(n0,
                                                      n1,
                                                      n2,
                                                      inverse,
@@ -5230,6 +5246,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
                                                      std::move(npu_transpose_indices),
                                                      npu_fused_outer_stores,
                                                      npu_fused_small_final_store);
+  if (ix_real_screen && fused_middle && batch > 1) {
+    const int64_t real_elements = n0*n1*n2, compact_elements = n0*n1*half;
+    return std::make_shared<CompiledRawPerBatchNode>(fused,
+        inverse ? compact_elements : real_elements, inverse ? real_elements : compact_elements,
+        inverse ? element_bytes : element_bytes/2, inverse ? element_bytes/2 : element_bytes);
+  }
+  return fused;
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(

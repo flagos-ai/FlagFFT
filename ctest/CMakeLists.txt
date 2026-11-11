@@ -56,6 +56,7 @@ target_link_libraries(test_maca_prime_tune PRIVATE gtest_main)
 add_test(NAME test_maca_prime_tune COMMAND test_maca_prime_tune)
 
 set(TEST_TARGETS
+    test_per_batch
     test_plan
     test_kernel_key
     test_packed_real_batch

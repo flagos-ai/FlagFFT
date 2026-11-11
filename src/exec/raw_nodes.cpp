@@ -39,6 +39,31 @@
 
 namespace flagfft {
 
+CompiledRawPerBatchNode::CompiledRawPerBatchNode(
+    std::shared_ptr<CompiledRawNode> inner, int64_t input_elements, int64_t output_elements,
+    int64_t input_element_bytes, int64_t output_element_bytes)
+    : inner(std::move(inner)), input_elements(input_elements), output_elements(output_elements),
+      input_element_bytes(input_element_bytes), output_element_bytes(output_element_bytes) {}
+
+std::string CompiledRawPerBatchNode::describe() const {
+  return "CompiledRawPerBatch(inner=" + inner->describe() + ")";
+}
+
+flagfftResult CompiledRawPerBatchNode::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                              const RawExecutionContext &context) const {
+  const int64_t input_stride = (context.input_distance > 0 ? context.input_distance : input_elements)
+                                  * input_element_bytes;
+  const int64_t output_stride = (context.output_distance > 0 ? context.output_distance : output_elements)
+                                   * output_element_bytes;
+  RawExecutionContext single {context.request, context.stream, 1};
+  for (int64_t batch = 0; batch < context.batch; ++batch) {
+    const auto result = inner->execute(input + batch * input_stride,
+                                       output + batch * output_stride, single);
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
+}
+
 CompiledRawGraphNode::CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inner)
     : inner(std::move(inner)) {}
 

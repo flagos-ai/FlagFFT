@@ -1212,6 +1212,7 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
             "python": platform.python_version(),
             "numpy": np.__version__,
             "git_commit": source_commit,
+            "capture_full_batch": os.environ.get("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH", "0") == "1",
             "backend": detect_backend(build_dir),
         }
     )
@@ -1517,6 +1518,22 @@ def run_accuracy_capture(
                 kill_process_group(process)
                 process.wait()
         result["duration"] = time.monotonic() - started
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if line.startswith("[capture-batch] "):
+            try:
+                fields = dict(item.split("=",1) for item in line.split()[1:])
+                result["capture_batch"] = {key:int(value) for key,value in fields.items()}
+            except (ValueError,TypeError):
+                pass
+    if os.environ.get("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH") == "1" and result["status"] == "Passed":
+        captured = result.get("capture_batch", {})
+        if captured.get("execution") != case["batch"] or captured.get("requested") != case["batch"]:
+            result["status"] = "Failed"
+            result["error"] = "capture did not verify the requested full batch"
     if implementation == "flagfft":
         result["plan"] = read_plan(log_path)
         if path_error := fourstep_path_error(case, result["plan"]):

@@ -151,6 +151,20 @@ struct CompiledRawNode {
   virtual std::string describe() const = 0;
 };
 
+// A fused axis permutation is defined within one ND transform. Reuse its
+// scratch and kernels serially rather than folding independent transforms
+// into the permutation's row index.
+struct CompiledRawPerBatchNode final : CompiledRawNode {
+  CompiledRawPerBatchNode(std::shared_ptr<CompiledRawNode> inner,
+                         int64_t input_elements, int64_t output_elements,
+                         int64_t input_element_bytes, int64_t output_element_bytes);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  std::shared_ptr<CompiledRawNode> inner;
+  int64_t input_elements, output_elements, input_element_bytes, output_element_bytes;
+};
+
 struct CompiledRawGraphNode final : CompiledRawNode {
   explicit CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inner);
   flagfftResult execute(adaptor::DevicePtr input,
