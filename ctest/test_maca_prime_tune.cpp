@@ -347,12 +347,12 @@ TEST(IXLeafPlan, ExplicitFactorsAreLengthScopedAndValidated) {
     ASSERT_NE(leaf,nullptr);
     baseline=leaf->factors;
   }
-  ScopedEnv override("FLAGFFT_IX_LEAF_FACTORS","210:15x14");
+  ScopedEnv override("FLAGFFT_IX_LEAF_FACTORS","210:30x7");
   flagfft::PlanBuilder builder;
   auto leaf=std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(210,request));
   ASSERT_NE(leaf,nullptr);
-  EXPECT_EQ(leaf->factors,(std::vector<int64_t>{15,14}));
-  for (const char *invalid : {"210:15x0","210:15x13","210:15x14x","210:15x14junk","210:15x14:2"}) {
+  EXPECT_EQ(leaf->factors,(std::vector<int64_t>{30,7}));
+  for (const char *invalid : {"210:30x0","210:30x6","210:30x7x","210:30x7junk","210:30x7:2","210:15x14"}) {
     setenv("FLAGFFT_IX_LEAF_FACTORS",invalid,1);
     flagfft::PlanBuilder invalid_builder;
     EXPECT_THROW(invalid_builder.build(210,request),std::runtime_error) << invalid;
