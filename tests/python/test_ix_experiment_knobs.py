@@ -473,6 +473,7 @@ def test_ix_radix8_contiguous_reuses_buffer_with_complete_intermediate_stages(ix
     assert not _use_single_smem_buffer(plan,io_mode='contiguous')
     monkeypatch.setenv('FLAGFFT_IX_RADIX8','1')
     monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','1')
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_PACK','4')
     assert _use_single_smem_buffer(plan,io_mode='contiguous')
     _,source=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
     assert 'smem_a_r = tle.gpu.alloc' not in source

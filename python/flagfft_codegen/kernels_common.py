@@ -476,6 +476,15 @@ def _portable_exchange_pack_floor(plan: LeafPlan, pack: int) -> int:
 
 
 def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) -> int:
+    if _ix_backend_active() and not _portable_leaf_backend_active() and _maca_knob("BATCH_PACK"):
+        pack = _positive_knob("BATCH_PACK", _maca_knob("BATCH_PACK"))
+        limit = current_profile().max_dynamic_shared_memory
+        if limit is not None and len(plan.factors) > 1:
+            while pack > 1 and 4 * lane_block_for(
+                (plan.smem_size + (1 if pack >= 4 else 0)) * pack
+            ) * _real_element_bytes(plan.dtype) > limit:
+                pack //= 2
+        return pack
     if _hcu_backend_active() and plan.length == 2048:
         middle_batch_pack = os.environ.get("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK", "auto")
         if middle_batch_pack != "auto":
