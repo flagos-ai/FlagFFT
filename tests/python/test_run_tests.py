@@ -485,7 +485,7 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
             (output / operators[0]["id"] / "accuracy_result.json").read_text()
         )
         assert accuracy["status"] == "Incomplete"
-        assert accuracy["passed"] == 1 and accuracy["missing"] == 3
+        assert accuracy["passed"] == 1 and accuracy["missing"] == len(cases) - 1
         with pytest.raises(ProcessLookupError):
             os.kill(native_pid, 0)
         assert (output / "manifest.json").is_file()
