@@ -22,16 +22,21 @@ def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = 
 def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bool = False,
                          *, recurrence: bool = False, fast_math: bool = False,
                          local_codelet: bool = False, manual_store: bool = False,
-                         output_radix_chunk: int = 0) -> tuple[str, str]:
+                         output_radix_chunk: int = 0, lane_width: int = 64,
+                         packed_gather: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {128,256,512,1024,2048}:
         raise ValueError("IX warp FFT length must be 128, 256, 512, 1024 or 2048")
-    radix=n//64
+    if lane_width<32 or lane_width>n or lane_width&(lane_width-1) or n%lane_width:
+        raise ValueError("invalid IX FFT lane width")
+    if manual_store and lane_width!=64:
+        raise ValueError("manual output experiments require 64-lane FFTs")
+    radix=n//lane_width
     chunk=output_radix_chunk or radix
     if chunk<1 or chunk>radix or chunk&(chunk-1) or (manual_store and output_radix_chunk):
         raise ValueError("invalid IX warp output chunk")
-    if pack not in {4,8,16,32,64}:
-        raise ValueError("IX warp FFT pack must be 4, 8, 16, 32 or 64")
+    if pack not in {1,2,4,8,16,32,64}:
+        raise ValueError("IX warp FFT pack must be 1, 2, 4, 8, 16, 32 or 64")
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r"}:
         raise ValueError("unsupported IX warp FFT I/O mode")
     if (mode in {"r2c","contiguous_r2c"} and inverse) or (mode == "c2r" and not inverse):
@@ -43,10 +48,12 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if local_codelet: name+='_codelet'
     if manual_store: name+='_manual'
     if output_radix_chunk: name+=f'_chunk{chunk}'
+    if lane_width!=64: name+=f'_lanes{lane_width}'
+    if packed_gather: name+='_pairgather'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
-       '    lane=tl.arange(0,64)[None,:]']
+       f'    lane=tl.arange(0,{lane_width})[None,:]']
     if mode=='inner':
         a+= [f'    row_base=(pid//span)*{pack}*span+pid%span',
              '    row=row_base+slot*span',
@@ -64,7 +71,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     a+= ['    valid=row[:,None]<nbatch']
     if mode=='outer': a += [f'    valid=valid&(((pid%groups)*{pack}+slot[:,None])<span)']
     for j in range(radix):
-        a+=[f'    pos=lane+{j*64}']
+        a+=[f'    pos=lane+{j*lane_width}']
         if mode=='c2r':
             a+= [f'    hpos=tl.where(pos<={n//2},pos,{n}-pos)',
                  '    offset=row[:,None]*input_distance+hpos',
@@ -72,10 +79,10 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                  f'    x{j}i=tl.load(inp+offset*2+1,valid,0.0)',
                  f'    x{j}i=tl.where(pos<={n//2},x{j}i,-x{j}i)']
         elif mode in {'r2c','contiguous_r2c'}:
-            a+=[f'    x{j}r=tl.load(inp+row[:,None]*input_distance+pos,valid,0.0)',f'    x{j}i=tl.full(({pack},64),0.0,tl.float32)']
+            a+=[f'    x{j}r=tl.load(inp+row[:,None]*input_distance+pos,valid,0.0)',f'    x{j}i=tl.full(({pack},{lane_width}),0.0,tl.float32)']
         else:
             a+=['    offset=row[:,None]*input_distance+pos',
-                 '    offset=tl.max_contiguous(tl.multiple_of(offset,(1,64)),(1,64))',
+                 f'    offset=tl.max_contiguous(tl.multiple_of(offset,(1,{lane_width})),(1,{lane_width}))',
                  '    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
                  '    pair=tl.load(ip+offset,valid,0)',
                  f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
@@ -119,17 +126,33 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                 '    wr=tl.cos(angle)','    wi=tl.sin(angle)']
             if recurrence: a+=['    base_wr=wr','    base_wi=wi']
         a+=[f'    tr=r{j}*wr-i{j}*wi',f'    ti=r{j}*wi+i{j}*wr',f'    r{j}=tr',f'    i{j}=ti']
-    a+=['    rev=((lane&1)<<5)|((lane&2)<<3)|((lane&4)<<1)|((lane&8)>>1)|((lane&16)>>3)|((lane&32)>>5)',
-         f'    idx=tl.broadcast_to(rev,({pack},64))']
-    for j in range(radix): a += [f'    r{j}=tl.gather(r{j},idx,axis=1)',f'    i{j}=tl.gather(i{j},idx,axis=1)']
-    for half in (1,2,4,8,16,32):
-        a += [f'    idx=tl.broadcast_to(lane^{half},({pack},64))',f'    high=(lane&{half})!=0']
+    if lane_width==64:
+        a+=['    rev=((lane&1)<<5)|((lane&2)<<3)|((lane&4)<<1)|((lane&8)>>1)|((lane&16)>>3)|((lane&32)>>5)']
+    else:
+        bits=lane_width.bit_length()-1
+        a+=['    rev='+'|'.join(f'(((lane>>{i})&1)<<{bits-1-i})' for i in range(bits))]
+    a += [f'    idx=tl.broadcast_to(rev,({pack},{lane_width}))']
+    def pair_source(j):
+        return f'tl.cast(tl.cast(r{j},tl.uint32,bitcast=True),tl.uint64)|(tl.cast(tl.cast(i{j},tl.uint32,bitcast=True),tl.uint64)<<32)'
+    for j in range(radix):
+        if packed_gather:
+            a += [f'    pair={pair_source(j)}','    pair=tl.gather(pair,idx,axis=1)',
+                  f'    r{j}=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                  f'    i{j}=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
+        else: a += [f'    r{j}=tl.gather(r{j},idx,axis=1)',f'    i{j}=tl.gather(i{j},idx,axis=1)']
+    for stage in range(lane_width.bit_length()-1):
+        half=1<<stage
+        a += [f'    idx=tl.broadcast_to(lane^{half},({pack},{lane_width}))',f'    high=(lane&{half})!=0']
         if half==1: a += ['    wr=1.0','    wi=0.0']
         elif half==2: a += ['    wr=tl.where((lane&1)==0,1.0,0.0)',f'    wi=tl.where((lane&1)==0,0.0,{float(sign)})']
         else: a += [f'    angle=(lane&{half-1})*{sign*math.pi/half:.17g}','    wr=tl.cos(angle)','    wi=tl.sin(angle)']
         for j in range(radix):
-            a += [f'    pr=tl.gather(r{j},idx,axis=1)',f'    pi=tl.gather(i{j},idx,axis=1)',
-                  f'    br=tl.where(high,r{j},pr)',f'    bi=tl.where(high,i{j},pi)',
+            if packed_gather:
+                a += [f'    pair={pair_source(j)}','    pair=tl.gather(pair,idx,axis=1)',
+                      '    pr=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                      '    pi=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
+            else: a += [f'    pr=tl.gather(r{j},idx,axis=1)',f'    pi=tl.gather(i{j},idx,axis=1)']
+            a += [f'    br=tl.where(high,r{j},pr)',f'    bi=tl.where(high,i{j},pi)',
                   '    tr=br*wr-bi*wi','    ti=br*wi+bi*wr',
                   f'    ar=tl.where(high,pr,r{j})',f'    ai=tl.where(high,pi,i{j})',
                   f'    r{j}=tl.where(high,ar-tr,ar+tr)',f'    i{j}=tl.where(high,ai-ti,ai+ti)']
@@ -170,7 +193,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         return name
     for start in range(0,radix,chunk):
         values=join(list(range(start,start+chunk)))
-        a += [f'    z=tl.reshape({values},({pack},{64*chunk}))',f'    freq=tl.arange(0,{64*chunk})']
+        a += [f'    z=tl.reshape({values},({pack},{lane_width*chunk}))',f'    freq=tl.arange(0,{lane_width*chunk})']
         if chunk!=radix: a += [f'    freq=(freq//{chunk})*{radix}+freq%{chunk}+{start}']
         if mode in {'contiguous','c2r','contiguous_r2c'}:
             a+=['    address=row[:,None]*output_distance+freq[None,:]',
