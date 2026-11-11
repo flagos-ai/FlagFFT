@@ -563,6 +563,10 @@ namespace {
         n/initial_prefix>=512 && n/initial_prefix<=4096 &&
         flag_or_default("FLAGFFT_NPU_DIF_BATCH_DENSE_PREFIX",true);
     const bool dense_prefix=dense_single || dense_batch;
+    // A 13 x 7 suffix fits one 128-lane matrix basis. Fuse it directly
+    // after the dense producer, before the physical prefix has expanded.
+    const bool late_pair=dense_batch && factors.size()>=5 && factors[2]*factors[3]==91 &&
+        flag_or_default("FLAGFFT_NPU_DIF_DENSE_LATE_PAIR",true);
     constexpr int64_t batch_dense_columns=64, batch_dense_frequencies=64;
     const int64_t dense_columns=dense_batch?batch_dense_columns:32;
     const int64_t dense_frequencies=dense_batch?batch_dense_frequencies:32;
@@ -587,6 +591,7 @@ namespace {
       if (codelet_reuse) key.perm_form+="_codeletreuse";
       if (finish_batch4) key.perm_form+="_finishbatch4";
       if (vector_basis) key.perm_form+="_vectorbasis";
+      if (late_pair) key.perm_form+="_latepair91";
       if ((dense_prefix && passes.empty()) || (matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
@@ -631,10 +636,33 @@ namespace {
               basis[t*2*frequencies*padded_prefix+(frequencies+f)*padded_prefix+d]=static_cast<float>(std::sin(angle));
             }
           }
+          if (late_pair) {
+            const auto offset=basis.size();
+            basis.resize(offset+2*workspace_length);
+            for (int64_t index=0;index<workspace_length;++index) {
+              const int64_t frequency=index%padded_prefix,sample=index/padded_prefix;
+              const double angle=sign*2*kPi*static_cast<double>(frequency)*sample/n;
+              basis[offset+index]=static_cast<float>(std::cos(angle));
+              basis[offset+workspace_length+index]=static_cast<float>(std::sin(angle));
+            }
+          }
           append(DeviceAllocation::from_floats(basis),ceiling(n/initial_prefix,columns)*tiles,1,false);
         }
         previous_prefix=prefix;prefix*=radix;
         if (stage==1) switched=true;
+        continue;
+      }
+      if (late_pair && stage==2) {
+        const int64_t pair_radix=factors[2]*factors[3],remaining=n/(prefix*pair_radix);
+        std::vector<float> basis(2*64*128,0.0f);
+        for (int64_t f=0;f<64;++f)for (int64_t d=0;d<pair_radix;++d) {
+          const double angle=sign*2*kPi*f*d/pair_radix;
+          basis[f*128+d]=static_cast<float>(std::cos(angle));
+          basis[(64+f)*128+d]=static_cast<float>(std::sin(angle));
+        }
+        append(DeviceAllocation::from_floats(basis),remaining*padded_prefix/64,1,false);
+        previous_prefix=prefix;prefix*=pair_radix;
+        ++stage;
         continue;
       }
       if (!switched && prefix>=64) {
@@ -658,7 +686,8 @@ namespace {
       if (cube_prefix && (stage==1 || (matrix_first && stage==0))) {
         weights=cube_weights(radix,stage?factors[0]:0,stage==1);
       } else if (stage) {
-        const int64_t previous_radix=factors[stage-1], current=radix*m;
+        const int64_t previous_radix=late_pair && stage==4 ? factors[2]*factors[3] : factors[stage-1];
+        const int64_t current=radix*m;
         const int64_t count=switched?workspace_length:previous_radix*current;
         const int64_t physical_prefix=aligned && switched ? prefix/initial_prefix*padded_prefix : prefix;
         weights.resize(2*count);

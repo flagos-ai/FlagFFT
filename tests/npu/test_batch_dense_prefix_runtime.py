@@ -27,6 +27,9 @@ def selected_options(monkeypatch):
         monkeypatch.setenv('FLAGFFT_NPU_' + option, '1')
     monkeypatch.setenv('FLAGFFT_NPU_DIF_DENSE_SHORT_PREFIX', '0')
     monkeypatch.setenv('FLAGFFT_NPU_DIF_GLOBAL_INVERSE', '1')
+    # Isolate the prefix policy's two-pass reduction. The subsequent late
+    # pair fusion has its own admission and live-execution checks.
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_DENSE_LATE_PAIR', '0')
 
 
 @pytest.fixture(scope='module')

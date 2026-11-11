@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32,coarse_dense=False,power_cube_finish=False,power_cube_batch=1):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32,coarse_dense=False,power_cube_finish=False,power_cube_batch=1,dense_late_pair=False):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -130,6 +130,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Unsupported DIF factors')
     if direction not in ('forward','inverse'):
         raise ValueError('Unsupported DIF direction')
+    if dense_late_pair and not (dense_prefix and cube_prefix and aligned and batch_pack and vector_basis):
+        raise ValueError('Late pair requires the batched dense Cube schedule')
     if dense_prefix and not cube_prefix:
         raise ValueError('Dense short prefix requires Cube DIF')
     if prefix_pitch!=1 and not cube_prefix:
@@ -185,9 +187,13 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     if vector_basis:
         from .npu_vector_basis import optimize_vector_basis
         source,specs=optimize_vector_basis(source,specs,'forward' if global_inverse else direction)
+    if dense_late_pair:
+        from .npu_dense_late_pair import replace_late_pair
+        source,specs=replace_late_pair(source,specs)
     if phase<0 or phase>=len(specs):raise ValueError('Invalid DIF phase')
     n=math.prod(factors);spec=specs[phase]
     dense_tag=f'_dense_f{dense_prefix_frequencies}_c{dense_prefix_columns}' if dense_prefix else ''
+    if dense_late_pair:dense_tag+='_latepair91'
     if coarse_dense:dense_tag+='_coarsedense'
     if power_cube_finish:dense_tag+='_powercubefinish'
     if power_cube_batch!=1:dense_tag+='_batch'+str(power_cube_batch)
@@ -222,6 +228,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         if pipeline not in ('0', '1'):
             raise ValueError('FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE must be 0 or 1')
         meta['num_stages'] = 2 if pipeline == '1' else 1
+    if spec.get('merged_late_pair'):meta['num_stages']=2
     if workspace_padding:meta['workspace_length']=spec['physical_n']
     if dense_prefix:
         meta.update(dense_prefix_columns=dense_prefix_columns,dense_prefix_frequencies=dense_prefix_frequencies)

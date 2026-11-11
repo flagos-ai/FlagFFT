@@ -803,6 +803,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     std::string phase=key.perm_form.substr(coarse?22:flat?27:cube?28:aligned?23:15);
     if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
       phase.resize(phase.size()-5);
+    const std::string late_pair_tag="_latepair91";
+    if (phase.size()>=late_pair_tag.size() &&
+        phase.compare(phase.size()-late_pair_tag.size(),late_pair_tag.size(),late_pair_tag)==0) {
+      phase.resize(phase.size()-late_pair_tag.size());
+      jit_command << " --npu-vector-dif-dense-late-pair";
+    }
     const std::string basis_tag="_vectorbasis";
     if (phase.size()>=basis_tag.size() &&
         phase.compare(phase.size()-basis_tag.size(),basis_tag.size(),basis_tag)==0) {
