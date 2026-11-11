@@ -6,7 +6,7 @@ from test_batch_dense_prefix_runtime import library,_description,_passes,_execut
 @pytest.fixture(autouse=True)
 def power_options(monkeypatch):
     for name in ('FLAT_POWER_DIF','FLAT_POWER_WORKSPACE_PAD','FLAT_POWER_TERMINAL8',
-                 'FLAT_POWER_CUBE_FINISH','DIF_GLOBAL_INVERSE'):
+                 'FLAT_POWER_CUBE_FINISH','FLAT_POWER_CUBE_BATCH','DIF_GLOBAL_INVERSE'):
         monkeypatch.setenv('FLAGFFT_NPU_'+name,'1')
 
 
@@ -38,6 +38,7 @@ class _PreparedLibrary:
 
 @pytest.mark.parametrize('n,batch,pattern,in_place',[
     (262144,17,'random',False),(262144,17,'basis',True),
+    (262144,65,'tone',True),
     (524288,65,'tone',True),(524288,17,'cancellation',False)])
 @pytest.mark.parametrize('direction',[-1,1])
 def test_complete_public_fft(library,monkeypatch,n,batch,pattern,in_place,direction):

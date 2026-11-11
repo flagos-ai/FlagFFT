@@ -854,6 +854,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-global-inverse";
     }
+    const std::string cube_batch_tag="_cubebatch";
+    const auto cube_batch_pos=phase.rfind(cube_batch_tag);
+    if (flat && cube_batch_pos!=std::string::npos) {
+      const auto group=phase.substr(cube_batch_pos+cube_batch_tag.size());
+      if (group!="8" && group!="32")
+        throw std::runtime_error("Unsupported power Cube batch group");
+      phase.resize(cube_batch_pos);
+      jit_command << " --npu-vector-dif-power-cube-batch " << group;
+    }
     if (flat && phase.size()>=11 && phase.compare(phase.size()-11,11,"_cubefinish")==0) {
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-power-cube-finish";
@@ -940,7 +949,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       ((kernel->kernel_name == "dense_prefix_half" &&
         key.perm_form.find("_dense_batch_f") != std::string::npos) ||
        kernel->kernel_name == "coarse_dense_prefix" ||
-       kernel->kernel_name == "power_cube_finish");
+       kernel->kernel_name == "power_cube_finish" ||
+       kernel->kernel_name == "power_cube_finish_batch");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
   if (key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {

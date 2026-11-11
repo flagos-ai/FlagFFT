@@ -10,10 +10,13 @@ Twiddles and structured FFT roots share each pass's read-only table argument.
 import math
 from flagfft_codegen.kernels_npu_structured import FFT_HELPERS
 
-def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0,cube_finish=False):
+def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0,cube_finish=False,cube_finish_batch=1):
  if type(workspace_padding) is not int or workspace_padding not in (0,512):
   raise ValueError('Power DIF workspace padding must be 0 or 512 floats')
  if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
+ if type(cube_finish_batch) is not int or cube_finish_batch not in (1,8,32):
+  raise ValueError('Unsupported power Cube batch group')
+ if cube_finish_batch!=1 and not cube_finish:raise ValueError('Batch coefficient reuse requires Cube finish')
  if cube_finish and (len(factors)!=3 or factors[0]!=64 or not 32<=factors[1]<=64 or factors[2]!=128 or workspace_padding!=512):
   raise ValueError('Power Cube finish requires bounded vector axes and padded workspace')
  n=math.prod(factors);workspace_n=n+workspace_padding;prefix=1;previous=1;specs=[]
@@ -28,7 +31,8 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False,works
   name=f'axis_{stage}';last=stage==len(factors)-1
   if last and cube_finish:
    from .npu_power_cube_finish import finish_source
-   spec=dict(name='power_cube_finish',phase='late',stage=stage,r=r,m=m,
+   spec=dict(name='power_cube_finish_batch' if cube_finish_batch>1 else 'power_cube_finish',
+       batch_pack=cube_finish_batch,phase='late',stage=stage,r=r,m=m,
        prefix=prefix,previous_prefix=previous,c=64,grid=(prefix//64,),physical_n=workspace_n)
    source+='\n'+finish_source(spec,conjugate_output=global_inverse)
    specs.append(spec)

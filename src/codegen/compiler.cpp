@@ -243,6 +243,17 @@ namespace {
         flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true) &&
         flag_or_default("FLAGFFT_NPU_FLAT_POWER_CUBE_FINISH",true);
     if (cube_finish) factors={64,middle,128};
+    // Keep at least 128 independent full groups to amortize coefficient
+    // loads without starving Cube cores. Short or sparse batches retain
+    // the ungrouped finish; every admitted size uses the same rule.
+    int64_t cube_batch=1;
+    if (cube_finish && batch>=32 &&
+        flag_or_default("FLAGFFT_NPU_FLAT_POWER_CUBE_BATCH",true)) {
+      const int64_t tiles=n/(128*64);
+      for (int64_t group:{32,8}) if (tiles*(batch/group)>=128) {
+        cube_batch=group;break;
+      }
+    }
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1,previous_prefix=1;
     const bool global_inverse=request.direction=="inverse" && batch>=16 &&
@@ -283,6 +294,7 @@ namespace {
       key.perm_form="npu_vector_dif_flat_power2_"+std::to_string(stage);
       if (padded_workspace) key.perm_form+="_workspacepad512";
       if (cube_finish) key.perm_form+="_cubefinish";
+      if (cube_batch>1) key.perm_form+="_cubebatch"+std::to_string(cube_batch);
       if (global_inverse) key.perm_form+="_globalconj";
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
       if (batch>=16 && axis_bits>=3 && axis_bits%2 &&
@@ -291,7 +303,8 @@ namespace {
       key.perm_form+="_auto";
       const int64_t extent=stage?m*prefix:m;
       const int64_t grid=matrix_finish?prefix/64:(extent+columns-1)/columns;
-      passes.push_back({TritonCompiler{}.compile_kernel(key),DeviceAllocation::from_floats(weights),grid,1,false});
+      passes.push_back({TritonCompiler{}.compile_kernel(key),DeviceAllocation::from_floats(weights),grid,1,false,
+                        matrix_finish?cube_batch:1});
       previous_prefix=prefix;prefix*=radix;
     }
     const auto bytes=static_cast<std::size_t>(batch*workspace_n*2*sizeof(float));

@@ -9,14 +9,15 @@ from flagfft_codegen.kernels_npu_dif import emit_vector_dif
 from test_npu_structured_fft import Pointer,execute_module,roots
 
 
+@pytest.mark.parametrize('batch_reuse',[1,8,32])
 @pytest.mark.parametrize('factors',[(64,32,128),(64,64,128)])
 @pytest.mark.parametrize('mode',['forward','inverse','global_inverse'])
-def test_complete_fft(tmp_path,factors,mode):
+def test_complete_fft(tmp_path,factors,mode,batch_reuse):
     global_inverse=mode=='global_inverse'
     direction='inverse' if global_inverse else mode
     sign=1 if direction=='inverse' and not global_inverse else -1
     source,specs=build(factors,direction,terminal8=True,global_inverse=global_inverse,
-                       workspace_padding=512,cube_finish=True)
+                       workspace_padding=512,cube_finish=True,cube_finish_batch=batch_reuse)
     path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
     ns['tl'].dot=lambda a,b,acc=None,**kw:(a.double()@b.double()+(acc.double() if acc is not None else 0)).float()
     n=math.prod(factors);batch=2
@@ -41,9 +42,11 @@ def test_complete_fft(tmp_path,factors,mode):
                 w=torch.cat((angle.cos().float().flatten(),angle.sin().float().flatten(),w))
         y=guard if final else torch.full((2*batch*s['physical_n'],),float('nan'))
         for gx in range(s['grid'][0]):
-            for b in range(batch):
+            for b in range(math.ceil(batch/s.get('batch_pack',1))):
                 pid[:]=[gx,b]
-                ns[s['name']](Pointer(current),Pointer(w),Pointer(y,64 if final else 0))
+                args=[Pointer(current),Pointer(w),Pointer(y,64 if final else 0)]
+                if s.get('batch_pack',1)>1:args.append(batch)
+                ns[s['name']](*args)
         current=y
     actual=torch.view_as_complex(guard[64:-64].reshape_as(x)).cdouble()
     z=torch.view_as_complex(x).cdouble()
@@ -73,3 +76,24 @@ def test_metadata_and_unsupported_geometry(tmp_path):
         build(factors,cube_finish=True)
     with pytest.raises(ValueError,match='requires flat power DIF'):
         emit_vector_dif((32,32,16),'forward',0,tmp_path,power_cube_finish=True)
+
+
+@pytest.mark.parametrize('group',[8,32])
+def test_batch_reuse_metadata(tmp_path,group):
+    for phase in range(3):
+        old=emit_vector_dif((64,64,128),'forward',phase,tmp_path,flat_power2=True,
+                            workspace_padding=512,power_cube_finish=True)
+        new=emit_vector_dif((64,64,128),'forward',phase,tmp_path,flat_power2=True,
+                            workspace_padding=512,power_cube_finish=True,power_cube_batch=group)
+        assert old['module_path']!=new['module_path']
+        assert new['batch_per_block']==(group if phase==2 else 1)
+        assert new['signature']==old['signature']+(',i32' if phase==2 else '')
+        if phase==2:assert new['kernel_name']=='power_cube_finish_batch'
+    with pytest.raises(ValueError,match='requires Cube finish'):
+        emit_vector_dif((64,64,128),'forward',0,tmp_path,flat_power2=True,power_cube_batch=group)
+
+
+def test_invalid_batch_group():
+    for group in (0,2,16,64,True):
+        with pytest.raises(ValueError,match='Unsupported power Cube batch group'):
+            build((64,64,128),workspace_padding=512,cube_finish=True,cube_finish_batch=group)
