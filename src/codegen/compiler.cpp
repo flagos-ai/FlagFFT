@@ -379,6 +379,14 @@ namespace {
       }
     }
     const int64_t physical_n=remaining*padded;
+    const int64_t terminal_radix=factors.size()>=4?
+        factors[factors.size()-2]*factors.back():0;
+    // A nearly full 32-point matrix amortizes its padding and replaces two
+    // complete Vector passes. Keep enough full batch groups for Cube cores.
+    const bool terminal_pair=natural126 && batch>=32 && factors.size()>=5 &&
+        terminal_radix>28 && terminal_radix<=32 &&
+        (physical_n/terminal_radix/128)*(batch/8)>=192 &&
+        flag_or_default("FLAGFFT_NPU_DIF_TERMINAL_PAIR",true);
     const bool coprime_layout=good_thomas && !dense_prefix;
     const bool global_inverse=request.direction=="inverse" &&
         flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
@@ -394,6 +402,7 @@ namespace {
       if (natural126) key.perm_form+="_natural126";
       if (global_inverse) key.perm_form+="_globalconj";
       if (vector_basis) key.perm_form+="_vectorbasis";
+      if (terminal_pair) key.perm_form+="_terminalpair";
       key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),
           DeviceAllocation::from_floats(weights),grid,1,false,packed});
@@ -417,6 +426,21 @@ namespace {
     for (std::size_t stage=2;stage<factors.size();++stage) {
       const int64_t radix=factors[stage],m=n/(prefix*radix);
       const int64_t physical_prefix=prefix/initial*padded;
+      if (terminal_pair && stage+2==factors.size()) {
+        const int64_t previous=factors[stage-1],width=64;
+        std::vector<float> matrix(previous*width*width,0.0f);
+        for (int64_t digit=0;digit<previous;++digit)
+          for (int64_t f=0;f<terminal_radix;++f)
+            for (int64_t d=0;d<terminal_radix;++d) {
+              const double angle=sign*2*kPi*(f+static_cast<double>(digit)/previous)*d/terminal_radix;
+              const float co=static_cast<float>(std::cos(angle)),si=static_cast<float>(std::sin(angle));
+              const int64_t offset=digit*width*width+f*width+d;
+              matrix[offset]=co;matrix[offset+32]=-si;
+              matrix[offset+32*width]=si;matrix[offset+32*width+32]=co;
+            }
+        append(std::move(matrix),physical_prefix/128,8);
+        break;
+      }
       std::vector<float> values(2*physical_n);
       for (int64_t index=0;index<physical_n;++index) {
         const int64_t pf=index%physical_prefix;
