@@ -1096,10 +1096,17 @@ def _leaf_single_smem_buffer_eligible(
         and os.getenv("FLAGFFT_IX_BLUESTEIN_SINGLE_SMEM", "0") == "1"
         and io_mode in {"bluestein_prepare_leaf", "bluestein_finish_leaf"}
     )
+    ix_cooperative = (
+        profile.backend == "ix" and profile.device_arch == "71"
+        and os.getenv("FLAGFFT_IX_RADIX8", "0") == "1"
+        and io_mode in {"contiguous", "strided"}
+        and 64 <= plan.length <= 4096 and plan.length & (plan.length - 1) == 0
+        and all(radix in {2,4,8} for radix in plan.factors)
+    )
     if io_mode not in {"contiguous", "strided"} and not ix_boundary:
         return False
     stage_lanes = cooperative_stage_lanes_for(plan)
-    if not ix_boundary and any(lanes != plan.lanes for lanes in stage_lanes):
+    if not (ix_boundary or ix_cooperative) and any(lanes != plan.lanes for lanes in stage_lanes):
         return False
     for index in range(len(plan.factors) - 1):
         if plan.length // (stage_lanes[index] * plan.factors[index]) != 1:

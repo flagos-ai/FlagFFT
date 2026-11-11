@@ -464,3 +464,16 @@ def test_ix_radix8_permuted_trial_reduces_shared_bytes_per_thread(ix_balanced_pr
     assert 'smem_b_r = tle.gpu.alloc([1024]' in source
     assert 'tail_flat' not in source
     compile(source,'<ix-radix8-permuted>','exec')
+
+
+def test_ix_radix8_contiguous_reuses_buffer_with_complete_intermediate_stages(ix_balanced_profile,monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan, _use_single_smem_buffer
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    plan=LeafPlan(256,(8,8,4),1,32,1,(),256,'forward','complex64')
+    assert not _use_single_smem_buffer(plan,io_mode='contiguous')
+    monkeypatch.setenv('FLAGFFT_IX_RADIX8','1')
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','1')
+    assert _use_single_smem_buffer(plan,io_mode='contiguous')
+    _,source=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
+    assert 'smem_a_r = tle.gpu.alloc' not in source
+    assert 'smem_b_r = tle.gpu.alloc([1024]' in source
