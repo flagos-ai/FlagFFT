@@ -1314,6 +1314,8 @@ def _emit_stage_block(
     )
     vectorized_complex_io = (
         io_mode in {"contiguous", "contiguous_c2r", "permuted_store"}
+        or (io_mode=="contiguous_r2c" and _ix_backend_active()
+            and _packed_maca_fp32_complex_io(dtype))
         or vectorized_four_step_complex_io
     ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
     hcu_u64_load = (
@@ -2032,12 +2034,12 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}dst_ptr{j} = out_ptr + (output_batch_base + out_idx{j}) * 2"
                 )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})"
-                )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
-                )
+                if vectorized_complex_io:
+                    lines.extend(_emit_vectorized_complex_store(
+                        indent,f"dst_ptr{j}",f"r{j}",f"i{j}",f"compact_mask{j}",dtype))
+                else:
+                    lines.append(f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})")
+                    lines.append(f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})")
             elif io_mode == "packed_r2c":
                 lines.extend(_emit_exchange_store(
                     indent, "packed", f"out_idx{j}", j, f"r{j}", f"i{j}", portable_exchange
