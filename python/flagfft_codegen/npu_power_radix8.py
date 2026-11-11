@@ -23,4 +23,3 @@ def radix8_axis_source():
         ls += [f'    out_r=al.insert_slice(out_r,r{b},[{b}*8*C],[8*C],[1])',f'    out_i=al.insert_slice(out_i,i{b},[{b}*8*C],[8*C],[1])']
     ls += ['    return out_r,out_i']
     return '\n'.join(ls)+'\n'
-
