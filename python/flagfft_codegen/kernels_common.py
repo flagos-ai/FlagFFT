@@ -688,9 +688,18 @@ def _maca_p8_register_leaf_supported(plan: LeafPlan) -> bool:
     the extra register/warp pressure.  Keep both cases on the derived policy
     even when a caller requests P8 globally.
     """
+    ix_short_trial = False
+    if _ix_backend_active():
+        # IX short FourStep axes can otherwise leave most of a four-warp
+        # block idle. Screen wider register tiles separately from the MetaX
+        # policy; the direct-exchange shared-memory bound still applies.
+        short_pack = _maca_knob("SHORT_REGISTER_PACK", "0")
+        if short_pack not in {"0", "1"}:
+            raise ValueError("FLAGFFT_IX_SHORT_REGISTER_PACK must be 0 or 1")
+        ix_short_trial = short_pack == "1" and 64 <= plan.length <= 256
     return (
         _maca_knob("EXCHANGE") in {"direct", "direct_all"}
-        and plan.length >= 512
+        and (plan.length >= 512 or ix_short_trial)
         and not _is_double_dtype(plan.dtype)
         and len(plan.factors) > 1
         and all(radix & (radix - 1) == 0 for radix in plan.factors)

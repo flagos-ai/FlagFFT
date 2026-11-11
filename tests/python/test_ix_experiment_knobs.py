@@ -162,6 +162,31 @@ def test_ix_resource_warps_and_explicit_override(ix_profile, monkeypatch, length
     assert _metadata(**params)["num_warps"] == 8
 
 
+def test_ix_short_register_pack_keeps_launch_and_source_consistent(ix_profile, monkeypatch):
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan, _maca_p8_register_leaf_supported
+    from flagfft_codegen.kernels_leaf import _build_four_step_col_kernel_source
+    from flagfft_codegen.metadata import _metadata
+
+    monkeypatch.setenv("FLAGFFT_IX_PORTABLE_LEAF", "1")
+    monkeypatch.setenv("FLAGFFT_IX_INNER_PACK", "16")
+    monkeypatch.setenv("FLAGFFT_IX_MAX_PACK", "16")
+    plan = LeafPlan(128, (16, 8), 1, 16, 4, (), 128, "forward", "complex64")
+    assert not _maca_p8_register_leaf_supported(plan)
+    monkeypatch.setenv("FLAGFFT_IX_SHORT_REGISTER_PACK", "1")
+    assert _maca_p8_register_leaf_supported(plan)
+    name, source = _build_four_step_col_kernel_source(plan, 128, 128)
+    meta = _metadata(module_path=Path("unused.py"), kernel_name=name, arg_names=[],
+                     plan=plan, kernel_type="four_step_col", n1=128, n2=128,
+                     dtype="complex64")
+    assert meta["inner_pack"] == 16
+    assert "four_step_inner_base = tl.program_id(0) * 16" in source
+    for length, factors, dtype in ((210, (7, 6, 5), "complex64"),
+                                    (128, (16, 8), "complex128")):
+        unsupported = LeafPlan(length, factors, 1, 16, 4, (), length, "forward", dtype)
+        assert not _maca_p8_register_leaf_supported(unsupported)
+
+
 def test_ix_tle_presets_are_scoped_and_overridable(ix_profile, monkeypatch):
     from flagfft_codegen.kernels_common import _maca_knob
     from flagfft_codegen.target import set_ix_ct_single_tle_default, reset_ix_ct_single_tle_default
