@@ -84,10 +84,15 @@ namespace {
     key.ix_warp_fft_pack = pack;
   }
 
+  bool ix_warp_fourstep_axes(int64_t n1, int64_t n2) {
+    const auto supported=[](int64_t n) { return n==64 || n==128 || n==256; };
+    return supported(n1) && supported(n2);
+  }
+
   void mark_ix_warp_fourstep(KernelKey &key, const FFTRequest &request) {
     if (request.device_type!="ix" || request.device_arch!="71" || key.dtype!="complex64" ||
         !flag_or_default("FLAGFFT_IX_WARP_FOURSTEP",false) ||
-        (key.length!=64 && key.length!=128 && key.length!=256)) return;
+        !ix_warp_fourstep_axes(key.four_step_n1,key.four_step_n2)) return;
     int64_t pack=16;
     if (const char *value=std::getenv("FLAGFFT_IX_WARP_FFT_PACK")) {
       const std::string text(value);
@@ -2603,7 +2608,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
         maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
-    const bool use_four_step = use_default_four_step || use_maca_four_step;
+    // The experimental dense stages fuse twiddles into the row pass. Keep
+    // specialized real Bluestein boundaries together; complex convolutions
+    // can instead exercise the complete pair of dense warp stages.
+    const bool use_ix_dense_warp = request.device_type=="ix" && real_kind.empty() &&
+        four_step && ix_warp_fourstep_axes(four_step->n1,four_step->n2) &&
+        flag_or_default("FLAGFFT_IX_WARP_FOURSTEP",false);
+    const bool use_four_step = (use_default_four_step || use_maca_four_step) && !use_ix_dense_warp;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
@@ -2728,7 +2739,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           four_step->n2,
           std::move(fft),
           compile_boundary_kernel(boundary_row, KernelKind::BluesteinFourStepPrepareRow, true),
-          compile_four_step_col_kernel(boundary_col, child_request, four_step->n1, four_step->n2),
+          compile_boundary_kernel(boundary_col, KernelKind::FourStepCol, false),
           compile_boundary_kernel(boundary_row, KernelKind::BluesteinFourStepPointwiseRow, true),
           compile_boundary_kernel(boundary_col, KernelKind::BluesteinFourStepFinishCol, false),
           build_raw_leaf_tables(boundary_row, child_request,
