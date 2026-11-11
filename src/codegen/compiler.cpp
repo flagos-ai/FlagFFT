@@ -5785,6 +5785,32 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                                    batch);
   }
 
+  const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+  const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+  if (request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048 &&
+      ix_row_leaf && ix_col_leaf && flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", false)) {
+    // Keep the compact spectrum transposed between two FFT passes. Each
+    // outer store stays inside its own matrix, including the odd half width.
+    auto key = KernelKey::leaf_r2c_permuted_store(
+        triton_target_for_request(row_request), row_request.direction, row_request.input_dtype,
+        ix_row_leaf->length, ix_row_leaf->factors, ix_row_leaf->lanes, ix_row_leaf->num_warps,
+        ix_row_leaf->generic_radices, ix_row_leaf->smem_size, "outer");
+    mark_ix_warp_fft(key, row_request, n0);
+    auto row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
+        n1, compile_kernel(key), build_raw_leaf_tables(*ix_row_leaf, row_request), DeviceAllocation{}, n0);
+    FFTRequest col_request = request;
+    col_request.fft_length = col_request.requested_n = n0;
+    col_request.input_shape = {batch * half_n1, n0};
+    col_request.input_strides = {n0, 1};
+    col_request.batch = batch * half_n1;
+    auto col_fft = compile_raw_permuted_store_leaf(*ix_col_leaf, col_request, half_n1, "outer");
+    return std::make_shared<CompiledRaw2DR2CRowNode>(
+        n0, n1, std::move(row_r2c), std::move(col_fft), nullptr, nullptr,
+        adaptor::Memory(static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes)), DeviceAllocation{});
+  }
+
 #if defined(FLAGFFT_BACKEND_NPU)
   const bool npu_aiv_fft64_enabled = flag_or_default("FLAGFFT_NPU_2D_ASCENDC_AIV", true);
   const bool use_npu_aiv_fft64_real =
@@ -6005,6 +6031,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     row_request.input_shape = {batch, n1};
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_c2r_node(node->row_plan, row_request, batch),
                                                    batch);
+  }
+
+  const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+  const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+  if (request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048 &&
+      ix_row_leaf && ix_col_leaf && flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", false)) {
+    auto col_fft = compile_raw_permuted_store_leaf(*ix_col_leaf, col_request, half_n1, "outer");
+    auto row_c2r = compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
+    auto transpose = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+    const auto bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+    return std::make_shared<CompiledRaw2DC2RRowNode>(
+        n0, n1, std::move(col_fft), std::move(row_c2r), std::move(transpose), nullptr,
+        adaptor::Memory(bytes), adaptor::Memory(bytes));
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)

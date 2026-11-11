@@ -2767,6 +2767,10 @@ flagfftResult CompiledRaw2DR2CRowNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
+    if (!transpose_fwd && !transpose_inv) {
+      RawExecutionContext col_context {context.request, context.stream, batch * half_n1, n0, n0};
+      return col_fft->execute(temp1.get(), output, col_context);
+    }
 
     std::vector<JitKernelArg> transpose_fwd_args = {
         JitKernelArg::device(temp1.get()),
@@ -2854,6 +2858,10 @@ flagfftResult CompiledRaw2DC2RRowNode::execute(adaptor::DevicePtr input,
     flagfftResult result = col_fft->execute(temp1.get(), temp2.get(), col_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+    if (!transpose_inv) {
+      RawExecutionContext row_context {context.request, context.stream, batch * n0, half_n1, n1};
+      return row_c2r->execute(temp2.get(), output, row_context);
     }
 
     std::vector<JitKernelArg> transpose_inv_args = {
