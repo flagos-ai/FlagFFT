@@ -3040,7 +3040,7 @@ def _build_leaf_kernel_source_for_io(
             _leaf_kernel_params_for_io(plan,io_mode=io_mode,
                 include_four_step_twiddle=io_mode=='four_step_row'),warp_pack)
     if (warp_pack and _ix_backend_active() and current_profile().device_arch == "71"
-            and current_profile().warp_size == 64 and plan.dtype == "complex64" and plan.length in {128,256,512,1024,2048}
+            and current_profile().warp_size == 64 and plan.dtype == "complex64" and plan.length in {64,128,256,512,1024,2048}
             and io_mode in {"contiguous", "contiguous_c2r", "contiguous_r2c", "permuted_store", "permuted_r2c", "permuted_store_r2c"}
             and perm_form in {"outer", "inner"}):
         from .kernels_ix_warp import build_ix_warp256_leaf_source

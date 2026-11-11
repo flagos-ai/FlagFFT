@@ -55,7 +55,7 @@ namespace {
     const bool family_default=request.ix_warp_fft_pack_default>0;
     const bool family=flag_or_default("FLAGFFT_IX_WARP_FFT",family_default);
     const bool narrow = key.length == 256 && flag_or_default("FLAGFFT_IX_WARP256", family);
-    const bool wide = (key.length == 128 || key.length == 256 || key.length == 512 ||
+    const bool wide = (key.length == 64 || key.length == 128 || key.length == 256 || key.length == 512 ||
                        key.length == 1024 || key.length == 2048) &&
                       family && key.length!=256;
     if (!narrow && !wide) return;

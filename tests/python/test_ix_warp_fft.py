@@ -3,7 +3,7 @@ import ast
 import pytest
 from flagfft_codegen.kernels_ix_warp import build_ix_warp256_source
 
-@pytest.mark.parametrize('length',[128,256,512,1024,2048])
+@pytest.mark.parametrize('length',[64,128,256,512,1024,2048])
 @pytest.mark.parametrize('mode,inverse',[('outer',False),('inner',True),('r2c',False),('c2r',True)])
 def test_wide_warp_fft_source_is_valid_and_names_length(length,mode,inverse):
     from flagfft_codegen.kernels_ix_warp import build_ix_warp_source
