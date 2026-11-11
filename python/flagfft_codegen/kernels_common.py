@@ -552,6 +552,19 @@ def contiguous_batch_pack_for(plan: LeafPlan, *, real_boundary: bool = False) ->
     return _profile_batch_pack_for(plan)
 
 
+def _ix_permuted_single_smem(plan: LeafPlan) -> bool:
+    """Explicit wide transpose-store trial with complete overwriting stages."""
+    if (not _ix_backend_active() or _portable_leaf_backend_active()
+            or os.getenv("FLAGFFT_IX_PERMUTED_SINGLE_SMEM", "0") != "1"
+            or os.getenv("FLAGFFT_IX_BATCH_INTERLEAVE", "0") != "1"
+            or plan.dtype != "complex64" or not 512 <= plan.length <= 4096
+            or plan.length & (plan.length - 1) or len(plan.factors) < 2):
+        return False
+    lanes = cooperative_stage_lanes_for(plan)
+    return all(plan.length == lanes[i] * plan.factors[i]
+               for i in range(len(plan.factors) - 1))
+
+
 def permuted_store_batch_pack_for(
     plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None
 ) -> int:
@@ -562,7 +575,9 @@ def permuted_store_batch_pack_for(
     two. Shared memory still caps the selected pack for large leaves.
     """
     profile = current_profile()
-    bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
+    single_smem = _ix_permuted_single_smem(plan)
+    buffer_count = 2 if single_smem else 4
+    bytes_per_fft = buffer_count * (plan.smem_size + (0 if single_smem else 1)) * _real_element_bytes(plan.dtype)
     smem_pack = max(
         1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
     )
@@ -612,8 +627,8 @@ def permuted_store_batch_pack_for(
                 # the source, rather than the default occupancy budget.
                 smem_pack = max(
                     (pack for pack in (1, 2, 4, 8, 16, 32)
-                     if 4 * lane_block_for(
-                         (plan.smem_size + (1 if pack >= 4 else 0)) * pack
+                     if buffer_count * lane_block_for(
+                         (plan.smem_size + (1 if pack >= 4 and not single_smem else 0)) * pack
                      ) * _real_element_bytes(plan.dtype)
                      <= profile.max_dynamic_shared_memory),
                     default=1,
@@ -1074,6 +1089,8 @@ def _leaf_single_smem_buffer_eligible(
         return False
     if plan.dtype != "complex64" or len(plan.factors) < 2:
         return False
+    if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
+        return _ix_permuted_single_smem(plan)
     ix_boundary = (
         profile.backend == "ix" and profile.device_arch == "71"
         and os.getenv("FLAGFFT_IX_BLUESTEIN_SINGLE_SMEM", "0") == "1"

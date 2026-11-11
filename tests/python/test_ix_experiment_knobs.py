@@ -403,3 +403,29 @@ def test_ix_bluestein_boundary_single_buffer_allows_only_complete_stages(ix_bala
     incomplete=LeafPlan(4096,(64,1,64),1,64,4,(),4096,'forward','complex64')
     assert not _use_single_smem_buffer(incomplete,io_mode=mode)
     compile(source,'<ix-boundary-single-buffer>','exec')
+
+
+@pytest.mark.parametrize('length,factors,lanes,requested,expected',[
+    (512,(32,16),16,32,32), (1024,(32,32),32,32,16),
+    (2048,(16,16,8),128,16,8), (4096,(16,16,16),256,8,4),
+])
+def test_ix_wide_permuted_single_buffer_pack_matches_queried_memory(ix_balanced_profile,monkeypatch,
+                                                                  length,factors,lanes,requested,expected):
+    from flagfft_codegen.kernels_common import LeafPlan, _use_single_smem_buffer, permuted_store_batch_pack_for
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_IX_PERMUTED_SINGLE_SMEM','1')
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','1')
+    monkeypatch.setenv('FLAGFFT_IX_3D_SMEM_STORE','1')
+    monkeypatch.setenv('FLAGFFT_IX_3D_PACK',str(requested))
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
+    plan=LeafPlan(length,factors,1,lanes,4,(),length,'forward','complex64')
+    assert _use_single_smem_buffer(plan,io_mode='permuted_store')
+    assert permuted_store_batch_pack_for(plan)==expected
+    name,source=_build_leaf_kernel_source_for_io(plan,io_mode='permuted_store')
+    assert 'smem_a_r = tle.gpu.alloc' not in source
+    complete_last = length == lanes*factors[-1] if lanes>32 else True
+    assert name.endswith('_smstore') == complete_last
+    assert (f'tail_flat = tl.arange(0, {length*expected})' in source) == complete_last
+    assert 2*length*expected*4==131072
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_INTERLEAVE','0')
+    assert not _use_single_smem_buffer(plan,io_mode='permuted_store')

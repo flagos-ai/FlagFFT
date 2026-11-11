@@ -33,6 +33,7 @@ from .kernels_common import (
     _maca_backend_active,
     _mthreads_backend_active,
     _ix_backend_active,
+    _ix_permuted_single_smem,
     _portable_leaf_backend_active,
     _maca_knob,
     _non_nvidia_backend_active,
@@ -3157,7 +3158,8 @@ def _build_leaf_kernel_source_for_io(
     permuted_smem_store = (
         _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_SMEM_STORE", "0") == "1"
         and _ix_batch_smem_interleave(io_mode, portable_exchange, batch_pack)
-        and plan.dtype == "complex64" and 64 <= n <= 256 and n & (n - 1) == 0
+        and plan.dtype == "complex64" and (64 <= n <= 256 or _ix_permuted_single_smem(plan))
+        and n & (n - 1) == 0
         and len(factors) >= 2 and batch_pack > 1
         and n == stage_lanes[-1] * factors[-1]
         and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}
