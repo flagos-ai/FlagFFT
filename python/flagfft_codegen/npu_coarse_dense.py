@@ -4,9 +4,11 @@
 import math
 
 
-def prefix_source(factors, global_inverse=False):
+def prefix_source(factors, global_inverse=False, radix=120):
     n = math.prod(factors)
-    m = n // 120
+    if radix not in (120,126) or n%radix:
+        raise ValueError('Unsupported natural Cube prefix')
+    m = n // radix
     pn = m * 128
     # A 64x64 complex tile uses one real 128x128 matrix product. The real
     # cosine/sine basis also supplies frequencies 64..119 by conjugate
@@ -19,7 +21,7 @@ def coarse_dense_prefix(X,TW,Y):
     base=tl.program_id(0)*64
     digit=tl.arange(0,128)[:,None]
     word=base*2+tl.arange(0,128)[None,:]
-    raw=tl.load(X+batch*{2*n}+digit*{2*m}+word,(digit<120)&(word<{2*m}),0.)
+    raw=tl.load(X+batch*{2*n}+digit*{2*m}+word,(digit<{radix})&(word<{2*m}),0.)
     row=tl.arange(0,128)[:,None]
     k=tl.arange(0,128)[None,:]
     basis=tl.load(TW+row*128+k)
@@ -37,11 +39,11 @@ def coarse_dense_prefix(X,TW,Y):
     tl.store(Y+batch*{2*pn}+{pn}+dst,posi,sample<{m})
     lane=tl.arange(0,4096)
     nf=64+lane//64
-    take=tl.maximum(0,120-nf)*64+lane%64
+    take=tl.maximum(0,{radix}-nf)*64+lane%64
     nr=tl.gather(cr+si,take,0)
     ni=tl.gather({negative_imag},take,0)
-    nr=tl.where(nf<120,nr,0.)
-    ni=tl.where(nf<120,ni,0.)
+    nr=tl.where(nf<{radix},nr,0.)
+    ni=tl.where(nf<{radix},ni,0.)
     ndst=sample*128+64+freq
     tl.store(Y+batch*{2*pn}+ndst,tl.trans(tl.reshape(nr,(64,64))),sample<{m})
     tl.store(Y+batch*{2*pn}+{pn}+ndst,tl.trans(tl.reshape(ni,(64,64))),sample<{m})

@@ -803,6 +803,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     std::string phase=key.perm_form.substr(coarse?22:flat?27:cube?28:aligned?23:15);
     if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
       phase.resize(phase.size()-5);
+    const std::string late_batch_tag="_latepairbatch8";
+    if (phase.size()>=late_batch_tag.size() &&
+        phase.compare(phase.size()-late_batch_tag.size(),late_batch_tag.size(),late_batch_tag)==0) {
+      phase.resize(phase.size()-late_batch_tag.size());
+      jit_command << " --npu-vector-dif-late-pair-batch 8";
+    }
     const std::string late_pair_tag="_latepair91";
     if (phase.size()>=late_pair_tag.size() &&
         phase.compare(phase.size()-late_pair_tag.size(),late_pair_tag.size(),late_pair_tag)==0) {
@@ -876,6 +882,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (flat && phase.size()>=16 && phase.compare(phase.size()-16,16,"_workspacepad512")==0) {
       phase.resize(phase.size()-16);
       jit_command << " --npu-vector-dif-workspace-padding 512";
+    }
+    const std::string natural_tag="_natural126";
+    if (coarse && phase.size()>=natural_tag.size() &&
+        phase.compare(phase.size()-natural_tag.size(),natural_tag.size(),natural_tag)==0) {
+      phase.resize(phase.size()-natural_tag.size());
+      jit_command << " --npu-vector-dif-natural-prefix";
     }
     if (coarse && phase.size()>=6 && phase.compare(phase.size()-6,6,"_dense")==0) {
       phase.resize(phase.size()-6);

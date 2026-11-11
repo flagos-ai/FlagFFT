@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32,coarse_dense=False,power_cube_finish=False,power_cube_batch=1,dense_late_pair=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32,coarse_dense=False,power_cube_finish=False,power_cube_batch=1,dense_late_pair=False,late_pair_batch=1,natural_prefix=False):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -130,6 +130,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Unsupported DIF factors')
     if direction not in ('forward','inverse'):
         raise ValueError('Unsupported DIF direction')
+    if late_pair_batch!=1 and not dense_late_pair:
+        raise ValueError('Late matrix batch reuse requires late-pair fusion')
     if dense_late_pair and not (dense_prefix and cube_prefix and aligned and batch_pack and vector_basis):
         raise ValueError('Late pair requires the batched dense Cube schedule')
     if dense_prefix and not cube_prefix:
@@ -156,6 +158,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Power Cube finish requires flat power DIF')
     if coarse_gt and not coarse:
         raise ValueError("Coprime coarse prefix requires coarse DIF")
+    if natural_prefix and not (coarse and coarse_dense and not coarse_single):
+        raise ValueError('Natural prefix requires batched dense coarse DIF')
     if coarse_dense and not coarse:
         raise ValueError('Dense coarse prefix requires coarse DIF')
     if coarse_single and not coarse:
@@ -164,7 +168,10 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Vector basis requires a public batch DIF schedule')
     if finish_batch4 and not (cube_prefix and aligned and batch_pack):
         raise ValueError('Batch finish requires batch-grouped aligned Cube DIF')
-    if coarse:
+    if natural_prefix:
+        from .npu_natural_prefix import build_natural_dif
+        source,specs=build_natural_dif(tuple(factors),direction,global_inverse)
+    elif coarse:
         from .kernels_npu_dif_coarse import build_coarse_dif
         source,specs=build_coarse_dif(tuple(factors),direction,global_inverse=global_inverse,single_batch=coarse_single,good_thomas=coarse_gt,dense_prefix=coarse_dense)
     elif flat_power2:
@@ -189,11 +196,13 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         source,specs=optimize_vector_basis(source,specs,'forward' if global_inverse else direction)
     if dense_late_pair:
         from .npu_dense_late_pair import replace_late_pair
-        source,specs=replace_late_pair(source,specs)
+        source,specs=replace_late_pair(source,specs,late_pair_batch)
     if phase<0 or phase>=len(specs):raise ValueError('Invalid DIF phase')
     n=math.prod(factors);spec=specs[phase]
     dense_tag=f'_dense_f{dense_prefix_frequencies}_c{dense_prefix_columns}' if dense_prefix else ''
     if dense_late_pair:dense_tag+='_latepair91'
+    if late_pair_batch!=1:dense_tag+='_latebatch'+str(late_pair_batch)
+    if natural_prefix:dense_tag+='_natural126'
     if coarse_dense:dense_tag+='_coarsedense'
     if power_cube_finish:dense_tag+='_powercubefinish'
     if power_cube_batch!=1:dense_tag+='_batch'+str(power_cube_batch)

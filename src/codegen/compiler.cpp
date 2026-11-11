@@ -324,7 +324,7 @@ namespace {
         !flag_or_default("FLAGFFT_NPU_SYMMETRIC_CODELETS",true)) return nullptr;
     const int64_t first=n%120==0?8:n%60==0?4:0;
     if (!first) return nullptr;
-    const int64_t initial=first*15,padded=first*16,remaining=n/initial;
+    int64_t initial=first*15,padded=first*16,remaining=n/initial;
     if (remaining<1024) return nullptr;
     const int64_t prefix_columns=first==4?128:64;
     // Forty independent vector tiles fill the 910B4 AIV cores even when the
@@ -337,7 +337,7 @@ namespace {
     for (int64_t radix:{7,9,5,8,4,3,2})
       while (rest%radix==0) { factors.push_back(radix);rest/=radix; }
     if (rest!=1 || factors.size()<3) return nullptr;
-    const int64_t physical_n=remaining*padded,columns=first==4?128:64;
+    const int64_t columns=first==4?128:64;
     const bool vector_basis=batch>=16 && padded==128 && factors.size()>3 && factors[2]==7 &&
         request.origin_rank<=1 && request.raw_dim==1 && !request.convolution_child &&
         !request.packed_real_child && request.real_transform_kind.empty() &&
@@ -348,6 +348,21 @@ namespace {
     // writes natural frequencies. Qualify by prefix/suffix geometry, not N.
     const bool dense_prefix=vector_basis && good_thomas &&
         flag_or_default("FLAGFFT_NPU_DIF_COARSE_DENSE_PREFIX",true);
+    // A near-128 natural prefix reduces padding for the same public coarse
+    // family. Admit only decompositions that do not add a full memory pass.
+    bool natural126=false;
+    if (dense_prefix && n%126==0 &&
+        flag_or_default("FLAGFFT_NPU_DIF_NATURAL126",true)) {
+      std::vector<int64_t> candidate={7,18};
+      int64_t tail=n/126;
+      for (int64_t radix:{9,10,8,7,6,5,4,3,2})
+        while (tail%radix==0) { candidate.push_back(radix);tail/=radix; }
+      if (tail==1 && candidate.size()>=3 && candidate.size()<=factors.size()) {
+        factors=std::move(candidate);initial=126;padded=128;remaining=n/126;
+        natural126=true;
+      }
+    }
+    const int64_t physical_n=remaining*padded;
     const bool coprime_layout=good_thomas && !dense_prefix;
     const bool global_inverse=request.direction=="inverse" &&
         flag_or_default("FLAGFFT_NPU_DIF_GLOBAL_INVERSE",true);
@@ -360,6 +375,7 @@ namespace {
       if (single_batch) key.perm_form+="_single";
       if (coprime_layout) key.perm_form+="_gt";
       if (dense_prefix) key.perm_form+="_dense";
+      if (natural126) key.perm_form+="_natural126";
       if (global_inverse) key.perm_form+="_globalconj";
       if (vector_basis) key.perm_form+="_vectorbasis";
       key.perm_form+="_auto";
@@ -381,7 +397,7 @@ namespace {
       roots[first*16+d*16+j]=static_cast<float>(std::sin(angle));
     }
     append(std::move(roots),(remaining+columns-1)/columns,1);
-    int64_t prefix=initial,previous_prefix=first;
+    int64_t prefix=initial,previous_prefix=factors.front();
     for (std::size_t stage=2;stage<factors.size();++stage) {
       const int64_t radix=factors[stage],m=n/(prefix*radix);
       const int64_t physical_prefix=prefix/initial*padded;
@@ -410,7 +426,7 @@ namespace {
         int64_t width=1;while(width<physical_prefix && width<512)width*=2;
         grid=m*((physical_prefix+width-1)/width);
       }
-      const bool spatial7=vector_basis && stage==2;
+      const bool spatial7=vector_basis && stage==2 && !natural126;
       if (spatial7) grid=(m+3)/4;
       append(std::move(values),grid,final||single_batch||spatial7?1:4);
       previous_prefix=prefix;prefix*=radix;
@@ -567,6 +583,11 @@ namespace {
     // after the dense producer, before the physical prefix has expanded.
     const bool late_pair=dense_batch && factors.size()>=5 && factors[2]*factors[3]==91 &&
         flag_or_default("FLAGFFT_NPU_DIF_DENSE_LATE_PAIR",true);
+    // Retain enough independent groups after coefficient reuse. Short
+    // batches and sparse suffix grids use the established pipelined kernel.
+    const int64_t late_pair_batch=late_pair && batch>=32 &&
+        (n/(initial_prefix*91))*(padded_prefix/64)*(batch/8)>=192 &&
+        flag_or_default("FLAGFFT_NPU_DIF_LATE_PAIR_BATCH",true) ? 8 : 1;
     constexpr int64_t batch_dense_columns=64, batch_dense_frequencies=64;
     const int64_t dense_columns=dense_batch?batch_dense_columns:32;
     const int64_t dense_frequencies=dense_batch?batch_dense_frequencies:32;
@@ -592,6 +613,7 @@ namespace {
       if (finish_batch4) key.perm_form+="_finishbatch4";
       if (vector_basis) key.perm_form+="_vectorbasis";
       if (late_pair) key.perm_form+="_latepair91";
+      if (late_pair_batch>1) key.perm_form+="_latepairbatch8";
       if ((dense_prefix && passes.empty()) || (matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
@@ -660,7 +682,7 @@ namespace {
           basis[f*128+d]=static_cast<float>(std::cos(angle));
           basis[(64+f)*128+d]=static_cast<float>(std::sin(angle));
         }
-        append(DeviceAllocation::from_floats(basis),remaining*padded_prefix/64,1,false);
+        append(DeviceAllocation::from_floats(basis),remaining*padded_prefix/64,1,false,late_pair_batch);
         previous_prefix=prefix;prefix*=pair_radix;
         ++stage;
         continue;

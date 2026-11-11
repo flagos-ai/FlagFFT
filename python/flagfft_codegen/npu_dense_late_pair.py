@@ -47,7 +47,9 @@ post_im=post_r*post_s+post_i*post_c
 
 
 
-def replace_late_pair(source,specs):
+def replace_late_pair(source,specs,batch_reuse=1):
+    if type(batch_reuse) is not int or batch_reuse not in (1,8):
+        raise ValueError('Unsupported late matrix batch group')
     specs=copy.deepcopy(specs)
     if (len(specs)<4 or specs[0].get('dense_prefix')!=(255,256,64,64,2)
             or not specs[1].get('deferred_twiddle')
@@ -58,7 +60,7 @@ def replace_late_pair(source,specs):
     r=first['r']*second['r'];m=second['m'];pp=first['physical_prefix']
     physical=first['physical_n']
     source=prephase(source,producer['name'],2*2*64*256,physical)
-    name='dense_late_pair';tiles=pp//64
+    name='dense_late_pair_batch' if batch_reuse>1 else 'dense_late_pair';tiles=pp//64
     body=f'''@triton.jit
 def {name}(X,TW,Y):
     batch=tl.program_id(1).to(tl.int64)
@@ -91,9 +93,12 @@ def {name}(X,TW,Y):
     tl.store(Y+batch*{2*physical}+{physical}+out,tl.reshape(ni,(64,64)),64+freq<{r})
 '''
 
+    if batch_reuse>1:
+        from .npu_matrix_batch import batch_matrix_source
+        body=batch_matrix_source(body,batch_reuse)
     source=_replace_function(source,first['name'],body)
     source=_replace_function(source,second['name'],'')
-    first.update(name=name,r=r,m=m,grid=(m*tiles,),batch_pack=1,merged_late_pair=True)
+    first.update(name=name,r=r,m=m,grid=(m*tiles,),batch_pack=batch_reuse,merged_late_pair=True)
     following['previous_prefix']=first['prefix']
     following['merged_previous_radix']=r
     del specs[2]

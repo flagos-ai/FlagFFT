@@ -12,8 +12,9 @@ from flagfft_codegen.kernels_npu_dif import emit_vector_dif
 
 @pytest.mark.parametrize('factors',[
     (17,15,13,7,8),(17,15,13,7,3,2),(17,15,13,7,8,2),(17,15,7,13,8)])
+@pytest.mark.parametrize('batch_reuse',[1,8])
 @pytest.mark.parametrize('mode',['forward','inverse','global_inverse'])
-def test_complete_fft(tmp_path,factors,mode):
+def test_complete_fft(tmp_path,factors,mode,batch_reuse):
     global_inverse=mode=='global_inverse'
     direction='inverse' if global_inverse else mode
     sign=1 if direction=='inverse' and not global_inverse else -1
@@ -32,7 +33,7 @@ def test_complete_fft(tmp_path,factors,mode):
     angle=sign*2*math.pi*torch.arange(length,dtype=torch.float64)[:,None]*(logical//prefix)[None,:]/(91*length)
     tables[3]=torch.cat((angle.cos().float().flatten(),angle.sin().float().flatten(),tables[3][2*pn:]))
     del tables[2]
-    source,specs=replace_late_pair(source,specs)
+    source,specs=replace_late_pair(source,specs,batch_reuse)
     path=tmp_path/'late.py';path.write_text(source);ns,pid=execute_module(path);pid.append(0)
     ns['tl'].dot=lambda a,b,acc=None,**kw:(a.double()@b.double()+(acc.double() if acc is not None else 0)).float()
     n=math.prod(factors);batch=3
@@ -69,8 +70,22 @@ def test_metadata_and_rejected_geometry(tmp_path):
     assert Path(before['module_path']).read_text()==text
     assert after['kernel_name']=='dense_late_pair' and after['num_stages']==2
     assert after['batch_per_block']==1 and after['signature']=='*fp32:16,*fp32:16,*fp32:16'
+    grouped=emit_vector_dif(factors,'forward',1,tmp_path,**kwargs,
+                           dense_late_pair=True,late_pair_batch=8)
+    assert grouped['module_path']!=after['module_path']
+    assert grouped['kernel_name']=='dense_late_pair_batch'
+    assert grouped['batch_per_block']==8 and grouped['arg_names']==['X','TW','Y','NB']
+    assert grouped['signature']==after['signature']+',i32'
+    with pytest.raises(ValueError,match='requires late-pair fusion'):
+        emit_vector_dif(factors,'forward',1,tmp_path,**kwargs,late_pair_batch=8)
     for factors in ((17,15,13,10,10,2),(17,15,13,7)):
         source,specs=_build(factors,'forward')
         with pytest.raises(ValueError,match='13 x 7 pair'):replace_late_pair(source,specs)
     with pytest.raises(ValueError,match='batched dense Cube'):
         emit_vector_dif((17,15,13,7,8),'forward',0,tmp_path,dense_late_pair=True)
+
+
+def test_invalid_batch_groups():
+    for group in (0,2,4,16,True):
+        with pytest.raises(ValueError,match='Unsupported late matrix batch group'):
+            replace_late_pair('',[],group)
