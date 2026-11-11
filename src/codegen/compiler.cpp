@@ -1870,6 +1870,43 @@ namespace {
            std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
   }
 
+  std::shared_ptr<LeafPlanNode> ix_fourstep_cta_leaf(const FFTRequest &request,
+                                                   int64_t n, int64_t batch) {
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        request.origin_rank > 1 || request.raw_dim != 1 || batch < 2 ||
+        request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+        n < 8192 || n > 16384 || (n & (n - 1)) != 0 ||
+        request.input_strides.empty() || request.input_strides.back() != 1) return nullptr;
+    const char *setting = std::getenv("FLAGFFT_IX_FOURSTEP_CTA");
+    if (!setting || std::string(setting) == "0") return nullptr;
+    if (std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA must be 0 or 1");
+    }
+    // Keep the initial experiment explicit: these launch/codegen settings
+    // match the native-ABI resource checks (64/128 KiB, no spills). They are
+    // not the ordinary CT batch defaults and must travel together.
+    for (const auto &[name, expected] : {
+             std::pair{"FLAGFFT_IX_PORTABLE_LEAF", "1"},
+             std::pair{"FLAGFFT_IX_WARPS", "8"},
+             std::pair{"FLAGFFT_IX_BATCH_PACK", "1"}}) {
+      const char *value = std::getenv(name);
+      if (!value || std::string(value) != expected) {
+        throw std::runtime_error(std::string("FLAGFFT_IX_FOURSTEP_CTA requires ") + name + "=" + expected);
+      }
+    }
+    int exponent = 0;
+    for (int64_t value = n; value > 1; value >>= 1) ++exponent;
+    std::vector<int64_t> factors;
+    for (int i = 0; i < 3; ++i) {
+      factors.push_back(int64_t{1} << (exponent / 3 + (i < exponent % 3 ? 1 : 0)));
+    }
+    const int64_t joined_bytes =
+        (n / factors.back()) * factors.front() * static_cast<int64_t>(sizeof(float));
+    if (joined_bytes > adaptor::max_dynamic_smem_bytes(request.device_index)) return nullptr;
+    return std::make_shared<LeafPlanNode>(n, std::move(factors), 1, 128, 16,
+                                           std::vector<int64_t>{}, n);
+  }
+
 }  // namespace
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
@@ -2350,6 +2387,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                      adaptor::Memory(bytes));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+    if (auto fused = ix_fourstep_cta_leaf(request, four_step->length, batch)) {
+      // Fuse the complete FFT into one block. The logical plan remains a
+      // FourStep node; the execution description exposes the larger leaf.
+      return compile_raw_leaf(*fused, request);
+    }
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
