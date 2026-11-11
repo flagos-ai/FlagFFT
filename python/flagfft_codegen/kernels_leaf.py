@@ -1314,7 +1314,7 @@ def _emit_stage_block(
     )
     vectorized_complex_io = (
         io_mode in {"contiguous", "contiguous_c2r", "permuted_store"}
-        or (io_mode=="contiguous_r2c" and _ix_backend_active()
+        or (io_mode in {"contiguous_r2c","packed_c2r"} and _ix_backend_active()
             and _packed_maca_fp32_complex_io(dtype))
         or vectorized_four_step_complex_io
     ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
@@ -1456,12 +1456,24 @@ def _emit_stage_block(
                         f"{indent}packed_q{j} = {n} - packed_k{j}",
                         f"{indent}packed_x_ptr{j} = in_ptr + (input_batch_base + packed_k{j}) * 2",
                         f"{indent}packed_q_ptr{j} = in_ptr + (input_batch_base + packed_q{j}) * 2",
+                    ]
+                )
+                if _ix_backend_active() and _packed_maca_fp32_complex_io(dtype):
+                    for ptr,dest in ((f"packed_x_ptr{j}",f"packed_xr{j}, packed_xi{j}"),
+                                     (f"packed_q_ptr{j}",f"packed_qr{j}, packed_qi{j}"),
+                                     (f"packed_twiddle_ptr + packed_k{j} * 2",f"packed_wr{j}, packed_wi{j}")):
+                        lines.extend(_emit_vectorized_complex_load(indent,ptr,"lane_mask",dest,dtype))
+                    lines.append(f"{indent}packed_qi{j} = -packed_qi{j}")
+                else:
+                    lines.extend([
                         f"{indent}packed_xr{j} = tl.load(packed_x_ptr{j}, mask=lane_mask, other={zero})",
                         f"{indent}packed_xi{j} = tl.load(packed_x_ptr{j} + 1, mask=lane_mask, other={zero})",
                         f"{indent}packed_qr{j} = tl.load(packed_q_ptr{j}, mask=lane_mask, other={zero})",
                         f"{indent}packed_qi{j} = -tl.load(packed_q_ptr{j} + 1, mask=lane_mask, other={zero})",
                         f"{indent}packed_wr{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2, mask=lane_mask, other={zero})",
                         f"{indent}packed_wi{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2 + 1, mask=lane_mask, other={zero})",
+                    ])
+                lines.extend([
                         f"{indent}packed_sum_r{j} = packed_xr{j} + packed_qr{j}",
                         f"{indent}packed_sum_i{j} = packed_xi{j} + packed_qi{j}",
                         f"{indent}packed_diff_r{j} = packed_xr{j} - packed_qr{j}",
@@ -3520,6 +3532,19 @@ def _build_leaf_kernel_source_for_io(
             "    tl.store(out_ptr + packed_nyquist * 2, packed_ar - packed_ai, mask=packed_mask & (packed_k == 0))",
             "    tl.store(out_ptr + packed_nyquist * 2 + 1, 0.0, mask=packed_mask & (packed_k == 0))",
         ])
+
+        if _ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype):
+            for old_lines,new_lines in (
+                (["    packed_wr = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2, mask=packed_mask, other=0.0)",
+                  "    packed_wi = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2 + 1, mask=packed_mask, other=0.0)"],
+                 _emit_vectorized_complex_load("    ","packed_twiddle_ptr + packed_twiddle_k * 2","packed_mask","packed_wr, packed_wi",plan.dtype)),
+                (["    tl.store(out_ptr + packed_dst * 2, packed_xr, mask=packed_mask)",
+                  "    tl.store(out_ptr + packed_dst * 2 + 1, packed_xi, mask=packed_mask)"],
+                 _emit_vectorized_complex_store("    ","out_ptr + packed_dst * 2","packed_xr","packed_xi","packed_mask",plan.dtype)),
+            ):
+                index=body.index(old_lines[0])
+                assert body[index:index+len(old_lines)]==old_lines
+                body[index:index+len(old_lines)]=new_lines
 
     if io_mode in {"bluestein_full_leaf", "rader_full_leaf"}:
         body.append("    tl.debug_barrier()")

@@ -498,3 +498,20 @@ def test_ix_short_permuted_fill_uses_every_lane_of_one_warp(ix_balanced_profile,
     assert f'batch_id = pid * {pack}' in source
     monkeypatch.setenv('FLAGFFT_IX_3D_PACK','2')
     assert permuted_store_batch_pack_for(plan)==2
+
+@pytest.mark.parametrize('mode,direction',[('packed_c2r','inverse'),('packed_r2c','forward')])
+def test_ix_packed_real_boundary_pair_io_is_explicit_fp32_only(ix_profile,monkeypatch,mode,direction):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv("FLAGFFT_IX_PORTABLE_LEAF","1")
+    for dtype in ('complex64','complex128'):
+        plan=LeafPlan(128,(16,8),1,16,2,(),128,direction,dtype)
+        monkeypatch.delenv('FLAGFFT_IX_VEC_IO',raising=False)
+        _,original=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+        monkeypatch.setenv('FLAGFFT_IX_VEC_IO','packed')
+        _,packed=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+        compile(packed,'<packed-real-io>','exec')
+        if dtype=='complex64':
+            assert '_packed_pair_' in packed and '_packed_pair_' not in original
+        else:
+            assert '_packed_pair_' not in packed
