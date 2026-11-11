@@ -121,7 +121,7 @@ def switch_axes(X,TW,Y):
  return header+'\n'.join(chunks),specs
 
 
-def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32,coarse_dense=False,power_cube_finish=False,power_cube_batch=1,dense_late_pair=False,late_pair_batch=1,natural_prefix=False):
+def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=False,flat_power2=False,vector_first17=False,batch_pack=False,vector_second15=False,terminal8=False,coarse=False,global_inverse=False,matrix_first17=False,prefix_pitch=1,dense_prefix=False,coarse_single=False,codelet_reuse=False,coarse_gt=False,workspace_padding=0,finish_batch4=False,vector_basis=False,dense_prefix_columns=32,dense_prefix_frequencies=32,coarse_dense=False,power_cube_finish=False,power_cube_batch=1,dense_late_pair=False,late_pair_batch=1,natural_prefix=False,power_middle_radix8=False):
     valid_factors = (all(4 <= r <= 128 and not (r & (r - 1)) for r in factors)
                      if flat_power2 else
                      all(r in _NATURAL_ORDER_CODELET_RADICES or r in (16,18,20,24,25,27,28,30,32)
@@ -154,6 +154,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
         raise ValueError('Workspace padding requires flat power DIF')
     if power_cube_batch!=1 and not power_cube_finish:
         raise ValueError('Power batch reuse requires Cube finish')
+    if power_middle_radix8 and not power_cube_finish:
+        raise ValueError('Radix-eight middle axis requires Cube finish')
     if power_cube_finish and not flat_power2:
         raise ValueError('Power Cube finish requires flat power DIF')
     if coarse_gt and not coarse:
@@ -177,7 +179,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     elif flat_power2:
         if aligned or cube_prefix:raise ValueError("Flat power DIF uses a compact layout")
         from .kernels_npu_power_dif import build
-        source,specs=build(tuple(factors),direction,terminal8=terminal8,global_inverse=global_inverse,workspace_padding=workspace_padding,cube_finish=power_cube_finish,cube_finish_batch=power_cube_batch)
+        source,specs=build(tuple(factors),direction,terminal8=terminal8,global_inverse=global_inverse,workspace_padding=workspace_padding,cube_finish=power_cube_finish,cube_finish_batch=power_cube_batch,middle_radix8=power_middle_radix8)
     elif cube_prefix:
         if not aligned:raise ValueError('Cube DIF prefix requires an aligned layout')
         from .kernels_npu_dif_cube import build_cube_prefix_dif
@@ -206,6 +208,7 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
     if coarse_dense:dense_tag+='_coarsedense'
     if power_cube_finish:dense_tag+='_powercubefinish'
     if power_cube_batch!=1:dense_tag+='_batch'+str(power_cube_batch)
+    if power_middle_radix8:dense_tag+='_middle8'
     path=Path(out_dir)/(('npu_vector_dif_coarse_' if coarse else 'npu_vector_dif_flat_power2_' if flat_power2 else 'npu_vector_dif_aligned_cube_' if cube_prefix else 'npu_vector_dif_aligned_' if aligned else 'npu_vector_dif_')+str(n)+'_'+str(phase)+'_'+direction+('_workspacepad512' if workspace_padding else '')+('_finishbatch4' if finish_batch4 else '')+('_vectorbasis' if vector_basis else '')+dense_tag+'.py')
     path.parent.mkdir(parents=True,exist_ok=True);write_text_atomic(path,source)
     meta=dict(module_path=str(path),kernel_name=spec['name'],arg_names=['X','TW','Y'],

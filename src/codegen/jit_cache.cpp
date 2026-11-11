@@ -866,6 +866,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-global-inverse";
     }
+    const std::string middle_tag="_middle8";
+    if (flat && phase.size()>=middle_tag.size() &&
+        phase.compare(phase.size()-middle_tag.size(),middle_tag.size(),middle_tag)==0) {
+      phase.resize(phase.size()-middle_tag.size());
+      jit_command << " --npu-vector-dif-power-middle-radix8";
+    }
     const std::string cube_batch_tag="_cubebatch";
     const auto cube_batch_pos=phase.rfind(cube_batch_tag);
     if (flat && cube_batch_pos!=std::string::npos) {

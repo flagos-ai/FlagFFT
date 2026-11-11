@@ -243,6 +243,8 @@ namespace {
         flag_or_default("FLAGFFT_NPU_FLAT_POWER_TERMINAL8",true) &&
         flag_or_default("FLAGFFT_NPU_FLAT_POWER_CUBE_FINISH",true);
     if (cube_finish) factors={64,middle,128};
+    const bool middle_radix8=cube_finish && middle==64 &&
+        flag_or_default("FLAGFFT_NPU_FLAT_POWER_MIDDLE_RADIX8",true);
     // Keep at least 128 independent full groups to amortize coefficient
     // loads without starving Cube cores. Short or sparse batches retain
     // the ungrouped finish; every admitted size uses the same rule.
@@ -286,7 +288,20 @@ namespace {
         }
       }
       if (!matrix_finish) {
-        auto roots=npu_structured_root_values(radix,columns);
+        std::vector<float> roots;
+        if (middle_radix8 && stage==1) {
+          // Both eight-point butterflies use forward roots. Local inverse
+          // axes conjugate around the complete helper, as before.
+          roots.resize(2*radix*columns);
+          for (int64_t a=0;a<8;++a)for(int64_t b=0;b<8;++b) {
+            const double angle=-2*kPi*a*b/64;
+            for (int64_t c=0;c<columns;++c) {
+              const int64_t offset=(a*8+b)*columns+c;
+              roots[offset]=static_cast<float>(std::cos(angle));
+              roots[radix*columns+offset]=static_cast<float>(std::sin(angle));
+            }
+          }
+        } else roots=npu_structured_root_values(radix,columns);
         weights.insert(weights.end(),roots.begin(),roots.end());
       }
       auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
@@ -295,6 +310,7 @@ namespace {
       if (padded_workspace) key.perm_form+="_workspacepad512";
       if (cube_finish) key.perm_form+="_cubefinish";
       if (cube_batch>1) key.perm_form+="_cubebatch"+std::to_string(cube_batch);
+      if (middle_radix8) key.perm_form+="_middle8";
       if (global_inverse) key.perm_form+="_globalconj";
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
       if (batch>=16 && axis_bits>=3 && axis_bits%2 &&

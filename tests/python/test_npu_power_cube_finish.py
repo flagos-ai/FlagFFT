@@ -10,14 +10,14 @@ from test_npu_structured_fft import Pointer,execute_module,roots
 
 
 @pytest.mark.parametrize('batch_reuse',[1,8,32])
-@pytest.mark.parametrize('factors',[(64,32,128),(64,64,128)])
+@pytest.mark.parametrize('factors,middle_radix8',[((64,32,128),False),((64,64,128),False),((64,64,128),True)])
 @pytest.mark.parametrize('mode',['forward','inverse','global_inverse'])
-def test_complete_fft(tmp_path,factors,mode,batch_reuse):
+def test_complete_fft(tmp_path,factors,mode,batch_reuse,middle_radix8):
     global_inverse=mode=='global_inverse'
     direction='inverse' if global_inverse else mode
     sign=1 if direction=='inverse' and not global_inverse else -1
     source,specs=build(factors,direction,terminal8=True,global_inverse=global_inverse,
-                       workspace_padding=512,cube_finish=True,cube_finish_batch=batch_reuse)
+                       workspace_padding=512,cube_finish=True,cube_finish_batch=batch_reuse,middle_radix8=middle_radix8)
     path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
     ns['tl'].dot=lambda a,b,acc=None,**kw:(a.double()@b.double()+(acc.double() if acc is not None else 0)).float()
     n=math.prod(factors);batch=2
@@ -34,7 +34,13 @@ def test_complete_fft(tmp_path,factors,mode,batch_reuse):
             co,si=angle.cos().float(),angle.sin().float()
             w=torch.cat((torch.cat((co,-si),2),torch.cat((si,co),2)),1).flatten()
         else:
-            w=roots(s['r'],s['c'])
+            if middle_radix8 and stage==1:
+                a=torch.arange(8,dtype=torch.float64)[:,None]
+                b=torch.arange(8,dtype=torch.float64)[None,:]
+                angle=-2*math.pi*a*b/64
+                w=torch.cat((angle.cos().float().repeat_interleave(s['c'],1).flatten(),
+                             angle.sin().float().repeat_interleave(s['c'],1).flatten()))
+            else:w=roots(s['r'],s['c'])
             if stage:
                 digit=torch.arange(s['prefix'])//s['previous_prefix']
                 sample=torch.arange(s['r']*s['m'],dtype=torch.float64)
@@ -97,3 +103,22 @@ def test_invalid_batch_group():
     for group in (0,2,16,64,True):
         with pytest.raises(ValueError,match='Unsupported power Cube batch group'):
             build((64,64,128),workspace_padding=512,cube_finish=True,cube_finish_batch=group)
+
+
+def test_radix8_middle_metadata_and_geometry(tmp_path):
+    for phase in range(3):
+        options=dict(flat_power2=True,workspace_padding=512,power_cube_finish=True)
+        old=emit_vector_dif((64,64,128),'forward',phase,tmp_path,**options)
+        original=Path(old['module_path']).read_text()
+        new=emit_vector_dif((64,64,128),'forward',phase,tmp_path,
+                            power_middle_radix8=True,**options)
+        assert old['module_path']!=new['module_path']
+        assert Path(old['module_path']).read_text()==original
+        assert new['signature']==old['signature']
+        assert new['kernel_name']==('axis_1_radix8' if phase==1 else old['kernel_name'])
+        assert 'def _npu_power_rad8(' in Path(new['module_path']).read_text()
+    with pytest.raises(ValueError,match='requires Cube finish'):
+        emit_vector_dif((64,64,128),'forward',1,tmp_path,
+                        flat_power2=True,power_middle_radix8=True)
+    with pytest.raises(ValueError,match='64-point middle'):
+        build((64,32,128),workspace_padding=512,cube_finish=True,middle_radix8=True)
