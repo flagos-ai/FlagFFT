@@ -127,6 +127,21 @@ def test_ix_permuted_pack_matches_source_and_launch(ix_profile, monkeypatch):
         _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
 
 
+@pytest.mark.parametrize("shared_limit,expected", [(16384,2),(32768,4),(65536,8),(131072,16)])
+def test_ix_explicit_permuted_pack_uses_rounded_hardware_bound(monkeypatch, shared_limit, expected):
+    from flagfft_codegen.kernels_common import LeafPlan, permuted_store_batch_pack_for
+    token = set_profile(BackendProfile.from_device({
+        "backend":"ix", "device_arch":"71", "warp_size":64,
+        "max_threads_per_block":4096, "max_dynamic_shared_memory":shared_limit,
+    }))
+    monkeypatch.setenv("FLAGFFT_IX_3D_PACK", "32")
+    try:
+        plan = LeafPlan(256,(16,16),1,16,2,(),256,"forward","complex64")
+        assert permuted_store_batch_pack_for(plan) == expected
+    finally:
+        reset_profile(token)
+
+
 def test_ix_permuted_pair_store_is_explicit(ix_profile, monkeypatch):
     from flagfft_codegen.kernels_common import LeafPlan
     from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io

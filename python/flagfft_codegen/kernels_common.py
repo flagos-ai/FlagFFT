@@ -587,6 +587,18 @@ def permuted_store_batch_pack_for(
             if override not in {"1", "2", "4", "8", "16", "32"}:
                 raise ValueError("FLAGFFT_IX_3D_PACK must be auto, 1, 2, 4, 8, 16 or 32")
             target_pack = int(override)
+            if profile.max_dynamic_shared_memory is not None:
+                # Explicit IX trials may use the queried device budget.
+                # Bound the rounded, padded four-buffer allocation used by
+                # the source, rather than the default occupancy budget.
+                smem_pack = max(
+                    (pack for pack in (1, 2, 4, 8, 16, 32)
+                     if 4 * lane_block_for(
+                         (plan.smem_size + (1 if pack >= 4 else 0)) * pack
+                     ) * _real_element_bytes(plan.dtype)
+                     <= profile.max_dynamic_shared_memory),
+                    default=1,
+                )
     if _hcu_backend_active():
         if force_full_smem:
             target_pack = 8
