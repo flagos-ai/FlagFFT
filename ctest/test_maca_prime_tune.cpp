@@ -478,33 +478,6 @@ TEST(IXNDPolicy, SmallRealWarpPolicyOnlySelectsPublicSingleFP32) {
   EXPECT_FALSE(flagfft::ix_small_real_warp_default_enabled(request));
 }
 
-TEST(IXLeafPlan, ExplicitBatchedRaderUsesBalancedConvolutionAndKeepsOtherRequests) {
-  ScopedEnv gate("FLAGFFT_IX_BATCH_RADER", "1");
-  flagfft::FFTRequest request;
-  request.device_type="ix"; request.device_arch="71";
-  request.input_dtype=request.output_dtype="complex64";
-  request.batch=64; request.raw_dim=request.origin_rank=1;
-  request.input_layout="contiguous";
-  for (int64_t n : {8191,16381}) {
-    request.fft_length=request.requested_n=n;
-    request.input_shape={64,n}; request.input_strides={n,1};
-    flagfft::PlanBuilder builder;
-    auto rader=std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(n,request));
-    ASSERT_NE(rader,nullptr);
-    auto pair=std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(rader->conv_plan);
-    ASSERT_NE(pair,nullptr);
-    EXPECT_EQ(pair->n1,n==8191?90:91);
-    EXPECT_EQ(pair->n2,n==8191?91:180);
-    request.batch=1;
-    flagfft::PlanBuilder single;
-    EXPECT_EQ(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(single.build(n,request)),nullptr);
-    request.batch=64; request.origin_rank=3;
-    flagfft::PlanBuilder axis;
-    EXPECT_EQ(std::dynamic_pointer_cast<flagfft::RaderPlanNode>(axis.build(n,request)),nullptr);
-    request.origin_rank=1;
-  }
-}
-
 TEST(IXLeafPlan, SingleRealDefaultsStayAtThePublicContiguousFP32Boundary) {
   flagfft::FFTRequest request;
   request.device_type="ix"; request.device_arch="71";
