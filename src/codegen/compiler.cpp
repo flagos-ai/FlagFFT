@@ -2005,6 +2005,11 @@ namespace {
     for (int i = 0; i < 3; ++i) {
       factors.push_back(int64_t{1} << (exponent / 3 + (i < exponent % 3 ? 1 : 0)));
     }
+    if (const char *order = std::getenv("FLAGFFT_IX_CTA_RADIX_ORDER")) {
+      if (std::string(order) != "0" && std::string(order) != "1" && std::string(order) != "2")
+        throw std::runtime_error("FLAGFFT_IX_CTA_RADIX_ORDER must be 0, 1 or 2");
+      std::rotate(factors.begin(),factors.begin() + (*order-'0'),factors.end());
+    }
     // Fixed lanes cover every intermediate butterfly in the 16K TLE case,
     // admitting the existing barrier-protected single shared-buffer path.
     // The 8K TLE case retains ping-pong buffers because its middle stage has

@@ -23,6 +23,18 @@
 namespace flagfft {
 namespace {
 
+  template <typename Context>
+  bool ix_batch_rader_experiment(const Context &context, int64_t n) {
+    if (context.device_type != "ix" || context.device_arch != "71" ||
+        context.origin_rank > 1 || context.batch != 64 || context.requested_n != n ||
+        !context.ix_ct_batch || (n != 8191 && n != 16381)) return false;
+    const char *setting = std::getenv("FLAGFFT_IX_BATCH_RADER");
+    if (!setting || std::string(setting) == "0") return false;
+    if (std::string(setting) != "1")
+      throw std::runtime_error("FLAGFFT_IX_BATCH_RADER must be 0 or 1");
+    return true;
+  }
+
   constexpr int64_t kBluesteinConvolutionSearchWindow = 4096;
   // vkFFT fixMaxRaderPrimeFFT: primes beyond this use Bluestein, not Rader.
   constexpr int64_t kMaxRaderPrime = 16384;
@@ -199,7 +211,7 @@ PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
   // Balanced, factorable children avoid the slow mixed-radix column leaves.
   const int64_t n1 = n == 8191 ? 90 : 91;
   const int64_t n2 = n == 8191 ? 91 : 180;
-  PlanNodePtr conv_plan = tuned_split
+  PlanNodePtr conv_plan = (tuned_split || ix_batch_rader_experiment(context,n))
                               ? std::make_shared<FourStepPlanNode>(
                                     n - 1, n1, n2,
                                     build_auto_node(n1, false), build_auto_node(n2, false))
@@ -518,9 +530,11 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
                                    context.output_dtype == "complex64") ||
                                   has_a100_fp64_fused_leaf || has_musa_s5000_fp64_fused_leaf ||
                                   prefer_musa_batched_bluestein;
-    if (!prefer_bluestein && is_prime_length(n) && n <= kMaxRaderPrime) {
+    if ((!prefer_bluestein || ix_batch_rader_experiment(context,n)) &&
+        is_prime_length(n) && n <= kMaxRaderPrime) {
       PlanNodePtr rader = make_rader_plan(n);
-      double rader_candidate_cost = rader_cost(n);
+      double rader_candidate_cost = ix_batch_rader_experiment(context,n)
+                                        ? bluestein_candidate_cost * 0.99 : rader_cost(n);
       const Factorization rader_factorization = factorize_supported_radices(n - 1);
       if (rader_factorization.remainder == 1 && !rader_factorization.factors.empty()) {
         rader_candidate_cost = std::min(rader_candidate_cost, bluestein_candidate_cost * 0.99);
