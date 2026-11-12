@@ -69,3 +69,37 @@ def test_loop_and_hidden_shared_accesses_are_not_supported():
     intrinsic=ir(middle='  call void @llvm.bi.shared.read(i32 %addr)\n')
     for source in (loop,hidden,atomic,assembly,opaque,intrinsic):
         assert rewrite_disjoint_writes(source,{20},{30})==(source,0)
+
+
+def _registered_stub(tmp_path,monkeypatch,runtime,compilation):
+    import sys
+    from types import SimpleNamespace
+    import flagfft_codegen.ix_disjoint_stage as stage
+    path=tmp_path/'generated.py'
+    path.write_text('tl.store(tle.gpu.local_ptr(smem_b_r, (x,)), value)\ntl.debug_barrier()\n')
+    fn=SimpleNamespace(fn=SimpleNamespace(__name__='test_'+stage.pass_tag(),
+        __code__=SimpleNamespace(co_filename=str(path))))
+    monkeypatch.setattr(stage,'_REGISTERED',{})
+    monkeypatch.setattr(stage,'_INSTALLED',False)
+    monkeypatch.setitem(sys.modules,'triton',SimpleNamespace(
+        knobs=SimpleNamespace(runtime=runtime,compilation=compilation)))
+    stage.register_kernel(fn)
+    return stage
+
+
+def test_missing_sdk_stage_hook_preserves_original_compilation(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    runtime=SimpleNamespace()
+    stage=_registered_stub(tmp_path,monkeypatch,runtime,SimpleNamespace())
+    assert not stage._INSTALLED
+    assert not hasattr(runtime,'add_stages_inspection_hook')
+
+
+def test_instrumented_compilation_keeps_the_sdk_lowering_stage(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    runtime=SimpleNamespace(add_stages_inspection_hook=None)
+    _registered_stub(tmp_path,monkeypatch,runtime,SimpleNamespace(instrumentation_mode=''))
+    original=object();stages={'llir':original}
+    backend=SimpleNamespace(target=SimpleNamespace(backend='corex',arch=71,warp_size=64))
+    runtime.add_stages_inspection_hook(backend,stages,SimpleNamespace(instrumentation_mode='consan'),None,None)
+    assert stages['llir'] is original
