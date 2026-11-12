@@ -1,7 +1,8 @@
 """Narrow CoreX postpass for disjoint writes in generated FFT stages.
 
-The generator opts in only bounded FourStep leaves with one butterfly group
-per stage. Their intermediate stores form a permutation of
+The generator opts in only bounded FourStep leaves. Mixed-radix groups are
+statically unrolled so the dependence check can require an acyclic function.
+Their intermediate stores form a permutation of
 independent (FFT slot, frequency) addresses. Preserve all read/write fences;
 only adjacent write-only intervals can lose an implicit write/write fence.
 """
@@ -60,9 +61,12 @@ def rewrite_disjoint_writes(llir: str, store_lines: set[int],
     # dependence proof. This pass never handles those kernels.
     for line in body:
         if re.search(r"\b(?:atomicrmw|cmpxchg|fence)\b",line): return llir,0
-        if "call " in line and ("addrspace(3)" in line or
-                                 re.search(r"(?:\basm\b|ldmatrix|cp\.async|memcpy|memmove)",line)):
-            return llir,0
+        if "call " in line:
+            callee=re.search(r"@([\w.$-]+)\(",line)
+            if (callee is None or not callee[1].startswith('llvm.') or
+                    'addrspace(3)' in line or
+                    re.search(r"(?:\basm\b|shared|smem|ldmatrix|cp\.async|memcpy|memmove)",line)):
+                return llir,0
     locations={int(k):int(v) for k,v in re.findall(
         r"!(\d+)\s*=\s*(?:distinct\s+)?!DILocation\(line:\s*(\d+)",llir)}
     barriers=[i for i in range(start+1,end) if _BARRIER.search(lines[i])]
@@ -100,14 +104,18 @@ def register_kernel(fn) -> None:
     else:
         _REGISTERED[name]=contract
     if _INSTALLED: return
-    from triton import knobs
-    previous=knobs.runtime.add_stages_inspection_hook
+    try:
+        from triton import knobs
+        previous=knobs.runtime.add_stages_inspection_hook
+    except (ImportError,AttributeError):
+        # Unsupported SDKs retain every original compiler fence.
+        return
     def hook(backend,stages,options,language,capability):
         if previous is not None: previous(backend,stages,options,language,capability)
         if (backend.target.backend!='corex' or backend.target.arch!=71 or
                 backend.target.warp_size!=64 or
                 getattr(options,'instrumentation_mode','') or
-                knobs.compilation.instrumentation_mode): return
+                getattr(getattr(knobs,'compilation',None),'instrumentation_mode','')): return
         original=stages['llir']
         def lower(src,metadata):
             llir=original(src,metadata)

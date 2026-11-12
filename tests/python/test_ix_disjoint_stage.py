@@ -65,5 +65,7 @@ def test_loop_and_hidden_shared_accesses_are_not_supported():
     hidden=ir(middle='  call void @shared(ptr addrspace(3) %tmp)\n')
     atomic=ir(middle='  %old = atomicrmw add ptr %p, i32 1 monotonic\n')
     assembly=ir(middle='  call void asm sideeffect "st.shared.f32 [$0], $1;", "r,f"(i32 %addr, float %r)\n')
-    for source in (loop,hidden,atomic,assembly):
+    opaque=ir(middle='  call void @instrumented_kernel_callback()\n')
+    intrinsic=ir(middle='  call void @llvm.bi.shared.read(i32 %addr)\n')
+    for source in (loop,hidden,atomic,assembly,opaque,intrinsic):
         assert rewrite_disjoint_writes(source,{20},{30})==(source,0)

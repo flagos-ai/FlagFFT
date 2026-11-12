@@ -242,17 +242,27 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 |---|---|---|
 | 1024 | `[16,8,8]`, tensor exchange, two physical warps | Same leaf with real input/output |
 | 2048 | Tensor exchange, two physical warps | R2C packs even/odd samples into a 1024-point complex leaf and reconstructs the half spectrum in one kernel; C2R keeps the real-boundary leaf |
-| 16384 | Tensor exchange, inner pack 4, two physical warps | Same Four-Step with real input/output |
+| 16384 | Tensor exchange, inner pack 4, two physical warps | Full-length real-boundary Four-Step with warp FFTs |
 | 328050, 340200 | Interleaved shared exchange and twiddle recurrence | Half-length complex FFT plus pre/postprocess |
 | 663000 | Unchanged | Half-length complex FFT plus pre/postprocess |
-| 1048576 | Interleaved/swizzled exchange, inner pack 8, four physical warps | Half-length complex FFT plus pre/postprocess |
+| 1048576 | Resource-bounded dense Four-Step tiles | Half-length complex FFT plus pre/postprocess |
+
+Single real transforms of length 16 use one physical warp; disable this with
+`FLAGFFT_IX_SMALL_REAL=0`. The measured 210/1024/2048 single real boundaries use
+packed complex I/O, with static single-batch indexing where eligible. The
+16384 single real path can be rolled back with `FLAGFFT_IX_SHORT_REAL=0`.
 
 For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024, 2048,
 or 16384 use tensor exchange and four physical warps. The 1024-point leaf uses
 `[8,8,4,4]`; the 2048-point C2C/C2R leaf uses its measured factor order.
 The 2048-point R2C path uses the fused 1024-point `[16,8,8]` leaf with two
-physical warps. The same exchange policy covers the 8191-point batch-64
-Bluestein plan, whose convolution uses a 16384-point Four-Step child.
+physical warps.
+The 8191/16381 batch-64 Bluestein plans use their qualified TLE presets:
+respectively 32/16 FFTs per tile, four physical warps, and narrowly scoped
+removal of redundant shared-memory write/write fences. Read/write fences and
+explicit barriers remain. The 8191 preset also reorders row-stage registers
+for contiguous output. `FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS=0` restores the earlier
+prime presets; `FLAGFFT_IX_CT_BATCH=0` also disables these defaults.
 For 23-point batch-64 R2C/C2R, a direct real DFT folds the two conversion
 kernels into the transform; `FLAGFFT_IX_REAL_DIRECT_DFT=0` restores the prior path.
 At length 16384, batch-64 R2C/C2R use a packed 8192-point complex child;
