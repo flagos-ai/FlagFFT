@@ -3371,7 +3371,7 @@ def _build_leaf_kernel_source_for_io(
     static_single = (
         _ix_backend_active() and ix_ct_single_default_enabled()
         and n in {1024, 2048} and plan.dtype == "complex64"
-        and io_mode in {"contiguous_r2c", "contiguous_c2r"} and batch_pack == 1
+        and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"} and batch_pack == 1
         and _maca_knob("STATIC_SINGLE", "0") == "1"
     )
     if io_mode in contiguous_modes:

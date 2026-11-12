@@ -654,3 +654,28 @@ def test_ix_stage_tiles_keep_independent_launch_metadata_and_smem_bounds(ix_bala
     monkeypatch.setenv('FLAGFFT_IX_TLE_ROW_PACK','256')
     assert four_step_row_inner_pack_for(128,128,plan=plan)==128
     assert four_step_col_inner_pack_for(128,128,plan=plan)==16
+
+
+@pytest.mark.parametrize('n,factors',[(1024,(16,8,8)),(2048,(16,16,8))])
+def test_ix_static_complex_indexing_requires_a_single_transform_request(ix_balanced_profile,monkeypatch,n,factors):
+    import ast
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.target import set_ix_ct_single_default,reset_ix_ct_single_default
+    for key,value in {'PORTABLE_LEAF':'1','BATCH_PACK':'1','STATIC_SINGLE':'1'}.items():
+        monkeypatch.setenv('FLAGFFT_IX_'+key,value)
+    plan=LeafPlan(n,factors,1,32,4,(),n,'forward','complex64')
+    _,dynamic=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
+    token=set_ix_ct_single_default(True)
+    try:
+        _,single=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
+    finally:reset_ix_ct_single_default(token)
+    assert '    nbatch = 1' not in dynamic
+    assert '    nbatch = 1' in single
+    assert ast.dump(ast.parse(dynamic).body[0].args)==ast.dump(ast.parse(single).body[0].args)
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_PACK','2')
+    token=set_ix_ct_single_default(True)
+    try:
+        _,batch=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
+    finally:reset_ix_ct_single_default(token)
+    assert '    nbatch = 1' not in batch
