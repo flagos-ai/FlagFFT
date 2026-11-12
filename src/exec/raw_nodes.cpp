@@ -130,7 +130,9 @@ namespace {
     const FFTRequest &request = context.request;
     const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH");
     const bool enabled = setting == nullptr || std::string(setting) == "1";
-    const bool measured_shape = length == 1024 ||
+    const bool explicit_short_r2c = setting && std::string(setting) == "1" &&
+        (length == 16 || length == 210) && request.real_transform_kind == "r2c";
+    const bool measured_shape = explicit_short_r2c || length == 1024 ||
         (length == 2048 && (request.real_transform_kind == "r2c" ||
                             request.real_transform_kind == "c2r"));
     return enabled && measured_shape && request.device_type == "ix" &&
