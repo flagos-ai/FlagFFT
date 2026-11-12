@@ -3,6 +3,7 @@
 
 #include "flagfft_test.h"
 #include "exec/c_api_internal.hpp"
+#include "triton_jit/triton_kernel.h"
 
 #include <array>
 #include <complex>
@@ -11,16 +12,18 @@
 namespace {
 
 struct GraphSetting {
+  std::string name;
   std::string previous;
-  bool existed = std::getenv("FLAGFFT_HCU_1D_GRAPH") != nullptr;
-  explicit GraphSetting(const char *value) {
-    if (existed) previous = std::getenv("FLAGFFT_HCU_1D_GRAPH");
-    if (value) setenv("FLAGFFT_HCU_1D_GRAPH", value, 1);
-    else unsetenv("FLAGFFT_HCU_1D_GRAPH");
+  bool existed;
+  explicit GraphSetting(const char *value, const char *variable = "FLAGFFT_HCU_1D_GRAPH")
+      : name(variable), existed(std::getenv(variable) != nullptr) {
+    if (existed) previous = std::getenv(name.c_str());
+    if (value) setenv(name.c_str(), value, 1);
+    else unsetenv(name.c_str());
   }
   ~GraphSetting() {
-    if (existed) setenv("FLAGFFT_HCU_1D_GRAPH", previous.c_str(), 1);
-    else unsetenv("FLAGFFT_HCU_1D_GRAPH");
+    if (existed) setenv(name.c_str(), previous.c_str(), 1);
+    else unsetenv(name.c_str());
   }
 };
 
@@ -121,6 +124,26 @@ TEST(HcuRealGraph, DefaultReplaysChangedDataAddressesStreamsAndInPlace) {
 TEST(HcuRealGraph, OverrideRetainsDirectLaunches) {
   GraphSetting setting("0");
   CheckRealGraph<float, flagfftComplex>(48, false, false);
+}
+
+TEST(HcuRealGraph, PreparedDispatchPreservesLaunchHooks) {
+  GraphSetting graph("0");
+  GraphSetting prepared("1", "FLAGFFT_HCU_PREPARED_LAUNCH");
+  struct ClearHooks {
+    ~ClearHooks() { triton_jit::clear_launch_hooks(); }
+  } cleanup;
+  int entered = 0, exited = 0;
+  triton_jit::set_launch_enter_hook([&](const triton_jit::LaunchMetadata &metadata) {
+    ++entered;
+    EXPECT_FALSE(metadata.kernel_name.empty());
+    EXPECT_FALSE(metadata.signature.empty());
+    EXPECT_GT(metadata.num_warps, 0);
+    EXPECT_EQ(metadata.grid_x, 1);
+  });
+  triton_jit::set_launch_exit_hook([&](const triton_jit::LaunchMetadata &) { ++exited; });
+  CheckRealGraph<float, flagfftComplex>(48, false, false);
+  EXPECT_EQ(entered, 12);
+  EXPECT_EQ(exited, entered);
 }
 
 }  // namespace
