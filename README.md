@@ -294,6 +294,13 @@ one FFT per warp after its three-amplitude qualification reached 0.9884x; `FLAGF
 At N=210, C2C and C2R retain the 7-by-6-by-5 geometry and eight FFTs per
 CTA, with recurrence twiddles selected by request preset 12. Their three-amplitude
 checks passed with minimum speedups of 1.1764x and 0.8776x respectively.
+The N=210 R2C request uses preset 13: sixteen FFTs per CTA, sixteen physical
+warps, and recurrence twiddles. Its intermediate shared stores are permutations
+of independent FFT-slot/frequency addresses. The existing CoreX postpass removes
+only adjacent write-only fences; read/write dependencies and explicit stage
+barriers remain. Three-amplitude scoped checks passed at warmup 10 / iterations
+100 with a 1.0380x speedup. `FLAGFFT_IX_TLE_REAL_DISJOINT=0` retains the original
+compiler fences. Other launch widths or batch tiles retain their fences.
 The N=2048 batch-64 fused R2C leaf also loads adjacent even/odd FP32 input
 samples as aligned pairs; `FLAGFFT_IX_PACKED_R2C_INPUT=0` restores scalar loads.
 `FLAGFFT_IX_CT_BATCH_PACKED_IO=0` disables the short-CT request presets.

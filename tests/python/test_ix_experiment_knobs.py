@@ -796,77 +796,45 @@ def test_ct2048_packed_input_loads_aligned_real_pairs(
         reset_ix_fourstep_preset(preset);reset_ix_ct_batch_default(batch)
 
 
-@pytest.mark.parametrize('dtype,setting,paired',[
-    ('complex64',None,False),('complex64','0',False),('complex64','1',True),
-    ('complex128','1',False),
-])
-def test_structured_complex_exchange_pairs_preserve_the_route(
-        ix_balanced_profile,monkeypatch,dtype,setting,paired):
+@pytest.mark.parametrize('setting,optimized',[(None,True),('0',False),('1',True)])
+def test_ct210_r2c_default_transports_the_qualified_TLE_launch(
+        ix_balanced_profile,monkeypatch,tmp_path,setting,optimized):
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
     from flagfft_codegen.kernels_common import LeafPlan
     from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
-    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','1')
-    monkeypatch.delenv('FLAGFFT_IX_PAIR_EXCHANGE',raising=False)
-    if setting is not None:monkeypatch.setenv('FLAGFFT_IX_PAIR_EXCHANGE',setting)
-    plan=LeafPlan(1024,(16,8,8),1,64,2,(),1024,'forward',dtype)
-    _,source=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous_r2c')
-    assert ('exchange_structured_p = tl.reshape' in source)==paired
-    assert ('smem_a_register_p' in source)==paired
-    compile(source,'<ix-paired-structured-exchange>','exec')
-
-
-@pytest.mark.parametrize('n,factors,pack',[
-    (105,(7,5,3),1),(105,(7,5,3),4),
-    (512,(8,8,8),1),(512,(8,8,8),4),
-    (1024,(16,8,8),1),(1024,(16,8,8),4),
-])
-def test_opt_in_packed_TLE_real_reconstruction_has_a_separate_visible_spectrum(
-        ix_balanced_profile,monkeypatch,n,factors,pack):
-    from flagfft_codegen.kernels_common import LeafPlan
-    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
-    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
-    monkeypatch.setenv('FLAGFFT_IX_PACKED_R2C_TLE','1')
-    monkeypatch.setenv('FLAGFFT_IX_BATCH_PACK',str(pack))
-    plan=LeafPlan(n,factors,1,1,1,(),1 << (n-1).bit_length(),'forward','complex64')
-    _,source=_build_leaf_kernel_source_for_io(plan,io_mode='packed_r2c')
-    assert 'packed_r = tle.gpu.alloc' in source and 'packed_i = tle.gpu.alloc' in source
-    # The final spectrum never aliases either stage input buffer.
-    assert 'tle.gpu.local_ptr(packed_r, (' in source
-    assert 'packed_br = tl.load(tle.gpu.local_ptr(packed_r, (packed_partner,))' in source
-    assert 'packed_br = tl.gather' not in source
-    assert source.index('tl.debug_barrier()',source.index('tle.gpu.local_ptr(packed_r, (')) < source.index('packed_ar = tl.load')
-    if pack>1:assert 'out_idx0 + batch_slot * ' in source
-    compile(source,'<ix-packed-TLE-real>','exec')
-
-
-@pytest.mark.parametrize('dtype,setting',[('complex64',None),('complex128','1')])
-def test_packed_TLE_real_remains_disabled_without_the_fp32_opt_in(
-        ix_balanced_profile,monkeypatch,dtype,setting):
-    from flagfft_codegen.kernels_common import LeafPlan
-    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
-    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
-    monkeypatch.delenv('FLAGFFT_IX_PACKED_R2C_TLE',raising=False)
-    if setting is not None:monkeypatch.setenv('FLAGFFT_IX_PACKED_R2C_TLE',setting)
-    plan=LeafPlan(105,(7,5,3),1,1,1,(),128,'forward',dtype)
-    with pytest.raises(ValueError,match='requires the portable'):
-        _build_leaf_kernel_source_for_io(plan,io_mode='packed_r2c')
-
-
-@pytest.mark.parametrize('mode,n,factors,enabled,qualified',[
-    ('contiguous_r2c',210,(7,6,5),False,False),
-    ('contiguous_r2c',210,(7,6,5),True,True),
-    ('packed_r2c',105,(7,5,3),True,True),
-    ('contiguous',210,(7,6,5),True,False),
-])
-def test_real_TLE_disjoint_postpass_requires_the_explicit_source_contract(
-        ix_balanced_profile,monkeypatch,mode,n,factors,enabled,qualified):
-    from flagfft_codegen.kernels_common import LeafPlan
-    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
     from flagfft_codegen.ix_disjoint_stage import pass_tag
-    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
-    monkeypatch.setenv('FLAGFFT_IX_PACKED_R2C_TLE','1')
-    monkeypatch.setenv('FLAGFFT_IX_TLE_DISJOINT_STAGE','1')
-    monkeypatch.setenv('FLAGFFT_IX_TLE_REAL_DISJOINT',str(int(enabled)))
-    plan=LeafPlan(n,factors,1,1,1,(),1 << (n-1).bit_length(),'forward','complex64')
-    name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
-    assert name.endswith(pass_tag())==qualified
-    compile(source,'<ix-real-TLE-disjoint-contract>','exec')
+    for key in ('VEC_IO','RECURRENCE','PORTABLE_LEAF','WARPS','BATCH_PACK',
+                'TLE_DISJOINT_STAGE','TLE_REAL_DISJOINT'):
+        monkeypatch.delenv('FLAGFFT_IX_'+key,raising=False)
+    if setting is not None:monkeypatch.setenv('FLAGFFT_IX_TLE_REAL_DISJOINT',setting)
+    token=set_ix_fourstep_preset(13)
+    try:
+        plan=LeafPlan(210,(7,6,5),1,1,1,(),256,'forward','complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous_r2c')
+        meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type='leaf_r2c',n1=0,n2=0,dtype='complex64')
+        assert meta['num_warps']==16 and meta['batch_per_block']==16
+        assert name.endswith(pass_tag())==optimized
+        assert 'tw_step_r = tl.load' in source and 'tle.gpu.alloc' in source
+        assert 'batch_id = pid * 16' in source
+        compile(source,'<ix-ct210-real-default>','exec')
+    finally:reset_ix_fourstep_preset(token)
+
+
+def test_ct210_r2c_explicit_launch_rollback_keeps_original_fences(
+        ix_balanced_profile,monkeypatch,tmp_path):
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    monkeypatch.setenv('FLAGFFT_IX_WARPS','8');monkeypatch.setenv('FLAGFFT_IX_BATCH_PACK','8')
+    token=set_ix_fourstep_preset(13)
+    try:
+        plan=LeafPlan(210,(7,6,5),1,1,1,(),256,'forward','complex64')
+        name,_=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous_r2c')
+        meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type='leaf_r2c',n1=0,n2=0,dtype='complex64')
+        assert meta['num_warps']==8 and meta['batch_per_block']==8
+        assert '_ixdisjoint_' not in name
+    finally:reset_ix_fourstep_preset(token)

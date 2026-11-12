@@ -815,7 +815,6 @@ def _emit_structured_portable_exchange(
     pack: int,
     natural_order: bool,
     interleaved: bool,
-    paired: bool = False,
 ) -> list[str]:
     """Express a power-of-two stage route as a static axis permutation."""
     n = math.prod(factors)
@@ -836,13 +835,7 @@ def _emit_structured_portable_exchange(
     shape = (pack, *(factors[axis] for axis in source_axes))
     permutation = (0, *(source_axes.index(axis) + 1 for axis in output_axes))
     lines = []
-    if paired:
-        for digit in range(radix):
-            lines.append(
-                f"    exchange_p{digit} = tl.cast(tl.cast(exchange_r{digit}, tl.uint32, bitcast=True), tl.uint64) | "
-                f"(tl.cast(tl.cast(exchange_i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)"
-            )
-    for component in (("p",) if paired else ("r", "i")):
+    for component in ("r", "i"):
         name = f"exchange_structured_{component}"
         joined = _distributed_join_tree(
             [f"exchange_{component}{digit}" for digit in range(radix)]
@@ -868,11 +861,6 @@ def _emit_structured_portable_exchange(
         lines.append(f"    {name} = tl.reshape({name}, {shape})")
         lines.append(f"    {name} = tl.trans({name}, {permutation})")
         lines.append(f"    {buffer}_{component} = tl.reshape({name}, ({n * pack},))")
-    if paired:
-        lines += [
-            f"    {buffer}_r = tl.cast(tl.cast({buffer}_p, tl.uint32), tl.float32, bitcast=True)",
-            f"    {buffer}_i = tl.cast(tl.cast({buffer}_p >> 32, tl.uint32), tl.float32, bitcast=True)",
-        ]
     return lines
 
 
@@ -894,14 +882,13 @@ def _emit_direct_exchange_registers(
     lane_block: int,
     pack: int,
     interleaved: bool,
-    paired: bool = False,
 ) -> list[str]:
     """Split the routed tensor directly into the next stage's registers."""
     lanes = n // radix
     split_shape = (pack, lane_block, *((2,) * (radix.bit_length() - 1)))
     highest_first = _maca_knob("SPLIT_ORDER", "lsb") == "msb"
     lines = []
-    for component in (("p",) if paired else ("r", "i")):
+    for component in ("r", "i"):
         prefix = f"{buffer}_register_{component}"
         lines.append(
             f"    {prefix} = tl.reshape({buffer}_{component}, ({pack}, {radix}, {lanes}))"
@@ -939,13 +926,6 @@ def _emit_direct_exchange_registers(
             if interleaved:
                 lines.append(f"    {name} = tl.trans({name}, (1, 0))")
             lines.append(f"    {name} = tl.reshape({name}, ({pack * lane_block},))")
-    if paired:
-        for digit in range(radix):
-            source=f"{buffer}_register_p{digit}"
-            lines += [
-                f"    {buffer}_register_r{digit} = tl.cast(tl.cast({source}, tl.uint32), tl.float32, bitcast=True)",
-                f"    {buffer}_register_i{digit} = tl.cast(tl.cast({source} >> 32, tl.uint32), tl.float32, bitcast=True)",
-            ]
     return lines
 
 
@@ -1069,7 +1049,6 @@ def _emit_portable_exchange(
     register_lane_stride: int = 1,
     register_slot_stride: int | None = None,
     allow_mixed_direct: bool = True,
-    dtype: str = "complex64",
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
@@ -1104,8 +1083,6 @@ def _emit_portable_exchange(
         and _structured_exchange_supported(factors, size, slot_stride, pack)
         and lane_block >= n // radix
     ):
-        paired = (_ix_backend_active() and dtype == "complex64"
-                  and _maca_knob("PAIR_EXCHANGE", "0") == "1")
         lines = _emit_structured_portable_exchange(
             buffer,
             stage,
@@ -1114,7 +1091,6 @@ def _emit_portable_exchange(
             pack,
             natural_order,
             interleaved=register_lane_stride > 1,
-            paired=paired,
         )
         if _maca_knob("EXCHANGE") in {"direct", "direct_all"} and not natural_order:
             lines.extend(
@@ -1125,7 +1101,6 @@ def _emit_portable_exchange(
                     lane_block,
                     pack,
                     interleaved=register_lane_stride > 1,
-                    paired=paired,
                 )
             )
         return lines
@@ -2130,11 +2105,8 @@ def _emit_stage_block(
                     lines.append(f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})")
                     lines.append(f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})")
             elif io_mode == "packed_r2c":
-                packed_index = f"out_idx{j}"
-                if not portable_exchange and smem_pack > 1:
-                    packed_index = f"(out_idx{j} + batch_slot * {exchange_slot_stride})"
                 lines.extend(_emit_exchange_store(
-                    indent, "packed", packed_index, j, f"r{j}", f"i{j}", portable_exchange
+                    indent, "packed", f"out_idx{j}", j, f"r{j}", f"i{j}", portable_exchange
                 ))
             elif io_mode == "contiguous_c2r":
                 lines.append(
@@ -2553,7 +2525,6 @@ def _emit_stage_block(
                     register_lane_stride=inner_pack if inner_pack > 1 else 1,
                     register_slot_stride=1 if inner_pack > 1 else lane_block,
                     allow_mixed_direct=mixed_direct_layout,
-                    dtype=dtype,
                 )
             )
     elif not is_last:
@@ -3162,10 +3133,7 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
-    packed_tle = (io_mode == "packed_r2c" and not portable_exchange
-                  and _ix_backend_active() and plan.dtype == "complex64"
-                  and _maca_knob("PACKED_R2C_TLE", "0") == "1")
-    if io_mode == "packed_r2c" and not portable_exchange and not packed_tle:
+    if io_mode == "packed_r2c" and not portable_exchange:
         raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
@@ -3173,7 +3141,7 @@ def _build_leaf_kernel_source_for_io(
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
-        if portable_exchange or packed_tle
+        if portable_exchange
         else cooperative_stage_lanes_for(plan)
     )
     uses_cooperative_stage_lanes = portable_exchange or any(
@@ -3278,10 +3246,7 @@ def _build_leaf_kernel_source_for_io(
         # bound batch and 3D shapes.
         lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
-    # Packed TLE reconstruction also indexes this tile by natural frequency.
-    # Keep a power-of-two slot stride for its masked conjugate-pair loads.
-    smem_slot_stride = (plan.smem_size + 1
-                        if batch_pack >= 4 and not packed_tle else plan.smem_size)
+    smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
     if _ix_batch_smem_interleave(io_mode, portable_exchange, batch_pack):
         # Adjacent FFT slots occupy adjacent words. Padding each power-of-two
         # FFT would double the rounded allocation without separating slots.
@@ -3384,10 +3349,10 @@ def _build_leaf_kernel_source_for_io(
         and all(n % (radix*width)==0 for radix,width in zip(factors,stage_lanes))
         and _maca_knob("TLE_DISJOINT_CTA","0")=="1")
     real_disjoint = (
-        _maca_knob("TLE_REAL_DISJOINT", "0") == "1"
-        and ((io_mode == "contiguous_r2c" and factors == (7,6,5))
-             or (packed_tle and factors in {(7,5,3),(7,3,5),(8,8,8),(16,8,8)}))
+        io_mode == "contiguous_r2c" and n == 210 and factors == (7,6,5)
+        and batch_pack == 16 and _maca_knob("WARPS", "") == "16"
         and all(n == radix * width for radix,width in zip(factors,stage_lanes))
+        and _maca_knob("TLE_REAL_DISJOINT", "0") == "1"
     )
     disjoint_stage = (
         _ix_backend_active() and not portable_exchange and plan.dtype=="complex64"
@@ -3579,12 +3544,6 @@ def _build_leaf_kernel_source_for_io(
     if uses_cooperative_stage_lanes:
         body.append("    base_lane_mask = lane_mask")
 
-    if packed_tle:
-        # Keep the final natural-order spectrum separate from stage input.
-        # No last-stage store can overwrite another lane's unread input.
-        body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
-        body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
-
     if len(factors) > 1 and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
         if not single_smem_buffer:
@@ -3672,19 +3631,6 @@ def _build_leaf_kernel_source_for_io(
             "    tl.store(out_ptr + packed_nyquist * 2, packed_ar - packed_ai, mask=packed_mask & (packed_k == 0))",
             "    tl.store(out_ptr + packed_nyquist * 2 + 1, 0.0, mask=packed_mask & (packed_k == 0))",
         ])
-
-        if packed_tle:
-            # All natural-order outputs are visible before loading either
-            # member of a conjugate pair, including across physical warps.
-            start = body.index(f"    packed_pos = tl.arange(0, {smem_n})")
-            body.insert(start, "    tl.debug_barrier()")
-            for old, new in (
-                ("    packed_ar = packed_r", "    packed_ar = tl.load(tle.gpu.local_ptr(packed_r, (packed_pos,)), mask=packed_mask, other=0.0)"),
-                ("    packed_ai = packed_i", "    packed_ai = tl.load(tle.gpu.local_ptr(packed_i, (packed_pos,)), mask=packed_mask, other=0.0)"),
-                ("    packed_br = tl.gather(packed_r, packed_partner, 0)", "    packed_br = tl.load(tle.gpu.local_ptr(packed_r, (packed_partner,)), mask=packed_mask, other=0.0)"),
-                ("    packed_bi = tl.gather(packed_i, packed_partner, 0)", "    packed_bi = tl.load(tle.gpu.local_ptr(packed_i, (packed_partner,)), mask=packed_mask, other=0.0)"),
-            ):
-                body[body.index(old)] = new
 
         if _ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype):
             for old_lines,new_lines in (

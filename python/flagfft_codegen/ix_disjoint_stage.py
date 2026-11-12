@@ -1,6 +1,7 @@
 """Narrow CoreX postpass for disjoint writes in generated FFT stages.
 
-The generator opts in only bounded FourStep leaves. Mixed-radix groups are
+The generator opts in bounded FourStep leaves and qualified real CT batches.
+Mixed-radix groups are
 statically unrolled so the dependence check can require an acyclic function.
 Their intermediate stores form a permutation of
 independent (FFT slot, frequency) addresses. Preserve all read/write fences;

@@ -357,7 +357,7 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
 }
 
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
-                                                   bool portable_default, bool full_stage_lanes) {
+                                                   bool portable_default) {
   const bool is_double = dtype_is_double(request.input_dtype);
   std::vector<DeviceAllocation> tables;
   const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
@@ -369,7 +369,7 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
                            (portable_default || ix_ct_single_policy_enabled(request) ||
                             ix_ct_batch_policy_enabled(request))));
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-    const int64_t lanes = (full_stage_lanes || adaptor::backend_name() == "maca" || portable_ix) ? leaf.length / leaf.factors[stage]
+    const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix) ? leaf.length / leaf.factors[stage]
                           : use_cooperative_stage_lanes(leaf, request)
                               ? cooperative_stage_lanes(leaf.length, leaf.factors[stage])
                               : leaf.lanes;

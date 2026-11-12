@@ -47,6 +47,7 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
     if (!packed || std::string(packed)=="1") {
       preset=request.requested_n==1024 ? 11 : 9;
       if (request.requested_n==210 && request.real_transform_kind!="r2c") preset=12;
+      if (request.requested_n==210 && request.real_transform_kind=="r2c") preset=13;
     }
   }
   if (request.batch==64 && request.requested_n==8191) preset=1;

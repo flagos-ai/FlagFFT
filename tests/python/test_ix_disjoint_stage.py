@@ -10,7 +10,7 @@ def test_mixed_stage_writes_are_bijections_before_fence_removal():
         def where(condition, yes, no):
             return yes if condition else no
     for factors in ((8,8),(16,8),(16,16),(17,13),(25,17),(12,13,5),(30,10,5),(24,13,5),
-                    (16,16,16,4),(7,6,5),(7,5,3),(7,3,5),(8,8,8),(16,8,8)):
+                    (16,16,16,4),(7,6,5)):
         n=math.prod(factors)
         # Include the real cooperative cap: later stages can have multiple
         # groups even though all stores together must remain a permutation.
@@ -28,9 +28,11 @@ def test_mixed_stage_writes_are_bijections_before_fence_removal():
                         exec('\n'.join(_emit_route_index('','dst',stage,factors,widths[stage+1],digit)),env)
                         addresses.append(env['dst'])
             assert sorted(addresses)==list(range(n))
-            if factors in {(7,6,5),(7,5,3),(7,3,5),(8,8,8),(16,8,8)}:
+            if factors == (7,6,5):
+                # Every source-identified write owns one frequency within
+                # its FFT slot, including the qualified batch-16 CTA tile.
                 for pack in (1,2,4,8,16):
-                    for stride in (1 << (n-1).bit_length(),(1 << (n-1).bit_length())+1):
+                    for stride in (256,257):
                         tiled=[slot*stride+k for slot in range(pack) for k in addresses]
                         assert len(set(tiled))==n*pack
             if n >= 8192:
