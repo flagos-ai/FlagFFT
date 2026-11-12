@@ -21,7 +21,7 @@
 #include <sys/file.h>
 #include <unistd.h>
 
-#if defined(BACKEND_MACA)
+#if defined(BACKEND_MACA) || defined(BACKEND_IX)
 #include "triton_jit/jit_utils.h"
 #endif
 
@@ -206,6 +206,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 ";ix-prime-3d=" + (ix_prime_3d_policy_ ? "1" : "0") +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+#if defined(BACKEND_IX)
+  const char *typed_setting=std::getenv("FLAGFFT_IX_TYPED_LAUNCH");
+  if (typed_setting && std::string(typed_setting)!="0" && std::string(typed_setting)!="1")
+    throw std::runtime_error("FLAGFFT_IX_TYPED_LAUNCH must be 0 or 1");
+  const bool ix_typed_launch=typed_setting && std::string(typed_setting)=="1";
+  cache_key += std::string(";ix-typed-launch=") + (ix_typed_launch?"1":"0");
+#endif
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
@@ -495,6 +502,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_prime_3d_policy_) jit_command << " --ix-prime-3d";
   if (key.ix_warp_fft_pack > 0) jit_command << " --ix-warp-fft-pack " << key.ix_warp_fft_pack;
   if (ix_ct_single_tle_policy_) jit_command << " --ix-ct-single-tle " << ix_ct_single_tle_policy_;
+#if defined(BACKEND_IX)
+  if (ix_typed_launch)
+    jit_command << " --compile-script "
+                << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());
+#endif
 #if defined(BACKEND_MACA)
   jit_command << " --compile-script "
               << shell_quote((triton_jit::get_script_dir() / "standalone_compile.py").string());
@@ -626,6 +638,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   kernel->module_path = json_string_field(artifact_json, "module_path");
 #if defined(BACKEND_MACA)
   kernel->binary_dir = json_string_field(artifact_json, "binary_dir");
+#elif defined(BACKEND_IX)
+  if (ix_typed_launch) kernel->binary_dir = json_string_field(artifact_json,"binary_dir");
 #endif
   kernel->signature = json_string_field(artifact_json, "signature");
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
