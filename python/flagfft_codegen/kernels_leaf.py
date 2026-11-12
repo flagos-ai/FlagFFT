@@ -1494,12 +1494,21 @@ def _emit_stage_block(
                 )
                 lines.append(f"{indent}i{j} = r{j} * 0.0")
             elif io_mode == "packed_r2c":
-                lines.append(
-                    f"{indent}r{j} = tl.load(in_ptr + input_batch_base + 2 * in{j}, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}i{j} = tl.load(in_ptr + input_batch_base + 2 * in{j} + 1, mask=lane_mask, other={zero})"
-                )
+                if (_ix_backend_active() and _packed_maca_fp32_complex_io(dtype)
+                        and _maca_knob("PACKED_R2C_INPUT", "0") == "1"):
+                    # A packed real input contains adjacent even/odd FP32
+                    # samples. Their pair has the same aligned eight-byte
+                    # representation as the complex I/O load.
+                    lines.extend(_emit_vectorized_complex_load(
+                        indent, f"in_ptr + input_batch_base + 2 * in{j}",
+                        "lane_mask", f"r{j}, i{j}", dtype))
+                else:
+                    lines.append(
+                        f"{indent}r{j} = tl.load(in_ptr + input_batch_base + 2 * in{j}, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}i{j} = tl.load(in_ptr + input_batch_base + 2 * in{j} + 1, mask=lane_mask, other={zero})"
+                    )
             elif io_mode == "packed_c2r":
                 lines.extend(
                     [

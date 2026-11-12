@@ -294,6 +294,8 @@ one FFT per warp after its three-amplitude qualification reached 0.9884x; `FLAGF
 At N=210, C2C and C2R retain the 7-by-6-by-5 geometry and eight FFTs per
 CTA, with recurrence twiddles selected by request preset 12. Their three-amplitude
 checks passed with minimum speedups of 1.1764x and 0.8776x respectively.
+The N=2048 batch-64 fused R2C leaf also loads adjacent even/odd FP32 input
+samples as aligned pairs; `FLAGFFT_IX_PACKED_R2C_INPUT=0` restores scalar loads.
 `FLAGFFT_IX_CT_BATCH_PACKED_IO=0` disables the short-CT request presets.
 
 The dense FP32 C2C request at N=340200 and batch=64 uses packed complex I/O,

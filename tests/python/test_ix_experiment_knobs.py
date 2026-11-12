@@ -774,3 +774,23 @@ def test_ct210_recurrence_default_preserves_batched_TLE_launch(
         assert 'tw_step_r = tl.load' in source and 'tle.gpu.alloc' in source
         assert 'nbatch = 1' not in source
     finally:reset_ix_fourstep_preset(token)
+
+
+@pytest.mark.parametrize('setting,paired',[(None,True),('0',False),('1',True)])
+def test_ct2048_packed_input_loads_aligned_real_pairs(
+        ix_balanced_profile,monkeypatch,setting,paired):
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
+    from flagfft_codegen.target import set_ix_ct_batch_default,reset_ix_ct_batch_default
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    for key in ('VEC_IO','PORTABLE_LEAF','PACKED_R2C_INPUT'):
+        monkeypatch.delenv('FLAGFFT_IX_'+key,raising=False)
+    if setting is not None:monkeypatch.setenv('FLAGFFT_IX_PACKED_R2C_INPUT',setting)
+    preset=set_ix_fourstep_preset(9);batch=set_ix_ct_batch_default(True)
+    try:
+        plan=LeafPlan(1024,(16,8,8),1,64,2,(),1024,'forward','complex64')
+        _,source=_build_leaf_kernel_source_for_io(plan,io_mode='packed_r2c')
+        assert ('_packed_pair_r0 = tl.load(tl.cast((in_ptr + input_batch_base + 2 * in0)' in source)==paired
+        compile(source,'<ix-packed-real-input>','exec')
+    finally:
+        reset_ix_fourstep_preset(preset);reset_ix_ct_batch_default(batch)

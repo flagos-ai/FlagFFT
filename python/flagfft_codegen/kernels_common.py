@@ -352,7 +352,7 @@ def _maca_knob(name: str, default: str = "") -> str:
                             MAX_PACK="16", RESOURCE_WARPS="1", VEC_IO="packed")
         preset = ix_fourstep_preset()
         if preset==9 and current_profile().policy=="balanced":
-            defaults.update(VEC_IO="packed")
+            defaults.update(VEC_IO="packed", PACKED_R2C_INPUT="1")
         elif preset==12 and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed", RECURRENCE="1")
         elif preset==10 and current_profile().policy=="balanced":
