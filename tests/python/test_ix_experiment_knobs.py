@@ -849,3 +849,24 @@ def test_packed_TLE_real_remains_disabled_without_the_fp32_opt_in(
     plan=LeafPlan(105,(7,5,3),1,1,1,(),128,'forward',dtype)
     with pytest.raises(ValueError,match='requires the portable'):
         _build_leaf_kernel_source_for_io(plan,io_mode='packed_r2c')
+
+
+@pytest.mark.parametrize('mode,n,factors,enabled,qualified',[
+    ('contiguous_r2c',210,(7,6,5),False,False),
+    ('contiguous_r2c',210,(7,6,5),True,True),
+    ('packed_r2c',105,(7,5,3),True,True),
+    ('contiguous',210,(7,6,5),True,False),
+])
+def test_real_TLE_disjoint_postpass_requires_the_explicit_source_contract(
+        ix_balanced_profile,monkeypatch,mode,n,factors,enabled,qualified):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.ix_disjoint_stage import pass_tag
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
+    monkeypatch.setenv('FLAGFFT_IX_PACKED_R2C_TLE','1')
+    monkeypatch.setenv('FLAGFFT_IX_TLE_DISJOINT_STAGE','1')
+    monkeypatch.setenv('FLAGFFT_IX_TLE_REAL_DISJOINT',str(int(enabled)))
+    plan=LeafPlan(n,factors,1,1,1,(),1 << (n-1).bit_length(),'forward','complex64')
+    name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+    assert name.endswith(pass_tag())==qualified
+    compile(source,'<ix-real-TLE-disjoint-contract>','exec')

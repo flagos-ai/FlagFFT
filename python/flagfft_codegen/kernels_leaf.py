@@ -3173,7 +3173,7 @@ def _build_leaf_kernel_source_for_io(
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
-        if portable_exchange
+        if portable_exchange or packed_tle
         else cooperative_stage_lanes_for(plan)
     )
     uses_cooperative_stage_lanes = portable_exchange or any(
@@ -3383,9 +3383,15 @@ def _build_leaf_kernel_source_for_io(
         and math.prod(factors)==n
         and all(n % (radix*width)==0 for radix,width in zip(factors,stage_lanes))
         and _maca_knob("TLE_DISJOINT_CTA","0")=="1")
+    real_disjoint = (
+        _maca_knob("TLE_REAL_DISJOINT", "0") == "1"
+        and ((io_mode == "contiguous_r2c" and factors == (7,6,5))
+             or (packed_tle and factors in {(7,5,3),(7,3,5),(8,8,8),(16,8,8)}))
+        and all(n == radix * width for radix,width in zip(factors,stage_lanes))
+    )
     disjoint_stage = (
         _ix_backend_active() and not portable_exchange and plan.dtype=="complex64"
-        and (cta_disjoint or (inner_pack>1
+        and (real_disjoint or cta_disjoint or (inner_pack>1
         and ((64<=n<=256 and len(factors)==2
               and all(radix & (radix-1)==0 for radix in factors)
               and all(n==radix*lanes for radix,lanes in zip(factors,stage_lanes)))

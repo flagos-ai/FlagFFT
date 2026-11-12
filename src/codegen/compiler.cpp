@@ -2970,7 +2970,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       key.kind = KernelKind::LeafPackedR2C;
       mark_ix_warp_fft(key,request);
       return std::make_shared<CompiledRawR2CLeafNode>(
-          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request,request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8),
+          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request,
+              request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8, packed_tle),
           build_raw_packed_real_twiddle(request, n));
     }
   }
