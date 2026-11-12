@@ -11,14 +11,19 @@ def test_mixed_stage_writes_are_bijections_before_fence_removal():
             return yes if condition else no
     for factors in ((25,17),(12,13,5),(24,13,5)):
         n=math.prod(factors)
+        # Include the real cooperative cap: later stages can have multiple
+        # groups even though all stores together must remain a permutation.
+        widths=tuple(next(w for w in range(min(n//r,128),0,-1) if (n//r)%w==0)
+                     for r in factors)
         for stage in range(len(factors)-1):
             addresses=[]
-            for lane in range(n//factors[stage]):
-                env={'tl':ScalarLanguage,'lane_mask':True,'lane':lane,'group':0}
-                exec('\n'.join(_emit_route_base('',stage,factors,n//factors[stage],'group')),env)
-                for digit in range(factors[stage]):
-                    exec('\n'.join(_emit_route_index('','dst',stage,factors,n//factors[stage+1],digit)),env)
-                    addresses.append(env['dst'])
+            for group in range(n//(widths[stage]*factors[stage])):
+                for lane in range(widths[stage]):
+                    env={'tl':ScalarLanguage,'lane_mask':True,'lane':lane,'group':group}
+                    exec('\n'.join(_emit_route_base('',stage,factors,widths[stage],'group')),env)
+                    for digit in range(factors[stage]):
+                        exec('\n'.join(_emit_route_index('','dst',stage,factors,widths[stage+1],digit)),env)
+                        addresses.append(env['dst'])
             assert sorted(addresses)==list(range(n))
 
 

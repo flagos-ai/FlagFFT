@@ -602,3 +602,13 @@ def test_ix_fourstep_request_preset_is_nested_and_explicit_knobs_win(ix_balanced
     finally:reset_ix_fourstep_preset(outer)
     monkeypatch.delenv('FLAGFFT_IX_PORTABLE_LEAF')
     assert _maca_knob('PORTABLE_LEAF','off')==original
+
+
+def test_mixed_shared_reuse_rejects_partial_intermediate_reads(ix_balanced_profile,monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan, _use_single_smem_buffer
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
+    monkeypatch.setenv('FLAGFFT_IX_MIXED_SINGLE_SMEM','1')
+    for factors,expected in [((24,13,5),True),((13,5,24),False)]:
+        plan=LeafPlan(1560,factors,1,1,1,(),2048,'forward','complex64')
+        assert _use_single_smem_buffer(plan,io_mode='four_step_col',four_step_n1=425,four_step_n2=1560)==expected
+        assert not _use_single_smem_buffer(plan,io_mode='four_step_col_strided',four_step_n1=425,four_step_n2=1560)
