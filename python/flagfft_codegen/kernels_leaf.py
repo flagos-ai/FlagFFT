@@ -3290,9 +3290,10 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
-    cuda_packed_r2c = (io_mode == "packed_r2c" and current_profile().backend == "cuda"
-        and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
-    if io_mode == "packed_r2c" and not portable_exchange and not cuda_packed_r2c:
+    tle_packed_r2c = io_mode == "packed_r2c" and (
+        _hcu_backend_active() or (current_profile().backend == "cuda"
+        and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1"))
+    if io_mode == "packed_r2c" and not portable_exchange and not tle_packed_r2c:
         raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
@@ -3412,7 +3413,10 @@ def _build_leaf_kernel_source_for_io(
         # bound batch and 3D shapes.
         lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
-    smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    # A one-stage FFT needs no exchange buffer, but the fused real boundary
+    # still stores all half-length frequencies before reading their partners.
+    leaf_smem_size = max(plan.smem_size, n) if io_mode == "packed_r2c" else plan.smem_size
+    smem_slot_stride = leaf_smem_size + 1 if batch_pack >= 4 else leaf_smem_size
     if current_profile().backend == "cuda" and io_mode in {
         "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
     }:
@@ -3699,7 +3703,7 @@ def _build_leaf_kernel_source_for_io(
             f"nv_mma_shared_layout=False)"
         )
 
-    if cuda_packed_r2c and not portable_exchange:
+    if tle_packed_r2c and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
         body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
         body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
