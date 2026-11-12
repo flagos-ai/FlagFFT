@@ -408,7 +408,8 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
                                std::shared_ptr<JitKernel> col_kernel,
                                std::vector<DeviceAllocation> col_tables,
                                DeviceAllocation twiddle,
-                               DeviceAllocation stage1);
+                               DeviceAllocation stage1,
+                               bool reuse_output = false);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -423,6 +424,7 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
   std::vector<DeviceAllocation> col_tables;
   DeviceAllocation twiddle;
   DeviceAllocation stage1;
+  bool reuse_output;
 };
 
 struct CompiledRawBluesteinNode final : CompiledRawNode {

@@ -384,7 +384,8 @@ CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(int64_t length,
                                                            std::shared_ptr<JitKernel> col_kernel,
                                                            std::vector<DeviceAllocation> col_tables,
                                                            DeviceAllocation twiddle,
-                                                           DeviceAllocation stage1)
+                                                           DeviceAllocation stage1,
+                                                           bool reuse_output)
     : length(length),
       n1(n1),
       n2(n2),
@@ -393,14 +394,17 @@ CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(int64_t length,
       col_kernel(std::move(col_kernel)),
       col_tables(std::move(col_tables)),
       twiddle(std::move(twiddle)),
-      stage1(std::move(stage1)) {
+      stage1(std::move(stage1)),
+      reuse_output(reuse_output) {
 }
 
 std::string CompiledRawFourStepFusedNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawFourStepFused(n=" << length << ", n1=" << n1 << ", n2=" << n2
       << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null")
-      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
+      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null");
+  if (reuse_output) oss << ", reuse_output=true";
+  oss << ")";
   return oss.str();
 }
 
@@ -421,11 +425,19 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
       batch_chunk = std::max<int64_t>(1, max_blocks / grid_x);
     }
     const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
+    // The qualified column tile reads its entire FFT before writing and
+    // owns disjoint columns. Keep the scratch buffer for aliased public I/O.
+    auto intermediate = stage1.get();
+    if (reuse_output) {
+      const auto bytes = static_cast<adaptor::DevicePtr>(context.batch * length * element_bytes);
+      const bool disjoint = input < output ? output - input >= bytes : input - output >= bytes;
+      if (disjoint) intermediate = output;
+    }
     for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
       const int64_t chunk_batch = std::min(batch_chunk, context.batch - batch_offset);
       const auto byte_offset = static_cast<adaptor::DevicePtr>(batch_offset * length * element_bytes);
       const adaptor::DevicePtr input_chunk = input + byte_offset;
-      const adaptor::DevicePtr stage1_chunk = stage1.get() + byte_offset;
+      const adaptor::DevicePtr stage1_chunk = intermediate + byte_offset;
       const adaptor::DevicePtr output_chunk = output + byte_offset;
 
       std::vector<JitKernelArg> row_args =
