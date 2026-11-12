@@ -597,4 +597,13 @@ TEST(IXLeafPlan, FourStepPresetsRequireTheQualifiedPublicDenseRequest) {
   unsetenv("FLAGFFT_IX_CT_SINGLE");
   setenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS","0",1);
   EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  unsetenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS");
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  request.batch=64;
+  for (const auto &[n,preset] : std::vector<std::pair<int64_t,int>>{{8191,1},{16381,2}}) {
+    request.fft_length=request.requested_n=n;request.input_strides={n,1};
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),preset);
+    ScopedEnv disabled("FLAGFFT_IX_CT_BATCH","0");
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  }
 }
