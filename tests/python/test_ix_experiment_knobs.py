@@ -680,3 +680,25 @@ def test_ix_static_complex_indexing_requires_a_single_transform_request(ix_balan
         _,batch=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
     finally:reset_ix_ct_single_default(token)
     assert '    nbatch = 1' not in batch
+
+
+def test_ct_batch_io_screen_keeps_launch_and_reconstruction_policy(ix_balanced_profile,monkeypatch):
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan,_maca_knob
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
+    from flagfft_codegen.target import set_ix_ct_batch_default,reset_ix_ct_batch_default
+    token=set_ix_ct_batch_default(True)
+    preset=set_ix_fourstep_preset(9)
+    try:
+        assert _maca_knob('VEC_IO')=='packed'
+        assert _maca_knob('WARPS')=='4'
+        plan=LeafPlan(1024,(16,8,8),1,64,4,(),1024,'forward','complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode='packed_r2c')
+        meta=_metadata(module_path=Path('unused.py'),kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type='leaf_packed_r2c',n1=0,n2=0,dtype='complex64')
+        assert meta['num_warps']==2
+        assert meta['batch_per_block']==1
+    finally:
+        reset_ix_fourstep_preset(preset);reset_ix_ct_batch_default(token)

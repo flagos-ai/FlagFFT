@@ -39,6 +39,13 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
   const char *policy=std::getenv("FLAGFFT_EXECUTION_POLICY");
   if (policy && std::string(policy)!="balanced") return 0;
   int preset=0;
+  if (request.batch==64 && (request.requested_n==16 || request.requested_n==210 ||
+                            request.requested_n==1024 || request.requested_n==2048)) {
+    const char *packed=std::getenv("FLAGFFT_IX_CT_BATCH_PACKED_IO");
+    if (packed && std::string(packed)!="0" && std::string(packed)!="1")
+      throw std::runtime_error("FLAGFFT_IX_CT_BATCH_PACKED_IO must be 0 or 1");
+    if (packed && std::string(packed)=="1") preset=9;
+  }
   if (request.batch==64 && request.requested_n==8191) preset=1;
   if (request.batch==64 && request.requested_n==16381) preset=2;
   if (request.requested_n==16384 && request.real_transform_kind.empty())
@@ -56,7 +63,7 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
     const char *portable=std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
     if ((cta && std::string(cta)=="0") || (portable && std::string(portable)=="1")) return 0;
   }
-  if (preset>=7) {
+  if (preset==7 || preset==8) {
     for (const char *name : {"FLAGFFT_IX_FOURSTEP_CTA", "FLAGFFT_IX_PORTABLE_LEAF",
                             "FLAGFFT_PACKED_REAL",
                             preset==7 ? "FLAGFFT_IX_FUSED_C2R" : "FLAGFFT_IX_FUSED_R2C"}) {

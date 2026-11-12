@@ -282,7 +282,7 @@ def _metadata(
             num_warps = max(2, profile.warps_for(threads))
             profile.validate(num_warps)
     from .target import ix_fourstep_preset
-    if (_ix_backend_active() and kernel_type == "leaf_packed_r2c" and ix_fourstep_preset()<7
+    if (_ix_backend_active() and kernel_type == "leaf_packed_r2c" and ix_fourstep_preset() not in {7,8}
             and os.environ.get("FLAGFFT_IX_WARPS") is None):
         # The half-length reconstruction has twice the register work of a
         # normal leaf. Four warps caused a large batch-64 regression on V150;
@@ -310,14 +310,16 @@ def _metadata(
     if kernel_name.startswith("ix_warp"):
         from .target import ix_warp_fft_pack
         warp_pack = ix_warp_fft_pack()
-        profile.validate(warp_pack)
+        physical_warps=max(1,(warp_pack*min(plan.length,64)+63)//64)
+        profile.validate(physical_warps)
         exchange_points=plan.length
         if "_chunk" in kernel_name:
             exchange_points=64*int(kernel_name.split("_chunk",1)[1].split("_",1)[0])
         element_bytes=4 if "_c2r_" in kernel_name and "_packed_c2r_" not in kernel_name else 8
         if warp_pack * exchange_points * element_bytes > profile.max_dynamic_shared_memory:
             raise ValueError("IX warp FFT output tile exceeds shared-memory capacity")
-        num_warps = batch_per_block = warp_pack
+        num_warps = physical_warps
+        batch_per_block = warp_pack
         inner_pack = 1
         if kernel_type in {'four_step_row','four_step_col','four_step_real_row',
                            'four_step_hermitian_row','four_step_r2c_col','four_step_c2r_col'}:

@@ -633,3 +633,42 @@ TEST(IXLeafPlan, BatchedRealCtaDefaultHasTypedScopeAndExistingRollbacks) {
     EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
   }
 }
+
+TEST(IXLeafPlan, PackedCtBatchScreenKeepsGeometryAndPublicDenseScope) {
+  ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
+  ScopedEnv packed("FLAGFFT_IX_CT_BATCH_PACKED_IO","1");
+  ScopedEnv rollback("FLAGFFT_IX_CT_BATCH",nullptr);
+  ScopedEnv gate("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS",nullptr);
+  ScopedEnv balanced("FLAGFFT_IX_BALANCED_RADICES",nullptr);
+  flagfft::FFTRequest request;
+  request.device_type="ix";request.device_arch="71";
+  request.input_dtype=request.output_dtype="complex64";
+  request.raw_dim=request.origin_rank=1;request.batch=64;
+  request.input_layout="contiguous";
+  for (int64_t n : {16,210,1024,2048}) {
+    request.fft_length=request.requested_n=n;
+    request.input_shape={64,n};
+    for (const auto &kind : {"","r2c","c2r"}) {
+      request.real_transform_kind=kind;
+      request.input_strides={std::string(kind)=="c2r" ? n/2+1 : n,1};
+      EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),9);
+      request.ix_fourstep_preset=0;
+      flagfft::PlanBuilder before;
+      const auto geometry=before.build(n,request)->describe();
+      request.ix_fourstep_preset=9;
+      flagfft::PlanBuilder after;
+      EXPECT_EQ(after.build(n,request)->describe(),geometry);
+      auto other=request;other.origin_rank=3;
+      EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
+      other=request;other.input_strides.front()++;
+      EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
+      other=request;other.batch=4;
+      EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
+    }
+  }
+  setenv("FLAGFFT_IX_CT_BATCH_PACKED_IO","0",1);
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  setenv("FLAGFFT_IX_CT_BATCH_PACKED_IO","1",1);
+  setenv("FLAGFFT_IX_CT_BATCH","0",1);
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+}

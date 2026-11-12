@@ -45,7 +45,7 @@ def test_warp_fft_rejects_invalid_configuration(args):
     ('contiguous_c2r','inverse','leaf_c2r'),
     ('contiguous_r2c','forward','leaf_r2c'),
 ])
-@pytest.mark.parametrize('length,pack',[(256,1),(256,2),(256,16),(256,32),(512,8),(1024,8),(2048,4),(2048,16)])
+@pytest.mark.parametrize('length,pack',[(16,4),(256,1),(256,2),(256,16),(256,32),(512,8),(1024,8),(2048,4),(2048,16)])
 def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind,length,pack,tmp_path):
     from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
     from flagfft_codegen.target import set_ix_warp_fft_pack,reset_ix_warp_fft_pack
@@ -56,7 +56,7 @@ def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind
                    'max_threads_per_block':4096,'max_dynamic_shared_memory':131072},'balanced'))
     token=set_ix_warp_fft_pack(0)
     try:
-        factors={256:(16,16),512:(32,16),1024:(32,32),2048:(16,16,8)}[length]
+        factors={16:(4,4),256:(16,16),512:(32,16),1024:(32,32),2048:(16,16,8)}[length]
         plan=LeafPlan(length,factors,1,16,2,(),length,direction,'complex64')
         _,base=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
         base_args=next(v.args for v in ast.parse(base).body if isinstance(v,ast.FunctionDef))
@@ -80,7 +80,8 @@ def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind
             return
         meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,
                        arg_names=[a.arg for a in args.args],plan=plan,kernel_type=kind,n1=0,n2=0,dtype='complex64')
-        assert meta['num_warps']==meta['batch_per_block']==meta['ix_warp_fft_pack']==pack
+        assert meta['num_warps']==max(1,(pack*min(length,64)+63)//64)
+        assert meta['batch_per_block']==meta['ix_warp_fft_pack']==pack
         assert meta['inner_pack']==1
         compile(source,'<ix-warp-leaf>','exec')
     finally:

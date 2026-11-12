@@ -61,12 +61,14 @@ namespace {
   void mark_ix_warp_fft(KernelKey &key, const FFTRequest &request, int64_t span = 0) {
     if (request.device_type != "ix" || request.device_arch != "71" ||
         key.dtype != "complex64") return;
-    const bool family_default=request.ix_warp_fft_pack_default>0 ||
+    const bool small_batch=request.ix_fourstep_preset==9 && key.length==16 &&
+        request.batch==64 && flag_or_default("FLAGFFT_IX_SMALL_CT_BATCH_WARP",false);
+    const bool family_default=request.ix_warp_fft_pack_default>0 || small_batch ||
                               ix_small_real_warp_default_enabled(request);
     const bool family=flag_or_default("FLAGFFT_IX_WARP_FFT",family_default);
     const bool small_real=key.length==16 && family && request.origin_rank<=1 &&
-        request.raw_dim==1 && request.batch==1 &&
-        (key.kind==KernelKind::LeafR2C || key.kind==KernelKind::LeafC2R);
+        request.raw_dim==1 && (small_batch || (request.batch==1 &&
+        (key.kind==KernelKind::LeafR2C || key.kind==KernelKind::LeafC2R)));
     const bool narrow = key.length == 256 && flag_or_default("FLAGFFT_IX_WARP256", family);
     const bool wide = (key.length == 64 || key.length == 128 || key.length == 256 || key.length == 512 ||
                        key.length == 1024 || key.length == 2048) &&
@@ -77,7 +79,7 @@ namespace {
     if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R &&
         key.kind != KernelKind::LeafR2C && key.kind != KernelKind::LeafPackedR2C &&
         key.kind != KernelKind::LeafPackedC2R) return;
-    int64_t pack = request.ix_warp_fft_pack_default>0 ? request.ix_warp_fft_pack_default :
+    int64_t pack = small_batch ? 4 : request.ix_warp_fft_pack_default>0 ? request.ix_warp_fft_pack_default :
                      (small_real ? 1 : key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
     if (const char *value = std::getenv(key.length == 256
                                          ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
@@ -2958,7 +2960,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       key.kind = KernelKind::LeafPackedR2C;
       mark_ix_warp_fft(key,request);
       return std::make_shared<CompiledRawR2CLeafNode>(
-          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request,request.ix_fourstep_preset>=7),
+          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request,request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8),
           build_raw_packed_real_twiddle(request, n));
     }
   }
@@ -3117,7 +3119,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             n,
             compile_kernel(key),
             build_raw_packed_real_twiddle(request, n),
-            build_raw_leaf_tables(*leaf, packed_child->request,request.ix_fourstep_preset>=7),
+            build_raw_leaf_tables(*leaf, packed_child->request,request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8),
             [node, request, batch]() {
               TritonCompiler compiler;
               return compiler.compile_raw_c2r_node(node, request, batch, false);

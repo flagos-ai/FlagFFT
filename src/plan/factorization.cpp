@@ -359,7 +359,8 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_IX_BALANCED_RADICES must be 0 or 1");
     }
-    if (setting ? std::string(setting) == "1" : context.ix_fourstep_preset > 0) {
+    if (setting ? std::string(setting) == "1"
+                : (context.ix_fourstep_preset > 0 && context.ix_fourstep_preset < 9)) {
       // Screen smaller codelets without a radix-2 tail that greatly widens
       // cooperative stages. Existing explicitly qualified policies above
       // retain precedence; the ordinary cost model orders the remaining
