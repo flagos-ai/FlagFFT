@@ -39,7 +39,6 @@ def test_structured_real_padded_rows(n, inverse, alias):
     assert lib.flagfftPlanMany(ctypes.byref(handle), 1, dims, None, 1, idist,
         None, 1, odist, 0x2c if inverse else 0x2a, batch) == 0
     stream = torch.npu.current_stream()
-    assert lib.flagfftSetStream(handle, ctypes.c_void_p(stream.npu_stream)) == 0
     description = lib.flagfftGetPlanDescription(handle).decode()
     assert "CompiledRawNpuAivFFTSmall(" in description
     words = batch * real_pitch
@@ -56,6 +55,7 @@ def test_structured_real_padded_rows(n, inverse, alias):
             else:
                 reference = torch.fft.rfft(value.double())
             x.copy_(value.npu())
+            assert lib.flagfftSetStream(handle, ctypes.c_void_p(stream.npu_stream)) == 0
             assert execute(handle, ctypes.c_void_p(x.data_ptr()), ctypes.c_void_p(y.data_ptr())) == 0
             stream.synchronize()
             got = y.cpu()

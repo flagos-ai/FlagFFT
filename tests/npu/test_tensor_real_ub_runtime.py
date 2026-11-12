@@ -44,7 +44,6 @@ def test_3d_inverse_uses_resource_bounded_plan(shape, batch):
     guarded = torch.full((batch * n + 128,), 31415.25, device='npu')
     output = guarded[64:-64].reshape((batch,) + shape)
     stream = torch.npu.current_stream()
-    assert lib.flagfftSetStream(plan, ctypes.c_void_p(stream.npu_stream)) == 0
     try:
         for scale in (1.0, 1e-6, 1e6):
             real = torch.randn((batch,) + shape, dtype=torch.float64) * scale
@@ -52,6 +51,9 @@ def test_3d_inverse_uses_resource_bounded_plan(shape, batch):
             reference = torch.fft.irfftn(spectrum.cdouble(), s=shape, dim=(1, 2, 3)) * n
             data = torch.view_as_real(spectrum).npu()
             output.fill_(float('nan'))
+            # Reading npu_stream drains torch_npu's host task queue before
+            # the external launch, without synchronizing device execution.
+            assert lib.flagfftSetStream(plan, ctypes.c_void_p(stream.npu_stream)) == 0
             assert lib.flagfftExecC2R(plan, ctypes.c_void_p(data.data_ptr()),
                                       ctypes.c_void_p(output.data_ptr())) == 0
             stream.synchronize()

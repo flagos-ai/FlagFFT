@@ -48,7 +48,6 @@ def test_3d_real_row256_grouped(shape, batch, inverse, monkeypatch):
     guarded = torch.full((words + 128,), 31415.25, device='npu')
     output = guarded[64:-64].reshape((batch,) + shape if inverse else (batch, *shape[:-1], half, 2))
     stream = torch.npu.current_stream()
-    assert lib.flagfftSetStream(plan, ctypes.c_void_p(stream.npu_stream)) == 0
     try:
         for scale in (1.0, 1e-6, 1e6):
             real = torch.randn((batch,) + shape, dtype=torch.float32) * scale
@@ -61,6 +60,9 @@ def test_3d_real_row256_grouped(shape, batch, inverse, monkeypatch):
                 data = real.npu()
                 reference = torch.view_as_real(spectrum)
             output.fill_(float('nan'))
+            # Flush queued Torch submissions before handing its stream to
+            # the native API. No device-wide synchronization is needed.
+            assert lib.flagfftSetStream(plan, ctypes.c_void_p(stream.npu_stream)) == 0
             assert execute(plan, ctypes.c_void_p(data.data_ptr()), ctypes.c_void_p(output.data_ptr())) == 0
             stream.synchronize()
             actual = output.cpu().double()
