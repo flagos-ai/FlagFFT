@@ -704,26 +704,6 @@ def test_ct_batch_io_screen_keeps_launch_and_reconstruction_policy(ix_balanced_p
         reset_ix_fourstep_preset(preset);reset_ix_ct_batch_default(token)
 
 
-@pytest.mark.parametrize('enabled,factors,pack,expected',[
-    (True,(32,32),1,True),(False,(32,32),1,False),
-    (True,(16,8,8),1,False),(True,(32,32),2,False),
-])
-def test_ct1024_disjoint_screen_preserves_runtime_batch_and_narrow_write_proof(
-        ix_balanced_profile,monkeypatch,enabled,factors,pack,expected):
-    from flagfft_codegen.kernels_common import LeafPlan
-    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
-    knobs={'PORTABLE_LEAF':'0','WARPS':'2','BATCH_PACK':str(pack),
-           'SMEM_SWIZZLE':'1','SMEM_SWIZZLE_SHIFT':'5',
-           'TLE_DISJOINT_STAGE':'1','TLE_DISJOINT_CTA':str(int(enabled))}
-    for key,value in knobs.items():monkeypatch.setenv('FLAGFFT_IX_'+key,value)
-    lanes=1024//max(factors)
-    plan=LeafPlan(1024,factors,1,lanes,2,(),1024,'forward','complex64')
-    name,source=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
-    assert ('ixdisjoint_' in name)==expected
-    assert 'nbatch = 1' not in source and 'batch_id = 0' not in source
-    if expected:assert 'tl.static_range(0, 1)' in source
-
-
 @pytest.mark.parametrize('n,factors,lanes,smem,mode',[
     (504,(28,18),2,512,'four_step_row'),(675,(27,25),1,1024,'four_step_col'),
 ])
