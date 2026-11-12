@@ -47,11 +47,11 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
   if (request.requested_n==16384 && request.batch==64 && request.real_transform_kind=="r2c") preset=8;
   if (request.requested_n==663000) preset=request.batch==1 ? 5 : 6;
   if (!preset) return 0;
-  // Batch C2C and batch R2C remain opt-in while their floor cases are screened.
+  // Batch C2C remains opt-in while its floor cases are screened.
   const char *setting=std::getenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS");
   if (setting && std::string(setting)!="0" && std::string(setting)!="1")
     throw std::runtime_error("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS must be 0 or 1");
-  if (setting ? std::string(setting)=="0" : (preset==4 || preset==8)) return 0;
+  if (setting ? std::string(setting)=="0" : preset==4) return 0;
   if (preset>=7) {
     for (const char *name : {"FLAGFFT_IX_FOURSTEP_CTA", "FLAGFFT_IX_PORTABLE_LEAF",
                             "FLAGFFT_PACKED_REAL",

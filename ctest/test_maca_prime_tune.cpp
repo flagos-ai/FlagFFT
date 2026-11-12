@@ -599,9 +599,13 @@ TEST(IXLeafPlan, BatchedRealCtaDefaultHasTypedScopeAndExistingRollbacks) {
     EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
   }
   request.real_transform_kind="r2c";request.input_strides={16384,1};
-  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
-  setenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS","1",1);
   EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),8);
-  ScopedEnv disabled("FLAGFFT_IX_FUSED_R2C","0");
+  for (const char *name : {"FLAGFFT_IX_FUSED_R2C","FLAGFFT_IX_FOURSTEP_CTA",
+                            "FLAGFFT_IX_PORTABLE_LEAF","FLAGFFT_PACKED_REAL",
+                            "FLAGFFT_IX_CT_BATCH","FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS"}) {
+    ScopedEnv disabled(name,"0");
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  }
+  request.real_transform_kind="";
   EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
 }
