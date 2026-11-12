@@ -221,6 +221,14 @@ def _emit_table_codelet(
     return lines
 
 
+def _emit_complex_boundary_load(indent, ptr, mask, real, imag, dtype, packed):
+    if packed:
+        return _emit_vectorized_complex_load(indent,ptr,mask,f'{real}, {imag}',dtype)
+    zero='0.0'
+    return [f'{indent}{real} = tl.load({ptr}, mask={mask}, other={zero})',
+            f'{indent}{imag} = tl.load({ptr} + 1, mask={mask}, other={zero})']
+
+
 def _emit_natural_order_codelet_call(
     indent: str,
     radix: int,
@@ -1302,14 +1310,15 @@ def _emit_stage_block(
         and (_maca_knob("VEC_IO", "0") != "packed" or dtype == "complex64")
     )
     vectorized_four_step_complex_io = (
-        io_mode
-        in {
+        (io_mode in {
             "four_step_row",
             "four_step_col",
             "four_step_r2c_col",
             "four_step_c2r_col",
             "four_step_hermitian_row",
-        }
+        } or (io_mode in {'four_step_real_row','bluestein_four_step_prepare_row',
+                          'bluestein_four_step_pointwise_row','bluestein_four_step_finish_col'}
+              and _ix_backend_active() and _packed_maca_fp32_complex_io(dtype)))
         and vector_io_allowed
     )
     vectorized_complex_io = (
@@ -1645,12 +1654,8 @@ def _emit_stage_block(
                         )
                     )
             elif io_mode == "bluestein_four_step_prepare_row":
-                lines.append(
-                    f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
-                )
-                lines.append(
-                    f"{indent}prime_mask{j} = lane_mask & (src_idx{j} < {prime_n})"
-                )
+                lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner")
+                lines.append(f"{indent}prime_mask{j} = lane_mask & (src_idx{j} < {prime_n})")
                 if bluestein_real_kind == "r2c":
                     lines.append(f"{indent}src_ptr{j} = in_ptr + four_step_batch * {prime_n} + src_idx{j}")
                     lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
@@ -1658,43 +1663,23 @@ def _emit_stage_block(
                 elif bluestein_real_kind == "c2r":
                     lines.append(f"{indent}compact_idx{j} = tl.minimum(src_idx{j}, {prime_n} - src_idx{j})")
                     lines.append(f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n // 2 + 1} + compact_idx{j}) * 2")
-                    lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
-                    lines.append(f"{indent}loaded_i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
+                    lines.extend(_emit_complex_boundary_load(indent,f"src_ptr{j}",f"prime_mask{j}",
+                        f"r{j}",f"loaded_i{j}",dtype,vectorized_complex_io))
                     lines.append(f"{indent}i{j} = tl.where(src_idx{j} == 0, 0.0, tl.where(src_idx{j} <= {prime_n // 2}, loaded_i{j}, -loaded_i{j}))")
                 else:
                     lines.append(f"{indent}src_ptr{j} = in_ptr + (four_step_batch * {prime_n} + src_idx{j}) * 2")
-                    lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
-                    lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
-                lines.append(
-                    f"{indent}chirp_r{j} = tl.load(chirp_ptr + src_idx{j} * 2, mask=prime_mask{j}, other={zero})"
-                )
-                lines.append(
-                    f"{indent}chirp_i{j} = tl.load(chirp_ptr + src_idx{j} * 2 + 1, mask=prime_mask{j}, other={zero})"
-                )
-                lines.append(
-                    f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, chirp_r{j}, chirp_i{j})"
-                )
+                    lines.extend(_emit_complex_boundary_load(indent,f"src_ptr{j}",f"prime_mask{j}",
+                        f"r{j}",f"i{j}",dtype,vectorized_complex_io))
+                lines.extend(_emit_complex_boundary_load(indent,f"chirp_ptr + src_idx{j} * 2",f"prime_mask{j}",
+                    f"chirp_r{j}",f"chirp_i{j}",dtype,vectorized_complex_io))
+                lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, chirp_r{j}, chirp_i{j})")
             elif io_mode == "bluestein_four_step_pointwise_row":
-                lines.append(
-                    f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
-                )
-                lines.append(
-                    f"{indent}ar{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
-                    f"mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}ai{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
-                    f"mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}br{j} = tl.load(b_fft_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}bi{j} = tl.load(b_fft_ptr + src_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})"
-                )
+                lines.append(f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner")
+                lines.extend(_emit_complex_boundary_load(indent,f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                    "lane_mask",f"ar{j}",f"ai{j}",dtype,vectorized_complex_io))
+                lines.extend(_emit_complex_boundary_load(indent,f"b_fft_ptr + src_idx{j} * 2",
+                    "lane_mask",f"br{j}",f"bi{j}",dtype,vectorized_complex_io))
+                lines.append(f"{indent}r{j}, point_i{j} = _cmul(ar{j}, ai{j}, br{j}, bi{j})")
                 lines.append(f"{indent}i{j} = -point_i{j}")
             elif io_mode == "four_step_row":
                 lines.append(
@@ -2247,12 +2232,8 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}scaled_i{j} = -i{j} / {four_step_n1 * four_step_n2}"
                 )
-                lines.append(
-                    f"{indent}chirp_r{j} = tl.load(chirp_ptr + dst_idx{j} * 2, mask=prime_mask{j}, other={zero})"
-                )
-                lines.append(
-                    f"{indent}chirp_i{j} = tl.load(chirp_ptr + dst_idx{j} * 2 + 1, mask=prime_mask{j}, other={zero})"
-                )
+                lines.extend(_emit_complex_boundary_load(indent,f"chirp_ptr + dst_idx{j} * 2",f"prime_mask{j}",
+                    f"chirp_r{j}",f"chirp_i{j}",dtype,vectorized_complex_io))
                 lines.append(
                     f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
                 )
@@ -2262,8 +2243,12 @@ def _emit_stage_block(
                 else:
                     output_distance = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
                     lines.append(f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * {output_distance} + dst_idx{j}) * 2")
-                    lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
-                    lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
+                    if vectorized_complex_io:
+                        lines.extend(_emit_vectorized_complex_store(indent,f"dst_ptr{j}",
+                            f"final_r{j}",f"final_i{j}",f"prime_mask{j}",dtype))
+                    else:
+                        lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
+                        lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
             elif io_mode == "four_step_row_strided":
                 lines.append(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"

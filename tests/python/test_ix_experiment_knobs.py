@@ -559,3 +559,21 @@ def test_prime_3d_context_matches_explicit_knobs_and_preserves_rollback(ix_balan
         _,legacy=_build_leaf_kernel_source_for_io(plan,io_mode=mode,prime_n=997 if length==2048 else 0)
         assert rolled_back==legacy
     finally:set_ix_prime_3d(previous)
+
+@pytest.mark.parametrize('mode',['four_step_real_row','bluestein_four_step_prepare_row',
+    'bluestein_four_step_prepare_row_r2c','bluestein_four_step_prepare_row_c2r',
+    'bluestein_four_step_pointwise_row','bluestein_four_step_finish_col',
+    'bluestein_four_step_finish_col_r2c','bluestein_four_step_finish_col_c2r'])
+@pytest.mark.parametrize('dtype',['complex64','complex128'])
+def test_packed_fourstep_boundaries_are_explicit_ix_fp32(ix_balanced_profile,monkeypatch,mode,dtype):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','1')
+    plan=LeafPlan(128,(16,8),1,16,2,(),128,'forward',dtype)
+    monkeypatch.setenv('FLAGFFT_IX_VEC_IO','0')
+    _,scalar=_build_leaf_kernel_source_for_io(plan,io_mode=mode,prime_n=8191,four_step_n1=128,four_step_n2=128)
+    monkeypatch.setenv('FLAGFFT_IX_VEC_IO','packed')
+    _,packed=_build_leaf_kernel_source_for_io(plan,io_mode=mode,prime_n=8191,four_step_n1=128,four_step_n2=128)
+    compile(packed,'<packed-fourstep-boundary>','exec')
+    assert 'tl.pointer_type(tl.uint64)' not in scalar
+    assert ('tl.pointer_type(tl.uint64)' in packed)==(dtype=='complex64')
