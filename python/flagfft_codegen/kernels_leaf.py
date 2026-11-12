@@ -815,6 +815,7 @@ def _emit_structured_portable_exchange(
     pack: int,
     natural_order: bool,
     interleaved: bool,
+    paired: bool = False,
 ) -> list[str]:
     """Express a power-of-two stage route as a static axis permutation."""
     n = math.prod(factors)
@@ -835,7 +836,13 @@ def _emit_structured_portable_exchange(
     shape = (pack, *(factors[axis] for axis in source_axes))
     permutation = (0, *(source_axes.index(axis) + 1 for axis in output_axes))
     lines = []
-    for component in ("r", "i"):
+    if paired:
+        for digit in range(radix):
+            lines.append(
+                f"    exchange_p{digit} = tl.cast(tl.cast(exchange_r{digit}, tl.uint32, bitcast=True), tl.uint64) | "
+                f"(tl.cast(tl.cast(exchange_i{digit}, tl.uint32, bitcast=True), tl.uint64) << 32)"
+            )
+    for component in (("p",) if paired else ("r", "i")):
         name = f"exchange_structured_{component}"
         joined = _distributed_join_tree(
             [f"exchange_{component}{digit}" for digit in range(radix)]
@@ -861,6 +868,11 @@ def _emit_structured_portable_exchange(
         lines.append(f"    {name} = tl.reshape({name}, {shape})")
         lines.append(f"    {name} = tl.trans({name}, {permutation})")
         lines.append(f"    {buffer}_{component} = tl.reshape({name}, ({n * pack},))")
+    if paired:
+        lines += [
+            f"    {buffer}_r = tl.cast(tl.cast({buffer}_p, tl.uint32), tl.float32, bitcast=True)",
+            f"    {buffer}_i = tl.cast(tl.cast({buffer}_p >> 32, tl.uint32), tl.float32, bitcast=True)",
+        ]
     return lines
 
 
@@ -882,13 +894,14 @@ def _emit_direct_exchange_registers(
     lane_block: int,
     pack: int,
     interleaved: bool,
+    paired: bool = False,
 ) -> list[str]:
     """Split the routed tensor directly into the next stage's registers."""
     lanes = n // radix
     split_shape = (pack, lane_block, *((2,) * (radix.bit_length() - 1)))
     highest_first = _maca_knob("SPLIT_ORDER", "lsb") == "msb"
     lines = []
-    for component in ("r", "i"):
+    for component in (("p",) if paired else ("r", "i")):
         prefix = f"{buffer}_register_{component}"
         lines.append(
             f"    {prefix} = tl.reshape({buffer}_{component}, ({pack}, {radix}, {lanes}))"
@@ -926,6 +939,13 @@ def _emit_direct_exchange_registers(
             if interleaved:
                 lines.append(f"    {name} = tl.trans({name}, (1, 0))")
             lines.append(f"    {name} = tl.reshape({name}, ({pack * lane_block},))")
+    if paired:
+        for digit in range(radix):
+            source=f"{buffer}_register_p{digit}"
+            lines += [
+                f"    {buffer}_register_r{digit} = tl.cast(tl.cast({source}, tl.uint32), tl.float32, bitcast=True)",
+                f"    {buffer}_register_i{digit} = tl.cast(tl.cast({source} >> 32, tl.uint32), tl.float32, bitcast=True)",
+            ]
     return lines
 
 
@@ -1049,6 +1069,7 @@ def _emit_portable_exchange(
     register_lane_stride: int = 1,
     register_slot_stride: int | None = None,
     allow_mixed_direct: bool = True,
+    dtype: str = "complex64",
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
@@ -1083,6 +1104,8 @@ def _emit_portable_exchange(
         and _structured_exchange_supported(factors, size, slot_stride, pack)
         and lane_block >= n // radix
     ):
+        paired = (_ix_backend_active() and dtype == "complex64"
+                  and _maca_knob("PAIR_EXCHANGE", "0") == "1")
         lines = _emit_structured_portable_exchange(
             buffer,
             stage,
@@ -1091,6 +1114,7 @@ def _emit_portable_exchange(
             pack,
             natural_order,
             interleaved=register_lane_stride > 1,
+            paired=paired,
         )
         if _maca_knob("EXCHANGE") in {"direct", "direct_all"} and not natural_order:
             lines.extend(
@@ -1101,6 +1125,7 @@ def _emit_portable_exchange(
                     lane_block,
                     pack,
                     interleaved=register_lane_stride > 1,
+                    paired=paired,
                 )
             )
         return lines
@@ -2525,6 +2550,7 @@ def _emit_stage_block(
                     register_lane_stride=inner_pack if inner_pack > 1 else 1,
                     register_slot_stride=1 if inner_pack > 1 else lane_block,
                     allow_mixed_direct=mixed_direct_layout,
+                    dtype=dtype,
                 )
             )
     elif not is_last:
