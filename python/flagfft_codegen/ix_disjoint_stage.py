@@ -93,7 +93,12 @@ def register_kernel(fn) -> None:
     explicit={i for i,line in enumerate(source,1) if "tl.debug_barrier()" in line}
     if not stores or not explicit:
         raise ValueError("IX disjoint-stage kernel lacks its shared-store/fence contract")
-    _REGISTERED[name]=(stores,explicit)
+    contract=(stores,explicit)
+    if name in _REGISTERED and _REGISTERED[name]!=contract:
+        # An ambiguous source location must preserve the original fences.
+        _REGISTERED[name]=None
+    else:
+        _REGISTERED[name]=contract
     if _INSTALLED: return
     from triton import knobs
     previous=knobs.runtime.add_stages_inspection_hook

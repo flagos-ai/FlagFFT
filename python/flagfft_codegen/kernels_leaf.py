@@ -1266,6 +1266,22 @@ def _emit_stage_block(
         and _maca_knob("SMEM_INTERLEAVE", "0") == "1"
     )
     interleave_slot = "batch_slot" if batch_interleave else "inner_slot"
+    io_layout = (
+        _ix_backend_active() and not portable_exchange and dtype=="complex64"
+        and 64<=n<=256 and len(factors)==2 and inner_pack>1
+        and all(radix & (radix-1)==0 for radix in factors)
+        and all(n//(radix*width)==1 for radix,width in
+                zip(factors,stage_lanes or (lanes,)*len(factors)))
+        and (io_mode.startswith("four_step_") or io_mode.startswith("bluestein_four_step_"))
+        and not io_mode.endswith("_strided")
+        and _maca_knob("TLE_IO_LAYOUT","0")=="1"
+    )
+    if io_layout:
+        smem_swizzle=False
+        smem_interleave=True
+    io_logical_shift=factors[0].bit_length()-1
+    io_slot_shift=max(0,6-(smem_pack.bit_length()-1))
+    io_slot_chunk=64//lane_block
     swizzle_shift = _TLE_SMEM_SWIZZLE_SHIFT
     if _ix_backend_active() and smem_swizzle:
         swizzle_shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
@@ -1303,6 +1319,18 @@ def _emit_stage_block(
     )
 
     lines: list[str] = []
+    if io_layout and stage==1:
+        # Shared memory separates the two register mappings: adjacent threads
+        # read adjacent input FFT slots, then write adjacent output frequencies.
+        inner_count=four_step_n2 if io_mode.endswith("_row") else four_step_n1
+        lines.extend([
+            f"    inner_slot = lane_vec // {lane_block}",
+            f"    lane = lane_vec % {lane_block}",
+            "    four_step_inner = four_step_inner_base + inner_slot",
+            f"    lane_mask = (lane < {current_lanes}) & (four_step_inner < {inner_count})",
+            "    base_lane_mask = lane_mask",
+            f"    smem_offset = inner_slot * {exchange_slot_stride}",
+        ])
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
     vector_io_allowed = not _non_nvidia_backend_active() or (
@@ -1347,7 +1375,12 @@ def _emit_stage_block(
             f"{indent}logical_phys{j} = tl.where(lane_mask, lane + "
             f"{current_lanes} * (group_{stage} * {radix} + {j}), 0)"
         )
-        if smem_interleave:
+        if io_layout:
+            lines.append(
+                f"{indent}phys{j} = (logical_phys{j} ^ (logical_phys{j} >> {io_logical_shift})) * {smem_pack} + "
+                f"(inner_slot ^ (((logical_phys{j} >> {io_slot_shift}) * {io_slot_chunk}) & {smem_pack-1}))"
+            )
+        elif smem_interleave:
             lines.append(f"{indent}phys{j} = logical_phys{j} * {smem_pack} + {interleave_slot}")
         elif smem_pack > 1:
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
@@ -2427,6 +2460,13 @@ def _emit_stage_block(
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
                 store_index = f"smem_dst{j}"
+            if io_layout:
+                # Both XOR maps are bijections within the allocated FFT tile.
+                lines.append(
+                    f"{indent}io_dst{j} = (dst{j} ^ (dst{j} >> {io_logical_shift})) * {smem_pack} + "
+                    f"(inner_slot ^ (((dst{j} >> {io_slot_shift}) * {io_slot_chunk}) & {smem_pack-1}))"
+                )
+                store_index=f"io_dst{j}"
             lines.extend(
                 _emit_exchange_store(
                     indent,
@@ -3595,7 +3635,16 @@ def _build_leaf_kernel_source_for_io(
                 )
             )
 
-    return kernel_name, "\n".join(body)
+    source="\n".join(body)
+    if disjoint_stage:
+        import hashlib
+        # Separate source contracts even when historical radix names coincide.
+        digest=hashlib.sha256(source.encode()).hexdigest()[:12]
+        base,tag=kernel_name.rsplit("_ixdisjoint_",1)
+        renamed=base+"_s"+digest+"_ixdisjoint_"+tag
+        source=source.replace(f"def {kernel_name}(",f"def {renamed}(",1)
+        kernel_name=renamed
+    return kernel_name, source
 
 
 def _build_leaf_kernel_source(plan: LeafPlan) -> tuple[str, str]:
