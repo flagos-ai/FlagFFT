@@ -2926,7 +2926,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       (n == 2048 || packed_cta || (fused_setting != nullptr && std::string(fused_setting) == "1" &&
                      n > 0 && n <= 2048 && n % 2 == 0)) &&
       (batch == 1 || batch == 64) &&
-      (batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) &&
+      ((batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) ||
+       (n==210 && batch==64 && request.ix_fourstep_preset==9 &&
+        fused_setting && std::string(fused_setting)=="1")) &&
       !request.input_strides.empty() && request.input_strides.back() == 1 &&
       (std::getenv("FLAGFFT_IX_PORTABLE_LEAF") == nullptr ||
        std::string(std::getenv("FLAGFFT_IX_PORTABLE_LEAF")) == "1") &&
