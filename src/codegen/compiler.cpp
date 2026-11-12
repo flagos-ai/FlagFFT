@@ -2535,10 +2535,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
       DeviceAllocation stage1 =
           adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * element_bytes));
-      const bool reuse_output = request.ix_fourstep_preset==4 &&
-          four_step->n1==128 && four_step->n2==128 &&
-          col_leaf->factors.size()==2 && col_leaf->factors.front()*col_leaf->lanes==128 &&
-          flag_or_default("FLAGFFT_IX_FOURSTEP_REUSE_OUTPUT",false);
       return std::make_shared<CompiledRawFourStepFusedNode>(
           four_step->length,
           four_step->n1,
@@ -2550,7 +2546,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           build_raw_leaf_tables(*col_leaf, request,
               ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
-          std::move(stage1), reuse_output);
+          std::move(stage1));
     }
     return compile_raw_four_step_generic(*four_step, request, batch);
   }
