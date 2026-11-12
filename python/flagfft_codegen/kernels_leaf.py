@@ -1334,11 +1334,7 @@ def _emit_stage_block(
     vector_suffix = "f64" if _is_double_dtype(dtype) else "f32"
     vector_reg = "d" if _is_double_dtype(dtype) else "f"
     vector_dtype = "tl.float64" if _is_double_dtype(dtype) else "tl.float32"
-    static_group = (
-        _ix_backend_active() and not portable_exchange and groups==1
-        and _maca_knob("STATIC_GROUPS","0")=="1"
-    )
-    if portable_exchange or static_group:
+    if portable_exchange:
         assert groups == 1
         lines.append(f"    group_{stage} = 0")
         indent = "    "
