@@ -12,12 +12,12 @@ from test_npu_structured_fft import Pointer,execute_module,roots
 @pytest.mark.parametrize('batch_reuse',[1,8,32])
 @pytest.mark.parametrize('factors,middle_radix8',[((64,32,128),False),((64,64,128),False),((64,64,128),True)])
 @pytest.mark.parametrize('mode',['forward','inverse','global_inverse'])
-def test_complete_fft(tmp_path,factors,mode,batch_reuse,middle_radix8,first_batch=1,execution_batch=2):
+def test_complete_fft(tmp_path,factors,mode,batch_reuse,middle_radix8,first_batch=1,execution_batch=2,first_phase=False):
     global_inverse=mode=='global_inverse'
     direction='inverse' if global_inverse else mode
     sign=1 if direction=='inverse' and not global_inverse else -1
     source,specs=build(factors,direction,terminal8=True,global_inverse=global_inverse,
-                       workspace_padding=512,cube_finish=True,cube_finish_batch=batch_reuse,middle_radix8=middle_radix8,first_batch=first_batch)
+                       workspace_padding=512,cube_finish=True,cube_finish_batch=batch_reuse,middle_radix8=middle_radix8,first_batch=first_batch,first_phase=first_phase)
     path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
     ns['tl'].dot=lambda a,b,acc=None,**kw:(a.double()@b.double()+(acc.double() if acc is not None else 0)).float()
     n=math.prod(factors);batch=execution_batch
@@ -41,11 +41,16 @@ def test_complete_fft(tmp_path,factors,mode,batch_reuse,middle_radix8,first_batc
                 w=torch.cat((angle.cos().float().repeat_interleave(s['c'],1).flatten(),
                              angle.sin().float().repeat_interleave(s['c'],1).flatten()))
             else:w=roots(s['r'],s['c'])
-            if stage:
+            if stage and not (stage==1 and first_phase):
                 digit=torch.arange(s['prefix'])//s['previous_prefix']
                 sample=torch.arange(s['r']*s['m'],dtype=torch.float64)
                 angle=sign*2*math.pi*sample[:,None]*digit[None,:]/(factors[stage-1]*s['r']*s['m'])
                 w=torch.cat((angle.cos().float().flatten(),angle.sin().float().flatten(),w))
+            if stage==0 and first_phase:
+                digit=torch.arange(factors[0],dtype=torch.float64)[None,:]
+                sample=torch.arange(n//factors[0],dtype=torch.float64)[:,None]
+                angle=sign*2*math.pi*sample*digit/n
+                w=torch.cat((w,angle.cos().float().flatten(),angle.sin().float().flatten()))
         y=guard if final else torch.full((2*batch*s['physical_n'],),float('nan'))
         for gx in range(s['grid'][0]):
             for b in range(math.ceil(batch/s.get('batch_pack',1))):
@@ -155,3 +160,30 @@ def test_first_pipeline_metadata_and_geometry(tmp_path):
         build((64,64,128),workspace_padding=512,first_batch=8)
     # Even first axes use the same radix-four helper without terminal-eight.
     build((64,32,128),workspace_padding=512,cube_finish=True,first_batch=16)
+
+
+@pytest.mark.parametrize('factors,mode,batch',[
+    ((64,32,128),'forward',17),
+    ((64,64,128),'global_inverse',17),
+    ((64,32,128),'inverse',3)])
+def test_producer_phase_complete_fft(tmp_path,factors,mode,batch):
+    test_complete_fft(tmp_path,factors,mode,8,factors[1]==64,
+                      first_batch=16 if batch>8 else 8,execution_batch=batch,first_phase=True)
+
+
+def test_producer_phase_metadata_and_geometry(tmp_path):
+    options=dict(flat_power2=True,workspace_padding=512,power_cube_finish=True,
+                 power_cube_batch=8,power_first_batch=8,power_middle_radix8=True)
+    for phase in range(3):
+        old=emit_vector_dif((64,64,128),'forward',phase,tmp_path,**options)
+        text=Path(old['module_path']).read_text()
+        new=emit_vector_dif((64,64,128),'forward',phase,tmp_path,power_first_phase=True,**options)
+        assert old['module_path']!=new['module_path']
+        assert Path(old['module_path']).read_text()==text
+        assert new['signature']==old['signature']
+        assert new['batch_per_block']==old['batch_per_block']
+        assert new['kernel_name']==old['kernel_name']+('_prephase' if phase<2 else '')
+    with pytest.raises(ValueError,match='requires the first-axis batch pipeline'):
+        build((64,64,128),workspace_padding=512,cube_finish=True,first_phase=True)
+    with pytest.raises(ValueError,match='requires the first-axis batch pipeline'):
+        emit_vector_dif((64,64,128),'forward',0,tmp_path,flat_power2=True,power_first_phase=True)

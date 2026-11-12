@@ -3594,6 +3594,8 @@ std::string CompiledRawVectorDIFNode::describe() const {
   out << "], vector_axis_switch=1";
   if (!passes.empty() && passes.front().batch_pack>1)
     out << ", first_batch=" << passes.front().batch_pack;
+  if (!passes.empty() && passes.front().kernel->kernel_name.find("_prephase")!=std::string::npos)
+    out << ", first_phase=1";
   out << ')';
   return out.str();
 }

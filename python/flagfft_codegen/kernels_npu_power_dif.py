@@ -10,7 +10,7 @@ Twiddles and structured FFT roots share each pass's read-only table argument.
 import math
 from flagfft_codegen.kernels_npu_structured import FFT_HELPERS
 
-def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0,cube_finish=False,cube_finish_batch=1,middle_radix8=False,first_batch=1):
+def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0,cube_finish=False,cube_finish_batch=1,middle_radix8=False,first_batch=1,first_phase=False):
  if type(workspace_padding) is not int or workspace_padding not in (0,512):
   raise ValueError('Power DIF workspace padding must be 0 or 512 floats')
  if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
@@ -25,6 +25,8 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False,works
   raise ValueError('Unsupported power first-axis batch group')
  if first_batch>1 and not cube_finish:
   raise ValueError('First-axis batch pipeline requires Cube finish')
+ if first_phase and first_batch==1:
+  raise ValueError('Producer phase requires the first-axis batch pipeline')
  n=math.prod(factors);workspace_n=n+workspace_padding;prefix=1;previous=1;specs=[]
  source='import triton\nimport triton.language as tl\nimport triton.language.extra.cann.extension as al\n'+FFT_HELPERS
  if terminal8 or middle_radix8:
@@ -41,6 +43,7 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False,works
   if stage==0 and first_batch>1:name+='_batch'+str(first_batch)
   selected_axis='power_fft64_8x8' if middle_radix8 and stage==1 else axis
   if middle_radix8 and stage==1:name+='_radix8'
+  if first_phase and stage<2:name+='_prephase'
   if last and cube_finish:
    from .npu_power_cube_finish import finish_source
    spec=dict(name='power_cube_finish_batch' if cube_finish_batch>1 else 'power_cube_finish',
@@ -49,17 +52,33 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False,works
    source+='\n'+finish_source(spec,conjugate_output=global_inverse)
    specs.append(spec)
    continue
-  ls=['@triton.jit',f'def {name}(X,TW,Y):',f'    W=TW+{0 if stage==0 else 2*n}','    batch=tl.program_id(1).to(tl.int64)',f'    d=tl.arange(0,{r})[:,None]']
+  ls=['@triton.jit',f'def {name}(X,TW,Y):',f'    W=TW+{0 if stage==0 or (stage==1 and first_phase) else 2*n}','    batch=tl.program_id(1).to(tl.int64)',f'    d=tl.arange(0,{r})[:,None]']
   if stage==0:
    ls += [f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',f'    word=tl.program_id(0)*{2*c}+tl.arange(0,{2*c})[None,:]',f'    raw=tl.load(X+batch*{2*n}+d*{2*m}+word,word<{2*m},0.)',f'    re,im=tl.split(tl.reshape(raw,({points},2)))']
   else:
-   ls += [f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',f'    j=tl.program_id(0)//{max(1,prefix//c)}',f'    pf=(tl.program_id(0)%{max(1,prefix//c)}*{c}+tl.arange(0,{c}))[None,:]',f'    off=d*{m*prefix}+q',f'    rr=tl.load(X+batch*{2*workspace_n}+off,q<{m*prefix},0.)',f'    ii=tl.load(X+batch*{2*workspace_n}+{workspace_n}+off,q<{m*prefix},0.)',f'    wr=tl.load(TW+off,q<{m*prefix},0.)',f'    wi=tl.load(TW+{n}+off,q<{m*prefix},0.)',f'    re=tl.reshape(rr*wr-ii*wi,({points},))',f'    im=tl.reshape(rr*wi+ii*wr,({points},))']
+   ls += [f'    q=tl.program_id(0)*{c}+tl.arange(0,{c})[None,:]',f'    j=tl.program_id(0)//{max(1,prefix//c)}',f'    pf=(tl.program_id(0)%{max(1,prefix//c)}*{c}+tl.arange(0,{c}))[None,:]',f'    off=d*{m*prefix}+q',f'    rr=tl.load(X+batch*{2*workspace_n}+off,q<{m*prefix},0.)',f'    ii=tl.load(X+batch*{2*workspace_n}+{workspace_n}+off,q<{m*prefix},0.)']
+   if stage==1 and first_phase:
+    ls += [f'    re=tl.reshape(rr,({points},))',f'    im=tl.reshape(ii,({points},))']
+   else:
+    ls += [f'    wr=tl.load(TW+off,q<{m*prefix},0.)',f'    wi=tl.load(TW+{n}+off,q<{m*prefix},0.)',f'    re=tl.reshape(rr*wr-ii*wi,({points},))',f'    im=tl.reshape(rr*wi+ii*wr,({points},))']
   ls += ['    r,i=re,im']
   if direction=='inverse' and (not global_inverse or stage==0):ls += ['    i=-i']
   ls += [f'    r,i={selected_axis}(r,i,W,{points},{r},{c},{r.bit_length()-1})']
   if direction=='inverse' and (not global_inverse or last):ls += ['    i=-i']
   if stage==0:
-   ls += [f'    row=tl.program_id(0)*{c}+tl.arange(0,{c})[:,None]',f'    freq=tl.arange(0,{r})[None,:]',f'    dst=row*{r}+freq',f'    tl.store(Y+batch*{2*workspace_n}+dst,tl.trans(tl.reshape(r,({r},{c}))),row<{m})',f'    tl.store(Y+batch*{2*workspace_n}+{workspace_n}+dst,tl.trans(tl.reshape(i,({r},{c}))),row<{m})']
+   ls += [f'    row=tl.program_id(0)*{c}+tl.arange(0,{c})[:,None]',f'    freq=tl.arange(0,{r})[None,:]',f'    dst=row*{r}+freq']
+   if first_phase:
+    # Move the same rotation across the GM boundary. Apply it to the
+    # transposed producer tile so the following butterfly starts at once.
+    root_words=6*((r.bit_length()-1)//2)*(points//4)
+    ls += [f'    pr=tl.trans(tl.reshape(r,({r},{c})))',f'    pi=tl.trans(tl.reshape(i,({r},{c})))',
+           f'    wr=tl.load(TW+{root_words}+dst,row<{m},0.)',
+           f'    wi=tl.load(TW+{root_words+n}+dst,row<{m},0.)',
+           '    re,im=pr*wr-pi*wi,pr*wi+pi*wr',
+           f'    tl.store(Y+batch*{2*workspace_n}+dst,re,row<{m})',
+           f'    tl.store(Y+batch*{2*workspace_n}+{workspace_n}+dst,im,row<{m})']
+   else:
+    ls += [f'    tl.store(Y+batch*{2*workspace_n}+dst,tl.trans(tl.reshape(r,({r},{c}))),row<{m})',f'    tl.store(Y+batch*{2*workspace_n}+{workspace_n}+dst,tl.trans(tl.reshape(i,({r},{c}))),row<{m})']
   elif not last:
    if prefix<c:
     ls += [f'    re=tl.reshape(tl.permute(tl.reshape(r,({r},{c//prefix},{prefix})),1,0,2),({points},))',f'    im=tl.reshape(tl.permute(tl.reshape(i,({r},{c//prefix},{prefix})),1,0,2),({points},))',f'    dst=tl.program_id(0)*{points}+tl.arange(0,{points})',f'    tl.store(Y+batch*{2*workspace_n}+dst,re,dst<{n})',f'    tl.store(Y+batch*{2*workspace_n}+{workspace_n}+dst,im,dst<{n})']

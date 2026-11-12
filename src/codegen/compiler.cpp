@@ -254,6 +254,8 @@ namespace {
         first_batch=group;break;
       }
     }
+    const bool first_phase=first_batch>1 &&
+        flag_or_default("FLAGFFT_NPU_FLAT_POWER_FIRST_PHASE",true);
     // Keep at least 128 independent full groups to amortize coefficient
     // loads without starving Cube cores. Short or sparse batches retain
     // the ungrouped finish; every admitted size uses the same rule.
@@ -287,7 +289,7 @@ namespace {
             weights[base+radix*width]=si;
             weights[base+radix*width+radix]=co;
           }
-      } else if (stage) {
+      } else if (stage && !(stage==1 && first_phase)) {
         weights.resize(2*n);
         for (int64_t index=0;index<n;++index) {
           const auto pf=index%prefix,sample=index/prefix,digit=pf/previous_prefix;
@@ -312,6 +314,16 @@ namespace {
           }
         } else roots=npu_structured_root_values(radix,columns);
         weights.insert(weights.end(),roots.begin(),roots.end());
+        if (stage==0 && first_phase) {
+          const auto offset=weights.size();
+          weights.resize(offset+2*n);
+          for (int64_t index=0;index<n;++index) {
+            const auto digit=index%radix,sample=index/radix;
+            const double angle=sign*2*kPi*static_cast<double>(digit)*sample/n;
+            weights[offset+index]=static_cast<float>(std::cos(angle));
+            weights[offset+n+index]=static_cast<float>(std::sin(angle));
+          }
+        }
       }
       auto key=KernelKey::four_step_row(triton_target_for_request(request),request.direction,
           request.input_dtype,n,1,n,factors,32,4,{},n);
@@ -321,6 +333,7 @@ namespace {
       if (cube_batch>1) key.perm_form+="_cubebatch"+std::to_string(cube_batch);
       if (middle_radix8) key.perm_form+="_middle8";
       if (first_batch>1) key.perm_form+="_firstbatch"+std::to_string(first_batch);
+      if (first_phase) key.perm_form+="_firstphase";
       if (global_inverse) key.perm_form+="_globalconj";
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
       if (batch>=16 && axis_bits>=3 && axis_bits%2 &&

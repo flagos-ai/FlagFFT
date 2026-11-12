@@ -872,6 +872,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-global-inverse";
     }
+    const std::string first_phase_tag="_firstphase";
+    if (flat && phase.size()>=first_phase_tag.size() &&
+        phase.compare(phase.size()-first_phase_tag.size(),first_phase_tag.size(),first_phase_tag)==0) {
+      phase.resize(phase.size()-first_phase_tag.size());
+      jit_command << " --npu-vector-dif-power-first-phase";
+    }
     const std::string first_batch_tag="_firstbatch";
     const auto first_batch_pos=phase.rfind(first_batch_tag);
     if (flat && first_batch_pos!=std::string::npos) {
