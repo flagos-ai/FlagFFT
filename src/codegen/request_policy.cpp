@@ -39,6 +39,25 @@ bool ix_small_real_warp_default_enabled(const FFTRequest &request) {
   throw std::runtime_error("FLAGFFT_IX_SMALL_REAL must be 0 or 1");
 }
 
+bool ix_short_real_warp_default_enabled(const FFTRequest &request) {
+  if (request.device_type!="ix" || request.device_arch!="71" || request.raw_dim!=1 ||
+      request.origin_rank>1 || request.batch!=1 || request.requested_n!=16384 ||
+      request.fft_length!=16384 || request.input_dtype!="complex64" ||
+      request.output_dtype!="complex64" || request.input_layout!="contiguous" ||
+      request.requires_contiguous_copy || request.input_strides.empty() ||
+      request.input_strides.back()!=1 ||
+      (request.real_transform_kind!="r2c" && request.real_transform_kind!="c2r")) return false;
+  const char *policy=std::getenv("FLAGFFT_EXECUTION_POLICY");
+  if (policy && std::string(policy)!="balanced") return false;
+  for (const char *name : {"FLAGFFT_IX_SHORT_REAL", "FLAGFFT_IX_WARP_FOURSTEP", "FLAGFFT_IX_WARP_FFT"}) {
+    const char *value=std::getenv(name);
+    if (value && std::string(value)=="0") return false;
+    if (value && std::string(value)!="1")
+      throw std::runtime_error(std::string(name)+" must be 0 or 1");
+  }
+  return true;
+}
+
 bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
                                  int64_t n0, int64_t n1, int64_t n2) {
   if (request.device_type!="ix" || request.device_arch!="71" ||

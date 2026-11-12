@@ -531,3 +531,32 @@ TEST(IXLeafPlan, SingleRealDefaultsStayAtThePublicContiguousFP32Boundary) {
     }
   }
 }
+
+TEST(IXLeafPlan, ShortSingleRealWarpDefaultsRemainParentScopedAndReversible) {
+  ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
+  ScopedEnv real("FLAGFFT_IX_SHORT_REAL",nullptr);
+  ScopedEnv dense("FLAGFFT_IX_WARP_FOURSTEP",nullptr);
+  ScopedEnv warp("FLAGFFT_IX_WARP_FFT",nullptr);
+  flagfft::FFTRequest request;
+  request.device_type="ix"; request.device_arch="71";
+  request.input_dtype=request.output_dtype="complex64";
+  request.batch=1; request.raw_dim=request.origin_rank=1;
+  request.input_layout="contiguous"; request.input_strides={1};
+  request.fft_length=request.requested_n=16384;
+  request.real_transform_kind="c2r";
+  EXPECT_TRUE(flagfft::ix_short_real_warp_default_enabled(request));
+  request.real_transform_kind="r2c";
+  EXPECT_TRUE(flagfft::ix_short_real_warp_default_enabled(request));
+  auto other=request; other.batch=64;
+  EXPECT_FALSE(flagfft::ix_short_real_warp_default_enabled(other));
+  other=request; other.origin_rank=3;
+  EXPECT_FALSE(flagfft::ix_short_real_warp_default_enabled(other));
+  other=request; other.real_transform_kind="";
+  EXPECT_FALSE(flagfft::ix_short_real_warp_default_enabled(other));
+  other=request; other.requires_contiguous_copy=true;
+  EXPECT_FALSE(flagfft::ix_short_real_warp_default_enabled(other));
+  for (const char *name : {"FLAGFFT_IX_SHORT_REAL","FLAGFFT_IX_WARP_FOURSTEP","FLAGFFT_IX_WARP_FFT"}) {
+    ScopedEnv disabled(name,"0");
+    EXPECT_FALSE(flagfft::ix_short_real_warp_default_enabled(request));
+  }
+}

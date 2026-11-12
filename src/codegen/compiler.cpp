@@ -103,9 +103,14 @@ namespace {
     return supported(n1) && supported(n2);
   }
 
+  bool qualified_ix_short_real_warp(const FFTRequest &request) {
+    return ix_short_real_warp_default_enabled(request) &&
+           adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024;
+  }
+
   void mark_ix_warp_fourstep(KernelKey &key, const FFTRequest &request) {
     if (request.device_type!="ix" || request.device_arch!="71" || key.dtype!="complex64" ||
-        !flag_or_default("FLAGFFT_IX_WARP_FOURSTEP",false) ||
+        !flag_or_default("FLAGFFT_IX_WARP_FOURSTEP",qualified_ix_short_real_warp(request)) ||
         !ix_warp_fourstep_axes(key.four_step_n1,key.four_step_n2)) return;
     int64_t pack=16;
     if (const char *value=std::getenv("FLAGFFT_IX_WARP_FFT_PACK")) {
@@ -1735,6 +1740,9 @@ namespace {
         n % 2 != 0) {
       return std::nullopt;
     }
+    // The qualified single 16K real path folds its boundary into two full
+    // FourStep passes. Preserve an explicit packed-real override.
+    if (!force && qualified_ix_short_real_warp(request)) return std::nullopt;
     const bool is_a100_fp64_target = request.device_type == "cuda" && request.device_arch == "sm_80";
     // Resource bounds remain target-local; batching itself is implemented
     // by the shared packed-real kernels with a distance-aware fallback.
