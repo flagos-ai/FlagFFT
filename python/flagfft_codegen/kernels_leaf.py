@@ -3290,11 +3290,23 @@ def _build_leaf_kernel_source_for_io(
         body.append(f"    perm_span = tl.full((), {permutation_span}, tl.int64)")
     if _portable_complex_vector_io():
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
+    from .target import ix_ct_single_default_enabled
+    static_single = (
+        _ix_backend_active() and ix_ct_single_default_enabled()
+        and n in {1024, 2048} and plan.dtype == "complex64"
+        and io_mode in {"contiguous_r2c", "contiguous_c2r"} and batch_pack == 1
+        and _maca_knob("STATIC_SINGLE", "0") == "1"
+    )
     if io_mode in contiguous_modes:
-        body.append("    pid = tl.program_id(0)")
-        body.append(f"    batch_id = pid * {batch_pack}")
-        body.append("    if batch_id >= nbatch:")
-        body.append("        return")
+        if static_single:
+            # The native policy identifies a single transform. Keep the runtime
+            # ABI while specializing its batch bound and base in this experiment.
+            body.extend(["    nbatch = 1", "    pid = 0", "    batch_id = 0"])
+        else:
+            body.append("    pid = tl.program_id(0)")
+            body.append(f"    batch_id = pid * {batch_pack}")
+            body.append("    if batch_id >= nbatch:")
+            body.append("        return")
     else:
         if io_mode in row_modes | col_modes and inner_pack > 1:
             body.append(f"    four_step_inner_base = tl.program_id(0) * {inner_pack}")
