@@ -623,5 +623,13 @@ TEST(IXLeafPlan, BatchedRealCtaDefaultHasTypedScopeAndExistingRollbacks) {
     EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
   }
   request.real_transform_kind="";
-  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),4);
+  {
+    ScopedEnv disabled("FLAGFFT_IX_FOURSTEP_CTA","0");
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  }
+  {
+    ScopedEnv portable("FLAGFFT_IX_PORTABLE_LEAF","1");
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  }
 }

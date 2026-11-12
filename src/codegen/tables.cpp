@@ -361,10 +361,13 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   const bool is_double = dtype_is_double(request.input_dtype);
   std::vector<DeviceAllocation> tables;
   const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
+  // The full TLE CTA uses fixed-width groups. Its final stage's table shape
+  // differs from the portable layout that evaluates every codelet at once.
   const bool portable_ix = adaptor::backend_name() == "ix" &&
       (portable_setting ? std::string(portable_setting) == "1"
-                        : (portable_default || ix_ct_single_policy_enabled(request) ||
-                           ix_ct_batch_policy_enabled(request)));
+                        : (request.ix_fourstep_preset!=4 &&
+                           (portable_default || ix_ct_single_policy_enabled(request) ||
+                            ix_ct_batch_policy_enabled(request))));
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
     const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix) ? leaf.length / leaf.factors[stage]
                           : use_cooperative_stage_lanes(leaf, request)

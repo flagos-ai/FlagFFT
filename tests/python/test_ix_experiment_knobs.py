@@ -634,6 +634,29 @@ def test_full_tle_cta_keeps_pingpong_when_an_intermediate_group_is_partial(ix_ba
     assert not _use_single_smem_buffer(half,io_mode='packed_c2r')
 
 
+def test_complex_cta_preset_preserves_its_tile_and_shared_exchange_without_env(ix_balanced_profile,monkeypatch):
+    from pathlib import Path
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    for key in ('PORTABLE_LEAF','WARPS','BATCH_PACK','SMEM_SWIZZLE','SMEM_SWIZZLE_SHIFT',
+                'TLE_DISJOINT_STAGE','TLE_DISJOINT_CTA'):
+        monkeypatch.delenv('FLAGFFT_IX_'+key,raising=False)
+    token=set_ix_fourstep_preset(4)
+    try:
+        plan=LeafPlan(16384,(16,16,16,4),1,1024,16,(),16384,'forward','complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode='contiguous')
+        meta=_metadata(module_path=Path('unused.py'),kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type='leaf',n1=0,n2=0,dtype='complex64')
+        assert meta['num_warps']==16
+        assert meta['batch_per_block']==1
+        assert 'ixdisjoint_' in name
+        assert 'smem_a_r = tle.gpu.alloc' not in source
+        assert 'smem_b_r = tle.gpu.alloc([16384]' in source
+    finally:reset_ix_fourstep_preset(token)
+
+
 @pytest.mark.parametrize('n,factors',[(1024,(16,8,8)),(2048,(16,16,8))])
 def test_ix_static_complex_indexing_requires_a_single_transform_request(ix_balanced_profile,monkeypatch,n,factors):
     import ast

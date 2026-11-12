@@ -1986,7 +1986,8 @@ namespace {
         request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
         n < 8192 || n > 16384 || (n & (n - 1)) != 0 ||
         request.input_strides.empty() || request.input_strides.back() != 1) return nullptr;
-    const bool qualified=request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8;
+    const bool qualified=request.ix_fourstep_preset==4 || request.ix_fourstep_preset==7 ||
+                         request.ix_fourstep_preset==8;
     const char *setting = std::getenv("FLAGFFT_IX_FOURSTEP_CTA");
     if (!flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",qualified)) return nullptr;
     if (setting && std::string(setting) != "1") {
@@ -1995,7 +1996,7 @@ namespace {
     // Public presets transport the launch width and tile together. Other
     // experiments must still provide the complete launch configuration.
     const char *warps = std::getenv("FLAGFFT_IX_WARPS");
-    const std::string warp_arg=warps ? warps : (qualified ? (request.ix_fourstep_preset==7 ? "16" : "8") : "");
+    const std::string warp_arg=warps ? warps : (qualified ? (request.ix_fourstep_preset==8 ? "8" : "16") : "");
     if (warp_arg!="4" && warp_arg!="8" && warp_arg!="16") {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_WARPS=4, 8 or 16");
     }
@@ -2005,7 +2006,8 @@ namespace {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_BATCH_PACK=1 or 2");
     }
     const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
-    const std::string portable_arg=portable_setting ? portable_setting : (qualified ? "1" : "");
+    const std::string portable_arg=portable_setting ? portable_setting
+        : (qualified ? (request.ix_fourstep_preset==4 ? "0" : "1") : "");
     if (portable_arg!="0" && portable_arg!="1") {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires explicit FLAGFFT_IX_PORTABLE_LEAF=0 or 1");
     }
@@ -2028,7 +2030,7 @@ namespace {
       factors = n==8192 ? std::vector<int64_t>{8,8,8,16}
                         : std::vector<int64_t>{8,8,16,16};
     }
-    if (flag_or_default("FLAGFFT_IX_CTA_TLE_RADIX16",false)) {
+    if (flag_or_default("FLAGFFT_IX_CTA_TLE_RADIX16",request.ix_fourstep_preset==4)) {
       if (portable || n!=16384 || cta_batch_pack!=1)
         throw std::runtime_error("radix-16 IX CTA requires one nonportable 16384-point FFT");
       factors = {16,16,16,4};

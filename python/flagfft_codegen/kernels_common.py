@@ -358,7 +358,10 @@ def _maca_knob(name: str, default: str = "") -> str:
                                 BATCH_PACK="1")
             else:
                 defaults.update(PORTABLE_LEAF="0", SMEM_INTERLEAVE="1", TLE_DISJOINT_STAGE="1")
-            if preset <= 4:
+            if preset == 4:
+                defaults.update(WARPS="16", BATCH_PACK="1", SMEM_SWIZZLE="1",
+                                SMEM_SWIZZLE_SHIFT="5", TLE_DISJOINT_CTA="1")
+            elif preset <= 3:
                 defaults.update(WARPS="4", TLE_INNER_PACK="32" if preset in {1,4} else "16",
                                 TLE_IO_LAYOUT="0" if preset==2 else "1")
             elif preset <= 6:

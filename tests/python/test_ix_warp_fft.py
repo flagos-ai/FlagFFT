@@ -66,6 +66,12 @@ def test_warp_route_preserves_raw_leaf_parameters_and_launch(mode,direction,kind
         args=next(v.args for v in ast.parse(source).body if isinstance(v,ast.FunctionDef))
         assert name.startswith(f'ix_warp{length}_')
         assert ast.dump(args)==ast.dump(base_args)
+        if pack>16:
+            with pytest.raises(ValueError,match='illegal launch'):
+                _metadata(module_path=tmp_path/'kernel.py',kernel_name=name,
+                          arg_names=[a.arg for a in args.args],plan=plan,kernel_type=kind,
+                          n1=0,n2=0,dtype='complex64')
+            return
         if length==2048 and pack==16 and mode in {'contiguous','contiguous_r2c'}:
             with pytest.raises(ValueError,match='shared-memory capacity'):
                 _metadata(module_path=tmp_path/'kernel.py',kernel_name=name,
