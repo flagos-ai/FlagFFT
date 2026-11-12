@@ -1262,7 +1262,7 @@ def _emit_stage_block(
     batch_interleave = _ix_batch_smem_interleave(io_mode, portable_exchange, smem_pack)
     smem_interleave = batch_interleave or (
         _ix_backend_active() and not portable_exchange and inner_pack > 1
-        and io_mode.startswith("four_step_")
+        and (io_mode.startswith("four_step_") or io_mode.startswith("bluestein_four_step_"))
         and _maca_knob("SMEM_INTERLEAVE", "0") == "1"
     )
     interleave_slot = "batch_slot" if batch_interleave else "inner_slot"
