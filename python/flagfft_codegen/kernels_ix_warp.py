@@ -39,14 +39,16 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("invalid IX warp output chunk")
     if pack not in {1,2,4,8,16,32,64}:
         raise ValueError("IX warp FFT pack must be 1, 2, 4, 8, 16, 32 or 64")
-    if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r","four_step_row","four_step_col"}:
+    row_modes={'four_step_row','four_step_real_row','four_step_hermitian_row'}
+    col_modes={'four_step_col','four_step_r2c_col','four_step_c2r_col'}
+    if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
         raise ValueError("unsupported IX warp FFT I/O mode")
-    four_step=mode in {'four_step_row','four_step_col'}
+    four_step=mode in row_modes|col_modes
     if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
         raise ValueError("invalid IX warp FourStep geometry")
     if mode in {'packed_r2c','packed_c2r'} and lane_width!=64:
         raise ValueError('packed real warp FFT requires a 64-lane FFT')
-    if (mode in {"r2c","contiguous_r2c","packed_r2c"} and inverse) or (mode in {"c2r","packed_c2r"} and not inverse):
+    if (mode in {"r2c","contiguous_r2c","packed_r2c","four_step_real_row","four_step_r2c_col"} and inverse) or (mode in {"c2r","packed_c2r","four_step_hermitian_row","four_step_c2r_col"} and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
@@ -85,12 +87,25 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a+=[f'    pos=lane+{j*lane_width}']
         if four_step:
             # Read adjacent columns together before routing each FFT to a warp.
-            a += [f'    offset=matrix_base+(tl.arange(0,64)[:,None]+{j*64})*{four_step_other}+row[None,:]',
+            a += [f'    position=(tl.arange(0,64)[:,None]+{j*64})*{four_step_other}+row[None,:]']
+            if mode=='four_step_real_row':
+                a += ['    offset=tl.program_id(1)*input_distance+position',
+                      f'    x{j}r=tl.trans(tl.load(inp+offset,row[None,:]<{four_step_other},0.0))',
+                      f'    x{j}i=tl.full(({pack},64),0.0,tl.float32)']
+                continue
+            if mode=='four_step_hermitian_row':
+                a += [f'    compact=tl.minimum(position,{n*four_step_other}-position)',
+                      '    offset=tl.program_id(1)*input_distance+compact']
+            else:a += ['    offset=matrix_base+position']
+            a += [
                   '    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
                   f'    pair=tl.load(ip+offset,row[None,:]<{four_step_other},0)',
                   '    pair=tl.trans(pair)',
                   f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
                   f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
+            if mode=='four_step_hermitian_row':
+                a += [f'    x{j}i=tl.where(tl.trans(position)<={n*four_step_other//2},x{j}i,-x{j}i)',
+                      f'    x{j}i=tl.where((tl.trans(position)==0)|(tl.trans(position)=={n*four_step_other//2}),0.0,x{j}i)']
         elif mode=='packed_c2r':
             a += ['    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
                   '    pair=tl.load(ip+row[:,None]*input_distance+pos,valid,0)',
@@ -211,12 +226,12 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   f'    post_r{j}=0.5*(r{j}+br+wi*dr+wr*di)',
                   f'    post_i{j}=0.5*(i{j}-bi-wr*dr+wi*di)']
         for j in range(radix):a += [f'    r{j}=post_r{j}',f'    i{j}=post_i{j}']
-    if mode=='four_step_row':
+    if mode in row_modes:
         for j in range(radix):
             a += [f'    angle=row[:,None]*(lane*{radix}+{j})*{sign*2*math.pi/(n*four_step_other):.17g}',
                   '    wr=tl.cos(angle)','    wi=tl.sin(angle)',
                   f'    tr=r{j}*wr-i{j}*wi',f'    i{j}=r{j}*wi+i{j}*wr',f'    r{j}=tr']
-    if mode=='c2r':
+    if mode in {'c2r','four_step_c2r_col'}:
         for j in range(radix): a += [f'    z{j}=r{j}']
     else:
         for j in range(radix): a += [f'    z{j}=tl.cast(tl.cast(r{j},tl.uint32,bitcast=True),tl.uint64)|(tl.cast(tl.cast(i{j},tl.uint32,bitcast=True),tl.uint64)<<32)']
@@ -256,13 +271,16 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a += [f'    z=tl.reshape({values},({pack},{lane_width*chunk}))',f'    freq=tl.arange(0,{lane_width*chunk})']
         if chunk!=radix: a += [f'    freq=(freq//{chunk})*{radix}+freq%{chunk}+{start}']
         if four_step:
-            a += ['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))']
-            if mode=='four_step_row':
+            a += ['    ptr=out' if mode=='four_step_c2r_col' else '    ptr=tl.cast(out,tl.pointer_type(tl.uint64))']
+            if mode in row_modes:
                 a += [f'    address=matrix_base+row[:,None]*{n}+freq[None,:]',
                       f'    tl.store(ptr+address,z,row[:,None]<{four_step_other})']
             else:
-                a += [f'    address=matrix_base+freq[:,None]*{four_step_other}+row[None,:]',
-                      f'    tl.store(ptr+address,tl.trans(z),row[None,:]<{four_step_other})']
+                a += [f'    position=freq[:,None]*{four_step_other}+row[None,:]',
+                      '    base=tl.program_id(1)*output_distance' if mode!='four_step_col' else '    base=matrix_base',
+                      '    address=base+position',f'    mask=row[None,:]<{four_step_other}']
+                if mode=='four_step_r2c_col':a += [f'    mask=mask&(position<{n*four_step_other//2+1})']
+                a += ['    tl.store(ptr+address,tl.trans(z),mask)']
         elif mode in {'contiguous','c2r','contiguous_r2c','packed_r2c','packed_c2r'}:
             a+=['    address=row[:,None]*output_distance+freq[None,:]',
                  '    mask=row[:,None]<nbatch']
@@ -331,7 +349,8 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
 
 
 def build_ix_warp_four_step_source(plan, io_mode, n1, n2, params, pack):
-    other=n2 if io_mode=='four_step_row' else n1
+    row=io_mode in {'four_step_row','four_step_real_row','four_step_hermitian_row'}
+    other=n2 if row else n1
     name,source=build_ix_warp_source(plan.length,pack,io_mode,
         plan.direction=='inverse',fast_math=True,four_step_other=other)
     leaf_name='ix_'+name+'_leaf'

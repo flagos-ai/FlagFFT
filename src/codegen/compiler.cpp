@@ -3441,6 +3441,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(con
                                                 leaf.num_warps,
                                                 leaf.generic_radices,
                                                 leaf.smem_size);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -3460,6 +3461,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_hermitian_row_kerne
                                                      leaf.num_warps,
                                                      leaf.generic_radices,
                                                      leaf.smem_size);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -3518,6 +3520,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(cons
                                                leaf.num_warps,
                                                leaf.generic_radices,
                                                leaf.smem_size);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -3537,6 +3540,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_c2r_col_kernel(cons
                                                leaf.num_warps,
                                                leaf.generic_radices,
                                                leaf.smem_size);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 

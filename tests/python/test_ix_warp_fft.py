@@ -126,3 +126,28 @@ def test_warp_packed_real_boundary_has_valid_raw_abi(mode,inverse):
     else:
         assert 'output_distance=tl.full((),1024,tl.int64)' in source
     compile(source,'<packed-real-warp>','exec')
+
+@pytest.mark.parametrize('mode,direction',[('four_step_real_row','forward'),('four_step_r2c_col','forward'),('four_step_hermitian_row','inverse'),('four_step_c2r_col','inverse')])
+def test_real_fourstep_warp_keeps_distance_and_twiddle_abi(mode,direction,tmp_path):
+    from flagfft_codegen.backend_profile import BackendProfile,set_profile,reset_profile
+    from flagfft_codegen.target import set_ix_warp_fft_pack,reset_ix_warp_fft_pack
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    profile=set_profile(BackendProfile.from_device({'backend':'ix','device_arch':'71','warp_size':64,
+        'max_threads_per_block':4096,'max_dynamic_shared_memory':131072},'balanced'))
+    token=set_ix_warp_fft_pack(16)
+    try:
+        plan=LeafPlan(128,(16,8),1,8,2,(),128,direction,'complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=128,four_step_n2=128)
+        args=[a.arg for v in ast.parse(source).body if isinstance(v,ast.FunctionDef) for a in v.args.args]
+        row=mode.endswith('_row')
+        assert ('twiddle_ptr' in args)==row
+        assert ('input_distance' in args)==row
+        assert ('output_distance' in args)==(not row)
+        meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,arg_names=args,
+            plan=plan,kernel_type=mode,n1=128,n2=128,dtype='complex64')
+        assert meta['inner_pack']==meta['num_warps']==16 and meta['batch_per_block']==1
+        assert meta['tle_fused_twiddle']
+        compile(source,'<real-fourstep-warp>','exec')
+    finally:reset_ix_warp_fft_pack(token);reset_profile(profile)
