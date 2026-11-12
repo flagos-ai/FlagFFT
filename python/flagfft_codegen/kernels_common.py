@@ -1010,7 +1010,7 @@ def _bounded_inner_pack(
     padded_elements = plan.smem_size + extra_smem_elements
     if (_ix_backend_active() and _maca_knob("TLE_INNER_PACK")
             and not _portable_leaf_backend_active()):
-        buffers = 2 if len(plan.factors) == 2 else 4
+        buffers = 2 if len(plan.factors) == 2 or _ix_mixed_single_smem(plan) else 4
         padded_elements = lane_block_for(plan.smem_size)
     bytes_per_fft = buffers * padded_elements * _real_element_bytes(plan.dtype)
     return _floor_power_of_two(
@@ -1088,6 +1088,19 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     )
 
 
+def _ix_mixed_single_smem(plan: LeafPlan) -> bool:
+    if (not _ix_backend_active() or current_profile().device_arch != "71"
+            or _portable_leaf_backend_active() or plan.dtype != "complex64"
+            or plan.length not in {780,1560} or len(plan.factors) != 3
+            or _maca_knob("MIXED_SINGLE_SMEM","0") != "1"):
+        return False
+    lanes = cooperative_stage_lanes_for(plan)
+    # Only intermediate stages overwrite shared inputs. The final stage can
+    # read several groups because its outputs go directly to global memory.
+    return all(plan.length == width*radix
+               for width,radix in zip(lanes[:-1],plan.factors[:-1]))
+
+
 def _leaf_single_smem_buffer_eligible(
     plan: LeafPlan,
     *,
@@ -1110,6 +1123,9 @@ def _leaf_single_smem_buffer_eligible(
         return False
     if plan.dtype != "complex64" or len(plan.factors) < 2:
         return False
+    if (io_mode.startswith("four_step_") and not io_mode.endswith("_strided")
+            and _ix_mixed_single_smem(plan)):
+        return True
     if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
         return _ix_permuted_single_smem(plan)
     ix_boundary = (
