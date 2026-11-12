@@ -1515,6 +1515,13 @@ def _emit_stage_block(
                         f"{indent}packed_wr{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2, mask=lane_mask, other={zero})",
                         f"{indent}packed_wi{j} = tl.load(packed_twiddle_ptr + packed_k{j} * 2 + 1, mask=lane_mask, other={zero})",
                     ])
+                if _ix_backend_active() and dtype == "complex64":
+                    # DC and Nyquist are real even when the compact input
+                    # contains arbitrary imaginary endpoint values.
+                    lines.extend([
+                        f"{indent}packed_xi{j} = tl.where(packed_k{j} == 0, 0.0, packed_xi{j})",
+                        f"{indent}packed_qi{j} = tl.where(packed_k{j} == 0, 0.0, packed_qi{j})",
+                    ])
                 lines.extend([
                         f"{indent}packed_sum_r{j} = packed_xr{j} + packed_qr{j}",
                         f"{indent}packed_sum_i{j} = packed_xi{j} + packed_qi{j}",

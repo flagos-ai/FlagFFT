@@ -38,5 +38,6 @@ def test_loop_and_hidden_shared_accesses_are_not_supported():
     loop=ir(tail='  br i1 %again, label %entry, label %exit\nexit:\n')
     hidden=ir(middle='  call void @shared(ptr addrspace(3) %tmp)\n')
     atomic=ir(middle='  %old = atomicrmw add ptr %p, i32 1 monotonic\n')
-    for source in (loop,hidden,atomic):
+    assembly=ir(middle='  call void asm sideeffect "st.shared.f32 [$0], $1;", "r,f"(i32 %addr, float %r)\n')
+    for source in (loop,hidden,atomic,assembly):
         assert rewrite_disjoint_writes(source,{20},{30})==(source,0)

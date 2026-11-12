@@ -61,7 +61,7 @@ def rewrite_disjoint_writes(llir: str, store_lines: set[int],
     for line in body:
         if re.search(r"\b(?:atomicrmw|cmpxchg|fence)\b",line): return llir,0
         if "call " in line and ("addrspace(3)" in line or
-                                 re.search(r"(?:ldmatrix|cp\.async|memcpy|memmove)",line)):
+                                 re.search(r"(?:\basm\b|ldmatrix|cp\.async|memcpy|memmove)",line)):
             return llir,0
     locations={int(k):int(v) for k,v in re.findall(
         r"!(\d+)\s*=\s*(?:distinct\s+)?!DILocation\(line:\s*(\d+)",llir)}
@@ -105,7 +105,9 @@ def register_kernel(fn) -> None:
     def hook(backend,stages,options,language,capability):
         if previous is not None: previous(backend,stages,options,language,capability)
         if (backend.target.backend!='corex' or backend.target.arch!=71 or
-                backend.target.warp_size!=64): return
+                backend.target.warp_size!=64 or
+                getattr(options,'instrumentation_mode','') or
+                knobs.compilation.instrumentation_mode): return
         original=stages['llir']
         def lower(src,metadata):
             llir=original(src,metadata)
