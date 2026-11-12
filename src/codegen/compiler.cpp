@@ -2920,16 +2920,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   const bool packed_cta = n==16384 && batch==64 &&
       (fused_setting ? std::string(fused_setting)=="1" : request.ix_fourstep_preset==8) &&
       flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",request.ix_fourstep_preset==8);
+  const bool packed_tle = request.device_type == "ix" &&
+      request.input_dtype == "complex64" && n <= 2048 &&
+      flag_or_default("FLAGFFT_IX_PACKED_R2C_TLE", false);
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       (n == 2048 || packed_cta || (fused_setting != nullptr && std::string(fused_setting) == "1" &&
                      n > 0 && n <= 2048 && n % 2 == 0)) &&
       (batch == 1 || batch == 64) &&
-      (batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) &&
+      ((batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) ||
+       (packed_tle && n == 210 && batch == 64)) &&
       !request.input_strides.empty() && request.input_strides.back() == 1 &&
       (std::getenv("FLAGFFT_IX_PORTABLE_LEAF") == nullptr ||
-       std::string(std::getenv("FLAGFFT_IX_PORTABLE_LEAF")) == "1") &&
+       std::string(std::getenv("FLAGFFT_IX_PORTABLE_LEAF")) == "1" || packed_tle) &&
       (fused_setting == nullptr || std::string(fused_setting) == "1")) {
     FFTRequest child_request = request;
     child_request.n = n / 2;

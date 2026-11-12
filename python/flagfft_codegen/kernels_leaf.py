@@ -2130,8 +2130,11 @@ def _emit_stage_block(
                     lines.append(f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})")
                     lines.append(f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})")
             elif io_mode == "packed_r2c":
+                packed_index = f"out_idx{j}"
+                if not portable_exchange and smem_pack > 1:
+                    packed_index = f"(out_idx{j} + batch_slot * {exchange_slot_stride})"
                 lines.extend(_emit_exchange_store(
-                    indent, "packed", f"out_idx{j}", j, f"r{j}", f"i{j}", portable_exchange
+                    indent, "packed", packed_index, j, f"r{j}", f"i{j}", portable_exchange
                 ))
             elif io_mode == "contiguous_c2r":
                 lines.append(
@@ -3159,7 +3162,10 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
-    if io_mode == "packed_r2c" and not portable_exchange:
+    packed_tle = (io_mode == "packed_r2c" and not portable_exchange
+                  and _ix_backend_active() and plan.dtype == "complex64"
+                  and _maca_knob("PACKED_R2C_TLE", "0") == "1")
+    if io_mode == "packed_r2c" and not portable_exchange and not packed_tle:
         raise ValueError("packed R2C leaf requires the portable exchange path")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
@@ -3564,6 +3570,12 @@ def _build_leaf_kernel_source_for_io(
     if uses_cooperative_stage_lanes:
         body.append("    base_lane_mask = lane_mask")
 
+    if packed_tle:
+        # Keep the final natural-order spectrum separate from stage input.
+        # No last-stage store can overwrite another lane's unread input.
+        body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+        body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+
     if len(factors) > 1 and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
         if not single_smem_buffer:
@@ -3651,6 +3663,19 @@ def _build_leaf_kernel_source_for_io(
             "    tl.store(out_ptr + packed_nyquist * 2, packed_ar - packed_ai, mask=packed_mask & (packed_k == 0))",
             "    tl.store(out_ptr + packed_nyquist * 2 + 1, 0.0, mask=packed_mask & (packed_k == 0))",
         ])
+
+        if packed_tle:
+            # All natural-order outputs are visible before loading either
+            # member of a conjugate pair, including across physical warps.
+            start = body.index(f"    packed_pos = tl.arange(0, {smem_n})")
+            body.insert(start, "    tl.debug_barrier()")
+            for old, new in (
+                ("    packed_ar = packed_r", "    packed_ar = tl.load(tle.gpu.local_ptr(packed_r, (packed_pos,)), mask=packed_mask, other=0.0)"),
+                ("    packed_ai = packed_i", "    packed_ai = tl.load(tle.gpu.local_ptr(packed_i, (packed_pos,)), mask=packed_mask, other=0.0)"),
+                ("    packed_br = tl.gather(packed_r, packed_partner, 0)", "    packed_br = tl.load(tle.gpu.local_ptr(packed_r, (packed_partner,)), mask=packed_mask, other=0.0)"),
+                ("    packed_bi = tl.gather(packed_i, packed_partner, 0)", "    packed_bi = tl.load(tle.gpu.local_ptr(packed_i, (packed_partner,)), mask=packed_mask, other=0.0)"),
+            ):
+                body[body.index(old)] = new
 
         if _ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype):
             for old_lines,new_lines in (

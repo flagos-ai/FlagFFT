@@ -812,3 +812,40 @@ def test_structured_complex_exchange_pairs_preserve_the_route(
     assert ('exchange_structured_p = tl.reshape' in source)==paired
     assert ('smem_a_register_p' in source)==paired
     compile(source,'<ix-paired-structured-exchange>','exec')
+
+
+@pytest.mark.parametrize('n,factors,pack',[
+    (105,(7,5,3),1),(105,(7,5,3),4),
+    (512,(8,8,8),1),(512,(8,8,8),4),
+    (1024,(16,8,8),1),(1024,(16,8,8),4),
+])
+def test_opt_in_packed_TLE_real_reconstruction_has_a_separate_visible_spectrum(
+        ix_balanced_profile,monkeypatch,n,factors,pack):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
+    monkeypatch.setenv('FLAGFFT_IX_PACKED_R2C_TLE','1')
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_PACK',str(pack))
+    plan=LeafPlan(n,factors,1,1,1,(),1 << (n-1).bit_length(),'forward','complex64')
+    _,source=_build_leaf_kernel_source_for_io(plan,io_mode='packed_r2c')
+    assert 'packed_r = tle.gpu.alloc' in source and 'packed_i = tle.gpu.alloc' in source
+    # The final spectrum never aliases either stage input buffer.
+    assert 'tle.gpu.local_ptr(packed_r, (' in source
+    assert 'packed_br = tl.load(tle.gpu.local_ptr(packed_r, (packed_partner,))' in source
+    assert 'packed_br = tl.gather' not in source
+    assert source.index('tl.debug_barrier()',source.index('tle.gpu.local_ptr(packed_r, (')) < source.index('packed_ar = tl.load')
+    if pack>1:assert 'out_idx0 + batch_slot * ' in source
+    compile(source,'<ix-packed-TLE-real>','exec')
+
+
+@pytest.mark.parametrize('dtype,setting',[('complex64',None),('complex128','1')])
+def test_packed_TLE_real_remains_disabled_without_the_fp32_opt_in(
+        ix_balanced_profile,monkeypatch,dtype,setting):
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
+    monkeypatch.delenv('FLAGFFT_IX_PACKED_R2C_TLE',raising=False)
+    if setting is not None:monkeypatch.setenv('FLAGFFT_IX_PACKED_R2C_TLE',setting)
+    plan=LeafPlan(105,(7,5,3),1,1,1,(),128,'forward',dtype)
+    with pytest.raises(ValueError,match='requires the portable'):
+        _build_leaf_kernel_source_for_io(plan,io_mode='packed_r2c')
