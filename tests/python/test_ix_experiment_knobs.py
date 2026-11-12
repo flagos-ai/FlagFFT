@@ -602,3 +602,24 @@ def test_ix_fourstep_request_preset_is_nested_and_explicit_knobs_win(ix_balanced
     finally:reset_ix_fourstep_preset(outer)
     monkeypatch.delenv('FLAGFFT_IX_PORTABLE_LEAF')
     assert _maca_knob('PORTABLE_LEAF','off')==original
+
+
+def test_ix_row_twiddle_moves_the_kernel_argument_without_backend_assembly(ix_balanced_profile,monkeypatch):
+    import ast
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan, use_four_step_row_fused_twiddle
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    for key,value in {'PORTABLE_LEAF':'0','ROW_TWIDDLE':'1','TLE_INNER_PACK':'32','WARPS':'4','TLE_IO_LAYOUT':'1'}.items():
+        monkeypatch.setenv('FLAGFFT_IX_'+key,value)
+    plan=LeafPlan(128,(16,8),1,8,1,(),128,'forward','complex64')
+    for mode in ('four_step_row','four_step_col'):
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=128,four_step_n2=128)
+        args=next(node.args.args for node in ast.parse(source).body if isinstance(node,ast.FunctionDef))
+        names=[arg.arg for arg in args]
+        assert ('twiddle_ptr' in names)==mode.endswith('_row')
+        assert 'inline_asm_elementwise' not in source
+        meta=_metadata(module_path=Path('unused.py'),kernel_name=name,arg_names=names,plan=plan,kernel_type=mode,n1=128,n2=128,dtype='complex64')
+        assert meta['tle_fused_twiddle']
+    assert not use_four_step_row_fused_twiddle(512,1024,'complex64')
+    assert not use_four_step_row_fused_twiddle(128,128,'complex128')
