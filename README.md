@@ -286,6 +286,14 @@ Set `FLAGFFT_IX_FUSED_R2C=0` before starting the process to
 disable fused packed R2C reconstruction. Set `FLAGFFT_IX_CT_BATCH=0` to
 compare with the previous batch path.
 
+The dense FP32 C2C request at N=340200 and batch=64 uses packed complex I/O,
+recurrence twiddles, interleaved shared FFT slots, and eight axis FFTs per CTA tile.
+Request preset 10 transports these settings while retaining the 504-by-675
+Four-Step geometry. Both directions passed scoped NumPy checks at input scales
+2^-20, 1, and 2^20 with warmup 10 / iterations 100; the scoped minimum speedup
+was 0.7623x. The complete frozen 30-operator run remains the acceptance gate.
+`FLAGFFT_IX_CT_BATCH=0` or `FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS=0` rolls back this policy.
+
 Other lengths, batch sizes, ranks, architectures and FP64 retain their existing
 paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to disable
 the single CT policy and request-level Four-Step presets; use the per-path

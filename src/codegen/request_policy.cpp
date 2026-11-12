@@ -53,6 +53,7 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
   if (request.requested_n==16384 && request.batch==64 && request.real_transform_kind=="c2r") preset=7;
   if (request.requested_n==16384 && request.batch==64 && request.real_transform_kind=="r2c") preset=8;
   if (request.requested_n==663000) preset=request.batch==1 ? 5 : 6;
+  if (request.requested_n==340200 && request.batch==64 && request.real_transform_kind.empty()) preset=10;
   if (!preset) return 0;
   const char *setting=std::getenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS");
   if (setting && std::string(setting)!="0" && std::string(setting)!="1")

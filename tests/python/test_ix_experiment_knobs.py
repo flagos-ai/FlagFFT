@@ -722,3 +722,25 @@ def test_ct1024_disjoint_screen_preserves_runtime_batch_and_narrow_write_proof(
     assert ('ixdisjoint_' in name)==expected
     assert 'nbatch = 1' not in source and 'batch_id = 0' not in source
     if expected:assert 'tl.static_range(0, 1)' in source
+
+
+@pytest.mark.parametrize('n,factors,lanes,smem,mode',[
+    (504,(28,18),2,512,'four_step_row'),(675,(27,25),1,1024,'four_step_col'),
+])
+def test_mixed340200_preset_uses_qualified_eight_slot_TLE_geometry(
+        ix_balanced_profile,monkeypatch,tmp_path,n,factors,lanes,smem,mode):
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    for key in ('VEC_IO','RECURRENCE','SMEM_INTERLEAVE','TLE_INNER_PACK','PORTABLE_LEAF','WARPS'):
+        monkeypatch.delenv('FLAGFFT_IX_'+key,raising=False)
+    token=set_ix_fourstep_preset(10)
+    try:
+        plan=LeafPlan(n,factors,1,lanes,1,(),smem,'forward','complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=504,four_step_n2=675)
+        meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type=mode,n1=504,n2=675,dtype='complex64')
+        assert meta['inner_pack']==8 and meta['num_warps']==4
+        assert 'tle.gpu.alloc' in source
+    finally:reset_ix_fourstep_preset(token)
