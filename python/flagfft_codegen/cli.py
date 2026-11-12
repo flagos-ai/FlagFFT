@@ -576,9 +576,9 @@ def main() -> None:
         raise AssertionError(f"unreachable kernel spec: {args.kernel}")
 
     if args.compile_script:
-        if not args.target.startswith(("maca:", "ix:")):
-            parser.error("--compile-script requires a MACA or IX target")
-        os.environ["TRITON_JIT_BACKEND"] = "IX" if args.target.startswith("ix:") else "MACA"
+        if not args.target.startswith("maca:"):
+            parser.error("--compile-script currently requires a MACA target")
+        os.environ["TRITON_JIT_BACKEND"] = "MACA"
         compile_spec = importlib.util.spec_from_file_location(
             "standalone_compile", args.compile_script
         )
@@ -598,20 +598,8 @@ def main() -> None:
             metadata["num_stages"],
             0,
             {},
-            compile_target=GPUTarget("corex" if backend == "ix" else backend, int(arch), int(warp)),
+            compile_target=GPUTarget(backend, int(arch), int(warp)),
         )
-        if backend == "ix":
-            # Package binaries under the request's device-profile directory.
-            # The SDK module loader keys handles by path; sharing its global
-            # compiler-cache path across devices would share a context handle.
-            import shutil
-            binary = Path(metadata["binary_dir"])
-            packaged = Path(metadata["module_path"]).parent / "binary"
-            packaged.mkdir(exist_ok=True)
-            for suffix in (".cubin", ".json"):
-                shutil.copyfile(binary / (metadata["kernel_name"] + suffix),
-                                packaged / (metadata["kernel_name"] + suffix))
-            metadata["binary_dir"] = str(packaged)
         kernel_metadata = Path(metadata["binary_dir"]) / (
             metadata["kernel_name"] + ".json"
         )
@@ -620,7 +608,7 @@ def main() -> None:
             "profile_scratch_size", 0
         ):
             raise RuntimeError(
-                "Compiled kernel requires scratch allocation unsupported by raw launch"
+                "MACA kernel requires scratch allocation unsupported by raw launch"
             )
     profile.validate(metadata["num_warps"])
     metadata.update(

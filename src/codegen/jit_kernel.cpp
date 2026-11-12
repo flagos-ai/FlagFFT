@@ -44,9 +44,8 @@ JitKernelArg JitKernelArg::i64(int64_t value) {
 }
 
 JitKernel::~JitKernel() {
-#if defined(BACKEND_MACA) || defined(BACKEND_IX)
-  if (!binary_dir.empty())
-    delete static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
+#if defined(BACKEND_MACA)
+  delete static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
 #endif
 }
 
@@ -75,15 +74,6 @@ void JitKernel::compile() {
   triton_jit::DefaultBackend::load_kernel(binary_dir, kernel_name);
   jit_function = new triton_jit::TritonKernelImpl<triton_jit::DefaultBackend>(binary_dir, kernel_name);
 #else
-#if defined(BACKEND_IX)
-  if (!binary_dir.empty()) {
-    triton_jit::DefaultBackend::ensure_context();
-    triton_jit::DefaultBackend::load_kernel(binary_dir,kernel_name);
-    jit_function=new triton_jit::TritonKernelImpl<triton_jit::DefaultBackend>(binary_dir,kernel_name);
-    compiled.store(true,std::memory_order_release);
-    return;
-  }
-#endif
   jit_function = &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
   function->compile(signature,
@@ -156,16 +146,6 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                                 signature,
                                 num_args);
 #else
-#if defined(BACKEND_IX)
-  if (!binary_dir.empty()) {
-    auto *kernel=static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
-    kernel->launch_with_signature(static_cast<unsigned int>(grid_x),
-                                 static_cast<unsigned int>(grid_y),
-                                 static_cast<unsigned int>(grid_z),num_warps,
-                                 reinterpret_cast<triton_jit::DefaultStreamType>(stream),
-                                 args,signature,num_args);
-  } else
-#endif
   function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
                                  static_cast<unsigned int>(grid_x),
                                  static_cast<unsigned int>(grid_y),
