@@ -1003,13 +1003,14 @@ def _bounded_inner_pack(
         # four-buffer TLE estimate again rejects packs that pass that bound:
         # 1024 x 8 is otherwise estimated as 131200 bytes with the padding.
         return min(pack, _maca_four_step_smem_pack_limit(plan))
-    # A two-stage TLE leaf writes only smem_b; smem_a is unused. Keep this
-    # tighter bound opt-in until the wider packs have been measured on IX.
+    # FourStep tiles use batch_pack=1, so their emitted slot stride has
+    # no per-batch padding. A two-stage leaf also leaves smem_a unused.
+    # Keep this tighter allocation bound explicit while screening IX tiles.
     buffers = 4
     padded_elements = plan.smem_size + extra_smem_elements
     if (_ix_backend_active() and _maca_knob("TLE_INNER_PACK")
-            and not _portable_leaf_backend_active() and len(plan.factors) == 2):
-        buffers = 2
+            and not _portable_leaf_backend_active()):
+        buffers = 2 if len(plan.factors) == 2 else 4
         padded_elements = lane_block_for(plan.smem_size)
     bytes_per_fft = buffers * padded_elements * _real_element_bytes(plan.dtype)
     return _floor_power_of_two(
