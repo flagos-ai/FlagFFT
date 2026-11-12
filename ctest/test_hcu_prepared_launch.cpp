@@ -8,6 +8,7 @@
 #include <array>
 #include <complex>
 #include <type_traits>
+#include <utility>
 
 namespace {
 
@@ -28,7 +29,7 @@ struct RuntimeSetting {
 };
 
 template <typename Scalar, typename Complex>
-void CheckRealDispatch(int n, bool alias) {
+void CheckRealDispatch(int n, bool alias, bool missing_prepared = false) {
   SCOPED_TRACE(::testing::Message() << "n=" << n << " alias=" << alias);
   constexpr bool fp64 = std::is_same_v<Scalar, double>;
   const auto forward_type = fp64 ? FLAGFFT_D2Z : FLAGFFT_R2C;
@@ -82,21 +83,28 @@ void CheckRealDispatch(int n, bool alias) {
     auto *restored_ptr = alias ? input_ptr : static_cast<Scalar *>(restored[slot].data());
     ASSERT_EQ(flagfftSetStream(forward, streams[step]), FLAGFFT_SUCCESS);
     ASSERT_EQ(flagfftSetStream(inverse, streams[step]), FLAGFFT_SUCCESS);
-    if constexpr (fp64) {
-      ASSERT_EQ(flagfftExecD2Z(forward, input_ptr, spectrum_ptr), FLAGFFT_SUCCESS);
-    } else {
-      ASSERT_EQ(flagfftExecR2C(forward, input_ptr, spectrum_ptr), FLAGFFT_SUCCESS);
-    }
+    auto saved_forward = fwd->kernel->direct_launch;
+    const bool remove_handle = missing_prepared && step > 0;
+    if (remove_handle) fwd->kernel->direct_launch.reset();
+    const auto forward_result = [&]() {
+      if constexpr (fp64) return flagfftExecD2Z(forward, input_ptr, spectrum_ptr);
+      else return flagfftExecR2C(forward, input_ptr, spectrum_ptr);
+    }();
+    if (remove_handle) fwd->kernel->direct_launch = std::move(saved_forward);
+    ASSERT_EQ(forward_result, FLAGFFT_SUCCESS);
     flagfft::adaptor::synchronize();
     (alias ? real[slot] : spectrum[slot]).copy_to_host(actual.data(), half * sizeof(Complex));
     auto forward_error = flagfft_test::error_stats(actual.data(), expected.data(), half, 1);
     EXPECT_TRUE(forward_error.finite);
     EXPECT_LT(forward_error.rel_l2, fp64 ? 5e-13 : 5e-6);
-    if constexpr (fp64) {
-      ASSERT_EQ(flagfftExecZ2D(inverse, spectrum_ptr, restored_ptr), FLAGFFT_SUCCESS);
-    } else {
-      ASSERT_EQ(flagfftExecC2R(inverse, spectrum_ptr, restored_ptr), FLAGFFT_SUCCESS);
-    }
+    auto saved_inverse = inv->kernel->direct_launch;
+    if (remove_handle) inv->kernel->direct_launch.reset();
+    const auto inverse_result = [&]() {
+      if constexpr (fp64) return flagfftExecZ2D(inverse, spectrum_ptr, restored_ptr);
+      else return flagfftExecC2R(inverse, spectrum_ptr, restored_ptr);
+    }();
+    if (remove_handle) inv->kernel->direct_launch = std::move(saved_inverse);
+    ASSERT_EQ(inverse_result, FLAGFFT_SUCCESS);
     flagfft::adaptor::synchronize();
     (alias ? real[slot] : restored[slot]).copy_to_host(output.data(), n * sizeof(Scalar));
     auto inverse_error = flagfft_test::error_stats(output.data(), expected_inverse.data(), n, 1);
@@ -122,6 +130,12 @@ TEST(HcuPreparedLaunch, DefaultHandlesChangedDataAddressesStreamsAndInPlace) {
 TEST(HcuPreparedLaunch, OverrideRetainsGenericDispatch) {
   RuntimeSetting setting("0");
   CheckRealDispatch<float, flagfftComplex>(48, false);
+}
+
+TEST(HcuPreparedLaunch, MissingPreparedHandleRetainsGenericDispatch) {
+  RuntimeSetting setting("1");
+  CheckRealDispatch<float, flagfftComplex>(48, false, true);
+  CheckRealDispatch<double, flagfftDoubleComplex>(48, false, true);
 }
 
 TEST(HcuPreparedLaunch, PreservesLaunchHooks) {

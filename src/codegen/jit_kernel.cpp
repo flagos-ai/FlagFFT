@@ -210,7 +210,7 @@ void JitKernel::launch(adaptor::StreamHandle stream,
   // Explicit streams and the compiled module identify the launch device.
   // Preserve the generic launcher when hooks are installed or the caller
   // uses a default stream, whose device can change independently.
-  if (prepared_enabled && stream != nullptr &&
+  if (prepared_enabled && direct_launch != nullptr && stream != nullptr &&
       !triton_jit::detail::get_launch_hooks_snapshot()) {
     const auto &prepared = *static_cast<triton_jit::DefaultBackend::DirectLaunch *>(direct_launch.get());
     prepared.launch(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
