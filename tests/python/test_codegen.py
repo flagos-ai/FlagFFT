@@ -330,7 +330,7 @@ def test_maca_packed_permuted_store_is_fp32_only(
     )
     token = set_profile(profile)
     monkeypatch.setenv("FLAGFFT_MACA_VEC_IO", "packed")
-    monkeypatch.setattr(kernels_leaf, "permuted_store_batch_pack_for", lambda _plan: pack)
+    monkeypatch.setattr(kernels_leaf, "permuted_store_batch_pack_for", lambda _plan, **kwargs: pack)
     plan = kernels.LeafPlan(
         length=256,
         factors=(4, 4, 4, 4),
@@ -387,7 +387,7 @@ def test_permuted_store_pack_masks_only_final_stage_lanes(
         }
     )
     token = set_profile(profile)
-    monkeypatch.setattr(kernels_leaf, "permuted_store_batch_pack_for", lambda _plan: 2)
+    monkeypatch.setattr(kernels_leaf, "permuted_store_batch_pack_for", lambda _plan, **kwargs: 2)
     plan = kernels.LeafPlan(
         length=2048,
         factors=(16, 8, 16),
@@ -1765,7 +1765,7 @@ def test_large_mixed_thread_local_leaf_is_generated(
     assert row_source.count("tle.gpu.alloc") == 2
     assert row_source.count("ld.global.v2.f32") == register_radix
     assert f"inner_tw_idx1 = 1 + {register_radix} * fft_thread" in row_source
-    assert "tl.load(tw1_r_ptr + inner_tw_idx1)" in row_source
+    assert "tl.load(tw1_r_ptr + inner_tw_idx1, mask=input_lane_mask, other=0.0)" in row_source
     assert "outer_tw_r = tl.load(twiddle_ptr + outer_base_offset" in row_source
     assert "sin.approx.f32" not in row_source
     assert "mask=output_lane_mask" in row_source
