@@ -401,7 +401,12 @@ TEST(IXNDPolicy, QualifiedShapesAndExplicitRollbackAreScoped) {
   unsetenv("FLAGFFT_IX_2D_TRANSPOSE_STORE");
   request.raw_dim=request.origin_rank=3;
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,256,256,256),16);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,128,2048,64),16);
+  request.real_transform_kind="c2r";
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,128,2048,64),0);
+  request.real_transform_kind="r2c";
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,128,2048,64),16);
+  request.real_transform_kind.clear();
   setenv("FLAGFFT_IX_3D_HYBRID","1",1);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,256,256,256),0);
   unsetenv("FLAGFFT_IX_3D_HYBRID");

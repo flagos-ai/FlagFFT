@@ -60,10 +60,13 @@ int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
                     n0==2048 && n1==2048 && n2==0;
   const bool cube=request.origin_rank==3 && request.raw_dim==3 &&
                   n0==256 && n1==256 && n2==256;
+  const bool elongated=request.origin_rank==3 && request.raw_dim==3 &&
+                       n0==128 && n1==2048 && n2==64 &&
+                       (request.real_transform_kind.empty() || request.real_transform_kind=="r2c");
   if (request.device_type!="ix" || request.device_arch!="71" ||
       request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
       request.input_layout!="contiguous" || request.requires_contiguous_copy ||
-      (batch!=1 && batch!=4) || (!matrix && !cube)) return 0;
+      (batch!=1 && batch!=4) || (!matrix && !cube && !elongated)) return 0;
   const char *policy=std::getenv("FLAGFFT_EXECUTION_POLICY");
   if (policy && std::string(policy)!="balanced") return 0;
   const auto enabled=[](const char *name,bool fallback) {
