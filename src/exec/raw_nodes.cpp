@@ -653,7 +653,17 @@ flagfftResult CompiledRawNpuAivFFTSmallNode::execute(adaptor::DevicePtr input,
   if (mode != NpuAivFFTSmallMode::Complex &&
       (context.input_distance > 0 || context.output_distance > 0)) {
     const bool forward = mode == NpuAivFFTSmallMode::RealForward;
-    const int64_t half = length / 2 + 1;
+    int64_t half = length / 2 + 1;
+    // A fused multidimensional tensor has a compact last axis in every
+    // outer row, rather than one half-spectrum for the whole volume.
+    // Match the kernel's real batch pitch to that layout when deciding
+    // whether a per-batch launch is necessary.
+    const auto &request = context.request;
+    if (request.raw_dim > 1 && request.fft_length == length &&
+        request.input_shape.size() == static_cast<size_t>(request.raw_dim + 1)) {
+      const int64_t last = request.input_shape.back();
+      if (last > 0 && length % last == 0) half = (length / last) * (last / 2 + 1);
+    }
     const int64_t input_width = forward ? length : half;
     const int64_t output_width = forward ? half : length;
     int64_t input_pitch = context.input_distance > 0 ? context.input_distance : input_width;
