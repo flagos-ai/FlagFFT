@@ -559,7 +559,7 @@ TEST(IXLeafPlan, FourStepPresetsRequireTheQualifiedPublicDenseRequest) {
     other=request;other.device_type="maca";
     EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
     other=request;other.real_transform_kind="c2r";other.input_strides={n/2+1,1};
-    EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),n==16384?0:preset);
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),n==16384?7:preset);
   }
   request.batch=1;
   EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),5);
@@ -571,7 +571,7 @@ TEST(IXLeafPlan, FourStepPresetsRequireTheQualifiedPublicDenseRequest) {
   setenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS","0",1);
   EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
   unsetenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS");
-  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),3);
   request.batch=64;
   for (const auto &[n,preset] : std::vector<std::pair<int64_t,int>>{{8191,1},{16381,2}}) {
     request.fft_length=request.requested_n=n;request.input_strides={n,1};
@@ -579,4 +579,29 @@ TEST(IXLeafPlan, FourStepPresetsRequireTheQualifiedPublicDenseRequest) {
     ScopedEnv disabled("FLAGFFT_IX_CT_BATCH","0");
     EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
   }
+}
+
+TEST(IXLeafPlan, BatchedRealCtaDefaultHasTypedScopeAndExistingRollbacks) {
+  ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
+  ScopedEnv gate("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS",nullptr);
+  flagfft::FFTRequest request;
+  request.device_type="ix";request.device_arch="71";
+  request.input_dtype=request.output_dtype="complex64";
+  request.raw_dim=request.origin_rank=1;request.batch=64;
+  request.input_layout="contiguous";
+  request.fft_length=request.requested_n=16384;
+  request.real_transform_kind="c2r";request.input_strides={8193,1};
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),7);
+  for (const char *name : {"FLAGFFT_IX_FUSED_C2R","FLAGFFT_IX_FOURSTEP_CTA",
+                            "FLAGFFT_IX_PORTABLE_LEAF","FLAGFFT_PACKED_REAL",
+                            "FLAGFFT_IX_CT_BATCH","FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS"}) {
+    ScopedEnv disabled(name,"0");
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  }
+  request.real_transform_kind="r2c";request.input_strides={16384,1};
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  setenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS","1",1);
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),8);
+  ScopedEnv disabled("FLAGFFT_IX_FUSED_R2C","0");
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
 }

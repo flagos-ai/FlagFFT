@@ -113,8 +113,8 @@ def ix_prime_3d_enabled() -> bool:
 
 
 def set_ix_fourstep_preset(preset: int):
-    if preset not in range(7):
-        raise ValueError("IX FourStep preset must be in [0, 6]")
+    if preset not in range(9):
+        raise ValueError("IX FourStep preset must be in [0, 8]")
     return _IX_FOURSTEP_PRESET.set(preset)
 
 

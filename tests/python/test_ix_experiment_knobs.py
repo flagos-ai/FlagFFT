@@ -623,3 +623,22 @@ def test_ix_row_twiddle_moves_the_kernel_argument_without_backend_assembly(ix_ba
         assert meta['tle_fused_twiddle']
     assert not use_four_step_row_fused_twiddle(512,1024,'complex64')
     assert not use_four_step_row_fused_twiddle(128,128,'complex128')
+
+
+@pytest.mark.parametrize('preset,kind,factors,warps',[(7,'leaf_packed_c2r',(8,8,8,16),16),(8,'leaf_packed_r2c',(32,16,16),8)])
+def test_real_cta_request_preserves_warps_and_batch_tile_without_env(ix_balanced_profile,monkeypatch,preset,kind,factors,warps):
+    from pathlib import Path
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    for key in ('WARPS','PORTABLE_LEAF','BATCH_PACK'):
+        monkeypatch.delenv('FLAGFFT_IX_'+key,raising=False)
+    token=set_ix_fourstep_preset(preset)
+    try:
+        plan=LeafPlan(8192,factors,1,128,16,(),8192,'inverse' if preset==7 else 'forward','complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode='packed_c2r' if preset==7 else 'packed_r2c')
+        meta=_metadata(module_path=Path('unused.py'),kernel_name=name,arg_names=[],plan=plan,kernel_type=kind,n1=0,n2=0,dtype='complex64')
+        assert meta['num_warps']==warps
+        assert meta['batch_per_block']==1
+    finally:reset_ix_fourstep_preset(token)

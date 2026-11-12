@@ -43,14 +43,23 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
   if (request.batch==64 && request.requested_n==16381) preset=2;
   if (request.requested_n==16384 && request.real_transform_kind.empty())
     preset=request.batch==1 ? 3 : 4;
+  if (request.requested_n==16384 && request.batch==64 && request.real_transform_kind=="c2r") preset=7;
+  if (request.requested_n==16384 && request.batch==64 && request.real_transform_kind=="r2c") preset=8;
   if (request.requested_n==663000) preset=request.batch==1 ? 5 : 6;
   if (!preset) return 0;
-  // Both prime presets passed the complete three-amplitude factory screen.
-  // Keep the remaining presets opt-in while their floor cases are screened.
+  // Batch C2C and batch R2C remain opt-in while their floor cases are screened.
   const char *setting=std::getenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS");
   if (setting && std::string(setting)!="0" && std::string(setting)!="1")
     throw std::runtime_error("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS must be 0 or 1");
-  if (setting ? std::string(setting)=="0" : preset>2) return 0;
+  if (setting ? std::string(setting)=="0" : (preset==4 || preset==8)) return 0;
+  if (preset>=7) {
+    for (const char *name : {"FLAGFFT_IX_FOURSTEP_CTA", "FLAGFFT_IX_PORTABLE_LEAF",
+                            "FLAGFFT_PACKED_REAL",
+                            preset==7 ? "FLAGFFT_IX_FUSED_C2R" : "FLAGFFT_IX_FUSED_R2C"}) {
+      const char *value=std::getenv(name);
+      if (value && std::string(value)=="0") return 0;
+    }
+  }
   const char *rollback=std::getenv(request.batch==1 ? "FLAGFFT_IX_CT_SINGLE" : "FLAGFFT_IX_CT_BATCH");
   return rollback && std::string(rollback)=="0" ? 0 : preset;
 }

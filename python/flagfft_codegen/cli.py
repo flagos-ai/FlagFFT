@@ -185,7 +185,7 @@ def main() -> None:
                         help="use one transform per block for IX N=210 real single")
     parser.add_argument("--ix-prime-3d", action="store_true",
                         help="enable parent-qualified IX prime-axis 3D defaults")
-    parser.add_argument("--ix-fourstep-preset", type=int, choices=range(7), default=0,
+    parser.add_argument("--ix-fourstep-preset", type=int, choices=range(9), default=0,
                         help="public-request IX FourStep preset transported by the native planner")
     parser.add_argument("--ix-ct-single-tle", type=int, choices=(0, 1, 2), default=0,
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")

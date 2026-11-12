@@ -281,7 +281,8 @@ def _metadata(
             threads = (plan.length * inner_pack + 31) // 32
             num_warps = max(2, profile.warps_for(threads))
             profile.validate(num_warps)
-    if (_ix_backend_active() and kernel_type == "leaf_packed_r2c"
+    from .target import ix_fourstep_preset
+    if (_ix_backend_active() and kernel_type == "leaf_packed_r2c" and ix_fourstep_preset()<7
             and os.environ.get("FLAGFFT_IX_WARPS") is None):
         # The half-length reconstruction has twice the register work of a
         # normal leaf. Four warps caused a large batch-64 regression on V150;

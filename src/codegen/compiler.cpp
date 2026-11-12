@@ -1703,7 +1703,7 @@ namespace {
   bool ix_fused_c2r_leaf_enabled(const FFTRequest &request, int64_t batch) {
     const int64_t n = request.requested_n;
     const bool packed_cta = n==16384 && batch==64 &&
-                           flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",false);
+                           flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",request.ix_fourstep_preset==7);
     if (request.device_type != "ix" || request.device_arch != "71" ||
         request.raw_dim != 1 || request.origin_rank > 1 || batch <= 0 ||
         request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
@@ -1718,7 +1718,7 @@ namespace {
     }
     // Screen the existing half-length inverse leaf without changing the
     // qualified default until IX correctness and paired timings are available.
-    return setting && std::string(setting) == "1";
+    return setting ? std::string(setting) == "1" : request.ix_fourstep_preset==7;
   }
 
   struct PackedRealChild {
@@ -1986,29 +1986,32 @@ namespace {
         request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
         n < 8192 || n > 16384 || (n & (n - 1)) != 0 ||
         request.input_strides.empty() || request.input_strides.back() != 1) return nullptr;
+    const bool qualified=request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8;
     const char *setting = std::getenv("FLAGFFT_IX_FOURSTEP_CTA");
-    if (!setting || std::string(setting) == "0") return nullptr;
-    if (std::string(setting) != "1") {
+    if (!flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",qualified)) return nullptr;
+    if (setting && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA must be 0 or 1");
     }
-    // Keep the experiment explicit. The launch width and batch tile differ
-    // from ordinary CT batch defaults and must travel together.
+    // Public presets transport the launch width and tile together. Other
+    // experiments must still provide the complete launch configuration.
     const char *warps = std::getenv("FLAGFFT_IX_WARPS");
-    if (!warps || (std::string(warps)!="8" && std::string(warps)!="16")) {
+    const std::string warp_arg=warps ? warps : (qualified ? (request.ix_fourstep_preset==7 ? "16" : "8") : "");
+    if (warp_arg!="8" && warp_arg!="16") {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_WARPS=8 or 16");
     }
     const char *batch_pack = std::getenv("FLAGFFT_IX_BATCH_PACK");
-    if (!batch_pack || (std::string(batch_pack)!="1" && std::string(batch_pack)!="2")) {
+    const std::string batch_arg=batch_pack ? batch_pack : (qualified ? "1" : "");
+    if (batch_arg!="1" && batch_arg!="2") {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_BATCH_PACK=1 or 2");
     }
     const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
-    if (!portable_setting || (std::string(portable_setting) != "0" &&
-                              std::string(portable_setting) != "1")) {
+    const std::string portable_arg=portable_setting ? portable_setting : (qualified ? "1" : "");
+    if (portable_arg!="0" && portable_arg!="1") {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires explicit FLAGFFT_IX_PORTABLE_LEAF=0 or 1");
     }
-    const bool portable = std::string(portable_setting) == "1";
-    const int64_t cta_batch_pack=std::stoll(batch_pack);
-    if (cta_batch_pack==2 && (!portable || n!=8192 || std::string(warps)!="16"))
+    const bool portable = portable_arg == "1";
+    const int64_t cta_batch_pack=std::stoll(batch_arg);
+    if (cta_batch_pack==2 && (!portable || n!=8192 || warp_arg!="16"))
       throw std::runtime_error("paired IX FourStep CTA requires portable 8192-point FFTs and 16 warps");
     int exponent = 0;
     for (int64_t value = n; value > 1; value >>= 1) ++exponent;
@@ -2016,15 +2019,14 @@ namespace {
     for (int i = 0; i < 3; ++i) {
       factors.push_back(int64_t{1} << (exponent / 3 + (i < exponent % 3 ? 1 : 0)));
     }
-    if (const char *small = std::getenv("FLAGFFT_IX_CTA_SMALL_RADICES")) {
-      if (std::string(small)!="0" && std::string(small)!="1")
-        throw std::runtime_error("FLAGFFT_IX_CTA_SMALL_RADICES must be 0 or 1");
-      if (std::string(small)=="1") {
-        if (!portable)
-          throw std::runtime_error("small-radix IX FourStep CTA requires portable exchange");
-        factors = n==8192 ? std::vector<int64_t>{8,8,8,16}
-                          : std::vector<int64_t>{8,8,16,16};
-      }
+    const char *small = std::getenv("FLAGFFT_IX_CTA_SMALL_RADICES");
+    if (small && std::string(small)!="0" && std::string(small)!="1")
+      throw std::runtime_error("FLAGFFT_IX_CTA_SMALL_RADICES must be 0 or 1");
+    if (flag_or_default("FLAGFFT_IX_CTA_SMALL_RADICES",request.ix_fourstep_preset==7)) {
+      if (!portable)
+        throw std::runtime_error("small-radix IX FourStep CTA requires portable exchange");
+      factors = n==8192 ? std::vector<int64_t>{8,8,8,16}
+                        : std::vector<int64_t>{8,8,16,16};
     }
     if (const char *order = std::getenv("FLAGFFT_IX_CTA_RADIX_ORDER")) {
       if (std::string(order) != "0" && std::string(order) != "1" && std::string(order) != "2")
@@ -2904,8 +2906,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       std::string(fused_setting) != "1") {
     throw std::runtime_error("FLAGFFT_IX_FUSED_R2C must be 0 or 1");
   }
-  const bool packed_cta = n==16384 && batch==64 && fused_setting &&
-      std::string(fused_setting)=="1" && flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",false);
+  const bool packed_cta = n==16384 && batch==64 &&
+      (fused_setting ? std::string(fused_setting)=="1" : request.ix_fourstep_preset==8) &&
+      flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",request.ix_fourstep_preset==8);
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
@@ -2947,7 +2950,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       key.kind = KernelKind::LeafPackedR2C;
       mark_ix_warp_fft(key,request);
       return std::make_shared<CompiledRawR2CLeafNode>(
-          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
+          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request,request.ix_fourstep_preset>=7),
           build_raw_packed_real_twiddle(request, n));
     }
   }
@@ -3106,7 +3109,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             n,
             compile_kernel(key),
             build_raw_packed_real_twiddle(request, n),
-            build_raw_leaf_tables(*leaf, packed_child->request),
+            build_raw_leaf_tables(*leaf, packed_child->request,request.ix_fourstep_preset>=7),
             [node, request, batch]() {
               TritonCompiler compiler;
               return compiler.compile_raw_c2r_node(node, request, batch, false);

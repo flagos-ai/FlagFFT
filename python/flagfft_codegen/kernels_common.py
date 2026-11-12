@@ -352,13 +352,20 @@ def _maca_knob(name: str, default: str = "") -> str:
                             MAX_PACK="16", RESOURCE_WARPS="1", VEC_IO="packed")
         preset = ix_fourstep_preset()
         if preset and current_profile().policy == "balanced":
-            defaults.update(PORTABLE_LEAF="0", RECURRENCE="1", VEC_IO="packed",
-                            SMEM_INTERLEAVE="1", TLE_DISJOINT_STAGE="1")
+            defaults.update(RECURRENCE="1", VEC_IO="packed")
+            if preset >= 7:
+                defaults.update(PORTABLE_LEAF="1", WARPS="16" if preset==7 else "8",
+                                BATCH_PACK="1")
+            else:
+                defaults.update(PORTABLE_LEAF="0", SMEM_INTERLEAVE="1", TLE_DISJOINT_STAGE="1")
             if preset <= 4:
                 defaults.update(WARPS="4", TLE_INNER_PACK="32" if preset in {1,4} else "16",
                                 TLE_IO_LAYOUT="0" if preset==2 else "1")
-            else:
-                defaults.update(TLE_INNER_PACK="4", TLE_DISJOINT_MIXED="1", RADER_CODELET="1")
+            elif preset <= 6:
+                defaults.update(TLE_INNER_PACK="4", TLE_DISJOINT_MIXED="1",
+                                RADER_CODELET="0" if preset==5 else "1")
+                if preset==5:
+                    defaults.update(REAL_BOUNDARY_BLOCK="256")
         return os.environ.get(f"FLAGFFT_IX_{name}", defaults.get(name, default)).strip().lower()
     if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
         npu_env_name = {
