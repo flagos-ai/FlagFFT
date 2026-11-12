@@ -1319,7 +1319,8 @@ def _emit_stage_block(
     )
 
     lines: list[str] = []
-    if io_layout and stage==1 and io_mode.endswith("_row"):
+    if io_layout and ((stage==1 and io_mode.endswith("_row")) or
+                      (stage==0 and io_mode.endswith("_col"))):
         # Shared memory separates the two register mappings: adjacent threads
         # read adjacent input FFT slots, then write adjacent output frequencies.
         inner_count=four_step_n2 if io_mode.endswith("_row") else four_step_n1
@@ -1328,6 +1329,17 @@ def _emit_stage_block(
             f"    lane = lane_vec % {lane_block}",
             "    four_step_inner = four_step_inner_base + inner_slot",
             f"    lane_mask = (lane < {current_lanes}) & (four_step_inner < {inner_count})",
+            "    base_lane_mask = lane_mask",
+            f"    smem_offset = inner_slot * {exchange_slot_stride}",
+        ])
+    elif io_layout and stage==1 and io_mode.endswith("_col"):
+        # Column input is frequency-major within each FFT slot; column output
+        # is slot-major within each frequency. Reverse the row-pass mapping.
+        lines.extend([
+            f"    inner_slot = lane_vec % {inner_pack}",
+            f"    lane = lane_vec // {inner_pack}",
+            "    four_step_inner = four_step_inner_base + inner_slot",
+            f"    lane_mask = (lane < {current_lanes}) & (four_step_inner < {four_step_n1})",
             "    base_lane_mask = lane_mask",
             f"    smem_offset = inner_slot * {exchange_slot_stride}",
         ])
