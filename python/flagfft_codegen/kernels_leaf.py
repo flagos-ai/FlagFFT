@@ -1370,7 +1370,7 @@ def _emit_stage_block(
         # The bounded mixed-radix experiment enumerates every store group so
         # the LLVM dependence check can still require an acyclic function.
         mixed_disjoint = (_ix_backend_active() and dtype == "complex64"
-                          and n in {425,780,1560}
+                          and n in {221,425,780,1500,1560}
                           and _maca_knob("TLE_DISJOINT_STAGE","0") == "1"
                           and _maca_knob("TLE_DISJOINT_MIXED","0") == "1")
         loop = "static_range" if mixed_disjoint else "range"
@@ -3338,7 +3338,7 @@ def _build_leaf_kernel_source_for_io(
         and ((64<=n<=256 and len(factors)==2
               and all(radix & (radix-1)==0 for radix in factors)
               and all(n==radix*lanes for radix,lanes in zip(factors,stage_lanes)))
-             or (n in {425,780,1560} and 2<=len(factors)<=3
+             or (n in {221,425,780,1500,1560} and 2<=len(factors)<=3
                  and all(n % (radix*lanes)==0 for radix,lanes in zip(factors,stage_lanes))
                  and _maca_knob("TLE_DISJOINT_MIXED","0")=="1"))
         and (io_mode.startswith("four_step_") or io_mode.startswith("bluestein_four_step_"))
