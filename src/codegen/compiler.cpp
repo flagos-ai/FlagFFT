@@ -2707,6 +2707,22 @@ namespace {
     if (hcu_fused && std::dynamic_pointer_cast<LeafPlanNode>(child_plan) == nullptr) {
       return std::nullopt;
     }
+    if (hcu_fused && ((n / 2) & (n / 2 - 1)) == 0) {
+      auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(child_plan);
+      std::vector<int64_t> factors;
+      for (int64_t remaining = n / 2; remaining > 1;) {
+        const int64_t radix = remaining % 8 == 0 ? 8 : (remaining % 4 == 0 ? 4 : 2);
+        factors.push_back(radix);
+        remaining /= radix;
+      }
+      const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
+      // Fill a 64-lane HCU wave instead of serialising a large radix-32
+      // codelet in a few lanes. Keep plans already spanning a wave intact.
+      if (leaf->lanes < 64 && lanes >= 64) {
+        child_plan = std::make_shared<LeafPlanNode>(n / 2, factors, 1, lanes,
+            child_builder.choose_num_warps(lanes), std::vector<int64_t>{}, leaf->smem_size);
+      }
+    }
     if (use_npu_packed_mixed_real(request,n,batch) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(child_plan)) {

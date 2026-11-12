@@ -3359,6 +3359,10 @@ def _build_leaf_kernel_source_for_io(
         )
     else:
         batch_pack = 1
+    if _hcu_backend_active() and io_mode == "packed_r2c":
+        # The HCU fused boundary is selected for one transform. Packing
+        # inactive rows enlarges both FFT exchange and reconstruction LDS.
+        batch_pack = 1
     row_modes = {
         "four_step_row",
         "four_step_row_strided",
