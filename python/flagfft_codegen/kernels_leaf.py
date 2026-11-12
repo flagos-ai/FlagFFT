@@ -794,37 +794,6 @@ def _emit_exchange_store(
     ]
 
 
-def _emit_joined_tle_store(indent: str, buffer: str, indices: list[str],
-                           vector_block: int, stage: int) -> list[str]:
-    """Write disjoint butterfly outputs as one operation per shared buffer."""
-    count=len(indices)
-    padded=1 << (count-1).bit_length()
-    prefix=f"tle_join_s{stage}"
-    lines=[f"{indent}{prefix}_zero = tl.full(({vector_block},),0.0,tl.float32)",
-           f"{indent}{prefix}_zero_idx = tl.full(({vector_block},),0,tl.int32)"]
-    def join(kind, values, positions):
-        if len(positions)==1: return values[positions[0]]
-        lhs=join(kind,values,positions[::2])
-        rhs=join(kind,values,positions[1::2])
-        name=prefix+'_'+kind+'_'+ '_'.join(map(str,positions))
-        lines.append(f"{indent}{name} = tl.join({lhs},{rhs})")
-        return name
-    groups={
-        'r':[f"r{j}" if j<count else prefix+'_zero' for j in range(padded)],
-        'i':[f"i{j}" if j<count else prefix+'_zero' for j in range(padded)],
-        'idx':[f"({indices[j]}).to(tl.int32)" if j<count else prefix+'_zero_idx' for j in range(padded)],
-    }
-    for kind,values in groups.items():
-        value=join(kind,values,list(range(padded)))
-        lines.append(f"{indent}{prefix}_{kind} = tl.reshape({value},({vector_block},{padded}))")
-    lines.extend([
-        f"{indent}{prefix}_mask = lane_mask[:,None] & (tl.arange(0,{padded})[None,:] < {count})",
-        f"{indent}tl.store(tle.gpu.local_ptr({buffer}_r,({prefix}_idx,)),{prefix}_r,mask={prefix}_mask)",
-        f"{indent}tl.store(tle.gpu.local_ptr({buffer}_i,({prefix}_idx,)),{prefix}_i,mask={prefix}_mask)",
-    ])
-    return lines
-
-
 def _portable_exchange_lane_floor(smem_pack: int) -> int:
     """Lane block needed for the exchange tensor to span more than one warp.
 
@@ -1989,13 +1958,6 @@ def _emit_stage_block(
             )
         )
 
-    join_tle = (
-        not is_last and not portable_exchange and _ix_backend_active()
-        and dtype=="complex64" and inner_pack>1
-        and (io_mode.startswith("four_step_") or io_mode.startswith("bluestein_four_step_"))
-        and _maca_knob("TLE_JOIN_STORE","0")=="1"
-    )
-    joined_indices=[]
     for j in range(radix):
         if is_last:
             if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
@@ -2465,18 +2427,18 @@ def _emit_stage_block(
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
                 store_index = f"smem_dst{j}"
-            if join_tle:
-                joined_indices.append(store_index)
-            else:
-                lines.extend(
-                    _emit_exchange_store(
-                        indent,dest_buffer,store_index,j,f"r{j}",f"i{j}",portable_exchange,
-                    )
+            lines.extend(
+                _emit_exchange_store(
+                    indent,
+                    dest_buffer,
+                    store_index,
+                    j,
+                    f"r{j}",
+                    f"i{j}",
+                    portable_exchange,
                 )
+            )
 
-    if join_tle:
-        lines.extend(_emit_joined_tle_store(indent,dest_buffer,joined_indices,
-                                          lane_block*smem_pack,stage))
     if portable_exchange:
         buffer = (
             "packed" if is_last and io_mode == "packed_r2c" else
