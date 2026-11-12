@@ -12,15 +12,15 @@ from test_npu_structured_fft import Pointer,execute_module,roots
 @pytest.mark.parametrize('batch_reuse',[1,8,32])
 @pytest.mark.parametrize('factors,middle_radix8',[((64,32,128),False),((64,64,128),False),((64,64,128),True)])
 @pytest.mark.parametrize('mode',['forward','inverse','global_inverse'])
-def test_complete_fft(tmp_path,factors,mode,batch_reuse,middle_radix8):
+def test_complete_fft(tmp_path,factors,mode,batch_reuse,middle_radix8,first_batch=1,execution_batch=2):
     global_inverse=mode=='global_inverse'
     direction='inverse' if global_inverse else mode
     sign=1 if direction=='inverse' and not global_inverse else -1
     source,specs=build(factors,direction,terminal8=True,global_inverse=global_inverse,
-                       workspace_padding=512,cube_finish=True,cube_finish_batch=batch_reuse,middle_radix8=middle_radix8)
+                       workspace_padding=512,cube_finish=True,cube_finish_batch=batch_reuse,middle_radix8=middle_radix8,first_batch=first_batch)
     path=tmp_path/'power.py';path.write_text(source);ns,pid=execute_module(path)
     ns['tl'].dot=lambda a,b,acc=None,**kw:(a.double()@b.double()+(acc.double() if acc is not None else 0)).float()
-    n=math.prod(factors);batch=2
+    n=math.prod(factors);batch=execution_batch
     torch.manual_seed(20261111);x=torch.randn(batch,n,2);saved=x.clone();current=x
     guard=torch.full((x.numel()+128,),31415.25)
     for stage,s in enumerate(specs):
@@ -122,3 +122,36 @@ def test_radix8_middle_metadata_and_geometry(tmp_path):
                         flat_power2=True,power_middle_radix8=True)
     with pytest.raises(ValueError,match='64-point middle'):
         build((64,32,128),workspace_padding=512,cube_finish=True,middle_radix8=True)
+
+
+@pytest.mark.parametrize('factors,mode,batch',[
+    ((64,32,128),'forward',17),
+    ((64,64,128),'global_inverse',17),
+    ((64,64,128),'inverse',3)])
+def test_first_pipeline_complete_fft(tmp_path,factors,mode,batch):
+    test_complete_fft(tmp_path,factors,mode,8,factors[1]==64,
+                      first_batch=16 if batch>8 else 8,execution_batch=batch)
+
+
+def test_first_pipeline_metadata_and_geometry(tmp_path):
+    options=dict(flat_power2=True,terminal8=True,workspace_padding=512,
+                 power_cube_finish=True,power_cube_batch=32,power_middle_radix8=True)
+    for phase in range(3):
+        old=emit_vector_dif((64,64,128),'forward',phase,tmp_path,**options)
+        text=Path(old['module_path']).read_text()
+        new=emit_vector_dif((64,64,128),'forward',phase,tmp_path,power_first_batch=8,**options)
+        assert old['module_path']!=new['module_path']
+        assert Path(old['module_path']).read_text()==text
+        assert new['batch_per_block']==(8 if phase==0 else old['batch_per_block'])
+        assert new['num_stages']==(2 if phase==0 else 1)
+        assert new['signature']==old['signature']+(',i32' if phase==0 else '')
+        assert new['kernel_name']==('axis_0_batch8' if phase==0 else old['kernel_name'])
+    for group in (0,2,4,32,True):
+        with pytest.raises(ValueError,match='Unsupported power first-axis batch group'):
+            build((64,64,128),workspace_padding=512,cube_finish=True,terminal8=True,first_batch=group)
+    with pytest.raises(ValueError,match='requires Cube finish'):
+        emit_vector_dif((64,64,128),'forward',0,tmp_path,flat_power2=True,power_first_batch=8)
+    with pytest.raises(ValueError,match='requires Cube finish'):
+        build((64,64,128),workspace_padding=512,first_batch=8)
+    # Even first axes use the same radix-four helper without terminal-eight.
+    build((64,32,128),workspace_padding=512,cube_finish=True,first_batch=16)

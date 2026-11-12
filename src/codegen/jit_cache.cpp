@@ -872,6 +872,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       phase.resize(phase.size()-11);
       jit_command << " --npu-vector-dif-global-inverse";
     }
+    const std::string first_batch_tag="_firstbatch";
+    const auto first_batch_pos=phase.rfind(first_batch_tag);
+    if (flat && first_batch_pos!=std::string::npos) {
+      const auto group=phase.substr(first_batch_pos+first_batch_tag.size());
+      if (group!="8" && group!="16")
+        throw std::runtime_error("Unsupported power first-axis batch group");
+      phase.resize(first_batch_pos);
+      jit_command << " --npu-vector-dif-power-first-batch " << group;
+    }
     const std::string middle_tag="_middle8";
     if (flat && phase.size()>=middle_tag.size() &&
         phase.compare(phase.size()-middle_tag.size(),middle_tag.size(),middle_tag)==0) {

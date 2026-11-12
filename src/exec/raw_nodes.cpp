@@ -3591,7 +3591,10 @@ std::string CompiledRawVectorDIFNode::describe() const {
     if (i) out << ',';
     out << factors[i];
   }
-  out << "], vector_axis_switch=1)";
+  out << "], vector_axis_switch=1";
+  if (!passes.empty() && passes.front().batch_pack>1)
+    out << ", first_batch=" << passes.front().batch_pack;
+  out << ')';
   return out.str();
 }
 

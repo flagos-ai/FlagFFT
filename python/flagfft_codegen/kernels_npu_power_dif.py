@@ -10,7 +10,7 @@ Twiddles and structured FFT roots share each pass's read-only table argument.
 import math
 from flagfft_codegen.kernels_npu_structured import FFT_HELPERS
 
-def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0,cube_finish=False,cube_finish_batch=1,middle_radix8=False):
+def build(factors,direction='forward',terminal8=False,global_inverse=False,workspace_padding=0,cube_finish=False,cube_finish_batch=1,middle_radix8=False,first_batch=1):
  if type(workspace_padding) is not int or workspace_padding not in (0,512):
   raise ValueError('Power DIF workspace padding must be 0 or 512 floats')
  if global_inverse and direction!='inverse':raise ValueError('Global inverse requires inverse DIF')
@@ -21,6 +21,10 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False,works
   raise ValueError('Power Cube finish requires bounded vector axes and padded workspace')
  if middle_radix8 and not (cube_finish and factors[1]==64):
   raise ValueError('Radix-eight middle axis requires a 64-point middle Cube-finish schedule')
+ if type(first_batch) is not int or first_batch not in (1,8,16):
+  raise ValueError('Unsupported power first-axis batch group')
+ if first_batch>1 and not cube_finish:
+  raise ValueError('First-axis batch pipeline requires Cube finish')
  n=math.prod(factors);workspace_n=n+workspace_padding;prefix=1;previous=1;specs=[]
  source='import triton\nimport triton.language as tl\nimport triton.language.extra.cann.extension as al\n'+FFT_HELPERS
  if terminal8 or middle_radix8:
@@ -34,6 +38,7 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False,works
   if r<4 or r>128 or r&(r-1):raise ValueError('Power DIF axes require radix 4..128')
   m=n//(prefix*r);c=4096//r;points=r*c;tiles=(m+c-1)//c if stage==0 else (m*prefix+c-1)//c
   name=f'axis_{stage}';last=stage==len(factors)-1
+  if stage==0 and first_batch>1:name+='_batch'+str(first_batch)
   selected_axis='power_fft64_8x8' if middle_radix8 and stage==1 else axis
   if middle_radix8 and stage==1:name+='_radix8'
   if last and cube_finish:
@@ -64,7 +69,18 @@ def build(factors,direction='forward',terminal8=False,global_inverse=False,works
    chunk=min(1024,points);rows=chunk//c
    for start in range(0,points,chunk):
     ls += [f'    pr=al.extract_slice(r,[{start}],[{chunk}],[1])',f'    pi=al.extract_slice(i,[{start}],[{chunk}],[1])',f'    out=tl.reshape(tl.join(pr,pi),({rows},{2*c}))',f'    freq=(tl.arange(0,{rows})+{start//c})[:,None]',f'    word=(tl.program_id(0)%{tiles}*{2*c}+tl.arange(0,{2*c}))[None,:]',f'    tl.store(Y+batch*{2*n}+freq*{2*prefix}+word,out,word<{2*prefix})']
+  if stage==0 and first_batch>1:
+   # Keep the 4096-element butterfly state fixed. A bounded batch loop gives
+   # the compiler consecutive independent inputs to double buffer in UB;
+   # the final group runs only its live batches, with no masked extra FFTs.
+   ls[1]=ls[1].replace('):',',NB):')
+   start=next(i for i,line in enumerate(ls) if line.strip().startswith('batch='))
+   ls=ls[:start]+[f'    begin=tl.program_id(1)*{first_batch}','    step=0',
+       f'    while step<tl.minimum({first_batch},NB-begin):',
+       '        batch=(begin+step).to(tl.int64)']+['    '+line for line in ls[start+1:]]+['        step+=1']
   source+='\n'+'\n'.join(ls)+'\n'
-  specs.append(dict(name=name,phase='early' if stage==0 else 'late',stage=stage,r=r,m=m,prefix=prefix,previous_prefix=previous,c=c,grid=(tiles,),physical_n=workspace_n))
+  spec=dict(name=name,phase='early' if stage==0 else 'late',stage=stage,r=r,m=m,prefix=prefix,previous_prefix=previous,c=c,grid=(tiles,),physical_n=workspace_n)
+  if stage==0 and first_batch>1:spec.update(batch_pack=first_batch,num_stages=2)
+  specs.append(spec)
   previous=prefix;prefix*=r
  return source,specs

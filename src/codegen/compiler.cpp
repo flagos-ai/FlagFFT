@@ -245,6 +245,15 @@ namespace {
     if (cube_finish) factors={64,middle,128};
     const bool middle_radix8=cube_finish && middle==64 &&
         flag_or_default("FLAGFFT_NPU_FLAT_POWER_MIDDLE_RADIX8",true);
+    // Pipeline independent first-axis inputs without enlarging the 4096-lane
+    // butterfly. Require enough complete groups to keep the Vector cores busy.
+    int64_t first_batch=1;
+    if (cube_finish && batch>=32 &&
+        flag_or_default("FLAGFFT_NPU_FLAT_POWER_FIRST_PIPELINE",true)) {
+      for (int64_t group:{16,8}) if ((n/4096)*(batch/group)>=256) {
+        first_batch=group;break;
+      }
+    }
     // Keep at least 128 independent full groups to amortize coefficient
     // loads without starving Cube cores. Short or sparse batches retain
     // the ungrouped finish; every admitted size uses the same rule.
@@ -311,6 +320,7 @@ namespace {
       if (cube_finish) key.perm_form+="_cubefinish";
       if (cube_batch>1) key.perm_form+="_cubebatch"+std::to_string(cube_batch);
       if (middle_radix8) key.perm_form+="_middle8";
+      if (first_batch>1) key.perm_form+="_firstbatch"+std::to_string(first_batch);
       if (global_inverse) key.perm_form+="_globalconj";
       int axis_bits=0;for (auto size=radix;size>1;size/=2) ++axis_bits;
       if (batch>=16 && axis_bits>=3 && axis_bits%2 &&
@@ -320,7 +330,7 @@ namespace {
       const int64_t extent=stage?m*prefix:m;
       const int64_t grid=matrix_finish?prefix/64:(extent+columns-1)/columns;
       passes.push_back({TritonCompiler{}.compile_kernel(key),DeviceAllocation::from_floats(weights),grid,1,false,
-                        matrix_finish?cube_batch:1});
+                        matrix_finish?cube_batch:stage==0?first_batch:1});
       previous_prefix=prefix;prefix*=radix;
     }
     const auto bytes=static_cast<std::size_t>(batch*workspace_n*2*sizeof(float));
