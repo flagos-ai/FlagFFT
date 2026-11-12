@@ -3327,9 +3327,12 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += f"_s{permutation_span}"
     disjoint_stage = (
         _ix_backend_active() and not portable_exchange and plan.dtype=="complex64"
-        and 64<=n<=256 and len(factors)==2 and inner_pack>1
-        and all(radix & (radix-1)==0 for radix in factors)
-        and all(n//(radix*lanes)==1 for radix,lanes in zip(factors,stage_lanes))
+        and inner_pack>1
+        and ((64<=n<=256 and len(factors)==2
+              and all(radix & (radix-1)==0 for radix in factors))
+             or (n in {425,780,1560} and 2<=len(factors)<=3
+                 and _maca_knob("TLE_DISJOINT_MIXED","0")=="1"))
+        and all(n==radix*lanes for radix,lanes in zip(factors,stage_lanes))
         and (io_mode.startswith("four_step_") or io_mode.startswith("bluestein_four_step_"))
         and not io_mode.endswith("_strided")
         and _maca_knob("TLE_DISJOINT_STAGE","0")=="1"

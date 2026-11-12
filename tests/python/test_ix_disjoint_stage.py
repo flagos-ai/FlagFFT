@@ -1,5 +1,25 @@
 """Dependence boundaries for the narrow, optional CoreX FFT postpass."""
 from flagfft_codegen.ix_disjoint_stage import rewrite_disjoint_writes
+import math
+
+
+def test_mixed_stage_writes_are_bijections_before_fence_removal():
+    from flagfft_codegen.kernels_leaf import _emit_route_base, _emit_route_index
+    class ScalarLanguage:
+        @staticmethod
+        def where(condition, yes, no):
+            return yes if condition else no
+    for factors in ((25,17),(12,13,5),(24,13,5)):
+        n=math.prod(factors)
+        for stage in range(len(factors)-1):
+            addresses=[]
+            for lane in range(n//factors[stage]):
+                env={'tl':ScalarLanguage,'lane_mask':True,'lane':lane,'group':0}
+                exec('\n'.join(_emit_route_base('',stage,factors,n//factors[stage],'group')),env)
+                for digit in range(factors[stage]):
+                    exec('\n'.join(_emit_route_index('','dst',stage,factors,n//factors[stage+1],digit)),env)
+                    addresses.append(env['dst'])
+            assert sorted(addresses)==list(range(n))
 
 
 def ir(middle='',tail='',debug=True):

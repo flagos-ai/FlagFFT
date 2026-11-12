@@ -1,7 +1,7 @@
-"""Narrow CoreX postpass for disjoint writes in generated two-stage FFTs.
+"""Narrow CoreX postpass for disjoint writes in generated FFT stages.
 
-The generator opts in only small power-of-two FourStep leaves with one
-butterfly group per stage. Their intermediate stores form a permutation of
+The generator opts in only bounded FourStep leaves with one butterfly group
+per stage. Their intermediate stores form a permutation of
 independent (FFT slot, frequency) addresses. Preserve all read/write fences;
 only adjacent write-only intervals can lose an implicit write/write fence.
 """
