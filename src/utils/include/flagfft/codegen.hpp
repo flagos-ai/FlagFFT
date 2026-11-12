@@ -1825,6 +1825,7 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
                                                    bool portable_default = false);
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
+bool ix_real_single_pack_policy_enabled(const FFTRequest &request);
 bool ix_ct_batch_policy_enabled(const FFTRequest &request);
 bool ix_packed_real_policy_enabled(const FFTRequest &request);
 int ix_ct_single_tle_policy(const FFTRequest &request);

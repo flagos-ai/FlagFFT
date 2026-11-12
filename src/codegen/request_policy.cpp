@@ -86,6 +86,19 @@ int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
   return 16;
 }
 
+bool ix_real_single_pack_policy_enabled(const FFTRequest &request) {
+  return request.device_type == "ix" && request.device_arch == "71" &&
+                         request.raw_dim == 1 && request.origin_rank <= 1 &&
+                         request.batch == 1 &&
+                         (request.requested_n == 210 || request.requested_n == 1024 ||
+                          request.requested_n == 2048) &&
+                         request.fft_length == request.requested_n && request.input_dtype == "complex64" &&
+                         request.output_dtype == "complex64" &&
+                         (request.real_transform_kind == "r2c" ||
+                          request.real_transform_kind == "c2r") &&
+                         !request.input_strides.empty() && request.input_strides.back() == 1;
+}
+
 bool ix_ct_single_policy_enabled(const FFTRequest &request) {
   if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
       request.batch != 1 || request.fft_length != request.requested_n ||

@@ -504,3 +504,30 @@ TEST(IXLeafPlan, ExplicitBatchedRaderUsesBalancedConvolutionAndKeepsOtherRequest
     request.origin_rank=1;
   }
 }
+
+TEST(IXLeafPlan, SingleRealDefaultsStayAtThePublicContiguousFP32Boundary) {
+  flagfft::FFTRequest request;
+  request.device_type="ix"; request.device_arch="71";
+  request.input_dtype=request.output_dtype="complex64";
+  request.batch=1; request.raw_dim=request.origin_rank=1;
+  request.input_strides={1}; request.real_transform_kind="c2r";
+  for (int64_t n : {210,1024,2048}) {
+    request.fft_length=request.requested_n=n;
+    for (const auto &kind : {"c2r","r2c"}) {
+      request.real_transform_kind=kind;
+      EXPECT_TRUE(flagfft::ix_real_single_pack_policy_enabled(request));
+      auto other=request; other.origin_rank=3;
+      EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
+      other=request; other.batch=64;
+      EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
+      other=request; other.device_type="maca";
+      EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
+      other=request; other.input_dtype=other.output_dtype="complex128";
+      EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
+      other=request; other.input_strides={2};
+      EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
+      other=request; other.real_transform_kind="";
+      EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
+    }
+  }
+}
