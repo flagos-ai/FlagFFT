@@ -523,6 +523,11 @@ def _emit_r2c_pointwise_jit_kernel(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     arg_names = list(getattr(module, kernel_name).arg_names)
+    column_block=256
+    if kernel in {"r2c_packed_postprocess","c2r_packed_preprocess"}:
+        from .kernels_real import packed_real_boundary_block, _packed_layout
+        width=n//2 + (1 if kernel=="r2c_packed_postprocess" else 0)
+        column_block,_=_packed_layout(width,packed_real_boundary_block(n,dtype))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -536,7 +541,7 @@ def _emit_r2c_pointwise_jit_kernel(
         "length": int(n),
         # `block` is the column extent used by raw_nodes.cpp to build grid.x;
         # `rows_per_block` carries the selected row grouping in grid.y.
-        "block": 256,
+        "block": column_block,
         "rows_per_block": int(rows_per_block),
     }
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))

@@ -107,6 +107,7 @@ struct JitKernel {
   int64_t batch_per_block = 1;
   int64_t inner_pack = 1;
   int64_t rows_per_block = 1;
+  int64_t column_block = 256;
   int64_t butterflies_per_block = 128;
   int64_t grid_x_override = 0;
   int64_t grid_y_override = 0;

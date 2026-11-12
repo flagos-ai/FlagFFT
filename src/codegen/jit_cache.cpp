@@ -647,6 +647,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     kernel->rows_per_block = json_int_field(artifact_json, "rows_per_block");
+    if (key.kind==KernelKind::R2CPackedPostprocess || key.kind==KernelKind::C2RPackedPreprocess) {
+      kernel->column_block=json_int_field(artifact_json,"block");
+      if (kernel->column_block<=0) throw std::runtime_error("invalid packed-real column block");
+    }
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
       key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||

@@ -1998,8 +1998,8 @@ namespace {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_WARPS=8, 16 or 32");
     }
     const char *batch_pack = std::getenv("FLAGFFT_IX_BATCH_PACK");
-    if (!batch_pack || std::string(batch_pack)!="1") {
-      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_BATCH_PACK=1");
+    if (!batch_pack || (std::string(batch_pack)!="1" && std::string(batch_pack)!="2")) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_BATCH_PACK=1 or 2");
     }
     const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
     if (!portable_setting || (std::string(portable_setting) != "0" &&
@@ -2007,6 +2007,9 @@ namespace {
       throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires explicit FLAGFFT_IX_PORTABLE_LEAF=0 or 1");
     }
     const bool portable = std::string(portable_setting) == "1";
+    const int64_t cta_batch_pack=std::stoll(batch_pack);
+    if (cta_batch_pack==2 && (!portable || n!=8192 || std::string(warps)!="16"))
+      throw std::runtime_error("paired IX FourStep CTA requires portable 8192-point FFTs and 16 warps");
     int exponent = 0;
     for (int64_t value = n; value > 1; value >>= 1) ++exponent;
     std::vector<int64_t> factors;
@@ -2025,7 +2028,7 @@ namespace {
     const int64_t joined_bytes = portable
         ? (n / factors.back()) * factors.front() * static_cast<int64_t>(sizeof(float))
         : n * (n == 8192 ? 4 : 2) * static_cast<int64_t>(sizeof(float));
-    if (joined_bytes > adaptor::max_dynamic_smem_bytes(request.device_index)) return nullptr;
+    if (joined_bytes * cta_batch_pack > adaptor::max_dynamic_smem_bytes(request.device_index)) return nullptr;
     const int64_t lanes = portable ? 128 : n / factors.front();
     return std::make_shared<LeafPlanNode>(n, std::move(factors), 1, lanes, 16,
                                            std::vector<int64_t>{}, n);

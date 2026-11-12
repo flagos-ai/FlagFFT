@@ -1893,7 +1893,7 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
-    constexpr int64_t block = 256;
+    const int64_t block = postprocess_kernel ? postprocess_kernel->column_block : 256;
     const int64_t packed = length / 2;
     const int64_t half = packed + 1;
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
@@ -2268,7 +2268,7 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
-    constexpr int64_t block = 256;
+    const int64_t block = preprocess_kernel ? preprocess_kernel->column_block : 256;
     const int64_t packed = length / 2;
     const int64_t half = packed + 1;
     const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
