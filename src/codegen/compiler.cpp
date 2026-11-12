@@ -2033,6 +2033,12 @@ namespace {
       count *= length;
     }
     if (count > 4096 || (shape.size() != 2 && shape.size() != 3)) return nullptr;
+    // Reconstructing a compact 3-D spectrum needs more live index and data
+    // vectors than the complex or forward-real tensor kernels. Limit this
+    // fusion to a smaller working set so it fits the 910B unified buffer;
+    // larger volumes use the existing plane or axis decomposition.
+    if (shape.size() == 3 && mode == NpuAivFFTSmallMode::RealInverse && count > 2048)
+      return nullptr;
     std::vector<float> values;
     for (auto length : shape) {
       auto axis = npu_structured_root_values(length, count / length);
