@@ -40,6 +40,17 @@ def cuda_source_profile():
     reset_profile(token)
 
 
+@pytest.fixture
+def maca_source_profile(cuda_source_profile):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    token = set_profile(BackendProfile(
+        backend="maca", device_arch="source-contract", warp_size=64
+    ))
+    yield
+    reset_profile(token)
+
+
 @pytest.fixture(scope="module")
 def kernels():
     pytest.importorskip("triton")
@@ -92,17 +103,22 @@ def test_fused_32_real_plane_kernel_source(tmp_path, dtype, direction) -> None:
     assert metadata["kernel_type"] == "fused_32_real_plane"
     assert metadata["kernel_name"] == "fused_32_real_plane_fft_kernel"
     assert metadata["arg_names"] == ["in_ptr", "out_ptr", "tw_r_ptr", "tw_i_ptr"]
-    expected_variant = "fused_32_r2c" if direction == "forward" else "fused_32_c2r"
-    assert expected_variant in metadata["module_path"]
+    suffix = "f32" if dtype == "complex64" else "f64"
+    assert Path(metadata["module_path"]).name == (
+        f"flagfft_jit_fused_32_real_plane_{direction}_{suffix}.py"
+    )
+    assert metadata["num_warps"] == 8
     assert "idx = tl.arange(0, 1024)" in source
     if direction == "forward":
-        assert "keep = col <= 16" in source
         assert "row * 17 + col" in source
-        assert "mask=keep" in source
+        assert "mask=col < 17" in source
+        scalar = "tl.float32" if dtype == "complex64" else "tl.float64"
+        assert f"xi = tl.full((1024,), 0.0, {scalar})" in source
     else:
-        assert "mirrored = logical_col > 16" in source
-        assert "(-logical_row) & 31" in source
-        assert "dst = plane * 32 * 32 + idx" in source
+        assert "reflected = rev_col >= 17" in source
+        assert "src_row = tl.where(reflected, (32 - rev_row) % 32, rev_row)" in source
+        assert "xi = tl.where(reflected, -xi, xi)" in source
+        assert "dst = plane * 1024 + idx" in source
 
 
 
@@ -1408,10 +1424,11 @@ def test_tiled_transpose3d_pair_slice_row_group_emits_independent_tiles() -> Non
     assert grid_x_group4 == 128 * 4 * 16
 
 
-def test_maca_pair16_slice_row_group_codegen_is_opt_in(tmp_path, monkeypatch) -> None:
-    from flagfft_codegen import emit, kernels_common
+def test_maca_pair16_slice_row_group_codegen_is_opt_in(
+    maca_source_profile, tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit
 
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
     monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16sg2rg2")
@@ -1434,10 +1451,11 @@ def test_maca_pair16_slice_row_group_codegen_is_opt_in(tmp_path, monkeypatch) ->
     assert fp64_metadata["kernel_name"].endswith("_tile_vec")
 
 
-def test_maca_pair16_row_group_only_codegen_screen(tmp_path, monkeypatch) -> None:
-    from flagfft_codegen import emit, kernels_common
+def test_maca_pair16_row_group_only_codegen_screen(
+    maca_source_profile, tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit
 
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
     monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16rg2")
@@ -1462,10 +1480,11 @@ def test_maca_pair16_row_group_only_codegen_screen(tmp_path, monkeypatch) -> Non
     assert fp64_metadata["num_warps"] == 4
 
 
-def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch) -> None:
-    from flagfft_codegen import emit, kernels_common
+def test_maca_transpose3d_row_major_tile_traversal_codegen(
+    maca_source_profile, tmp_path, monkeypatch
+) -> None:
+    from flagfft_codegen import emit
 
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
     monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
@@ -1482,11 +1501,10 @@ def test_maca_transpose3d_row_major_tile_traversal_codegen(tmp_path, monkeypatch
 
 
 def test_maca_256_cube_pair_slice_group_is_scoped_to_pair16_eight_warps(
-    tmp_path, monkeypatch
+    maca_source_profile, tmp_path, monkeypatch
 ) -> None:
-    from flagfft_codegen import emit, kernels_common
+    from flagfft_codegen import emit
 
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
     monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
@@ -1514,11 +1532,10 @@ def test_maca_256_cube_pair_slice_group_is_scoped_to_pair16_eight_warps(
 
 
 def test_maca_long_complex64_transpose_defaults_to_row_tile_traversal(
-    tmp_path, monkeypatch
+    maca_source_profile, tmp_path, monkeypatch
 ) -> None:
-    from flagfft_codegen import emit, kernels_common
+    from flagfft_codegen import emit
 
-    monkeypatch.setattr(kernels_common, "_declared_backend", lambda: "maca")
     monkeypatch.setattr(emit, "_transpose3d_v2_supported", lambda: False)
     monkeypatch.setattr(emit, "_portable_transpose3d_supported", lambda: True)
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")

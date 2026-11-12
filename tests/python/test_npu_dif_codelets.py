@@ -58,8 +58,9 @@ def test_dif_codelet_accumulated_error(radix,depth):
 
 
 @pytest.mark.parametrize('direction',['forward','inverse'])
-def test_dif_codelet_selection_survives_layout_wrappers(direction):
+def test_dif_codelet_selection_survives_layout_wrappers(direction,monkeypatch):
     from flagfft_codegen.kernels_npu_dif_cube import build_cube_prefix_dif
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_FUSED_FINISH','1')
     args=dict(vector_first17=True,batch_pack=True,vector_second15=True,matrix_first17=True,
               prefix_pitch=32,global_inverse=direction=='inverse')
     old,old_specs=build_cube_prefix_dif((17,15,13,7,8),direction,**args)

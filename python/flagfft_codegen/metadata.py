@@ -277,8 +277,9 @@ def _metadata(
         num_warps = max(num_warps, cooperative_warps)
     if "_thread_local_" in kernel_name:
         num_warps = 4
-    if maca_backend:
-        # One warp triggers unsupported shuffle lowering in multi-stage leaves.
+    if maca_backend and not _ix_backend_active():
+        # One warp triggers unsupported shuffle lowering on MACA. IX shares
+        # portable exchange code but validates its own warp override below.
         num_warps = max(2, num_warps)
         warp_override = _maca_knob("WARPS")
         if warp_override:

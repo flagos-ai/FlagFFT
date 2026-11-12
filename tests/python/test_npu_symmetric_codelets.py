@@ -1,4 +1,5 @@
 """Check fixed convolutions, cancellation inputs and accumulated FP32 error."""
+import numpy as np
 import pytest
 
 torch=pytest.importorskip('torch')
@@ -37,7 +38,8 @@ def test_repeated_symmetric_axes(radix,depth):
     got=x
     for axis in range(depth):
         got=transform(got.movedim(axis,0),radix).movedim(0,axis)
-    expected=torch.fft.fftn(x.to(torch.complex128))
+    # NumPy supports the rank-eight case that some Torch/MKL builds reject.
+    expected=torch.from_numpy(np.fft.fftn(x.numpy().astype(np.complex128)))
     assert torch.linalg.vector_norm(got-expected)/torch.linalg.vector_norm(expected)<5e-7
 
 

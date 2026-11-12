@@ -245,7 +245,7 @@ def test_leaf_producer_consumer_and_source_size(
     monkeypatch.setattr(
         leaf, "contiguous_batch_pack_for", lambda plan, **kwargs: pack
     )
-    monkeypatch.setattr(leaf, "permuted_store_batch_pack_for", lambda plan: pack)
+    monkeypatch.setattr(leaf, "permuted_store_batch_pack_for", lambda plan, **kwargs: pack)
     monkeypatch.setattr(leaf, "four_step_row_inner_pack_for", lambda *args: pack)
     monkeypatch.setattr(leaf, "four_step_col_inner_pack_for", lambda *args: pack)
     monkeypatch.setattr(
