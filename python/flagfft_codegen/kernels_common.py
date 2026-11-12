@@ -1025,8 +1025,7 @@ def _bounded_inner_pack(
     # Keep this tighter allocation bound explicit while screening IX tiles.
     buffers = 4
     padded_elements = plan.smem_size + extra_smem_elements
-    if (_ix_backend_active() and any(_maca_knob(key) for key in
-            ("TLE_INNER_PACK", "TLE_ROW_PACK", "TLE_COL_PACK"))
+    if (_ix_backend_active() and _maca_knob("TLE_INNER_PACK")
             and not _portable_leaf_backend_active()):
         buffers = 2 if len(plan.factors) == 2 else 4
         padded_elements = lane_block_for(plan.smem_size)
@@ -1037,10 +1036,8 @@ def _bounded_inner_pack(
 
 
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
-    if _ix_backend_active() and not _portable_leaf_backend_active():
-        pack = _maca_knob("TLE_COL_PACK", _maca_knob("TLE_INNER_PACK"))
-        if pack:
-            return _bounded_inner_pack(_positive_knob("TLE_COL_PACK", pack), plan)
+    if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
+        return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
     # HCU's FP32 1024-point leaves benefit from using the exact unpadded
     # four-step stride: pack four fills 64 KiB and improved the measured
     # large C2R cases.  Keep the generic 64-byte margin for FP64; pack two
@@ -1059,10 +1056,8 @@ def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
 
 
 def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
-    if _ix_backend_active() and not _portable_leaf_backend_active():
-        pack = _maca_knob("TLE_ROW_PACK", _maca_knob("TLE_INNER_PACK"))
-        if pack:
-            return _bounded_inner_pack(_positive_knob("TLE_ROW_PACK", pack), plan)
+    if _ix_backend_active() and _maca_knob("TLE_INNER_PACK") and not _portable_leaf_backend_active():
+        return _bounded_inner_pack(_positive_knob("TLE_INNER_PACK", _maca_knob("TLE_INNER_PACK")), plan)
     extra_smem_elements = (
         0
         if current_profile().backend == "hcu" and not _is_double_dtype(dtype)
