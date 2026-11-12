@@ -30,6 +30,7 @@ def selected_options(monkeypatch):
     # Isolate the prefix policy's two-pass reduction. The subsequent late
     # pair fusion has its own admission and live-execution checks.
     monkeypatch.setenv('FLAGFFT_NPU_DIF_DENSE_LATE_PAIR', '0')
+    monkeypatch.setenv('FLAGFFT_NPU_DIF_MATRIX_CHAIN', '0')
 
 
 @pytest.fixture(scope='module')

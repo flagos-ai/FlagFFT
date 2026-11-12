@@ -3596,6 +3596,8 @@ std::string CompiledRawVectorDIFNode::describe() const {
     out << ", first_batch=" << passes.front().batch_pack;
   if (!passes.empty() && passes.front().kernel->kernel_name.find("_prephase")!=std::string::npos)
     out << ", first_phase=1";
+  if (passes.size()==3 && passes[1].kernel->kernel_name=="matrix_middle26_batch")
+    out << ", matrix_suffix=26x" << factors.back();
   out << ')';
   return out.str();
 }

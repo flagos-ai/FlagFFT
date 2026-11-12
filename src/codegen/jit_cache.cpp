@@ -803,6 +803,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     std::string phase=key.perm_form.substr(coarse?22:flat?27:cube?28:aligned?23:15);
     if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
       phase.resize(phase.size()-5);
+    const std::string chain_tag="_matrixchain";
+    const auto chain_pos=phase.rfind(chain_tag);
+    if (cube && chain_pos!=std::string::npos) {
+      const auto columns=phase.substr(chain_pos+chain_tag.size());
+      if (columns!="128" && columns!="256")
+        throw std::runtime_error("Unsupported matrix-chain columns");
+      phase.resize(chain_pos);
+      jit_command << " --npu-vector-dif-matrix-chain-columns " << columns;
+    }
     const std::string late_batch_tag="_latepairbatch8";
     if (phase.size()>=late_batch_tag.size() &&
         phase.compare(phase.size()-late_batch_tag.size(),late_batch_tag.size(),late_batch_tag)==0) {
@@ -994,6 +1003,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       ((kernel->kernel_name == "dense_prefix_half" &&
         key.perm_form.find("_dense_batch_f") != std::string::npos) ||
        kernel->kernel_name == "coarse_dense_prefix" ||
+       kernel->kernel_name == "matrix_chain_finish_batch" ||
        kernel->kernel_name == "power_cube_finish" ||
        kernel->kernel_name == "power_cube_finish_batch");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");

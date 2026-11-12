@@ -642,6 +642,19 @@ namespace {
         n/initial_prefix>=512 && n/initial_prefix<=4096 &&
         flag_or_default("FLAGFFT_NPU_DIF_BATCH_DENSE_PREFIX",true);
     const bool dense_prefix=dense_single || dense_batch;
+    // Consume the prime-13 axis together with one factor of two. A bounded
+    // terminal matrix then replaces the remaining small-radix passes. This
+    // admission depends on factorization, padding and parallel batch groups.
+    // Fill at least three quarters of the first 64-frequency tile and keep
+    // the existing 13 x 7 fusion when that suffix is already available.
+    const int64_t matrix_tail=n%(255*26)==0?n/(255*26):0;
+    const bool matrix_chain=dense_batch && batch>=32 && factors.size()>=5 &&
+        factors[2]==13 && factors[3]!=7 &&
+        matrix_tail>=48 && matrix_tail<=128 &&
+        matrix_tail*(batch/8)>=192 &&
+        flag_or_default("FLAGFFT_NPU_DIF_MATRIX_CHAIN",true);
+    constexpr int64_t matrix_columns=256;
+    if (matrix_chain) factors={17,15,13,2,matrix_tail};
     // A 13 x 7 suffix fits one 128-lane matrix basis. Fuse it directly
     // after the dense producer, before the physical prefix has expanded.
     const bool late_pair=dense_batch && factors.size()>=5 && factors[2]*factors[3]==91 &&
@@ -668,15 +681,16 @@ namespace {
       if (batch_pack) key.perm_form+="_batchpack";
       if (global_inverse) key.perm_form+="_globalconj";
       if (matrix_first17) key.perm_form+="_half17";
-      if (prefix_pitch && (passes.size()==1 || passes.size()==2)) key.perm_form+="_pitch32";
+      if (prefix_pitch && !matrix_chain && (passes.size()==1 || passes.size()==2)) key.perm_form+="_pitch32";
       if (dense_batch) key.perm_form+="_dense_batch_f"+std::to_string(dense_frequencies)+
           "_c"+std::to_string(dense_columns);
       else if (dense_single) key.perm_form+="_dense_short";
       if (codelet_reuse) key.perm_form+="_codeletreuse";
-      if (finish_batch4) key.perm_form+="_finishbatch4";
+      if (finish_batch4 && !matrix_chain) key.perm_form+="_finishbatch4";
       if (vector_basis) key.perm_form+="_vectorbasis";
       if (late_pair) key.perm_form+="_latepair91";
       if (late_pair_batch>1) key.perm_form+="_latepairbatch8";
+      if (matrix_chain) key.perm_form+="_matrixchain"+std::to_string(matrix_columns);
       if ((dense_prefix && passes.empty()) || (matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
@@ -684,6 +698,49 @@ namespace {
         key.perm_form+="_auto";
       passes.push_back({TritonCompiler{}.compile_kernel(key),std::move(weights),x,y,transpose,packed});
     };
+    if (matrix_chain) {
+      constexpr int64_t frequencies=64, coefficient_words=2*2*frequencies*256;
+      std::vector<float> first(coefficient_words+2*workspace_length,0.0f);
+      const double first_sign=request.direction=="inverse"?1.0:-1.0;
+      for (int64_t t=0;t<2;++t)for(int64_t f=0;f<64;++f)for(int64_t d=0;d<255;++d) {
+        const double angle=first_sign*2*kPi*(t*64+f)*d/255;
+        first[t*32768+f*256+d]=static_cast<float>(std::cos(angle));
+        first[t*32768+(64+f)*256+d]=static_cast<float>(std::sin(angle));
+      }
+      for (int64_t index=0;index<workspace_length;++index) {
+        const int64_t frequency=index%256,sample=index/256;
+        const double angle=sign*2*kPi*static_cast<double>(frequency)*sample/n;
+        first[coefficient_words+index]=static_cast<float>(std::cos(angle));
+        first[coefficient_words+workspace_length+index]=static_cast<float>(std::sin(angle));
+      }
+      append(DeviceAllocation::from_floats(first),ceiling(n/255,64)*2,1,false);
+      switched=true;
+      std::vector<float> middle(32*32,0.0f);
+      for (int64_t f=0;f<16;++f)for(int64_t d=0;d<26;++d) {
+        const double angle=sign*2*kPi*f*d/26;
+        middle[f*32+d]=static_cast<float>(std::cos(angle));
+        middle[(16+f)*32+d]=static_cast<float>(std::sin(angle));
+      }
+      append(DeviceAllocation::from_floats(middle),matrix_tail,1,false,8);
+      const int64_t padded=power(matrix_tail),tiles=ceiling(matrix_tail,64);
+      std::vector<float> last(26*tiles*128*2*padded,0.0f);
+      for (int64_t previous=0;previous<26;++previous)
+        for (int64_t tile=0;tile<tiles;++tile)for(int64_t f=0;f<64;++f) {
+          const int64_t frequency=tile*64+f;
+          if (frequency>=matrix_tail) continue;
+          for (int64_t d=0;d<matrix_tail;++d) {
+            const double angle=sign*2*kPi*(frequency+static_cast<double>(previous)/26)*d/matrix_tail;
+            const auto co=static_cast<float>(std::cos(angle)),si=static_cast<float>(std::sin(angle));
+            const int64_t offset=((previous*tiles+tile)*128+f)*2*padded+d;
+            last[offset]=co;last[offset+padded]=-si;
+            last[offset+64*2*padded]=si;last[offset+64*2*padded+padded]=co;
+          }
+        }
+      append(DeviceAllocation::from_floats(last),26*256/matrix_columns*tiles,1,false,8);
+      const auto bytes=static_cast<std::size_t>(batch*workspace_length*2*sizeof(float));
+      return std::make_shared<CompiledRawVectorDIFNode>(n,batch,std::move(passes),
+          adaptor::Memory(bytes),adaptor::Memory(bytes),workspace_length,factors);
+    }
     auto cube_weights=[&](int64_t radix,int64_t previous,bool compact) {
       const int64_t pr=std::max<int64_t>(16,power(radix));
       const int64_t matrices=previous>0?previous:1;
