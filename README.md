@@ -286,6 +286,13 @@ Set `FLAGFFT_IX_FUSED_R2C=0` before starting the process to
 disable fused packed R2C reconstruction. Set `FLAGFFT_IX_CT_BATCH=0` to
 compare with the previous batch path.
 
+For dense FP32 batch-64 CT requests at N=1024, request preset 11 selects radices 16-by-8-by-8, two physical warps, one FFT per
+CTA, and portable recurrence exchange for C2C, R2C, and C2R. All twelve scoped
+NumPy checks across three input amplitudes passed; minimum speedups were
+0.7804x for C2C, 0.8695x for C2R, and 0.8521x for R2C. At N=16, four FFTs
+share one physical warp; `FLAGFFT_IX_SMALL_CT_BATCH_WARP=0` disables that route.
+`FLAGFFT_IX_CT_BATCH_PACKED_IO=0` disables the short-CT request presets.
+
 The dense FP32 C2C request at N=340200 and batch=64 uses packed complex I/O,
 recurrence twiddles, interleaved shared FFT slots, and eight axis FFTs per CTA tile.
 Request preset 10 transports these settings while retaining the 504-by-675

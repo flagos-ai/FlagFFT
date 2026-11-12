@@ -62,7 +62,7 @@ namespace {
     if (request.device_type != "ix" || request.device_arch != "71" ||
         key.dtype != "complex64") return;
     const bool small_batch=request.ix_fourstep_preset==9 && key.length==16 &&
-        request.batch==64 && flag_or_default("FLAGFFT_IX_SMALL_CT_BATCH_WARP",false);
+        request.batch==64 && flag_or_default("FLAGFFT_IX_SMALL_CT_BATCH_WARP",true);
     const bool family_default=request.ix_warp_fft_pack_default>0 || small_batch ||
                               ix_small_real_warp_default_enabled(request);
     const bool family=flag_or_default("FLAGFFT_IX_WARP_FFT",family_default);

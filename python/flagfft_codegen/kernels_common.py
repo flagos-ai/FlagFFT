@@ -356,6 +356,9 @@ def _maca_knob(name: str, default: str = "") -> str:
         elif preset==10 and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed", RECURRENCE="1", SMEM_INTERLEAVE="1",
                             TLE_INNER_PACK="8")
+        elif preset==11 and current_profile().policy=="balanced":
+            defaults.update(VEC_IO="packed", PORTABLE_LEAF="1", RECURRENCE="1",
+                            WARPS="2", BATCH_PACK="1")
         elif preset and current_profile().policy == "balanced":
             defaults.update(RECURRENCE="1", VEC_IO="packed")
             if preset >= 7:

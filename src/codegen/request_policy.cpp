@@ -44,7 +44,7 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
     const char *packed=std::getenv("FLAGFFT_IX_CT_BATCH_PACKED_IO");
     if (packed && std::string(packed)!="0" && std::string(packed)!="1")
       throw std::runtime_error("FLAGFFT_IX_CT_BATCH_PACKED_IO must be 0 or 1");
-    if (packed && std::string(packed)=="1") preset=9;
+    if (!packed || std::string(packed)=="1") preset=request.requested_n==1024 ? 11 : 9;
   }
   if (request.batch==64 && request.requested_n==8191) preset=1;
   if (request.batch==64 && request.requested_n==16381) preset=2;

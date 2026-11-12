@@ -175,6 +175,11 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       return factors;
     }
   }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      context.ix_fourstep_preset == 11 && n == 1024 && context.requested_n == n) {
+    return {16, 8, 8};
+  }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
     const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
     if (override_value != nullptr) {

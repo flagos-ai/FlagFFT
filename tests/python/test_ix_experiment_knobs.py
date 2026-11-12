@@ -724,3 +724,29 @@ def test_mixed340200_preset_uses_qualified_eight_slot_TLE_geometry(
         assert meta['inner_pack']==8 and meta['num_warps']==4
         assert 'tle.gpu.alloc' in source
     finally:reset_ix_fourstep_preset(token)
+
+
+@pytest.mark.parametrize('mode,kind,direction',[
+    ('contiguous','leaf','forward'),('contiguous_c2r','leaf_c2r','inverse'),
+    ('contiguous_r2c','leaf_r2c','forward'),
+])
+def test_ct1024_default_uses_shared_qualified_launch_and_runtime_batch(
+        ix_balanced_profile,monkeypatch,tmp_path,mode,kind,direction):
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
+    from flagfft_codegen.target import set_ix_ct_batch_default,reset_ix_ct_batch_default
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    for key in ('VEC_IO','RECURRENCE','BATCH_PACK','PORTABLE_LEAF','WARPS','STATIC_SINGLE'):
+        monkeypatch.delenv('FLAGFFT_IX_'+key,raising=False)
+    preset=set_ix_fourstep_preset(11);batch=set_ix_ct_batch_default(True)
+    try:
+        plan=LeafPlan(1024,(16,8,8),1,64,2,(),1024,direction,'complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+        meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type=kind,n1=0,n2=0,dtype='complex64')
+        assert meta['num_warps']==2 and meta['batch_per_block']==1
+        assert 'nbatch = 1' not in source and 'batch_id = 0' not in source
+        assert 'tle.gpu.alloc' not in source
+    finally:
+        reset_ix_fourstep_preset(preset);reset_ix_ct_batch_default(batch)

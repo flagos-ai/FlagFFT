@@ -634,9 +634,9 @@ TEST(IXLeafPlan, BatchedRealCtaDefaultHasTypedScopeAndExistingRollbacks) {
   }
 }
 
-TEST(IXLeafPlan, PackedCtBatchScreenKeepsGeometryAndPublicDenseScope) {
+TEST(IXLeafPlan, CtBatchDefaultsKeepPublicDenseScopeAndQualifiedFactors) {
   ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
-  ScopedEnv packed("FLAGFFT_IX_CT_BATCH_PACKED_IO","1");
+  ScopedEnv packed("FLAGFFT_IX_CT_BATCH_PACKED_IO",nullptr);
   ScopedEnv rollback("FLAGFFT_IX_CT_BATCH",nullptr);
   ScopedEnv gate("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS",nullptr);
   ScopedEnv balanced("FLAGFFT_IX_BALANCED_RADICES",nullptr);
@@ -651,13 +651,22 @@ TEST(IXLeafPlan, PackedCtBatchScreenKeepsGeometryAndPublicDenseScope) {
     for (const auto &kind : {"","r2c","c2r"}) {
       request.real_transform_kind=kind;
       request.input_strides={std::string(kind)=="c2r" ? n/2+1 : n,1};
-      EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),9);
+      const int preset=n==1024 ? 11 : 9;
+      EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),preset);
       request.ix_fourstep_preset=0;
       flagfft::PlanBuilder before;
       const auto geometry=before.build(n,request)->describe();
-      request.ix_fourstep_preset=9;
+      request.ix_fourstep_preset=preset;
       flagfft::PlanBuilder after;
-      EXPECT_EQ(after.build(n,request)->describe(),geometry);
+      auto node=after.build(n,request);
+      if (n==1024) {
+        auto leaf=std::dynamic_pointer_cast<flagfft::LeafPlanNode>(node);
+        ASSERT_NE(leaf,nullptr);
+        EXPECT_EQ(leaf->factors,(std::vector<int64_t>{16,8,8}));
+        EXPECT_EQ(leaf->lanes,64);
+      } else {
+        EXPECT_EQ(node->describe(),geometry);
+      }
       auto other=request;other.origin_rank=3;
       EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
       other=request;other.input_strides.front()++;
