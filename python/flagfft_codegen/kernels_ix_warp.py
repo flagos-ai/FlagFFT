@@ -26,9 +26,10 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          packed_gather: bool = False,
                          four_step_other: int = 0) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
-    if n not in {64,128,256,512,1024,2048}:
-        raise ValueError("IX warp FFT length must be 64, 128, 256, 512, 1024 or 2048")
-    if lane_width<32 or lane_width>n or lane_width&(lane_width-1) or n%lane_width:
+    if n not in {16,32,64,128,256,512,1024,2048}:
+        raise ValueError("unsupported IX warp FFT length")
+    if n<64 and lane_width==64:lane_width=n
+    if lane_width<16 or lane_width>n or lane_width&(lane_width-1) or n%lane_width:
         raise ValueError("invalid IX FFT lane width")
     if manual_store and lane_width!=64:
         raise ValueError("manual output experiments require 64-lane FFTs")
@@ -43,6 +44,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     four_step=mode in {'four_step_row','four_step_col'}
     if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
         raise ValueError("invalid IX warp FourStep geometry")
+    if mode in {'packed_r2c','packed_c2r'} and lane_width!=64:
+        raise ValueError('packed real warp FFT requires a 64-lane FFT')
     if (mode in {"r2c","contiguous_r2c","packed_r2c"} and inverse) or (mode in {"c2r","packed_c2r"} and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
     sign=1 if inverse else -1

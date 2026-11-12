@@ -54,18 +54,21 @@ namespace {
         key.dtype != "complex64") return;
     const bool family_default=request.ix_warp_fft_pack_default>0;
     const bool family=flag_or_default("FLAGFFT_IX_WARP_FFT",family_default);
+    const bool small_real=key.length==16 && family && request.origin_rank<=1 &&
+        request.raw_dim==1 && request.batch==1 &&
+        (key.kind==KernelKind::LeafR2C || key.kind==KernelKind::LeafC2R);
     const bool narrow = key.length == 256 && flag_or_default("FLAGFFT_IX_WARP256", family);
     const bool wide = (key.length == 64 || key.length == 128 || key.length == 256 || key.length == 512 ||
                        key.length == 1024 || key.length == 2048) &&
                       family && key.length!=256;
-    if (!narrow && !wide) return;
+    if (!narrow && !wide && !small_real) return;
     const bool permuted = key.kind == KernelKind::LeafPermutedStore ||
                           key.kind == KernelKind::LeafR2CPermutedStore;
     if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R &&
         key.kind != KernelKind::LeafR2C && key.kind != KernelKind::LeafPackedR2C &&
         key.kind != KernelKind::LeafPackedC2R) return;
     int64_t pack = family_default ? request.ix_warp_fft_pack_default :
-                     (key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
+                     (small_real ? 1 : key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
     if (const char *value = std::getenv(key.length == 256
                                          ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
       const std::string text(value);
