@@ -1865,11 +1865,11 @@ def _emit_stage_block(
             load_index = f"smem_phys{j}" if smem_swizzle else f"phys{j}"
             if slotted_tle:
                 # The first radix selects a shared-memory slot; the remaining
-                # digit selects a value within its XOR-swizzled packed row.
+                # digit selects a value within its padded, packed row.
                 for component in ('r','i'):
                     lines.append(
                         f"{indent}{component}{j} = tl.load(tle.gpu.local_ptr({source_buffer}_{component}, "
-                        f"(logical_phys{j} % {factors[0]}, ((logical_phys{j} // {factors[0]}) * {smem_pack} + inner_slot) ^ (((logical_phys{j} % {factors[0]}) % {factors[1]}) * {smem_pack}))), "
+                        f"(logical_phys{j} % {factors[0]}, (logical_phys{j} // {factors[0]}) * {smem_pack} + inner_slot)), "
                         "mask=lane_mask,other=0.0)"
                     )
             else:
@@ -2454,7 +2454,7 @@ def _emit_stage_block(
                 for component in ('r','i'):
                     lines.append(
                         f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_{component}.slot(tl.full((),{j},tl.int32)), "
-                        f"((lane * {smem_pack} + inner_slot) ^ {(j % factors[1])*smem_pack},)), {component}{j}, mask=lane_mask)"
+                        f"(lane * {smem_pack} + inner_slot,)), {component}{j}, mask=lane_mask)"
                     )
             else:
                 lines.extend(
@@ -3477,7 +3477,7 @@ def _build_leaf_kernel_source_for_io(
         body.append("    base_lane_mask = lane_mask")
 
     slotted_tle = _ix_slotted_tle_exchange(plan,io_mode,inner_pack)
-    smem_b_shape = (f"[{factors[0]}, {(n//factors[0])*inner_pack}]"
+    smem_b_shape = (f"[{factors[0]}, {(n//factors[0]+1)*inner_pack}]"
                     if slotted_tle else f"[{smem_n}]")
     if len(factors) > 1 and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
