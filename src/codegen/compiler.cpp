@@ -1697,11 +1697,13 @@ namespace {
 
   bool ix_fused_c2r_leaf_enabled(const FFTRequest &request, int64_t batch) {
     const int64_t n = request.requested_n;
+    const bool packed_cta = n==16384 && batch==64 &&
+                           flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",false);
     if (request.device_type != "ix" || request.device_arch != "71" ||
         request.raw_dim != 1 || request.origin_rank > 1 || batch <= 0 ||
         request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
         request.real_transform_kind != "c2r" || request.fft_length != n ||
-        n < 32 || n > 4096 || (n & (n - 1)) != 0 ||
+        n < 32 || (n > 4096 && !packed_cta) || (n & (n - 1)) != 0 ||
         request.input_strides.empty() || request.input_strides.back() != 1) {
       return false;
     }
@@ -2883,10 +2885,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       std::string(fused_setting) != "1") {
     throw std::runtime_error("FLAGFFT_IX_FUSED_R2C must be 0 or 1");
   }
+  const bool packed_cta = n==16384 && batch==64 && fused_setting &&
+      std::string(fused_setting)=="1" && flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",false);
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      (n == 2048 || (fused_setting != nullptr && std::string(fused_setting) == "1" &&
+      (n == 2048 || packed_cta || (fused_setting != nullptr && std::string(fused_setting) == "1" &&
                      n > 0 && n <= 2048 && n % 2 == 0)) &&
       (batch == 1 || batch == 64) &&
       (batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) &&
@@ -2905,15 +2909,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     PlanBuilder child_builder;
     auto child_plan = child_builder.build(n / 2, child_request);
     auto child_leaf = std::dynamic_pointer_cast<LeafPlanNode>(child_plan);
+    if (!child_leaf && packed_cta && std::dynamic_pointer_cast<FourStepPlanNode>(child_plan))
+      child_leaf=ix_fourstep_cta_leaf(child_request,n/2,batch);
     if (n == 2048 || child_leaf) {
       // Keep the measured 1024-point child for the default route. Explicit
       // shorter requests need factors for their own half-length transform.
       const std::vector<int64_t> factors = n == 2048
           ? std::vector<int64_t>{16, 8, 8}
           : child_leaf->factors;
-      const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
+      const int64_t lanes = packed_cta ? child_leaf->lanes : child_builder.choose_lanes(n / 2, factors);
       LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
-                               child_builder.choose_num_warps(lanes), {}, n / 2);
+                               packed_cta ? child_leaf->num_warps : child_builder.choose_num_warps(lanes), {}, n / 2);
       KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
                                            request.direction, request.input_dtype,
                                            packed_leaf.length, packed_leaf.factors,
@@ -3061,7 +3067,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                        batch == 256 * 256 && packed_fuse_enabled) ||
                                       ix_fused_c2r_leaf_enabled(request, batch);
     if (use_packed_fused_leaf) {
-      if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+      auto leaf=std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan);
+      if (!leaf && std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan))
+        leaf=ix_fourstep_cta_leaf(packed_child->request,packed,batch);
+      if (leaf) {
         KernelKey key = KernelKey::leaf_c2r(
             triton_target_for_request(packed_child->request),
             packed_child->request.direction,
