@@ -9,7 +9,7 @@ def test_mixed_stage_writes_are_bijections_before_fence_removal():
         @staticmethod
         def where(condition, yes, no):
             return yes if condition else no
-    for factors in ((8,8),(16,8),(16,16),(17,13),(25,17),(12,13,5),(30,10,5),(24,13,5),
+    for factors in ((8,8),(16,8),(16,16),(32,32),(17,13),(25,17),(12,13,5),(30,10,5),(24,13,5),
                     (16,16,16,4)):
         n=math.prod(factors)
         # Include the real cooperative cap: later stages can have multiple
@@ -28,7 +28,7 @@ def test_mixed_stage_writes_are_bijections_before_fence_removal():
                         exec('\n'.join(_emit_route_index('','dst',stage,factors,widths[stage+1],digit)),env)
                         addresses.append(env['dst'])
             assert sorted(addresses)==list(range(n))
-            if n >= 8192:
+            if n >= 1024 and n & (n-1) == 0:
                 for shift in (3,4,5,7):
                     assert sorted(value ^ (value >> shift) for value in addresses)==list(range(n))
 
