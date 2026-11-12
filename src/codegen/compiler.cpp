@@ -2242,13 +2242,17 @@ namespace {
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_real_child(
       const FFTRequest &request, int64_t batch, NpuAivFFT256Mode mode) {
-    if (batch <= 0 || batch % 8 != 0) throw std::runtime_error("Grouped real FFT256 requires batches divisible by 8");
+    // Keep the real-boundary working set within the 910B unified buffer,
+    // including the temporary packing and recursive FFT vectors.
+    constexpr int64_t group_size = 4;
+    if (batch <= 0 || batch % group_size != 0)
+      throw std::runtime_error("Grouped real FFT256 requires batches divisible by 4");
     auto indices = std::make_shared<DeviceAllocation>(sizeof(uint32_t));
     auto roots = std::make_shared<DeviceAllocation>(flag_or_default("FLAGFFT_NPU_RECURSIVE_POWER2",false)
-        ? npu_recursive_axis_roots(256,8,256) : npu_structured_roots(256,8));
-    auto kernel = npu_power2_kernel(request, 256, 8, 1, 1, static_cast<int64_t>(mode));
+        ? npu_recursive_axis_roots(256,group_size,256) : npu_structured_roots(256,group_size));
+    auto kernel = npu_power2_kernel(request, 256, group_size, 1, 1, static_cast<int64_t>(mode));
     return std::make_shared<CompiledRawNpuAivFFT256Node>(std::move(indices),
-        std::move(roots), 8, true, false, false, 0, mode, std::move(kernel));
+        std::move(roots), group_size, true, false, false, 0, mode, std::move(kernel));
   }
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_complex_child(
