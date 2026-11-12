@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -1183,39 +1182,6 @@ def test_hcu_tiled_transpose3d_can_store_complex_pairs(kernels) -> None:
     assert kernel_name.endswith("_tile_pair")
     assert "dst_pair = tl.join(dst_r, dst_i)" in source
     assert "tl.store(out_ptr + pair_base, dst_pair, mask=store_mask[:, :, None])" in source
-
-
-@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
-@pytest.mark.parametrize("length,factors,lanes,smem", [
-    (32, (32,), 1, 0),
-    (105, (7, 5, 3), 1, 128),
-    (512, (8, 8, 8), 64, 512),
-    (1024, (8, 8, 4, 4), 128, 1024),
-])
-def test_hcu_packed_r2c_resources_and_launch_agree(
-    tmp_path, dtype, length, factors, lanes, smem
-) -> None:
-    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
-    from flagfft_codegen.emit import emit_jit_kernel
-
-    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
-        max_dynamic_shared_memory=65536, policy="native"))
-    try:
-        metadata = emit_jit_kernel(kernel="leaf_packed_r2c", length=length,
-            factors=factors, lanes=lanes, num_warps=max(1, lanes // 32),
-            generic_radices=(), smem_size=smem, direction="forward", dtype=dtype,
-            prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=tmp_path)
-    finally:
-        reset_profile(token)
-    source = Path(metadata["module_path"]).read_text()
-    compile(source, metadata["module_path"], "exec")
-    assert metadata["batch_per_block"] == 1
-    assert "batch_id = pid * 1" in source
-    allocations = [int(x) for x in re.findall(r"tle\.gpu\.alloc\(\[(\d+)\]", source)]
-    # Single-stage FFTs have no ordinary exchange buffer, but reconstruction
-    # still requires every frequency. The whole launch must fit BW1000 LDS.
-    assert allocations and min(allocations) >= length
-    assert sum(allocations) * (8 if dtype == "complex128" else 4) <= 65536
 
 
 def test_fused_16_cube_codegen_resolves_template_parameters(tmp_path) -> None:

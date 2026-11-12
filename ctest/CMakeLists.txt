@@ -91,7 +91,7 @@ if(BACKEND STREQUAL "CUDA")
 endif()
 
 if(BACKEND STREQUAL "HCU")
-    list(APPEND TEST_TARGETS test_hcu_real_graph)
+    list(APPEND TEST_TARGETS test_hcu_prepared_launch)
 endif()
 
 if(BACKEND STREQUAL "MACA")
@@ -101,7 +101,7 @@ endif()
 foreach(test_name ${TEST_TARGETS})
     add_executable(${test_name} ${test_name}.cpp main.cpp)
     target_link_libraries(${test_name} PRIVATE flagfft flagfft_test_adaptor gtest)
-    if(test_name STREQUAL "test_hcu_real_graph")
+    if(test_name STREQUAL "test_hcu_prepared_launch")
         target_link_libraries(${test_name} PRIVATE TritonJIT::triton_jit)
     endif()
     target_include_directories(${test_name} PRIVATE

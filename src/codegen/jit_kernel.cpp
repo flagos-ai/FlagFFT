@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <array>
 #include <optional>
 #include "flagfft/core.hpp"
 
@@ -206,7 +206,7 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                                 argument_count);
 #elif defined(BACKEND_HCU)
   const char *prepared_setting = std::getenv("FLAGFFT_HCU_PREPARED_LAUNCH");
-  const bool prepared_enabled = prepared_setting != nullptr && std::strcmp(prepared_setting, "1") == 0;
+  const bool prepared_enabled = prepared_setting == nullptr || std::strcmp(prepared_setting, "1") == 0;
   // Explicit streams and the compiled module identify the launch device.
   // Preserve the generic launcher when hooks are installed or the caller
   // uses a default stream, whose device can change independently.

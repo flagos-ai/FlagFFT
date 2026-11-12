@@ -128,23 +128,6 @@ namespace {
     return args;
   }
 
-  bool hcu_single_r2c_leaf_graph_enabled(const RawExecutionContext &context, int64_t length) {
-    const FFTRequest &request = context.request;
-    if (request.device_type != "hcu" || request.raw_dim != 1 || request.origin_rank > 1 ||
-        request.requested_n != length || request.fft_length != length ||
-        request.packed_real_child || context.batch != 1 || context.stream == nullptr ||
-        std::getenv("FLAGFFT_PROFILE_KERNELS") != nullptr) return false;
-    const char *setting = std::getenv("FLAGFFT_HCU_1D_GRAPH");
-    if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
-      throw std::runtime_error("FLAGFFT_HCU_1D_GRAPH must be 0 or 1");
-    }
-    // Repeated host submission is a significant cost for short R2C leaves on BW1000.
-    // Reuse the existing address/distance-aware graph cache, independently of
-    // transform length, factorization and precision. Null streams cannot be
-    // captured by HIP and keep the normal kernel launch.
-    return setting == nullptr || std::string(setting) == "1";
-  }
-
   bool ix_ct_batch_graph_enabled(const RawExecutionContext &context, int64_t length) {
     const FFTRequest &request = context.request;
     const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH");
@@ -2038,9 +2021,7 @@ std::string CompiledRawR2CLeafNode::describe() const {
       << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
       << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size()
-      << ", perm_span=" << perm_span;
-  if (graph_state.graph) oss << ", graph=captured";
-  oss << ")";
+      << ", perm_span=" << perm_span << ")";
   return oss.str();
 }
 
@@ -2054,8 +2035,7 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     const int64_t input_distance = in_place ? std::max(context.input_distance, padded_real_distance)
                                             : (context.input_distance > 0 ? context.input_distance : length);
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
-    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length) ||
-                               hcu_single_r2c_leaf_graph_enabled(context, length);
+    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
     if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
                                            input_distance, output_distance)) {
       return FLAGFFT_SUCCESS;

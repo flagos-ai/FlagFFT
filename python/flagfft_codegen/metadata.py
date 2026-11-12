@@ -254,8 +254,6 @@ def _metadata(
             num_warps = int(override)
     if tle_fused_twiddle:
         num_warps = min(8, num_warps * inner_pack)
-    if profile.backend == "hcu" and kernel_type == "leaf_packed_r2c":
-        batch_per_block = 1
     work_pack = max(batch_per_block, inner_pack)
     maca_backend = _portable_leaf_backend_active()
     if work_pack > 1 or any(lanes != plan.lanes for lanes in stage_lanes):

@@ -2511,18 +2511,6 @@ namespace {
     return length == 256 && batch == 256 * 256;
   }
 
-  bool hcu_fused_packed_r2c_enabled(const FFTRequest &request, int64_t batch) {
-    // A half-length leaf plus two reconstruction buffers stays within the
-    // 64 KiB LDS budget for both precisions at this bound. The extra boundary
-    // work is not useful for the small single-codelet transforms.
-    const int64_t n = request.requested_n;
-    return request.device_type == "hcu" && request.raw_dim == 1 &&
-        request.origin_rank <= 1 && batch == 1 && !request.packed_real_child &&
-        request.fft_length == n && n >= 64 && n <= 2048 && n % 2 == 0 &&
-        !request.input_strides.empty() && request.input_strides.back() == 1 &&
-        flag_or_default("FLAGFFT_HCU_FUSED_PACKED_R2C", false);
-  }
-
   bool use_fused_prime_real_bluestein(const PlanNodePtr &node,
                                    const FFTRequest &request,
                                    int64_t batch) {
@@ -2581,9 +2569,7 @@ namespace {
     const bool cuda_fused = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && request.raw_dim == 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
-    const bool hcu_fused = !inverse && hcu_fused_packed_r2c_enabled(request, batch) &&
-        std::dynamic_pointer_cast<LeafPlanNode>(original_plan) != nullptr;
-    const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused || hcu_fused ||
+    const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
     const bool disable = setting != nullptr && std::string(setting) == "0";
     if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") || n <= 0 ||
@@ -2704,25 +2690,6 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
-    if (hcu_fused && std::dynamic_pointer_cast<LeafPlanNode>(child_plan) == nullptr) {
-      return std::nullopt;
-    }
-    if (hcu_fused && ((n / 2) & (n / 2 - 1)) == 0) {
-      auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(child_plan);
-      std::vector<int64_t> factors;
-      for (int64_t remaining = n / 2; remaining > 1;) {
-        const int64_t radix = remaining % 8 == 0 ? 8 : (remaining % 4 == 0 ? 4 : 2);
-        factors.push_back(radix);
-        remaining /= radix;
-      }
-      const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
-      // Fill a 64-lane HCU wave instead of serialising a large radix-32
-      // codelet in a few lanes. Keep plans already spanning a wave intact.
-      if (leaf->lanes < 64 && lanes >= 64) {
-        child_plan = std::make_shared<LeafPlanNode>(n / 2, factors, 1, lanes,
-            child_builder.choose_num_warps(lanes), std::vector<int64_t>{}, leaf->smem_size);
-      }
-    }
     if (use_npu_packed_mixed_real(request,n,batch) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(child_plan)) {
@@ -4419,10 +4386,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
               ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;
-    if (hcu_fused_packed_r2c_enabled(request, batch) ||
-        (request.device_type == "cuda" && request.device_arch == "sm_80" &&
+    if (request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
-        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false))) {
+        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false)) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
         auto key = KernelKey::leaf_r2c(triton_target_for_request(packed_child->request),
             packed_child->request.direction, packed_child->request.input_dtype,

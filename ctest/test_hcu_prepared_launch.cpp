@@ -11,24 +11,24 @@
 
 namespace {
 
-struct GraphSetting {
+struct RuntimeSetting {
   std::string name;
   std::string previous;
   bool existed;
-  explicit GraphSetting(const char *value, const char *variable = "FLAGFFT_HCU_1D_GRAPH")
+  explicit RuntimeSetting(const char *value, const char *variable = "FLAGFFT_HCU_PREPARED_LAUNCH")
       : name(variable), existed(std::getenv(variable) != nullptr) {
     if (existed) previous = std::getenv(name.c_str());
     if (value) setenv(name.c_str(), value, 1);
     else unsetenv(name.c_str());
   }
-  ~GraphSetting() {
+  ~RuntimeSetting() {
     if (existed) setenv(name.c_str(), previous.c_str(), 1);
     else unsetenv(name.c_str());
   }
 };
 
 template <typename Scalar, typename Complex>
-void CheckRealGraph(int n, bool alias, bool capture_expected) {
+void CheckRealDispatch(int n, bool alias) {
   SCOPED_TRACE(::testing::Message() << "n=" << n << " alias=" << alias);
   constexpr bool fp64 = std::is_same_v<Scalar, double>;
   const auto forward_type = fp64 ? FLAGFFT_D2Z : FLAGFFT_R2C;
@@ -102,33 +102,30 @@ void CheckRealGraph(int n, bool alias, bool capture_expected) {
     auto inverse_error = flagfft_test::error_stats(output.data(), expected_inverse.data(), n, 1);
     EXPECT_TRUE(inverse_error.finite);
     EXPECT_LT(inverse_error.rel_l2, fp64 ? 5e-13 : 5e-6);
-    EXPECT_EQ(fwd->graph_state.graph != nullptr, capture_expected && step > 0);
-    EXPECT_EQ(inv->graph_state.graph, nullptr);
-    EXPECT_FALSE(fwd->graph_state.failed);
-    EXPECT_FALSE(inv->graph_state.failed);
+    EXPECT_NE(fwd->kernel->direct_launch, nullptr);
+    EXPECT_NE(inv->kernel->direct_launch, nullptr);
   }
   EXPECT_EQ(flagfftDestroy(forward), FLAGFFT_SUCCESS);
   EXPECT_EQ(flagfftDestroy(inverse), FLAGFFT_SUCCESS);
 }
 
-TEST(HcuRealGraph, DefaultReplaysChangedDataAddressesStreamsAndInPlace) {
-  GraphSetting setting(nullptr);
+TEST(HcuPreparedLaunch, DefaultHandlesChangedDataAddressesStreamsAndInPlace) {
+  RuntimeSetting setting(nullptr);
   for (int n : {48, 105}) {
     for (bool alias : {false, true}) {
-      CheckRealGraph<float, flagfftComplex>(n, alias, true);
-      CheckRealGraph<double, flagfftDoubleComplex>(n, alias, true);
+      CheckRealDispatch<float, flagfftComplex>(n, alias);
+      CheckRealDispatch<double, flagfftDoubleComplex>(n, alias);
     }
   }
 }
 
-TEST(HcuRealGraph, OverrideRetainsDirectLaunches) {
-  GraphSetting setting("0");
-  CheckRealGraph<float, flagfftComplex>(48, false, false);
+TEST(HcuPreparedLaunch, OverrideRetainsGenericDispatch) {
+  RuntimeSetting setting("0");
+  CheckRealDispatch<float, flagfftComplex>(48, false);
 }
 
-TEST(HcuRealGraph, PreparedDispatchPreservesLaunchHooks) {
-  GraphSetting graph("0");
-  GraphSetting prepared("1", "FLAGFFT_HCU_PREPARED_LAUNCH");
+TEST(HcuPreparedLaunch, PreservesLaunchHooks) {
+  RuntimeSetting prepared("1");
   struct ClearHooks {
     ~ClearHooks() { triton_jit::clear_launch_hooks(); }
   } cleanup;
@@ -141,7 +138,7 @@ TEST(HcuRealGraph, PreparedDispatchPreservesLaunchHooks) {
     EXPECT_EQ(metadata.grid_x, 1);
   });
   triton_jit::set_launch_exit_hook([&](const triton_jit::LaunchMetadata &) { ++exited; });
-  CheckRealGraph<float, flagfftComplex>(48, false, false);
+  CheckRealDispatch<float, flagfftComplex>(48, false);
   EXPECT_EQ(entered, 12);
   EXPECT_EQ(exited, entered);
 }
