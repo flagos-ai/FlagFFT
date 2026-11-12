@@ -128,7 +128,7 @@ namespace {
     return args;
   }
 
-  bool hcu_single_real_leaf_graph_enabled(const RawExecutionContext &context, int64_t length) {
+  bool hcu_single_r2c_leaf_graph_enabled(const RawExecutionContext &context, int64_t length) {
     const FFTRequest &request = context.request;
     if (request.device_type != "hcu" || request.raw_dim != 1 || request.origin_rank > 1 ||
         request.requested_n != length || request.fft_length != length ||
@@ -138,7 +138,7 @@ namespace {
     if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_HCU_1D_GRAPH must be 0 or 1");
     }
-    // A single real leaf is dominated by repeated host submission on BW1000.
+    // Repeated host submission is a significant cost for short R2C leaves on BW1000.
     // Reuse the existing address/distance-aware graph cache, independently of
     // transform length, factorization and precision. Null streams cannot be
     // captured by HIP and keep the normal kernel launch.
@@ -2055,7 +2055,7 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
                                             : (context.input_distance > 0 ? context.input_distance : length);
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
     const bool graph_enabled = ix_ct_batch_graph_enabled(context, length) ||
-                               hcu_single_real_leaf_graph_enabled(context, length);
+                               hcu_single_r2c_leaf_graph_enabled(context, length);
     if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
                                            input_distance, output_distance)) {
       return FLAGFFT_SUCCESS;
@@ -2762,9 +2762,7 @@ std::string CompiledRawC2RLeafNode::describe() const {
   oss << "CompiledRawC2RLeaf(n=" << length
       << ", kernel=" << (kernel ? kernel->execution_description() : "null")
       << ", num_warps=" << (kernel ? kernel->num_warps : 0)
-      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size();
-  if (graph_state.graph) oss << ", graph=captured";
-  oss << ")";
+      << ", module=" << (kernel ? kernel->module_path : "null") << ", tables=" << tables.size() << ")";
   return oss.str();
 }
 
@@ -2779,8 +2777,7 @@ flagfftResult CompiledRawC2RLeafNode::execute(adaptor::DevicePtr input,
     const int64_t output_distance = in_place
                                         ? std::max(context.output_distance, padded_real_distance)
                                         : (context.output_distance > 0 ? context.output_distance : length);
-    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length) ||
-                               hcu_single_real_leaf_graph_enabled(context, length);
+    const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
     if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
                                            input_distance, output_distance)) {
       return FLAGFFT_SUCCESS;

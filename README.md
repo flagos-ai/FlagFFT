@@ -233,7 +233,7 @@ cmake --build build-hcu -j$(nproc)
 | `FLAGFFT_TUNE_DB` | Path to the SQLite tuning database (default: `.flagfft/tuned_plans.sqlite` beside the executable) |
 | `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
 | `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `balanced` (IX default), `native` (HCU default; device warp with queried resource caps), `legacy` (other backends' default/comparison), or `packed` (experimental wider leaf packing) |
-| `FLAGFFT_HCU_1D_GRAPH` | HCU caches repeated single-batch 1D real leaf launches in a HIP graph by default; set `0` to disable. Other addresses use the normal launch; default streams and kernel profiling retain the normal launch. |
+| `FLAGFFT_HCU_1D_GRAPH` | HCU caches repeated single-batch 1D R2C/D2Z leaf launches in a HIP graph by default; set `0` to disable. Other addresses use the normal launch; default streams and kernel profiling retain the normal launch. |
 
 ### Hardware profiles and IX experiments
 

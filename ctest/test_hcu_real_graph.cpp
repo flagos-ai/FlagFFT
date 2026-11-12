@@ -100,7 +100,7 @@ void CheckRealGraph(int n, bool alias, bool capture_expected) {
     EXPECT_TRUE(inverse_error.finite);
     EXPECT_LT(inverse_error.rel_l2, fp64 ? 5e-13 : 5e-6);
     EXPECT_EQ(fwd->graph_state.graph != nullptr, capture_expected && step > 0);
-    EXPECT_EQ(inv->graph_state.graph != nullptr, capture_expected && step > 0);
+    EXPECT_EQ(inv->graph_state.graph, nullptr);
     EXPECT_FALSE(fwd->graph_state.failed);
     EXPECT_FALSE(inv->graph_state.failed);
   }
