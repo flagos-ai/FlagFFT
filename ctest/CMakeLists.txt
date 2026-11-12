@@ -90,6 +90,10 @@ if(BACKEND STREQUAL "CUDA")
     list(APPEND TEST_TARGETS test_cuda_multid_reference)
 endif()
 
+if(BACKEND STREQUAL "HCU")
+    list(APPEND TEST_TARGETS test_hcu_real_graph)
+endif()
+
 if(BACKEND STREQUAL "MACA")
     list(APPEND TEST_TARGETS test_maca_runtime)
 endif()
