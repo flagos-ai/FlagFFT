@@ -3278,7 +3278,10 @@ def _build_leaf_kernel_source_for_io(
         # bound batch and 3D shapes.
         lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
-    smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    # Packed TLE reconstruction also indexes this tile by natural frequency.
+    # Keep a power-of-two slot stride for its masked conjugate-pair loads.
+    smem_slot_stride = (plan.smem_size + 1
+                        if batch_pack >= 4 and not packed_tle else plan.smem_size)
     if _ix_batch_smem_interleave(io_mode, portable_exchange, batch_pack):
         # Adjacent FFT slots occupy adjacent words. Padding each power-of-two
         # FFT would double the rounded allocation without separating slots.
