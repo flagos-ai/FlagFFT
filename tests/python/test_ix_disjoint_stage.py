@@ -27,6 +27,9 @@ def test_mixed_stage_writes_are_bijections_before_fence_removal():
                         exec('\n'.join(_emit_route_index('','dst',stage,factors,widths[stage+1],digit)),env)
                         addresses.append(env['dst'])
             assert sorted(addresses)==list(range(n))
+            if n >= 8192:
+                for shift in (3,5,7):
+                    assert sorted(value ^ (value >> shift) for value in addresses)==list(range(n))
 
 
 def ir(middle='',tail='',debug=True):
