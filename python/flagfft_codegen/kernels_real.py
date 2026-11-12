@@ -257,7 +257,7 @@ def _build_r2c_half_pack_kernel_source(
 
 
 def packed_real_boundary_block(n: int, dtype: str) -> int:
-    if not (_ix_backend_active() and dtype=="complex64" and n==16384): return 256
+    if not (_ix_backend_active() and dtype=="complex64" and n in {16384,663000}): return 256
     value=_maca_knob("REAL_BOUNDARY_BLOCK","256")
     if value not in {"256","512","1024","2048"}:
         raise ValueError("FLAGFFT_IX_REAL_BOUNDARY_BLOCK must be 256, 512, 1024 or 2048")
@@ -294,7 +294,8 @@ def _build_r2c_packed_postprocess_kernel_source(
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_r2c_packed_postprocess_kernel_n{n}_{suffix}"
-    packed_io = (_ix_backend_active() and dtype=="complex64" and n==16384
+    packed_io = (_ix_backend_active() and dtype=="complex64"
+                 and (n==16384 or (n==663000 and bool(_maca_knob("REAL_BOUNDARY_BLOCK"))))
                  and _maca_knob("VEC_IO","0")=="packed")
     if block!=256: kernel_name+=f"_b{block}"
     if packed_io: kernel_name+="_u64"
@@ -360,7 +361,8 @@ def _build_c2r_packed_preprocess_kernel_source(
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_c2r_packed_preprocess_kernel_n{n}_{suffix}"
-    packed_io = (_ix_backend_active() and dtype=="complex64" and n==16384
+    packed_io = (_ix_backend_active() and dtype=="complex64"
+                 and (n==16384 or (n==663000 and bool(_maca_knob("REAL_BOUNDARY_BLOCK"))))
                  and _maca_knob("VEC_IO","0")=="packed")
     if block!=256: kernel_name+=f"_b{block}"
     if packed_io: kernel_name+="_u64"
