@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #pragma once
+#include <atomic>
 #include <cstdlib>
 #include <functional>
 
@@ -111,6 +112,7 @@ struct JitKernel {
   int64_t grid_y_override = 0;
   bool tle_fused_twiddle = false;
   void *jit_function = nullptr;
+  std::atomic<bool> compiled{false};
   std::mutex mutex;
 };
 
