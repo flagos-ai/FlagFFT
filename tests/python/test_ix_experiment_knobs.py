@@ -642,3 +642,14 @@ def test_real_cta_request_preserves_warps_and_batch_tile_without_env(ix_balanced
         assert meta['num_warps']==warps
         assert meta['batch_per_block']==1
     finally:reset_ix_fourstep_preset(token)
+
+
+def test_full_tle_cta_keeps_pingpong_when_an_intermediate_group_is_partial(ix_balanced_profile,monkeypatch):
+    from flagfft_codegen.kernels_common import LeafPlan,_use_single_smem_buffer
+    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','0')
+    monkeypatch.setenv('FLAGFFT_IX_BATCH_PACK','1')
+    full=LeafPlan(16384,(32,32,16),1,512,16,(),16384,'forward','complex64')
+    half=LeafPlan(8192,(32,16,16),1,256,16,(),8192,'inverse','complex64')
+    assert _use_single_smem_buffer(full,io_mode='contiguous')
+    assert not _use_single_smem_buffer(half,io_mode='contiguous')
+    assert not _use_single_smem_buffer(half,io_mode='packed_c2r')

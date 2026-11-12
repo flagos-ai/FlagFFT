@@ -9,11 +9,12 @@ def test_mixed_stage_writes_are_bijections_before_fence_removal():
         @staticmethod
         def where(condition, yes, no):
             return yes if condition else no
-    for factors in ((17,13),(25,17),(12,13,5),(30,10,5),(24,13,5)):
+    for factors in ((17,13),(25,17),(12,13,5),(30,10,5),(24,13,5),(32,16,16),(32,32,16)):
         n=math.prod(factors)
         # Include the real cooperative cap: later stages can have multiple
         # groups even though all stores together must remain a permutation.
-        widths=((50,)*3 if factors==(30,10,5) else
+        widths=((256,)*3 if n==8192 else (512,)*3 if n==16384 else
+                (50,)*3 if factors==(30,10,5) else
                 tuple(next(w for w in range(min(n//r,128),0,-1) if (n//r)%w==0)
                       for r in factors))
         for stage in range(len(factors)-1):

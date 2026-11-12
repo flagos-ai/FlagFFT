@@ -1996,8 +1996,8 @@ namespace {
     // experiments must still provide the complete launch configuration.
     const char *warps = std::getenv("FLAGFFT_IX_WARPS");
     const std::string warp_arg=warps ? warps : (qualified ? (request.ix_fourstep_preset==7 ? "16" : "8") : "");
-    if (warp_arg!="8" && warp_arg!="16") {
-      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_WARPS=8 or 16");
+    if (warp_arg!="4" && warp_arg!="8" && warp_arg!="16") {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_WARPS=4, 8 or 16");
     }
     const char *batch_pack = std::getenv("FLAGFFT_IX_BATCH_PACK");
     const std::string batch_arg=batch_pack ? batch_pack : (qualified ? "1" : "");
@@ -2033,16 +2033,17 @@ namespace {
         throw std::runtime_error("FLAGFFT_IX_CTA_RADIX_ORDER must be 0, 1 or 2");
       std::rotate(factors.begin(),factors.begin() + (*order-'0'),factors.end());
     }
-    // Fixed lanes cover every intermediate butterfly in the 16K TLE case,
-    // admitting the existing barrier-protected single shared-buffer path.
-    // The 8K TLE case retains ping-pong buffers because its middle stage has
-    // two register groups. The portable path uses register-tensor exchange.
+    const int64_t max_radix=*std::max_element(factors.begin(),factors.end());
+    const bool single_tle=std::all_of(factors.begin(),factors.end()-1,
+                                    [&](int64_t radix) { return radix==max_radix; });
+    // Rotated factor orders can need several groups. Only complete
+    // intermediate stages may reuse the TLE shared buffer.
     const int64_t joined_bytes = portable
         ? (factors.size()>3 ? n*2 : (n / factors.back()) * factors.front()) *
               static_cast<int64_t>(sizeof(float))
-        : n * (n == 8192 ? 4 : 2) * static_cast<int64_t>(sizeof(float));
+        : n * (single_tle ? 2 : 4) * static_cast<int64_t>(sizeof(float));
     if (joined_bytes * cta_batch_pack > adaptor::max_dynamic_smem_bytes(request.device_index)) return nullptr;
-    const int64_t lanes = portable ? 128 : n / factors.front();
+    const int64_t lanes = portable ? 128 : n / max_radix;
     return std::make_shared<LeafPlanNode>(n, std::move(factors), 1, lanes, 16,
                                            std::vector<int64_t>{}, n);
   }

@@ -1370,9 +1370,11 @@ def _emit_stage_block(
         # The bounded mixed-radix experiment enumerates every store group so
         # the LLVM dependence check can still require an acyclic function.
         mixed_disjoint = (_ix_backend_active() and dtype == "complex64"
-                          and n in {221,425,780,1500,1560}
                           and _maca_knob("TLE_DISJOINT_STAGE","0") == "1"
-                          and _maca_knob("TLE_DISJOINT_MIXED","0") == "1")
+                          and ((n in {221,425,780,1500,1560}
+                                and _maca_knob("TLE_DISJOINT_MIXED","0") == "1")
+                               or (n in {8192,16384} and io_mode in {"contiguous","packed_c2r"}
+                                   and _maca_knob("TLE_DISJOINT_CTA","0") == "1")))
         loop = "static_range" if mixed_disjoint else "range"
         lines.append(f"    for group_{stage} in tl.{loop}(0, {groups}):")
         indent = "        "
@@ -3332,9 +3334,14 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_smstore"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
+    cta_disjoint = (n in {8192,16384} and batch_pack==1
+        and io_mode in {"contiguous","packed_c2r"}
+        and math.prod(factors)==n
+        and all(n % (radix*width)==0 for radix,width in zip(factors,stage_lanes))
+        and _maca_knob("TLE_DISJOINT_CTA","0")=="1")
     disjoint_stage = (
         _ix_backend_active() and not portable_exchange and plan.dtype=="complex64"
-        and inner_pack>1
+        and (cta_disjoint or (inner_pack>1
         and ((64<=n<=256 and len(factors)==2
               and all(radix & (radix-1)==0 for radix in factors)
               and all(n==radix*lanes for radix,lanes in zip(factors,stage_lanes)))
@@ -3342,7 +3349,7 @@ def _build_leaf_kernel_source_for_io(
                  and all(n % (radix*lanes)==0 for radix,lanes in zip(factors,stage_lanes))
                  and _maca_knob("TLE_DISJOINT_MIXED","0")=="1"))
         and (io_mode.startswith("four_step_") or io_mode.startswith("bluestein_four_step_"))
-        and not io_mode.endswith("_strided")
+        and not io_mode.endswith("_strided")))
         and _maca_knob("TLE_DISJOINT_STAGE","0")=="1"
     )
     if disjoint_stage:
