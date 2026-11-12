@@ -1687,6 +1687,7 @@ class TritonCompiler {
   bool ix_ct_single_policy_ = false;
   bool ix_ct_batch_policy_ = false;
   bool ix_real_single_pack_ = false;
+  bool ix_prime_3d_policy_ = false;
   int ix_ct_single_tle_policy_ = 0;
   std::string maca_tail_policy_ = "off";
 
@@ -1827,6 +1828,8 @@ bool ix_packed_real_policy_enabled(const FFTRequest &request);
 int ix_ct_single_tle_policy(const FFTRequest &request);
 int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
                                 int64_t n0, int64_t n1, int64_t n2 = 0);
+bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
+                                 int64_t n0, int64_t n1, int64_t n2);
 std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request);
 std::vector<DeviceAllocation> build_raw_cube_dft_tables(int64_t n, const FFTRequest &request);
 

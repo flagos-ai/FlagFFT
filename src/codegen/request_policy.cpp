@@ -24,6 +24,21 @@
 
 namespace flagfft {
 
+bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
+                                 int64_t n0, int64_t n1, int64_t n2) {
+  if (request.device_type!="ix" || request.device_arch!="71" ||
+      request.origin_rank!=3 || request.raw_dim!=3 ||
+      request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
+      request.input_layout!="contiguous" || request.requires_contiguous_copy ||
+      (batch!=1 && batch!=4) || n0!=16 || n1!=997 || n2!=64) return false;
+  const char *policy=std::getenv("FLAGFFT_EXECUTION_POLICY");
+  if (policy && std::string(policy)!="balanced") return false;
+  const char *value=std::getenv("FLAGFFT_IX_PRIME_3D");
+  if (!value || std::string(value)=="1") return true;
+  if (std::string(value)=="0") return false;
+  throw std::runtime_error("FLAGFFT_IX_PRIME_3D must be 0 or 1");
+}
+
 int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
                                 int64_t n0, int64_t n1, int64_t n2) {
   const bool matrix=request.origin_rank==2 && request.raw_dim==2 &&

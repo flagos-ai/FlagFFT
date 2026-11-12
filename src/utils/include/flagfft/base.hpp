@@ -133,6 +133,7 @@ struct FFTRequest {
   // Parent-qualified IX layouts pass their measured tile to axis compilers.
   // Zero preserves the ordinary leaf policy.
   int64_t ix_warp_fft_pack_default = 0;
+  bool ix_prime_3d_default = false;
 };
 
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim, ThreeDim };

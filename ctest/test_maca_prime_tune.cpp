@@ -416,3 +416,31 @@ TEST(IXNDPolicy, QualifiedShapesAndExplicitRollbackAreScoped) {
   setenv("FLAGFFT_EXECUTION_POLICY","legacy",1);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,256,256,256),0);
 }
+
+TEST(IXNDPolicy, PrimeAxisPolicyIsScopedToQualifiedParent) {
+  ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
+  ScopedEnv enabled("FLAGFFT_IX_PRIME_3D",nullptr);
+  flagfft::FFTRequest request;
+  request.device_type="ix";request.device_arch="71";
+  request.raw_dim=request.origin_rank=3;
+  request.input_dtype=request.output_dtype="complex64";
+  request.input_layout="contiguous";
+  EXPECT_TRUE(flagfft::ix_prime_3d_default_enabled(request,1,16,997,64));
+  EXPECT_TRUE(flagfft::ix_prime_3d_default_enabled(request,4,16,997,64));
+  EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,3,16,997,64));
+  EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,4,128,2048,64));
+  request.origin_rank=1;
+  EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,4,16,997,64));
+  request.origin_rank=3;request.requires_contiguous_copy=true;
+  EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,4,16,997,64));
+  request.requires_contiguous_copy=false;request.input_dtype="complex128";
+  EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,4,16,997,64));
+  request.input_dtype="complex64";request.device_type="maca";
+  EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,4,16,997,64));
+  request.device_type="ix";
+  setenv("FLAGFFT_IX_PRIME_3D","0",1);
+  EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,4,16,997,64));
+  setenv("FLAGFFT_IX_PRIME_3D","1",1);
+  setenv("FLAGFFT_EXECUTION_POLICY","legacy",1);
+  EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,4,16,997,64));
+}

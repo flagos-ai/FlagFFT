@@ -183,6 +183,8 @@ def main() -> None:
                         help="enable the scoped IX FP32 batch-64 CT leaf policy")
     parser.add_argument("--ix-real-single-pack", action="store_true",
                         help="use one transform per block for IX N=210 real single")
+    parser.add_argument("--ix-prime-3d", action="store_true",
+                        help="enable parent-qualified IX prime-axis 3D defaults")
     parser.add_argument("--ix-ct-single-tle", type=int, choices=(0, 1, 2), default=0,
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
     parser.add_argument("--maca-tail-mode",
@@ -223,6 +225,8 @@ def main() -> None:
     set_ix_warp_fft_pack(args.ix_warp_fft_pack)
     set_ix_ct_batch_default(args.ix_ct_batch)
     set_ix_real_single_pack(args.ix_real_single_pack)
+    from .target import set_ix_prime_3d
+    set_ix_prime_3d(args.ix_prime_3d)
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
@@ -261,6 +265,8 @@ def main() -> None:
             profile_dir += "-ct-batch"
         if args.ix_real_single_pack:
             profile_dir += "-real-single-pack"
+        if args.ix_prime_3d:
+            profile_dir += "-prime3d"
         if args.ix_ct_single_tle:
             profile_dir += f"-tle{args.ix_ct_single_tle}"
         if ix_large_fourstep:

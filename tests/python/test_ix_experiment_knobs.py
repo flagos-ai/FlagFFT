@@ -534,3 +534,28 @@ def test_single_real_vector_io_default_is_scoped_and_has_rollback(ix_profile,mon
         assert _maca_knob('VEC_IO','0')=='0'
     finally:
         set_ix_real_single_pack(previous);reset_profile(token)
+
+
+@pytest.mark.parametrize('length,factors,mode',[(16,(4,4),'permuted_store'),(64,(4,4,4),'permuted_store_r2c'),(2048,(16,16,8),'bluestein_prepare_leaf'),(2048,(16,16,8),'bluestein_finish_leaf')])
+def test_prime_3d_context_matches_explicit_knobs_and_preserves_rollback(ix_balanced_profile,monkeypatch,length,factors,mode):
+    from flagfft_codegen.target import ix_prime_3d_enabled,set_ix_prime_3d
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    previous=ix_prime_3d_enabled()
+    knobs={'WARP_FILL_PACK':'1','BATCH_INTERLEAVE':'1','BLUESTEIN_SINGLE_SMEM':'1'}
+    for knob in knobs:monkeypatch.delenv('FLAGFFT_IX_'+knob,raising=False)
+    plan=LeafPlan(length,factors,1,128 if length==2048 else 16,2 if length==2048 else 1,(),length,'forward','complex64')
+    try:
+        set_ix_prime_3d(True)
+        name,scoped=_build_leaf_kernel_source_for_io(plan,io_mode=mode,prime_n=997 if length==2048 else 0)
+        set_ix_prime_3d(False)
+        for knob,value in knobs.items():monkeypatch.setenv('FLAGFFT_IX_'+knob,value)
+        explicit_name,explicit=_build_leaf_kernel_source_for_io(plan,io_mode=mode,prime_n=997 if length==2048 else 0)
+        assert (name,scoped)==(explicit_name,explicit)
+        for knob in knobs:monkeypatch.setenv('FLAGFFT_IX_'+knob,'0')
+        set_ix_prime_3d(True)
+        _,rolled_back=_build_leaf_kernel_source_for_io(plan,io_mode=mode,prime_n=997 if length==2048 else 0)
+        set_ix_prime_3d(False)
+        _,legacy=_build_leaf_kernel_source_for_io(plan,io_mode=mode,prime_n=997 if length==2048 else 0)
+        assert rolled_back==legacy
+    finally:set_ix_prime_3d(previous)

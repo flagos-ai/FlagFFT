@@ -24,6 +24,7 @@ _IX_CT_BATCH_DEFAULT = ContextVar("flagfft_ix_ct_batch_default", default=False)
 _IX_LARGE_FOURSTEP_DEFAULT = ContextVar("flagfft_ix_large_fourstep_default", default=False)
 _IX_WARP_FFT_PACK = ContextVar("flagfft_ix_warp_fft_pack", default=0)
 _IX_REAL_SINGLE_PACK = ContextVar("flagfft_ix_real_single_pack", default=False)
+_IX_PRIME_3D = ContextVar("flagfft_ix_prime_3d", default=False)
 _IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
 _MACA_2D_SINGLE_DEFAULT = ContextVar("flagfft_maca_2d_single_default", default=False)
 _MACA_3D_DEFAULT = ContextVar("flagfft_maca_3d_default", default=False)
@@ -100,6 +101,14 @@ def set_ix_real_single_pack(enabled: bool):
 
 def ix_real_single_pack_enabled() -> bool:
     return _IX_REAL_SINGLE_PACK.get()
+
+
+def set_ix_prime_3d(enabled: bool):
+    return _IX_PRIME_3D.set(bool(enabled))
+
+
+def ix_prime_3d_enabled() -> bool:
+    return _IX_PRIME_3D.get()
 
 
 def set_codegen_target(target: str) -> None:

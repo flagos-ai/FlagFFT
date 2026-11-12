@@ -30,6 +30,7 @@ from .target import (
     ix_large_fourstep_default_enabled,
     ix_ct_single_tle_default,
     ix_real_single_pack_enabled,
+    ix_prime_3d_enabled,
     maca_1d_single_default_enabled,
     maca_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
@@ -339,6 +340,8 @@ def _maca_knob(name: str, default: str = "") -> str:
             defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="4", LANE_MIN="1")
         if ix_real_single_pack_enabled() and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed")
+        if ix_prime_3d_enabled() and current_profile().policy=="balanced":
+            defaults.update(WARP_FILL_PACK="1", BATCH_INTERLEAVE="1", BLUESTEIN_SINGLE_SMEM="1")
         if ix_ct_single_tle_default():
             defaults.update(SMEM_INTERLEAVE="1", RECURRENCE="1")
         if ix_ct_single_tle_default() == 2:
@@ -1110,7 +1113,7 @@ def _leaf_single_smem_buffer_eligible(
         return _ix_permuted_single_smem(plan)
     ix_boundary = (
         profile.backend == "ix" and profile.device_arch == "71"
-        and os.getenv("FLAGFFT_IX_BLUESTEIN_SINGLE_SMEM", "0") == "1"
+        and _maca_knob("BLUESTEIN_SINGLE_SMEM", "0") == "1"
         and io_mode in {"bluestein_prepare_leaf", "bluestein_finish_leaf"}
     )
     ix_cooperative = (

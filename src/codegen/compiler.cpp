@@ -31,6 +31,15 @@
 namespace flagfft {
 namespace {
 
+  struct ScopedBool {
+    bool &value;
+    const bool previous;
+    ScopedBool(bool &value, bool enabled) : value(value), previous(value) { value=enabled; }
+    ~ScopedBool() { value=previous; }
+    ScopedBool(const ScopedBool &)=delete;
+    ScopedBool &operator=(const ScopedBool &)=delete;
+  };
+
   bool flag_or_default(const char *name, bool default_value) {
     const char *value = std::getenv(name);
     return value == nullptr ? default_value : std::string(value) == "1";
@@ -2014,6 +2023,7 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
                                       request.maca_3d_c2c32_single_cube;
   ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
   ix_ct_batch_policy_ = ix_ct_batch_policy_enabled(request);
+  ix_prime_3d_policy_ = request.ix_prime_3d_default;
   ix_real_single_pack_ = request.device_type == "ix" && request.device_arch == "71" &&
                          request.raw_dim == 1 && request.origin_rank <= 1 &&
                          request.batch == 1 &&
@@ -2585,12 +2595,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         ((batch == 1 &&
           maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION", maca_1d_single_policy_)) ||
          use_maca_3d_boundary);
-    const char *ix_3d_boundary = std::getenv("FLAGFFT_IX_3D_BLUESTEIN_BOUNDARY");
     const bool use_ix_3d_boundary_leaf =
         request.device_type == "ix" && request.device_arch == "71" &&
         request.origin_rank == 3 && request.input_dtype == "complex64" &&
-        bluestein->length == 997 && leaf != nullptr && ix_3d_boundary != nullptr &&
-        std::string(ix_3d_boundary) == "1";
+        bluestein->length == 997 && leaf != nullptr &&
+        flag_or_default("FLAGFFT_IX_3D_BLUESTEIN_BOUNDARY",request.ix_prime_3d_default);
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
@@ -3845,6 +3854,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   n0_request.batch = batch * n1 * n2;
 
   const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1,n2);
+  const bool ix_prime_3d=ix_prime_3d_default_enabled(request,batch,n0,n1,n2) &&
+      adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024;
+  ScopedBool prime_scope(ix_prime_3d_policy_,ix_prime_3d);
+  n2_request.ix_prime_3d_default=n1_request.ix_prime_3d_default=
+      n0_request.ix_prime_3d_default=ix_prime_3d;
   n2_request.ix_warp_fft_pack_default=n1_request.ix_warp_fft_pack_default=
       n0_request.ix_warp_fft_pack_default=ix_nd_pack;
 
@@ -5170,6 +5184,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   }
 #endif
 
+  const bool ix_prime_3d=ix_prime_3d_default_enabled(request,batch,n0,n1,n2) &&
+      adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024;
+  ScopedBool prime_scope(ix_prime_3d_policy_,ix_prime_3d);
+  n2_request.ix_prime_3d_default=n1_request.ix_prime_3d_default=
+      n0_request.ix_prime_3d_default=ix_prime_3d;
   n2_request.ix_warp_fft_pack_default=n1_request.ix_warp_fft_pack_default=
       n0_request.ix_warp_fft_pack_default=ix_nd_pack;
   std::shared_ptr<CompiledRawNode> n2_real_fft;

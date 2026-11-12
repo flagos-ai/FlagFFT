@@ -88,7 +88,7 @@ _IX_BATCH_INTERLEAVE_MODES = {
 def _ix_batch_smem_interleave(io_mode: str, portable: bool, pack: int) -> bool:
     if not _ix_backend_active():
         return False
-    setting = os.getenv("FLAGFFT_IX_BATCH_INTERLEAVE", "0")
+    setting = _maca_knob("BATCH_INTERLEAVE", "0")
     if setting not in {"0", "1"}:
         raise ValueError("FLAGFFT_IX_BATCH_INTERLEAVE must be 0 or 1")
     return setting == "1" and not portable and pack > 1 and io_mode in _IX_BATCH_INTERLEAVE_MODES
