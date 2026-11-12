@@ -651,7 +651,7 @@ TEST(IXLeafPlan, CtBatchDefaultsKeepPublicDenseScopeAndQualifiedFactors) {
     for (const auto &kind : {"","r2c","c2r"}) {
       request.real_transform_kind=kind;
       request.input_strides={std::string(kind)=="c2r" ? n/2+1 : n,1};
-      const int preset=n==1024 ? 11 : 9;
+      const int preset=n==1024 ? 11 : n==210 && std::string(kind)!="r2c" ? 12 : 9;
       EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),preset);
       request.ix_fourstep_preset=0;
       flagfft::PlanBuilder before;

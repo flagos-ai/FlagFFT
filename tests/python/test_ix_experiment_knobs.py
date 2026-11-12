@@ -750,3 +750,27 @@ def test_ct1024_default_uses_shared_qualified_launch_and_runtime_batch(
         assert 'tle.gpu.alloc' not in source
     finally:
         reset_ix_fourstep_preset(preset);reset_ix_ct_batch_default(batch)
+
+
+@pytest.mark.parametrize('mode,kind,direction',[
+    ('contiguous','leaf','forward'),('contiguous','leaf','inverse'),
+    ('contiguous_c2r','leaf_c2r','inverse'),
+])
+def test_ct210_recurrence_default_preserves_batched_TLE_launch(
+        ix_balanced_profile,monkeypatch,tmp_path,mode,kind,direction):
+    from flagfft_codegen.target import set_ix_fourstep_preset,reset_ix_fourstep_preset
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    for key in ('VEC_IO','RECURRENCE','BATCH_PACK','PORTABLE_LEAF','WARPS','BATCH_INTERLEAVE'):
+        monkeypatch.delenv('FLAGFFT_IX_'+key,raising=False)
+    token=set_ix_fourstep_preset(12)
+    try:
+        plan=LeafPlan(210,(7,6,5),1,1,1,(),256,direction,'complex64')
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode)
+        meta=_metadata(module_path=tmp_path/'kernel.py',kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type=kind,n1=0,n2=0,dtype='complex64')
+        assert meta['num_warps']==8 and meta['batch_per_block']==8
+        assert 'tw_step_r = tl.load' in source and 'tle.gpu.alloc' in source
+        assert 'nbatch = 1' not in source
+    finally:reset_ix_fourstep_preset(token)

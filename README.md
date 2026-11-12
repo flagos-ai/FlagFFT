@@ -289,8 +289,11 @@ compare with the previous batch path.
 For dense FP32 batch-64 CT requests at N=1024, request preset 11 selects radices 16-by-8-by-8, two physical warps, one FFT per
 CTA, and portable recurrence exchange for C2C, R2C, and C2R. All twelve scoped
 NumPy checks across three input amplitudes passed; minimum speedups were
-0.7804x for C2C, 0.8695x for C2R, and 0.8521x for R2C. At N=16, four FFTs
-share one physical warp; `FLAGFFT_IX_SMALL_CT_BATCH_WARP=0` disables that route.
+0.7804x for C2C, 0.8695x for C2R, and 0.8521x for R2C. At N=16, C2C and R2C pack four FFTs into one physical warp; C2R uses
+one FFT per warp after its three-amplitude qualification reached 0.9884x; `FLAGFFT_IX_SMALL_CT_BATCH_WARP=0` disables that route.
+At N=210, C2C and C2R retain the 7-by-6-by-5 geometry and eight FFTs per
+CTA, with recurrence twiddles selected by request preset 12. Their three-amplitude
+checks passed with minimum speedups of 1.1764x and 0.8776x respectively.
 `FLAGFFT_IX_CT_BATCH_PACKED_IO=0` disables the short-CT request presets.
 
 The dense FP32 C2C request at N=340200 and batch=64 uses packed complex I/O,
@@ -304,8 +307,9 @@ was 0.7623x. The complete frozen 30-operator run remains the acceptance gate.
 Other lengths, batch sizes, ranks, architectures and FP64 retain their existing
 paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to disable
 the single CT policy and request-level Four-Step presets; use the per-path
-switches above for other comparisons. `FLAGFFT_PACKED_REAL=0` separately
-disables half-length real packing. The policies select matching stage-twiddle
+switches above for other comparisons. Use `FLAGFFT_PACKED_REAL=0` together with `FLAGFFT_IX_FUSED_R2C=0`
+to compare R2C with the full-length real path; the fused reconstruction
+has its own switch. The policies select matching stage-twiddle
 tables and have separate in-process and filesystem kernel cache entries.
 
 Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --batches 1,64 --output-dir

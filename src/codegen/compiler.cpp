@@ -79,7 +79,8 @@ namespace {
     if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R &&
         key.kind != KernelKind::LeafR2C && key.kind != KernelKind::LeafPackedR2C &&
         key.kind != KernelKind::LeafPackedC2R) return;
-    int64_t pack = small_batch ? 4 : request.ix_warp_fft_pack_default>0 ? request.ix_warp_fft_pack_default :
+    int64_t pack = small_batch ? (request.real_transform_kind=="c2r" ? 1 : 4) :
+                     request.ix_warp_fft_pack_default>0 ? request.ix_warp_fft_pack_default :
                      (small_real ? 1 : key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
     if (const char *value = std::getenv(key.length == 256
                                          ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
