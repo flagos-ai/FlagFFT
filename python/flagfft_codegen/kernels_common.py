@@ -337,6 +337,8 @@ def _maca_knob(name: str, default: str = "") -> str:
             defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="2", INNER_PACK="4", LANE_MIN="1")
         if ix_ct_batch_default_enabled():
             defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", WARPS="4", LANE_MIN="1")
+        if ix_real_single_pack_enabled() and current_profile().policy=="balanced":
+            defaults.update(VEC_IO="packed")
         if ix_ct_single_tle_default():
             defaults.update(SMEM_INTERLEAVE="1", RECURRENCE="1")
         if ix_ct_single_tle_default() == 2:

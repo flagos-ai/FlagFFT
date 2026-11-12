@@ -2016,8 +2016,10 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
   ix_ct_batch_policy_ = ix_ct_batch_policy_enabled(request);
   ix_real_single_pack_ = request.device_type == "ix" && request.device_arch == "71" &&
                          request.raw_dim == 1 && request.origin_rank <= 1 &&
-                         request.batch == 1 && request.requested_n == 210 &&
-                         request.fft_length == 210 && request.input_dtype == "complex64" &&
+                         request.batch == 1 &&
+                         (request.requested_n == 210 ||
+                          (request.requested_n == 2048 && request.real_transform_kind == "c2r")) &&
+                         request.fft_length == request.requested_n && request.input_dtype == "complex64" &&
                          request.output_dtype == "complex64" &&
                          (request.real_transform_kind == "r2c" ||
                           request.real_transform_kind == "c2r") &&

@@ -515,3 +515,22 @@ def test_ix_packed_real_boundary_pair_io_is_explicit_fp32_only(ix_profile,monkey
             assert '_packed_pair_' in packed and '_packed_pair_' not in original
         else:
             assert '_packed_pair_' not in packed
+
+@pytest.mark.parametrize('policy,expected',[('balanced','packed'),('legacy','0')])
+def test_single_real_vector_io_default_is_scoped_and_has_rollback(ix_profile,monkeypatch,policy,expected):
+    from dataclasses import replace
+    from flagfft_codegen.backend_profile import current_profile
+    from flagfft_codegen.target import ix_real_single_pack_enabled,set_ix_real_single_pack
+    from flagfft_codegen.kernels_common import _maca_knob
+    previous=ix_real_single_pack_enabled()
+    token=set_profile(replace(current_profile(),policy=policy))
+    monkeypatch.delenv('FLAGFFT_IX_VEC_IO',raising=False)
+    try:
+        set_ix_real_single_pack(False)
+        assert _maca_knob('VEC_IO','0')=='0'
+        set_ix_real_single_pack(True)
+        assert _maca_knob('VEC_IO','0')==expected
+        monkeypatch.setenv('FLAGFFT_IX_VEC_IO','0')
+        assert _maca_knob('VEC_IO','0')=='0'
+    finally:
+        set_ix_real_single_pack(previous);reset_profile(token)
