@@ -2016,6 +2016,16 @@ namespace {
     for (int i = 0; i < 3; ++i) {
       factors.push_back(int64_t{1} << (exponent / 3 + (i < exponent % 3 ? 1 : 0)));
     }
+    if (const char *small = std::getenv("FLAGFFT_IX_CTA_SMALL_RADICES")) {
+      if (std::string(small)!="0" && std::string(small)!="1")
+        throw std::runtime_error("FLAGFFT_IX_CTA_SMALL_RADICES must be 0 or 1");
+      if (std::string(small)=="1") {
+        if (!portable)
+          throw std::runtime_error("small-radix IX FourStep CTA requires portable exchange");
+        factors = n==8192 ? std::vector<int64_t>{8,8,8,16}
+                          : std::vector<int64_t>{8,8,16,16};
+      }
+    }
     if (const char *order = std::getenv("FLAGFFT_IX_CTA_RADIX_ORDER")) {
       if (std::string(order) != "0" && std::string(order) != "1" && std::string(order) != "2")
         throw std::runtime_error("FLAGFFT_IX_CTA_RADIX_ORDER must be 0, 1 or 2");
@@ -2026,7 +2036,8 @@ namespace {
     // The 8K TLE case retains ping-pong buffers because its middle stage has
     // two register groups. The portable path uses register-tensor exchange.
     const int64_t joined_bytes = portable
-        ? (n / factors.back()) * factors.front() * static_cast<int64_t>(sizeof(float))
+        ? (factors.size()>3 ? n*2 : (n / factors.back()) * factors.front()) *
+              static_cast<int64_t>(sizeof(float))
         : n * (n == 8192 ? 4 : 2) * static_cast<int64_t>(sizeof(float));
     if (joined_bytes * cta_batch_pack > adaptor::max_dynamic_smem_bytes(request.device_index)) return nullptr;
     const int64_t lanes = portable ? 128 : n / factors.front();
