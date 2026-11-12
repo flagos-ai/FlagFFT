@@ -248,8 +248,10 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 | 1048576 | Resource-bounded dense Four-Step tiles | Half-length complex FFT plus pre/postprocess |
 
 Single real transforms of length 16 use one physical warp; disable this with
-`FLAGFFT_IX_SMALL_REAL=0`. The measured 210/1024/2048 single real boundaries use
-packed complex I/O, with static single-batch indexing where eligible. The
+`FLAGFFT_IX_SMALL_REAL=0`. Single complex transforms of length 16/210/1024/2048
+and single real boundaries of length 210/1024/2048 use packed complex I/O.
+The 1024/2048 leaves specialize single-batch indexing where eligible; disable
+this with `FLAGFFT_IX_STATIC_SINGLE=0`, or use `FLAGFFT_IX_VEC_IO=0` for scalar I/O. The
 16384 single real path can be rolled back with `FLAGFFT_IX_SHORT_REAL=0`.
 
 For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024 or 2048
@@ -257,6 +259,10 @@ use tensor exchange and four physical warps. The 1024-point leaf uses
 `[8,8,4,4]`; the 2048-point C2C/C2R leaf uses its measured factor order.
 The 2048-point R2C path uses the fused 1024-point `[16,8,8]` leaf with two
 physical warps.
+The 16384-point batch-64 C2C plan uses one TLE CTA per transform, with
+`[16,16,16,4]`, sixteen physical warps, and 128 KiB of shared memory. Its
+shared-memory permutation and disjoint-write scheduling keep the transform
+inside the block. `FLAGFFT_IX_FOURSTEP_CTA=0` restores the earlier path.
 The 8191/16381 batch-64 Bluestein plans use their qualified TLE presets:
 respectively 32/16 FFTs per tile, four physical warps, and narrowly scoped
 removal of redundant shared-memory write/write fences. Read/write fences and
@@ -281,9 +287,10 @@ disable fused packed R2C reconstruction. Set `FLAGFFT_IX_CT_BATCH=0` to
 compare with the previous batch path.
 
 Other lengths, batch sizes, ranks, architectures and FP64 retain their existing
-paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to compare
-against the original single implementation. `FLAGFFT_PACKED_REAL=0` can separately
-disable the half-length real path. The policies select matching stage-twiddle
+paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to disable
+the single CT policy and request-level Four-Step presets; use the per-path
+switches above for other comparisons. `FLAGFFT_PACKED_REAL=0` separately
+disables half-length real packing. The policies select matching stage-twiddle
 tables and have separate in-process and filesystem kernel cache entries.
 
 Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --batches 1,64 --output-dir

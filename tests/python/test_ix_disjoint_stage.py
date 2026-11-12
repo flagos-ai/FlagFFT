@@ -10,7 +10,7 @@ def test_mixed_stage_writes_are_bijections_before_fence_removal():
         def where(condition, yes, no):
             return yes if condition else no
     for factors in ((8,8),(16,8),(16,16),(17,13),(25,17),(12,13,5),(30,10,5),(24,13,5),
-                    (32,16,16),(32,32,16),(16,16,16,4)):
+                    (16,16,16,4)):
         n=math.prod(factors)
         # Include the real cooperative cap: later stages can have multiple
         # groups even though all stores together must remain a permutation.

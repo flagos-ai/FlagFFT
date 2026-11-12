@@ -1373,7 +1373,7 @@ def _emit_stage_block(
                           and _maca_knob("TLE_DISJOINT_STAGE","0") == "1"
                           and ((n in {221,425,780,1500,1560}
                                 and _maca_knob("TLE_DISJOINT_MIXED","0") == "1")
-                               or (n in {8192,16384} and io_mode in {"contiguous","packed_c2r"}
+                               or (n==16384 and factors==(16,16,16,4) and io_mode=="contiguous"
                                    and _maca_knob("TLE_DISJOINT_CTA","0") == "1")))
         loop = "static_range" if mixed_disjoint else "range"
         lines.append(f"    for group_{stage} in tl.{loop}(0, {groups}):")
@@ -3334,8 +3334,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_smstore"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
-    cta_disjoint = (n in {8192,16384} and batch_pack==1
-        and io_mode in {"contiguous","packed_c2r"}
+    cta_disjoint = (n==16384 and factors==(16,16,16,4) and batch_pack==1
+        and io_mode=="contiguous"
         and math.prod(factors)==n
         and all(n % (radix*width)==0 for radix,width in zip(factors,stage_lanes))
         and _maca_knob("TLE_DISJOINT_CTA","0")=="1")
