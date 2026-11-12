@@ -32,6 +32,7 @@ from .kernels_common import (
     _is_double_dtype,
     _hcu_backend_active,
     _maca_backend_active,
+    _npu_backend_active,
     _mthreads_backend_active,
     _ix_backend_active,
     _portable_leaf_backend_active,
@@ -91,6 +92,7 @@ def _portable_complex_vector_io() -> bool:
     """
     return (
         (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
+        or (_npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1")
     )
 
 
@@ -100,6 +102,38 @@ def _packed_maca_fp32_complex_io(dtype: str) -> bool:
         and _maca_backend_active()
         and _maca_knob("VEC_IO", "0") == "packed"
     )
+
+
+def _emit_npu_matrix_load(indent, ptr, tag, real, imag, lanes, pack, active, offset, width, batch_base):
+    """Keep the row/column DMA shape explicit until after the global load."""
+    return [
+        f"{indent}{tag}_row = tl.arange(0, {lanes})[:,None]",
+        f"{indent}{tag}_col = four_step_inner_base*2 + tl.arange(0, {2*pack})[None,:]",
+        f"{indent}{tag} = tl.load({ptr} + ({batch_base})*2 + ({tag}_row+{offset})*{2*width} + {tag}_col, "
+        f"({tag}_row < {active}) & ({tag}_col < {2*width}), 0.0)",
+        f"{indent}{real}, {imag} = tl.split(tl.reshape({tag}, ({lanes*pack},2)))",
+    ]
+
+
+def _emit_npu_matrix_store(indent, tag, real, imag, lanes, pack, active, offset, width, transposed, output_rows):
+    lines=[f"{indent}{tag} = tl.reshape(tl.join({real}, {imag}), ({lanes},{pack},2))"]
+    if transposed:
+        lines += [
+            f"{indent}{tag} = tl.reshape(tl.permute({tag},1,0,2), ({pack},{2*lanes}))",
+            f"{indent}{tag}_row = four_step_inner_base + tl.arange(0,{pack})[:,None]",
+            f"{indent}{tag}_col = tl.arange(0,{2*lanes})[None,:]",
+            f"{indent}tl.store(out_ptr + four_step_batch_base*2 + {tag}_row*{2*width} + {tag}_col+{2*offset}, "
+            f"{tag}, ({tag}_row < {output_rows}) & ({tag}_col < {2*active}))",
+        ]
+    else:
+        lines += [
+            f"{indent}{tag} = tl.reshape({tag}, ({lanes},{2*pack}))",
+            f"{indent}{tag}_row = tl.arange(0,{lanes})[:,None]",
+            f"{indent}{tag}_col = four_step_inner_base*2 + tl.arange(0,{2*pack})[None,:]",
+            f"{indent}tl.store(out_ptr + four_step_batch_base*2 + ({tag}_row+{offset})*{2*width} + {tag}_col, "
+            f"{tag}, ({tag}_row < {active}) & ({tag}_col < {2*width}))",
+        ]
+    return lines
 
 
 def _emit_vectorized_complex_load(
@@ -376,6 +410,11 @@ def _emit_input_base(
     lanes: int,
     group_var: str,
 ) -> list[str]:
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
+        # The mixed-radix digit reconstruction is the identity on active
+        # codelets. Preserve that affine address; the GM load already masks
+        # padded lanes and CANN can then issue a contiguous transfer.
+        return [f"{indent}input_base = lane + {lanes} * {group_var}"]
     lines = [
         f"{indent}codelet_in = tl.where(lane_mask, lane + {lanes} * {group_var}, 0)",
         f"{indent}rem_in = codelet_in",
@@ -408,6 +447,8 @@ def _emit_output_base(
     group_var: str,
 ) -> list[str]:
     last_stage = len(factors) - 1
+    if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
+        return [f"{indent}output_base = lane + {lanes} * {group_var}"]
     lines = [
         f"{indent}codelet_out = tl.where(lane_mask, lane + {lanes} * {group_var}, 0)",
         f"{indent}rem_out = codelet_out",
@@ -1210,6 +1251,21 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
+    compact_npu_stage = (portable_exchange and _npu_backend_active()
+        and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"
+        and any(factor & (factor-1) for factor in factors)
+        and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r",
+                        "four_step_row", "four_step_col", "four_step_real_row",
+                        "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"})
+    if compact_npu_stage:
+        lane_block = 1 << (current_lanes-1).bit_length()
+    npu_affine_tables = (portable_exchange and _npu_backend_active()
+        and os.environ.get("FLAGFFT_NPU_AFFINE_MATRIX_IO") == "1")
+    npu_matrix_io = (npu_affine_tables and inner_pack >= 4 and dtype == "complex64"
+        and not fuse_twiddle_into_row and io_mode in {"four_step_row", "four_step_col"})
+    npu_batch_io = (npu_affine_tables and dtype == "complex64"
+        and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"})
+    npu_trig_twiddles = npu_matrix_io and os.environ.get("FLAGFFT_NPU_TRIG_TWIDDLES") == "1"
     hcu_swizzle_override = os.getenv("FLAGFFT_HCU_3D_SMEM_SWIZZLE")
     hcu_swizzle_default = dtype == "complex128" and n >= 64
     hcu_swizzle_enabled = (
@@ -1303,6 +1359,27 @@ def _emit_stage_block(
     )
 
     lines: list[str] = []
+    if compact_npu_stage:
+        lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
+        if inner_pack > 1:
+            width = four_step_n2 if io_mode in {"four_step_row","four_step_real_row","four_step_hermitian_row"} else four_step_n1
+            lines += [f"    inner_slot = lane_vec % {inner_pack}",
+                      f"    lane = lane_vec // {inner_pack}",
+                      "    four_step_inner = four_step_inner_base + inner_slot",
+                      f"    smem_offset = inner_slot * {exchange_slot_stride}",
+                      f"    base_lane_mask = four_step_inner < {width}"]
+        elif smem_pack > 1:
+            lines += [f"    batch_slot = lane_vec // {lane_block}",
+                      f"    lane = lane_vec - batch_slot * {lane_block}",
+                      "    current_batch = batch_id + batch_slot",
+                      f"    batch_base = current_batch * {n}",
+                      f"    smem_offset = batch_slot * {exchange_slot_stride}",
+                      "    base_lane_mask = current_batch < nbatch"]
+            if io_mode in {"contiguous_r2c","contiguous_c2r"}:
+                lines += ["    input_batch_base = current_batch * input_distance",
+                          "    output_batch_base = current_batch * output_distance"]
+        else:
+            lines += ["    lane = lane_vec", "    base_lane_mask = lane >= 0"]
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
     vector_io_allowed = not _non_nvidia_backend_active() or (
@@ -1322,6 +1399,8 @@ def _emit_stage_block(
     )
     vectorized_complex_io = (
         io_mode in {"contiguous", "contiguous_c2r", "permuted_store"}
+        or (io_mode == "contiguous_r2c" and _npu_backend_active()
+            and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1")
         or vectorized_four_step_complex_io
     ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
     hcu_u64_load = (
@@ -1397,9 +1476,66 @@ def _emit_stage_block(
             _emit_route_base(indent, stage, factors, current_lanes, f"group_{stage}")
         )
 
+    if npu_batch_io and stage == 0 and io_mode == "contiguous_c2r":
+        compact_row = 1 << (2*(n//2+1)-1).bit_length()
+        lines += [
+            f"{indent}compact_rows = batch_id + tl.arange(0,{smem_pack})[:,None]",
+            f"{indent}compact_cols = tl.arange(0,{compact_row})[None,:]",
+            f"{indent}compact_input = tl.load(in_ptr + compact_rows*input_distance*2 + compact_cols, "
+            f"(compact_rows < nbatch) & (compact_cols < {2*(n//2+1)}), 0.0)",
+            f"{indent}compact_input = tl.reshape(compact_input,({smem_pack*compact_row},))",
+        ]
     for j in range(radix):
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
+            if npu_batch_io:
+                offset = j * math.prod(factors[1:])
+                if io_mode == "contiguous_c2r":
+                    half_n = n//2+1
+                    slot = "batch_slot" if smem_pack > 1 else "0"
+                    nyquist = f" | (in{j} == {n//2})" if n%2 == 0 else ""
+                    lines += [
+                        f"{indent}compact_freq = tl.where(in{j} < {half_n}, in{j}, {n}-in{j})",
+                        f"{indent}compact_lookup = tl.where(lane_mask, ({slot})*{compact_row}+compact_freq*2, 0)",
+                        f"{indent}r{j} = tl.gather(compact_input, compact_lookup, 0)",
+                        f"{indent}i{j} = tl.gather(compact_input, compact_lookup+1, 0)",
+                        f"{indent}i{j} = tl.where(in{j} < {half_n}, i{j}, -i{j})",
+                        f"{indent}i{j} = tl.where((in{j} == 0){nyquist}, 0.0, i{j})",
+                    ]
+                else:
+                    components = 1 if io_mode == "contiguous_r2c" else 2
+                    distance = "input_distance" if io_mode == "contiguous_r2c" else str(n)
+                    lines += [
+                        f"{indent}batch_rows = batch_id + tl.arange(0,{smem_pack})[:,None]",
+                        f"{indent}batch_cols = tl.arange(0,{lane_block*components})[None,:]",
+                        f"{indent}batch_input{j} = tl.load(in_ptr + batch_rows*({distance})*{components} "
+                        f"+ batch_cols+{offset*components}, (batch_rows < nbatch) & (batch_cols < {current_lanes*components}), 0.0)",
+                    ]
+                    if components == 1:
+                        lines += [f"{indent}r{j} = tl.reshape(batch_input{j},({smem_pack*lane_block},))",
+                                  f"{indent}i{j} = tl.zeros_like(r{j})"]
+                    else:
+                        lines.append(f"{indent}r{j}, i{j} = tl.split(tl.reshape(batch_input{j},({smem_pack*lane_block},2)))")
+                continue
+            if npu_matrix_io:
+                width = four_step_n2 if io_mode == "four_step_row" else four_step_n1
+                offset = j * math.prod(factors[1:])
+                lines.extend(_emit_npu_matrix_load(indent, "in_ptr", f"matrix_input{j}",
+                    f"r{j}", f"i{j}", lane_block, inner_pack, current_lanes, offset, width,
+                    "four_step_batch_base"))
+                if io_mode == "four_step_col":
+                    if npu_trig_twiddles:
+                        scale = _direction_sign(direction)*2*math.pi/(four_step_n1*four_step_n2)
+                        lines += [
+                            f"{indent}outer_angle{j} = in{j}.to(tl.float32)*four_step_inner.to(tl.float32)*{scale:.17g}",
+                            f"{indent}tw_r{j} = tl.cos(outer_angle{j})",
+                            f"{indent}tw_i{j} = tl.sin(outer_angle{j})",
+                        ]
+                    else:
+                        lines.extend(_emit_npu_matrix_load(indent, "twiddle_ptr", f"matrix_phase{j}",
+                            f"tw_r{j}", f"tw_i{j}", lane_block, inner_pack, current_lanes, offset, width, "0"))
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
+                continue
             if io_mode in {"contiguous", "permuted_store"}:
                 if hcu_u64_load:
                     lines.append(
@@ -1891,12 +2027,34 @@ def _emit_stage_block(
                 if j:
                     lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
             else:
-                lines.append(
-                    f"{indent}twr = tl.load(tw{stage}_r_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
-                )
-                lines.append(
-                    f"{indent}twi = tl.load(tw{stage}_i_ptr + logical_phys{j}, mask=lane_mask, other={zero})"
-                )
+                tw_index = f"logical_phys{j}"
+                if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1":
+                    tw_index = f"(lane + {current_lanes} * (group_{stage} * {radix} + {j}))"
+                if npu_trig_twiddles:
+                    prefix = math.prod(factors[:stage])
+                    scale = _direction_sign(direction)*2*math.pi*j/(prefix*radix)
+                    lines += [
+                        f"{indent}tw_frequency = lane-(lane//{prefix})*{prefix}",
+                        f"{indent}tw_angle = tw_frequency.to(tl.float32)*{scale:.17g}",
+                        f"{indent}twr = tl.cos(tw_angle)",
+                        f"{indent}twi = tl.sin(tw_angle)",
+                    ]
+                elif npu_affine_tables:
+                    lines += [
+                        f"{indent}tw_range = tl.arange(0,{lane_block})",
+                        f"{indent}tw_plane_r = tl.load(tw{stage}_r_ptr + {j*current_lanes} + tw_range, tw_range < {current_lanes}, 0.0)",
+                        f"{indent}tw_plane_i = tl.load(tw{stage}_i_ptr + {j*current_lanes} + tw_range, tw_range < {current_lanes}, 0.0)",
+                        f"{indent}tw_lookup = tl.where(lane_mask, lane, 0)",
+                        f"{indent}twr = tl.gather(tw_plane_r, tw_lookup, 0)",
+                        f"{indent}twi = tl.gather(tw_plane_i, tw_lookup, 0)",
+                    ]
+                else:
+                    lines.append(
+                        f"{indent}twr = tl.load(tw{stage}_r_ptr + {tw_index}, mask=lane_mask, other={zero})"
+                    )
+                    lines.append(
+                        f"{indent}twi = tl.load(tw{stage}_i_ptr + {tw_index}, mask=lane_mask, other={zero})"
+                    )
                 lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     if single_smem_buffer and stage > 0 and not is_last:
@@ -1930,6 +2088,11 @@ def _emit_stage_block(
 
     for j in range(radix):
         if is_last:
+            if (io_mode == "contiguous_r2c" and _npu_backend_active()
+                    and j * math.prod(factors[:-1]) >= n//2+1):
+                # These frequencies are outside the compact spectrum. Avoid
+                # constructing an empty masked vector in the CANN lowering.
+                continue
             if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
                 if grouped_maca_cube_store:
                     continue
@@ -1951,6 +2114,27 @@ def _emit_stage_block(
                 )
                 continue
             lines.extend(_emit_output_index(indent, f"out_idx{j}", factors, j))
+            if npu_batch_io:
+                offset = j * math.prod(factors[:-1])
+                real_output = io_mode == "contiguous_c2r"
+                components = 1 if real_output else 2
+                extent = n//2+1 if io_mode == "contiguous_r2c" else n
+                distance = "output_distance" if io_mode != "contiguous" else str(n)
+                value = f"r{j}" if real_output else f"tl.join(r{j},i{j})"
+                lines += [
+                    f"{indent}batch_output{j} = tl.reshape({value},({smem_pack},{lane_block*components}))",
+                    f"{indent}batch_rows = batch_id + tl.arange(0,{smem_pack})[:,None]",
+                    f"{indent}batch_cols = tl.arange(0,{lane_block*components})[None,:]",
+                    f"{indent}tl.store(out_ptr + batch_rows*({distance})*{components} + batch_cols+{offset*components}, "
+                    f"batch_output{j}, (batch_rows < nbatch) & (batch_cols < {current_lanes*components}) "
+                    f"& (batch_cols+{offset*components} < {extent*components}))",
+                ]
+                continue
+            if npu_matrix_io:
+                lines.extend(_emit_npu_matrix_store(indent, f"matrix_output{j}",
+                    f"r{j}", f"i{j}", lane_block, inner_pack, current_lanes,
+                    j * math.prod(factors[:-1]), four_step_n1, io_mode == "four_step_row", four_step_n2))
+                continue
             if io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
                            "rader_prepare_leaf"}:
                 if io_mode == "strided":
@@ -2010,12 +2194,16 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}dst_ptr{j} = out_ptr + (output_batch_base + out_idx{j}) * 2"
                 )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})"
-                )
-                lines.append(
-                    f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
-                )
+                if vectorized_complex_io:
+                    lines.extend(_emit_vectorized_complex_store(indent,f"dst_ptr{j}",
+                        f"r{j}",f"i{j}",f"compact_mask{j}",dtype))
+                else:
+                    lines.append(
+                        f"{indent}tl.store(dst_ptr{j}, r{j}, mask=compact_mask{j})"
+                    )
+                    lines.append(
+                        f"{indent}tl.store(dst_ptr{j} + 1, i{j}, mask=compact_mask{j})"
+                    )
             elif io_mode == "packed_r2c":
                 packed_index = f"out_idx{j}"
                 if not portable_exchange and smem_pack > 1:

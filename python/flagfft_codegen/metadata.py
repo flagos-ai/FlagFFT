@@ -64,6 +64,16 @@ def _csv_ints(raw: str) -> tuple[int, ...]:
 
 
 def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
+    if _npu_backend_active():
+        if os.environ.get("FLAGFFT_NPU_VECTOR_REMAINDER") == "1":
+            from .npu_source import vector_remainders
+            kernel_source = vector_remainders(kernel_source)
+        # CANN exposes tensor slice operations through the language extension.
+        # Use that public surface instead of requiring the optional TLE module.
+        for operation in ("insert_slice", "extract_slice"):
+            kernel_source = kernel_source.replace(f"tle.dsa.{operation}", f"al.{operation}")
+        if "al." in kernel_source and "import triton.language.extra.cann.extension as al" not in kernel_source:
+            kernel_source = "import triton.language.extra.cann.extension as al\n" + kernel_source
     helpers = (
         "import os\n"
         "if (os.environ.get('TRITON_BACKEND') in {'torch_npu', 'npu'}\n"
@@ -87,6 +97,13 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
         helpers += utils_path.read_text() + "\n\n"
 
     for radix in radices:
+        if (_npu_backend_active()
+                and os.environ.get("FLAGFFT_NPU_SYMMETRIC_CODELETS", "1") != "0"):
+            from .npu_codelets import codelet_source
+            optimized = codelet_source(radix)
+            if optimized is not None:
+                helpers += optimized + "\n\n"
+                continue
         codelet_path = _CODELET_DIR / f"radix{radix}.py"
         if codelet_path.exists():
             helpers += codelet_path.read_text() + "\n\n"

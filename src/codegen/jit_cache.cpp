@@ -28,6 +28,49 @@
 namespace flagfft {
 namespace {
 
+  bool npu_auto_blockify_for(const KernelKey &key) {
+    if (key.perm_form=="npu_paired_real_boundary_auto") return true;
+    if (key.perm_form=="npu_frequency_dft") return true;
+    const bool matrix=key.perm_form.rfind("npu_matrix_fourstep_",0)==0 ||
+        key.perm_form=="npu_matrix_pack" || key.perm_form=="npu_matrix_cube";
+    const bool long_power2 = key.length >= 512 &&
+        (key.perm_form == "structured_power2" || key.perm_form == "structured_recursive_power2");
+    const bool structured_fourstep = key.perm_form.rfind("npu_structured_recursive_axis_planar",0)==0;
+    const bool vector_dif = key.perm_form.rfind("npu_vector_dif_",0)==0;
+    // The planner records scheduling per pass, so batch-only choices cannot
+    // silently change another plan that shares the same transform length.
+    if (vector_dif && key.perm_form.size()>=5 &&
+        key.perm_form.compare(key.perm_form.size()-5,5,"_auto")==0) return true;
+    const char *policy = matrix ? "FLAGFFT_NPU_MATRIX_AUTO_BLOCK" :
+                         long_power2 ? "FLAGFFT_NPU_POWER2_AUTO_BLOCK" :
+                         structured_fourstep ? "FLAGFFT_NPU_FOURSTEP_AUTO_BLOCK" :
+                         vector_dif ? "FLAGFFT_NPU_DIF_AUTO_BLOCK" : nullptr;
+    if (policy != nullptr) {
+      if (const char *value=std::getenv(policy)) {
+        const std::string setting(value);
+        if (setting!="0" && setting!="1")
+          throw std::runtime_error(std::string(policy) + " must be 0 or 1");
+        if (setting == "1" && structured_fourstep) {
+          const auto pack_pos = key.perm_form.find("_pack_");
+          const bool row = key.kind == KernelKind::FourStepRow;
+          const int64_t axis = row ? key.four_step_n1 : key.four_step_n2;
+          const int64_t width = row ? key.four_step_n2 : key.four_step_n1;
+          const int64_t budget = axis >= 512 ? 4096 : 2048;
+          const int64_t pack = pack_pos != std::string::npos
+              ? std::stoll(key.perm_form.substr(pack_pos + 6))
+              : std::min({int64_t{8}, width, std::max<int64_t>(1, budget / axis)});
+          // Narrow structured slices currently fail under CANN loop scheduling.
+          // Keep their full logical grid; wider groups have native replay coverage.
+          const bool dense_col=!row && key.four_step_n1>=512 && key.four_step_n2>=512 &&
+              env_flag_enabled(std::getenv("FLAGFFT_NPU_FOURSTEP_DENSE_SECOND"));
+          if (pack < 8 && !(dense_col && pack>=4 && axis*pack==budget)) return false;
+        }
+        return setting=="1";
+      }
+    }
+    return env_flag_enabled(std::getenv("TRITON_ALL_BLOCKS_PARALLEL"));
+  }
+
   // std::hash is not guaranteed to be stable across standard library versions.
   // The two independent FNV streams give request directories stable names.
   std::string request_id(const std::string &request) {
@@ -218,6 +261,88 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
         std::string(fourstep_row_pack != nullptr ? fourstep_row_pack : "auto") + ";col-pack=" +
         std::string(fourstep_col_pack != nullptr ? fourstep_col_pack : "auto");
   }
+  if (adaptor::backend_name() == "npu") {
+    if (key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess) {
+      const char *group=std::getenv("FLAGFFT_NPU_REAL_BOUNDARY_GROUP");
+      cache_key += ";npu-real-boundary-group-v5=" + std::string(group!=nullptr?group:"auto");
+      const char *midpoint=std::getenv("FLAGFFT_NPU_REAL_MIDPOINT_DIRECT");
+      cache_key += ";npu-real-midpoint=" + std::string(midpoint!=nullptr?midpoint:"1");
+    }
+    if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0) {
+      cache_key += ";npu-dif-cube-prefix-v6";
+      if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
+          key.perm_form.find("_dense_batch_f64_c64")!=std::string::npos) {
+        const char *pipeline=std::getenv("FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE");
+        cache_key += ";npu-dif-batch-dense-pipeline-v1=" +
+                     std::string(pipeline!=nullptr?pipeline:"1");
+      }
+      const char *fast9=std::getenv("FLAGFFT_NPU_DIF_FAST9");
+      cache_key += ";npu-dif-radix9-v1=" + std::string(fast9!=nullptr?fast9:"1");
+      const char *pack13=std::getenv("FLAGFFT_NPU_DIF_BATCH_PACK13");
+      cache_key += ";npu-dif-batch13-v1=" + std::string(pack13!=nullptr?pack13:"1");
+      const char *coprime=std::getenv("FLAGFFT_NPU_DIF_COPRIME");
+      cache_key += ";npu-dif-coprime-v2=" + std::string(coprime!=nullptr?coprime:"1");
+      if (key.perm_form.find("_vector17")!=std::string::npos)
+        cache_key += ";npu-dif-vector17-codelet-v1";
+      if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
+          key.perm_form.find("_vectorbasis")!=std::string::npos &&
+          key.perm_form.find("_batchpack")!=std::string::npos &&
+          key.perm_form.find("_half17")!=std::string::npos &&
+          key.direction=="forward" && !key.factors.empty() &&
+          key.factors.front()==17 && (key.length/17+511)/512>=64) {
+        const char *pipeline=std::getenv("FLAGFFT_NPU_DIF_PREFIX_PIPELINE");
+        cache_key += ";npu-dif-prefix-pipeline-v1=" +
+                     std::string(pipeline!=nullptr?pipeline:"1");
+      }
+      const char *component17=std::getenv("FLAGFFT_NPU_DIF_COMPONENT17");
+      const char *wide7=std::getenv("FLAGFFT_NPU_DIF_FIRST7_WIDE");
+      if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
+          key.perm_form.find("_batchpack")!=std::string::npos &&
+          key.perm_form.size()>=5 &&
+          key.perm_form.compare(key.perm_form.size()-5,5,"_auto")==0 &&
+          !key.factors.empty() && key.factors.front()==7 &&
+          (wide7==nullptr || std::string(wide7)!="0"))
+        cache_key += ";npu-dif-first7-wide-v1";
+      if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
+          key.perm_form.find("_vector17")!=std::string::npos &&
+          key.perm_form.find("_batchpack")!=std::string::npos &&
+          (component17==nullptr || std::string(component17)!="0"))
+        cache_key += ";npu-dif-component17-v1";
+      const char *group_branches=std::getenv("FLAGFFT_NPU_DIF_GROUP_BRANCHES");
+      cache_key += ";npu-dif-group-branches-v2=" +
+                   std::string(group_branches!=nullptr?group_branches:"1");
+    }
+    if (key.perm_form.rfind("npu_structured_recursive_axis_planar",0)==0)
+      cache_key += ";npu-structured-contiguous-slices-v1";
+    if (key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0)
+      cache_key += ";npu-flat-power-dif-v1";
+    if (key.perm_form.rfind("npu_vector_dif_aligned_",0)==0) {
+      const char *dense_transpose=std::getenv("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE");
+      cache_key += ";npu-dif-dense-transpose-v2=" +
+                   std::string(dense_transpose!=nullptr?dense_transpose:"1");
+      const char *transpose_points=std::getenv("FLAGFFT_NPU_DIF_TRANSPOSE_POINTS");
+      cache_key += ";npu-dif-transpose-points=" +
+                   std::string(transpose_points!=nullptr?transpose_points:"auto");
+      const char *single_gather=std::getenv("FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH");
+      cache_key += ";npu-dif-single-gather-finish-v1=" +
+                   std::string(single_gather!=nullptr?single_gather:"1");
+    }
+    const char *symmetric_codelets=std::getenv("FLAGFFT_NPU_SYMMETRIC_CODELETS");
+    cache_key += ";npu-symmetric-codelets-v1=" +
+                 std::string(symmetric_codelets!=nullptr?symmetric_codelets:"1");
+    const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
+    cache_key += ";npu-join-mode=" + std::string(join != nullptr ? join : "auto");
+    cache_key += ";npu-auto-blockify=" + std::string(npu_auto_blockify_for(key) ? "1" : "0");
+    if (key.perm_form.rfind("npu_vector_dif_aligned_",0)==0 &&
+        env_flag_enabled(std::getenv("FLAGFFT_NPU_DIF_FUSED_FINISH")))
+      cache_key += ";npu-dif-fused-finish=3";
+    const char *vector_remainder = std::getenv("FLAGFFT_NPU_VECTOR_REMAINDER");
+    cache_key += ";npu-source-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
+    for (const char *name : {"FLAGFFT_NPU_FOURSTEP_DENSE_SECOND", "FLAGFFT_NPU_DIRECT_DFT_PAIR", "FLAGFFT_NPU_DIRECT_DFT_PREFETCH", "FLAGFFT_NPU_DIF_TRANSPOSE_TILE", "FLAGFFT_NPU_DIRECT_DFT_BT", "FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "FLAGFFT_NPU_REAL_BOUNDARY_TILE", "FLAGFFT_NPU_COMPACT_STAGES", "FLAGFFT_NPU_FOURSTEP_PACK", "FLAGFFT_NPU_AFFINE_MATRIX_IO", "FLAGFFT_NPU_TRIG_TWIDDLES"}) {
+      const char *value = std::getenv(name);
+      cache_key += ";" + std::string(name) + "=" + (value != nullptr ? value : "default");
+    }
+  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
     const char *direct_store = std::getenv("FLAGFFT_IX_3D_DIRECT_STORE");
     const char *pair_store = std::getenv("FLAGFFT_IX_3D_PAIR_STORE");
@@ -242,7 +367,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "npu" &&
       (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafStrided ||
        key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafR2C ||
-       key.kind == KernelKind::LeafC2R)) {
+       key.kind == KernelKind::LeafC2R || key.kind == KernelKind::FourStepRow ||
+       key.kind == KernelKind::FourStepCol || key.kind == KernelKind::FourStepRealRow ||
+       key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepR2CCol ||
+       key.kind == KernelKind::FourStepC2RCol || key.kind == KernelKind::FourStepRowStrided ||
+       key.kind == KernelKind::FourStepColStrided)) {
+    const char *vector_remainder = std::getenv("FLAGFFT_NPU_VECTOR_REMAINDER");
+    cache_key += ";npu-vector-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
+    const char *vector_io = std::getenv("FLAGFFT_NPU_PORTABLE_VECTOR_IO");
+    cache_key += ";npu-vector-io=" + std::string(vector_io != nullptr ? vector_io : "0");
     const char *portable_leaf = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
     const bool use_portable_leaf = key.npu_portable_leaf ||
                                    (portable_leaf != nullptr && std::string(portable_leaf) == "1");
@@ -497,6 +630,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::TiledTranspose:
       kernel_kind = "tiled_transpose";
       break;
+    case KernelKind::NpuGroupedFFT64:
+      kernel_kind = "npu_grouped_fft64";
+      break;
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
@@ -557,6 +693,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                         ? std::to_string(key.hcu_3d_middle_batch_pack)
                         : std::string("auto"))
                 << " ";
+  }
+  if (key.npu_batch_pack > 0) {
+    jit_command << "FLAGFFT_NPU_2D_BATCH_PACK=" << key.npu_batch_pack << " ";
   }
   jit_command << shell_quote(python_executable()) << " " << triton_jit_source_entrypoint() << " --kernel "
               << kernel_kind << " --out-dir " << shell_quote(request_dir.string()) << " --dtype "
@@ -628,6 +767,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::StockhamStage) {
     jit_command << " --length " << key.length << " --factors " << shell_quote(join_ints(key.factors))
                 << " --direction " << shell_quote(key.direction);
+    if (key.perm_form == "tle_aiv") jit_command << " --npu-stockham-aiv";
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
       key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||
@@ -655,10 +795,22 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::TiledTranspose) {
     jit_command << " --reshape-n1 " << key.reshape_n1 << " --reshape-n2 " << key.reshape_n2;
   }
+  if (key.kind == KernelKind::TiledTranspose && key.perm_form == "npu_table") {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {
+      throw std::runtime_error("NPU vector transpose requires NPU complex64");
+    }
+    jit_command << " --npu-vector-transpose";
+  }
   if (key.kind == KernelKind::Transpose3D) {
     jit_command << " --transpose3d-n0 " << key.transpose3d_n0 << " --transpose3d-n1 " << key.transpose3d_n1
                 << " --transpose3d-n2 " << key.transpose3d_n2 << " --transpose3d-order "
                 << shell_quote(key.transpose3d_order);
+    if (key.perm_form == "npu_table_loop") {
+      if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {
+        throw std::runtime_error("Table transpose3d requires NPU FP32");
+      }
+      jit_command << " --npu-table-transpose3d";
+    }
   }
   if (key.kind == KernelKind::Fused16Plane || key.kind == KernelKind::Fused32Plane ||
       key.kind == KernelKind::Fused16RealPlane || key.kind == KernelKind::Fused32RealPlane ||
@@ -693,6 +845,215 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     jit_command << " --length " << key.length;
   }
 
+  if (key.kind == KernelKind::NpuGroupedFFT64) {
+    if (key.target.rfind("npu:", 0) != 0 || key.dtype != "complex64") {
+      throw std::runtime_error("Grouped FFT64 body requires NPU FP32");
+    }
+    jit_command << " --npu-fft-group " << key.lanes
+                << " --npu-fft-stride " << key.reshape_n1
+                << " --npu-fft-mode " << key.reshape_n2
+                << " --length " << key.length
+                << " --direction " << shell_quote(key.direction);
+    if (key.perm_form == "radix4_pair") jit_command << " --npu-fft-radix4-pair";
+    if (key.perm_form == "npu_matrix_pack") jit_command << " --npu-matrix-phase pack";
+    if (key.perm_form == "npu_matrix_cube") jit_command << " --npu-matrix-phase cube";
+    if (key.perm_form == "structured_packed_real") jit_command << " --npu-packed-real";
+    if (key.perm_form == "structured_tensor") {
+      if (key.factors.size() != 2 && key.factors.size() != 3)
+        throw std::runtime_error("Tensor FFT key requires two or three axes");
+      jit_command << " --npu-tensor-shape " << shell_quote(join_ints(key.factors));
+    }
+    if (key.perm_form == "structured_power2" || key.perm_form == "structured_packed_real" ||
+        key.perm_form == "structured_recursive_power2") {
+      if (key.factors.size() != 1) throw std::runtime_error("Grouped FFT key requires an output stride");
+      jit_command << " --npu-power2 --npu-fft-output-stride " << key.factors.front();
+      if (key.perm_form == "structured_recursive_power2") jit_command << " --npu-recursive-power2";
+    }
+  }
+
+  if (key.perm_form=="npu_frequency_dft") jit_command << " --npu-frequency-dft";
+  if (key.perm_form.rfind("npu_vector_dif_",0)==0) {
+    const bool coarse=key.perm_form.rfind("npu_vector_dif_coarse_",0)==0;
+    const bool aligned=key.perm_form.rfind("npu_vector_dif_aligned_",0)==0;
+    const bool flat=key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0;
+    const bool cube=key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0;
+    std::string phase=key.perm_form.substr(coarse?22:flat?27:cube?28:aligned?23:15);
+    if (phase.size()>=5 && phase.compare(phase.size()-5,5,"_auto")==0)
+      phase.resize(phase.size()-5);
+    const std::string chain_tag="_matrixchain";
+    const auto chain_pos=phase.rfind(chain_tag);
+    if (cube && chain_pos!=std::string::npos) {
+      const auto columns=phase.substr(chain_pos+chain_tag.size());
+      if (columns!="128" && columns!="256")
+        throw std::runtime_error("Unsupported matrix-chain columns");
+      phase.resize(chain_pos);
+      jit_command << " --npu-vector-dif-matrix-chain-columns " << columns;
+    }
+    const std::string late_batch_tag="_latepairbatch8";
+    if (phase.size()>=late_batch_tag.size() &&
+        phase.compare(phase.size()-late_batch_tag.size(),late_batch_tag.size(),late_batch_tag)==0) {
+      phase.resize(phase.size()-late_batch_tag.size());
+      jit_command << " --npu-vector-dif-late-pair-batch 8";
+    }
+    const std::string late_pair_tag="_latepair91";
+    if (phase.size()>=late_pair_tag.size() &&
+        phase.compare(phase.size()-late_pair_tag.size(),late_pair_tag.size(),late_pair_tag)==0) {
+      phase.resize(phase.size()-late_pair_tag.size());
+      jit_command << " --npu-vector-dif-dense-late-pair";
+    }
+    const std::string terminal_tag="_terminalpair";
+    if (phase.size()>=terminal_tag.size() &&
+        phase.compare(phase.size()-terminal_tag.size(),terminal_tag.size(),terminal_tag)==0) {
+      phase.resize(phase.size()-terminal_tag.size());
+      jit_command << " --npu-vector-dif-terminal-pair";
+    }
+    const std::string basis_tag="_vectorbasis";
+    if (phase.size()>=basis_tag.size() &&
+        phase.compare(phase.size()-basis_tag.size(),basis_tag.size(),basis_tag)==0) {
+      phase.resize(phase.size()-basis_tag.size());
+      jit_command << " --npu-vector-dif-vector-basis";
+    }
+    const std::string finish_tag="_finishbatch4";
+    if (phase.size()>=finish_tag.size() &&
+        phase.compare(phase.size()-finish_tag.size(),finish_tag.size(),finish_tag)==0) {
+      phase.resize(phase.size()-finish_tag.size());
+      jit_command << " --npu-vector-dif-finish-batch4";
+    }
+    if (phase.size()>=13 && phase.compare(phase.size()-13,13,"_codeletreuse")==0) {
+      phase.resize(phase.size()-13);
+      jit_command << " --npu-vector-dif-codelet-reuse";
+    }
+    if (flat && phase.size()>=10 && phase.compare(phase.size()-10,10,"_terminal8")==0) {
+      phase.resize(phase.size()-10);
+      jit_command << " --npu-vector-dif-terminal8";
+    }
+    const std::string dense_batch_tag="_dense_batch_f";
+    const auto dense_batch_pos=phase.rfind(dense_batch_tag);
+    if (dense_batch_pos!=std::string::npos) {
+      const auto tile=phase.substr(dense_batch_pos+dense_batch_tag.size());
+      const auto separator=tile.find("_c");
+      if (separator==std::string::npos)
+        throw std::runtime_error("Malformed batch dense-prefix tile key");
+      const auto frequencies=tile.substr(0,separator), columns=tile.substr(separator+2);
+      if ((frequencies!="32" && frequencies!="64" && frequencies!="128") ||
+          (columns!="16" && columns!="32" && columns!="64"))
+        throw std::runtime_error("Unsupported batch dense-prefix tile key");
+      phase.resize(dense_batch_pos);
+      jit_command << " --npu-vector-dif-dense-prefix"
+                  << " --npu-vector-dif-dense-prefix-columns " << columns
+                  << " --npu-vector-dif-dense-prefix-frequencies " << frequencies;
+    } else if (phase.size()>=12 && phase.compare(phase.size()-12,12,"_dense_short")==0) {
+      phase.resize(phase.size()-12);
+      jit_command << " --npu-vector-dif-dense-prefix";
+    }
+    if (phase.size()>=8 && phase.compare(phase.size()-8,8,"_pitch32")==0) {
+      phase.resize(phase.size()-8);
+      jit_command << " --npu-vector-dif-prefix-pitch 32";
+    }
+    if (phase.size()>=7 && phase.compare(phase.size()-7,7,"_half17")==0) {
+      phase.resize(phase.size()-7);
+      jit_command << " --npu-vector-dif-matrix-first17";
+    }
+    if (phase.size()>=11 && phase.compare(phase.size()-11,11,"_globalconj")==0) {
+      phase.resize(phase.size()-11);
+      jit_command << " --npu-vector-dif-global-inverse";
+    }
+    const std::string first_phase_tag="_firstphase";
+    if (flat && phase.size()>=first_phase_tag.size() &&
+        phase.compare(phase.size()-first_phase_tag.size(),first_phase_tag.size(),first_phase_tag)==0) {
+      phase.resize(phase.size()-first_phase_tag.size());
+      jit_command << " --npu-vector-dif-power-first-phase";
+    }
+    const std::string first_batch_tag="_firstbatch";
+    const auto first_batch_pos=phase.rfind(first_batch_tag);
+    if (flat && first_batch_pos!=std::string::npos) {
+      const auto group=phase.substr(first_batch_pos+first_batch_tag.size());
+      if (group!="8" && group!="16")
+        throw std::runtime_error("Unsupported power first-axis batch group");
+      phase.resize(first_batch_pos);
+      jit_command << " --npu-vector-dif-power-first-batch " << group;
+    }
+    const std::string middle_tag="_middle8";
+    if (flat && phase.size()>=middle_tag.size() &&
+        phase.compare(phase.size()-middle_tag.size(),middle_tag.size(),middle_tag)==0) {
+      phase.resize(phase.size()-middle_tag.size());
+      jit_command << " --npu-vector-dif-power-middle-radix8";
+    }
+    const std::string cube_batch_tag="_cubebatch";
+    const auto cube_batch_pos=phase.rfind(cube_batch_tag);
+    if (flat && cube_batch_pos!=std::string::npos) {
+      const auto group=phase.substr(cube_batch_pos+cube_batch_tag.size());
+      if (group!="8" && group!="32")
+        throw std::runtime_error("Unsupported power Cube batch group");
+      phase.resize(cube_batch_pos);
+      jit_command << " --npu-vector-dif-power-cube-batch " << group;
+    }
+    if (flat && phase.size()>=11 && phase.compare(phase.size()-11,11,"_cubefinish")==0) {
+      phase.resize(phase.size()-11);
+      jit_command << " --npu-vector-dif-power-cube-finish";
+    }
+    if (flat && phase.size()>=16 && phase.compare(phase.size()-16,16,"_workspacepad512")==0) {
+      phase.resize(phase.size()-16);
+      jit_command << " --npu-vector-dif-workspace-padding 512";
+    }
+    const std::string natural_tag="_natural126";
+    if (coarse && phase.size()>=natural_tag.size() &&
+        phase.compare(phase.size()-natural_tag.size(),natural_tag.size(),natural_tag)==0) {
+      phase.resize(phase.size()-natural_tag.size());
+      jit_command << " --npu-vector-dif-natural-prefix";
+    }
+    if (coarse && phase.size()>=6 && phase.compare(phase.size()-6,6,"_dense")==0) {
+      phase.resize(phase.size()-6);
+      jit_command << " --npu-vector-dif-coarse-dense";
+    }
+    if (coarse && phase.size()>=3 && phase.compare(phase.size()-3,3,"_gt")==0) {
+      phase.resize(phase.size()-3);
+      jit_command << " --npu-vector-dif-coarse-gt";
+    }
+    if (coarse && phase.size()>=7 && phase.compare(phase.size()-7,7,"_single")==0) {
+      phase.resize(phase.size()-7);
+      jit_command << " --npu-vector-dif-coarse-single";
+    }
+    if (phase.size()>=10 && phase.compare(phase.size()-10,10,"_batchpack")==0) {
+      phase.resize(phase.size()-10);
+      jit_command << " --npu-vector-dif-batch-pack";
+    }
+    if (phase.size()>=9 && phase.compare(phase.size()-9,9,"_vector17")==0) {
+      phase.resize(phase.size()-9);
+      jit_command << " --npu-vector-dif-vector-first17";
+    }
+    if (phase.size()>=9 && phase.compare(phase.size()-9,9,"_vector15")==0) {
+      phase.resize(phase.size()-9);
+      jit_command << " --npu-vector-dif-vector-second15";
+    }
+    jit_command << " --npu-vector-dif-phase " << shell_quote(phase);
+    if (aligned) jit_command << " --npu-vector-dif-aligned";
+    if (cube) jit_command << " --npu-vector-dif-cube-prefix";
+    if (flat) jit_command << " --npu-vector-dif-flat-power2";
+    if (coarse) jit_command << " --npu-vector-dif-coarse";
+  }
+  if (key.perm_form.rfind("npu_matrix_fourstep_",0)==0) {
+    const std::string phase=key.perm_form.substr(20);
+    const bool wide=phase.size()>5 && phase.substr(phase.size()-5)=="_wide";
+    jit_command << " --npu-matrix-fourstep-phase " << shell_quote(wide?phase.substr(0,phase.size()-5):phase);
+    if (wide) jit_command << " --npu-matrix-fourstep-wide";
+  }
+  if (key.perm_form == "npu_packed_mixed_planar") jit_command << " --npu-packed-mixed-axis";
+  const auto structured_pack=key.perm_form.find("_pack_");
+  std::string structured_form=key.perm_form.substr(0,structured_pack);
+  const bool structured_global=structured_form.size()>=11 &&
+      structured_form.compare(structured_form.size()-11,11,"_globalconj")==0;
+  if (structured_global) structured_form.resize(structured_form.size()-11);
+  if (structured_form=="npu_structured" || structured_form=="npu_structured_planar" ||
+      structured_form=="npu_structured_recursive_axis_planar") {
+    jit_command << " --npu-structured-fft";
+    if (structured_global) jit_command << " --npu-structured-global-inverse";
+    if (structured_form=="npu_structured_recursive_axis_planar")
+      jit_command << " --npu-structured-recursive";
+    if (structured_pack!=std::string::npos)
+      jit_command << " --npu-structured-pack " << shell_quote(key.perm_form.substr(structured_pack+6));
+  }
+
   std::string artifact_json = run_command_capture_stdout(jit_command.str());
   auto kernel = std::make_shared<JitKernel>();
   kernel->kernel_name = json_string_field(artifact_json, "kernel_name");
@@ -700,11 +1061,28 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
 #if defined(BACKEND_MACA)
   kernel->binary_dir = json_string_field(artifact_json, "binary_dir");
 #endif
+  if (adaptor::backend_name() == "npu") {
+    if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0)
+      cache_key += ";npu-dif-cube-prefix-v2";
+    const char *join = std::getenv("FLAGFFT_NPU_JOIN_MODE");
+    kernel->npu_join_lowering = join != nullptr ? join : "auto";
+    if (kernel->npu_join_lowering != "auto" && kernel->npu_join_lowering != "native" &&
+        kernel->npu_join_lowering != "packed")
+      throw std::runtime_error("FLAGFFT_NPU_JOIN_MODE must be auto, native or packed");
+    kernel->npu_auto_blockify = npu_auto_blockify_for(key);
+  }
   kernel->signature = json_string_field(artifact_json, "signature");
   kernel->num_warps = json_int_field(artifact_json, "num_warps");
   kernel->warp_size = json_int_field(artifact_json, "warp_size");
   kernel->profile_id = json_string_field(artifact_json, "profile_id");
   kernel->num_stages = json_int_field(artifact_json, "num_stages");
+  kernel->npu_single_buffer = adaptor::backend_name() == "npu" && kernel->num_stages == 1 &&
+      ((kernel->kernel_name == "dense_prefix_half" &&
+        key.perm_form.find("_dense_batch_f") != std::string::npos) ||
+       kernel->kernel_name == "coarse_dense_prefix" ||
+       kernel->kernel_name == "matrix_chain_finish_batch" ||
+       kernel->kernel_name == "power_cube_finish" ||
+       kernel->kernel_name == "power_cube_finish_batch");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
   if (key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {
@@ -715,6 +1093,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::Transpose3D) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    kernel->npu_permutation_table = key.perm_form == "npu_table_loop";
+  }
+  if (key.kind == KernelKind::TiledTranspose && key.perm_form == "npu_table") {
+    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
+    kernel->transpose_tile_size = json_int_field(artifact_json, "tile_size");
   }
   if (key.kind == KernelKind::RealPairR2CPack || key.kind == KernelKind::RealPairR2CUnpack ||
       key.kind == KernelKind::RealPairC2RPack || key.kind == KernelKind::RealPairC2RUnpack ||
@@ -722,6 +1106,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess ||
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     kernel->rows_per_block = json_int_field(artifact_json, "rows_per_block");
+    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
       key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||

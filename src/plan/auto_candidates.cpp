@@ -238,6 +238,17 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     const bool npu_2d_real_transform = context.real_transform_kind == "r2c" ||
                                        context.real_transform_kind == "c2r";
     const bool npu_2d_c2c = context.real_transform_kind.empty();
+    // Ascend Stockham stages launch once per radix and the scalar kernel
+    // serialises across active butterflies, so a short 1D transform costs more
+    // in stage launches than a single batch-tiled direct DFT.
+    const char *npu_1d_direct_setting = std::getenv("FLAGFFT_NPU_1D_DIRECT_DFT");
+    const bool npu_1d_direct_enabled =
+        npu_1d_direct_setting == nullptr || std::string(npu_1d_direct_setting) != "0";
+    if (npu_1d_direct_enabled && context.origin_rank <= 1 &&
+        context.input_dtype == "complex64" && n > 1 && n <= kDirectDftMaxN) {
+      PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+      return {{node, estimate_direct_dft_cost(n), priority(node)}};
+    }
     const char *npu_3d_leaf_setting = std::getenv("FLAGFFT_NPU_3D_LEAF");
     if (npu_3d_leaf_setting != nullptr && std::string(npu_3d_leaf_setting) != "0" &&
         std::string(npu_3d_leaf_setting) != "1") {
@@ -354,6 +365,65 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
 
     Factorization factorization = factorize_supported_radices(n);
+    const char *structured_pair = std::getenv("FLAGFFT_NPU_STRUCTURED_FOURSTEP");
+    if (structured_pair != nullptr && std::string(structured_pair) == "1" &&
+        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+        n > 2048 && n <= 2048 * 2048 && (n & (n-1)) == 0) {
+      int64_t n1 = 1;
+      while (n1 * n1 < n) n1 *= 2;
+      const int64_t n2 = n / n1;
+      PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,n1,n2,
+          build_auto_node(n1,false),build_auto_node(n2,false));
+      return {{node, static_cast<double>(2*n), priority(node)}};
+    }
+    const char *mixed_pair = std::getenv("FLAGFFT_NPU_MIXED_FOURSTEP");
+    if (mixed_pair != nullptr && std::string(mixed_pair) == "1" &&
+        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+        n > 2048 && n <= 2048*2048 && (n & (n-1)) != 0 &&
+        factorization.remainder == 1) {
+      int64_t best_a = 0, best_b = 0;
+      const char *matrix_setting=std::getenv("FLAGFFT_NPU_MATRIX_FFT");
+      const bool matrix_enabled=matrix_setting && std::string(matrix_setting)=="1";
+      bool best_matrix=false;
+      std::vector<int64_t> best_row, best_col;
+      double best_cost = std::numeric_limits<double>::infinity();
+      for (int64_t a : enumerate_divisors(n)) {
+        const int64_t b = n/a;
+        if (a < 16 || a > b || b > 2048) continue;
+        auto row = select_leaf_factors(a), col = select_leaf_factors(b);
+        if (!should_use_leaf(a,row) || !should_use_leaf(b,col)) continue;
+        const bool matrix_candidate=matrix_enabled && a<=256 && b<=256;
+        const double cost = matrix_candidate ? static_cast<double>(a+b) :
+            estimate_leaf_warm_cost(a,row)/a + estimate_leaf_warm_cost(b,col)/b;
+        if ((matrix_candidate && !best_matrix) ||
+            (matrix_candidate==best_matrix && cost < best_cost)) {
+          best_matrix=matrix_candidate;
+          best_cost = cost; best_a = a; best_b = b;
+          best_row = std::move(row); best_col = std::move(col);
+        }
+      }
+      if (best_a != 0) {
+        PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,best_a,best_b,
+            make_leaf_plan(best_a,best_row),make_leaf_plan(best_b,best_col));
+        return {{node, static_cast<double>(n)*best_cost, priority(node)}};
+      }
+    }
+    // Resource-bounded experiment: reuse the portable fused leaf codelets
+    // instead of one global-memory Stockham launch per radix.
+    if (const char *raw = std::getenv("FLAGFFT_NPU_PORTABLE_LEAF_MAX")) {
+      std::size_t parsed = 0;
+      const int64_t limit = std::stoll(raw, &parsed);
+      if (parsed != std::string(raw).size() || limit < 0 || limit > 2048)
+        throw std::runtime_error("FLAGFFT_NPU_PORTABLE_LEAF_MAX must be in [0,2048]");
+      if (n > 1 && n <= limit && (n & (n-1)) != 0 && context.input_dtype == "complex64" &&
+          context.output_dtype == "complex64" && factorization.remainder == 1) {
+        const auto factors = select_leaf_factors(n);
+        if (should_use_leaf(n, factors)) {
+          PlanNodePtr node = make_leaf_plan(n, factors);
+          return {{node, estimate_leaf_warm_cost(n, factors), priority(node)}};
+        }
+      }
+    }
     const char *factor_split_setting = std::getenv("FLAGFFT_NPU_2D_FACTOR_SPLIT");
     if (factor_split_setting != nullptr && std::string(factor_split_setting) != "0" &&
         std::string(factor_split_setting) != "1") {

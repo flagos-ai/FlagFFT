@@ -877,6 +877,29 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
     return min(pack, _maca_four_step_smem_pack_limit(plan))
 
 
+def _npu_four_step_inner_pack(plan: LeafPlan | None) -> int:
+    raw = os.environ.get("FLAGFFT_NPU_FOURSTEP_PACK", "1")
+    if raw == "auto":
+        requested = 8
+    elif raw in {"1","2","4","8"}:
+        requested = int(raw)
+    else:
+        raise ValueError("FLAGFFT_NPU_FOURSTEP_PACK must be auto, 1, 2, 4 or 8")
+    if plan is None or requested == 1:
+        return 1
+    widths = [1 << (plan.length//r-1).bit_length() for r in plan.factors]
+    if os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") != "1":
+        widths = [max(widths)]*len(widths)
+    joined = max(p*(1 << (r-1).bit_length()) for p,r in zip(widths,plan.factors))
+    # Four complex exchange components plus the two padded join tensors.
+    # Keep 64 KiB of the 192 KiB UB available for codelet temporaries and I/O.
+    per_slot = 4*(1 << (plan.length-1).bit_length())*4 + 2*joined*4
+    pack = 1
+    while pack*2 <= requested and per_slot*pack*2 <= 128*1024:
+        pack *= 2
+    return pack
+
+
 def _four_step_col_inner_pack_for(
     n1: int,
     n2: int,
@@ -884,7 +907,7 @@ def _four_step_col_inner_pack_for(
     plan: LeafPlan | None = None,
 ) -> int:
     if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
-        return 1
+        return _npu_four_step_inner_pack(plan)
     if _portable_leaf_backend_active():
         return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
@@ -914,7 +937,7 @@ def _four_step_row_inner_pack_for(
     plan: LeafPlan | None = None,
 ) -> int:
     if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
-        return 1
+        return _npu_four_step_inner_pack(plan)
     if _portable_leaf_backend_active():
         return _maca_four_step_inner_pack(plan)
     if plan is not None and _mthreads_small_mixed_leaf(plan):
@@ -1240,6 +1263,22 @@ def _npu_backend_active() -> bool:
         or os.environ.get("FLAGTREE_BACKEND") == "ascend"
         or os.environ.get("TRITON_BACKEND") in {"npu", "torch_npu"}
     )
+
+
+def direct_dft_batch_tile(n: int, *, strided: bool = False, dtype: str = "complex64") -> int:
+    """Batches per program for tiny direct DFTs on the NPU.
+
+    Small transforms are launch-bound: at batch 64 the per-program dispatch
+    dominates the arithmetic. Folding a fixed group of batches into one
+    program's vector lanes keeps the grid small without lengthening the
+    dependency chain.
+    """
+    if strided or dtype != "complex64" or not _npu_backend_active() or n > 32:
+        return 1
+    override = os.environ.get("FLAGFFT_NPU_DIRECT_DFT_BT")
+    if override:
+        return max(1, int(override))
+    return 8
 
 
 def _hcu_backend_active() -> bool:

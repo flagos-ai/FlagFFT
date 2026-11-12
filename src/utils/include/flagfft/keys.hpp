@@ -98,6 +98,7 @@ struct KernelKey {
   std::string transpose3d_order;
   std::string perm_form = "outer";
   bool npu_portable_leaf = false;
+  int64_t npu_batch_pack = 0;
   bool hcu_full_smem = false;
   int64_t hcu_3d_middle_batch_pack = 0;
   int64_t cuda_permute_span = 0;
@@ -338,6 +339,9 @@ struct KernelKey {
   static KernelKey reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
   static KernelKey twiddle_reshape_pack(std::string target, std::string dtype, int64_t n1, int64_t n2);
   static KernelKey tiled_transpose(std::string target, std::string dtype, int64_t n0, int64_t n1);
+  static KernelKey npu_grouped_fft64(std::string target, std::string direction,
+                                     int64_t group, int64_t stride, int64_t mode,
+                                     int64_t length = 64);
   static KernelKey transpose3d(
       std::string target, std::string dtype, int64_t n0, int64_t n1, int64_t n2, std::string order);
   static KernelKey real_to_complex(std::string target, std::string dtype, int64_t length);

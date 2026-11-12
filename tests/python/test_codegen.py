@@ -2070,6 +2070,8 @@ def test_jit_r2c_pointwise_source_metadata(jit_source, tmp_path) -> None:
         "nbatch",
     ]
 
+    assert (tmp_path / "flagfft_jit_c2r_packed_preprocess_n18_f64.py").is_file()
+
 
 def test_npu_256_real_pointwise_layout_is_tunable(jit_source, tmp_path, monkeypatch) -> None:
     kernels = (
@@ -2114,7 +2116,6 @@ def test_npu_256_real_pointwise_layout_is_tunable(jit_source, tmp_path, monkeypa
         target="cuda:90:32",
     )
     assert portable["rows_per_block"] == 1
-    assert (tmp_path / "flagfft_jit_c2r_packed_preprocess_n18_f64.py").is_file()
 
 
 def test_packed_real_codegen_requires_even_length_and_pairs_bins(kernels) -> None:
@@ -2528,3 +2529,31 @@ def test_fused_convolution_multigroup_second_fft_uses_distinct_buffers(mode):
     assert 'tl.store(tle.gpu.local_ptr(smem_a_r' in first
     assert 'tl.load(tle.gpu.local_ptr(smem_a_r' in second
     assert 'tl.store(tle.gpu.local_ptr(smem_b_r' in second
+
+@pytest.mark.parametrize("tile", [256, 512, 1024, 2048])
+@pytest.mark.parametrize("kernel", ["real_to_complex", "r2c_half_pack", "compact_to_hermitian_full", "complex_to_real"])
+def test_npu_real_boundary_launch_extent(jit_source, tmp_path, monkeypatch, tile, kernel):
+    monkeypatch.setenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE", str(tile))
+    metadata = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel=kernel, n=46189, dtype="complex64", out_dir=tmp_path,
+        target="npu:Ascend910B4:1")
+    columns = 23095 if kernel == "r2c_half_pack" else 46189
+    assert metadata["grid_x_override"] == (columns + tile - 1) // tile
+    assert metadata["rows_per_block"] == 1
+
+
+@pytest.mark.parametrize("kernel", ["r2c_packed_postprocess", "c2r_packed_preprocess"])
+@pytest.mark.parametrize("n,setting,groups", [(65534, None, 1), (65536, None, 2),
+                                           (65536, "1", 1), (65536, "2", 2)])
+def test_npu_paired_boundary_group_grid(jit_source, tmp_path, monkeypatch, kernel, n, setting, groups):
+    monkeypatch.setenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE", "2048")
+    monkeypatch.setenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "1")
+    if setting is None:
+        monkeypatch.delenv("FLAGFFT_NPU_REAL_BOUNDARY_GROUP", raising=False)
+    else:
+        monkeypatch.setenv("FLAGFFT_NPU_REAL_BOUNDARY_GROUP", setting)
+    metadata = jit_source._emit_r2c_pointwise_jit_kernel(
+        kernel=kernel, n=n, dtype="complex64", out_dir=tmp_path,
+        target="npu:Ascend910B4:1")
+    columns = n // 4 + 1 - int(n % 4 == 0 and (n // 4) % (2048 * groups) == 0)
+    assert metadata["grid_x_override"] == (columns + 2048 * groups - 1) // (2048 * groups)

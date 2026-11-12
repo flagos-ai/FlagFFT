@@ -378,7 +378,7 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   const bool portable_cuda = adaptor::backend_name() == "cuda" && cuda_portable &&
                               std::string(cuda_portable) == "1";
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-    const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix || portable_cuda) ? leaf.length / leaf.factors[stage]
+    const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix || portable_cuda || npu_portable_leaf_enabled(request)) ? leaf.length / leaf.factors[stage]
                           : use_cooperative_stage_lanes(leaf, request)
                               ? cooperative_stage_lanes(leaf.length, leaf.factors[stage], request)
                               : leaf.lanes;

@@ -20,6 +20,20 @@
 #include "triton_jit/triton_jit_function.h"
 
 namespace flagfft {
+#if defined(BACKEND_NPU)
+namespace {
+triton_jit::CompileOptions npu_compile_options(const JitKernel &kernel) {
+  triton_jit::CompileOptions options;
+  options.num_warps = static_cast<int>(kernel.num_warps);
+  options.num_stages = static_cast<int>(kernel.num_stages);
+  options.extra["structured_join_lowering"] = kernel.npu_join_lowering;
+  options.extra["enable_auto_blockify"] = kernel.npu_auto_blockify ? "true" : "false";
+  if (kernel.npu_single_buffer)
+    options.extra["multibuffer"] = "false";
+  return options;
+}
+}
+#endif
 
 JitKernelArg JitKernelArg::device(adaptor::DevicePtr value) {
   JitKernelArg arg;
@@ -76,10 +90,15 @@ void JitKernel::compile() {
 #else
   jit_function = &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
+#if defined(BACKEND_NPU)
+  function->compile(signature,npu_compile_options(*this),
+                    triton_jit::DefaultBackend::get_device_index());
+#else
   function->compile(signature,
                     static_cast<unsigned int>(num_warps),
                     static_cast<unsigned int>(num_stages),
                     triton_jit::DefaultBackend::get_device_index());
+#endif
 #endif
 }
 
@@ -119,6 +138,14 @@ void JitKernel::launch(adaptor::StreamHandle stream,
 #if !defined(BACKEND_MACA)
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
 #endif
+#if defined(BACKEND_NPU)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (direct_launch == nullptr) {
+      direct_launch = function->prepare_direct_launch(signature,npu_compile_options(*this));
+    }
+  }
+#endif
   // Diagnostic timings synchronise each launch and must not be used as
   // end-to-end benchmark results. Disabled unless explicitly requested.
   static const bool profile = env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS"));
@@ -127,7 +154,14 @@ void JitKernel::launch(adaptor::StreamHandle stream,
     timer.emplace();
     timer->start(stream);
   }
-#if defined(BACKEND_MACA)
+#if defined(BACKEND_NPU)
+  auto *direct = static_cast<triton_jit::DefaultBackend::DirectLaunch *>(direct_launch.get());
+  direct->launch(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+                 static_cast<unsigned int>(grid_x),
+                 static_cast<unsigned int>(grid_y),
+                 static_cast<unsigned int>(grid_z),
+                 args.data());
+#elif defined(BACKEND_MACA)
   auto *kernel = static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
   kernel->launch_with_signature(static_cast<unsigned int>(grid_x),
                                 static_cast<unsigned int>(grid_y),

@@ -44,6 +44,9 @@ from .kernels_small_3d import (
     emit_fused_32_plane_kernel,
 )
 from .kernels_small_2d import emit_fused_2d_kernel
+from .kernels_npu_layout import emit_npu_table_transpose3d
+from .kernels_npu_grouped import emit_npu_grouped_fft64
+from .kernels_npu_stockham_aiv import emit_npu_stockham_aiv
 from .artifacts import write_text_atomic
 from .registry import (
     BLUESTEIN,
@@ -53,6 +56,7 @@ from .registry import (
     KERNEL_NAMES,
     RADER,
     REAL_POINTWISE,
+    NPU_GROUPED_FFT,
     RESHAPE,
     SMALL_3D,
     SMALL_2D,
@@ -120,6 +124,11 @@ def main() -> None:
     parser.add_argument("--length", type=int)
     parser.add_argument("--factors", type=_csv_ints)
     parser.add_argument("--lanes", type=int)
+    parser.add_argument("--npu-fft-group", type=int)
+    parser.add_argument("--npu-fft-stride", type=int)
+    parser.add_argument("--npu-fft-mode", type=int)
+    parser.add_argument("--npu-fft-radix4-pair", action="store_true")
+    parser.add_argument("--npu-stockham-aiv", action="store_true")
     parser.add_argument("--num-warps", type=int)
     parser.add_argument("--generic-radices", type=_csv_ints, default=())
     parser.add_argument("--smem-size", type=int)
@@ -131,6 +140,56 @@ def main() -> None:
     )
     parser.add_argument("--four-step-n1", type=int, default=0)
     parser.add_argument("--four-step-n2", type=int, default=0)
+    parser.add_argument("--npu-structured-pack", type=int, choices=(1,2,4,8,16,32))
+    parser.add_argument("--npu-structured-global-inverse", action="store_true")
+    parser.add_argument("--npu-structured-fft", action="store_true")
+    parser.add_argument("--npu-frequency-dft", action="store_true")
+    parser.add_argument("--npu-packed-mixed-axis", action="store_true")
+    parser.add_argument("--npu-structured-recursive", action="store_true")
+    parser.add_argument("--npu-power2", action="store_true")
+    parser.add_argument("--npu-recursive-power2", action="store_true")
+    parser.add_argument("--npu-tensor-shape", type=_csv_ints, default=())
+    parser.add_argument("--npu-vector-dif-coarse-single", action="store_true")
+    parser.add_argument("--npu-vector-dif-coarse", action="store_true")
+    parser.add_argument("--npu-vector-dif-coarse-gt", action="store_true")
+    parser.add_argument("--npu-vector-dif-coarse-dense", action="store_true")
+    parser.add_argument("--npu-vector-dif-natural-prefix", action="store_true")
+    parser.add_argument("--npu-vector-dif-terminal-pair", action="store_true")
+    parser.add_argument("--npu-vector-dif-dense-late-pair", action="store_true")
+    parser.add_argument("--npu-vector-dif-late-pair-batch", type=int, choices=(1,8), default=1)
+    parser.add_argument("--npu-vector-dif-power-middle-radix8", action="store_true")
+    parser.add_argument("--npu-vector-dif-matrix-chain-columns", type=int, choices=(0,128,256), default=0)
+    parser.add_argument("--npu-vector-dif-power-first-phase", action="store_true")
+    parser.add_argument("--npu-vector-dif-power-first-batch", type=int, choices=(1,8,16), default=1)
+    parser.add_argument("--npu-vector-dif-power-cube-finish", action="store_true")
+    parser.add_argument("--npu-vector-dif-power-cube-batch", type=int, choices=(1,8,32), default=1)
+    parser.add_argument("--npu-vector-dif-phase", type=int)
+    parser.add_argument("--npu-vector-dif-aligned", action="store_true")
+    parser.add_argument("--npu-vector-dif-flat-power2", action="store_true")
+    parser.add_argument("--npu-vector-dif-workspace-padding", type=int, choices=[0,512], default=0)
+    parser.add_argument("--npu-vector-dif-terminal8", action="store_true")
+    parser.add_argument("--npu-vector-dif-cube-prefix", action="store_true")
+    parser.add_argument("--npu-vector-dif-vector-first17", action="store_true")
+    parser.add_argument("--npu-vector-dif-vector-second15", action="store_true")
+    parser.add_argument("--npu-vector-dif-batch-pack", action="store_true")
+    parser.add_argument("--npu-vector-dif-prefix-pitch", type=int, choices=(1,32), default=1)
+    parser.add_argument("--npu-vector-dif-dense-prefix", action="store_true")
+    parser.add_argument("--npu-vector-dif-dense-prefix-columns", type=int, choices=(16,32,64), default=32)
+    parser.add_argument("--npu-vector-dif-dense-prefix-frequencies", type=int, choices=(32,64,128), default=32)
+    parser.add_argument("--npu-vector-dif-global-inverse", action="store_true")
+    parser.add_argument("--npu-vector-dif-matrix-first17",action="store_true")
+    parser.add_argument("--npu-vector-dif-codelet-reuse",action="store_true")
+    parser.add_argument("--npu-vector-dif-finish-batch4",action="store_true")
+    parser.add_argument("--npu-vector-dif-vector-basis",action="store_true")
+    parser.add_argument("--npu-matrix-fourstep-wide", action="store_true")
+    parser.add_argument("--npu-matrix-fourstep-phase", choices=("pack0","cube0","pack1","cube1","transpose","pack0_real","cube0_real","cube1_half","transpose_half","transpose_real","cube0_pack1","cube1_finish_real","cube0_real_pack1","cube1_finish","pack_inverse","cube0_inverse_half_pack","cube1_inverse_half_real","cube0_complex_half_pack","cube1_complex_half_finish","cube1_complex_half_finish_narrow","cube0_complex_direct_pack","cube0_complex_direct_combined"))
+    parser.add_argument("--npu-matrix-phase", choices=('pack','cube'))
+    parser.add_argument("--npu-packed-real", action="store_true")
+    parser.add_argument("--npu-fft-output-stride", type=int, default=1)
+    parser.add_argument("--npu-vector-transpose", action="store_true",
+                        help="Use the replacement body for an eligible native NPU 2D transpose")
+    parser.add_argument("--npu-table-transpose3d", action="store_true",
+                        help="Replace a native NPU 3D tile with the same permutation table")
     parser.add_argument(
         "--perm-form",
         choices=(
@@ -215,6 +274,17 @@ def main() -> None:
         "--execution-policy", choices=("legacy", "native", "packed", "balanced")
     )
     args = parser.parse_args()
+    if args.npu_fft_radix4_pair and args.kernel != "npu_grouped_fft64":
+        parser.error("--npu-fft-radix4-pair requires --kernel npu_grouped_fft64")
+    if args.npu_stockham_aiv and args.kernel != "stockham_stage":
+        parser.error("--npu-stockham-aiv requires --kernel stockham_stage")
+    if args.npu_vector_transpose and args.kernel != "tiled_transpose":
+        parser.error("--npu-vector-transpose requires --kernel tiled_transpose")
+    if args.npu_table_transpose3d and (
+        args.kernel != "transpose3d" or not args.target.startswith("npu:")
+        or args.dtype != "complex64"
+    ):
+        parser.error("--npu-table-transpose3d requires an NPU FP32 transpose3d target")
     if args.npu_portable_leaf:
         os.environ["FLAGFFT_NPU_FOURSTEP_LEAF"] = "1"
     set_codegen_target(args.target)
@@ -419,7 +489,32 @@ def main() -> None:
             + ", ".join(f"--{flag.replace('_', '-')}" for flag in missing)
         )
 
-    if spec.family == BLUESTEIN:
+    if args.npu_frequency_dft:
+        if (not args.target.startswith('npu:') or args.dtype!='complex64' or args.kernel!='leaf'):
+            parser.error('Frequency DFT requires an NPU FP32 leaf')
+        from .kernels_npu_frequency_dft import emit_frequency_dft
+        metadata=emit_frequency_dft(args.length,args.direction,args.out_dir)
+    elif args.npu_packed_mixed_axis:
+        if (not args.target.startswith('npu:') or args.dtype!='complex64'
+                or args.kernel not in ('four_step_row','four_step_col')):
+            parser.error('Packed mixed axis requires an NPU FP32 four-step axis')
+        from .kernels_npu_mixed_axis import emit_mixed_axis
+        metadata=emit_mixed_axis(args.factors,args.four_step_n1,args.four_step_n2,
+            args.kernel=='four_step_row',args.direction,args.out_dir)
+    elif args.npu_structured_fft:
+        if (not args.target.startswith('npu:') or args.dtype!='complex64'
+                or args.kernel not in ('leaf','four_step_row','four_step_col')):
+            parser.error('Structured FFT requires an NPU FP32 leaf or four-step axis')
+        from .kernels_npu_structured import emit_structured
+        axis_length = args.four_step_n1 if args.kernel=='four_step_row' else args.four_step_n2
+        metadata=emit_structured(length=args.length,direction=args.direction,out_dir=args.out_dir,
+            first=None if args.kernel=='leaf' else args.kernel=='four_step_row',
+            n1=args.four_step_n1,n2=args.four_step_n2,
+            tile=args.npu_structured_pack or min(8,max(1,(4096 if args.npu_structured_recursive else 2048)//
+                (max(1,axis_length) if args.npu_structured_recursive else
+                 max(args.four_step_n1 or 1,args.four_step_n2 or 1)))),
+            recursive=args.npu_structured_recursive,global_inverse=args.npu_structured_global_inverse)
+    elif spec.family == BLUESTEIN:
         metadata = _emit_bluestein_jit_kernel(
             kernel=args.kernel,
             n=args.bluestein_n,
@@ -447,6 +542,37 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
+    elif args.npu_vector_dif_phase is not None:
+        if not args.target.startswith('npu:') or args.dtype!='complex64':
+            parser.error('Vector DIF requires NPU FP32')
+        from .kernels_npu_dif import emit_vector_dif
+        metadata=emit_vector_dif(args.factors,args.direction,args.npu_vector_dif_phase,args.out_dir,aligned=args.npu_vector_dif_aligned,cube_prefix=args.npu_vector_dif_cube_prefix,flat_power2=args.npu_vector_dif_flat_power2,vector_first17=args.npu_vector_dif_vector_first17,batch_pack=args.npu_vector_dif_batch_pack,vector_second15=args.npu_vector_dif_vector_second15,terminal8=args.npu_vector_dif_terminal8,coarse=args.npu_vector_dif_coarse,global_inverse=args.npu_vector_dif_global_inverse,matrix_first17=args.npu_vector_dif_matrix_first17,prefix_pitch=args.npu_vector_dif_prefix_pitch,dense_prefix=args.npu_vector_dif_dense_prefix,coarse_single=args.npu_vector_dif_coarse_single,codelet_reuse=args.npu_vector_dif_codelet_reuse,coarse_gt=args.npu_vector_dif_coarse_gt,coarse_dense=args.npu_vector_dif_coarse_dense,natural_prefix=args.npu_vector_dif_natural_prefix,terminal_pair=args.npu_vector_dif_terminal_pair,dense_late_pair=args.npu_vector_dif_dense_late_pair,late_pair_batch=args.npu_vector_dif_late_pair_batch,power_cube_finish=args.npu_vector_dif_power_cube_finish,power_cube_batch=args.npu_vector_dif_power_cube_batch,power_middle_radix8=args.npu_vector_dif_power_middle_radix8,power_first_batch=args.npu_vector_dif_power_first_batch,power_first_phase=args.npu_vector_dif_power_first_phase,matrix_chain_columns=args.npu_vector_dif_matrix_chain_columns,workspace_padding=args.npu_vector_dif_workspace_padding,finish_batch4=args.npu_vector_dif_finish_batch4,vector_basis=args.npu_vector_dif_vector_basis,dense_prefix_columns=args.npu_vector_dif_dense_prefix_columns,dense_prefix_frequencies=args.npu_vector_dif_dense_prefix_frequencies)
+    elif args.npu_matrix_fourstep_phase:
+        if not args.target.startswith('npu:') or args.dtype!='complex64':
+            parser.error('Matrix four-step requires NPU FP32')
+        from .kernels_npu_matrix_fourstep import emit_matrix_fourstep
+        metadata=emit_matrix_fourstep(args.four_step_n1,args.four_step_n2,args.npu_matrix_fourstep_phase,args.direction,args.out_dir,wide=args.npu_matrix_fourstep_wide)
+    elif args.npu_matrix_phase:
+        if spec.family != NPU_GROUPED_FFT or not args.target.startswith('npu:') or args.dtype!='complex64':
+            parser.error('Matrix FFT requires an NPU FP32 grouped FFT key')
+        from .kernels_npu_matrix import emit_matrix
+        metadata=emit_matrix(args.length,args.npu_fft_mode,args.direction,args.npu_matrix_phase,args.out_dir)
+    elif args.npu_tensor_shape:
+        if spec.family != NPU_GROUPED_FFT or not args.target.startswith('npu:') or args.dtype!='complex64':
+            parser.error('Tensor FFT requires an NPU FP32 grouped FFT key')
+        from .kernels_npu_tensor import emit_npu_tensor
+        metadata=emit_npu_tensor(args.npu_tensor_shape,args.npu_fft_mode,args.direction,args.out_dir)
+    elif spec.family == NPU_GROUPED_FFT:
+        if not args.target.startswith("npu:") or args.dtype != "complex64":
+            parser.error("npu_grouped_fft64 requires an NPU FP32 target")
+        metadata = emit_npu_grouped_fft64(
+            group=args.npu_fft_group, stride=args.npu_fft_stride,
+            mode=args.npu_fft_mode, direction=args.direction, out_dir=args.out_dir,
+            radix4_pair=args.npu_fft_radix4_pair,
+            length=args.length if args.length is not None else 64,
+            structured=args.npu_power2,output_stride=args.npu_fft_output_stride,packed_real=args.npu_packed_real,
+            recursive=args.npu_recursive_power2,
+        )
     elif spec.family == TRANSPOSE:
         if args.reshape_n1 <= 0 or args.reshape_n2 <= 0:
             parser.error(
@@ -458,6 +584,7 @@ def main() -> None:
             dtype=args.dtype,
             tile_size=args.tile_size,
             out_dir=args.out_dir,
+            npu_vector_transpose=args.npu_vector_transpose,
         )
     elif spec.family == TRANSPOSE3D:
         if (
@@ -470,7 +597,9 @@ def main() -> None:
                 "--kernel transpose3d requires --transpose3d-n0, --transpose3d-n1, "
                 "--transpose3d-n2 and --transpose3d-order"
             )
-        metadata = _emit_tiled_transpose3d_jit_kernel(
+        transpose3d_emitter = (emit_npu_table_transpose3d if args.npu_table_transpose3d
+                               else _emit_tiled_transpose3d_jit_kernel)
+        metadata = transpose3d_emitter(
             n0=args.transpose3d_n0,
             n1=args.transpose3d_n1,
             n2=args.transpose3d_n2,
@@ -538,21 +667,35 @@ def main() -> None:
     elif spec.family in {DIRECT_DFT, STOCKHAM}:
         if args.length is None or args.length <= 0:
             parser.error("--kernel direct_dft requires --length")
-        metadata = emit_jit_kernel(
-            kernel=args.kernel,
-            length=args.length,
-            factors=args.factors if spec.family == STOCKHAM else (),
-            lanes=1,
-            num_warps=1,
-            generic_radices=(),
-            smem_size=0,
-            direction=args.direction,
-            dtype=args.dtype,
-            prime_n=0,
-            four_step_n1=0,
-            four_step_n2=0,
-            out_dir=args.out_dir,
-        )
+        if spec.family == STOCKHAM and args.npu_stockham_aiv:
+            factors = args.factors or ()
+            if len(factors) not in (1, 2, 3):
+                parser.error("--npu-stockham-aiv requires --factors radix[,span[,tile]]")
+            metadata = emit_npu_stockham_aiv(
+                length=args.length,
+                radix=factors[0],
+                span=factors[1] if len(factors) >= 2 else 1,
+                direction=args.direction,
+                dtype=args.dtype,
+                out_dir=args.out_dir,
+                tile=factors[2] if len(factors) == 3 else 128,
+            )
+        else:
+            metadata = emit_jit_kernel(
+                kernel=args.kernel,
+                length=args.length,
+                factors=args.factors if spec.family == STOCKHAM else (),
+                lanes=1,
+                num_warps=1,
+                generic_radices=(),
+                smem_size=0,
+                direction=args.direction,
+                dtype=args.dtype,
+                prime_n=0,
+                four_step_n1=0,
+                four_step_n2=0,
+                out_dir=args.out_dir,
+            )
     elif spec.is_leaf_like:
         if spec.family in {BLUESTEIN_LEAF, BLUESTEIN_FOUR_STEP} and (
             args.bluestein_n is None or args.bluestein_n <= 0

@@ -27,6 +27,7 @@ import multiprocessing
 import os
 import platform
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -984,13 +985,14 @@ def performance_cases(cases: list[dict]) -> list[dict]:
 
 
 def build_accuracy_cmd(
-    case: dict, capture_bin: Path, case_dir: Path, implementation: str
+    case: dict, capture_bin: Path, case_dir: Path, implementation: str,
+    *, preserve_batch: bool = False,
 ) -> list[str]:
     """File-mode capture command, kept for the standalone profiling tools.
 
     The acceptance runner streams instead; see build_stream_accuracy_cmd.
     """
-    return [
+    command = [
         str(capture_bin),
         f"--api={case['api']}",
         f"--shape={'x'.join(str(value) for value in case['shape'])}",
@@ -1001,17 +1003,20 @@ def build_accuracy_cmd(
         f"--output-dir={case_dir}",
         f"--implementation={implementation}",
     ]
+    if preserve_batch:
+        command.append("--preserve-batch=1")
+    return command
 
 
 def build_stream_accuracy_cmd(
-    case: dict, capture_bin: Path, implementation: str
+    case: dict, capture_bin: Path, implementation: str, *, preserve_batch: bool = False,
 ) -> list[str]:
     """Streaming capture command: input on stdin, output on stdout.
 
     Neither the multi-gigabyte input nor the output ever lands in the result
     directory, which is what the acceptance platform has to upload and parse.
     """
-    return [
+    command = [
         str(capture_bin),
         f"--api={case['api']}",
         f"--shape={'x'.join(str(value) for value in case['shape'])}",
@@ -1022,6 +1027,9 @@ def build_stream_accuracy_cmd(
         "--output-dir=-",
         f"--implementation={implementation}",
     ]
+    if preserve_batch:
+        command.append("--preserve-batch=1")
+    return command
 
 
 def build_perf_cmd(case: dict, build_dir: Path, warmup: int, iters: int) -> list[str]:
@@ -1372,6 +1380,16 @@ def fourstep_path_error(case: dict, plan: str | None) -> str | None:
     return None
 
 
+def capture_batch_error(case: dict, plan: str | None) -> str | None:
+    match = re.search(r"(?m)^rank=\d+ n=\[[^\]]+\] batch=(\d+) type=", plan or "")
+    if match is None:
+        return "capture plan is missing the executed batch size"
+    executed = int(match.group(1))
+    if executed != case["batch"]:
+        return f"capture executed batch={executed}, requested batch={case['batch']}"
+    return None
+
+
 def tail_text(path: Path, limit: int = 4000) -> str:
     try:
         with path.open("rb") as stream:
@@ -1396,6 +1414,7 @@ def run_accuracy_capture(
     implementation: str,
     gpu_id: int,
     timeout: int,
+    *, preserve_batch: bool = False,
 ) -> dict:
     """Run one native capture and judge its streamed output against NumPy.
 
@@ -1407,7 +1426,7 @@ def run_accuracy_capture(
     limits = accuracy_limit(case["api"], product(case["shape"]))
     case_scratch.mkdir(parents=True, exist_ok=True)
     log_path = case_scratch / f"{implementation}.log"
-    command = build_stream_accuracy_cmd(case, capture_bin, implementation)
+    command = build_stream_accuracy_cmd(case, capture_bin, implementation, preserve_batch=preserve_batch)
     result: dict[str, Any] = {
         "status": "Error",
         "reference": "numpy.fft",
@@ -1465,6 +1484,8 @@ def run_accuracy_capture(
                     case["direction"],
                     case["batch"],
                 )
+                if process.stdout.read(1):
+                    raise ValueError("capture emitted bytes beyond the expected binary output")
             finally:
                 stop.set()
                 close_quietly(process.stdout)
@@ -1519,9 +1540,13 @@ def run_accuracy_capture(
         result["duration"] = time.monotonic() - started
     if implementation == "flagfft":
         result["plan"] = read_plan(log_path)
-        if path_error := fourstep_path_error(case, result["plan"]):
-            result["status"] = "Failed"
-            result["error"] = path_error
+        if preserve_batch and result["status"] == "Passed":
+            if batch_error := capture_batch_error(case, result["plan"]):
+                result.update(status="Error", error=batch_error)
+        if result["status"] not in ("Error", "Timeout", "Skipped"):
+            if path_error := fourstep_path_error(case, result["plan"]):
+                result["status"] = "Failed"
+                result["error"] = path_error
     if result["status"] in ("Error", "Timeout"):
         detail = tail_text(log_path)
         if detail:
@@ -1595,6 +1620,7 @@ def run_accuracy_case(
                 implementation,
                 gpu_id,
                 timeout,
+                preserve_batch=backend == "npu",
             )
     except Exception as error:
         for field in ("accuracy", "platform_accuracy"):
@@ -1808,6 +1834,11 @@ def worker_proc(
 
 def policy_skip_message(case: dict, phase: str) -> dict:
     """Create a report/CSV message for a case excluded by backend policy."""
+    if phase == "performance":
+        # Timing identities have no accuracy scale. Keep the skip on the same
+        # key as the pre-created performance row instead of adding a duplicate.
+        case = {key: value for key, value in case.items() if key != "scale"}
+        case["case_id"] = case_name(case, performance=True)
     reason = case.get("skip_reason", "unsupported by backend policy")
     reference = ENV_INFO.get("reference_library", "unknown")
     result = {
@@ -2723,7 +2754,7 @@ def main(argv: list[str] | None = None) -> int:
                     messages.append(message)
                     writer.writerow(incremental_row(message))
                     stream.flush()
-            for case in reference_skipped_cases:
+            for case in performance_cases(reference_skipped_cases):
                 if not args.accuracy_only:
                     message = policy_skip_message(case, "performance")
                     messages.append(message)

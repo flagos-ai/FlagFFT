@@ -339,6 +339,28 @@ def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
     assert op_result["performance"]["status"] == "Skipped"
 
 
+def test_reference_performance_skip_has_one_identity_across_scales(operators):
+    op = next(op for op in operators if op["id"] == "2d_c2c")
+    cases = []
+    for scale in (0.5, 1.0, 2.0):
+        case = dict(op_id=op["id"], op_api="c2c", api="c2c", dtype="torch.float32",
+                    rank=2, algorithm="2d", batch_mode="single", shape=[32, 997], batch=1,
+                    placement="out-of-place", direction="forward", scale=scale,
+                    skip_reason="fixed SiP reference factor limit")
+        case["case_id"] = RUN_TESTS.case_name(case)
+        cases.append(case)
+    direct = RUN_TESTS.policy_skip_message(cases[0], "performance")
+    expected = RUN_TESTS.case_name(cases[0], performance=True)
+    assert direct["case_id"] == expected and "scale" not in direct
+    messages = [RUN_TESTS.policy_skip_message(case, "performance")
+                for case in RUN_TESTS.performance_cases(cases)]
+    assert len(messages) == 1
+    result = RUN_TESTS.aggregate_results(messages, [op], cases, False, True)
+    performance = result[op["id"]]["performance"]
+    assert performance["status"] == "Skipped"
+    assert performance["total"] == 1 and list(performance["cases"]) == [expected]
+
+
 def test_dtype_and_placement_are_visible_in_incremental_csv(operators, matrix):
     op = operators[0]
     case = next(
@@ -587,6 +609,25 @@ def test_capture_command_uses_api_instead_of_id_prefix(tmp_path, operators, matr
     perf_cmd = RUN_TESTS.build_perf_cmd(case, tmp_path, 2, 5)
     assert "--print-path" in perf_cmd
     assert "--scale" not in perf_cmd
+
+
+def test_full_batch_capture_is_explicit_without_changing_bounded_default(tmp_path, operators, matrix):
+    case = RUN_TESTS.expand_test_cases(operators, matrix, "3d")[0]
+    for builder in (
+        lambda **kw: RUN_TESTS.build_accuracy_cmd(case,tmp_path/'capture',tmp_path,'flagfft',**kw),
+        lambda **kw: RUN_TESTS.build_stream_accuracy_cmd(case,tmp_path/'capture','flagfft',**kw),
+    ):
+        assert '--preserve-batch=1' not in builder()
+        assert '--preserve-batch=1' in builder(preserve_batch=True)
+
+
+@pytest.mark.parametrize('plan,error', [
+    ('=== FlagFFT Plan ===\nrank=3 n=[128,2048,64] batch=4 type=41\n',None),
+    ('=== FlagFFT Plan ===\nrank=3 n=[128,2048,64] batch=1 type=41\n','capture executed batch=1, requested batch=4'),
+    (None,'capture plan is missing the executed batch size'),
+])
+def test_preserved_batch_checks_the_actual_plan(plan,error):
+    assert RUN_TESTS.capture_batch_error({'batch':4},plan)==error
 
 
 @pytest.mark.parametrize("api", ["c2r", "z2d"])
@@ -1272,3 +1313,31 @@ def test_failed_numeric_metrics_are_written_as_strict_json(tmp_path):
     )
     data = json.loads(path.read_text(), parse_constant=lambda value: pytest.fail(value))
     assert data == {"finite": False, "rel_l2": None, "rel_linf": None}
+
+
+def test_capture_rejects_extra_stdout_bytes(tmp_path, operators, matrix):
+    case = RUN_TESTS.expand_test_cases([operators[0]], matrix, scales="1")[0]
+    capture = fake_capture(tmp_path)
+    capture.write_text(capture.read_text() + '\nsys.stdout.buffer.write(b"unexpected compiler log")\nsys.stdout.buffer.flush()\n')
+    record = RUN_TESTS.run_accuracy_case(
+        case, capture, tmp_path / "output", 0, 20, tmp_path / "scratch"
+    )
+    assert record["accuracy"]["status"] == "Error"
+    assert "beyond the expected binary output" in record["accuracy"]["error"]
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_fourstep_capture_preserves_compile_failure_and_timeout(tmp_path, operators, matrix, timeout):
+    case = next(c for c in RUN_TESTS.expand_all_test_cases(operators, matrix)
+                if c["algorithm"] == "fourstep" and c["dtype"] == "torch.float32")
+    executable = tmp_path / "failed_capture"
+    executable.write_text(f"#!{sys.executable}\nimport sys,time\n"
+                          "sys.stderr.write('compiler diagnostic before plan creation\\n')\n"
+                          "sys.stderr.flush()\n" +
+                          ("time.sleep(30)\n" if timeout else "sys.exit(1)\n"))
+    executable.chmod(0o755)
+    result = RUN_TESTS.run_accuracy_capture(case, executable, tmp_path / "capture",
+                                           "flagfft", 0, 1)
+    assert result["status"] == ("Timeout" if timeout else "Error")
+    assert "compiler diagnostic before plan creation" in result["error"]
+    assert "without a FourStep node" not in result["error"]

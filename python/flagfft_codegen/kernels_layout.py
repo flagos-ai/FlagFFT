@@ -18,7 +18,114 @@ from __future__ import annotations
 
 from textwrap import dedent
 
-from .kernels_common import _dtype_suffix, _zero_other
+from .kernels_common import _dtype_suffix, _npu_backend_active, _zero_other
+
+NPU_RESHAPE_TILE = 32
+NPU_RESHAPE_PROGRAMS = 40
+
+
+def npu_tiled_reshape_pack(n1: int, n2: int, dtype: str) -> bool:
+    """Whether the four-step reshape uses the table-driven NPU tile transpose."""
+    return _npu_backend_active() and dtype == "complex64" and n1 > 1 and n2 > 1
+
+
+def npu_reshape_pack_grid(n1: int, n2: int) -> int:
+    tiles = ((n1 + NPU_RESHAPE_TILE - 1) // NPU_RESHAPE_TILE) * (
+        (n2 + NPU_RESHAPE_TILE - 1) // NPU_RESHAPE_TILE
+    )
+    return min(NPU_RESHAPE_PROGRAMS, tiles)
+
+
+def _npu_reshape_pack_source(n1: int, n2: int, *, twiddle: bool) -> tuple[str, list[str], list[str]]:
+    """Tile-local transpose pack using the 2D transpose byte-offset table.
+
+    The portable pack stores every element to a row-strided address, which the
+    Ascend memory system turns into one transaction per element. Load a
+    (tile x tile) complex block contiguously, permute it with the same table
+    the 2D transpose uses, and write whole transposed rows instead.
+    """
+    R, C = n1, n2
+    total = R * C
+    tile = NPU_RESHAPE_TILE
+    half = 2 * tile
+    n_flat = half * tile
+    row_tiles = (R + tile - 1) // tile
+    col_tiles = (C + tile - 1) // tile
+    tiles = row_tiles * col_tiles
+    programs = min(NPU_RESHAPE_PROGRAMS, tiles)
+    suffix = _dtype_suffix("complex64")
+    kind = "_twiddle_reshape_pack_kernel" if twiddle else "_reshape_pack_kernel"
+    name = f"{kind}_n{R}_{C}_{suffix}_t{tile}p{programs}"
+
+    lines = ["@triton.jit", f"def {name}("]
+    lines.append("    in_ptr,")
+    if twiddle:
+        lines.append("    twiddle_ptr,")
+    lines.extend(["    idx_ptr,", "    out_ptr,", "    nbatch,", "):"])
+    lines.extend([
+        "    pid = tl.program_id(0)",
+        "    batch = tl.program_id(1).to(tl.int64)",
+        f"    src_base = in_ptr + batch * {2 * total}",
+        f"    dst_base = out_ptr + batch * {2 * total}",
+    ])
+    if twiddle:
+        # The twiddle table is shared by every batch row.
+        lines.append("    tw_base = twiddle_ptr")
+    lines.extend([
+        f"    flat_lane = tl.arange(0, {n_flat})",
+        "    perm = tl.load(idx_ptr + flat_lane) >> 2",
+    ])
+    if twiddle:
+        lines.extend([
+            "    swap = flat_lane ^ 1",
+            "    even = (flat_lane % 2) == 0",
+        ])
+    lines.extend([
+        f"    row_lane = tl.arange(0, {tile})",
+        f"    word_lane = tl.arange(0, {half})",
+        f"    for tile_id in range(pid, {tiles}, tl.num_programs(0)):",
+        f"        tile_row = tile_id // {col_tiles}",
+        f"        tile_col = tile_id % {col_tiles}",
+        f"        row = tile_row * {tile} + row_lane",
+        f"        word = tile_col * {half} + word_lane",
+        f"        src_mask = ((row[:, None] < {R}) & (word[None, :] < {2 * C}) &",
+        "                    (batch < nbatch))",
+        f"        data = tl.load(src_base + row[:, None] * {2 * C} + word[None, :],",
+        "                       mask=src_mask, other=0.0)",
+        f"        flat_data = tl.reshape(data, ({n_flat},))",
+    ])
+    if twiddle:
+        lines.extend([
+            f"        tw = tl.load(tw_base + row[:, None] * {2 * C} + word[None, :],",
+            "                      mask=src_mask, other=0.0)",
+            f"        tw_flat = tl.reshape(tw, ({n_flat},))",
+            "        x_partner = tl.gather(flat_data, swap, 0)",
+            "        w_partner = tl.gather(tw_flat, swap, 0)",
+            "        x_r = tl.where(even, flat_data, x_partner)",
+            "        x_i = tl.where(even, x_partner, flat_data)",
+            "        w_r = tl.where(even, tw_flat, w_partner)",
+            "        w_i = tl.where(even, w_partner, tw_flat)",
+            "        product = tl.where(even, x_r * w_r - x_i * w_i,",
+            "                           x_r * w_i + x_i * w_r)",
+            f"        data = tl.reshape(tl.gather(product, perm, 0), ({tile}, {half}))",
+        ])
+    else:
+        lines.extend([
+            f"        data = tl.reshape(tl.gather(flat_data, perm, 0), ({tile}, {half}))",
+        ])
+    lines.extend([
+        f"        col = tile_col * {tile} + row_lane",
+        f"        out_word = tile_row * {half} + word_lane",
+        f"        dst_mask = ((col[:, None] < {C}) & (out_word[None, :] < {2 * R}) &",
+        "                    (batch < nbatch))",
+        f"        tl.store(dst_base + col[:, None] * {2 * R} + out_word[None, :],",
+        "                 data, mask=dst_mask)",
+    ])
+    args = ["in_ptr"]
+    if twiddle:
+        args.append("twiddle_ptr")
+    args += ["idx_ptr", "out_ptr", "nbatch"]
+    return name, "\n".join(lines) + "\n", args
 
 
 def _build_reshape_pack_kernel_source(
@@ -36,6 +143,8 @@ def _build_reshape_pack_kernel_source(
     block = 256
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
+    if npu_tiled_reshape_pack(n1, n2, dtype):
+        return _npu_reshape_pack_source(n1, n2, twiddle=False)
     kernel_name = f"_reshape_pack_kernel_n{R}_{C}_{suffix}"
     source = dedent(
         f"""
@@ -80,6 +189,8 @@ def _build_twiddle_reshape_pack_kernel_source(
     block = 256
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
+    if npu_tiled_reshape_pack(n1, n2, dtype):
+        return _npu_reshape_pack_source(n1, n2, twiddle=True)
     kernel_name = f"_twiddle_reshape_pack_kernel_n{R}_{C}_{suffix}"
     source = dedent(
         f"""
@@ -1205,7 +1316,51 @@ def _build_tiled_transpose3d_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
 
 
+def _build_complex_pair_transpose_kernel_source(
+    n0: int, n1: int, tile_size: int = 32
+) -> tuple[str, str, list[str]]:
+    """Transpose interleaved complex64 with one on-chip vector permutation.
+
+    This implements the existing 2D transpose IO contract. The caller retains
+    the original FFT plan, scratch buffers and launch grid.
+    """
+    if n0 < 1 or n1 < 1 or tile_size < 1 or tile_size & (tile_size - 1):
+        raise ValueError("transpose dimensions must be positive and tile_size a power of two")
+    name = f"_complex_pair_transpose_n{n0}_{n1}_t{tile_size}"
+    log_tile = tile_size.bit_length() - 1
+    # Keep per-matrix coordinates narrow when even masked tile offsets fit.
+    # The outer batch address remains 64-bit for every matrix size.
+    index_type = "int32" if 2 * (n0 + tile_size) * (n1 + tile_size) < 2**31 else "int64"
+    source = dedent(f"""
+        @triton.jit
+        def {name}(in_ptr, out_ptr, nbatch):
+            row = tl.program_id(1).to(tl.{index_type}) * {tile_size} + tl.arange(0, {tile_size})
+            batch = tl.program_id(2).to(tl.int64)
+            word = tl.program_id(0).to(tl.{index_type}) * {2 * tile_size} + tl.arange(0, {2 * tile_size})
+            input_batch = in_ptr + batch * {2 * n0 * n1}
+            output_batch = out_ptr + batch * {2 * n0 * n1}
+            source = row[:, None] * {2 * n1} + word[None, :]
+            mask = (row[:, None] < {n0}) & (word[None, :] < {2 * n1}) & (batch < nbatch)
+            point = tl.load(input_batch + source, mask, 0.0)
+            point = tl.reshape(point, ({2 * tile_size * tile_size},))
+            z = tl.arange(0, {2 * tile_size * tile_size})
+            # All local coordinates are nonnegative powers-of-two ranges.
+            # Signed // and % otherwise expand into division/conversion buffers
+            # on the Ascend compiler, even for these constant denominators.
+            index = ((z >> {log_tile + 1}) << 1) + (((z >> 1) & {tile_size - 1}) << {log_tile + 1}) + (z & 1)
+            point = tl.gather(point, index, 0)
+            point = tl.reshape(point, ({tile_size}, {2 * tile_size}))
+            col = tl.program_id(0).to(tl.{index_type}) * {tile_size} + tl.arange(0, {tile_size})
+            word = tl.program_id(1).to(tl.{index_type}) * {2 * tile_size} + tl.arange(0, {2 * tile_size})
+            target = col[:, None] * {2 * n0} + word[None, :]
+            mask = (col[:, None] < {n1}) & (word[None, :] < {2 * n0}) & (batch < nbatch)
+            tl.store(output_batch + target, point, mask)
+    """)
+    return name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
 __all__ = [
+    "_build_complex_pair_transpose_kernel_source",
     "_build_reshape_pack_kernel_source",
     "_build_tiled_transpose3d_kernel_source",
     "_build_tiled_transpose3d_slice_group_kernel_source",
