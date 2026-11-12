@@ -94,6 +94,13 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
         # Portable MACA kernels do not use TLE. Keep their modules independent
         # of the backend-specific TLE extensions during isolated compilation.
         source = source.replace("import triton.experimental.tle.language as tle\n", "")
+    if "_ixdisjoint_" in kernel_source:
+        import re
+        names=re.findall(r"def (\w+_ixdisjoint_[0-9a-f]{12})\(",kernel_source)
+        if len(names)!=1:
+            raise ValueError("Expected one generated IX disjoint-stage entry")
+        source += ("\nfrom flagfft_codegen.ix_disjoint_stage import register_kernel as _register_ix_stage\n"
+                   + f"_register_ix_stage({names[0]})\n")
     return source
 
 
