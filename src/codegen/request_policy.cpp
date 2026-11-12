@@ -24,6 +24,36 @@
 
 namespace flagfft {
 
+int ix_fourstep_default_preset(const FFTRequest &request) {
+  if (request.device_type!="ix" || request.device_arch!="71" || request.raw_dim!=1 ||
+      request.origin_rank>1 || request.fft_length!=request.requested_n ||
+      request.input_dtype!="complex64" || request.output_dtype!="complex64" ||
+      request.input_layout!="contiguous" || request.requires_contiguous_copy ||
+      (request.batch!=1 && request.batch!=64) || request.input_strides.size()!=2 ||
+      request.input_strides.back()!=1 ||
+      (request.real_transform_kind!="" && request.real_transform_kind!="r2c" &&
+       request.real_transform_kind!="c2r")) return 0;
+  const int64_t dense_input = request.real_transform_kind=="c2r"
+      ? request.requested_n/2+1 : request.requested_n;
+  if (request.input_strides.front()!=dense_input) return 0;
+  const char *policy=std::getenv("FLAGFFT_EXECUTION_POLICY");
+  if (policy && std::string(policy)!="balanced") return 0;
+  int preset=0;
+  if (request.batch==64 && request.requested_n==8191) preset=1;
+  if (request.batch==64 && request.requested_n==16381) preset=2;
+  if (request.requested_n==16384 && request.real_transform_kind.empty())
+    preset=request.batch==1 ? 3 : 4;
+  if (request.requested_n==663000) preset=request.batch==1 ? 5 : 6;
+  if (!preset) return 0;
+  // Keep factory integration opt-in until its own default-path qualification.
+  const char *setting=std::getenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS");
+  if (!setting || std::string(setting)=="0") return 0;
+  if (std::string(setting)!="1")
+    throw std::runtime_error("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS must be 0 or 1");
+  const char *rollback=std::getenv(request.batch==1 ? "FLAGFFT_IX_CT_SINGLE" : "FLAGFFT_IX_CT_BATCH");
+  return rollback && std::string(rollback)=="0" ? 0 : preset;
+}
+
 bool ix_small_real_warp_default_enabled(const FFTRequest &request) {
   if (request.device_type!="ix" || request.device_arch!="71" || request.raw_dim!=1 ||
       request.origin_rank>1 || request.batch!=1 || request.requested_n!=16 ||

@@ -31,6 +31,7 @@ from .target import (
     ix_ct_single_tle_default,
     ix_real_single_pack_enabled,
     ix_prime_3d_enabled,
+    ix_fourstep_preset,
     maca_1d_single_default_enabled,
     maca_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
@@ -349,6 +350,15 @@ def _maca_knob(name: str, default: str = "") -> str:
         if ix_large_fourstep_default_enabled():
             defaults.update(PORTABLE_LEAF="1", RECURRENCE="1", INNER_PACK="16",
                             MAX_PACK="16", RESOURCE_WARPS="1", VEC_IO="packed")
+        preset = ix_fourstep_preset()
+        if preset and current_profile().policy == "balanced":
+            defaults.update(PORTABLE_LEAF="0", RECURRENCE="1", VEC_IO="packed",
+                            SMEM_INTERLEAVE="1", TLE_DISJOINT_STAGE="1")
+            if preset <= 4:
+                defaults.update(WARPS="4", TLE_INNER_PACK="32" if preset in {1,4} else "16",
+                                TLE_IO_LAYOUT="0" if preset==2 else "1")
+            else:
+                defaults.update(TLE_INNER_PACK="4", TLE_DISJOINT_MIXED="1", RADER_CODELET="1")
         return os.environ.get(f"FLAGFFT_IX_{name}", defaults.get(name, default)).strip().lower()
     if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
         npu_env_name = {

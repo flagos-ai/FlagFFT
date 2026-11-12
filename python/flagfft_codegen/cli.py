@@ -185,6 +185,8 @@ def main() -> None:
                         help="use one transform per block for IX N=210 real single")
     parser.add_argument("--ix-prime-3d", action="store_true",
                         help="enable parent-qualified IX prime-axis 3D defaults")
+    parser.add_argument("--ix-fourstep-preset", type=int, choices=range(7), default=0,
+                        help="public-request IX FourStep preset transported by the native planner")
     parser.add_argument("--ix-ct-single-tle", type=int, choices=(0, 1, 2), default=0,
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
     parser.add_argument("--maca-tail-mode",
@@ -227,6 +229,8 @@ def main() -> None:
     set_ix_real_single_pack(args.ix_real_single_pack)
     from .target import set_ix_prime_3d
     set_ix_prime_3d(args.ix_prime_3d)
+    from .target import set_ix_fourstep_preset
+    set_ix_fourstep_preset(args.ix_fourstep_preset)
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
@@ -267,6 +271,8 @@ def main() -> None:
             profile_dir += "-real-single-pack"
         if args.ix_prime_3d:
             profile_dir += "-prime3d"
+        if args.ix_fourstep_preset:
+            profile_dir += f"-fourstep{args.ix_fourstep_preset}"
         if args.ix_ct_single_tle:
             profile_dir += f"-tle{args.ix_ct_single_tle}"
         if ix_large_fourstep:
@@ -618,6 +624,7 @@ def main() -> None:
             "maca_1d_single_default": args.maca_1d_single,
             "ix_ct_single_default": args.ix_ct_single,
             "ix_ct_batch_default": args.ix_ct_batch,
+            "ix_fourstep_preset": args.ix_fourstep_preset,
             "ix_large_fourstep_default": ix_large_fourstep,
             "ix_real_single_pack": args.ix_real_single_pack,
             "ix_ct_single_tle_default": args.ix_ct_single_tle,

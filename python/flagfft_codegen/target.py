@@ -25,6 +25,7 @@ _IX_LARGE_FOURSTEP_DEFAULT = ContextVar("flagfft_ix_large_fourstep_default", def
 _IX_WARP_FFT_PACK = ContextVar("flagfft_ix_warp_fft_pack", default=0)
 _IX_REAL_SINGLE_PACK = ContextVar("flagfft_ix_real_single_pack", default=False)
 _IX_PRIME_3D = ContextVar("flagfft_ix_prime_3d", default=False)
+_IX_FOURSTEP_PRESET = ContextVar("flagfft_ix_fourstep_preset", default=0)
 _IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
 _MACA_2D_SINGLE_DEFAULT = ContextVar("flagfft_maca_2d_single_default", default=False)
 _MACA_3D_DEFAULT = ContextVar("flagfft_maca_3d_default", default=False)
@@ -109,6 +110,20 @@ def set_ix_prime_3d(enabled: bool):
 
 def ix_prime_3d_enabled() -> bool:
     return _IX_PRIME_3D.get()
+
+
+def set_ix_fourstep_preset(preset: int):
+    if preset not in range(7):
+        raise ValueError("IX FourStep preset must be in [0, 6]")
+    return _IX_FOURSTEP_PRESET.set(preset)
+
+
+def reset_ix_fourstep_preset(token):
+    _IX_FOURSTEP_PRESET.reset(token)
+
+
+def ix_fourstep_preset() -> int:
+    return _IX_FOURSTEP_PRESET.get()
 
 
 def set_codegen_target(target: str) -> None:

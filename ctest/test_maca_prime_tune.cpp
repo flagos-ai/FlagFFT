@@ -560,3 +560,41 @@ TEST(IXLeafPlan, ShortSingleRealWarpDefaultsRemainParentScopedAndReversible) {
     EXPECT_FALSE(flagfft::ix_short_real_warp_default_enabled(request));
   }
 }
+
+TEST(IXLeafPlan, FourStepPresetsRequireTheQualifiedPublicDenseRequest) {
+  ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
+  ScopedEnv gate("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS","1");
+  ScopedEnv single("FLAGFFT_IX_CT_SINGLE",nullptr);
+  ScopedEnv batched("FLAGFFT_IX_CT_BATCH",nullptr);
+  flagfft::FFTRequest request;
+  request.device_type="ix";request.device_arch="71";
+  request.input_dtype=request.output_dtype="complex64";
+  request.raw_dim=request.origin_rank=1;request.batch=64;
+  request.input_layout="contiguous";
+  for (const auto &[n,preset] : std::vector<std::pair<int64_t,int>>{{8191,1},{16381,2},{16384,4},{663000,6}}) {
+    request.fft_length=request.requested_n=n;
+    request.input_strides={n,1};
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),preset);
+    auto other=request;other.origin_rank=3;
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
+    other=request;other.batch=4;
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
+    other=request;other.input_strides={n+8,1};
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
+    other=request;other.input_dtype=other.output_dtype="complex128";
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
+    other=request;other.device_type="maca";
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
+    other=request;other.real_transform_kind="c2r";other.input_strides={n/2+1,1};
+    EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),n==16384?0:preset);
+  }
+  request.batch=1;
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),5);
+  request.requested_n=request.fft_length=16384;request.input_strides={16384,1};
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),3);
+  setenv("FLAGFFT_IX_CT_SINGLE","0",1);
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+  unsetenv("FLAGFFT_IX_CT_SINGLE");
+  setenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS","0",1);
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),0);
+}

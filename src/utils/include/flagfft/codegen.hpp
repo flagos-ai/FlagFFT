@@ -1691,6 +1691,7 @@ class TritonCompiler {
   bool ix_ct_batch_policy_ = false;
   bool ix_real_single_pack_ = false;
   bool ix_prime_3d_policy_ = false;
+  int ix_fourstep_preset_ = 0;
   int ix_ct_single_tle_policy_ = 0;
   std::string maca_tail_policy_ = "off";
 
@@ -1828,6 +1829,7 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
 bool ix_real_single_pack_policy_enabled(const FFTRequest &request);
 bool ix_ct_batch_policy_enabled(const FFTRequest &request);
+int ix_fourstep_default_preset(const FFTRequest &request);
 bool ix_packed_real_policy_enabled(const FFTRequest &request);
 int ix_ct_single_tle_policy(const FFTRequest &request);
 int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,

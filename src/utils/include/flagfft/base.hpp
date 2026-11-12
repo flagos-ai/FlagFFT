@@ -134,6 +134,8 @@ struct FFTRequest {
   // Zero preserves the ordinary leaf policy.
   int64_t ix_warp_fft_pack_default = 0;
   bool ix_prime_3d_default = false;
+  // Public-request preset, retained by convolution and packed-real children.
+  int ix_fourstep_preset = 0;
 };
 
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim, ThreeDim };

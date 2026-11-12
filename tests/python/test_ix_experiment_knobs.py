@@ -577,3 +577,28 @@ def test_packed_fourstep_boundaries_are_explicit_ix_fp32(ix_balanced_profile,mon
     compile(packed,'<packed-fourstep-boundary>','exec')
     assert 'tl.pointer_type(tl.uint64)' not in scalar
     assert ('tl.pointer_type(tl.uint64)' in packed)==(dtype=='complex64')
+
+
+def test_ix_fourstep_request_preset_is_nested_and_explicit_knobs_win(ix_balanced_profile,monkeypatch):
+    from flagfft_codegen.target import set_ix_fourstep_preset, reset_ix_fourstep_preset
+    from flagfft_codegen.kernels_common import _maca_knob
+    monkeypatch.delenv('FLAGFFT_IX_PORTABLE_LEAF',raising=False)
+    monkeypatch.delenv('FLAGFFT_IX_TLE_INNER_PACK',raising=False)
+    original=_maca_knob('PORTABLE_LEAF','off')
+    outer=set_ix_fourstep_preset(1)
+    try:
+        assert _maca_knob('TLE_INNER_PACK')=='32'
+        assert _maca_knob('PORTABLE_LEAF')=='0'
+        inner=set_ix_fourstep_preset(2)
+        try:
+            assert _maca_knob('TLE_INNER_PACK')=='16'
+            assert _maca_knob('TLE_IO_LAYOUT')=='0'
+        finally:reset_ix_fourstep_preset(inner)
+        assert _maca_knob('TLE_INNER_PACK')=='32'
+        monkeypatch.setenv('FLAGFFT_IX_TLE_INNER_PACK','8')
+        assert _maca_knob('TLE_INNER_PACK')=='8'
+        monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','1')
+        assert _maca_knob('PORTABLE_LEAF')=='1'
+    finally:reset_ix_fourstep_preset(outer)
+    monkeypatch.delenv('FLAGFFT_IX_PORTABLE_LEAF')
+    assert _maca_knob('PORTABLE_LEAF','off')==original

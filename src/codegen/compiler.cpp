@@ -2043,6 +2043,7 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
   ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
   ix_ct_batch_policy_ = ix_ct_batch_policy_enabled(request);
   ix_prime_3d_policy_ = request.ix_prime_3d_default;
+  ix_fourstep_preset_ = request.ix_fourstep_preset;
   ix_real_single_pack_ = ix_real_single_pack_policy_enabled(request);
   ix_ct_single_tle_policy_ = ix_ct_single_tle_policy(request);
   maca_tail_policy_ = maca_tail_codegen_root(request);

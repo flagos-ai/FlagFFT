@@ -252,6 +252,9 @@ FFTRequest request_from_desc(const FlagFFTPlanDesc &desc, std::string direction,
   request.requires_contiguous_copy = false;
   request.direction = std::move(direction);
   request.batch = desc.batch;
+  if (request.device_type == "ix" &&
+      adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024)
+    request.ix_fourstep_preset = ix_fourstep_default_preset(request);
   return request;
 }
 

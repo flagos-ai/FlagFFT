@@ -204,6 +204,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (ix_ct_batch_policy_ ? "1" : "0") + ";ix-real-single-pack=" +
                                 (ix_real_single_pack_ ? "1" : "0") +
                                 ";ix-prime-3d=" + (ix_prime_3d_policy_ ? "1" : "0") +
+                                ";ix-fourstep-preset=" + std::to_string(ix_fourstep_preset_) +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "ix") {
@@ -493,6 +494,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_ct_batch_policy_) jit_command << " --ix-ct-batch";
   if (ix_real_single_pack_) jit_command << " --ix-real-single-pack";
   if (ix_prime_3d_policy_) jit_command << " --ix-prime-3d";
+  if (ix_fourstep_preset_) jit_command << " --ix-fourstep-preset " << ix_fourstep_preset_;
   if (key.ix_warp_fft_pack > 0) jit_command << " --ix-warp-fft-pack " << key.ix_warp_fft_pack;
   if (ix_ct_single_tle_policy_) jit_command << " --ix-ct-single-tle " << ix_ct_single_tle_policy_;
 #if defined(BACKEND_MACA)
