@@ -2948,8 +2948,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       // Preserve the measured default, while honoring the already validated
       // half-length factor override when screening packed R2C leaves.
       const char *factor_override = std::getenv("FLAGFFT_IX_LEAF_FACTORS");
+      char *factor_end = nullptr;
       const bool explicit_child_factors = child_leaf && factor_override &&
-          std::string(factor_override).rfind(std::to_string(n / 2) + ":", 0) == 0;
+          std::strtoll(factor_override, &factor_end, 10) == n / 2 &&
+          factor_end && *factor_end == ':';
       const std::vector<int64_t> factors = n == 2048 && !explicit_child_factors
           ? std::vector<int64_t>{16, 8, 8}
           : child_leaf->factors;
