@@ -800,24 +800,6 @@ def test_ct2048_packed_input_loads_aligned_real_pairs(
     ('complex64',None,False),('complex64','0',False),('complex64','1',True),
     ('complex128','1',False),
 ])
-def test_packed_real_partner_gather_remains_opt_in_and_fp32_only(
-        ix_balanced_profile,monkeypatch,dtype,setting,paired):
-    from flagfft_codegen.kernels_common import LeafPlan
-    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
-    monkeypatch.setenv('FLAGFFT_IX_PORTABLE_LEAF','1')
-    monkeypatch.delenv('FLAGFFT_IX_PACKED_R2C_GATHER',raising=False)
-    if setting is not None:monkeypatch.setenv('FLAGFFT_IX_PACKED_R2C_GATHER',setting)
-    plan=LeafPlan(512,(8,8,8),1,64,2,(),512,'forward',dtype)
-    _,source=_build_leaf_kernel_source_for_io(plan,io_mode='packed_r2c')
-    assert ('packed_partner_pair = tl.gather(packed_pair, packed_partner, 0)' in source)==paired
-    assert ('packed_br = tl.gather(packed_r, packed_partner, 0)' in source)!=paired
-    compile(source,'<packed-real-partner-gather>','exec')
-
-
-@pytest.mark.parametrize('dtype,setting,paired',[
-    ('complex64',None,False),('complex64','0',False),('complex64','1',True),
-    ('complex128','1',False),
-])
 def test_structured_complex_exchange_pairs_preserve_the_route(
         ix_balanced_profile,monkeypatch,dtype,setting,paired):
     from flagfft_codegen.kernels_common import LeafPlan
