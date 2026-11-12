@@ -22,15 +22,6 @@
 #include "triton_jit/triton_jit_function.h"
 
 namespace flagfft {
-#if defined(BACKEND_HCU)
-namespace {
-struct HcuPreparedLaunch {
-  triton_jit::DefaultBackend::KernelHandle function;
-  triton_jit::DefaultBackend::LaunchOptions options;
-  unsigned int block_threads;
-};
-}
-#endif
 #if defined(BACKEND_NPU)
 namespace {
 triton_jit::CompileOptions npu_compile_options(const JitKernel &kernel) {
@@ -113,13 +104,7 @@ void JitKernel::compile() {
   triton_jit::CompileOptions options;
   options.num_warps = static_cast<int>(num_warps);
   options.num_stages = static_cast<int>(num_stages);
-  const auto &implementation = function->get_kernel(
-      signature, options, triton_jit::DefaultBackend::get_device_index());
-  direct_launch = std::make_shared<HcuPreparedLaunch>(HcuPreparedLaunch {
-      triton_jit::DefaultBackend::load_kernel(implementation.get_dir(), kernel_name),
-      {.shared_memory = triton_jit::DefaultBackend::get_shared_memory(
-          implementation.get_dir(), kernel_name)},
-      static_cast<unsigned int>(num_warps * warp_size)});
+  direct_launch = function->prepare_direct_launch(signature, options);
 #endif
 #endif
 #endif
@@ -227,12 +212,10 @@ void JitKernel::launch(adaptor::StreamHandle stream,
   // uses a default stream, whose device can change independently.
   if (prepared_enabled && stream != nullptr &&
       !triton_jit::detail::get_launch_hooks_snapshot()) {
-    const auto &prepared = *static_cast<HcuPreparedLaunch *>(direct_launch.get());
-    triton_jit::DefaultBackend::launch_kernel(
-        reinterpret_cast<triton_jit::DefaultStreamType>(stream), prepared.function,
+    const auto &prepared = *static_cast<triton_jit::DefaultBackend::DirectLaunch *>(direct_launch.get());
+    prepared.launch(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
         static_cast<unsigned int>(grid_x), static_cast<unsigned int>(grid_y),
-        static_cast<unsigned int>(grid_z), prepared.block_threads, 1, 1,
-        launch_args, prepared.options);
+        static_cast<unsigned int>(grid_z), static_cast<unsigned int>(num_warps), launch_args);
   } else {
     function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
         static_cast<unsigned int>(grid_x), static_cast<unsigned int>(grid_y),
