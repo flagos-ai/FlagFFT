@@ -2321,7 +2321,7 @@ def _emit_stage_block(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
                 )
                 if fuse_twiddle_into_row:
-                    if _is_double_dtype(dtype):
+                    if _is_double_dtype(dtype) or _ix_backend_active():
                         if vectorized_complex_io:
                             lines.extend(
                                 _emit_vectorized_complex_load(
