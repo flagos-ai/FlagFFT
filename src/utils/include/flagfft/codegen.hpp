@@ -1830,6 +1830,7 @@ int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
                                 int64_t n0, int64_t n1, int64_t n2 = 0);
 bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
                                  int64_t n0, int64_t n1, int64_t n2);
+bool ix_small_real_warp_default_enabled(const FFTRequest &request);
 std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request);
 std::vector<DeviceAllocation> build_raw_cube_dft_tables(int64_t n, const FFTRequest &request);
 

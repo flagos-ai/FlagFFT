@@ -444,3 +444,31 @@ TEST(IXNDPolicy, PrimeAxisPolicyIsScopedToQualifiedParent) {
   setenv("FLAGFFT_EXECUTION_POLICY","legacy",1);
   EXPECT_FALSE(flagfft::ix_prime_3d_default_enabled(request,4,16,997,64));
 }
+
+TEST(IXNDPolicy, SmallRealWarpPolicyOnlySelectsPublicSingleFP32) {
+  ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
+  ScopedEnv enabled("FLAGFFT_IX_SMALL_REAL",nullptr);
+  flagfft::FFTRequest request;
+  request.device_type="ix";request.device_arch="71";
+  request.raw_dim=request.origin_rank=1;request.batch=1;
+  request.requested_n=request.fft_length=16;
+  request.input_dtype=request.output_dtype="complex64";
+  request.input_layout="contiguous";request.real_transform_kind="r2c";
+  EXPECT_TRUE(flagfft::ix_small_real_warp_default_enabled(request));
+  request.real_transform_kind="c2r";
+  EXPECT_TRUE(flagfft::ix_small_real_warp_default_enabled(request));
+  request.real_transform_kind.clear();
+  EXPECT_FALSE(flagfft::ix_small_real_warp_default_enabled(request));
+  request.real_transform_kind="r2c";request.batch=64;
+  EXPECT_FALSE(flagfft::ix_small_real_warp_default_enabled(request));
+  request.batch=1;request.origin_rank=3;
+  EXPECT_FALSE(flagfft::ix_small_real_warp_default_enabled(request));
+  request.origin_rank=1;request.input_dtype="complex128";
+  EXPECT_FALSE(flagfft::ix_small_real_warp_default_enabled(request));
+  request.input_dtype="complex64";
+  setenv("FLAGFFT_IX_SMALL_REAL","0",1);
+  EXPECT_FALSE(flagfft::ix_small_real_warp_default_enabled(request));
+  setenv("FLAGFFT_IX_SMALL_REAL","1",1);
+  setenv("FLAGFFT_EXECUTION_POLICY","legacy",1);
+  EXPECT_FALSE(flagfft::ix_small_real_warp_default_enabled(request));
+}

@@ -61,7 +61,8 @@ namespace {
   void mark_ix_warp_fft(KernelKey &key, const FFTRequest &request, int64_t span = 0) {
     if (request.device_type != "ix" || request.device_arch != "71" ||
         key.dtype != "complex64") return;
-    const bool family_default=request.ix_warp_fft_pack_default>0;
+    const bool family_default=request.ix_warp_fft_pack_default>0 ||
+                              ix_small_real_warp_default_enabled(request);
     const bool family=flag_or_default("FLAGFFT_IX_WARP_FFT",family_default);
     const bool small_real=key.length==16 && family && request.origin_rank<=1 &&
         request.raw_dim==1 && request.batch==1 &&
@@ -76,7 +77,7 @@ namespace {
     if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R &&
         key.kind != KernelKind::LeafR2C && key.kind != KernelKind::LeafPackedR2C &&
         key.kind != KernelKind::LeafPackedC2R) return;
-    int64_t pack = family_default ? request.ix_warp_fft_pack_default :
+    int64_t pack = request.ix_warp_fft_pack_default>0 ? request.ix_warp_fft_pack_default :
                      (small_real ? 1 : key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
     if (const char *value = std::getenv(key.length == 256
                                          ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
