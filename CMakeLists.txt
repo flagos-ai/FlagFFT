@@ -157,6 +157,12 @@ set(FLAGFFT_CORE_SOURCES
 add_library(flagfft SHARED ${FLAGFFT_CORE_SOURCES})
 add_subdirectory(src/adaptor)
 
+if(BACKEND STREQUAL "HCU")
+    # The header-defined HCU launcher is instantiated in FlagFFT as well as
+    # libtriton_jit. Strip its INFO logging from both translation units.
+    target_compile_definitions(flagfft PRIVATE GOOGLE_STRIP_LOG=1)
+endif()
+
 # NPU kernels are generated Triton; ACL is used only for runtime/launch glue.
 if(BACKEND STREQUAL "NPU")
     target_compile_definitions(flagfft PRIVATE FLAGFFT_BACKEND_NPU=1)
