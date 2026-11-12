@@ -1319,7 +1319,7 @@ def _emit_stage_block(
     )
 
     lines: list[str] = []
-    if io_layout and stage==1:
+    if io_layout and stage==1 and io_mode.endswith("_row"):
         # Shared memory separates the two register mappings: adjacent threads
         # read adjacent input FFT slots, then write adjacent output frequencies.
         inner_count=four_step_n2 if io_mode.endswith("_row") else four_step_n1
