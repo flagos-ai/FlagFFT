@@ -2028,6 +2028,11 @@ namespace {
       factors = n==8192 ? std::vector<int64_t>{8,8,8,16}
                         : std::vector<int64_t>{8,8,16,16};
     }
+    if (flag_or_default("FLAGFFT_IX_CTA_TLE_RADIX16",false)) {
+      if (portable || n!=16384 || cta_batch_pack!=1)
+        throw std::runtime_error("radix-16 IX CTA requires one nonportable 16384-point FFT");
+      factors = {16,16,16,4};
+    }
     if (const char *order = std::getenv("FLAGFFT_IX_CTA_RADIX_ORDER")) {
       if (std::string(order) != "0" && std::string(order) != "1" && std::string(order) != "2")
         throw std::runtime_error("FLAGFFT_IX_CTA_RADIX_ORDER must be 0, 1 or 2");
