@@ -420,6 +420,21 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
       }
     }
+    if (!is_2d && !is_3d && multid_request.device_type == "hcu") {
+      const char *setting = std::getenv("FLAGFFT_HCU_1D_GRAPH");
+      if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
+        throw std::runtime_error("FLAGFFT_HCU_1D_GRAPH must be 0 or 1");
+      }
+      if (setting != nullptr && std::string(setting) == "1" &&
+          std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+        if (plan->executable.forward) {
+          plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+        }
+        if (plan->executable.inverse) {
+          plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+        }
+      }
+    }
     const char *npu_graph = std::getenv("FLAGFFT_NPU_GRAPH");
     if (plan->executable.forward_request.device_type == "npu" && npu_graph != nullptr &&
         (std::string(npu_graph) == "1" || std::string(npu_graph) == "auto") &&
