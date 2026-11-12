@@ -556,6 +556,34 @@ The current IX acceptance policy disables FP64. The runner omits
 not count them as skipped or completed work; every logical operator still runs
 for FP32.
 
+IX acceptance must set `FLAGFFT_NUMPY_CAPTURE_FULL_BATCH=1`. The capture's
+historical 128 MiB transfer chunk also changes the execution plan's batch;
+without this setting, a large batch case can validate smaller independent
+plans and miss a batch-layout error. The runner records the requested and
+executed batches and rejects a missing or mismatched full-batch report.
+Memory-limited chunked checks remain useful diagnostics, but do not certify
+the requested batch plan.
+
+For a complete IX qualification, use one committed source/build and an idle
+GPU, with tuning disabled and diagnostic kernel overrides cleared:
+
+```bash
+FLAGFFT_EXECUTION_POLICY=balanced FLAGFFT_TUNE_DISABLE=1 \
+FLAGFFT_NUMPY_CAPTURE_FULL_BATCH=1 \
+python tools/run_tests.py --build-dir /absolute/path/to/build \
+  --gpus 2 --combination full --scales all --warmup 10 --iters 100 \
+  --timeout 600 --output-dir /absolute/path/to/results/YYYYMMDD_HHMMSS_ix_30op
+```
+
+This expands to 600 FP32 accuracy cases (three amplitudes) and 200 performance
+cases across 30 operators. Acceptance requires each operator's geometric
+mean speedup, computed from its own cases, to reach `0.85`, and every case to
+reach `0.65x`. A successful runner exit checks execution and numerical status;
+it does not enforce these performance thresholds. Keep incorrect reference
+timings visible and report their raw ratios separately from statistics over
+valid references. A collection of faster targeted runs is screening evidence;
+the complete final-source run is the acceptance result.
+
 On NPU, Ascend 910B does not support FP64, so the runner omits those cases
 before launch and aggregation. The FP32 cases run FlagFFT against NumPy. SiP
 is used for its supported out-of-place 1D/2D/3D C2C/R2C/C2R shapes. Cases
