@@ -281,6 +281,14 @@ def _metadata(
             threads = (plan.length * inner_pack + 31) // 32
             num_warps = max(2, profile.warps_for(threads))
             profile.validate(num_warps)
+        if not maca_backend and kernel_type in INNER_PACK_ROW_KERNELS | INNER_PACK_COL_KERNELS:
+            stage = "ROW" if kernel_type in INNER_PACK_ROW_KERNELS else "COL"
+            stage_warps = _maca_knob(f"TLE_{stage}_WARPS")
+            if stage_warps:
+                if stage_warps not in {"1", "2", "4", "8", "16"}:
+                    raise ValueError(f"FLAGFFT_IX_TLE_{stage}_WARPS must be 1, 2, 4, 8 or 16")
+                num_warps = int(stage_warps)
+                profile.validate(num_warps)
     from .target import ix_fourstep_preset
     if (_ix_backend_active() and kernel_type == "leaf_packed_r2c" and ix_fourstep_preset()<7
             and os.environ.get("FLAGFFT_IX_WARPS") is None):

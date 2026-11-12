@@ -632,3 +632,25 @@ def test_full_tle_cta_keeps_pingpong_when_an_intermediate_group_is_partial(ix_ba
     assert _use_single_smem_buffer(full,io_mode='contiguous')
     assert not _use_single_smem_buffer(half,io_mode='contiguous')
     assert not _use_single_smem_buffer(half,io_mode='packed_c2r')
+
+
+def test_ix_stage_tiles_keep_independent_launch_metadata_and_smem_bounds(ix_balanced_profile,monkeypatch):
+    from pathlib import Path
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+    from flagfft_codegen.metadata import _metadata
+    for key,value in {'PORTABLE_LEAF':'0','TLE_INNER_PACK':'32','TLE_ROW_PACK':'64',
+                      'TLE_COL_PACK':'16','WARPS':'4','TLE_ROW_WARPS':'8',
+                      'TLE_COL_WARPS':'2'}.items():
+        monkeypatch.setenv('FLAGFFT_IX_'+key,value)
+    plan=LeafPlan(128,(16,8),1,8,1,(),128,'forward','complex64')
+    for mode,pack,warps in [('four_step_row',64,8),('four_step_col',16,2)]:
+        name,source=_build_leaf_kernel_source_for_io(plan,io_mode=mode,four_step_n1=128,four_step_n2=128)
+        meta=_metadata(module_path=Path('unused.py'),kernel_name=name,arg_names=[],plan=plan,
+                       kernel_type=mode,n1=128,n2=128,dtype='complex64')
+        assert meta['inner_pack']==pack
+        assert meta['num_warps']==warps
+        assert 'for group_' in source
+    monkeypatch.setenv('FLAGFFT_IX_TLE_ROW_PACK','256')
+    assert four_step_row_inner_pack_for(128,128,plan=plan)==128
+    assert four_step_col_inner_pack_for(128,128,plan=plan)==16
