@@ -94,18 +94,6 @@ def _ix_batch_smem_interleave(io_mode: str, portable: bool, pack: int) -> bool:
     return setting == "1" and not portable and pack > 1 and io_mode in _IX_BATCH_INTERLEAVE_MODES
 
 
-def _ix_slotted_tle_exchange(plan: LeafPlan, io_mode: str, inner_pack: int) -> bool:
-    if not (_ix_backend_active() and not _portable_leaf_backend_active()
-            and plan.dtype=="complex64" and inner_pack>1
-            and 64<=plan.length<=256 and len(plan.factors)==2
-            and all(radix & (radix-1)==0 for radix in plan.factors)
-            and (io_mode.startswith("four_step_") or io_mode.startswith("bluestein_four_step_"))
-            and not io_mode.endswith("_strided")):
-        return False
-    return (_maca_knob("TLE_SLOTTED_STORE","0")=="1" and
-            cooperative_stage_lanes_for(plan)==tuple(plan.length//r for r in plan.factors))
-
-
 def _portable_complex_vector_io() -> bool:
     """Whether to vectorize complex IO without backend inline assembly.
 
@@ -1226,7 +1214,6 @@ def _emit_stage_block(
     bluestein_real_kind: str = "",
     permuted_smem_store: bool = False,
     perm_inner: bool = False,
-    slotted_tle: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1863,29 +1850,19 @@ def _emit_stage_block(
                     )
         else:
             load_index = f"smem_phys{j}" if smem_swizzle else f"phys{j}"
-            if slotted_tle:
-                # The first radix selects a shared-memory slot; the remaining
-                # digit selects a value within its padded, packed row.
-                for component in ('r','i'):
-                    lines.append(
-                        f"{indent}{component}{j} = tl.load(tle.gpu.local_ptr({source_buffer}_{component}, "
-                        f"(logical_phys{j} % {factors[0]}, (logical_phys{j} // {factors[0]}) * {smem_pack} + inner_slot)), "
-                        "mask=lane_mask,other=0.0)"
-                    )
-            else:
-                lines.extend(
-                    _emit_exchange_load(
-                        indent, source_buffer, load_index, j, portable_exchange,
-                        mixed_direct=mixed_direct_load,
-                        direct=(
-                            portable_exchange
-                            and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
-                            and _structured_exchange_supported(
-                                factors, exchange_size, exchange_slot_stride, smem_pack
-                            )
-                        ),
-                    )
+            lines.extend(
+                _emit_exchange_load(
+                    indent, source_buffer, load_index, j, portable_exchange,
+                    mixed_direct=mixed_direct_load,
+                    direct=(
+                        portable_exchange
+                        and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+                        and _structured_exchange_supported(
+                            factors, exchange_size, exchange_slot_stride, smem_pack
+                        )
+                    ),
                 )
+            )
             recurrence = (
                 _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
                 and dtype == "complex64"
@@ -2450,18 +2427,17 @@ def _emit_stage_block(
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
                 store_index = f"smem_dst{j}"
-            if slotted_tle:
-                for component in ('r','i'):
-                    lines.append(
-                        f"{indent}tl.store(tle.gpu.local_ptr({dest_buffer}_{component}.slot(tl.full((),{j},tl.int32)), "
-                        f"(lane * {smem_pack} + inner_slot,)), {component}{j}, mask=lane_mask)"
-                    )
-            else:
-                lines.extend(
-                    _emit_exchange_store(
-                        indent,dest_buffer,store_index,j,f"r{j}",f"i{j}",portable_exchange,
-                    )
+            lines.extend(
+                _emit_exchange_store(
+                    indent,
+                    dest_buffer,
+                    store_index,
+                    j,
+                    f"r{j}",
+                    f"i{j}",
+                    portable_exchange,
                 )
+            )
 
     if portable_exchange:
         buffer = (
@@ -3476,9 +3452,6 @@ def _build_leaf_kernel_source_for_io(
     if uses_cooperative_stage_lanes:
         body.append("    base_lane_mask = lane_mask")
 
-    slotted_tle = _ix_slotted_tle_exchange(plan,io_mode,inner_pack)
-    smem_b_shape = (f"[{factors[0]}, {(n//factors[0]+1)*inner_pack}]"
-                    if slotted_tle else f"[{smem_n}]")
     if len(factors) > 1 and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
         if not single_smem_buffer:
@@ -3491,11 +3464,11 @@ def _build_leaf_kernel_source_for_io(
                 f"nv_mma_shared_layout=False)"
             )
         body.append(
-            f"    smem_b_r = tle.gpu.alloc({smem_b_shape}, dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+            f"    smem_b_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
             f"nv_mma_shared_layout=False)"
         )
         body.append(
-            f"    smem_b_i = tle.gpu.alloc({smem_b_shape}, dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
+            f"    smem_b_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, "
             f"nv_mma_shared_layout=False)"
         )
 
@@ -3534,7 +3507,6 @@ def _build_leaf_kernel_source_for_io(
                 bluestein_real_kind=bluestein_real_kind,
                 permuted_smem_store=permuted_smem_store,
                 perm_inner=inner_perm_form,
-                slotted_tle=slotted_tle,
             )
         )
 
