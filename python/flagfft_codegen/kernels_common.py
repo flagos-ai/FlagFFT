@@ -1100,11 +1100,6 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     """
     if _portable_leaf_backend_active():
         return False
-    if (_ix_backend_active() and current_profile().device_arch == "71"
-            and dtype == "complex64" and n1*n2 in {8192,16384}
-            and all(64 <= n <= 256 and n & (n-1) == 0 for n in (n1,n2))
-            and _maca_knob("ROW_TWIDDLE","0") == "1"):
-        return True
     return use_tle_fused_twiddle(n1, n2, dtype) or (
         _is_double_dtype(dtype) and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
     )
