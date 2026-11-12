@@ -146,15 +146,26 @@ int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
 }
 
 bool ix_real_single_pack_policy_enabled(const FFTRequest &request) {
+  // Retain the existing transport name for packed I/O in qualified single
+  // CT leaves. Complex leaves share the real path's vector/static defaults.
+  if (request.device_type!="ix" || request.device_arch!="71") return false;
+  const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+  if (policy && std::string(policy)!="balanced") return false;
+  const char *setting = std::getenv("FLAGFFT_IX_CT_SINGLE");
+  if (setting && std::string(setting)=="0") return false;
+  if (setting && std::string(setting)!="1")
+    throw std::runtime_error("FLAGFFT_IX_CT_SINGLE must be 0 or 1");
+  const bool real = request.real_transform_kind=="r2c" || request.real_transform_kind=="c2r";
+  const bool length = request.requested_n==210 || request.requested_n==1024 ||
+                      request.requested_n==2048 ||
+                      (request.requested_n==16 && request.real_transform_kind.empty());
   return request.device_type == "ix" && request.device_arch == "71" &&
                          request.raw_dim == 1 && request.origin_rank <= 1 &&
-                         request.batch == 1 &&
-                         (request.requested_n == 210 || request.requested_n == 1024 ||
-                          request.requested_n == 2048) &&
+                         request.batch == 1 && length &&
                          request.fft_length == request.requested_n && request.input_dtype == "complex64" &&
                          request.output_dtype == "complex64" &&
-                         (request.real_transform_kind == "r2c" ||
-                          request.real_transform_kind == "c2r") &&
+                         (real || request.real_transform_kind.empty()) &&
+                         request.input_layout=="contiguous" && !request.requires_contiguous_copy &&
                          !request.input_strides.empty() && request.input_strides.back() == 1;
 }
 

@@ -478,15 +478,18 @@ TEST(IXNDPolicy, SmallRealWarpPolicyOnlySelectsPublicSingleFP32) {
   EXPECT_FALSE(flagfft::ix_small_real_warp_default_enabled(request));
 }
 
-TEST(IXLeafPlan, SingleRealDefaultsStayAtThePublicContiguousFP32Boundary) {
+TEST(IXLeafPlan, SinglePackedIoDefaultsStayAtThePublicContiguousFP32Boundary) {
+  ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
+  ScopedEnv enabled("FLAGFFT_IX_CT_SINGLE",nullptr);
   flagfft::FFTRequest request;
   request.device_type="ix"; request.device_arch="71";
   request.input_dtype=request.output_dtype="complex64";
   request.batch=1; request.raw_dim=request.origin_rank=1;
   request.input_strides={1}; request.real_transform_kind="c2r";
+  request.input_layout="contiguous";
   for (int64_t n : {210,1024,2048}) {
     request.fft_length=request.requested_n=n;
-    for (const auto &kind : {"c2r","r2c"}) {
+    for (const auto &kind : {"c2r","r2c",""}) {
       request.real_transform_kind=kind;
       EXPECT_TRUE(flagfft::ix_real_single_pack_policy_enabled(request));
       auto other=request; other.origin_rank=3;
@@ -499,10 +502,23 @@ TEST(IXLeafPlan, SingleRealDefaultsStayAtThePublicContiguousFP32Boundary) {
       EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
       other=request; other.input_strides={2};
       EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
-      other=request; other.real_transform_kind="";
+      other=request; other.real_transform_kind="unknown";
+      EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
+      other=request; other.requires_contiguous_copy=true;
       EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(other));
     }
   }
+  request.fft_length=request.requested_n=16;
+  request.real_transform_kind="";
+  EXPECT_TRUE(flagfft::ix_real_single_pack_policy_enabled(request));
+  request.real_transform_kind="r2c";
+  EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(request));
+  request.fft_length=request.requested_n=2048;
+  setenv("FLAGFFT_IX_CT_SINGLE","0",1);
+  EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(request));
+  setenv("FLAGFFT_IX_CT_SINGLE","1",1);
+  setenv("FLAGFFT_EXECUTION_POLICY","legacy",1);
+  EXPECT_FALSE(flagfft::ix_real_single_pack_policy_enabled(request));
 }
 
 TEST(IXLeafPlan, ShortSingleRealWarpDefaultsRemainParentScopedAndReversible) {
