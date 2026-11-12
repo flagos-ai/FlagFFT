@@ -3626,6 +3626,19 @@ def _build_leaf_kernel_source_for_io(
             "    tl.store(out_ptr + packed_nyquist * 2 + 1, 0.0, mask=packed_mask & (packed_k == 0))",
         ])
 
+        if (_ix_backend_active() and plan.dtype == "complex64"
+                and _maca_knob("PACKED_R2C_GATHER", "0") == "1"):
+            # Move each complex partner as one bit-preserving value. A single
+            # gather can share its synchronization and scratch lifetime for
+            # both components; the FP32 arithmetic remains unchanged.
+            index = body.index("    packed_br = tl.gather(packed_r, packed_partner, 0)")
+            body[index:index+2] = [
+                "    packed_pair = tl.cast(tl.cast(packed_r, tl.uint32, bitcast=True), tl.uint64) | (tl.cast(tl.cast(packed_i, tl.uint32, bitcast=True), tl.uint64) << 32)",
+                "    packed_partner_pair = tl.gather(packed_pair, packed_partner, 0)",
+                "    packed_br = tl.cast(tl.cast(packed_partner_pair, tl.uint32), tl.float32, bitcast=True)",
+                "    packed_bi = tl.cast(tl.cast(packed_partner_pair >> 32, tl.uint32), tl.float32, bitcast=True)",
+            ]
+
         if _ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype):
             for old_lines,new_lines in (
                 (["    packed_wr = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2, mask=packed_mask, other=0.0)",
